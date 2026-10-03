@@ -144,10 +144,18 @@ class MainActivity : Activity() {
      * 确认：取播放地址并起播（P3）。
      *
      * 链路（与 TV 版一致）：`getPlaybackInfo` → `mediaSources.first()`
-     * 的 `directStreamUrl`（没有就用 `transcodingUrl`）→ `${server}/emby<path>` →
+     * 的 `directStreamUrl`（没有就用 `transcodingUrl`）→ `${server}/emby<path}` →
      * ExoPlayer 解码 → Surface → 渲染器 OES 纹理贴到虚拟屏。
+     *
+     * **播放中先拦截**：扳机走的是触摸通道（onConfirm 直调本函数，不经过
+     * input 分发），不拦就会在播放中重新走起播流程 —— 父亲 2026-10-04 实测
+     * 「扣扳机/拨摇杆都让视频从头开始播放」就是这个原因。
      */
     private fun confirmCurrent() {
+        if (renderer.videoActive) {
+            togglePlayPause()
+            return
+        }
         val i = renderer.focusedPosterIndex
         if (i < 0 || i >= movies.size) {
             renderer.setScreenText("未选中任何海报")
@@ -209,6 +217,11 @@ class MainActivity : Activity() {
                 })
             }
             renderer.videoActive = true
+            // 进播放时重置指针位移累计，避免入场第一拨就触发一次跳转
+            seekAccumX = 0f
+            lastRayX = null
+            lastSeekAt = 0L
+            hud("播放中：左右拨动摇杆=快进快退 · 扳机=暂停 · 返回=退出")
             renderer.setScreenText(title)
             Log.i(TAG, "开始播放: $title url=${url.take(160)}")
         } catch (e: Exception) {
