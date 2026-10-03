@@ -19,9 +19,19 @@
     <uses-feature
         android:name="android.hardware.vr.high_performance"
         android:required="false" />
-    <uses-feature
-        android:name="android.hardware.touchscreen"
-        android:required="false" />
+    <!--
+      【重要】不声明 android.hardware.touchscreen（2026-10-04 实测结论）。
+
+      对照实验：哔哩哔哩 TV 版（tv.danmaku.bilibilihd）的 manifest 里
+      **完全没有** touchscreen 声明，它在 PICO 上能拿到独立摇杆信号
+      （晃动零反应、拨摇杆持续快进、A 键菜单、B 键返回）；
+      而我们声明了 required=false，PICO 只给我们「光标模拟」——
+      手柄全部输入被压成触摸坐标，拿不到摇杆与按键。
+
+      推断：PICO 见到应用声明 touchscreen 就按「触摸应用」处理，
+      给虚拟光标；不声明则按 TV/手柄应用处理，发方向键与摇杆。
+      去掉此声明以便实测验证（原声明历史见 git）。
+    -->
 
     <!--
       usesCleartextTraffic：允许 http:// 明文请求（关键，别删）。
