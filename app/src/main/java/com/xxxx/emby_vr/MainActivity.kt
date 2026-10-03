@@ -587,6 +587,18 @@ class MainActivity : Activity() {
         return super.onKeyDown(keyCode, event)
     }
 
+    /**
+     * [诊断] 最外层事件总入口：PICO 的手柄输入有可能走 key/motion 之外的路径，
+     * 这里记录所有到达 Activity 的事件（含被 super 消费的），
+     * 用于对比「B 站能收到、我们漏掉」的是什么（父亲 2026-10-04）。
+     */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        Log.i(TAG, "DIAG keyEv: action=${event.action} keyCode=${event.keyCode} " +
+            "scanCode=${event.scanCode} deviceId=${event.deviceId} repeat=${event.repeatCount} " +
+            "source=0x${Integer.toHexString(event.source)}")
+        return super.dispatchKeyEvent(event)
+    }
+
     override fun onGenericMotionEvent(event: MotionEvent): Boolean {
         // [诊断] 摇杆轴事件是否到达：记录 source 与轴值（父亲 2026-10-04 抓数据用）
         Log.i(TAG, "DIAG generic: action=${event.actionMasked} source=0x${Integer.toHexString(event.source)} " +
