@@ -595,7 +595,14 @@ class MainActivity : Activity() {
             "AXIS_Z=${"%.3f".format(event.getAxisValue(MotionEvent.AXIS_Z))} " +
             "AXIS_RZ=${"%.3f".format(event.getAxisValue(MotionEvent.AXIS_RZ))} " +
             "AXIS_HAT_X=${"%.3f".format(event.getAxisValue(MotionEvent.AXIS_HAT_X))} " +
-            "AXIS_LTRIGGER=${"%.3f".format(event.getAxisValue(MotionEvent.AXIS_LTRIGGER))}")
+            "AXIS_HAT_Y=${"%.3f".format(event.getAxisValue(MotionEvent.AXIS_HAT_Y))} " +
+            "AXIS_SCROLL=${"%.3f".format(event.getAxisValue(MotionEvent.AXIS_SCROLL))} " +
+            "AXIS_VSCROLL=${"%.3f".format(event.getAxisValue(MotionEvent.AXIS_VSCROLL))} " +
+            "AXIS_HSCROLL=${"%.3f".format(event.getAxisValue(MotionEvent.AXIS_HSCROLL))} " +
+            "AXIS_RX=${"%.3f".format(event.getAxisValue(MotionEvent.AXIS_RX))} " +
+            "AXIS_RY=${"%.3f".format(event.getAxisValue(MotionEvent.AXIS_RY))} " +
+            "AXIS_LTRIGGER=${"%.3f".format(event.getAxisValue(MotionEvent.AXIS_LTRIGGER))} " +
+            "AXIS_THROTTLE=${"%.3f".format(event.getAxisValue(MotionEvent.AXIS_THROTTLE))}")
         if (input.onGenericMotion(event)) return true
         return super.onGenericMotionEvent(event)
     }
