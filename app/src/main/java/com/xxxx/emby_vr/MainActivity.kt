@@ -269,7 +269,7 @@ class MainActivity : Activity() {
         val p = player ?: return
         p.seekTo((p.currentPosition + deltaMs).coerceAtLeast(0L))
         val sec = p.currentPosition / 1000
-        Log.i(TAG, "seek ${deltaMs / 1000}s → ${sec / 60}:${\"%02d\".format(sec % 60)}")
+        Log.i(TAG, "seek ${deltaMs / 1000}s → ${sec / 60}:${"%02d".format(sec % 60)}")
         hud("${if (deltaMs < 0) "快退" else "快进"} 10 秒 → ${sec / 60}:${"%02d".format(sec % 60)}")
     }
 
