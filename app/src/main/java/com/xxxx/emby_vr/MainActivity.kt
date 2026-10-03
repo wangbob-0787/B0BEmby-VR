@@ -735,8 +735,15 @@ class MainActivity : Activity() {
          */
         private const val DRAG_SEEK_STEP = 0.9f
 
-        /** 拨摇杆判定：单向累计位移过该值算一次「拨动」（归一化坐标，半高=1） */
-        private const val STICK_RUN = 0.35f
+        /**
+         * 拨摇杆判定：单向累计位移过该值算一次「拨动」（归一化坐标，半高=1）。
+         *
+         * 取值 0.9 来自 build-38 实机数据分布（父亲 2026-10-04 实测）：
+         *   真拨摇杆：累计位移 1.5 ~ 2.1
+         *   晃动手柄：累计位移 0.35 ~ 0.51
+         *   0.6 ~ 1.4 之间无样本 —— 天然分界带，取 0.9 居中。
+         */
+        private const val STICK_RUN = 0.9f
 
         /** 判定指针移动方向的最小步长，滤掉落点抖动 */
         private const val STICK_EPS = 0.003f
