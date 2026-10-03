@@ -10,8 +10,13 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
 import com.xxxx.emby_vr.data.EmbyContent
 import com.xxxx.emby_vr.data.model.BaseItemDto
+import com.xxxx.emby_vr.data.remote.EmbyApi
 import com.xxxx.emby_vr.data.remote.HttpClient as EmbyHttpClient
 import com.xxxx.emby_vr.vr.InputRouter
 import com.xxxx.emby_vr.vr.VrRenderer
@@ -21,6 +26,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.Request
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
@@ -62,15 +68,19 @@ class MainActivity : Activity() {
      */
     private val input = InputRouter { action ->
         when (action) {
-            InputRouter.Action.LEFT -> moveFocus(-1)
-            InputRouter.Action.RIGHT -> moveFocus(+1)
+            InputRouter.Action.LEFT -> if (renderer.videoActive) seekBy(-10_000) else moveFocus(-1)
+            InputRouter.Action.RIGHT -> if (renderer.videoActive) seekBy(+10_000) else moveFocus(+1)
             InputRouter.Action.UP,
             InputRouter.Action.DOWN -> { /* 海报墙只有一行，上下暂忽略 */ }
-            InputRouter.Action.CONFIRM -> confirmCurrent()
-            InputRouter.Action.BACK -> clearFocus()
+            InputRouter.Action.CONFIRM -> if (renderer.videoActive) togglePlayPause() else confirmCurrent()
+            InputRouter.Action.BACK ->
+                if (renderer.videoActive) stopPlayback() else clearFocus()
+            InputRouter.Action.PLAY_PAUSE -> if (renderer.videoActive) togglePlayPause()
+            InputRouter.Action.SEEK_BACK -> if (renderer.videoActive) seekBy(-10_000)
+            InputRouter.Action.SEEK_FORWARD -> if (renderer.videoActive) seekBy(+10_000)
             InputRouter.Action.RAY_POS,
             InputRouter.Action.RAY_DIR -> applyRayFocus()
-            else -> { /* SEEK/PLAY_PAUSE 等播放中动作 P3 再接 */ }
+            else -> { /* 余下动作后续接 */ }
         }
     }
 
@@ -92,9 +102,110 @@ class MainActivity : Activity() {
         }
     }
 
+    /**
+     * 确认：取播放地址并起播（P3）。
+     *
+     * 链路（与 TV 版一致）：`getPlaybackInfo` → `mediaSources.first()`
+     * 的 `directStreamUrl`（没有就用 `transcodingUrl`）→ `${server}/emby<path>` →
+     * ExoPlayer 解码 → Surface → 渲染器 OES 纹理贴到虚拟屏。
+     */
     private fun confirmCurrent() {
         val i = renderer.focusedPosterIndex
-        renderer.setScreenText(if (i >= 0) "已选择海报 #${i + 1}" else "未选中任何海报")
+        if (i < 0 || i >= movies.size) {
+            renderer.setScreenText("未选中任何海报")
+            return
+        }
+        val item = movies[i]
+        val id = item.id
+        if (id == null) {
+            renderer.setScreenText("条目无 id，无法播放")
+            return
+        }
+        renderer.setScreenText("正在获取播放地址…")
+        scope.launch {
+            val media = EmbyApi.getPlaybackInfo(
+                context = this@MainActivity,
+                serverUrl = BuildConfig.EMBY_SERVER,
+                apiKey = BuildConfig.EMBY_API_KEY,
+                deviceId = EmbyContent.DEVICE_ID,
+                userId = BuildConfig.EMBY_USER_ID,
+                mediaId = id,
+                startTimeTicks = 0L,
+            )
+            val source = media.mediaSources?.firstOrNull()
+            var path = source?.directStreamUrl ?: source?.transcodingUrl
+            if (path == null) {
+                renderer.setScreenText("取不到播放地址（服务器未返回直链）")
+                return@launch
+            }
+            // 直链缺 api_key 时补上（Emby 视频直链默认不带 token）
+            if (!path.contains("api_key=")) {
+                path += (if (path.contains("?")) "&" else "?") + "api_key=${BuildConfig.EMBY_API_KEY}"
+            }
+            val url = "${BuildConfig.EMBY_SERVER}/emby$path"
+            withContext(Dispatchers.Main) {
+                startPlayer(url, item.name ?: "")
+            }
+        }
+    }
+
+    /** 起播 */
+    private fun startPlayer(url: String, title: String) {
+        val surface = renderer.videoSurface
+        if (surface == null) {
+            renderer.setScreenText("视频纹理未就绪（GL 还没建好）")
+            return
+        }
+        try {
+            stopPlaybackInternal()
+            player = ExoPlayer.Builder(this).build().also { p ->
+                p.setMediaItem(MediaItem.fromUri(url))
+                p.setVideoSurface(surface)
+                p.prepare()
+                p.playWhenReady = true
+                p.addListener(object : Player.Listener {
+                    override fun onPlayerError(error: PlaybackException) {
+                        renderer.setScreenText("播放出错: ${error.errorCodeName} ${error.message?.take(60)}")
+                        renderer.videoActive = false
+                    }
+                })
+            }
+            renderer.videoActive = true
+            renderer.setScreenText(title)
+            Log.i(TAG, "开始播放: $title url=${url.take(160)}")
+        } catch (e: Exception) {
+            Log.e(TAG, "起播失败", e)
+            renderer.setScreenText("起播失败: ${e.javaClass.simpleName}: ${e.message?.take(60)}")
+            renderer.videoActive = false
+        }
+    }
+
+    private fun togglePlayPause() {
+        val p = player ?: return
+        p.playWhenReady = !p.playWhenReady
+        renderer.setScreenText(if (p.playWhenReady) "播放" else "暂停")
+    }
+
+    private fun seekBy(deltaMs: Long) {
+        val p = player ?: return
+        p.seekTo((p.currentPosition + deltaMs).coerceAtLeast(0L))
+        renderer.setScreenText("${p.currentPosition / 1000} 秒")
+    }
+
+    /** 停止播放并回到海报墙 */
+    private fun stopPlayback() {
+        stopPlaybackInternal()
+        renderer.videoActive = false
+        renderer.setScreenText(movies.firstOrNull()?.name ?: "B0BEmby VR")
+        Log.i(TAG, "停止播放，回到海报墙")
+    }
+
+    private fun stopPlaybackInternal() {
+        player?.let {
+            runCatching { it.stop() }
+            runCatching { it.release() }
+        }
+        player = null
     }
 
     private fun clearFocus() {
@@ -177,6 +288,9 @@ class MainActivity : Activity() {
 
     /** 已加载的影片列表，海报墙按它的顺序排 */
     private var movies: List<BaseItemDto> = emptyList()
+
+    /** 播放器：点海报起播，返回键释放 */
+    private var player: ExoPlayer? = null
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
@@ -308,6 +422,8 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        stopPlaybackInternal()
+        renderer.releaseVideoPipeline()
         scope.cancel()
         vrSession.stop()
         super.onDestroy()

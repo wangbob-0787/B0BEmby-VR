@@ -46,8 +46,8 @@ object EmbyContent {
     const val DEFAULT_USER_ID = "40a02f8503ce4de49d58331a282dcea1"
     const val DEFAULT_USER_NAME = "wangbob"
 
-    /** 设备标识：同一台 PICO 固定，服务端按它区分播放会话 */
-    private const val DEVICE_ID = "b0bemby-vr-pico4"
+    /** 设备标识：同一台 PICO 固定，服务端按它区分播放会话（播放链路也用它） */
+    const val DEVICE_ID = "b0bemby-vr-pico4"
 
     /**
      * 带错误详情的结果。

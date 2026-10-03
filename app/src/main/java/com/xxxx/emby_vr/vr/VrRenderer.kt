@@ -5,6 +5,8 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.opengl.GLES11Ext
+import android.opengl.GLES20
 import android.opengl.GLES30
 import android.opengl.GLSurfaceView
 import android.opengl.GLUtils
@@ -43,6 +45,39 @@ class VrRenderer(
     private var texHandle = 0
     private var useTexHandle = 0
     private var colorHandle = 0
+
+    // ---- 视频播放（P3）：ExoPlayer 输出 → SurfaceTexture(OES) → 贴到虚拟屏 ----
+    private var videoProgram = 0
+    private var videoUvHandle = 0
+    private var videoMvpHandle = 0
+    private var videoTexHandle = 0
+
+    /** GL 外部纹理（GL_TEXTURE_EXTERNAL_OES），专供视频帧采样 */
+    private var videoTex = 0
+    private var surfaceTexture: android.opengl.SurfaceTexture? = null
+
+    /**
+     * 播放器用的 Surface。
+     *
+     * 在 onSurfaceCreated 里创建（SurfaceTexture 需要在 GL 线程绑定纹理），
+     * 主线程拿去交给 ExoPlayer；@Volatile 保证跨线程可见。
+     */
+    @Volatile
+    var videoSurface: android.view.Surface? = null
+        private set
+
+    /** 释放视频管线（Activity onDestroy 时调，GL 资源仍由 GL 线程上下文管理） */
+    fun releaseVideoPipeline() {
+        runCatching { videoSurface?.release() }
+        videoSurface = null
+        runCatching { surfaceTexture?.release() }
+        surfaceTexture = null
+        videoActive = false
+    }
+
+    /** 是否正在播放视频：true 时虚拟屏改采样视频纹理 */
+    @Volatile
+    var videoActive = false
 
     private lateinit var screenQuad: Quad
     lateinit var posterQuads: List<Quad>
@@ -251,9 +286,51 @@ class VrRenderer(
         posterQuads = List(posterCount) { Quad(posterW, posterH, textured = false) }
 
         createPlaceholderTexture()
+        createVideoPipeline()
 
         GLES30.glEnable(GLES30.GL_DEPTH_TEST)
         GLES30.glClearColor(0.03f, 0.03f, 0.04f, 1f)   // 近黑空间（与 TV 版底色一致）
+    }
+
+    /**
+     * 视频渲染管线：OES 纹理 + SurfaceTexture + Surface。
+     *
+     * ExoPlayer 把解码帧写进 Surface → SurfaceTexture 挂在 OES 纹理上 →
+     * onDrawFrame 里 updateTexImage 取最新帧 → 用外部纹理着色器贴到虚拟屏。
+     *
+     * 必须在 GL 线程（onSurfaceCreated）建：SurfaceTexture 要绑定已存在的 GL 纹理。
+     */
+    private fun createVideoPipeline() {
+        videoProgram = buildProgram(VERTEX_SHADER, VIDEO_FRAGMENT_SHADER)
+        videoUvHandle = GLES30.glGetAttribLocation(videoProgram, "aUV")
+        videoMvpHandle = GLES30.glGetUniformLocation(videoProgram, "uMVP")
+        videoTexHandle = GLES30.glGetUniformLocation(videoProgram, "uTex")
+
+        val texArr = IntArray(1)
+        GLES30.glGenTextures(1, texArr, 0)
+        videoTex = texArr[0]
+        GLES30.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, videoTex)
+        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+
+        surfaceTexture?.release()
+        surfaceTexture = android.opengl.SurfaceTexture(videoTex)
+        videoSurface?.release()
+        videoSurface = android.view.Surface(surfaceTexture)
+        videoActive = false
+        Log.i(TAG, "视频管线就绪: videoTex=$videoTex")
+    }
+
+    /** 视频帧到达后取最新帧（播放中每帧调） */
+    private fun updateVideoFrame() {
+        val st = surfaceTexture ?: return
+        try {
+            st.updateTexImage()
+        } catch (e: Exception) {
+            Log.w(TAG, "updateTexImage 失败: ${e.message}")
+        }
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
@@ -360,20 +437,25 @@ class VrRenderer(
         val screenHalfW = screenHalfH * 16f / 9f
         val screenCenterY = 1f - topMargin - screenHalfH
 
-        // 1) 虚拟屏
+        // 1) 虚拟屏：播放中采样视频帧，否则显示状态文字
         val screenModel = M.mul(
             M.translate(0f, screenCenterY, 0f),
             M.scale(screenHalfW / halfWOfScreen, screenHalfH / halfHOfScreen, 1f),
         )
-        val hasScreenTex = screenTex != 0
-        drawQuad(
-            screenQuad,
-            screenModel,
-            vp,
-            if (hasScreenTex) 1f else 0.10f,
-            useTex = hasScreenTex,
-            tex = screenTex,
-        )
+        if (videoActive) {
+            updateVideoFrame()
+            drawVideoQuad(screenQuad, screenModel, vp)
+        } else {
+            val hasScreenTex = screenTex != 0
+            drawQuad(
+                screenQuad,
+                screenModel,
+                vp,
+                if (hasScreenTex) 1f else 0.10f,
+                useTex = hasScreenTex,
+                tex = screenTex,
+            )
+        }
 
         // 2) 海报墙：一行排开，选中卡片用绿色描边
         val screenBottomY = screenCenterY - screenHalfH
@@ -455,6 +537,26 @@ class VrRenderer(
                 drawQuad(posterQuads[i], model, vp, 1f, useTex = true, tex = posterTexs[i])
             }
         }
+    }
+
+    /**
+     * 用视频程序画一个四边形（采样 OES 外部纹理）。
+     *
+     * 与 [drawQuad] 分开是因为它绑定的是另一个 program 和纹理目标，
+     * 共用会导致普通纹理采样器读 OES 纹理（黑帧）。
+     */
+    private fun drawVideoQuad(quad: Quad, model: FloatArray, viewProj: FloatArray) {
+        if (videoProgram == 0 || videoTex == 0) return
+        val mvp = M.mul(viewProj, model)
+        GLES30.glUseProgram(videoProgram)
+        GLES30.glUniformMatrix4fv(videoMvpHandle, 1, false, mvp, 0)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, videoTex)
+        GLES30.glUniform1i(videoTexHandle, 0)
+        quad.bindAttribs(posHandle, videoUvHandle)
+        quad.draw()
+        // 恢复默认程序，避免后续 drawQuad 拿错 program 状态
+        GLES30.glUseProgram(program)
     }
 
     private fun drawQuad(
@@ -724,6 +826,25 @@ class VrRenderer(
          * `texture2D` 是 GLSL ES 1.0 的函数，在 `#version 300 es` 里已移除，
          * 必须用 `texture`。
          */
+        /**
+         * 视频片元着色器（GL 外部纹理）。
+         *
+         * 视频帧走 GL_TEXTURE_EXTERNAL_OES，采样必须用 samplerExternalOES，
+         * 普通 sampler2D 采不到（拿到的是黑帧或报错）。extension 指令要在
+         * #version 之后、源码首条语句之前。
+         */
+        private val VIDEO_FRAGMENT_SHADER = """
+            #version 300 es
+            #extension GL_OES_EGL_image_external_essl3 : require
+            precision mediump float;
+            in vec2 vUV;
+            uniform samplerExternalOES uTex;
+            out vec4 fragColor;
+            void main() {
+                fragColor = texture(uTex, vUV);
+            }
+        """.trimIndent()
+
         private val FRAGMENT_SHADER = """
             #version 300 es
             precision mediump float;
