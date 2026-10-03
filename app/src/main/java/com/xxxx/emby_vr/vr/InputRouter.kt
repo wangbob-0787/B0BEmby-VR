@@ -123,6 +123,7 @@ class InputRouter(
             val px = x * 4f
             val py = 0.5f - y * 2f
             lastSimRay = floatArrayOf(px, py)
+            currentSimRay = lastSimRay
             onAction(Action.RAY_POS)
             onAction(Action.RAY_DIR)
             Log.d(TAG, "模拟射线: x=${px} y=${py}")
@@ -159,5 +160,15 @@ class InputRouter(
         /** 方向键连发节流：200ms 一次，同 TV 版手感 */
         private const val REPEAT_MS = 200L
         private const val STICK_DEADZONE = 0.35f
+
+        /**
+         * 模拟射线位置的全局快照。
+         *
+         * 为什么用伴生对象而不是实例字段：MainActivity 的输入 lambda 在
+         * `input` 字段初始化过程中就会被调用，此时引用 `input.lastSimRay`
+         * 属于「初始化未完成即自引用」，Kotlin 编译不过。
+         */
+        @Volatile
+        var currentSimRay: FloatArray? = null
     }
 }

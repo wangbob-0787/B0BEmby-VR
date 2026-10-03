@@ -48,8 +48,10 @@ class MainActivity : Activity() {
             InputRouter.Action.BACK -> clearFocus()
             InputRouter.Action.RAY_POS,
             InputRouter.Action.RAY_DIR -> {
-                // 读取模拟射线位置，驱动海报焦点
-                val ray = input.lastSimRay
+                // 读取模拟射线位置，驱动海报焦点。
+                // 注意：不能在 lambda 里引用 input 自身（初始化未完成），
+                // 改用 InputRouter.currentSimRay() 静态快照。
+                val ray = InputRouter.currentSimRay
                 if (ray != null) {
                     renderer.simRayX = ray[0]
                     renderer.simRayY = ray[1]

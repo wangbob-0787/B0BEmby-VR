@@ -146,23 +146,25 @@ class VrRenderer(
     /** 占位资源：在 GL 线程一次性建好（GLSurfaceView 在 onSurfaceCreated 已绑定 EGL 上下文） */
     private fun createPlaceholderTexture() {
         // 屏幕位图：深色背景 + 大标题 + 网格参考（验证贴图方向/比例）
-        screenBitmap = buildScreenBitmap(1280, 720, "B0BEmby VR")
-        screenTex = GLES30.glGenTextures().also {
-            bindTexture(it, screenBitmap)
-        }
+        val screenBmp = buildScreenBitmap(1280, 720, "B0BEmby VR")
+        screenBitmap = screenBmp
+        screenTex = GLES30.glGenTextures()
+        bindTexture(screenTex, screenBmp)
+
         // 海报占位卡：每张生成一张不同渐变色 + 序号
         for (i in posterTexs.indices) {
             val bmp = buildPosterBitmap(i, 256, 384)
-            posterTexs[i] = GLES30.glGenTextures().also { bindTexture(it, bmp) }
+            posterTexs[i] = GLES30.glGenTextures()
+            bindTexture(posterTexs[i], bmp)
             bmp.recycle()
         }
-        whiteTex = GLES30.glGenTextures().also {
-            val bmp = Bitmap.createBitmap(2, 2, Bitmap.Config.RGBA_8888).apply {
-                setColor(Color.WHITE)
-            }
-            bindTexture(it, bmp)
-            bmp.recycle()
-        }
+
+        whiteTex = GLES30.glGenTextures()
+        val whiteBmp = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
+        whiteBmp.eraseColor(Color.WHITE)
+        bindTexture(whiteTex, whiteBmp)
+        whiteBmp.recycle()
+
         Log.i(TAG, "占位纹理就绪: 屏幕 + ${posterTexs.size} 张海报")
     }
 
@@ -198,7 +200,7 @@ class VrRenderer(
         drawQuad(screenQuad, M.translate(0f, 0f, -screenDistance), vp, if (hasScreenTex) 1f else 0.10f, useTex = hasScreenTex, tex = screenTex)
 
         // 2) 海报墙：一行排开，选中卡片用绿色描边
-        drawPosterWall(vp, proj, view)
+        drawPosterWall(vp)
 
         // 3) 底部控制条底板
         drawQuad(
@@ -211,7 +213,7 @@ class VrRenderer(
 
     private var lastRenderedScreenText = ""
 
-    private fun drawPosterWall(vp: FloatArray, proj: FloatArray, view: FloatArray) {
+    private fun drawPosterWall(vp: FloatArray) {
         val totalW = posterCount * posterW + (posterCount - 1) * posterGap
         for (i in posterQuads.indices) {
             val x = -totalW / 2f + i * (posterW + posterGap) + posterW / 2f
@@ -255,7 +257,7 @@ class VrRenderer(
     // ---- 位图构建（主线程或 GL 线程皆可，只做 CPU 绘图）----
 
     private fun buildScreenBitmap(w: Int, h: Int, title: String): Bitmap {
-        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.RGBA_8888)
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val c = Canvas(bmp)
         c.drawColor(Color.rgb(10, 12, 16))
         // 参考网格（验证贴图方向与 16:9 比例）
@@ -287,7 +289,7 @@ class VrRenderer(
     }
 
     private fun buildPosterBitmap(index: Int, w: Int, h: Int): Bitmap {
-        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.RGBA_8888)
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val c = Canvas(bmp)
         // 占位卡：深色底 + 不同色调区分序号（P2 替换为 Emby 真实海报 URL）
         val hue = (index * 36f % 360f)
