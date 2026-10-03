@@ -235,11 +235,24 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 逐张下载海报并投递给渲染器（顺序下载，避免一次性打开过多连接） */
+    /**
+     * 逐张下载海报并投递给渲染器（顺序下载，避免一次性打开过多连接）。
+     *
+     * 把成功/失败数量回报到虚拟屏上：2026-10-03 实机排查时 adb 不通、
+     * 拿不到 logcat，只能靠屏上文字判断海报到底下没下来。
+     */
     private fun downloadPosters(list: List<BaseItemDto>, apiKey: String) {
         scope.launch(Dispatchers.IO) {
+            var ok = 0
+            var fail = 0
+            var lastReason = ""
             list.forEachIndexed { index, item ->
-                val id = item.id ?: return@forEachIndexed
+                val id = item.id
+                if (id == null) {
+                    fail++
+                    lastReason = "条目无 id"
+                    return@forEachIndexed
+                }
                 val tag = item.imageTags?.get("Primary")
                 val url = EmbyContent.posterUrl(
                     serverUrl = BuildConfig.EMBY_SERVER,
@@ -247,25 +260,38 @@ class MainActivity : Activity() {
                     imageTag = tag,
                     apiKey = apiKey,
                 )
-                val bmp = runCatching { downloadBitmap(url) }.getOrNull()
+                val r = runCatching { downloadBitmap(url) }
+                val bmp = r.getOrNull()
                 if (bmp != null) {
                     renderer.setPosterBitmap(index, bmp)
+                    ok++
                 } else {
-                    Log.w(TAG, "海报下载失败: ${item.name}")
+                    fail++
+                    lastReason = r.exceptionOrNull()?.let { "${it.javaClass.simpleName}: ${it.message}" }
+                        ?: "返回 null（HTTP 非 200 或解码失败）"
+                    Log.w(TAG, "海报下载失败 #$index ${item.name}: $lastReason")
                 }
             }
-            Log.i(TAG, "海报下载完成，共 ${list.size} 张")
+            Log.i(TAG, "海报下载完成: 成功 $ok / 失败 $fail")
+            if (fail > 0) {
+                // 屏上给出失败概况 + 最后一条原因，便于无 adb 时定位
+                renderer.setScreenText("海报成功 $ok 张，失败 $fail 张：$lastReason")
+            }
         }
     }
 
-    /** 下载图片为 Bitmap */
+    /** 下载图片为 Bitmap；失败时抛出便于上层记录原因 */
     private fun downloadBitmap(url: String): Bitmap? {
         val client = EmbyHttpClient.getClient(this)
         val request = Request.Builder().url(url).build()
         client.newCall(request).execute().use { resp ->
-            if (!resp.isSuccessful) return null
-            val bytes = resp.body?.bytes() ?: return null
-            return BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            if (!resp.isSuccessful) {
+                throw IllegalStateException("HTTP ${resp.code}")
+            }
+            val bytes = resp.body?.bytes() ?: throw IllegalStateException("响应体为空")
+            val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                ?: throw IllegalStateException("图片解码失败(${bytes.size}字节)")
+            return bmp
         }
     }
 
