@@ -43,7 +43,28 @@ class InputRouter(
         PLAY_PAUSE,
         /** 指针悬停到某点（归一化坐标 0..1），用于射线选卡 */
         HOVER,
+        /** 手柄射线 3D 位置（米，相对原点），P2 起用于射线-海报命中判定 */
+        RAY_POS,
+        /** 手柄射线方向（单位向量，世界系），配合 RAY_POS 求射线 */
+        RAY_DIR,
     }
+
+    /**
+     * 是否启用模拟射线。
+     *
+     * 真实 OpenXR 手柄姿态数据（PICO controller pose）接入前（P5），
+     * 用摇杆推行位置模拟一条指向屏幕平面的假射线，让海报能被"指"到。
+     */
+    @Volatile
+    var simulatedRay = true
+
+    /** 模拟射线最近一次落在 z = -screenDistance 平面上的 x/y 坐标（米）。 */
+    @Volatile
+    var lastSimRay: FloatArray? = null
+
+    /** 模拟射线映射所用的屏幕距离（米），与 VrRenderer 保持一致 */
+    @Volatile
+    var screenDistance: Float = 3.0f
 
     /** 记录最近一次按键时间，用于区分「点按」与「长按连发」 */
     private var lastRepeatAt = 0L
@@ -92,6 +113,19 @@ class InputRouter(
                 lastRepeatAt = now
                 onAction(action)
             }
+            return true
+        }
+
+        // 模拟射线：摇杆在死区内但仍有偏转时，把偏转量映射到屏幕平面。
+        // 摇杆满偏 → 屏幕平面 x ∈ [-4, +4]m, y 偏移量按比例映射。
+        // P5 接入真实 controller pose 后删除此段。
+        if (simulatedRay && (kotlin.math.abs(x) > 0.02f || kotlin.math.abs(y) > 0.02f)) {
+            val px = x * 4f
+            val py = 0.5f - y * 2f
+            lastSimRay = floatArrayOf(px, py)
+            onAction(Action.RAY_POS)
+            onAction(Action.RAY_DIR)
+            Log.d(TAG, "模拟射线: x=${px} y=${py}")
             return true
         }
         return false

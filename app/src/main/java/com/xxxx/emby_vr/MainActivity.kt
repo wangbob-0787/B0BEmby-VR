@@ -29,9 +29,55 @@ class MainActivity : Activity() {
     private lateinit var renderer: VrRenderer
     private val vrSession = VrSession()
 
-    /** 手柄输入 → 语义动作。P0 先打日志，P2 起驱动海报墙焦点 */
+    /**
+     * 手柄/按键输入 → UI 动作（P1/P2 最小平面虚拟屏）。
+     *
+     * 与 TV 版 B0BEmby 的交互模型对齐：
+     *   左右/上下 → 移动焦点（海报墙一行内左右）
+     *   确认（A/扳机） → 进入当前选中项（P1 阶段显示标题到虚拟屏）
+     *   返回（B） → 返回/取消焦点
+     *   摇杆偏转 → 模拟射线跟随（海报悬停高亮）
+     */
     private val input = InputRouter { action ->
-        Log.i(TAG, "动作: $action")
+        when (action) {
+            InputRouter.Action.LEFT -> moveFocus(-1)
+            InputRouter.Action.RIGHT -> moveFocus(+1)
+            InputRouter.Action.UP,
+            InputRouter.Action.DOWN -> { /* P1 海报墙只有一行，上下暂忽略 */ }
+            InputRouter.Action.CONFIRM -> confirmCurrent()
+            InputRouter.Action.BACK -> clearFocus()
+            InputRouter.Action.RAY_POS,
+            InputRouter.Action.RAY_DIR -> {
+                // 读取模拟射线位置，驱动海报焦点
+                val ray = input.lastSimRay
+                if (ray != null) {
+                    renderer.simRayX = ray[0]
+                    renderer.simRayY = ray[1]
+                }
+            }
+            else -> { /* SEEK/PLAY_PAUSE 等播放中动作 P3 再接 */ }
+        }
+    }
+
+    private fun moveFocus(delta: Int) {
+        val maxIdx = renderer.posterQuads.size - 1
+        val next = (renderer.focusedPosterIndex + delta).coerceIn(0, maxIdx)
+        if (next != renderer.focusedPosterIndex) {
+            renderer.focusedPosterIndex = next
+            if (next >= 0) {
+                renderer.setScreenText("第 ${next + 1} / ${maxIdx + 1} 张海报")
+            }
+        }
+    }
+
+    private fun confirmCurrent() {
+        val i = renderer.focusedPosterIndex
+        renderer.setScreenText(if (i >= 0) "已选择海报 #${i + 1}" else "未选中任何海报")
+    }
+
+    private fun clearFocus() {
+        renderer.focusedPosterIndex = -1
+        renderer.setScreenText("B0BEmby VR")
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
