@@ -120,11 +120,13 @@ class MainActivity : Activity() {
         val now = System.currentTimeMillis()
         if (now - lastSeekAt < 800) return          // 两次 seek 之间冷却，防刷屏
         if (seekAccumX > SEEK_STEP) {
-            seekBy(+10_000)
+            // 指针坐标与视觉方向在实机上是反的（父亲 2026-10-04 实测：
+            // 向右拨要快退、向左拨要快进），这里按实测结果配对
+            seekBy(-10_000)
             seekAccumX = 0f
             lastSeekAt = now
         } else if (seekAccumX < -SEEK_STEP) {
-            seekBy(-10_000)
+            seekBy(+10_000)
             seekAccumX = 0f
             lastSeekAt = now
         }
@@ -267,6 +269,7 @@ class MainActivity : Activity() {
         val p = player ?: return
         p.seekTo((p.currentPosition + deltaMs).coerceAtLeast(0L))
         val sec = p.currentPosition / 1000
+        Log.i(TAG, "seek ${deltaMs / 1000}s → ${sec / 60}:${\"%02d\".format(sec % 60)}")
         hud("${if (deltaMs < 0) "快退" else "快进"} 10 秒 → ${sec / 60}:${"%02d".format(sec % 60)}")
     }
 
