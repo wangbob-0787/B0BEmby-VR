@@ -70,6 +70,10 @@ class InputRouter(
     /** 记录最近一次按键时间，用于区分「点按」与「长按连发」 */
     private var lastRepeatAt = 0L
 
+    /** 按下时的指针位置，抬起时对比以区分「点一下」和「拖过去」 */
+    private var downX: Float? = null
+    private var downY: Float? = null
+
     /**
      * 处理按键。返回 true 表示已消费。
      *
@@ -180,15 +184,28 @@ class InputRouter(
                 return true
             }
             MotionEvent.ACTION_DOWN -> {
+                downX = nx
+                downY = ny
                 lastSimRay = floatArrayOf(nx, ny)
                 currentSimRay = lastSimRay
                 onPointer(lastSimRay!!)
                 return true
             }
             MotionEvent.ACTION_UP -> {
-                // 扳机抬起 = 一次点击 → 确认
-                onConfirm()
-                Log.i(TAG, "指针点击 → CONFIRM (${"%.3f".format(nx)}, ${"%.3f".format(ny)})")
+                // 只有「按下到抬起位移很小」才算点击（扳机点一下）；
+                // 拖了一段再抬起 = 拖拽手势（播放中用于快进快退），
+                // 不能触发确认 —— 否则拨动摇杆会被当成点按，画面乱暂停
+                // （父亲 2026-10-04 实测反馈）。
+                val dx = if (downX != null) nx - downX!! else 0f
+                val dy = if (downY != null) ny - downY!! else 0f
+                downX = null
+                downY = null
+                if (kotlin.math.hypot(dx, dy) < DRAG_THRESHOLD) {
+                    onConfirm()
+                    Log.i(TAG, "指针点击 → CONFIRM (${"%.3f".format(nx)}, ${"%.3f".format(ny)})")
+                } else {
+                    Log.i(TAG, "指针拖拽，不触发确认 (位移 ${"%.3f".format(kotlin.math.hypot(dx, dy))})")
+                }
                 return true
             }
             MotionEvent.ACTION_HOVER_ENTER,
@@ -230,6 +247,13 @@ class InputRouter(
         /** 方向键连发节流：200ms 一次，同 TV 版手感 */
         private const val REPEAT_MS = 200L
         private const val STICK_DEADZONE = 0.35f
+
+        /**
+         * 点击与拖拽的位移分界（归一化坐标，半高 = 1）。
+         * 0.15 ≈ 屏幕高度的 7.5%，扳机点一下手部抖动远小于此，
+         * 而拨动摇杆扫过的距离远大于此。
+         */
+        private const val DRAG_THRESHOLD = 0.15f
 
         /**
          * 模拟射线的横向满偏范围（归一化坐标）。

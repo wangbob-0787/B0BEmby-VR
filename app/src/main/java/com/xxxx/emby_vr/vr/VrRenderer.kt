@@ -500,7 +500,7 @@ class VrRenderer(
             val hudHalfW = screenHalfW * 0.82f
             val hudHalfH = hudHalfW / (screenWidth / 1f)   // hudQuad 是 16:1 比例
             val hudModel = M.mul(
-                M.translate(0f, screenCenterY - screenHalfH + 0.14f, -0.01f),
+                M.translate(0f, screenCenterY - screenHalfH + 0.14f, 0.01f),
                 M.scale(hudHalfW / (hudQuad.width / 2f), hudHalfH / (hudQuad.height / 2f), 1f),
             )
             drawQuad(hudQuad, hudModel, vp, 1f, useTex = true, tex = hudTex)

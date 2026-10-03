@@ -95,18 +95,19 @@ class MainActivity : Activity() {
     private fun hud(text: String) = renderer.setHudText(text)
 
     /**
-     * 把当前射线位置同步给渲染器，由渲染器算出该聚焦哪张卡。
+     * 指针位置变化的统一入口（触摸通道 `applyRay` 和按键通道 `applyRayFocus`
+     * 都走这里）。
      *
-     * 播放中另有职责（父亲 2026-10-04 实测：PICO 摇杆走的是**指针通道**，
-     * 方向动作根本不会产生，只有指针坐标在动）—— 指针横向位移累计到阈值
-     * 就触发一次快进/快退，方向按位移方向。
+     * 播放中：PICO 摇杆走的是**指针通道**（方向动作根本不产生，只有指针坐标
+     * 在动），所以横向位移累计到阈值触发一次快进/快退，方向按位移方向；
+     * 海报焦点此时由渲染器冻结，不会跟着光标跑。
+     * 非播放中：只同步坐标，渲染器据此给海报换焦点。
      */
     private var lastRayX: Float? = null
     private var seekAccumX = 0f
     private var lastSeekAt = 0L
 
-    private fun applyRayFocus() {
-        val ray = InputRouter.currentSimRay ?: return
+    private fun applyRay(ray: FloatArray) {
         renderer.simRayX = ray[0]
         renderer.simRayY = ray[1]
 
@@ -127,6 +128,12 @@ class MainActivity : Activity() {
             seekAccumX = 0f
             lastSeekAt = now
         }
+    }
+
+    /** 按键通道的射线同步（方向键分支走这里），复用同一套 seek 逻辑 */
+    private fun applyRayFocus() {
+        val ray = InputRouter.currentSimRay ?: return
+        applyRay(ray)
     }
 
     private fun moveFocus(delta: Int) {
@@ -348,12 +355,6 @@ class MainActivity : Activity() {
 
         // P2：接 Emby 拉真实影片与海报
         loadLibrary()
-    }
-
-    /** 把指针位置同步给渲染器（渲染器据此决定聚焦哪张卡） */
-    private fun applyRay(ray: FloatArray) {
-        renderer.simRayX = ray[0]
-        renderer.simRayY = ray[1]
     }
 
     // ---- Emby 内容加载（P2）----
