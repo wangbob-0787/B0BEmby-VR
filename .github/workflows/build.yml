@@ -35,6 +35,31 @@ jobs:
           key: gradle-${{ hashFiles('**/*.gradle*', 'gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: gradle-
 
+      # 写入 Emby 连接参数。
+      #
+      # 为什么不写在源码里：仓库公开，API Key 进源码等于泄露。
+      # 这里用 GitHub Secrets（Settings → Secrets and variables → Actions）：
+      #   EMBY_API_KEY   必填，Emby 后台生成的 API Key
+      #   EMBY_SERVER    选填，默认内网 http://192.168.150.15:6908
+      #   EMBY_USER_ID   选填，默认父亲账号 wangbob 的 guid
+      # Secret 未配置时该步骤不写文件，构建仍能通过，只是应用内提示未配置。
+      - name: 写入 Emby 配置
+        env:
+          EMBY_API_KEY: ${{ secrets.EMBY_API_KEY }}
+          EMBY_SERVER: ${{ secrets.EMBY_SERVER }}
+          EMBY_USER_ID: ${{ secrets.EMBY_USER_ID }}
+        run: |
+          if [ -z "$EMBY_API_KEY" ]; then
+            echo "::warning::未配置 EMBY_API_KEY，本次产物不含 Emby 连接信息"
+            exit 0
+          fi
+          {
+            echo "EMBY_SERVER=${EMBY_SERVER:-http://192.168.150.15:6908}"
+            echo "EMBY_API_KEY=$EMBY_API_KEY"
+            echo "EMBY_USER_ID=${EMBY_USER_ID:-40a02f8503ce4de49d58331a282dcea1}"
+          } > local.properties
+          echo "local.properties 已写入（Key 长度 ${#EMBY_API_KEY}）"
+
       # 装机一律用 release：TV 版实测 debug 包每帧 650ms、release 32ms（debug 不跑 AOT）
       - name: 编译 APK（debug + release）
         run: |

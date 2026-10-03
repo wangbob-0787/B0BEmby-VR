@@ -78,6 +78,65 @@ class VrRenderer(
         synchronized(this) { pendingScreenText = text }
     }
 
+    // ---- 真实海报（P2）----
+
+    /** 待上传的海报位图：索引 → 位图。主线程写入，GL 线程消费 */
+    private val pendingPosters = HashMap<Int, Bitmap>()
+
+    /** 当前已上传的海报数量（用于日志） */
+    @Volatile
+    private var uploadedPosterCount = 0
+
+    /**
+     * 投递一张真实海报位图。
+     *
+     * 纹理必须在 GL 线程创建/上传，所以这里只把位图放进待处理队列，
+     * 由 onDrawFrame 在 GL 线程取出并绑成纹理。
+     *
+     * @param index 海报位（0-based，对应海报墙从左到右第几张）
+     */
+    fun setPosterBitmap(index: Int, bitmap: Bitmap) {
+        if (index < 0 || index >= posterCount) {
+            // 超出当前海报墙容量的直接丢弃并回收，避免内存泄漏
+            bitmap.recycle()
+            return
+        }
+        synchronized(pendingPosters) {
+            // 同一位置重复投递时，回收旧的那张（图片可能以大图换小图）
+            pendingPosters[index]?.takeIf { it !== bitmap }?.recycle()
+            pendingPosters[index] = bitmap
+        }
+    }
+
+    /** 本次海报墙占用的卡片数（数据条数可能少于容量） */
+    @Volatile
+    var activePosterCount: Int = posterCount
+
+    /** 清空海报墙（重新加载时调用） */
+    fun clearPosters() {
+        synchronized(pendingPosters) {
+            pendingPosters.values.forEach { it.recycle() }
+            pendingPosters.clear()
+        }
+    }
+
+    /** 在 GL 线程把待处理的海报位图上传成纹理 */
+    private fun flushPendingPosters() {
+        val ready: List<Pair<Int, Bitmap>>
+        synchronized(pendingPosters) {
+            if (pendingPosters.isEmpty()) return
+            ready = pendingPosters.map { it.key to it.value }
+            pendingPosters.clear()
+        }
+        for ((idx, bmp) in ready) {
+            if (posterTexs[idx] == 0) posterTexs[idx] = newTexture()
+            bindTexture(posterTexs[idx], bmp)
+            bmp.recycle()
+        }
+        uploadedPosterCount += ready.size
+        Log.i(TAG, "海报纹理已更新 ${ready.size} 张（累计 $uploadedPosterCount）")
+    }
+
     /**
      * 根据模拟射线位置更新焦点海报索引。
      *
@@ -244,6 +303,9 @@ class VrRenderer(
             bindTexture(screenTex, bmp)
         }
 
+        // 主线程投递的真实海报 → 上传成 GL 纹理（必须在 GL 线程做）
+        flushPendingPosters()
+
         // 模拟射线焦点：读取 simRayX/Y 计算应聚焦哪张海报
         updateFocusFromSimRay()
 
@@ -313,8 +375,10 @@ class VrRenderer(
 
     private fun drawPosterWall(vp: FloatArray) {
         // 与 updateFocusFromSimRay 共用 posterLayout()，保证「看到的」和「指到的」一致。
+        // 只画有数据的卡片：activePosterCount 由 MainActivity 在加载完成后设置。
         val layout = posterLayout()
-        for (i in posterQuads.indices) {
+        val visible = activePosterCount.coerceIn(0, posterCount)
+        for (i in 0 until visible) {
             val (x, y, halfW, halfH) = layout[i]
             val model = M.mul(
                 M.translate(x, y, 0f),

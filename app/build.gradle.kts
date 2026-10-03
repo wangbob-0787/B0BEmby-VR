@@ -14,6 +14,25 @@ if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 }
 
+/*
+ * Emby 连接参数注入。
+ *
+ * 为什么不写死在 Kotlin 源码里：仓库是公开的（GitHub B0BEmby-VR），
+ * API Key 进源码就等于公开泄露。改为从 `local.properties` 读，
+ * 该文件在 .gitignore 里；CI 编译时用 GitHub Secrets 覆盖。
+ *
+ * 缺省值：服务器地址是内网固定地址，写死无妨；Key 留空，
+ * 缺 Key 时应用仍能启动，只是海报墙为空并提示需要配置。
+ */
+val localProps = Properties()
+val localPropsFile = rootProject.file("local.properties")
+if (localPropsFile.exists()) {
+    localPropsFile.inputStream().use { localProps.load(it) }
+
+}
+fun propOrEnv(key: String, default: String = ""): String =
+    (localProps.getProperty(key) ?: System.getenv(key) ?: default)
+
 android {
     namespace = "com.xxxx.emby_vr"
     compileSdk = 36
@@ -34,6 +53,11 @@ android {
         ndk {
             abiFilters += listOf("arm64-v8a")
         }
+
+        // Emby 连接参数：从 local.properties 或环境变量注入，不进源码
+        buildConfigField("String", "EMBY_SERVER", "\"${propOrEnv("EMBY_SERVER", "http://192.168.150.15:6908")}\"")
+        buildConfigField("String", "EMBY_API_KEY", "\"${propOrEnv("EMBY_API_KEY")}\"")
+        buildConfigField("String", "EMBY_USER_ID", "\"${propOrEnv("EMBY_USER_ID", "40a02f8503ce4de49d58331a282dcea1")}\"")
     }
 
     compileOptions {
@@ -101,4 +125,5 @@ dependencies {
 
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
+    implementation(libs.gson)
 }

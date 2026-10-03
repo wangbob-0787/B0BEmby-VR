@@ -1,6 +1,8 @@
 package com.xxxx.emby_vr
 
 import android.app.Activity
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.opengl.GLSurfaceView
 import android.os.Bundle
 import android.util.Log
@@ -8,20 +10,34 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import com.xxxx.emby_vr.data.EmbyContent
+import com.xxxx.emby_vr.data.model.BaseItemDto
+import com.xxxx.emby_vr.data.remote.HttpClient as EmbyHttpClient
 import com.xxxx.emby_vr.vr.InputRouter
 import com.xxxx.emby_vr.vr.VrRenderer
 import com.xxxx.emby_vr.vr.VrSession
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import okhttp3.Request
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 
 /**
- * B0BEmby VR 版 主 Activity（P0 骨架）。
+ * B0BEmby VR 版 主 Activity。
  *
- * 目标（父亲 2026-10-03）：最小可用平面虚拟屏 —— 纯色空间 + 正前方 16:9 平面。
+ * ## 阶段
+ *
+ * - **P0/P1（已完成）**：最小可用平面虚拟屏 —— 头显里一块 16:9 平面，
+ *   手柄能指向、能确认。实机验收 2026-10-03 通过。
+ * - **P2（本版）**：接 Emby —— 拉真实影片列表，海报墙显示真实海报。
+ * - **P3（下一步）**：点海报播放影片。
  *
  * 渲染路线：GLSurfaceView + OpenGL ES 3.0。
- * XR 会话（PICO OpenXR）走 VrSession 封装，P0 先确保画面能出、手柄事件能收到，
- * 后续阶段再把每眼视图矩阵接进来做真正的立体渲染。
+ * 当前走 PICO 的 2D 面板模式（不声明 pvr.app.type），系统把画面贴成空间面板；
+ * 做真双目立体渲染时再接 OpenXR runtime。
  */
 class MainActivity : Activity() {
 
@@ -146,12 +162,93 @@ class MainActivity : Activity() {
         // 启动 XR 会话（失败不崩，退化为普通 2D 渲染，便于在没有头显时调试）
         val ok = vrSession.start(this)
         Log.i(TAG, "XR 会话启动: $ok")
+
+        // P2：接 Emby 拉真实影片与海报
+        loadLibrary()
     }
 
     /** 把指针位置同步给渲染器（渲染器据此决定聚焦哪张卡） */
     private fun applyRay(ray: FloatArray) {
         renderer.simRayX = ray[0]
         renderer.simRayY = ray[1]
+    }
+
+    // ---- Emby 内容加载（P2）----
+
+    /** 已加载的影片列表，海报墙按它的顺序排 */
+    private var movies: List<BaseItemDto> = emptyList()
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    /**
+     * 拉取影片 + 下载海报。
+     *
+     * 流程：拉列表 → 更新海报墙可见数量 → 逐张下载海报位图 → 投递给渲染器。
+     * 海报下载用 OkHttp 直接取字节（不用 Coil 的 ImageLoader，因为它面向
+     * Compose 的 AsyncImage；这里要的是原始 Bitmap 交给 GL，直接取更直接）。
+     */
+    private fun loadLibrary() {
+        val apiKey = BuildConfig.EMBY_API_KEY
+        if (apiKey.isBlank()) {
+            renderer.setScreenText("未配置 Emby Key")
+            Log.w(TAG, "BuildConfig.EMBY_API_KEY 为空，跳过内容加载")
+            return
+        }
+        renderer.setScreenText("正在连接 Emby...")
+
+        scope.launch {
+            val list = EmbyContent.loadMovies(
+                context = this@MainActivity,
+                apiKey = apiKey,
+                serverUrl = BuildConfig.EMBY_SERVER,
+                userId = BuildConfig.EMBY_USER_ID,
+                limit = POSTER_SLOTS,
+            )
+            movies = list
+            Log.i(TAG, "影片加载完成: ${list.size} 条")
+            if (list.isEmpty()) {
+                renderer.setScreenText("未取到影片")
+                return@launch
+            }
+            renderer.clearPosters()
+            renderer.activePosterCount = list.size
+            renderer.setScreenText("${list.first().name ?: ""}")
+            downloadPosters(list, apiKey)
+        }
+    }
+
+    /** 逐张下载海报并投递给渲染器（顺序下载，避免一次性打开过多连接） */
+    private fun downloadPosters(list: List<BaseItemDto>, apiKey: String) {
+        scope.launch(Dispatchers.IO) {
+            list.forEachIndexed { index, item ->
+                val id = item.id ?: return@forEachIndexed
+                val tag = item.imageTags?.get("Primary")
+                val url = EmbyContent.posterUrl(
+                    serverUrl = BuildConfig.EMBY_SERVER,
+                    itemId = id,
+                    imageTag = tag,
+                    apiKey = apiKey,
+                )
+                val bmp = runCatching { downloadBitmap(url) }.getOrNull()
+                if (bmp != null) {
+                    renderer.setPosterBitmap(index, bmp)
+                } else {
+                    Log.w(TAG, "海报下载失败: ${item.name}")
+                }
+            }
+            Log.i(TAG, "海报下载完成，共 ${list.size} 张")
+        }
+    }
+
+    /** 下载图片为 Bitmap */
+    private fun downloadBitmap(url: String): Bitmap? {
+        val client = EmbyHttpClient.getClient(this)
+        val request = Request.Builder().url(url).build()
+        client.newCall(request).execute().use { resp ->
+            if (!resp.isSuccessful) return null
+            val bytes = resp.body?.bytes() ?: return null
+            return BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        }
     }
 
     override fun onResume() {
@@ -167,6 +264,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        scope.cancel()
         vrSession.stop()
         super.onDestroy()
     }
@@ -197,5 +295,13 @@ class MainActivity : Activity() {
 
     companion object {
         const val TAG = "B0BEmbyVR"
+
+        /**
+         * 海报墙槽位数。
+         *
+         * 与渲染器的 POSTER_COUNT 保持一致（渲染器按一行排布，
+         * 每个槽位有固定的横向区间，超出槽位的数据会被丢弃）。
+         */
+        private const val POSTER_SLOTS = 10
     }
 }

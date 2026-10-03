@@ -7,6 +7,7 @@ media3 = "1.4.1"
 coil = "3.0.4"
 coroutines = "1.9.0"
 serialization = "1.7.3"
+gson = "2.11.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -26,6 +27,11 @@ coil-network-okhttp = { group = "io.coil-kt.coil3", name = "coil-network-okhttp"
 # 协程 / 序列化
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "serialization" }
+
+# JSON：Emby 数据层（HttpClient / EmbyApi / DTO）沿用 TV 版的 Gson 实现，
+# DTO 上全是 @SerializedName 注解，换 kotlinx.serialization 要重写全部模型，
+# 直接与 TV 版保持一致更省事、也便于两边同步修 bug。
+gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
