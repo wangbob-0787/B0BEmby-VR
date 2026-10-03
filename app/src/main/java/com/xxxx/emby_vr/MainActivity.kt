@@ -30,35 +30,39 @@ class MainActivity : Activity() {
     private val vrSession = VrSession()
 
     /**
-     * 手柄/按键输入 → UI 动作（P1/P2 最小平面虚拟屏）。
+     * 手柄/按键输入 → UI 动作。
      *
-     * 与 TV 版 B0BEmby 的交互模型对齐：
-     *   左右/上下 → 移动焦点（海报墙一行内左右）
-     *   确认（A/扳机） → 进入当前选中项（P1 阶段显示标题到虚拟屏）
-     *   返回（B） → 返回/取消焦点
-     *   摇杆偏转 → 模拟射线跟随（海报悬停高亮）
+     * ## 与 TV 版 B0BEmby 的交互模型对齐 + VR 手柄适配
+     *
+     * | 来源 | 语义 |
+     * |---|---|
+     * | 方向键 / 摇杆 | 移动焦点（同 TV 版） |
+     * | 手柄指向（PICO 转成虚拟指针） | 焦点跟随指针（VR 特有） |
+     * | 扳机（PICO 发 BTN_TOOL_FINGER + 指针坐标） | 确认 |
+     * | 返回键 / 手柄 B | 返回上一层 |
+     *
+     * 实机结论（2026-10-03 抓包）：PICO 手柄走的是**虚拟指针**通道，
+     * 不是 BUTTON_A，详见 [InputRouter.onTouchEvent]。
      */
     private val input = InputRouter { action ->
         when (action) {
             InputRouter.Action.LEFT -> moveFocus(-1)
             InputRouter.Action.RIGHT -> moveFocus(+1)
             InputRouter.Action.UP,
-            InputRouter.Action.DOWN -> { /* P1 海报墙只有一行，上下暂忽略 */ }
+            InputRouter.Action.DOWN -> { /* 海报墙只有一行，上下暂忽略 */ }
             InputRouter.Action.CONFIRM -> confirmCurrent()
             InputRouter.Action.BACK -> clearFocus()
             InputRouter.Action.RAY_POS,
-            InputRouter.Action.RAY_DIR -> {
-                // 读取模拟射线位置，驱动海报焦点。
-                // 注意：不能在 lambda 里引用 input 自身（初始化未完成），
-                // 改用 InputRouter.currentSimRay() 静态快照。
-                val ray = InputRouter.currentSimRay
-                if (ray != null) {
-                    renderer.simRayX = ray[0]
-                    renderer.simRayY = ray[1]
-                }
-            }
+            InputRouter.Action.RAY_DIR -> applyRayFocus()
             else -> { /* SEEK/PLAY_PAUSE 等播放中动作 P3 再接 */ }
         }
+    }
+
+    /** 把当前射线位置同步给渲染器，由渲染器算出该聚焦哪张卡 */
+    private fun applyRayFocus() {
+        val ray = InputRouter.currentSimRay ?: return
+        renderer.simRayX = ray[0]
+        renderer.simRayY = ray[1]
     }
 
     private fun moveFocus(delta: Int) {
@@ -106,12 +110,48 @@ class MainActivity : Activity() {
             setRenderer(renderer)
             renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
             preserveEGLContextOnPause = true
+
+            /*
+             * PICO 手柄的指针/扳机走触摸通道（见 InputRouter.onTouchEvent 的抓包结论），
+             * 因此必须显式打开点击与悬停两类事件；GLSurfaceView 默认只收 DOWN/UP，
+             * 不加 HOVER 就收不到「手柄指向移动」。
+             */
+            isClickable = true
+            isFocusable = true
+            isFocusableInTouchMode = true
+            setOnHoverListener { _, e ->
+                input.onTouchEvent(
+                    event = e,
+                    viewW = width,
+                    viewH = height,
+                    onPointer = { ray -> applyRay(ray) },
+                    onConfirm = { confirmCurrent() },
+                )
+            }
+            setOnTouchListener { _, e ->
+                input.onTouchEvent(
+                    event = e,
+                    viewW = width,
+                    viewH = height,
+                    onPointer = { ray -> applyRay(ray) },
+                    onConfirm = { confirmCurrent() },
+                )
+            }
         }
         setContentView(glView)
+
+        // 请求焦点：手柄的悬停/按键事件必须先有焦点才会送到本视图
+        glView.requestFocus()
 
         // 启动 XR 会话（失败不崩，退化为普通 2D 渲染，便于在没有头显时调试）
         val ok = vrSession.start(this)
         Log.i(TAG, "XR 会话启动: $ok")
+    }
+
+    /** 把指针位置同步给渲染器（渲染器据此决定聚焦哪张卡） */
+    private fun applyRay(ray: FloatArray) {
+        renderer.simRayX = ray[0]
+        renderer.simRayY = ray[1]
     }
 
     override fun onResume() {

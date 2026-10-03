@@ -133,6 +133,75 @@ class InputRouter(
         return false
     }
 
+    /**
+     * 处理触摸/指针事件（PICO 手柄的真正通道）。
+     *
+     * ## 2026-10-03 实机抓包结论（重要）
+     *
+     * 在 PICO 4 上对手柄按扳机，`getevent` 抓到的是：
+     *   `/dev/input/event4 (virtual_input_device)`:
+     *     EV_ABS ABS_X / ABS_Y   ← 指针在屏幕上的坐标（实时跟随手柄指向）
+     *     EV_KEY BTN_TOOL_FINGER DOWN / UP   ← 扳机按下/抬起
+     *
+     * 也就是说：**PICO 手柄在这个应用里被系统转成「虚拟手指」**，
+     * 走的是触摸/指针通道，**不是** `KEYCODE_BUTTON_A`，也不是方向键。
+     * 设备能力表（`getevent -pl`）也印证：`pvr-virtual-input-*` 只暴露
+     * ENTER/UP/DOWN/LEFT/RIGHT/VOLUME/POWER，压根没有 BUTTON_A。
+     *
+     * 因此单靠 onKeyDown 是不够的 —— 必须同时接指针与触摸，
+     * 把「指点位置」换算成射线，把「按下」当作确认。
+     *
+     * @param viewW 视图宽（像素），用于把绝对坐标归一化
+     * @param viewH 视图高（像素）
+     * @param onPointer 指针移动回调，参数为归一化坐标（半高 = 1）
+     * @param onConfirm 扳机/点击确认回调
+     * @param onBack 返回（右键/长按）回调
+     */
+    fun onTouchEvent(
+        event: MotionEvent,
+        viewW: Int,
+        viewH: Int,
+        onPointer: (FloatArray) -> Unit,
+        onConfirm: () -> Unit,
+    ): Boolean {
+        if (viewW <= 0 || viewH <= 0) return false
+
+        // 绝对坐标 → 视口归一化坐标（半高 = 1，与渲染口径一致）
+        val aspect = viewW.toFloat() / viewH.toFloat()
+        val nx = (event.x / viewW * 2f - 1f) * aspect
+        val ny = 1f - event.y / viewH * 2f
+
+        when (event.actionMasked) {
+            MotionEvent.ACTION_MOVE,
+            MotionEvent.ACTION_HOVER_MOVE -> {
+                lastSimRay = floatArrayOf(nx, ny)
+                currentSimRay = lastSimRay
+                onPointer(lastSimRay!!)
+                return true
+            }
+            MotionEvent.ACTION_DOWN -> {
+                lastSimRay = floatArrayOf(nx, ny)
+                currentSimRay = lastSimRay
+                onPointer(lastSimRay!!)
+                return true
+            }
+            MotionEvent.ACTION_UP -> {
+                // 扳机抬起 = 一次点击 → 确认
+                onConfirm()
+                Log.i(TAG, "指针点击 → CONFIRM (${"%.3f".format(nx)}, ${"%.3f".format(ny)})")
+                return true
+            }
+            MotionEvent.ACTION_HOVER_ENTER,
+            MotionEvent.ACTION_HOVER_EXIT -> {
+                lastSimRay = floatArrayOf(nx, ny)
+                currentSimRay = lastSimRay
+                onPointer(lastSimRay!!)
+                return true
+            }
+        }
+        return false
+    }
+
     private fun mapKey(keyCode: Int): Action? = when (keyCode) {
         KeyEvent.KEYCODE_DPAD_UP -> Action.UP
         KeyEvent.KEYCODE_DPAD_DOWN -> Action.DOWN
