@@ -23,10 +23,20 @@
         android:name="android.hardware.touchscreen"
         android:required="false" />
 
+    <!--
+      usesCleartextTraffic：允许 http:// 明文请求（关键，别删）。
+
+      Android 9（API 28）起默认禁止明文 HTTP，未声明时所有 http 请求
+      会被系统直接拒绝 —— 表现是应用内「网络错误」，而服务端日志里
+      一条访问记录都没有，极易误判成网络不通。
+      Emby 内网地址是 `http://192.168.150.15:6908`（明文端口），必须放开。
+      TV 版 B0BEmby 同样声明了这一项（见其 AndroidManifest.xml line 32）。
+    -->
     <application
         android:allowBackup="true"
         android:label="@string/app_name"
         android:icon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="true"
         android:supportsRtl="true">
 
         <activity

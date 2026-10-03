@@ -758,7 +758,19 @@ object EmbyApi {
                     throw proxyHintException(context, e as Exception)
                 }
                 else -> {
-                    throw Exception(context.getString(R.string.error_network_error), e)
+                    /*
+                     * 兜底分支：不再用笼统的「网络错误」，而是把原始异常类型与消息
+                     * 带出去。2026-10-03 实机排查教训 —— 屏上只显示「网络错误」时
+                     * 完全无法定位（可能是 URL 非法、SSL、DNS、被拒、解析失败…），
+                     * 而 PICO 的 adb 又连不上、拿不到 logcat，等于黑盒。
+                     */
+                    val root = generateSequence(e as Throwable) { it.cause }.last()
+                    val detail = "${root.javaClass.simpleName}: ${root.message ?: "无消息"}"
+                    Log.e(TAG, "请求失败(原始原因) url=$url detail=$detail", e)
+                    throw Exception(
+                        context.getString(R.string.error_network_error) + " [" + detail.take(90) + "]",
+                        e,
+                    )
                 }
             }
         }
