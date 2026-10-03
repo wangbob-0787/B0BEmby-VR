@@ -668,9 +668,25 @@ object EmbyApi {
         val startTime = System.currentTimeMillis()
 
         val connector = if (url.contains("?")) "&" else "?"
-        val params = "${connector}deviceId=$deviceId&X-Emby-Client=$CLIENT" +
-                "&X-Emby-Client-Version=$CLIENT_VERSION&X-Emby-Device-Name=$DEVICE_NAME" +
-                "&X-Emby-Device-Id=$deviceId"
+
+        /*
+         * 查询参数必须逐个 URL 编码（2026-10-03 实机踩坑）。
+         *
+         * 设备名是 `"${Build.MANUFACTURER} ${Build.MODEL}"`，在 PICO 4 上等于
+         * **"PICO 4"（含空格）**。原实现把它直接拼进 URL，OkHttp 校验 URL 时
+         * 遇到未转义的空格直接抛异常，请求根本没发出去 ——
+         * 表现就是虚拟屏上「未取到影片」，而服务端日志里连一条访问记录都没有。
+         *
+         * TV 版没暴露这个问题，是因为电视设备的 MANUFACTURER/MODEL 通常不含空格。
+         */
+        fun enc(s: String): String =
+            java.net.URLEncoder.encode(s, "UTF-8")
+
+        val params = "${connector}deviceId=${enc(deviceId)}" +
+                "&X-Emby-Client=${enc(CLIENT)}" +
+                "&X-Emby-Client-Version=${enc(CLIENT_VERSION)}" +
+                "&X-Emby-Device-Name=${enc(DEVICE_NAME)}" +
+                "&X-Emby-Device-Id=${enc(deviceId)}"
         val fullUrl = "$serverUrl/emby$url$params"
 
         val requestBuilder = Request.Builder()

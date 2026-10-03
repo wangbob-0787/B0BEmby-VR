@@ -186,34 +186,52 @@ class MainActivity : Activity() {
      * 流程：拉列表 → 更新海报墙可见数量 → 逐张下载海报位图 → 投递给渲染器。
      * 海报下载用 OkHttp 直接取字节（不用 Coil 的 ImageLoader，因为它面向
      * Compose 的 AsyncImage；这里要的是原始 Bitmap 交给 GL，直接取更直接）。
+     *
+     * ## 为什么把错误直接写到虚拟屏上
+     *
+     * 2026-10-03 实机排查：PICO 的 adb 端口连不上，拿不到 logcat，
+     * 只能靠「屏上显示什么」来定位。所以这里把失败原因（异常类型 + 消息 +
+     * 服务器地址）直接渲染到虚拟屏，不用 adb 也能看到卡在哪一步。
      */
     private fun loadLibrary() {
         val apiKey = BuildConfig.EMBY_API_KEY
+        val server = BuildConfig.EMBY_SERVER
+        Log.i(TAG, "Emby 配置: server=$server keyLen=${apiKey.length} userId=${BuildConfig.EMBY_USER_ID}")
         if (apiKey.isBlank()) {
             renderer.setScreenText("未配置 Emby Key")
             Log.w(TAG, "BuildConfig.EMBY_API_KEY 为空，跳过内容加载")
             return
         }
-        renderer.setScreenText("正在连接 Emby...")
+        renderer.setScreenText("正在连接 $server")
 
         scope.launch {
-            val list = EmbyContent.loadMovies(
+            val result = EmbyContent.loadMoviesDetailed(
                 context = this@MainActivity,
                 apiKey = apiKey,
-                serverUrl = BuildConfig.EMBY_SERVER,
+                serverUrl = server,
                 userId = BuildConfig.EMBY_USER_ID,
                 limit = POSTER_SLOTS,
             )
-            movies = list
-            Log.i(TAG, "影片加载完成: ${list.size} 条")
-            if (list.isEmpty()) {
-                renderer.setScreenText("未取到影片")
-                return@launch
+            when (result) {
+                is EmbyContent.Result.Ok -> {
+                    val list = result.items
+                    movies = list
+                    Log.i(TAG, "影片加载完成: ${list.size} 条")
+                    if (list.isEmpty()) {
+                        renderer.setScreenText("库返回 0 条影片")
+                        return@launch
+                    }
+                    renderer.clearPosters()
+                    renderer.activePosterCount = list.size
+                    renderer.setScreenText("${list.first().name ?: ""}")
+                    downloadPosters(list, apiKey)
+                }
+                is EmbyContent.Result.Err -> {
+                    // 屏上直接显示失败原因，避免「黑盒」排查
+                    Log.e(TAG, "拉取影片失败: ${result.reason}")
+                    renderer.setScreenText("拉取失败: ${result.reason}")
+                }
             }
-            renderer.clearPosters()
-            renderer.activePosterCount = list.size
-            renderer.setScreenText("${list.first().name ?: ""}")
-            downloadPosters(list, apiKey)
         }
     }
 

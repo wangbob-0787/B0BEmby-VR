@@ -50,7 +50,30 @@ object EmbyContent {
     private const val DEVICE_ID = "b0bemby-vr-pico4"
 
     /**
-     * 拉取影片（按入库时间倒序）。
+     * 带错误详情的结果。
+     *
+     * 为什么不用「失败就返回空列表」：空列表无法区分
+     * 「网络不通 / 认证失败 / 库里真没片」这三种情况，实机排查时是黑盒。
+     * 这里把失败原因一并带出去，调用方可以直接显示到屏幕上。
+     */
+    sealed interface Result {
+        data class Ok(val items: List<BaseItemDto>) : Result
+        data class Err(val reason: String) : Result
+    }
+
+    /**
+     * 拉取影片，返回带错误详情的结果。
+     */
+    suspend fun loadMoviesDetailed(
+        context: Context,
+        apiKey: String,
+        serverUrl: String = DEFAULT_SERVER,
+        userId: String = DEFAULT_USER_ID,
+        limit: Int = 12,
+    ): Result = loadItemsDetailed(context, apiKey, serverUrl, userId, "Movie", limit)
+
+    /**
+     * 拉取影片（按入库时间倒序）。失败返回空列表，仅用于不需要区分失败原因的场合。
      *
      * @param limit 拉取条数，海报墙一行放得下的量即可
      */
@@ -60,10 +83,12 @@ object EmbyContent {
         serverUrl: String = DEFAULT_SERVER,
         userId: String = DEFAULT_USER_ID,
         limit: Int = 12,
-    ): List<BaseItemDto> = loadItems(
-        context, apiKey, serverUrl, userId,
-        itemTypes = "Movie", limit = limit,
-    )
+    ): List<BaseItemDto> = when (
+        val r = loadMoviesDetailed(context, apiKey, serverUrl, userId, limit)
+    ) {
+        is Result.Ok -> r.items
+        is Result.Err -> emptyList()
+    }
 
     /** 剧集列表 */
     suspend fun loadSeries(
@@ -72,19 +97,21 @@ object EmbyContent {
         serverUrl: String = DEFAULT_SERVER,
         userId: String = DEFAULT_USER_ID,
         limit: Int = 12,
-    ): List<BaseItemDto> = loadItems(
-        context, apiKey, serverUrl, userId,
-        itemTypes = "Series", limit = limit,
-    )
+    ): List<BaseItemDto> = when (
+        val r = loadItemsDetailed(context, apiKey, serverUrl, userId, "Series", limit)
+    ) {
+        is Result.Ok -> r.items
+        is Result.Err -> emptyList()
+    }
 
-    private suspend fun loadItems(
+    private suspend fun loadItemsDetailed(
         context: Context,
         apiKey: String,
         serverUrl: String,
         userId: String,
         itemTypes: String,
         limit: Int,
-    ): List<BaseItemDto> = withContext(Dispatchers.IO) {
+    ): Result = withContext(Dispatchers.IO) {
         val path = buildString {
             append("/Users/$userId/Items")
             append("?Recursive=true")
@@ -95,11 +122,16 @@ object EmbyContent {
             append("&Fields=PrimaryImageAspectRatio,ImageTags,ProductionYear,RunTimeTicks")
             append("&api_key=$apiKey")
         }
-        runCatching {
-            EmbyApi.getItemsByPath(context, serverUrl, apiKey, DEVICE_ID, path)
-        }.onFailure {
-            Log.e(TAG, "拉取 $itemTypes 失败: ${it.message}", it)
-        }.getOrDefault(emptyList())
+        try {
+            val items = EmbyApi.getItemsByPath(context, serverUrl, apiKey, DEVICE_ID, path)
+            Log.i(TAG, "拉取 $itemTypes 成功: ${items.size} 条")
+            Result.Ok(items)
+        } catch (t: Throwable) {
+            // 异常类型 + 消息足以区分「连不上 / 超时 / 认证失败 / 解析失败」
+            val reason = "${t.javaClass.simpleName}: ${t.message ?: "无消息"}"
+            Log.e(TAG, "拉取 $itemTypes 失败: $reason", t)
+            Result.Err(reason.take(120))
+        }
     }
 
     /**
