@@ -150,8 +150,8 @@ class VrRenderer(
      * 横向上限 = 宽高比。射线 x 落在哪张海报的横向区间就聚焦哪张；
      * 纵向命中作为附加条件（避免射线飞得太远还锁定卡片）。
      */
-    fun updateFocusFromSimRay() {
-        val layout = posterLayout()
+    fun updateFocusFromSimRay(screenBottomY: Float) {
+        val layout = posterLayout(screenBottomY)
         var hit = -1
         for (i in layout.indices) {
             val (centerX, centerY, halfW, halfH) = layout[i]
@@ -178,9 +178,13 @@ class VrRenderer(
 
     /**
      * 海报墙布局：返回每张卡的 (centerX, centerY, halfW, halfH)，归一化坐标。
-     * 与 drawPosterWall 用同一套计算，保证「看到的」和「选中的」一致。
+     *
+     * 与 drawPosterWall 共用，保证「看到的」和「选中的」一致。
+     * 纵向位置由 [screenBottomY]（屏幕下缘）与视口下边界共同决定，
+     * 保证整行都落在可视区 [-1, 1] 内 —— 2026-10-03 就是因为没做这个约束，
+     * 海报行中心落到 -1.08，整行跑出画面，屏上什么都不显示。
      */
-    private fun posterLayout(): List<FloatArray> {
+    private fun posterLayout(screenBottomY: Float): List<FloatArray> {
         val aspect = viewW.toFloat() / viewH.toFloat().coerceAtLeast(1f)
         val usableHalfW = 0.96f * aspect
         val gap = POSTER_GAP
@@ -188,15 +192,23 @@ class VrRenderer(
         val cardHalfW = (usableHalfW * 2f - totalGap) / posterCount / 2f
         val cardHalfH = cardHalfW * 3f / 2f
         val startX = -usableHalfW + cardHalfW
-        val y = posterCenterY(cardHalfH)
+        val y = posterCenterY(screenBottomY, cardHalfH)
         return List(posterCount) { i ->
             floatArrayOf(startX + i * (cardHalfW * 2f + gap), y, cardHalfW, cardHalfH)
         }
     }
 
-    /** 海报行的中心 y（归一化）：贴在屏幕下缘下方 */
-    private fun posterCenterY(cardHalfH: Float): Float =
-        screenCenterY - screenHeightNorm / 2f - POSTER_TOP_MARGIN - cardHalfH
+    /**
+     * 海报行的中心 y：贴在屏幕下缘下方，且整行不越出视口下边界。
+     *
+     * 若屏幕下缘与视口底部之间放不下完整的一行（卡片过高），
+     * 就把海报行**上移**到视口内（宁可压住屏幕一点，也不能整行看不见）。
+     */
+    private fun posterCenterY(screenBottomY: Float, cardHalfH: Float): Float {
+        val ideal = screenBottomY - POSTER_TOP_MARGIN - cardHalfH
+        val lowestAllowed = -1f + BOTTOM_MARGIN + cardHalfH   // 底边留安全边距
+        return if (ideal < lowestAllowed) lowestAllowed else ideal
+    }
 
     // 基准几何：这些 Quad 的绝对尺寸不重要（渲染时一律缩放到视口），
     // 只用来定义宽高比 —— 屏幕 16:9、海报 2:3（与 TV 版一致）。
@@ -207,8 +219,8 @@ class VrRenderer(
     private val halfWOfScreen = screenWidth / 2f
     private val halfHOfScreen = screenHeight / 2f
 
-    /** 屏幕高度在归一化坐标里的值（半高 = 1） */
-    private val screenHeightNorm = 0.96f * (16f / 9f) * 2f
+    /** 视口下边界的安全边距 */
+    private val BOTTOM_MARGIN = 0.02f
 
     // 海报墙参数：一行 10 张，2:3 比例；实际排布在 drawPosterWall 里按视口算
     private val posterCount = POSTER_COUNT
@@ -312,9 +324,6 @@ class VrRenderer(
         // 主线程投递的真实海报 → 上传成 GL 纹理（必须在 GL 线程做）
         flushPendingPosters()
 
-        // 模拟射线焦点：读取 simRayX/Y 计算应聚焦哪张海报
-        updateFocusFromSimRay()
-
         val aspect = viewW.toFloat() / viewH.toFloat().coerceAtLeast(1f)
 
         /*
@@ -332,9 +341,25 @@ class VrRenderer(
          */
         val vp = M.ortho(-aspect, aspect, -1f, 1f, -10f, 10f)
 
-        // 1) 虚拟屏：水平占视口 96%，16:9
-        val screenHalfW = 0.96f * aspect
-        val screenHalfH = screenHalfW * 9f / 16f
+        /*
+         * 布局（归一化坐标，纵向可用范围就是 [-1, 1]，**超出即不可见**）。
+         *
+         * 2026-10-03 实机踩坑：改完正交投影后海报一直不显示，原因是布局没按
+         * 视口边界算 —— 屏幕中心 y=0.22、半高 0.96，屏幕顶到了 1.18（超出上边
+         * 0.18 被切），海报行中心落到 -1.08（整个跑出下边）。视觉上就是
+         * 「只有一块被切边的屏，下面什么都没有」。
+         *
+         * 现在按「上：屏幕 / 下：海报行」分区，两段都完整落在 [-1, 1] 内：
+         *   - 屏幕：高占视口 58%，顶边贴 y = 0.96
+         *   - 海报：紧贴屏幕下方，底边留 0.06 安全边距
+         * 屏幕宽度仍按 16:9 从高度反推，避免拉变形。
+         */
+        val topMargin = 0.04f              // 屏幕上边距
+        val screenHalfH = 0.58f            // 屏幕半高（占视口 58%）
+        val screenHalfW = screenHalfH * 16f / 9f
+        val screenCenterY = 1f - topMargin - screenHalfH
+
+        // 1) 虚拟屏
         val screenModel = M.mul(
             M.translate(0f, screenCenterY, 0f),
             M.scale(screenHalfW / halfWOfScreen, screenHalfH / halfHOfScreen, 1f),
@@ -350,15 +375,21 @@ class VrRenderer(
         )
 
         // 2) 海报墙：一行排开，选中卡片用绿色描边
-        drawPosterWall(vp)
+        val screenBottomY = screenCenterY - screenHalfH
+        drawPosterWall(vp, screenBottomY)
 
-        // 3) 底部控制条底板
+        // 3) 底部控制条底板（紧贴海报行下方；空间不足时交给 posterCenterY 上移处理）
         val barHalfW = screenHalfW
+        val layoutForBar = posterLayout(screenBottomY)
+        val posterRowBottom = layoutForBar.first()[1] - layoutForBar.first()[3]
         val barModel = M.mul(
-            M.translate(0f, screenCenterY - screenHalfH - 0.22f, 0f),
-            M.scale(barHalfW / (barQuad.width / 2f), 0.22f / (barQuad.height / 2f), 1f),
+            M.translate(0f, (posterRowBottom - 0.04f).coerceAtLeast(-1f + BOTTOM_MARGIN), 0f),
+            M.scale(barHalfW / (barQuad.width / 2f), 0.03f / (barQuad.height / 2f), 1f),
         )
         drawQuad(barQuad, barModel, vp, 0.25f)
+
+        // 焦点判定要在布局确定之后做（依赖 screenBottomY）
+        updateFocusFromSimRay(screenBottomY)
 
         // 首帧日志：实机排查「画面到底出来没有」时，这行是最直接的证据。
         if (!loggedFirstFrame) {
@@ -374,15 +405,12 @@ class VrRenderer(
 
     private var loggedFirstFrame = false
 
-    /** 屏幕中心的 y 坐标（归一化，半高 = 1），略高于中心，给下方海报墙留位置 */
-    private val screenCenterY = 0.22f
-
     private var lastRenderedScreenText = ""
 
-    private fun drawPosterWall(vp: FloatArray) {
+    private fun drawPosterWall(vp: FloatArray, screenBottomY: Float) {
         // 与 updateFocusFromSimRay 共用 posterLayout()，保证「看到的」和「指到的」一致。
         // 只画有数据的卡片：activePosterCount 由 MainActivity 在加载完成后设置。
-        val layout = posterLayout()
+        val layout = posterLayout(screenBottomY)
         val visible = activePosterCount.coerceIn(0, posterCount)
         for (i in 0 until visible) {
             val (x, y, halfW, halfH) = layout[i]
