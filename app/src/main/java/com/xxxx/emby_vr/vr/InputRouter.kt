@@ -240,8 +240,12 @@ class InputRouter(
         KeyEvent.KEYCODE_DPAD_CENTER,
         KeyEvent.KEYCODE_ENTER,
         KeyEvent.KEYCODE_NUMPAD_ENTER,
-        KeyEvent.KEYCODE_BUTTON_A,          // 手柄 A / 扳机按下
         -> Action.CONFIRM
+
+        // 手柄 A 键：父亲 2026-10-04 定案「什么都不做」。
+        // 确认统一由扳机承担（PICO 上扳机被系统转成虚拟手指的点击，
+        // 与 DPAD_CENTER/ENTER 不是一回事）。
+        KeyEvent.KEYCODE_BUTTON_A -> null
 
         KeyEvent.KEYCODE_BACK,
         KeyEvent.KEYCODE_BUTTON_B,          // 手柄 B
