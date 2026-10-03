@@ -311,10 +311,11 @@ class VrRenderer(
 
         GLES30.glUseProgram(program)
 
-        // 主线程更新了屏幕文字 → 重建位图与纹理
+        // 主线程更新了屏幕文字（或调试信息变化）→ 重建位图与纹理
         val want = synchronized(this) { pendingScreenText }
-        if (want != lastRenderedScreenText) {
+        if (want != lastRenderedScreenText || screenDirty) {
             lastRenderedScreenText = want
+            screenDirty = false
             val bmp = buildScreenBitmap(1280, 720, want)
             screenBitmap?.recycle()
             screenBitmap = bmp
@@ -391,6 +392,22 @@ class VrRenderer(
         // 焦点判定要在布局确定之后做（依赖 screenBottomY）
         updateFocusFromSimRay(screenBottomY)
 
+        // 把关键运行状态画到屏上（拿不到 logcat 时的唯一观测手段）
+        setDebugLines(
+            buildList {
+                add("视口 ${viewW}x$viewH aspect=${"%.3f".format(aspect)}")
+                add("屏幕 y=[${"%.2f".format(screenBottomY)}, ${"%.2f".format(screenCenterY + screenHalfH)}] 半宽=${"%.2f".format(screenHalfW)}")
+                val first = layoutForBar.firstOrNull()
+                if (first != null) {
+                    add("海报行 y=[${"%.2f".format(first[1] - first[3])}, ${"%.2f".format(first[1] + first[3])}] 卡半宽=${"%.3f".format(first[2])}")
+                }
+                add("海报 可见=${activePosterCount} 已传纹理=$uploadedPosterCount 焦点=$focusedPosterIndex")
+                val texOk = posterTexs.count { it != 0 }
+                add("纹理句柄有效=$texOk/${posterTexs.size} 屏幕纹理=$screenTex 白图=$whiteTex")
+                add("待上传海报=${synchronized(pendingPosters) { pendingPosters.size }}")
+            },
+        )
+
         // 首帧日志：实机排查「画面到底出来没有」时，这行是最直接的证据。
         if (!loggedFirstFrame) {
             loggedFirstFrame = true
@@ -464,6 +481,26 @@ class VrRenderer(
 
     // ---- 位图构建（主线程或 GL 线程皆可，只做 CPU 绘图）----
 
+    /**
+     * 屏幕上的调试信息行。
+     *
+     * 2026-10-03 立：PICO 的 adb 连不上、拿不到 logcat，唯一能看见运行状态的地方
+     * 就是虚拟屏本身。把关键数值直接画到屏上，一眼就能看出卡在哪一步，
+     * 不用靠猜。父亲原话：「你在代码中加一些日志不行吗？在 pico 屏幕上显示出来」。
+     */
+    @Volatile
+    private var debugLines: List<String> = emptyList()
+
+    /** 屏幕纹理需要重建（文字或调试信息变了） */
+    private var screenDirty = false
+
+    /** 更新屏上调试信息（GL 线程调用；内容变化时才触发屏幕纹理重建） */
+    private fun setDebugLines(lines: List<String>) {
+        if (lines == debugLines) return          // 内容没变就不动，避免每帧重建纹理
+        debugLines = lines
+        screenDirty = true
+    }
+
     private fun buildScreenBitmap(w: Int, h: Int, title: String): Bitmap {
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val c = Canvas(bmp)
@@ -515,6 +552,25 @@ class VrRenderer(
             textAlign = Paint.Align.CENTER
         }
         c.drawText("方向键/摇杆：浏览 · A/扳机：确认 · B：返回", w / 2f, h * 0.9f, hp)
+
+        /*
+         * 调试信息区（左下角，暗青色小字）。
+         *
+         * 只在有内容时画；用于在拿不到 logcat 的头显上直接读运行状态。
+         */
+        val dbg = debugLines
+        if (dbg.isNotEmpty()) {
+            val dp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.rgb(120, 200, 220)
+                textSize = h * 0.030f
+                textAlign = Paint.Align.LEFT
+            }
+            var dy = h * 0.70f
+            for (line in dbg.take(8)) {
+                c.drawText(line, w * 0.04f, dy, dp)
+                dy += h * 0.038f
+            }
+        }
         return bmp
     }
 

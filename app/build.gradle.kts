@@ -47,8 +47,23 @@ android {
         // PICO 4 = Android 10 / API 29；PICO 官方上传要求 minSdk 29
         minSdk = 29
         targetSdk = 33          // PICO OS 5.x 兼容；Google Play 上架线是 33，低于它 lint 会拦构建
-        versionCode = 1
-        versionName = "0.1.0"
+
+        /*
+         * 版本号必须每版递增，否则装机可能被系统跳过。
+         *
+         * 2026-10-03 实机踩坑：原先固定 versionCode=1 / versionName="0.1.0"，
+         * 连出十几个包版本号都不变，父亲在头显里装完后「和上一版没有任何变化」——
+         * 因为同版本号的包覆盖安装时，系统可能直接跳过不装（PICO 的安装器尤其如此），
+         * 看起来就是改动没生效，极易误判成「代码没起作用」。
+         *
+         * 取值来源（按优先级）：
+         *   1. 环境变量 BUILD_NUMBER（CI 里传 github.run_number）
+         *   2. local.properties 的 BUILD_NUMBER
+         *   3. 缺省 1
+         */
+        val buildNo = propOrEnv("BUILD_NUMBER", "1").toIntOrNull() ?: 1
+        versionCode = buildNo
+        versionName = "0.1.$buildNo"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
