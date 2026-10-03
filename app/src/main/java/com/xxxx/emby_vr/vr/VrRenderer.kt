@@ -444,13 +444,35 @@ class VrRenderer(
         val grid = Paint().apply { color = Color.rgb(40, 44, 52); style = Paint.Style.STROKE; strokeWidth = 1f }
         for (i in 1..5) c.drawLine(w * i / 6f, 0f, w * i / 6f, h.toFloat(), grid)
         for (i in 1..3) c.drawLine(0f, h * i / 4f, w.toFloat(), h * i / 4f, grid)
-        // 标题
-        val tp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+
+        /*
+         * 主标题：**按文字长度自动缩放 + 折行**。
+         *
+         * 2026-10-03 父亲反馈：错误信息（如「网络错误 [UnknownHostException: ...]」）
+         * 用固定 0.13h 字号会超出屏幕宽度被截断，看不到关键内容。
+         * 现在长文本自动降字号并在两侧留边距（左右各 6%），一行放不下就折行。
+         */
+        val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.rgb(0x4C, 0xD1, 0x37)   // 纯绿 primary，与 TV 版主题一致
-            textSize = h * 0.13f
             textAlign = Paint.Align.CENTER
         }
-        c.drawText(title, w / 2f, h * 0.42f, tp)
+        val maxWidth = w * 0.88f                 // 左右各留 6% 边距
+        val shortSize = h * 0.13f                // 短文本（片名等）用大字号
+        titlePaint.textSize = shortSize
+        val lines: List<String> = if (titlePaint.measureText(title) <= maxWidth) {
+            listOf(title)
+        } else {
+            // 太长：先降到小字号，再按宽度折行（最多 3 行，多出的截断加省略号）
+            titlePaint.textSize = h * 0.062f
+            wrapText(title, titlePaint, maxWidth, maxLines = 3)
+        }
+        val lineHeight = titlePaint.textSize * 1.28f
+        var y = h * 0.42f - (lines.size - 1) * lineHeight / 2f
+        for (line in lines) {
+            c.drawText(line, w / 2f, y, titlePaint)
+            y += lineHeight
+        }
+
         // 副标题（状态提示）
         val sp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.rgb(170, 175, 185)
@@ -466,6 +488,43 @@ class VrRenderer(
         }
         c.drawText("方向键/摇杆：浏览 · A/扳机：确认 · B：返回", w / 2f, h * 0.9f, hp)
         return bmp
+    }
+
+    /**
+     * 按像素宽度把文本折成多行。
+     *
+     * 中英文混排：逐字符累加测量宽度，超宽就换行。
+     * 不做「按词换行」是因为中文本没有空格，按词切会切不开。
+     */
+    private fun wrapText(
+        text: String,
+        paint: Paint,
+        maxWidth: Float,
+        maxLines: Int,
+    ): List<String> {
+        val out = mutableListOf<String>()
+        val sb = StringBuilder()
+        for (ch in text) {
+            sb.append(ch)
+            if (paint.measureText(sb.toString()) > maxWidth) {
+                // 超宽：把最后一个字符留到下一行
+                sb.deleteCharAt(sb.length - 1)
+                if (sb.isNotEmpty()) out.add(sb.toString())
+                sb.setLength(0)
+                sb.append(ch)
+                if (out.size == maxLines) break
+            }
+        }
+        if (out.size < maxLines && sb.isNotEmpty()) out.add(sb.toString())
+        // 超出 maxLines：把最后一行替换为省略号结尾
+        if (out.size >= maxLines && sb.isNotEmpty()) {
+            var last = out[maxLines - 1]
+            while (last.isNotEmpty() && paint.measureText("$last…") > maxWidth) {
+                last = last.dropLast(1)
+            }
+            out[maxLines - 1] = "$last…"
+        }
+        return out.ifEmpty { listOf(text) }
     }
 
     private fun buildPosterBitmap(index: Int, w: Int, h: Int): Bitmap {
