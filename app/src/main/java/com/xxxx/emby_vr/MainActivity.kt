@@ -98,62 +98,18 @@ class MainActivity : Activity() {
      * 指针位置变化的统一入口（触摸通道 `applyRay` 和按键通道 `applyRayFocus`
      * 都走这里）。
      *
-     * 播放中的快进快退判定 —— 难点是 PICO 手柄只给指针坐标，拿不到摇杆原始值，
-     * 而指针**跟手**：手一晃指针就动。父亲 2026-10-04 实测「一晃手就快进」
-     * 就是这个原因（旧版按累计位移判方向，晃动足以跨档）。
+     * **指针只用来移动海报焦点，不参与快进快退**（父亲 2026-10-04 明确：
+     * 「晃动手柄不应该触发快进，我并没有拨动摇杆」）。PICO 的指针是跟手的，
+     * 手一晃坐标就变，任何基于位移的阈值判断都会误触发 —— 所以这条通道
+     * 与 seek 完全解耦。
      *
-     * 现判据（真拨摇杆 vs 晃手）：
-     * - 只有**持续单向**移动才累计：一旦位移方向反转，累计清零重来
-     *   （晃手是往复运动，来回抵消，永远累计不到阈值）；
-     * - 阈值放宽到 0.9（约半屏宽度的一半），真拨摇杆一下就能到；
-     * - 跨档触发后清零并进入 900ms 冷却，防连发。
-     * 指针坐标与视觉方向相反（build-27 实测定案）：位移为正 → 快退。
+     * 播放中的快进快退只认**摇杆**：走 InputRouter.onGenericMotion 的
+     * 轴事件（超死区 → LEFT/RIGHT 动作），见 `input` 分发里的
+     * `Action.LEFT/RIGHT → seekBy`。
      */
-    private var lastRayX: Float? = null
-    private var runStartX = 0f          // 本轮单向移动的起点
-    private var runDir = 0              // 本轮方向：+1/-1/0
-    private var lastMoveAt = 0L
-    private var lastSeekAt = 0L
-
     private fun applyRay(ray: FloatArray) {
         renderer.simRayX = ray[0]
         renderer.simRayY = ray[1]
-
-        if (!renderer.videoActive) return
-
-        val now = System.currentTimeMillis()
-        val prev = lastRayX
-        lastRayX = ray[0]
-        if (prev == null) {
-            runStartX = ray[0]
-            runDir = 0
-            lastMoveAt = now
-            return
-        }
-
-        val dx = ray[0] - prev
-        // 方向反转（含完全静止后重新起手）→ 本轮重新计时：
-        // 晃手的往复在这里被抵消，只有持续单向才累计得起来
-        val dir = when {
-            dx > DIR_EPS -> 1
-            dx < -DIR_EPS -> -1
-            else -> runDir
-        }
-        if (dir != runDir || now - lastMoveAt > GESTURE_GAP_MS) {
-            runStartX = prev
-            runDir = dir
-        }
-        lastMoveAt = now
-
-        if (dir == 0) return
-        val run = ray[0] - runStartX             // 本轮单向位移
-        if (kotlin.math.abs(run) < SEEK_RUN) return
-        if (now - lastSeekAt < SEEK_COOLDOWN_MS) return
-
-        lastSeekAt = now
-        runStartX = ray[0]                       // 触发后重新计时，防连发
-        // 位移为正（指针 x 增大）在实机上对应视觉左侧 → 快退
-        seekBy(if (run > 0) -10_000 else +10_000)
     }
 
     /** 按键通道的射线同步（方向键分支走这里），复用同一套 seek 逻辑 */
@@ -261,12 +217,6 @@ class MainActivity : Activity() {
                 })
             }
             renderer.videoActive = true
-            // 进播放时重置手势状态，避免入场第一拨就触发一次跳转
-            lastRayX = null
-            runDir = 0
-            runStartX = 0f
-            lastMoveAt = 0L
-            lastSeekAt = 0L
             seekHudLabel = null
             startHudTicker()
             hud("播放中：左右拨动摇杆=快进快退 · 扳机=暂停 · 返回=退出")
@@ -632,25 +582,5 @@ class MainActivity : Activity() {
          * 每个槽位有固定的横向区间，超出槽位的数据会被丢弃）。
          */
         private const val POSTER_SLOTS = 10
-
-        /**
-         * 播放中指针横移触发一次快进/快退的阈值（射线坐标单位，满偏约 ±2）。
-         * 0.5 相当于推摇杆三分之一多一点，符合「拨一下快进 10 秒」的手感。
-         */
-        /**
-         * 触发一次快进/快退所需的**持续单向**位移（射线坐标，满偏约 ±2）。
-         * 0.9 约等于半屏宽度的一半：真拨一下摇杆能轻松到，
-         * 手部晃动是往复运动、来回抵消，累计不到（父亲 2026-10-04 实测）。
-         */
-        private const val SEEK_RUN = 0.9f
-
-        /** 判定指针「移动方向」的最小步长，滤掉落点抖动 */
-        private const val DIR_EPS = 0.004f
-
-        /** 指针停顿超过该时长视为「重新起手」，以停顿位置为新手势中点 */
-        private const val GESTURE_GAP_MS = 400L
-
-        /** 两次 seek 的最小间隔（防抖） */
-        private const val SEEK_COOLDOWN_MS = 800L
     }
 }
