@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 与 TV 版一致的暗夜主题色（2026-10-03 父亲定：纯绿强调色） -->
+    <color name="theme_primary">#FF4CD137</color>
+    <color name="theme_focus_bg">#FF7ED97A</color>
+    <color name="theme_bg">#FF0C0D10</color>
+</resources>
