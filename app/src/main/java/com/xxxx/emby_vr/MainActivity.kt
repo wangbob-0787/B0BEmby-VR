@@ -110,7 +110,8 @@ class MainActivity : Activity() {
     private fun applyRay(ray: FloatArray) {
         renderer.simRayX = ray[0]
         renderer.simRayY = ray[1]
-        onStickMotion(ray[0])
+        // 不再从指针流里猜摇杆手势：实测证明拨摇杆会合成 DOWN/拖动/UP 事件，
+        // 走 onTriggerDrag；悬停移动只移动光标（父亲 2026-10-04 定案）。
     }
 
     // ---- 摇杆手势识别（父亲 2026-10-04 规格）----
@@ -199,31 +200,37 @@ class MainActivity : Activity() {
     private var lastSeekAt = 0L
 
     /**
-     * 按住扳机 + 左右移动手柄 → 快进/快退（父亲 2026-10-04 定案的鼠标模型：
-     * 移动手柄 = 移动鼠标光标；扣扳机 = 点击；按住扳机拖动 = 拖拽手势）。
+     * 拨摇杆 → 快进/快退（2026-10-04 对 B 站抓包后定案）。
      *
-     * 只有**按住扳机期间**的移动才走这里（悬停移动不触发任何操作），
-     * 所以晃动手柄永远不会误触发快进。
-     * 横移累计 0.9（半屏宽度一半）触发一次 ±10 秒，800ms 冷却防连发。
+     * 实测机制：拨摇杆时系统合成一次「拖动手势」——
+     *   BTN_TOUCH DOWN → ABS_X 横向移动 800+ 像素 → BTN_TOUCH UP
+     * 而晃动手柄只有坐标抖动、**没有 DOWN/UP**，所以不会走到这里。
+     * 这就是"晃手无反应、拨摇杆有效"的根本原因，也是 B 站的做法。
      *
-     * @param dx 相对扳机按下位置的横向位移（归一化坐标，半高 = 1）
+     * 档位按「离按下点的距离」数，只在档位**增加**时触发：
+     * 手回到按下点的过程只让档位回落，不会反向误触发。
+     *
+     * @param dx 相对按下点的横向位移（归一化坐标，半高 = 1）
      */
     private fun onTriggerDrag(dx: Float) {
         if (!renderer.videoActive) return
-        // 档位按「离扳机按下点的距离」数，只在档位**增加**时触发：
-        // 手回到按下点的过程只会让档位回落，绝不会反向触发，
-        // 所以按住扳机后回中不会误触发（父亲 2026-10-04 实测的老问题）。
         val steps = (kotlin.math.abs(dx) / DRAG_SEEK_STEP).toInt()
         if (steps <= dragFiredSteps) return
         val now = System.currentTimeMillis()
         if (now - lastSeekAt < SEEK_COOLDOWN_MS) return
         lastSeekAt = now
         dragFiredSteps = steps
+        Log.i(TAG, "摇杆拖动: dx=${"%.3f".format(dx)} → ${if (dx > 0) "快退" else "快进"} 10 秒")
         // 位移为正（指针 x 增大）在实机上对应视觉左侧 → 快退
         seekBy(if (dx > 0) -10_000 else +10_000)
     }
 
     /** 按键通道的射线同步（方向键分支走这里），复用同一套 seek 逻辑 */
+    /** 每次「按下」开始新的拖动窗口，档位归零 */
+    private fun onPointerDown() {
+        dragFiredSteps = 0
+    }
+
     private fun applyRayFocus() {
         val ray = InputRouter.currentSimRay ?: return
         applyRay(ray)
@@ -497,6 +504,7 @@ class MainActivity : Activity() {
                     onPointer = { ray -> applyRay(ray) },
                     onConfirm = { confirmCurrent() },
                     onDrag = { dx -> onTriggerDrag(dx) },
+                    onDown = { onPointerDown() },
                 )
             }
             setOnTouchListener { _, e ->
@@ -507,6 +515,7 @@ class MainActivity : Activity() {
                     onPointer = { ray -> applyRay(ray) },
                     onConfirm = { confirmCurrent() },
                     onDrag = { dx -> onTriggerDrag(dx) },
+                    onDown = { onPointerDown() },
                 )
             }
         }
@@ -683,6 +692,34 @@ class MainActivity : Activity() {
             "scanCode=${event.scanCode} deviceId=${event.deviceId} repeat=${event.repeatCount} " +
             "source=0x${Integer.toHexString(event.source)}")
         return super.dispatchKeyEvent(event)
+    }
+
+    /**
+     * 触摸事件总入口（2026-10-04 关键修复）。
+     *
+     * 实测对比：B 站播放视频时抓 `/dev/input/event4`，拨摇杆产生的是
+     *   BTN_TOUCH DOWN → ABS_X 横向移动 800+ 像素 → BTN_TOUCH UP
+     * 即「一次完整拖动」，B 站据此识别摇杆操作；
+     * 而我们的应用日志里 1099 条指针事件**全是 MOVE，一条 DOWN 都没有**
+     * —— GLSurfaceView 的触摸分发把 DOWN/UP 吃掉了，所以我们既识别不出
+     * 摇杆拖动，也拿不到"按下/抬起"这个配对。
+     *
+     * 因此在 Activity 最外层拦下所有触摸事件，交给 InputRouter 统一处理。
+     */
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (::glView.isInitialized) {
+            val handled = input.onTouchEvent(
+                event = event,
+                viewW = glView.width,
+                viewH = glView.height,
+                onPointer = { ray -> applyRay(ray) },
+                onConfirm = { confirmCurrent() },
+                onDrag = { dx -> onTriggerDrag(dx) },
+                onDown = { onPointerDown() },
+            )
+            if (handled) return true
+        }
+        return super.dispatchTouchEvent(event)
     }
 
     override fun onGenericMotionEvent(event: MotionEvent): Boolean {

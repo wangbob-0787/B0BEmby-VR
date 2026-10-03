@@ -171,6 +171,7 @@ class InputRouter(
         onPointer: (FloatArray) -> Unit,
         onConfirm: () -> Unit,
         onDrag: (Float) -> Unit = {},
+        onDown: () -> Unit = {},
     ): Boolean {
         if (viewW <= 0 || viewH <= 0) return false
 
@@ -188,10 +189,14 @@ class InputRouter(
                 lastSimRay = floatArrayOf(nx, ny)
                 currentSimRay = lastSimRay
                 onPointer(lastSimRay!!)
-                // 按住扳机期间的移动 = 有意图的拖拽手势（播放中用于快进快退）。
-                // 悬停移动（没按扳机）只移动光标，绝不参与任何操作 ——
-                // 父亲 2026-10-04 定案：移动手柄 = 移动鼠标，扣扳机 = 点击。
-                if (pressed && downX != null) {
+                // 拖动中的移动 → 上报横向位移（播放中用于快进快退）。
+                //
+                // 2026-10-04 实测（B 站对照）：拨摇杆时系统合成的是
+                //   BTN_TOUCH DOWN → ABS_X 横向移动 800+ 像素 → BTN_TOUCH UP
+                // 即「一次按下+拖动+抬起」，**不需要按扳机**；
+                // 而晃动手柄只有 ABS_X/Y 抖动、没有 DOWN/UP。
+                // 因此判定依据就是「按下状态下的横向拖动」，晃手天然被排除。
+                if (downX != null) {
                     onDrag(nx - downX!!)
                 }
                 return true
@@ -200,6 +205,7 @@ class InputRouter(
                 downX = nx
                 downY = ny
                 pressed = true
+                onDown()
                 lastSimRay = floatArrayOf(nx, ny)
                 currentSimRay = lastSimRay
                 onPointer(lastSimRay!!)
