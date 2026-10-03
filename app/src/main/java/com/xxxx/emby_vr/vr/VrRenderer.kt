@@ -91,6 +91,11 @@ class VrRenderer(
     private var posterTexs = IntArray(POSTER_COUNT)
     private var whiteTex = 0
 
+    // 视频状态条（HUD）纹理与几何
+    private var hudTex = 0
+    private lateinit var hudQuad: Quad
+    private var lastRenderedHudText: String = ""
+
     // 屏幕纹理内容缓存（GL 线程）
     private var screenBitmap: Bitmap? = null
     private var pendingScreenText: String = ""
@@ -111,6 +116,21 @@ class VrRenderer(
      */
     fun setScreenText(text: String) {
         synchronized(this) { pendingScreenText = text }
+    }
+
+    // ---- 视频状态条（HUD）----
+    //
+    // 播放中屏幕显示的是视频画面，setScreenText 写的状态全被盖住 —— 父亲反馈
+    // 「左右快退快进没有反馈 / 返回没反应」，实际可能执行了但看不见。
+    // HUD 独立成一条贴在视频画面上方（后画、z 靠前），显示最近收到的动作、
+    // 播放位置、完整错误，作为播放期唯一的观测手段。
+
+    /** HUD 文字（主线程写，GL 线程检测变化重建纹理） */
+    private var pendingHudText: String = ""
+
+    /** 更新视频状态条文字 */
+    fun setHudText(text: String) {
+        synchronized(this) { pendingHudText = text }
     }
 
     // ---- 真实海报（P2）----
@@ -290,6 +310,9 @@ class VrRenderer(
 
         GLES30.glEnable(GLES30.GL_DEPTH_TEST)
         GLES30.glClearColor(0.03f, 0.03f, 0.04f, 1f)   // 近黑空间（与 TV 版底色一致）
+        // 半透明 HUD / 描边需要 alpha 混合（HUD 底色 argb(160,...)）
+        GLES30.glEnable(GLES30.GL_BLEND)
+        GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA)
     }
 
     /**
@@ -362,6 +385,11 @@ class VrRenderer(
         bindTexture(whiteTex, whiteBmp)
         whiteBmp.recycle()
 
+        // 视频状态条：宽扁四边形 + 初始空纹理（有文字时才画）
+        hudQuad = Quad(screenWidth, 1f)
+        hudTex = newTexture()
+        bindTexture(hudTex, buildHudBitmap(""))
+
         Log.i(TAG, "占位纹理就绪: 屏幕 + ${posterTexs.size} 张海报")
     }
 
@@ -397,6 +425,15 @@ class VrRenderer(
             screenBitmap?.recycle()
             screenBitmap = bmp
             bindTexture(screenTex, bmp)
+        }
+
+        // HUD 文字变化 → 重建状态条纹理
+        val hudWant = synchronized(this) { pendingHudText }
+        if (hudWant != lastRenderedHudText) {
+            lastRenderedHudText = hudWant
+            val hudBmp = buildHudBitmap(hudWant)
+            bindTexture(hudTex, hudBmp)
+            hudBmp.recycle()
         }
 
         // 主线程投递的真实海报 → 上传成 GL 纹理（必须在 GL 线程做）
@@ -455,6 +492,18 @@ class VrRenderer(
                 useTex = hasScreenTex,
                 tex = screenTex,
             )
+        }
+
+        // 1.5) 视频状态条（HUD）：贴在视频画面上层（z 更靠前，越过深度测试）
+        val hudTextNow = lastRenderedHudText
+        if (hudTextNow.isNotEmpty()) {
+            val hudHalfW = screenHalfW * 0.82f
+            val hudHalfH = hudHalfW / (screenWidth / 1f)   // hudQuad 是 16:1 比例
+            val hudModel = M.mul(
+                M.translate(0f, screenCenterY - screenHalfH + 0.14f, -0.01f),
+                M.scale(hudHalfW / (hudQuad.width / 2f), hudHalfH / (hudQuad.height / 2f), 1f),
+            )
+            drawQuad(hudQuad, hudModel, vp, 1f, useTex = true, tex = hudTex)
         }
 
         // 2) 海报墙：一行排开，选中卡片用绿色描边
@@ -601,6 +650,34 @@ class VrRenderer(
         if (lines == debugLines) return          // 内容没变就不动，避免每帧重建纹理
         debugLines = lines
         screenDirty = true
+    }
+
+    /**
+     * 构建视频状态条（HUD）位图：半透明黑底 + 单行文字（超长自动缩小）。
+     *
+     * 播放期唯一可见的状态输出 —— 屏幕大字被视频盖住，HUD 贴在视频上层。
+     */
+    private fun buildHudBitmap(text: String): Bitmap {
+        val w = 1024
+        val h = 64
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        c.drawColor(Color.argb(160, 8, 10, 14))
+        if (text.isNotEmpty()) {
+            val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.rgb(0x7E, 0xD9, 0x7A)
+                textAlign = Paint.Align.CENTER
+            }
+            p.textSize = h * 0.62f
+            if (p.measureText(text) > w * 0.95f) {
+                p.textSize = h * 0.36f
+            }
+            var y = h * 0.66f
+            val lines = if (p.measureText(text) <= w * 0.95f) listOf(text)
+            else wrapText(text, p, w * 0.95f, maxLines = 1)
+            for (line in lines) c.drawText(line, w / 2f, y, p)
+        }
+        return bmp
     }
 
     private fun buildScreenBitmap(w: Int, h: Int, title: String): Bitmap {

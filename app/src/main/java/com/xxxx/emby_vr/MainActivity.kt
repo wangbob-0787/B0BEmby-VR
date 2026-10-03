@@ -68,13 +68,20 @@ class MainActivity : Activity() {
      */
     private val input = InputRouter { action ->
         when (action) {
-            InputRouter.Action.LEFT -> if (renderer.videoActive) seekBy(-10_000) else moveFocus(-1)
-            InputRouter.Action.RIGHT -> if (renderer.videoActive) seekBy(+10_000) else moveFocus(+1)
+            InputRouter.Action.LEFT -> {
+                if (renderer.videoActive) seekBy(-10_000) else moveFocus(-1)
+            }
+            InputRouter.Action.RIGHT -> {
+                if (renderer.videoActive) seekBy(+10_000) else moveFocus(+1)
+            }
             InputRouter.Action.UP,
             InputRouter.Action.DOWN -> { /* 海报墙只有一行，上下暂忽略 */ }
-            InputRouter.Action.CONFIRM -> if (renderer.videoActive) togglePlayPause() else confirmCurrent()
-            InputRouter.Action.BACK ->
+            InputRouter.Action.CONFIRM -> {
+                if (renderer.videoActive) togglePlayPause() else confirmCurrent()
+            }
+            InputRouter.Action.BACK -> {
                 if (renderer.videoActive) stopPlayback() else clearFocus()
+            }
             InputRouter.Action.PLAY_PAUSE -> if (renderer.videoActive) togglePlayPause()
             InputRouter.Action.SEEK_BACK -> if (renderer.videoActive) seekBy(-10_000)
             InputRouter.Action.SEEK_FORWARD -> if (renderer.videoActive) seekBy(+10_000)
@@ -83,6 +90,9 @@ class MainActivity : Activity() {
             else -> { /* 余下动作后续接 */ }
         }
     }
+
+    /** 播放期状态反馈：写到视频画面上的状态条（屏幕大字被视频盖住，看不见） */
+    private fun hud(text: String) = renderer.setHudText(text)
 
     /** 把当前射线位置同步给渲染器，由渲染器算出该聚焦哪张卡 */
     private fun applyRayFocus() {
@@ -165,7 +175,7 @@ class MainActivity : Activity() {
                 p.playWhenReady = true
                 p.addListener(object : Player.Listener {
                     override fun onPlayerError(error: PlaybackException) {
-                        renderer.setScreenText("播放出错: ${error.errorCodeName} ${error.message?.take(60)}")
+                        hud("播放出错：${friendlyError(error)}")
                         renderer.videoActive = false
                     }
                 })
@@ -175,27 +185,48 @@ class MainActivity : Activity() {
             Log.i(TAG, "开始播放: $title url=${url.take(160)}")
         } catch (e: Exception) {
             Log.e(TAG, "起播失败", e)
-            renderer.setScreenText("起播失败: ${e.javaClass.simpleName}: ${e.message?.take(60)}")
+            hud("起播失败：${friendlyError(e)}")
             renderer.videoActive = false
+        }
+    }
+
+    /**
+     * 把技术错误翻成一句人话（给父亲看的屏上提示，不出现英文异常名）。
+     * 只翻译能判断的常见情况，翻不出就给「播放失败，原因未知」并把详情留给日志。
+     */
+    private fun friendlyError(t: Throwable): String {
+        val msg = t.message ?: ""
+        return when {
+            t is java.net.UnknownHostException -> "连不上服务器"
+            t is java.net.SocketTimeoutException || msg.contains("timeout", true) -> "连接超时"
+            t is java.net.ConnectException -> "连不上服务器"
+            msg.contains("404", false) -> "地址不存在"
+            msg.contains("401", false) || msg.contains("403", false) -> "认证失败"
+            msg.contains("HTTP 5", false) -> "服务器内部错误"
+            msg.contains("解码", false) || msg.contains("图片", false) -> "图片解码失败"
+            msg.contains("HTTP", false) -> "请求失败"
+            else -> "播放失败（详情见日志）"
         }
     }
 
     private fun togglePlayPause() {
         val p = player ?: return
         p.playWhenReady = !p.playWhenReady
-        renderer.setScreenText(if (p.playWhenReady) "播放" else "暂停")
+        hud(if (p.playWhenReady) "继续播放" else "已暂停")
     }
 
     private fun seekBy(deltaMs: Long) {
         val p = player ?: return
         p.seekTo((p.currentPosition + deltaMs).coerceAtLeast(0L))
-        renderer.setScreenText("${p.currentPosition / 1000} 秒")
+        val sec = p.currentPosition / 1000
+        hud("${if (deltaMs < 0) "快退" else "快进"} 10 秒 → ${sec / 60}:${"%02d".format(sec % 60)}")
     }
 
     /** 停止播放并回到海报墙 */
     private fun stopPlayback() {
         stopPlaybackInternal()
         renderer.videoActive = false
+        renderer.setHudText("")
         renderer.setScreenText(movies.firstOrNull()?.name ?: "B0BEmby VR")
         Log.i(TAG, "停止播放，回到海报墙")
     }
@@ -341,9 +372,9 @@ class MainActivity : Activity() {
                     downloadPosters(list, apiKey)
                 }
                 is EmbyContent.Result.Err -> {
-                    // 屏上直接显示失败原因，避免「黑盒」排查
+                    // 屏上直接显示失败原因，避免「黑盒」排查；详情留给日志
                     Log.e(TAG, "拉取影片失败: ${result.reason}")
-                    renderer.setScreenText("拉取失败: ${result.reason}")
+                    renderer.setScreenText("连不上服务器（详情见日志）")
                 }
             }
         }
@@ -381,15 +412,14 @@ class MainActivity : Activity() {
                     ok++
                 } else {
                     fail++
-                    lastReason = r.exceptionOrNull()?.let { "${it.javaClass.simpleName}: ${it.message}" }
-                        ?: "返回 null（HTTP 非 200 或解码失败）"
-                    Log.w(TAG, "海报下载失败 #$index ${item.name}: $lastReason")
+                    lastReason = r.exceptionOrNull()?.let { friendlyError(it) } ?: "图片为空"
+                    Log.w(TAG, "海报下载失败 #$index ${item.name}: ${lastReason}", r.exceptionOrNull())
                 }
             }
             Log.i(TAG, "海报下载完成: 成功 $ok / 失败 $fail")
             if (fail > 0) {
                 // 屏上给出失败概况 + 最后一条原因，便于无 adb 时定位
-                renderer.setScreenText("海报成功 $ok 张，失败 $fail 张：$lastReason")
+                renderer.setScreenText("海报 $ok 张成功、$fail 张失败：$lastReason")
             }
         }
     }
