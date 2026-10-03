@@ -148,24 +148,38 @@ class VrRenderer(
         // 屏幕位图：深色背景 + 大标题 + 网格参考（验证贴图方向/比例）
         val screenBmp = buildScreenBitmap(1280, 720, "B0BEmby VR")
         screenBitmap = screenBmp
-        screenTex = GLES30.glGenTextures()
+        screenTex = newTexture()
         bindTexture(screenTex, screenBmp)
 
         // 海报占位卡：每张生成一张不同渐变色 + 序号
         for (i in posterTexs.indices) {
             val bmp = buildPosterBitmap(i, 256, 384)
-            posterTexs[i] = GLES30.glGenTextures()
+            posterTexs[i] = newTexture()
             bindTexture(posterTexs[i], bmp)
             bmp.recycle()
         }
 
-        whiteTex = GLES30.glGenTextures()
+        whiteTex = newTexture()
         val whiteBmp = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
         whiteBmp.eraseColor(Color.WHITE)
         bindTexture(whiteTex, whiteBmp)
         whiteBmp.recycle()
 
         Log.i(TAG, "占位纹理就绪: 屏幕 + ${posterTexs.size} 张海报")
+    }
+
+    /**
+     * 生成一个 GL 纹理名。
+     *
+     * 注意：Android 的 `GLES30.glGenTextures()` 在 Java 层只有
+     * `glGenTextures(int n, int[] textures, int offset)` 与 `glGenTextures(int, IntBuffer)`
+     * 两个重载，**没有无参版本**（无参那是 C 接口的写法），写成
+     * `GLES30.glGenTextures()` 会编译不过。
+     */
+    private fun newTexture(): Int {
+        val ids = IntArray(1)
+        GLES30.glGenTextures(1, ids, 0)
+        return ids[0]
     }
 
     override fun onDrawFrame(gl: GL10?) {
@@ -295,8 +309,11 @@ class VrRenderer(
         val hue = (index * 36f % 360f)
         c.drawColor(Color.HSVToColor(floatArrayOf(hue, 0.25f, 0.22f)))
         val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-        // 圆角裁切视觉：画一个略浅的圆角矩形框
-        paint.color = Color.HSVToColor(floatArrayOf(hue, 0.4f, 0.5f), 0.6f)
+        // 圆角框线：同色系亮一档，演示 TV 版海报卡的圆角视觉
+        // 注意：Color.HSVToColor 只有 (float[]) 与 (float[], float) 两种重载，
+        // 后者第二参是 alpha（0..1），不是 S/V 分量。
+        val borderColor = Color.HSVToColor(floatArrayOf(hue, 0.4f, 0.5f))
+        paint.color = Color.argb(153, Color.red(borderColor), Color.green(borderColor), Color.blue(borderColor))
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 4f
         c.drawRoundRect(8f, 8f, w - 8f, h - 8f, 12f, 12f, paint)
