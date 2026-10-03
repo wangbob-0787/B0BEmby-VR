@@ -112,6 +112,35 @@ class MainActivity : Activity() {
         renderer.simRayY = ray[1]
     }
 
+    /** 按住扳机拖拽已触发的档位数与上次触发时间 */
+    private var dragFiredSteps = 0
+    private var lastSeekAt = 0L
+
+    /**
+     * 按住扳机 + 左右移动手柄 → 快进/快退（父亲 2026-10-04 定案的鼠标模型：
+     * 移动手柄 = 移动鼠标光标；扣扳机 = 点击；按住扳机拖动 = 拖拽手势）。
+     *
+     * 只有**按住扳机期间**的移动才走这里（悬停移动不触发任何操作），
+     * 所以晃动手柄永远不会误触发快进。
+     * 横移累计 0.9（半屏宽度一半）触发一次 ±10 秒，800ms 冷却防连发。
+     *
+     * @param dx 相对扳机按下位置的横向位移（归一化坐标，半高 = 1）
+     */
+    private fun onTriggerDrag(dx: Float) {
+        if (!renderer.videoActive) return
+        // 档位按「离扳机按下点的距离」数，只在档位**增加**时触发：
+        // 手回到按下点的过程只会让档位回落，绝不会反向触发，
+        // 所以按住扳机后回中不会误触发（父亲 2026-10-04 实测的老问题）。
+        val steps = (kotlin.math.abs(dx) / DRAG_SEEK_STEP).toInt()
+        if (steps <= dragFiredSteps) return
+        val now = System.currentTimeMillis()
+        if (now - lastSeekAt < SEEK_COOLDOWN_MS) return
+        lastSeekAt = now
+        dragFiredSteps = steps
+        // 位移为正（指针 x 增大）在实机上对应视觉左侧 → 快退
+        seekBy(if (dx > 0) -10_000 else +10_000)
+    }
+
     /** 按键通道的射线同步（方向键分支走这里），复用同一套 seek 逻辑 */
     private fun applyRayFocus() {
         val ray = InputRouter.currentSimRay ?: return
@@ -218,6 +247,8 @@ class MainActivity : Activity() {
             }
             renderer.videoActive = true
             seekHudLabel = null
+            dragFiredSteps = 0
+            lastSeekAt = 0L
             startHudTicker()
             hud("播放中：左右拨动摇杆=快进快退 · 扳机=暂停 · 返回=退出")
             renderer.setScreenText(title)
@@ -379,6 +410,7 @@ class MainActivity : Activity() {
                     viewH = height,
                     onPointer = { ray -> applyRay(ray) },
                     onConfirm = { confirmCurrent() },
+                    onDrag = { dx -> onTriggerDrag(dx) },
                 )
             }
             setOnTouchListener { _, e ->
@@ -388,6 +420,7 @@ class MainActivity : Activity() {
                     viewH = height,
                     onPointer = { ray -> applyRay(ray) },
                     onConfirm = { confirmCurrent() },
+                    onDrag = { dx -> onTriggerDrag(dx) },
                 )
             }
         }
@@ -582,5 +615,14 @@ class MainActivity : Activity() {
          * 每个槽位有固定的横向区间，超出槽位的数据会被丢弃）。
          */
         private const val POSTER_SLOTS = 10
+
+        /**
+         * 按住扳机拖拽触发一次快进/快退的横向位移（归一化坐标，半高 = 1）。
+         * 0.9 ≈ 半屏宽度的一半：按住扳机左右拖一下就能到。
+         */
+        private const val DRAG_SEEK_STEP = 0.9f
+
+        /** 两次快进/快退的最小间隔（防连发） */
+        private const val SEEK_COOLDOWN_MS = 800L
     }
 }

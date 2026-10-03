@@ -74,6 +74,9 @@ class InputRouter(
     private var downX: Float? = null
     private var downY: Float? = null
 
+    /** 扳机是否处于按下状态（按住期间的指针移动才是有意图的拖拽） */
+    private var pressed = false
+
     /**
      * 处理按键。返回 true 表示已消费。
      *
@@ -167,6 +170,7 @@ class InputRouter(
         viewH: Int,
         onPointer: (FloatArray) -> Unit,
         onConfirm: () -> Unit,
+        onDrag: (Float) -> Unit = {},
     ): Boolean {
         if (viewW <= 0 || viewH <= 0) return false
 
@@ -181,11 +185,18 @@ class InputRouter(
                 lastSimRay = floatArrayOf(nx, ny)
                 currentSimRay = lastSimRay
                 onPointer(lastSimRay!!)
+                // 按住扳机期间的移动 = 有意图的拖拽手势（播放中用于快进快退）。
+                // 悬停移动（没按扳机）只移动光标，绝不参与任何操作 ——
+                // 父亲 2026-10-04 定案：移动手柄 = 移动鼠标，扣扳机 = 点击。
+                if (pressed && downX != null) {
+                    onDrag(nx - downX!!)
+                }
                 return true
             }
             MotionEvent.ACTION_DOWN -> {
                 downX = nx
                 downY = ny
+                pressed = true
                 lastSimRay = floatArrayOf(nx, ny)
                 currentSimRay = lastSimRay
                 onPointer(lastSimRay!!)
@@ -194,8 +205,9 @@ class InputRouter(
             MotionEvent.ACTION_UP -> {
                 // 只有「按下到抬起位移很小」才算点击（扳机点一下）；
                 // 拖了一段再抬起 = 拖拽手势（播放中用于快进快退），
-                // 不能触发确认 —— 否则拨动摇杆会被当成点按，画面乱暂停
+                // 不能触发确认 —— 否则按住扳机左右拖会被当成点按，画面乱暂停
                 // （父亲 2026-10-04 实测反馈）。
+                pressed = false
                 val dx = if (downX != null) nx - downX!! else 0f
                 val dy = if (downY != null) ny - downY!! else 0f
                 downX = null
@@ -204,7 +216,7 @@ class InputRouter(
                     onConfirm()
                     Log.i(TAG, "指针点击 → CONFIRM (${"%.3f".format(nx)}, ${"%.3f".format(ny)})")
                 } else {
-                    Log.i(TAG, "指针拖拽，不触发确认 (位移 ${"%.3f".format(kotlin.math.hypot(dx, dy))})")
+                    Log.i(TAG, "指针拖拽结束，不触发确认 (位移 ${"%.3f".format(kotlin.math.hypot(dx, dy))})")
                 }
                 return true
             }
