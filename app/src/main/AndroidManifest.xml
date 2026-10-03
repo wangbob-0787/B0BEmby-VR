@@ -4,14 +4,21 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
-    <!-- VR 应用：声明头显与手柄为必需能力 -->
+    <!--
+      VR 头显能力声明。
+
+      注意 `required`：`android.hardware.vr.headtracking` 若写 required="true"，
+      PICO 会把应用归入 VR 应用并走 VR 合成器路径。当前阶段（最小平面虚拟屏）
+      我们要的是「头显里看到一块平面屏」，走 PICO 的 2D 面板模式更稳，因此
+      这里保留声明但**不强制**，由系统按应用类型决定呈现方式。
+    -->
     <uses-feature
         android:name="android.hardware.vr.headtracking"
         android:version="1"
-        android:required="true" />
+        android:required="false" />
     <uses-feature
         android:name="android.hardware.vr.high_performance"
-        android:required="true" />
+        android:required="false" />
     <uses-feature
         android:name="android.hardware.touchscreen"
         android:required="false" />
@@ -22,27 +29,40 @@
         android:icon="@mipmap/ic_launcher"
         android:supportsRtl="true">
 
-        <meta-data
-            android:name="pvr.app.type"
-            android:value="vr" />
-        <meta-data
-            android:name="pvr.sdk.version"
-            android:value="XR Platform_2.3.0" />
-
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
             android:screenOrientation="landscape"
             android:excludeFromRecents="false"
+            android:resizeableActivity="true"
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|density|uiMode">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-                <!-- VR 启动器入口 -->
                 <category android:name="android.intent.category.LAUNCHER" />
-                <category android:name="com.pico.intent.category.VR" />
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
+
+            <!--
+              关于 `pvr.app.type=vr`（2026-10-03 实机结论，重要）：
+
+              build-6/build-7 声明了它，结果 PICO 按 **VR 应用**合成 ——
+              画面直出到 4320x2160 面板，不走「2D 面板虚拟显示器」路径，
+              而我们的渲染是单眼 + 普通透视投影，与 VR 合成器要求不匹配，
+              表现为**全黑**（实测截图中心像素 RGB 全 0）。
+
+              「最小可用平面虚拟屏」阶段的目标是：头显里看到一块平面屏、
+              手柄能操作。这用 **PICO 的 2D 面板模式**即可达成：
+              PICO 会为 2D 应用建一个名为 `NS_APP[<包名>]` 的虚拟显示器
+              （`dumpsys display` 可见，哔哩哔哩 HD 就是这个形态），
+              应用照常在面板分辨率上输出，系统负责贴成空间面板。
+
+              因此当前**不加** pvr.app.type，先走 2D 面板；
+              等做真双目立体渲染（接 OpenXR runtime）时再加回来。
+              对照：设备上的 4XVR Player 是原生 VR 播放器，
+              它的 manifest 里 pvr.app.type 挂在 activity 上。
+            -->
+
         </activity>
     </application>
 

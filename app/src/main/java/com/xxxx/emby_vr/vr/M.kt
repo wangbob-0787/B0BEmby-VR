@@ -16,6 +16,21 @@ object M {
     fun perspective(fovYDeg: Float, aspect: Float, near: Float, far: Float): FloatArray =
         FloatArray(16).also { Matrix.perspectiveM(it, 0, fovYDeg, aspect, near, far) }
 
+    /**
+     * 正交投影。
+     *
+     * 用途：当几何用「视口归一化坐标」表达时（半高 = 1，横向上限 = 宽高比），
+     * 用正交投影可以让画面精确铺满视口、尺寸不随分辨率漂移；
+     * 透视投影会让同一份几何在不同分辨率/宽高比下占的视野比例不同。
+     */
+    fun ortho(
+        left: Float, right: Float,
+        bottom: Float, top: Float,
+        near: Float, far: Float,
+    ): FloatArray = FloatArray(16).also {
+        Matrix.orthoM(it, 0, left, right, bottom, top, near, far)
+    }
+
     /** 相机：eye 位置、center 看向点、up 上方向 */
     fun lookAt(
         eyeX: Float, eyeY: Float, eyeZ: Float,

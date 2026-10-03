@@ -80,41 +80,84 @@ class VrRenderer(
 
     /**
      * 根据模拟射线位置更新焦点海报索引。
-     * 海报一行排开，每张占 x 区间 [cardLeft_i, cardLeft_i + posterW]，
-     * 射线 x/y 命中哪张的纵向范围就聚焦哪张。
+     *
+     * 坐标口径：与渲染一致，用「视口归一化坐标」——半高 = 1，
+     * 横向上限 = 宽高比。射线 x 落在哪张海报的横向区间就聚焦哪张；
+     * 纵向命中作为附加条件（避免射线飞得太远还锁定卡片）。
      */
     fun updateFocusFromSimRay() {
-        val totalW = posterCount * posterW + (posterCount - 1) * posterGap
-        val startX = -totalW / 2f
-        for (i in posterQuads.indices) {
-            val cardLeft = startX + i * (posterW + posterGap)
-            val cardTop = posterY + posterH / 2f
-            val cardBottom = posterY - posterH / 2f
-            if (simRayX in (cardLeft - posterGap / 2f)..(cardLeft + posterW + posterGap / 2f) &&
-                simRayY in cardBottom..cardTop
-            ) {
-                if (focusedPosterIndex != i) {
-                    focusedPosterIndex = i
-                }
-                return
+        val layout = posterLayout()
+        var hit = -1
+        for (i in layout.indices) {
+            val (centerX, centerY, halfW, halfH) = layout[i]
+            val inX = simRayX in (centerX - halfW - POSTER_HIT_PAD)..(centerX + halfW + POSTER_HIT_PAD)
+            val inY = simRayY in (centerY - halfH - POSTER_HIT_PAD)..(centerY + halfH + POSTER_HIT_PAD)
+            if (inX && inY) {
+                hit = i
+                break
             }
         }
-        // 未命中任何卡片 → 清除焦点
-        focusedPosterIndex = -1
+        // 纵向没命中时退化为「只看横向」：VR 里手柄经常略微上抬，
+        // 严格双轴命中会导致指不到卡片。
+        if (hit < 0) {
+            for (i in layout.indices) {
+                val (centerX, _, halfW, _) = layout[i]
+                if (simRayX in (centerX - halfW - POSTER_HIT_PAD)..(centerX + halfW + POSTER_HIT_PAD)) {
+                    hit = i
+                    break
+                }
+            }
+        }
+        if (focusedPosterIndex != hit) focusedPosterIndex = hit
     }
 
-    // 虚拟屏参数（米）
-    private val screenWidth = 3.0f
-    private val screenHeight = screenWidth * 9f / 16f
-    private val screenDistance = 3.0f
+    /**
+     * 海报墙布局：返回每张卡的 (centerX, centerY, halfW, halfH)，归一化坐标。
+     * 与 drawPosterWall 用同一套计算，保证「看到的」和「选中的」一致。
+     */
+    private fun posterLayout(): List<FloatArray> {
+        val aspect = viewW.toFloat() / viewH.toFloat().coerceAtLeast(1f)
+        val usableHalfW = 0.96f * aspect
+        val gap = POSTER_GAP
+        val totalGap = (posterCount - 1) * gap
+        val cardHalfW = (usableHalfW * 2f - totalGap) / posterCount / 2f
+        val cardHalfH = cardHalfW * 3f / 2f
+        val startX = -usableHalfW + cardHalfW
+        val y = posterCenterY(cardHalfH)
+        return List(posterCount) { i ->
+            floatArrayOf(startX + i * (cardHalfW * 2f + gap), y, cardHalfW, cardHalfH)
+        }
+    }
 
-    // 海报墙参数：一行 10 张，摆在屏幕正前方（z 略浅于屏幕，避免遮挡），高度贴近屏幕下缘
+    /** 海报行的中心 y（归一化）：贴在屏幕下缘下方 */
+    private fun posterCenterY(cardHalfH: Float): Float =
+        screenCenterY - screenHeightNorm / 2f - POSTER_TOP_MARGIN - cardHalfH
+
+    // 基准几何：这些 Quad 的绝对尺寸不重要（渲染时一律缩放到视口），
+    // 只用来定义宽高比 —— 屏幕 16:9、海报 2:3（与 TV 版一致）。
+    private val screenWidth = 16f
+    private val screenHeight = 9f
+
+    /** 屏幕 16:9 的半宽/半高（供缩放换算用） */
+    private val halfWOfScreen = screenWidth / 2f
+    private val halfHOfScreen = screenHeight / 2f
+
+    /** 屏幕高度在归一化坐标里的值（半高 = 1） */
+    private val screenHeightNorm = 0.96f * (16f / 9f) * 2f
+
+    // 海报墙参数：一行 10 张，2:3 比例；实际排布在 drawPosterWall 里按视口算
     private val posterCount = POSTER_COUNT
-    private val posterW = 0.30f
-    private val posterH = posterW * 3f / 2f   // 2:3，与 TV 版海报卡一致
-    private val posterGap = 0.06f
-    private val posterY = -screenHeight / 2f - 0.35f
-    private val posterZ = -screenDistance + 0.25f
+    private val posterW = 2f
+    private val posterH = 3f
+
+    /** 海报之间的横向间隙（归一化坐标，半高 = 1） */
+    private val POSTER_GAP = 0.024f
+
+    /** 屏幕下缘到海报行顶部的间距（归一化坐标） */
+    private val POSTER_TOP_MARGIN = 0.10f
+
+    /** 射线命中判定向外放宽的量（归一化坐标），避免边缘难指中 */
+    private val POSTER_HIT_PAD = 0.02f
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         Log.i(TAG, "onSurfaceCreated")
@@ -204,47 +247,93 @@ class VrRenderer(
         // 模拟射线焦点：读取 simRayX/Y 计算应聚焦哪张海报
         updateFocusFromSimRay()
 
-        val aspect = viewW.toFloat() / viewH.toFloat().coerceAtLeast(1f)
-        // 观察者在原点，朝 -Z 看；屏幕放在 -Z 方向 3m 处
-        val proj = M.perspective(70f, aspect, 0.05f, 100f)
-        val view = M.lookAt(
-            0f, 0f, 0f,
-            0f, 0f, -1f,
-            0f, 1f, 0f,
-        )
-        val vp = M.mul(proj, view)
+        /*
+         * 投影方式：**正交，且坐标系直接按视口宽高定义**。
+         *
+         * 为什么不透视：PICO 上应用画面会被系统贴成空间面板，视口分辨率由
+         * 面板决定（实测 4320x2160）。若用固定 FOV 的透视投影，几何尺寸会
+         * 随分辨率和宽高比漂移 —— 3m 外一块 3m 宽的屏在 70° FOV 下只占视野
+         * 一小块，四周大片空黑，这正是 build-6/build-7 「看起来是黑屏」的
+         * 直接观感原因。
+         *
+         * 改用「视口即坐标系」的正交投影后：屏幕宽度恒等于视口宽度的 96%，
+         * 无论面板多少分辨率、什么宽高比，画面都铺满且比例正确。
+         * 坐标单位仍是「半高 = 1」的归一化尺寸。
+         */
+        val vp = M.ortho(-aspect, aspect, -1f, 1f, -10f, 10f)
 
-        // 1) 虚拟屏（贴屏幕纹理；纹理未就绪时退回纯色）
+        // 1) 虚拟屏：水平占视口 96%，16:9
+        val screenHalfW = 0.96f * aspect
+        val screenHalfH = screenHalfW * 9f / 16f
+        val screenModel = M.mul(
+            M.translate(0f, screenCenterY, 0f),
+            M.scale(screenHalfW / halfWOfScreen, screenHalfH / halfHOfScreen, 1f),
+        )
         val hasScreenTex = screenTex != 0
-        drawQuad(screenQuad, M.translate(0f, 0f, -screenDistance), vp, if (hasScreenTex) 1f else 0.10f, useTex = hasScreenTex, tex = screenTex)
+        drawQuad(
+            screenQuad,
+            screenModel,
+            vp,
+            if (hasScreenTex) 1f else 0.10f,
+            useTex = hasScreenTex,
+            tex = screenTex,
+        )
 
         // 2) 海报墙：一行排开，选中卡片用绿色描边
-        drawPosterWall(vp)
+        drawPosterWall(vp, aspect)
 
         // 3) 底部控制条底板
-        drawQuad(
-            barQuad,
-            M.translate(0f, -screenHeight / 2f - 0.30f, -screenDistance + 0.01f),
-            vp,
-            0.25f,
+        val barHalfW = screenHalfW
+        val barModel = M.mul(
+            M.translate(0f, screenCenterY - screenHalfH - 0.22f, 0f),
+            M.scale(barHalfW / (barQuad.width / 2f), 0.22f / (barQuad.height / 2f), 1f),
         )
+        drawQuad(barQuad, barModel, vp, 0.25f)
+
+        // 首帧日志：实机排查「画面到底出来没有」时，这行是最直接的证据。
+        if (!loggedFirstFrame) {
+            loggedFirstFrame = true
+            val err = GLES30.glGetError()
+            Log.i(
+                TAG,
+                "首帧已渲染: 视口=${viewW}x$viewH aspect=$aspect " +
+                    "屏幕半宽=$screenHalfW 屏幕半高=$screenHalfH glError=$err",
+            )
+        }
     }
+
+    private var loggedFirstFrame = false
+
+    /** 屏幕中心的 y 坐标（归一化，半高 = 1），略高于中心，给下方海报墙留位置 */
+    private val screenCenterY = 0.22f
 
     private var lastRenderedScreenText = ""
 
-    private fun drawPosterWall(vp: FloatArray) {
-        val totalW = posterCount * posterW + (posterCount - 1) * posterGap
+    private fun drawPosterWall(vp: FloatArray, aspect: Float) {
+        // 与 updateFocusFromSimRay 共用 posterLayout()，保证「看到的」和「指到的」一致。
+        val layout = posterLayout()
         for (i in posterQuads.indices) {
-            val x = -totalW / 2f + i * (posterW + posterGap) + posterW / 2f
-            val model = M.translate(x, posterY, posterZ)
+            val (x, y, halfW, halfH) = layout[i]
+            val model = M.mul(
+                M.translate(x, y, 0f),
+                M.scale(halfW / (posterQuads[i].width / 2f), halfH / (posterQuads[i].height / 2f), 1f),
+            )
             val focused = i == focusedPosterIndex
             if (focused) {
                 // 焦点底色：纯绿 #7ED97A（secondary，与 TV 版焦点背景一致）
                 drawQuad(posterQuads[i], model, vp, 0.0f, useTex = true, tex = whiteTex, color = GREEN_FOCUSED)
                 // 卡片本身
                 drawQuad(posterQuads[i], model, vp, 1f, useTex = true, tex = posterTexs[i])
-                // 绿色描边：放大 1.12 倍画一次描边框（P1 用两层 quads 近似）
-                drawQuad(posterQuads[i], M.mul(model, M.scale(1.12f, 1.12f)), vp, 0.0f, useTex = true, tex = whiteTex, color = GREEN_OUTLINE)
+                // 绿色描边：放大 1.10 倍画一次描边框（P1 用两层 quads 近似）
+                drawQuad(
+                    posterQuads[i],
+                    M.mul(model, M.scale(1.10f, 1.10f)),
+                    vp,
+                    0.0f,
+                    useTex = true,
+                    tex = whiteTex,
+                    color = GREEN_OUTLINE,
+                )
             } else {
                 drawQuad(posterQuads[i], model, vp, 1f, useTex = true, tex = posterTexs[i])
             }

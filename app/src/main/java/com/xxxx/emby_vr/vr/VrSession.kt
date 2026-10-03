@@ -65,13 +65,31 @@ class VrSession {
 
     /**
      * 判断是否运行在头显上。
-     * PICO 4 会在 features 里声明 `android.hardware.vr.headtracking`。
+     *
+     * PICO 4 的 features 里有 `android.hardware.vr.headtracking`。
+     *
+     * 注意：`hasSystemFeature` 的返回受**本应用 manifest 声明**影响 ——
+     * 若应用没声明 `uses-feature android.hardware.vr.headtracking`，
+     * 某些 ROM 上会返回 false。所以这里同时查三路证据，避免单点误判：
+     *   1. 系统 feature（hasSystemFeature）
+     *   2. 本应用 manifest 里 pvr.app.type 是否被读成 meta-data
+     *   3. Build 里的 PICO 标识
      */
     private fun detectVrEnvironment(ctx: Context): Boolean {
         val pm = ctx.packageManager
         val hasHeadTracking = pm.hasSystemFeature("android.hardware.vr.headtracking")
         val hasHighPerf = pm.hasSystemFeature("android.hardware.vr.high_performance")
-        Log.i(TAG, "系统特性: headtracking=$hasHeadTracking high_performance=$hasHighPerf")
+        val pvrType = runCatching {
+            pm.getApplicationInfo(ctx.packageName, android.content.pm.PackageManager.GET_META_DATA)
+                .metaData?.getString("pvr.app.type")
+        }.getOrNull()
+        val manufacturer = android.os.Build.MANUFACTURER
+        val brand = android.os.Build.BRAND
+        Log.i(
+            TAG,
+            "VR 环境探测: headtracking=$hasHeadTracking high_performance=$hasHighPerf " +
+                "pvr.app.type=$pvrType manufacturer=$manufacturer brand=$brand",
+        )
         return hasHeadTracking || hasHighPerf
     }
 

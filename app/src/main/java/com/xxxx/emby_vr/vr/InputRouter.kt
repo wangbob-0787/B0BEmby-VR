@@ -58,13 +58,14 @@ class InputRouter(
     @Volatile
     var simulatedRay = true
 
-    /** 模拟射线最近一次落在 z = -screenDistance 平面上的 x/y 坐标（米）。 */
+    /**
+     * 模拟射线最近一次在屏幕平面上的坐标。
+     *
+     * 坐标口径与渲染一致：**视口归一化坐标**，半高 = 1，
+     * 横向上限 = 视口宽高比（竖屏时 ≤1，横屏 4320x2160 时为 2.0）。
+     */
     @Volatile
     var lastSimRay: FloatArray? = null
-
-    /** 模拟射线映射所用的屏幕距离（米），与 VrRenderer 保持一致 */
-    @Volatile
-    var screenDistance: Float = 3.0f
 
     /** 记录最近一次按键时间，用于区分「点按」与「长按连发」 */
     private var lastRepeatAt = 0L
@@ -116,17 +117,17 @@ class InputRouter(
             return true
         }
 
-        // 模拟射线：摇杆在死区内但仍有偏转时，把偏转量映射到屏幕平面。
-        // 摇杆满偏 → 屏幕平面 x ∈ [-4, +4]m, y 偏移量按比例映射。
-        // P5 接入真实 controller pose 后删除此段。
+        // 模拟射线：摇杆在死区内但仍有偏转时，把偏转量映射到视口坐标。
+        // 横屏 4320x2160 宽高比 = 2.0，所以 x 满偏映射到 ±2。
+        // P5 接入真实 controller pose 后删除此段，改用 OpenXR 给的手柄朝向。
         if (simulatedRay && (kotlin.math.abs(x) > 0.02f || kotlin.math.abs(y) > 0.02f)) {
-            val px = x * 4f
-            val py = 0.5f - y * 2f
+            val px = x * RAY_X_EXTENT
+            val py = -y                      // 摇杆上推 → 焦点上移（屏幕坐标 y 向下）
             lastSimRay = floatArrayOf(px, py)
             currentSimRay = lastSimRay
             onAction(Action.RAY_POS)
             onAction(Action.RAY_DIR)
-            Log.d(TAG, "模拟射线: x=${px} y=${py}")
+            Log.d(TAG, "模拟射线: x=$px y=$py")
             return true
         }
         return false
@@ -160,6 +161,12 @@ class InputRouter(
         /** 方向键连发节流：200ms 一次，同 TV 版手感 */
         private const val REPEAT_MS = 200L
         private const val STICK_DEADZONE = 0.35f
+
+        /**
+         * 模拟射线的横向满偏范围（归一化坐标）。
+         * 取值 2.0 = 4320x2160 横屏的宽高比，摇杆推到底刚好扫过整屏宽度。
+         */
+        private const val RAY_X_EXTENT = 2.0f
 
         /**
          * 模拟射线位置的全局快照。
