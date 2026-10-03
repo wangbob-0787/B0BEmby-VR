@@ -110,6 +110,76 @@ class MainActivity : Activity() {
     private fun applyRay(ray: FloatArray) {
         renderer.simRayX = ray[0]
         renderer.simRayY = ray[1]
+        onStickMotion(ray[0])
+    }
+
+    // ---- 摇杆手势识别（父亲 2026-10-04 规格）----
+    //
+    // 规格：左拨一次（500ms 内拨出→回中）= 快退 10 秒；拨住不回中 = 持续快退。
+    //       右拨同理快进。
+    //
+    // 难点：PICO 只给光标流，摇杆与手部晃动同源。区分依据 ——
+    //   摇杆拨动：**平滑单向**移动，且停在新位置（不回中）或迅速弹回（回中）
+    //   手部晃动：**快速往复**，方向频繁反转，始终围绕原点
+    // 因此：方向反转即清零累计（晃动永远累计不到阈值）。
+    private var stickRunStart = 0f      // 本轮单向移动起点
+    private var stickRunDir = 0         // 本轮方向 ±1
+    private var stickLastX = 0f
+    private var stickLastAt = 0L
+    private var stickHoldFiredAt = 0L   // 持续模式上次续跳时间
+
+    private fun onStickMotion(x: Float) {
+        if (!renderer.videoActive) return
+        val now = System.currentTimeMillis()
+        val dt = now - stickLastAt
+        stickLastAt = now
+
+        // 停顿 >400ms 视为新手势起点
+        if (dt > STICK_GAP_MS) {
+            stickRunStart = x
+            stickRunDir = 0
+            stickLastX = x
+            stickHoldFiredAt = 0L
+            return
+        }
+        val dx = x - stickLastX
+        stickLastX = x
+        val dir = when {
+            dx > STICK_EPS -> 1
+            dx < -STICK_EPS -> -1
+            else -> 0
+        }
+        if (dir != 0 && dir != stickRunDir) {
+            // 方向反转（晃手特征）→ 重新起算
+            stickRunDir = dir
+            stickRunStart = x - dx
+        }
+        if (stickRunDir == 0) return
+
+        val run = x - stickRunStart
+
+        // 回中检测：指针回到起点附近（拨一下松手）→ 结束持续模式。
+        // 这是父亲规格里「500ms 内回中 = 只跳一次」的判定点。
+        if (stickHoldFiredAt > 0 && kotlin.math.abs(run) < STICK_RUN / 2f) {
+            stickHoldFiredAt = 0
+            return
+        }
+
+        // 持续模式：拨住不回中（指针停在偏位）→ 每 500ms 续跳一次
+        if (stickHoldFiredAt > 0 && now - stickHoldFiredAt >= STICK_HOLD_MS) {
+            stickHoldFiredAt = now
+            Log.i(TAG, "摇杆持续拨住: run=${"%.3f".format(run)} → 续跳 10 秒")
+            seekBy(if (run > 0) -10_000 else +10_000)
+            return
+        }
+        // 首次触发：累计单向位移过阈值
+        if (kotlin.math.abs(run) < STICK_RUN) return
+        if (now - lastSeekAt < SEEK_COOLDOWN_MS) return
+        lastSeekAt = now
+        stickHoldFiredAt = now
+        Log.i(TAG, "摇杆拨动: run=${"%.3f".format(run)} → ${if (run > 0) "快退" else "快进"} 10 秒")
+        // 位移为正（指针 x 增大）实机上对应视觉左侧 → 快退
+        seekBy(if (run > 0) -10_000 else +10_000)
     }
 
     /** 按住扳机拖拽已触发的档位数与上次触发时间 */
@@ -249,6 +319,10 @@ class MainActivity : Activity() {
             seekHudLabel = null
             dragFiredSteps = 0
             lastSeekAt = 0L
+            stickRunDir = 0
+            stickRunStart = 0f
+            stickLastAt = 0L
+            stickHoldFiredAt = 0L
             startHudTicker()
             hud("播放中：左右拨动摇杆=快进快退 · 扳机=暂停 · 返回=退出")
             renderer.setScreenText(title)
@@ -648,6 +722,18 @@ class MainActivity : Activity() {
          * 0.9 ≈ 半屏宽度的一半：按住扳机左右拖一下就能到。
          */
         private const val DRAG_SEEK_STEP = 0.9f
+
+        /** 拨摇杆判定：单向累计位移过该值算一次「拨动」（归一化坐标，半高=1） */
+        private const val STICK_RUN = 0.35f
+
+        /** 判定指针移动方向的最小步长，滤掉落点抖动 */
+        private const val STICK_EPS = 0.003f
+
+        /** 停顿超过该时长视为新手势（摇杆回到中位） */
+        private const val STICK_GAP_MS = 400L
+
+        /** 拨住不放时的续跳间隔（父亲规格：500ms 内不回中 → 持续快进快退） */
+        private const val STICK_HOLD_MS = 500L
 
         /** 两次快进/快退的最小间隔（防连发） */
         private const val SEEK_COOLDOWN_MS = 800L
