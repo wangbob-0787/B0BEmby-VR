@@ -8,4 +8,6 @@
     <string name="error_network_error">Network error, please try again</string>
     <string name="error_network_unavailable">Network unavailable, please check your connection</string>
     <string name="error_proxy_connection">Proxy connection failed, please check proxy information</string>
+    <string name="error_ssl_failed">Secure connection failed</string>
+    <string name="error_unknown">Unknown error</string>
 </resources>
