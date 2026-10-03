@@ -94,11 +94,39 @@ class MainActivity : Activity() {
     /** 播放期状态反馈：写到视频画面上的状态条（屏幕大字被视频盖住，看不见） */
     private fun hud(text: String) = renderer.setHudText(text)
 
-    /** 把当前射线位置同步给渲染器，由渲染器算出该聚焦哪张卡 */
+    /**
+     * 把当前射线位置同步给渲染器，由渲染器算出该聚焦哪张卡。
+     *
+     * 播放中另有职责（父亲 2026-10-04 实测：PICO 摇杆走的是**指针通道**，
+     * 方向动作根本不会产生，只有指针坐标在动）—— 指针横向位移累计到阈值
+     * 就触发一次快进/快退，方向按位移方向。
+     */
+    private var lastRayX: Float? = null
+    private var seekAccumX = 0f
+    private var lastSeekAt = 0L
+
     private fun applyRayFocus() {
         val ray = InputRouter.currentSimRay ?: return
         renderer.simRayX = ray[0]
         renderer.simRayY = ray[1]
+
+        if (!renderer.videoActive) return
+
+        // 播放中：横移累计 → 快进/快退
+        val prev = lastRayX
+        lastRayX = ray[0]
+        if (prev != null) seekAccumX += ray[0] - prev
+        val now = System.currentTimeMillis()
+        if (now - lastSeekAt < 800) return          // 两次 seek 之间冷却，防刷屏
+        if (seekAccumX > SEEK_STEP) {
+            seekBy(+10_000)
+            seekAccumX = 0f
+            lastSeekAt = now
+        } else if (seekAccumX < -SEEK_STEP) {
+            seekBy(-10_000)
+            seekAccumX = 0f
+            lastSeekAt = now
+        }
     }
 
     private fun moveFocus(delta: Int) {
@@ -493,5 +521,11 @@ class MainActivity : Activity() {
          * 每个槽位有固定的横向区间，超出槽位的数据会被丢弃）。
          */
         private const val POSTER_SLOTS = 10
+
+        /**
+         * 播放中指针横移触发一次快进/快退的阈值（射线坐标单位，满偏约 ±2）。
+         * 0.5 相当于推摇杆三分之一多一点，符合「拨一下快进 10 秒」的手感。
+         */
+        private const val SEEK_STEP = 0.5f
     }
 }

@@ -520,8 +520,12 @@ class VrRenderer(
         )
         drawQuad(barQuad, barModel, vp, 0.25f)
 
-        // 焦点判定要在布局确定之后做（依赖 screenBottomY）
-        updateFocusFromSimRay(screenBottomY)
+        // 焦点判定要在布局确定之后做（依赖 screenBottomY）。
+        // 播放中跳过：光标在视频上时摇杆横移应驱动快进快退，
+        // 而不是继续给下面的海报换焦点（父亲 2026-10-04 实测反馈）。
+        if (!videoActive) {
+            updateFocusFromSimRay(screenBottomY)
+        }
 
         // 把关键运行状态画到屏上（拿不到 logcat 时的唯一观测手段）
         setDebugLines(
