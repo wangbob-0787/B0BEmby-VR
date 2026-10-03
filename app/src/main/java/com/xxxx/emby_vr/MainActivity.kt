@@ -144,6 +144,18 @@ class MainActivity : Activity() {
         }
         val dx = x - stickLastX
         stickLastX = x
+
+        // 指针跳变过滤（父亲 2026-10-04 实测：晃手时光标会瞬间窜一大段，
+        // 例如 0.656 → 1.778，超过屏幕范围，被误当成一次拨动）。
+        // 真摇杆拨动是平滑的，单帧位移远小于此；跳变一律当噪音丢弃并重起手势。
+        if (kotlin.math.abs(dx) > STICK_MAX_JUMP) {
+            stickRunStart = x
+            stickRunDir = 0
+            stickHoldFiredAt = 0L
+            Log.i(TAG, "指针跳变 ${"%.3f".format(dx)}，丢弃")
+            return
+        }
+
         val dir = when {
             dx > STICK_EPS -> 1
             dx < -STICK_EPS -> -1
@@ -728,6 +740,13 @@ class MainActivity : Activity() {
 
         /** 判定指针移动方向的最小步长，滤掉落点抖动 */
         private const val STICK_EPS = 0.003f
+
+        /**
+         * 单帧位移上限：超过即视为指针跳变噪音（非摇杆拨动）。
+         * 真摇杆拨动是平滑的，实测单帧位移在 0.1 以内；
+         * 晃手时的光标跳变可达 1.0+（build-37 实机日志 0.656→1.778）。
+         */
+        private const val STICK_MAX_JUMP = 0.25f
 
         /** 停顿超过该时长视为新手势（摇杆回到中位） */
         private const val STICK_GAP_MS = 400L
