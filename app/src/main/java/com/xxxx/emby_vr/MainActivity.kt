@@ -265,11 +265,25 @@ class MainActivity : Activity() {
         hud(if (p.playWhenReady) "继续播放" else "已暂停")
     }
 
+    /** 最近一次 seek 的目标位置与发起时间（毫秒）；用于连跳时的基准 */
+    private var seekTargetMs: Long? = null
+    private var seekTargetAt = 0L
+
     private fun seekBy(deltaMs: Long) {
         val p = player ?: return
-        p.seekTo((p.currentPosition + deltaMs).coerceAtLeast(0L))
-        val sec = p.currentPosition / 1000
-        Log.i(TAG, "seek ${deltaMs / 1000}s → ${sec / 60}:${"%02d".format(sec % 60)}")
+        // ExoPlayer 的 seekTo 是异步的：连续快进时上一跳还没落地，
+        // currentPosition 仍是旧值，基于它算下一跳会越跳越偏
+        // （父亲 2026-10-04 实测：连跳几次落点与预期不符）。
+        // 500ms 内的连跳一律以「上一跳的目标」为基准，之后回归真实位置。
+        val withinChain = seekTargetMs != null &&
+            System.currentTimeMillis() - seekTargetAt < 500
+        val base = if (withinChain) seekTargetMs!! else p.currentPosition
+        val target = (base + deltaMs).coerceAtLeast(0L)
+        seekTargetMs = target
+        seekTargetAt = System.currentTimeMillis()
+        p.seekTo(target)
+        val sec = target / 1000
+        Log.i(TAG, "seek ${deltaMs / 1000}s → ${sec / 60}:${"%02d".format(sec % 60)} (基准 ${if (withinChain) "连跳" else "实时"})")
         hud("${if (deltaMs < 0) "快退" else "快进"} 10 秒 → ${sec / 60}:${"%02d".format(sec % 60)}")
     }
 
@@ -288,6 +302,7 @@ class MainActivity : Activity() {
             runCatching { it.release() }
         }
         player = null
+        seekTargetMs = null
     }
 
     private fun clearFocus() {
