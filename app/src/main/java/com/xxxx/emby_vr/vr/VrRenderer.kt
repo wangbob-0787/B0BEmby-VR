@@ -108,9 +108,15 @@ class VrRenderer(
         }
     }
 
-    /** 本次海报墙占用的卡片数（数据条数可能少于容量） */
+    /**
+     * 本次海报墙实际要画的卡片数（数据条数可能少于容量）。
+     *
+     * 初值直接用伴生常量而不是 `posterCount`：实例属性按声明顺序初始化，
+     * 本行在 `posterCount` 声明之前，引用它会编译不过
+     * （Kotlin 报 "Variable 'posterCount' must be initialized"）。
+     */
     @Volatile
-    var activePosterCount: Int = posterCount
+    var activePosterCount: Int = POSTER_COUNT
 
     /** 清空海报墙（重新加载时调用） */
     fun clearPosters() {
