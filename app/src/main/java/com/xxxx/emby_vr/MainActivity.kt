@@ -98,13 +98,18 @@ class MainActivity : Activity() {
      * 指针位置变化的统一入口（触摸通道 `applyRay` 和按键通道 `applyRayFocus`
      * 都走这里）。
      *
-     * 播放中：PICO 摇杆走的是**指针通道**（方向动作根本不产生，只有指针坐标
-     * 在动），所以横向位移累计到阈值触发一次快进/快退，方向按位移方向；
-     * 海报焦点此时由渲染器冻结，不会跟着光标跑。
-     * 非播放中：只同步坐标，渲染器据此给海报换焦点。
+     * 播放中的快进快退判定（父亲 2026-10-04 规则：**只有越过中点才判断方向**）：
+     * - 手势起点 = 中点（停顿 >400ms 后重新起手，以停顿时位置为新中点）；
+     * - 位移按 0.5 一档计数，跨档才触发一次 seek，方向 = 档位符号；
+     * - 回中（位移往中点缩回）只是档位回落，**不触发反向 seek**，
+     *   要反向必须越过中点再走 0.5 —— 自然回中的漂移到不了那里；
+     * - 触发有 800ms 冷却防抖。
+     * 指针坐标与视觉方向相反（build-27 实测定案）：位移为正 → 快退。
      */
     private var lastRayX: Float? = null
-    private var seekAccumX = 0f
+    private var gestureAnchorX = 0f
+    private var gestureFiredSteps = 0
+    private var lastMoveAt = 0L
     private var lastSeekAt = 0L
 
     private fun applyRay(ray: FloatArray) {
@@ -113,23 +118,33 @@ class MainActivity : Activity() {
 
         if (!renderer.videoActive) return
 
-        // 播放中：横移累计 → 快进/快退
+        val now = System.currentTimeMillis()
         val prev = lastRayX
         lastRayX = ray[0]
-        if (prev != null) seekAccumX += ray[0] - prev
-        val now = System.currentTimeMillis()
-        if (now - lastSeekAt < 800) return          // 两次 seek 之间冷却，防刷屏
-        if (seekAccumX > SEEK_STEP) {
-            // 指针坐标与视觉方向在实机上是反的（父亲 2026-10-04 实测：
-            // 向右拨要快退、向左拨要快进），这里按实测结果配对
-            seekBy(-10_000)
-            seekAccumX = 0f
-            lastSeekAt = now
-        } else if (seekAccumX < -SEEK_STEP) {
-            seekBy(+10_000)
-            seekAccumX = 0f
-            lastSeekAt = now
+        if (prev == null) {
+            gestureAnchorX = ray[0]
+            lastMoveAt = now
+            return
         }
+        if (now - lastMoveAt > GESTURE_GAP_MS) {
+            // 停顿后重新起手：以停顿时的指针位置为新手势中点
+            gestureAnchorX = prev
+            gestureFiredSteps = 0
+        }
+        lastMoveAt = now
+
+        val disp = ray[0] - gestureAnchorX
+        val steps = (disp / SEEK_STEP).toInt()      // 向零取整，0.5 一档
+        if (steps == gestureFiredSteps) return
+        if (steps == 0) {                           // 回到中点附近：只复位，不触发
+            gestureFiredSteps = 0
+            return
+        }
+        gestureFiredSteps = steps
+        if (now - lastSeekAt < SEEK_COOLDOWN_MS) return
+        lastSeekAt = now
+        // 档位为正（指针 x 增大方向）在实机上对应视觉左侧 → 快退
+        seekBy(if (steps > 0) -10_000 else +10_000)
     }
 
     /** 按键通道的射线同步（方向键分支走这里），复用同一套 seek 逻辑 */
@@ -178,28 +193,36 @@ class MainActivity : Activity() {
         }
         renderer.setScreenText("正在获取播放地址…")
         scope.launch {
-            val media = EmbyApi.getPlaybackInfo(
-                context = this@MainActivity,
-                serverUrl = BuildConfig.EMBY_SERVER,
-                apiKey = BuildConfig.EMBY_API_KEY,
-                deviceId = EmbyContent.DEVICE_ID,
-                userId = BuildConfig.EMBY_USER_ID,
-                mediaId = id,
-                startTimeTicks = 0L,
-            )
-            val source = media.mediaSources?.firstOrNull()
-            var path = source?.directStreamUrl ?: source?.transcodingUrl
-            if (path == null) {
-                renderer.setScreenText("取不到播放地址（服务器未返回直链）")
-                return@launch
-            }
-            // 直链缺 api_key 时补上（Emby 视频直链默认不带 token）
-            if (!path.contains("api_key=")) {
-                path += (if (path.contains("?")) "&" else "?") + "api_key=${BuildConfig.EMBY_API_KEY}"
-            }
-            val url = "${BuildConfig.EMBY_SERVER}/emby$path"
-            withContext(Dispatchers.Main) {
-                startPlayer(url, item.name ?: "")
+            try {
+                val media = EmbyApi.getPlaybackInfo(
+                    context = this@MainActivity,
+                    serverUrl = BuildConfig.EMBY_SERVER,
+                    apiKey = BuildConfig.EMBY_API_KEY,
+                    deviceId = EmbyContent.DEVICE_ID,
+                    userId = BuildConfig.EMBY_USER_ID,
+                    mediaId = id,
+                    startTimeTicks = 0L,
+                )
+                val source = media.mediaSources?.firstOrNull()
+                val path0 = source?.directStreamUrl ?: source?.transcodingUrl
+                if (path0 == null) {
+                    renderer.setScreenText("取不到播放地址（服务器未返回直链）")
+                    return@launch
+                }
+                var path = path0
+                // 直链缺 api_key 时补上（Emby 视频直链默认不带 token）
+                if (!path.contains("api_key=")) {
+                    path += (if (path.contains("?")) "&" else "?") + "api_key=${BuildConfig.EMBY_API_KEY}"
+                }
+                val url = "${BuildConfig.EMBY_SERVER}/emby$path"
+                withContext(Dispatchers.Main) {
+                    startPlayer(url, item.name ?: "")
+                }
+            } catch (e: Exception) {
+                // 取地址失败（网络/服务器错）：屏幕给一句人话，
+                // 否则永远停在「正在获取播放地址…」（父亲 2026-10-04 实测）
+                Log.e(TAG, "取播放地址失败", e)
+                renderer.setScreenText("取播放地址失败：${friendlyError(e)}")
             }
         }
     }
@@ -220,16 +243,22 @@ class MainActivity : Activity() {
                 p.playWhenReady = true
                 p.addListener(object : Player.Listener {
                     override fun onPlayerError(error: PlaybackException) {
-                        hud("播放出错：${friendlyError(error)}")
+                        // 先停 videoActive（ticker 下一圈自行退出），再写错误提示，
+                        // 否则每秒刷新的绿字会把错误盖掉
                         renderer.videoActive = false
+                        hudJob?.cancel()
+                        hud("播放出错：${friendlyError(error)}")
                     }
                 })
             }
             renderer.videoActive = true
-            // 进播放时重置指针位移累计，避免入场第一拨就触发一次跳转
-            seekAccumX = 0f
+            // 进播放时重置手势状态，避免入场第一拨就触发一次跳转
             lastRayX = null
+            gestureFiredSteps = 0
+            lastMoveAt = 0L
             lastSeekAt = 0L
+            seekHudLabel = null
+            startHudTicker()
             hud("播放中：左右拨动摇杆=快进快退 · 扳机=暂停 · 返回=退出")
             renderer.setScreenText(title)
             Log.i(TAG, "开始播放: $title url=${url.take(160)}")
@@ -237,6 +266,39 @@ class MainActivity : Activity() {
             Log.e(TAG, "起播失败", e)
             hud("起播失败：${friendlyError(e)}")
             renderer.videoActive = false
+        }
+    }
+
+    // ---- 播放期绿字：时间随播放实时刷新 ----
+
+    /** 绿字前缀（快进/快退/已暂停…），时间部分由 ticker 每秒刷新 */
+    private var seekHudLabel: String? = null
+    private var seekHudLabelAt = 0L
+    private var hudJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * 播放中每秒刷新一次绿字：前缀 + 当前播放位置。
+     * 父亲 2026-10-04 实测：「快进 10 秒 → 0:28」写死后不随播放变化，
+     * 要求时间跟着播放走。seek/暂停标签显示 5 秒后回落为「播放中」；
+     * 出错/退出时 videoActive=false，ticker 自行停掉，不覆盖错误提示。
+     */
+    private fun startHudTicker() {
+        hudJob?.cancel()
+        hudJob = scope.launch {
+            while (renderer.videoActive) {
+                val p = player
+                if (p != null) {
+                    val sec = p.currentPosition / 1000
+                    val stale = System.currentTimeMillis() - seekHudLabelAt > 5000
+                    val prefix = when {
+                        seekHudLabel == null -> "播放中"
+                        stale -> "播放中"
+                        else -> seekHudLabel!!
+                    }
+                    hud("$prefix → ${sec / 60}:${"%02d".format(sec % 60)}")
+                }
+                kotlinx.coroutines.delay(1000)
+            }
         }
     }
 
@@ -262,7 +324,9 @@ class MainActivity : Activity() {
     private fun togglePlayPause() {
         val p = player ?: return
         p.playWhenReady = !p.playWhenReady
-        hud(if (p.playWhenReady) "继续播放" else "已暂停")
+        seekHudLabel = if (p.playWhenReady) "继续播放" else "已暂停"
+        seekHudLabelAt = System.currentTimeMillis()
+        hud("${seekHudLabel} → ${p.currentPosition / 1000 / 60}:${"%02d".format(p.currentPosition / 1000 % 60)}")
     }
 
     /** 最近一次 seek 的目标位置与发起时间（毫秒）；用于连跳时的基准 */
@@ -284,13 +348,18 @@ class MainActivity : Activity() {
         p.seekTo(target)
         val sec = target / 1000
         Log.i(TAG, "seek ${deltaMs / 1000}s → ${sec / 60}:${"%02d".format(sec % 60)} (基准 ${if (withinChain) "连跳" else "实时"})")
-        hud("${if (deltaMs < 0) "快退" else "快进"} 10 秒 → ${sec / 60}:${"%02d".format(sec % 60)}")
+        // 绿字只设前缀，时间交给 ticker 每秒刷新（随播放走）
+        seekHudLabel = if (deltaMs < 0) "快退 10 秒" else "快进 10 秒"
+        seekHudLabelAt = System.currentTimeMillis()
+        hud("${seekHudLabel} → ${sec / 60}:${"%02d".format(sec % 60)}")
     }
 
     /** 停止播放并回到海报墙 */
     private fun stopPlayback() {
         stopPlaybackInternal()
         renderer.videoActive = false
+        hudJob?.cancel()
+        hudJob = null
         renderer.setHudText("")
         renderer.setScreenText(movies.firstOrNull()?.name ?: "B0BEmby VR")
         Log.i(TAG, "停止播放，回到海报墙")
@@ -559,5 +628,11 @@ class MainActivity : Activity() {
          * 0.5 相当于推摇杆三分之一多一点，符合「拨一下快进 10 秒」的手感。
          */
         private const val SEEK_STEP = 0.5f
+
+        /** 指针停顿超过该时长视为「重新起手」，以停顿位置为新手势中点 */
+        private const val GESTURE_GAP_MS = 400L
+
+        /** 两次 seek 的最小间隔（防抖） */
+        private const val SEEK_COOLDOWN_MS = 800L
     }
 }
