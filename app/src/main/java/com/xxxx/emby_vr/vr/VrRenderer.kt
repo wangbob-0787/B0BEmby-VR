@@ -54,7 +54,7 @@ class VrRenderer(
 
     /** GL 外部纹理（GL_TEXTURE_EXTERNAL_OES），专供视频帧采样 */
     private var videoTex = 0
-    private var surfaceTexture: android.opengl.SurfaceTexture? = null
+    private var surfaceTexture: android.graphics.SurfaceTexture? = null
 
     /**
      * 播放器用的 Surface。
@@ -316,7 +316,7 @@ class VrRenderer(
         GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
 
         surfaceTexture?.release()
-        surfaceTexture = android.opengl.SurfaceTexture(videoTex)
+        surfaceTexture = android.graphics.SurfaceTexture(videoTex)
         videoSurface?.release()
         videoSurface = android.view.Surface(surfaceTexture)
         videoActive = false
