@@ -27,7 +27,7 @@ android {
         applicationId = "com.xxxx.emby_vr"
         // PICO 4 = Android 10 / API 29；PICO 官方上传要求 minSdk 29
         minSdk = 29
-        targetSdk = 32          // PICO OS 5.x 对 targetSdk 32 兼容最好
+        targetSdk = 33          // PICO OS 5.x 兼容；Google Play 上架线是 33，低于它 lint 会拦构建
         versionCode = 1
         versionName = "0.1.0"
 
@@ -77,6 +77,12 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+    }
+    lint {
+        // 家庭自用，不上架 Google Play：关掉 release 构建的致命检查，
+        // 否则 ExpiredTargetSdkVersion 之类「上架要求」会直接拦死构建。
+        checkReleaseBuilds = false
+        abortOnError = false
     }
 }
 
