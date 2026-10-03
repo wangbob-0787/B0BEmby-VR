@@ -247,6 +247,8 @@ class VrRenderer(
         // 模拟射线焦点：读取 simRayX/Y 计算应聚焦哪张海报
         updateFocusFromSimRay()
 
+        val aspect = viewW.toFloat() / viewH.toFloat().coerceAtLeast(1f)
+
         /*
          * 投影方式：**正交，且坐标系直接按视口宽高定义**。
          *
@@ -280,7 +282,7 @@ class VrRenderer(
         )
 
         // 2) 海报墙：一行排开，选中卡片用绿色描边
-        drawPosterWall(vp, aspect)
+        drawPosterWall(vp)
 
         // 3) 底部控制条底板
         val barHalfW = screenHalfW
@@ -309,7 +311,7 @@ class VrRenderer(
 
     private var lastRenderedScreenText = ""
 
-    private fun drawPosterWall(vp: FloatArray, aspect: Float) {
+    private fun drawPosterWall(vp: FloatArray) {
         // 与 updateFocusFromSimRay 共用 posterLayout()，保证「看到的」和「指到的」一致。
         val layout = posterLayout()
         for (i in posterQuads.indices) {
