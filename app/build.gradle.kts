@@ -16,7 +16,7 @@ if (keystorePropertiesFile.exists()) {
 
 android {
     namespace = "com.xxxx.emby_vr"
-    compileSdk = 35
+    compileSdk = 36
 
     buildFeatures {
         compose = true
