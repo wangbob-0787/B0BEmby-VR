@@ -182,6 +182,9 @@ class InputRouter(
         when (event.actionMasked) {
             MotionEvent.ACTION_MOVE,
             MotionEvent.ACTION_HOVER_MOVE -> {
+                // [诊断] 记录指针移动事件（晃手 vs 拨摇杆对比用，父亲 2026-10-04）
+                Log.i(TAG, "DIAG ptr: ${event.actionMasked} nx=${"%.3f".format(nx)} ny=${"%.3f".format(ny)} " +
+                    "source=0x${Integer.toHexString(event.source)} pressed=$pressed")
                 lastSimRay = floatArrayOf(nx, ny)
                 currentSimRay = lastSimRay
                 onPointer(lastSimRay!!)

@@ -588,6 +588,14 @@ class MainActivity : Activity() {
     }
 
     override fun onGenericMotionEvent(event: MotionEvent): Boolean {
+        // [诊断] 摇杆轴事件是否到达：记录 source 与轴值（父亲 2026-10-04 抓数据用）
+        Log.i(TAG, "DIAG generic: action=${event.actionMasked} source=0x${Integer.toHexString(event.source)} " +
+            "AXIS_X=${"%.3f".format(event.getAxisValue(MotionEvent.AXIS_X))} " +
+            "AXIS_Y=${"%.3f".format(event.getAxisValue(MotionEvent.AXIS_Y))} " +
+            "AXIS_Z=${"%.3f".format(event.getAxisValue(MotionEvent.AXIS_Z))} " +
+            "AXIS_RZ=${"%.3f".format(event.getAxisValue(MotionEvent.AXIS_RZ))} " +
+            "AXIS_HAT_X=${"%.3f".format(event.getAxisValue(MotionEvent.AXIS_HAT_X))} " +
+            "AXIS_LTRIGGER=${"%.3f".format(event.getAxisValue(MotionEvent.AXIS_LTRIGGER))}")
         if (input.onGenericMotion(event)) return true
         return super.onGenericMotionEvent(event)
     }
