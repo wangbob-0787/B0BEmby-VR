@@ -184,6 +184,11 @@ class VrRenderer(
 
     override fun onDrawFrame(gl: GL10?) {
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT or GLES30.GL_DEPTH_BUFFER_BIT)
+
+        // 着色器不可用（编译/链接失败）时直接返回：清屏后什么都不画，
+        // 日志里已有明确错误，避免用 0 号程序做无效绘制。
+        if (!programReady) return
+
         GLES30.glUseProgram(program)
 
         // 主线程更新了屏幕文字 → 重建位图与纹理
@@ -340,6 +345,9 @@ class VrRenderer(
 
     // ---- 着色器 ----
 
+    /** 着色器程序是否可用；false 时 onDrawFrame 只清屏，不画几何 */
+    private var programReady = false
+
     private fun buildProgram(vs: String, fs: String): Int {
         val v = compile(GLES30.GL_VERTEX_SHADER, vs)
         val f = compile(GLES30.GL_FRAGMENT_SHADER, fs)
@@ -349,8 +357,15 @@ class VrRenderer(
         GLES30.glLinkProgram(p)
         val status = IntArray(1)
         GLES30.glGetProgramiv(p, GLES30.GL_LINK_STATUS, status, 0)
-        if (status[0] == 0) {
+        programReady = status[0] != 0
+        if (!programReady) {
+            // 失败时把程序置 0：GLES 规定 glUseProgram(0) 是「无程序」，
+            // 比拿着半成品程序继续调用更安全，也避免静默黑屏查不出原因。
             Log.e(TAG, "程序链接失败: ${GLES30.glGetProgramInfoLog(p)}")
+            GLES30.glDeleteProgram(p)
+            GLES30.glDeleteShader(v)
+            GLES30.glDeleteShader(f)
+            return 0
         }
         GLES30.glDeleteShader(v)
         GLES30.glDeleteShader(f)
@@ -379,7 +394,15 @@ class VrRenderer(
         /** 焦点描边：纯绿 #4CD137（TV 版 primary，描边比底色亮一档） */
         private val GREEN_OUTLINE = floatArrayOf(0.298f, 0.820f, 0.216f, 1f)
 
-        private const val VERTEX_SHADER = """
+        /**
+         * 顶点着色器。
+         *
+         * 注意：必须 `.trimIndent()` —— Kotlin 三引号字符串会给每行带上源码缩进，
+         * `#version` 指令前只要有空格，GLSL 编译器就不认它（版本声明必须是
+         * 文件第一条非空白内容），于是按 ES 1.0 解析，`vec4(aPos, 1.0)` 会报
+         * `'constructor' : too many arguments`。
+         */
+        private val VERTEX_SHADER = """
             #version 300 es
             layout(location = 0) in vec3 aPos;
             layout(location = 1) in vec2 aUV;
@@ -389,9 +412,15 @@ class VrRenderer(
                 vUV = aUV;
                 gl_Position = uMVP * vec4(aPos, 1.0);
             }
-        """
+        """.trimIndent()
 
-        private const val FRAGMENT_SHADER = """
+        /**
+         * 片元着色器。
+         *
+         * `texture2D` 是 GLSL ES 1.0 的函数，在 `#version 300 es` 里已移除，
+         * 必须用 `texture`。
+         */
+        private val FRAGMENT_SHADER = """
             #version 300 es
             precision mediump float;
             in vec2 vUV;
@@ -401,11 +430,11 @@ class VrRenderer(
             out vec4 fragColor;
             void main() {
                 if (uUseTex == 1) {
-                    fragColor = texture2D(uTex, vUV) * uColor;
+                    fragColor = texture(uTex, vUV) * uColor;
                 } else {
                     fragColor = uColor;
                 }
             }
-        """
+        """.trimIndent()
     }
 }
