@@ -98,17 +98,20 @@ class MainActivity : Activity() {
      * 指针位置变化的统一入口（触摸通道 `applyRay` 和按键通道 `applyRayFocus`
      * 都走这里）。
      *
-     * 播放中的快进快退判定（父亲 2026-10-04 规则：**只有越过中点才判断方向**）：
-     * - 手势起点 = 中点（停顿 >400ms 后重新起手，以停顿时位置为新中点）；
-     * - 位移按 0.5 一档计数，跨档才触发一次 seek，方向 = 档位符号；
-     * - 回中（位移往中点缩回）只是档位回落，**不触发反向 seek**，
-     *   要反向必须越过中点再走 0.5 —— 自然回中的漂移到不了那里；
-     * - 触发有 800ms 冷却防抖。
+     * 播放中的快进快退判定 —— 难点是 PICO 手柄只给指针坐标，拿不到摇杆原始值，
+     * 而指针**跟手**：手一晃指针就动。父亲 2026-10-04 实测「一晃手就快进」
+     * 就是这个原因（旧版按累计位移判方向，晃动足以跨档）。
+     *
+     * 现判据（真拨摇杆 vs 晃手）：
+     * - 只有**持续单向**移动才累计：一旦位移方向反转，累计清零重来
+     *   （晃手是往复运动，来回抵消，永远累计不到阈值）；
+     * - 阈值放宽到 0.9（约半屏宽度的一半），真拨摇杆一下就能到；
+     * - 跨档触发后清零并进入 900ms 冷却，防连发。
      * 指针坐标与视觉方向相反（build-27 实测定案）：位移为正 → 快退。
      */
     private var lastRayX: Float? = null
-    private var gestureAnchorX = 0f
-    private var gestureFiredSteps = 0
+    private var runStartX = 0f          // 本轮单向移动的起点
+    private var runDir = 0              // 本轮方向：+1/-1/0
     private var lastMoveAt = 0L
     private var lastSeekAt = 0L
 
@@ -122,29 +125,35 @@ class MainActivity : Activity() {
         val prev = lastRayX
         lastRayX = ray[0]
         if (prev == null) {
-            gestureAnchorX = ray[0]
+            runStartX = ray[0]
+            runDir = 0
             lastMoveAt = now
             return
         }
-        if (now - lastMoveAt > GESTURE_GAP_MS) {
-            // 停顿后重新起手：以停顿时的指针位置为新手势中点
-            gestureAnchorX = prev
-            gestureFiredSteps = 0
+
+        val dx = ray[0] - prev
+        // 方向反转（含完全静止后重新起手）→ 本轮重新计时：
+        // 晃手的往复在这里被抵消，只有持续单向才累计得起来
+        val dir = when {
+            dx > DIR_EPS -> 1
+            dx < -DIR_EPS -> -1
+            else -> runDir
+        }
+        if (dir != runDir || now - lastMoveAt > GESTURE_GAP_MS) {
+            runStartX = prev
+            runDir = dir
         }
         lastMoveAt = now
 
-        val disp = ray[0] - gestureAnchorX
-        val steps = (disp / SEEK_STEP).toInt()      // 向零取整，0.5 一档
-        if (steps == gestureFiredSteps) return
-        if (steps == 0) {                           // 回到中点附近：只复位，不触发
-            gestureFiredSteps = 0
-            return
-        }
-        gestureFiredSteps = steps
+        if (dir == 0) return
+        val run = ray[0] - runStartX             // 本轮单向位移
+        if (kotlin.math.abs(run) < SEEK_RUN) return
         if (now - lastSeekAt < SEEK_COOLDOWN_MS) return
+
         lastSeekAt = now
-        // 档位为正（指针 x 增大方向）在实机上对应视觉左侧 → 快退
-        seekBy(if (steps > 0) -10_000 else +10_000)
+        runStartX = ray[0]                       // 触发后重新计时，防连发
+        // 位移为正（指针 x 增大）在实机上对应视觉左侧 → 快退
+        seekBy(if (run > 0) -10_000 else +10_000)
     }
 
     /** 按键通道的射线同步（方向键分支走这里），复用同一套 seek 逻辑 */
@@ -254,7 +263,8 @@ class MainActivity : Activity() {
             renderer.videoActive = true
             // 进播放时重置手势状态，避免入场第一拨就触发一次跳转
             lastRayX = null
-            gestureFiredSteps = 0
+            runDir = 0
+            runStartX = 0f
             lastMoveAt = 0L
             lastSeekAt = 0L
             seekHudLabel = null
@@ -627,7 +637,15 @@ class MainActivity : Activity() {
          * 播放中指针横移触发一次快进/快退的阈值（射线坐标单位，满偏约 ±2）。
          * 0.5 相当于推摇杆三分之一多一点，符合「拨一下快进 10 秒」的手感。
          */
-        private const val SEEK_STEP = 0.5f
+        /**
+         * 触发一次快进/快退所需的**持续单向**位移（射线坐标，满偏约 ±2）。
+         * 0.9 约等于半屏宽度的一半：真拨一下摇杆能轻松到，
+         * 手部晃动是往复运动、来回抵消，累计不到（父亲 2026-10-04 实测）。
+         */
+        private const val SEEK_RUN = 0.9f
+
+        /** 判定指针「移动方向」的最小步长，滤掉落点抖动 */
+        private const val DIR_EPS = 0.004f
 
         /** 指针停顿超过该时长视为「重新起手」，以停顿位置为新手势中点 */
         private const val GESTURE_GAP_MS = 400L
