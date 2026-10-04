@@ -493,7 +493,7 @@ class MainActivity : ComponentActivity() {
                         EmbyContent.DEVICE_ID, body,
                     )
                 }
-            }.onFailure { Log.w(TAG, "上报$what失败: ${it.javaClass.simpleName}: ${it.message}") }
+            }.onFailure { Log.w(TAG, "上报${what}失败: ${it.javaClass.simpleName}: ${it.message}") }
         }
     }
 
