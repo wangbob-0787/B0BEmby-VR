@@ -399,15 +399,15 @@ private class PanelPresentation(
  * （Compose 需要它们），但**返回栈是自己的**，且栈底是 no-op：
  * 这样面板里的 NavHost 弹到根之后不会再触发 Activity 的返回（退出应用）。
  */
-private class PanelBackOwner(activity: ComponentActivity) :
-    OnBackPressedDispatcherOwner,
-    androidx.lifecycle.LifecycleOwner by activity,
-    androidx.lifecycle.ViewModelStoreOwner by activity,
-    androidx.savedstate.SavedStateRegistryOwner by activity {
+private class PanelBackOwner(private val activity: ComponentActivity) : OnBackPressedDispatcherOwner {
 
     /** 兜底：面板栈已空 —— 什么都不做（不退出应用） */
     private val dispatcher = OnBackPressedDispatcher(Runnable { })
 
     override val onBackPressedDispatcher: OnBackPressedDispatcher
         get() = dispatcher
+
+    /** OnBackPressedDispatcherOwner 同时是 LifecycleOwner，直接用宿主的 */
+    override val lifecycle: androidx.lifecycle.Lifecycle
+        get() = activity.lifecycle
 }
