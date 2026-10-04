@@ -236,6 +236,23 @@ class PanelLayer(
         }
     }
 
+    /**
+     * 面板像素位移 → 方向键。
+     *
+     * 符号取反的依据（父亲 2026-10-04 实机反馈「上下左右都反了」）：
+     * PICO 把摇杆合成成一次「指针拖动」，而**指针扫动的方向与手上的推动方向相反**
+     * （这也解释了他早前说的「光标要在上部才能向下滚」）。所以这里按手感发键：
+     * 指针向上扫 = 手感向下推 = 发 DOWN。日志里会打出方向名，实机再校一次即可。
+     */
+    private fun dirKeyOf(dx: Float, dy: Float): Int {
+        if (dx == 0f && dy == 0f) return 0
+        return if (kotlin.math.abs(dx) >= kotlin.math.abs(dy)) {
+            if (dx > 0) KeyEvent.KEYCODE_DPAD_LEFT else KeyEvent.KEYCODE_DPAD_RIGHT
+        } else {
+            if (dy > 0) KeyEvent.KEYCODE_DPAD_UP else KeyEvent.KEYCODE_DPAD_DOWN
+        }
+    }
+
     /** 方向名（日志用，方便一眼看出「发的是哪个方向」） */
     private fun dirName(code: Int): String = when (code) {
         KeyEvent.KEYCODE_DPAD_UP -> "上"
