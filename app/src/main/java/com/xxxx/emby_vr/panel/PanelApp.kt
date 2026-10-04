@@ -301,7 +301,8 @@ private fun EmptyServerScreen(onAdd: () -> Unit) {
                 Text(
                     text = "添加服务器",
                     style = MaterialTheme.typography.titleMedium,
-                    color = Color.Black,
+                    // 绿底白字 = 电视版主按钮风格（父亲 2026-10-04）
+                    color = Color.White,
                 )
             }
         }

@@ -64,11 +64,12 @@ fun TvInputDialog(
                     onConfirm(inputText)
                     onDismiss()
                 },
+                // 绿底白字（父亲 2026-10-04：这就是电视版主按钮的风格）
                 colors = ButtonDefaults.colors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = androidx.compose.ui.graphics.Color.White,
                     focusedContainerColor = MaterialTheme.colorScheme.secondary,
-                    focusedContentColor = MaterialTheme.colorScheme.onTertiary,
-                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
-                    contentColor = MaterialTheme.colorScheme.onSurface
+                    focusedContentColor = androidx.compose.ui.graphics.Color.White,
                 ),
             ) {
                 Text(stringResource(R.string.confirm))
@@ -77,11 +78,12 @@ fun TvInputDialog(
         dismissButton = {
             Button(
                 onClick = onDismiss,
+                // 绿底白字（父亲 2026-10-04：这就是电视版主按钮的风格）
                 colors = ButtonDefaults.colors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = androidx.compose.ui.graphics.Color.White,
                     focusedContainerColor = MaterialTheme.colorScheme.secondary,
-                    focusedContentColor = MaterialTheme.colorScheme.onTertiary,
-                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
-                    contentColor = MaterialTheme.colorScheme.onSurface
+                    focusedContentColor = androidx.compose.ui.graphics.Color.White,
                 ),
             ) {
                 Text(stringResource(R.string.cancel))
