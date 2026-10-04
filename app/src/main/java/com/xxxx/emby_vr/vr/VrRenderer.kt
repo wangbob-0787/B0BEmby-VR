@@ -542,19 +542,9 @@ class VrRenderer(
             drawQuad(hudQuad, hudModel, vp, 1f, useTex = true, tex = hudTex)
         }
 
-        // 2) 海报墙：一行排开，选中卡片用绿色描边
+        // 2) 海报墙 + 3) 底部控制条底板：已删除（父亲 2026-10-04：色块没用途，全部删掉）
+        // screenBottomY 保留，后续焦点判定还需要
         val screenBottomY = screenCenterY - screenHalfH
-        drawPosterWall(vp, screenBottomY)
-
-        // 3) 底部控制条底板（紧贴海报行下方；空间不足时交给 posterCenterY 上移处理）
-        val barHalfW = screenHalfW
-        val layoutForBar = posterLayout(screenBottomY)
-        val posterRowBottom = layoutForBar.first()[1] - layoutForBar.first()[3]
-        val barModel = M.mul(
-            M.translate(0f, (posterRowBottom - 0.04f).coerceAtLeast(-1f + BOTTOM_MARGIN), 0f),
-            M.scale(barHalfW / (barQuad.width / 2f), 0.03f / (barQuad.height / 2f), 1f),
-        )
-        drawQuad(barQuad, barModel, vp, 0.25f)
 
         // 焦点判定要在布局确定之后做（依赖 screenBottomY）。
         // 播放中跳过：光标在视频上时摇杆横移应驱动快进快退，
