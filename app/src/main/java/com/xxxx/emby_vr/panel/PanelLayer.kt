@@ -80,12 +80,14 @@ class PanelLayer(
         private const val SLOP_PX2 = SLOP_PX * SLOP_PX
 
         /**
-         * 判定「一次方向操作」的位移（面板像素）。
+         * 摇杆滚动的步长（面板像素）与限速（毫秒）。
          *
-         * PICO 摇杆推一下 = 合成「按下 + 拖动 + 抬起」，位移可达 800+ 像素；
-         * 若按距离连续发键会一次飞十几格，所以**一次按下只走一格**（松手才能再走）。
+         * PICO 摇杆是「合成 按下+拖动+抬起」，一次推可达 800+ 像素。
+         * 父亲 2026-10-04 定：摇杆用来滚动列表 —— 所以推住不放要能连续滚（按步长反复发方向键），
+         * 但不能一次推就把焦点连飞十几格，因此加 130ms 限速（约每秒 7 格，滚动顺滑）。
          */
-        private const val STEP_PX = 72f
+        private const val STEP_PX = 110f
+        private const val FIRE_INTERVAL_MS = 130L
 
         /** 扣住扳机不动超过这个时长 = 返回上一层 */
         private const val LONG_PRESS_MS = 600L
@@ -110,8 +112,10 @@ class PanelLayer(
     private var isDown = false
     private var isDragging = false
 
-    /** 本次按下是否已经发过方向键（一次按下只走一格，防摇杆一次推飞焦点） */
-    private var arrowFired = false
+    /** 上一次发方向键的位置与时间（摇杆滚动：按步长 + 限速反复发） */
+    private var stepPx = 0f
+    private var stepPy = 0f
+    private var lastFireAt = 0L
 
     /**
      * GL 线程建好 OES 纹理与 SurfaceTexture 后调用。
@@ -214,22 +218,35 @@ class PanelLayer(
                 downPy = py
                 isDown = true
                 isDragging = false
-                arrowFired = false
+                lastFireAt = now
             }
 
             MotionEvent.ACTION_MOVE -> {
-                if (!isDown || arrowFired) return
+                if (!isDown) return
                 val dx = px - downPx
                 val dy = py - downPy
-                if (dx * dx + dy * dy < STEP_PX * STEP_PX) return   // 没走够一格
-                isDragging = true
-                arrowFired = true
-                val code = if (kotlin.math.abs(dx) >= kotlin.math.abs(dy)) {
-                    if (dx > 0) KeyEvent.KEYCODE_DPAD_RIGHT else KeyEvent.KEYCODE_DPAD_LEFT
-                } else {
-                    if (dy > 0) KeyEvent.KEYCODE_DPAD_DOWN else KeyEvent.KEYCODE_DPAD_UP
+                if (!isDragging) {
+                    if (dx * dx + dy * dy < SLOP_PX2) return       // 手抖：不算摇杆
+                    isDragging = true
+                    stepPx = px
+                    stepPy = py
+                    lastFireAt = now
+                    Log.i(TAG, "摇杆滚动开始: (${downPx.toInt()},${downPy.toInt()})")
+                    return
                 }
-                Log.i(TAG, "面板方向键: dx=${dx.toInt()} dy=${dy.toInt()}")
+                // 摇杆滚动：从上一次发键的位置算位移，够一格且过了限速就再发一格
+                val sx = px - stepPx
+                val sy = py - stepPy
+                if (kotlin.math.abs(sx) < STEP_PX && kotlin.math.abs(sy) < STEP_PX) return
+                if (now - lastFireAt < FIRE_INTERVAL_MS) return
+                stepPx = px
+                stepPy = py
+                lastFireAt = now
+                val code = if (kotlin.math.abs(sx) >= kotlin.math.abs(sy)) {
+                    if (sx > 0) KeyEvent.KEYCODE_DPAD_RIGHT else KeyEvent.KEYCODE_DPAD_LEFT
+                } else {
+                    if (sy > 0) KeyEvent.KEYCODE_DPAD_DOWN else KeyEvent.KEYCODE_DPAD_UP
+                }
                 key(code)
             }
 
