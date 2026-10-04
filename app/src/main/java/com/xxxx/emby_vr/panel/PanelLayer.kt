@@ -101,6 +101,9 @@ class PanelLayer(
          */
         private const val EDGE_PX = 40f
 
+        /** 方向记忆的有效窗口：这段时间内滚过，贴边无位移时沿用同方向 */
+        private const val DIR_MEMORY_MS = 2000L
+
     }
 
     /** 面板是否可用（Presentation 已显示、decorView 已就绪） */
@@ -131,6 +134,17 @@ class PanelLayer(
 
     /** 本次按下最后发出的方向键（指针贴边后按同方向续滚用） */
     private var lastDirKey = 0
+
+    /**
+     * 跨按次的方向记忆。
+     *
+     * 父亲 2026-10-04：B站里「光标在可滚动区域就能滚」，而我们这边指针一顶到
+     * 屏幕最外圈，位移就恒为 0，方向信息彻底丢失（界面留空解决不了 —— 光标位置
+     * 由系统控制，照样能顶到最外圈）。所以补一条记忆：如果这次推动贴着边、
+     * 一点位移都没有，就沿用刚才那次的方向继续滚，而不是当成点击。
+     */
+    private var lastDirKeyGlobal = 0
+    private var lastDirKeyGlobalAt = 0L
 
     // ---- 按压画像（实机取证用，判断摇杆与扳机在事件流上的差异）----
     private var pressMoveCount = 0      // 本次按下收到多少 MOVE
@@ -379,6 +393,8 @@ class PanelLayer(
                         if (sy > 0) KeyEvent.KEYCODE_DPAD_DOWN else KeyEvent.KEYCODE_DPAD_UP
                     }
                     lastDirKey = code
+                    lastDirKeyGlobal = code
+                    lastDirKeyGlobalAt = now
                     pressArrows++
                     Log.i(
                         TAG,
@@ -393,6 +409,8 @@ class PanelLayer(
                 // 否则「光标在下半屏就滚不动」。
                 if (lastDirKey != 0 && isNearEdge(px, py) && now - lastFireAt >= FIRE_INTERVAL_MS) {
                     lastFireAt = now
+                    lastDirKeyGlobal = lastDirKey
+                    lastDirKeyGlobalAt = now
                     Log.i(TAG, "摇杆续滚（指针贴边）: key=$lastDirKey")
                     key(lastDirKey)
                 }
@@ -411,6 +429,23 @@ class PanelLayer(
                         "起点=(${downPx.toInt()},${downPy.toInt()})",
                 )
                 if (dragged) return                                // 摇杆推动：只发方向键，不发 OK
+
+                /*
+                 * 贴边且这次一点位移都没有：方向信息丢了。
+                 * 若最近 2 秒内刚滚过，就沿用那个方向继续滚 ——
+                 * 对应父亲说的「B站里光标在可滚动区域就能滚」的体感。
+                 * 代价：贴边位置刚滚完马上想点按钮时，可能被当成继续滚动
+                 * （已打日志，实测若误判再收紧窗口或去掉）。
+                 */
+                val recentDir = lastDirKeyGlobal != 0 &&
+                    now - lastDirKeyGlobalAt < DIR_MEMORY_MS
+                val noMove = pressMaxDx < SLOP_PX && pressMaxDy < SLOP_PX
+                if (noMove && isNearEdge(px, py) && recentDir) {
+                    Log.i(TAG, "贴边沿用方向续滚: key=$lastDirKeyGlobal（无位移，不当点击）")
+                    lastDirKeyGlobalAt = now
+                    key(lastDirKeyGlobal)
+                    return
+                }
                 /*
                  * 双通道点击（2026-10-04 排查用）：
                  *   1) 按光标位置送一次触摸点击 —— 对自绘 clickable 组件有效
