@@ -129,11 +129,9 @@ fun BuildItem(
             // 海报完全盖住它，却要多付一次整卡面积的混合（同屏十来张 = 一屏多余混合）。
             // 焦点态保留高亮（同屏只有一张卡带焦点）。
             containerColor = Color.Transparent,
-            focusedContainerColor = Color.Transparent,
             contentColor = MaterialTheme.colorScheme.onSurface,
             pressedContentColor = MaterialTheme.colorScheme.secondary,
-            focusedContentColor = MaterialTheme.colorScheme.onSurface
-        ),
+),
 
         modifier = modifier
             .width(imgWidth)

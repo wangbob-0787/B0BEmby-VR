@@ -227,14 +227,13 @@ fun MenuListItem(
         selected = false,
         onClick = onClick,
         modifier = modifier,
-        scale = ListItemDefaults.scale(focusedScale = 1.04f),
+        scale = ListItemDefaults.scale(focusedScale = 1f),
         shape = ListItemDefaults.shape(RoundedCornerShape(12.dp)),
         colors = ListItemDefaults.colors(
             containerColor = Color.White.copy(alpha = 0.05f),
             contentColor = Color.White.copy(alpha = 0.8f),
-            focusedContainerColor = primaryColor, // 聚焦时使用当前选中的主题色！
-            focusedContentColor = MaterialTheme.colorScheme.onTertiary
-        ),
+// 聚焦时使用当前选中的主题色！
+),
         headlineContent = {
             Text(text = text, fontSize = 24.sp, fontWeight = FontWeight.Medium)
         },
@@ -295,17 +294,14 @@ fun ThemeSelectionDialog(
                                 .fillMaxWidth()
                                 .height(180.dp)
                                 .focusRequester(if (index == 0) firstItemFocusRequester else FocusRequester.Default),
-                            scale = ClickableSurfaceDefaults.scale(focusedScale = 1.06f), // 稍微加大缩放感
+                            scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
                             shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(16.dp)),
                             glow = ClickableSurfaceDefaults.glow(
-                                focusedGlow = Glow(
-                                    elevationColor = theme.secondary.copy(alpha = 0.5f),
-                                    elevation = 20.dp
-                                )
+                                // 聚焦不发绿光（父亲 2026-10-05：VR 里焦点由光点表示，控件不再有焦点态）
+                                focusedGlow = null
                             ),
                             border = ClickableSurfaceDefaults.border(
-                                focusedBorder = Border(BorderStroke(2.dp, MaterialTheme.colorScheme.secondary))
-                            ),
+                                focusedBorder = null),
                             colors = ClickableSurfaceDefaults.colors(
                                 containerColor = Color.Transparent
                             )

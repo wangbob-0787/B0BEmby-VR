@@ -62,13 +62,11 @@ fun BufferSettingsTab(
                 onClick = onReplay,
                 shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(8.dp)),
                 colors = ClickableSurfaceDefaults.colors(
-                    focusedContainerColor = TvMaterialTheme.colorScheme.secondary,
-                    focusedContentColor = TvMaterialTheme.colorScheme.onTertiary,
                     containerColor = Color.Transparent,
                     contentColor = MaterialTheme.colorScheme.onSurface
                 ),
                 scale = ClickableSurfaceDefaults.scale(
-                    focusedScale = 1.04f,
+                    focusedScale = 1f,
                 ),
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -178,13 +176,11 @@ fun BufferSettingsTab(
                 onClick = onReplay,
                 shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(8.dp)),
                 colors = ClickableSurfaceDefaults.colors(
-                    focusedContainerColor = TvMaterialTheme.colorScheme.secondary,
-                    focusedContentColor = TvMaterialTheme.colorScheme.onTertiary,
                     containerColor = Color.Transparent,
                     contentColor = TvMaterialTheme.colorScheme.onSecondary
                 ),
                 scale = ClickableSurfaceDefaults.scale(
-                    focusedScale = 1.04f,
+                    focusedScale = 1f,
                 ),
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -210,13 +206,11 @@ fun BufferSettingsTab(
                 onClick = onResetDefault,
                 shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(8.dp)),
                 colors = ClickableSurfaceDefaults.colors(
-                    focusedContainerColor = TvMaterialTheme.colorScheme.secondary,
-                    focusedContentColor = TvMaterialTheme.colorScheme.onTertiary,
                     containerColor = Color.Transparent,
                     contentColor = TvMaterialTheme.colorScheme.onSecondary
                 ),
                 scale = ClickableSurfaceDefaults.scale(
-                    focusedScale = 1.04f,
+                    focusedScale = 1f,
                 ),
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -298,15 +292,13 @@ private fun BufferSettingRow(
                     onClick = {},
                     shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(4.dp)),
                     scale = ClickableSurfaceDefaults
-                        .scale(focusedScale = 1.06f),
+                        .scale(focusedScale = 1f),
                     colors = ClickableSurfaceDefaults.colors(
                         containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
-                        focusedContainerColor = MaterialTheme.colorScheme.secondary,
                         contentColor = MaterialTheme.colorScheme.onPrimary,
                         pressedContentColor = MaterialTheme.colorScheme.onSecondary,
                         pressedContainerColor = MaterialTheme.colorScheme.secondary,
-                        focusedContentColor = MaterialTheme.colorScheme.onTertiary
-                    ),
+),
                     modifier = Modifier
                         .onKeyEvent { keyEvent ->
                             when {

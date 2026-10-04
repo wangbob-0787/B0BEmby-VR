@@ -3,6 +3,7 @@ package com.xxxx.emby_vr.panel
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -37,6 +38,8 @@ object ClickTargets {
     /** 一个可点控件：矩形 + 可选焦点 + 触发动作 */
     class Target(
         val key: Any,
+        /** 日志用名字（同一个内容出现在两排里时，两把钥匙不同但名字一样） */
+        val label: String,
         val left: Float,
         val top: Float,
         val right: Float,
@@ -49,8 +52,15 @@ object ClickTargets {
         fun contains(x: Float, y: Float): Boolean =
             x >= left && x <= right && y >= top && y <= bottom
 
+        /** 点到矩形外的距离（点在矩形内为 0）——诊断用 */
+        fun distance(x: Float, y: Float): Float {
+            val dx = maxOf(left - x, 0f, x - right)
+            val dy = maxOf(top - y, 0f, y - bottom)
+            return kotlin.math.hypot(dx.toDouble(), dy.toDouble()).toFloat()
+        }
+
         override fun toString(): String =
-            "$key (${left.toInt()},${top.toInt()})-(${right.toInt()},${bottom.toInt()})"
+            "$label (${left.toInt()},${top.toInt()})-(${right.toInt()},${bottom.toInt()})"
     }
 
     private val targets = LinkedHashMap<Any, Target>()
@@ -60,6 +70,7 @@ object ClickTargets {
 
     fun put(
         key: Any,
+        label: String,
         left: Float,
         top: Float,
         right: Float,
@@ -68,13 +79,13 @@ object ClickTargets {
         activate: () -> Unit,
     ) {
         synchronized(targets) {
-            targets[key] = Target(key, left, top, right, bottom, focus, activate)
+            targets[key] = Target(key, label, left, top, right, bottom, focus, activate)
             putCount++
             // 头 15 条 + 每 50 条打一行：既能核对坐标，又不会把日志刷爆
             if (putCount <= 15 || putCount % 50 == 0) {
                 android.util.Log.i(
                     "B0BEmbyVR",
-                    "坐标表登记 #$putCount $key = ($left, $top)-($right, $bottom) 表内 ${targets.size} 项",
+                    "坐标表登记 #$putCount $label = ($left, $top)-($right, $bottom) 表内 ${targets.size} 项",
                 )
             }
         }
@@ -104,6 +115,20 @@ object ClickTargets {
     fun findAt(x: Float, y: Float): Target? = synchronized(targets) {
         targets.values.filter { it.contains(x, y) }.minByOrNull { it.area }
     }
+
+    /**
+     * 诊断用：离点击点最近的几个控件（含距离，单位=面板像素）。
+     *
+     * 用在「点下去什么都没命中」的时候 —— 一眼能看出是**压根没登记**（最近目标很远），
+     * 还是**坐标/矩形对不上**（最近目标只差几像素）。
+     */
+    fun nearest(x: Float, y: Float, count: Int = 5): List<Pair<Target, Float>> =
+        synchronized(targets) {
+            targets.values
+                .map { it to it.distance(x, y) }
+                .sortedBy { it.second }
+                .take(count)
+        }
 }
 
 /**
@@ -129,9 +154,19 @@ fun Modifier.vrClickTarget(
     // 用 rememberUpdatedState 拿最新的闭包/请求器，避免登记的是上一帧的旧值
     val activate by rememberUpdatedState(onActivate)
     val requester by rememberUpdatedState(focusRequester)
+    /*
+     * 每个控件实例一把**独立**钥匙（父亲 2026-10-05 实测：继续观看那排点不动）。
+     *
+     * 原因：同一条内容会同时出现在两排里（继续观看 + 最近添加），
+     * 以前用内容 id 当钥匙，后登记的那条把先登记的矩形**覆盖**掉，
+     * 于是其中一排的坐标从表里消失 → 扣扳机判成"点在空白" → 没反应。
+     * 钥匙只用来标识"这块矩形是谁的"，生命周期跟着这个控件实例走，
+     * 所以实例唯一即可；`key` 字符串只留给日志看。
+     */
+    val instance = remember { Any() }
 
-    DisposableEffect(key) {
-        onDispose { ClickTargets.remove(key) }
+    DisposableEffect(instance) {
+        onDispose { ClickTargets.remove(instance) }
     }
 
     return this.onGloballyPositioned { coords ->
@@ -139,7 +174,8 @@ fun Modifier.vrClickTarget(
         val b: Rect = coords.boundsInWindow()
         if (b.width <= 1f || b.height <= 1f) return@onGloballyPositioned
         ClickTargets.put(
-            key = key,
+            key = instance,
+            label = key.toString(),
             left = b.left,
             top = b.top,
             right = b.right,

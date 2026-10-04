@@ -563,7 +563,20 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
-        // 返回键先给面板：复用界面的导航栈（NavHost）在面板窗口里，
+        /*
+         * 播放中按 B（返回）：先停播放，回界面。
+         *
+         * 2026-10-05 父亲实测「进了播放页按 B 返回不了，只能关 app」：
+         * 以前 BACK 一律先给面板导航栈，而播放时面板仍然活着（panelActive=true），
+         * 于是 B 被面板吃掉（在背后做了一次界面返回），播放一点没停 —— 看起来就是没反应。
+         * 现在按「谁在前面谁先接」：播放在前 → 停播放。
+         */
+        if (keyCode == KeyEvent.KEYCODE_BACK && renderer.videoActive) {
+            Log.i(TAG, "BACK：播放中 → 停止播放回界面")
+            stopPlayback()
+            return true
+        }
+        // 返回键再给面板：复用界面的导航栈（NavHost）在面板窗口里，
         // 不进面板就等于「返回」失效（实测 PICO 面板模式基本不发按键，
         // 这里做兜底，主通道是扳机手势，见 PanelLayer.dispatch）
         if (keyCode == KeyEvent.KEYCODE_BACK && ::panel.isInitialized &&

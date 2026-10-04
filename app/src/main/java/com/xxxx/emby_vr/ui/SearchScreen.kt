@@ -206,10 +206,8 @@ fun SearchScreen(
                                 containerColor = if (isAllSelected) MaterialTheme.colorScheme.primary.copy(
                                     alpha = 0.2f
                                 ) else Color.White.copy(alpha = 0.05f),
-                                focusedContainerColor = MaterialTheme.colorScheme.secondary,
                                 contentColor = Color.White,
-                                focusedContentColor = MaterialTheme.colorScheme.onTertiary
-                            ),
+),
                             border = ClickableSurfaceDefaults.border(
                                 border = if (isAllSelected) Border(
                                     BorderStroke(
@@ -217,14 +215,8 @@ fun SearchScreen(
                                         MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
                                     )
                                 ) else Border(BorderStroke(0.dp, Color.Transparent)),
-                                focusedBorder = Border(
-                                    BorderStroke(
-                                        2.dp,
-                                        MaterialTheme.colorScheme.primary
-                                    )
-                                )
-                            ),
-                            scale = ClickableSurfaceDefaults.scale(focusedScale = 1.04f),
+                                focusedBorder = null),
+                            scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(60.dp)
@@ -281,10 +273,8 @@ fun SearchScreen(
                             containerColor = if (isSelected) MaterialTheme.colorScheme.primary.copy(
                                 alpha = 0.2f
                             ) else Color.White.copy(alpha = 0.05f),
-                            focusedContainerColor = MaterialTheme.colorScheme.secondary,
                             contentColor = Color.White,
-                            focusedContentColor = MaterialTheme.colorScheme.onTertiary
-                        ),
+),
                         border = ClickableSurfaceDefaults.border(
                             border = if (isSelected) Border(
                                 BorderStroke(
@@ -292,14 +282,8 @@ fun SearchScreen(
                                     MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
                                 )
                             ) else Border(BorderStroke(0.dp, Color.Transparent)),
-                            focusedBorder = Border(
-                                BorderStroke(
-                                    2.dp,
-                                    MaterialTheme.colorScheme.primary
-                                )
-                            )
-                        ),
-                        scale = ClickableSurfaceDefaults.scale(focusedScale = 1.04f),
+                            focusedBorder = null),
+                        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(60.dp)
@@ -376,19 +360,12 @@ fun SearchScreen(
                             }
                         },
                     shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(28.dp)),
-                    scale = ClickableSurfaceDefaults.scale(focusedScale = 1.04f),
+                    scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
                     border = ClickableSurfaceDefaults.border(
                         border = Border(BorderStroke(1.dp, Color.White.copy(alpha = 0.2f))),
-                        focusedBorder = Border(
-                            BorderStroke(
-                                2.dp,
-                                MaterialTheme.colorScheme.primary
-                            )
-                        )
-                    ),
+                        focusedBorder = null),
                     colors = ClickableSurfaceDefaults.colors(
                         containerColor = Color.White.copy(alpha = 0.1f),
-                        focusedContainerColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.35f),
                         contentColor = Color.White
                     )
                 ) {

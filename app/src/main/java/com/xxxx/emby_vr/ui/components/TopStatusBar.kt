@@ -28,6 +28,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import com.xxxx.emby_vr.panel.vrClickTarget
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Button
@@ -77,15 +78,19 @@ fun TopStatusBar(
                         onClick = onMenuClick,
                         modifier = Modifier
                             .size(32.dp)
-                            .focusRequester(menuFocusRequester),
+                            .focusRequester(menuFocusRequester)
+                            // 登记进点击表（父亲 2026-10-05：顶栏图标扣扳机没反应 = 没登记）
+                            .vrClickTarget(
+                                key = "top:menu",
+                                focusRequester = menuFocusRequester,
+                                onActivate = { onMenuClick?.invoke() },
+                            ),
                         shape = ClickableSurfaceDefaults.shape(androidx.compose.foundation.shape.CircleShape),
                         // 父亲 2026-10-02：聚焦 = 绿底白图标
                         colors = ClickableSurfaceDefaults.colors(
                             containerColor = Color.Transparent,
-                            focusedContainerColor = MaterialTheme.colorScheme.secondary,
                             contentColor = Color.White,
-                            focusedContentColor = MaterialTheme.colorScheme.onTertiary
-                        )
+)
                     ) {
                         Box(
                             modifier = Modifier
@@ -146,15 +151,18 @@ fun TopStatusBar(
                         onClick = onSearchClick,
                         modifier = Modifier
                             .size(32.dp)
-                            .focusRequester(searchFocusRequester),
+                            .focusRequester(searchFocusRequester)
+                            .vrClickTarget(
+                                key = "top:search",
+                                focusRequester = searchFocusRequester,
+                                onActivate = { onSearchClick?.invoke() },
+                            ),
                         shape = ClickableSurfaceDefaults.shape(androidx.compose.foundation.shape.CircleShape),
                         // 父亲 2026-10-02：聚焦 = 绿底白图标
                         colors = ClickableSurfaceDefaults.colors(
                             containerColor = Color.Transparent,
-                            focusedContainerColor = MaterialTheme.colorScheme.secondary,
                             contentColor = Color.White,
-                            focusedContentColor = MaterialTheme.colorScheme.onTertiary
-                        )
+)
                     ) {
                         Box(
                             modifier = Modifier
@@ -178,14 +186,17 @@ fun TopStatusBar(
                     Surface(
                         onClick = onUserInfoClick ?: {},
                         modifier = Modifier
-                            .focusRequester(userInfoFocusRequester),
+                            .focusRequester(userInfoFocusRequester)
+                            .vrClickTarget(
+                                key = "top:user",
+                                focusRequester = userInfoFocusRequester,
+                                onActivate = { (onUserInfoClick ?: {}).invoke() },
+                            ),
                         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(16.dp)),
                         colors = ClickableSurfaceDefaults.colors(
                             containerColor = Color.Transparent,
-                            focusedContainerColor = MaterialTheme.colorScheme.secondary,
                             contentColor = MaterialTheme.colorScheme.onSecondary,
-                            focusedContentColor = MaterialTheme.colorScheme.onTertiary
-                        )
+)
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,

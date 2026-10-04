@@ -409,9 +409,7 @@ fun MediaDetailScreen(
                                     // 父亲 2026-10-02：**只有聚焦才是绿底**；当前季不聚焦时也是暗灰
                                     containerColor = Color(0xFF3A3A3A),
                                     contentColor = Color.White,
-                                    focusedContainerColor = MaterialTheme.colorScheme.secondary,
-                                    focusedContentColor = MaterialTheme.colorScheme.onTertiary
-                                ),
+),
                                 modifier = Modifier
                                     .width(DetailButtonWidth)
                                     .height(DetailButtonHeight)
@@ -635,12 +633,11 @@ fun MetaRow(label: String, value: String) {
             enabled = true,
             shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(8.dp)),
             colors = ClickableSurfaceDefaults.colors(
-                focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
                 containerColor = Color.Transparent,
                 contentColor = Color.White
             ),
             scale = ClickableSurfaceDefaults.scale(
-                focusedScale = 1.04f
+                focusedScale = 1f
             ),
             modifier = Modifier
                 .fillMaxWidth()
@@ -684,22 +681,14 @@ fun PersonCard(
         onClick = {},
         shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(12.dp)),
         border = ClickableSurfaceDefaults.border(
-            focusedBorder = Border(
-                BorderStroke(
-                    2.dp,
-                    MaterialTheme.colorScheme.onSurface
-                )
-            )
-        ),
+            focusedBorder = null),
         scale = ClickableSurfaceDefaults
-            .scale(focusedScale = 1.06f),
+            .scale(focusedScale = 1f),
         colors = ClickableSurfaceDefaults.colors(
             containerColor = Color.Black.copy(alpha = 0.2f),
-            focusedContainerColor = MaterialTheme.colorScheme.secondary,
             contentColor = MaterialTheme.colorScheme.onSurface,
             pressedContentColor = MaterialTheme.colorScheme.surface,
-            focusedContentColor = MaterialTheme.colorScheme.onTertiary
-        ),
+),
         modifier = Modifier
             .width(imgWidth)
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
@@ -813,13 +802,11 @@ private fun SongRow(
         onClick = onPlay,
         shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(8.dp)),
         border = ClickableSurfaceDefaults.border(
-            focusedBorder = Border(BorderStroke(2.dp, MaterialTheme.colorScheme.secondary))
-        ),
-        scale = ClickableSurfaceDefaults.scale(focusedScale = 1.04f),
+            focusedBorder = null),
+        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
         colors = ClickableSurfaceDefaults.colors(
             containerColor = Color.White.copy(alpha = 0.06f),
-            focusedContainerColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.30f)
-        ),
+),
         modifier = Modifier.fillMaxWidth()
     ) {
         Row(
@@ -867,13 +854,11 @@ private fun ActionTile(
         shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(8.dp)),
         // 父亲 2026-10-02：获得焦点不要白边，只靠绿底表示
         border = ClickableSurfaceDefaults.border(),
-        scale = ClickableSurfaceDefaults.scale(focusedScale = 1.04f),
+        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
         colors = ClickableSurfaceDefaults.colors(
             containerColor = Color(0xFF3A3A3A),
             contentColor = Color.White,
-            focusedContainerColor = MaterialTheme.colorScheme.secondary,
-            focusedContentColor = MaterialTheme.colorScheme.onTertiary
-        ),
+),
         modifier = Modifier
             .width(DetailButtonWidth)
             .height(DetailButtonHeight)
@@ -940,13 +925,11 @@ private fun EpisodeRow(
         onClick = onPlay,
         shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(8.dp)),
         border = ClickableSurfaceDefaults.border(
-            focusedBorder = Border(BorderStroke(2.dp, MaterialTheme.colorScheme.secondary))
-        ),
-        scale = ClickableSurfaceDefaults.scale(focusedScale = 1.04f),
+            focusedBorder = null),
+        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
         colors = ClickableSurfaceDefaults.colors(
             containerColor = Color.White.copy(alpha = 0.05f),
-            focusedContainerColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.30f)
-        ),
+),
         modifier = Modifier
             .fillMaxWidth()
             .then(

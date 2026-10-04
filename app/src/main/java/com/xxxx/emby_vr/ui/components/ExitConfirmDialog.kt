@@ -97,14 +97,11 @@ private fun DialogButton(
         onClick = onClick,
         shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(8.dp)),
         border = ClickableSurfaceDefaults.border(
-            focusedBorder = Border(BorderStroke(2.dp, MaterialTheme.colorScheme.secondary))
-        ),
+            focusedBorder = null),
         colors = ClickableSurfaceDefaults.colors(
             containerColor = Color(0xFF333333),
             contentColor = Color.White,
-            focusedContainerColor = MaterialTheme.colorScheme.secondary,
-            focusedContentColor = MaterialTheme.colorScheme.onTertiary
-        ),
+),
         modifier = Modifier.then(
             if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier
         )

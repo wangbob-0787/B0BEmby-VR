@@ -28,6 +28,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
+import com.xxxx.emby_vr.panel.vrClickTarget
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -145,6 +146,13 @@ fun HomeHeroCarousel(
                 .onFocusChanged { onFocusChanged(it.isFocused) }
                 .focusRequester(heroFocus)
                 .focusable()
+                // 登记进点击表：指着大海报扣扳机 = 续播当前这一部
+                //（父亲 2026-10-05：大海报扣扳机没反应 = 没登记）
+                .vrClickTarget(
+                    key = "hero",
+                    focusRequester = heroFocus,
+                    onActivate = { onOpenItem(list[index.coerceIn(0, list.lastIndex)]) },
+                )
                 .onPreviewKeyEvent { e ->
                     if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                     when (e.key) {

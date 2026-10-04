@@ -162,12 +162,9 @@ fun LibraryScreen(
                 colors = ClickableSurfaceDefaults.colors(
                     containerColor = Color.White.copy(alpha = 0.15f),
                     contentColor = Color.White,
-                    focusedContainerColor = MaterialTheme.colorScheme.secondary,
-                    focusedContentColor = MaterialTheme.colorScheme.onTertiary
-                ),
+),
                 border = ClickableSurfaceDefaults.border(
-                    focusedBorder = Border(BorderStroke(2.dp, MaterialTheme.colorScheme.secondary))
-                ),
+                    focusedBorder = null),
                 modifier = Modifier.padding(end = 12.dp)
             ) {
                 Row(
@@ -214,15 +211,12 @@ fun LibraryScreen(
                         } else {
                             Color.White.copy(alpha = 0.7f)
                         },
-                        focusedContainerColor = MaterialTheme.colorScheme.secondary,
-                        focusedContentColor = MaterialTheme.colorScheme.onTertiary
-                    ),
+),
                     border = ClickableSurfaceDefaults.border(
                         border = if (!isSelected) Border(
                             BorderStroke(1.dp, Color.White.copy(alpha = 0.3f))
                         ) else Border(BorderStroke(0.dp, Color.Transparent)),
-                        focusedBorder = Border(BorderStroke(2.dp, MaterialTheme.colorScheme.secondary))
-                    )
+                        focusedBorder = null)
                 ) {
                     Text(
                         text = label,
@@ -409,9 +403,7 @@ private fun SortDialog(
                                         Color.Transparent
                                     },
                                     contentColor = Color.White,
-                                    focusedContainerColor = MaterialTheme.colorScheme.secondary,
-                                    focusedContentColor = MaterialTheme.colorScheme.onTertiary
-                                )
+)
                             ) {
                                 Row(
                                     modifier = Modifier

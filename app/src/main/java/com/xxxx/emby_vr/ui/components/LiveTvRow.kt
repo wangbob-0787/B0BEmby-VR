@@ -23,6 +23,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import com.xxxx.emby_vr.panel.vrClickTarget
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -123,18 +124,22 @@ private fun ChannelCard(
         onClick = onClick,
         shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(12.dp)),
         border = ClickableSurfaceDefaults.border(
-            focusedBorder = Border(BorderStroke(2.dp, MaterialTheme.colorScheme.secondary))
-        ),
-        scale = ClickableSurfaceDefaults.scale(focusedScale = 1.06f),
+            focusedBorder = null),
+        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
         colors = ClickableSurfaceDefaults.colors(
             containerColor = Color.Transparent,
-            focusedContainerColor = Color.Black.copy(alpha = 0.35f),
             contentColor = Color.White
         ),
         modifier = Modifier
             .width(214.dp)
             .onFocusChanged { if (it.isFocused) FocusMemory.lastItemId = channel.id }
             .focusRequester(myFocusRequester)
+            // 登记进点击表（父亲 2026-10-05：电视直播海报扣扳机没反应 = 没登记）
+            .vrClickTarget(
+                key = "live:${channel.id}",
+                focusRequester = myFocusRequester,
+                onActivate = onClick,
+            )
     ) {
         Column {
             // 台标区：16:9，台标居中留白（不裁切，免得把台标裁掉）

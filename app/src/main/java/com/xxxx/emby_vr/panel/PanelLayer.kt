@@ -116,6 +116,49 @@ class PanelLayer(
          */
         private const val CLICK_VERIFY_MS = 220L
 
+        /**
+         * 近失兜底距离（面板像素，2026-10-05）。
+         *
+         * 点离控件只差这么多像素时，仍按命中处理。用于吸收卡片聚焦放大动画
+         * 与瞄准抖动造成的几像素偏差；1920 宽下 16px ≈ 0.8%，不会误点真空白。
+         */
+        private const val NEAR_MISS_PX = 16f
+
+    }
+
+    /**
+     * 触发一个控件的动作（扣扳机命中后统一走这里）。
+     *
+     * 先移焦点再触发：焦点事务要下一帧才生效，动作推到下一帧，
+     * 避免"没聚焦就被点"（电视版控件按焦点态渲染）。
+     */
+    private fun fireTarget(target: ClickTargets.Target) {
+        Log.i(TAG, "落点命中控件: $target → 聚焦并触发")
+        target.focus?.invoke()
+        decor?.post {
+            runCatching { target.activate() }
+                .onFailure { Log.e(TAG, "控件触发失败: ${it.javaClass.simpleName}: ${it.message}") }
+            Log.i(TAG, "控件动作已调用: ${target.label}")
+        }
+    }
+
+    /**
+     * 把焦点挪到「光点底下的控件」上，供摇杆滚动用（父亲 2026-10-05 要求）。
+     *
+     * 方向键打在当前焦点上，所以滚哪一排取决于焦点在哪一排 —— 先把焦点
+     * 落到光点指的卡片上，滚的就是他正看着的那一排。
+     * 光点落在空白上时不硬塞焦点（免得把焦点抢到没想动的地方）。
+     */
+    private fun focusUnderPointer(x: Float, y: Float, why: String) {
+        val t = ClickTargets.findAt(x, y)
+            ?: ClickTargets.nearest(x, y, 1).firstOrNull()
+                ?.takeIf { it.second <= NEAR_MISS_PX }?.first
+        if (t == null) {
+            Log.i(TAG, "$why：光点下没有控件 → 沿用当前焦点滚")
+            return
+        }
+        Log.i(TAG, "$why：光点下是 ${t.label} → 先聚焦它，保证滚的是这一排")
+        t.focus?.invoke()
     }
 
     /** 面板是否可用（Presentation 已显示、decorView 已就绪） */
@@ -452,6 +495,13 @@ class PanelLayer(
                     stepPx = px
                     stepPy = py
                     lastFireAt = now
+                    /*
+                     * 先聚焦「光点底下的那个控件」再滚（父亲 2026-10-05）：
+                     * 方向键是打在**当前焦点**上的，不先移焦点就会出现
+                     * 「推摇杆要么不滚、要么滚错了一排」。
+                     * 把焦点落到光点指向的卡片上，滚的就是那一排。
+                     */
+                    focusUnderPointer(px, py, "摇杆起始")
                     val dir = dirKeyOf(dx, dy)
                     if (dir != 0) {
                         lastDirKey = dir
@@ -550,18 +600,32 @@ class PanelLayer(
                  */
                 val target = ClickTargets.findAt(px, py)
                 if (target != null) {
-                    Log.i(TAG, "落点命中控件: $target → 聚焦并触发")
-                    target.focus?.invoke()
-                    // 焦点事务要下一帧才生效，动作推到下一帧，避免"没聚焦就被点"
-                    decor?.post {
-                        runCatching { target.activate() }
-                            .onFailure { Log.e(TAG, "控件触发失败: ${it.javaClass.simpleName}: ${it.message}") }
-                    }
+                    fireTarget(target)
                     return
                 }
                 if (ClickTargets.size() > 0) {
-                    // 这一屏已经接入坐标表，说明就是点在空白处 → 不动作
-                    Log.i(TAG, "落点未命中任何控件（空白处）→ 不动作 位置=(${px.toInt()},${py.toInt()})")
+                    // 诊断：离得最近的几个控件是谁、差多远。最近目标很远 = 没登记（漏控件）；
+                    // 只差几像素 = 坐标/矩形对不上（另一种病，治法不同）。
+                    val near = ClickTargets.nearest(px, py, 5)
+                    Log.i(
+                        TAG,
+                        "落点未命中任何控件 位置=(${px.toInt()},${py.toInt()}) 表内 ${ClickTargets.size()} 项",
+                    )
+                    near.forEach { (t, d) ->
+                        Log.i(TAG, "  最近控件 $t 距离=${d.toInt()}px")
+                    }
+                    /*
+                     * 近失兜底（2026-10-05）：只差一点点就算命中。
+                     * 卡片有聚焦放大动画、瞄准时手也会轻微偏移，
+                     * 差十几像素就判成"点在空白"太苛刻 —— 那正是父亲
+                     * 「明明指着卡片，扣扳机却没反应」的一类来源。
+                     * 16px 在 1920 宽的面板上约等于 0.8%，不会把真的空白点成控件。
+                     */
+                    val closest = near.firstOrNull()
+                    if (closest != null && closest.second <= NEAR_MISS_PX) {
+                        Log.i(TAG, "近失兜底：按命中处理（差 ${closest.second.toInt()}px）")
+                        fireTarget(closest.first)
+                    }
                     return
                 }
                 // 这一屏还没接入坐标表：退回旧的「鼠标式点击 + 验证」通道，保证其它屏可用

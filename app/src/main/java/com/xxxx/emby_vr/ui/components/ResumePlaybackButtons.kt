@@ -97,17 +97,14 @@ fun ResumePlaybackButtons(
                         onActivate = onPlayFromStart,
                     ),
                 shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(28.dp)),
-                scale = ClickableSurfaceDefaults.scale(focusedScale = 1.04f),
+                scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
                 border = ClickableSurfaceDefaults.border(
                     border = Border(BorderStroke(1.dp, Color.White.copy(alpha = 0.3f))),
-                    focusedBorder = Border(BorderStroke(2.dp, MaterialTheme.colorScheme.secondary))
-                ),
+                    focusedBorder = null),
                 colors = ClickableSurfaceDefaults.colors(
                     containerColor = Color.White.copy(alpha = 0.1f),
-                    focusedContainerColor = MaterialTheme.colorScheme.secondary,
                     contentColor = Color.White,
-                    focusedContentColor = MaterialTheme.colorScheme.onTertiary
-                )
+)
             ) {
                 Box(
                     modifier = Modifier
@@ -136,17 +133,14 @@ fun ResumePlaybackButtons(
                         onActivate = onContinue,
                     ),
                 shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(28.dp)),
-                scale = ClickableSurfaceDefaults.scale(focusedScale = 1.04f),
+                scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
                 border = ClickableSurfaceDefaults.border(
                     border = Border(BorderStroke(1.dp, Color.White.copy(alpha = 0.3f))),
-                    focusedBorder = Border(BorderStroke(2.dp, MaterialTheme.colorScheme.secondary))
-                ),
+                    focusedBorder = null),
                 colors = ClickableSurfaceDefaults.colors(
                     containerColor = Color.White.copy(alpha = 0.1f),
-                    focusedContainerColor = MaterialTheme.colorScheme.secondary,
                     contentColor = Color.White,
-                    focusedContentColor = MaterialTheme.colorScheme.onTertiary
-                )
+)
             ) {
                 Box(
                     modifier = Modifier

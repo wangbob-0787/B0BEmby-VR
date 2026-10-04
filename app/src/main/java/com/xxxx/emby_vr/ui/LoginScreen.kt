@@ -332,8 +332,6 @@ fun LoginScreen(
                             } else false
                         },
                     colors = ButtonDefaults.colors(
-                        focusedContainerColor = MaterialTheme.colorScheme.secondary,
-                        focusedContentColor = MaterialTheme.colorScheme.onTertiary,
                         containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.3f),
                         contentColor = MaterialTheme.colorScheme.onSurface
                     ),
@@ -377,10 +375,8 @@ fun LoginScreen(
                     shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(100)),
                     colors = ClickableSurfaceDefaults.colors(
                         containerColor = Color.Transparent,
-                        focusedContainerColor = MaterialTheme.colorScheme.secondary,
                         contentColor = Color.White.copy(alpha = 0.5f),
-                        focusedContentColor = MaterialTheme.colorScheme.onTertiary
-                    ),
+),
                     modifier = Modifier.fillMaxWidth(0.8f)
                 ) {
                     Box(
@@ -492,13 +488,10 @@ fun TvInputButton(
                     MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                 )
             ),
-            focusedBorder = Border(BorderStroke(2.dp, MaterialTheme.colorScheme.primary))
-        ),
+            focusedBorder = null),
         colors = ClickableSurfaceDefaults.colors(
             containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.3f),
             contentColor = MaterialTheme.colorScheme.onSurface,
-            focusedContainerColor = MaterialTheme.colorScheme.secondary,
-            focusedContentColor = MaterialTheme.colorScheme.onTertiary,
         ),
         modifier = modifier
             .fillMaxWidth(0.8f)
@@ -555,13 +548,10 @@ fun ProtocolButton(
                     MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                 )
             ),
-            focusedBorder = Border(BorderStroke(2.dp, MaterialTheme.colorScheme.primary))
-        ),
+            focusedBorder = null),
         colors = ClickableSurfaceDefaults.colors(
             containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.3f),
             contentColor = MaterialTheme.colorScheme.onSurface,
-            focusedContainerColor = MaterialTheme.colorScheme.onSurface,
-            focusedContentColor = MaterialTheme.colorScheme.onTertiary,
         ),
         modifier = modifier.height(64.dp)
     ) {
