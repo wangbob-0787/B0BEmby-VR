@@ -14,7 +14,9 @@ import android.view.MotionEvent
 import android.view.Surface
 import android.view.View
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.ComposeView
 import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.lifecycle.setViewTreeViewModelStoreOwner
@@ -188,7 +190,23 @@ private class PanelPresentation(
         cv.setViewTreeLifecycleOwner(activity)
         cv.setViewTreeViewModelStoreOwner(activity)
         cv.setViewTreeSavedStateRegistryOwner(activity)
-        cv.setContent { content() }
+        /*
+         * 除了 ViewTree 的三个 owner，还必须提供 LocalOnBackPressedDispatcherOwner。
+         *
+         * 2026-10-04 实机闪退（build-45）：
+         *   IllegalStateException: No OnBackPressedDispatcherOwner was provided
+         *   via LocalOnBackPressedDispatcherOwner
+         *   at NavHostKt.NavHost
+         * Navigation 的 NavHost 内部用 PredictiveBackHandler 处理返回手势，
+         * 它从这个 CompositionLocal 取宿主；而我们的 ComposeView 挂在
+         * Presentation 窗口里，不在 Activity 的 decorView 下，系统不会自动提供。
+         * 把 Activity 自己（ComponentActivity 就是 OnBackPressedDispatcherOwner）提供进去即可。
+         */
+        cv.setContent {
+            CompositionLocalProvider(LocalOnBackPressedDispatcherOwner provides activity) {
+                content()
+            }
+        }
         setContentView(cv)
 
         onReady(window!!.decorView)
