@@ -89,8 +89,6 @@ class PanelLayer(
         private const val STEP_PX = 110f
         private const val FIRE_INTERVAL_MS = 130L
 
-        /** 扣住扳机不动超过这个时长 = 返回上一层 */
-        private const val LONG_PRESS_MS = 600L
     }
 
     /** 面板是否可用（Presentation 已显示、decorView 已就绪） */
@@ -102,7 +100,6 @@ class PanelLayer(
     private var virtualDisplay: VirtualDisplay? = null
     private var presentation: PanelPresentation? = null
     private var decor: View? = null
-    private var downTime = 0L
 
     /** 本次按下的锁定位置（抬起时若没拖动，就用它收尾成一次干净的点击） */
     private var downPx = 0f
@@ -200,11 +197,16 @@ class PanelLayer(
      * 没有任何按键事件（实测 dispatchKeyEvent 一条都没收到）。所以在这两样上
      * 合成一套遥控器语义：
      *
-     * | 操作 | 含义 |
-     * |---|---|
-     * | 轻扣扳机（不动） | OK —— 激活当前焦点元素 |
-     * | 扣住不动 600ms | 返回 —— 上一层 |
-     * | 扣住并拖动 | 方向键 —— 按拖动主轴移动焦点，每 72px 发一次 |
+     * ## 手柄 ↔ 遥控器统一语义（父亲 2026-10-04 定）
+     *
+     * | 手柄 | 遥控器 | 作用 |
+     * |---|---|---|
+     * | A 键 / 扳机 | OK 键 | 确定（激活当前焦点） |
+     * | B 键 | 返回键 | 返回上一层（在 MainActivity 里转发） |
+     * | 摇杆 | 方向键 | 四向滚动 / 移动焦点；播放页左右 = 快进快退 |
+     *
+     * 摇杆在 PICO 面板模式下是「合成 按下+拖动+抬起」送进来的，
+     * 所以这里按位移方向合成方向键；位移小于 slop 的才算一次确定。
      *
      * 坐标是**面板像素坐标**（0..W, 0..H），由调用方换算。
      */
@@ -213,7 +215,6 @@ class PanelLayer(
         val now = SystemClock.uptimeMillis()
         when (action) {
             MotionEvent.ACTION_DOWN -> {
-                downTime = now
                 downPx = px
                 downPy = py
                 isDown = true
@@ -255,14 +256,9 @@ class PanelLayer(
                 isDown = false
                 val dragged = isDragging
                 isDragging = false
-                if (dragged) return                                // 推过摇杆/拖动过：不发 OK
-                if (now - downTime >= LONG_PRESS_MS) {
-                    Log.i(TAG, "面板长按 → 返回")
-                    key(KeyEvent.KEYCODE_BACK)
-                } else {
-                    Log.i(TAG, "面板轻扣 → OK (${px.toInt()},${py.toInt()})")
-                    key(KeyEvent.KEYCODE_DPAD_CENTER)
-                }
+                if (dragged) return                                // 摇杆推动：只发方向键，不发 OK
+                Log.i(TAG, "面板 OK (${px.toInt()},${py.toInt()})")
+                key(KeyEvent.KEYCODE_DPAD_CENTER)
             }
         }
     }
