@@ -91,7 +91,15 @@ class MainActivity : ComponentActivity() {
                 if (!renderer.videoActive) panelKey(KeyEvent.KEYCODE_DPAD_DOWN)
             }
             InputRouter.Action.CONFIRM -> {
-                if (renderer.videoActive) togglePlayPause() else panelKey(KeyEvent.KEYCODE_DPAD_CENTER)
+                /*
+                 * 只在播放中有效（扳机 = 暂停/继续）。
+                 *
+                 * 非播放时**不给面板发 OK**：新语义里扳机是「鼠标左键」——
+                 * 指着哪里就激活哪里（由 PanelLayer 用光标位置发鼠标点击实现）。
+                 * 若在这里再补一个 OK，就会出现「指着空白处扣扳机却激活了当前焦点元素」，
+                 * 与鼠标语义冲突（父亲 2026-10-04 定）。
+                 */
+                if (renderer.videoActive) togglePlayPause()
             }
             InputRouter.Action.BACK -> {
                 if (renderer.videoActive) stopPlayback() else panelKey(KeyEvent.KEYCODE_BACK)
@@ -214,6 +222,7 @@ class MainActivity : ComponentActivity() {
      *
      * @param dx 相对按下点的横向位移（归一化坐标，半高 = 1）
      */
+    @Suppress("unused")
     private fun onTriggerDrag(dx: Float) {
         if (!renderer.videoActive) return
         val steps = (kotlin.math.abs(dx) / DRAG_SEEK_STEP).toInt()
@@ -477,7 +486,9 @@ class MainActivity : ComponentActivity() {
                     viewH = height,
                     onPointer = { },
                     onConfirm = { },
-                    onDrag = { dx -> onTriggerDrag(dx) },
+                    // 播放页快进快退由摇杆承担（Action.LEFT/RIGHT → seekBy）。
+                    // 「按住扳机拖动 = seek」是旧语义，已停用：新语义里扳机 = 鼠标左键
+                    onDrag = { },
                     onDown = { onPointerDown() },
                 )
             }
@@ -488,7 +499,9 @@ class MainActivity : ComponentActivity() {
                     viewH = height,
                     onPointer = { },
                     onConfirm = { },
-                    onDrag = { dx -> onTriggerDrag(dx) },
+                    // 播放页快进快退由摇杆承担（Action.LEFT/RIGHT → seekBy）。
+                    // 「按住扳机拖动 = seek」是旧语义，已停用：新语义里扳机 = 鼠标左键
+                    onDrag = { },
                     onDown = { onPointerDown() },
                 )
             }
@@ -596,7 +609,7 @@ class MainActivity : ComponentActivity() {
          */
         /*
          * 播放中不喂面板（父亲 2026-10-04）：
-         * 播放时画面是视频，摇杆要用来快进快退（走下面的 onTriggerDrag / 摇杆轴通道），
+         * 播放时画面是视频，摇杆要用来快进快退（走摇杆通道 / InputRouter 的方向动作），
          * 若仍把事件派进面板，播放中摇杆就失效、还会在隐藏的界面上乱移焦点。
          */
         if (!renderer.videoActive &&
@@ -638,7 +651,7 @@ class MainActivity : ComponentActivity() {
                 viewH = glView.height,
                 onPointer = { },
                 onConfirm = { },
-                onDrag = { dx -> onTriggerDrag(dx) },
+                onDrag = { },
                 onDown = { onPointerDown() },
             )
             if (handled) return true

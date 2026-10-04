@@ -265,29 +265,6 @@ class PanelLayer(
         )
     }
 
-    /**
-     * 按面板像素位置送一次触摸点击（DOWN + UP）。
-     *
-     * @return 是否有视图接住（decor.dispatchTouchEvent 的返回值）
-     */
-    private fun touchClick(px: Float, py: Float): Boolean {
-        val v = decor ?: return false
-        val now = SystemClock.uptimeMillis()
-        var handled = false
-        for (action in intArrayOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP)) {
-            val ev = MotionEvent.obtain(now, now, action, px, py, 0)
-            ev.source = InputDevice.SOURCE_TOUCHSCREEN
-            try {
-                handled = v.dispatchTouchEvent(ev) || handled
-            } catch (t: Throwable) {
-                Log.e(TAG, "触摸派发失败: ${t.javaClass.simpleName}: ${t.message}")
-            } finally {
-                ev.recycle()
-            }
-        }
-        return handled
-    }
-
     /** 一次点击（自动自测用）：DOWN + UP 同点 */
     fun tap(px: Float, py: Float) {
         dispatch(px, py, MotionEvent.ACTION_DOWN)
