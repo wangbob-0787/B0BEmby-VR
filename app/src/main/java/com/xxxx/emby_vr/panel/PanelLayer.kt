@@ -68,6 +68,15 @@ class PanelLayer(
 
         /** 240dpi → 1920x1080 折合 1280x720 dp，与电视版十尺布局接近 */
         const val DPI = 240
+
+        /**
+         * 点击/拖动的分界（面板像素）。
+         *
+         * 240dpi 下面板 1dp = 1.5px，取系统惯例 8dp = 12px 的 touch slop：
+         * 按下后位移小于它算手抖（仍按点击处理），超过它才算拖动。
+         */
+        private const val SLOP_PX = 12f
+        private const val SLOP_PX2 = SLOP_PX * SLOP_PX
     }
 
     /** 面板是否可用（Presentation 已显示、decorView 已就绪） */
@@ -80,6 +89,14 @@ class PanelLayer(
     private var presentation: PanelPresentation? = null
     private var decor: View? = null
     private var downTime = 0L
+
+    /** 本次按下的锁定位置（抬起时若没拖动，就用它收尾成一次干净的点击） */
+    private var downPx = 0f
+    private var downPy = 0f
+
+    /** 是否处于按下状态（含拖动），以及是否已越过阈值进入拖动 */
+    private var isDown = false
+    private var isDragging = false
 
     /**
      * GL 线程建好 OES 纹理与 SurfaceTexture 后调用。
@@ -135,11 +152,57 @@ class PanelLayer(
      * 坐标是**面板像素坐标**（0..W, 0..H），由调用方换算。
      * 用 `dispatchTouchEvent` 而不是 `injectInputEvent`：同进程派发，
      * 不需要 INJECT_EVENTS（该权限在 PICO 上拿不到）。
+     *
+     * ## 为什么要做「按下后小幅飘移不算拖动」（2026-10-04 实机定位）
+     *
+     * 实测日志：扳机按下与抬起时激光光标位置差约 100 像素（面板像素），
+     * Compose 的点击判定要求按下→抬起期间指针不超出 touch slop，
+     * 于是每一次点击都被判成「拖动」而取消 —— 表现就是**光标能指到按钮但点不动**。
+     * 电视版在电视上用遥控器按键导航，压根没有指针，所以这块在复用界面里无代码可抄，
+     * 必须在派发层补：按下时锁定位置，位移小于阈值当抖动吞掉，越过阈值才算拖动
+     * （拖动正是父亲定的「按住扳机拖 = 拖进度条 / 拖选片墙」所要的语义）。
      */
     fun dispatch(px: Float, py: Float, action: Int) {
         val v = decor ?: return
         val now = SystemClock.uptimeMillis()
-        if (action == MotionEvent.ACTION_DOWN) downTime = now
+        when (action) {
+            MotionEvent.ACTION_DOWN -> {
+                downTime = now
+                downPx = px
+                downPy = py
+                isDown = true
+                isDragging = false
+                send(v, px, py, action, now)
+            }
+
+            MotionEvent.ACTION_MOVE -> {
+                if (!isDown) return
+                if (!isDragging) {
+                    val dx = px - downPx
+                    val dy = py - downPy
+                    if (dx * dx + dy * dy < SLOP_PX2) return   // 抖动：吞掉，不打扰界面
+                    isDragging = true                          // 越过阈值 → 进入拖动
+                    Log.i(TAG, "面板进入拖动: 从 (${downPx.toInt()},${downPy.toInt()}) 起")
+                }
+                send(v, px, py, action, now)
+            }
+
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (!isDown) return
+                isDown = false
+                val dragging = isDragging
+                isDragging = false
+                // 没拖动 → 抬起仍用按下时的位置，让 Compose 收到一次干净的点击
+                val tx = if (dragging) px else downPx
+                val ty = if (dragging) py else downPy
+                send(v, tx, ty, action, now)
+            }
+
+            else -> send(v, px, py, action, now)
+        }
+    }
+
+    private fun send(v: View, px: Float, py: Float, action: Int, now: Long) {
         val ev = MotionEvent.obtain(downTime, now, action, px, py, 0)
         ev.source = InputDevice.SOURCE_TOUCHSCREEN
         try {

@@ -1,10 +1,14 @@
 package com.xxxx.emby_vr.panel
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -271,9 +275,26 @@ private fun EmptyServerScreen(onAdd: () -> Unit) {
                 style = MaterialTheme.typography.headlineSmall,
                 color = Color.White,
             )
-            Spacer(modifier = Modifier.height(16.dp))
-            androidx.tv.material3.Button(onClick = onAdd) {
-                Text(text = "添加服务器")
+            Spacer(modifier = Modifier.height(28.dp))
+            /*
+             * 自绘按钮（亮绿底 + 黑字）。
+             *
+             * 为什么不用 TV 库的 Button：深色主题下它的默认配色是深底深字，
+             * 头显里几乎看不见（父亲 2026-10-04 反馈「按钮看不清楚」）。
+             * 这里直接用背景色 + 点击，颜色可控，也不依赖库的配色参数。
+             */
+            Box(
+                modifier = Modifier
+                    .background(Color(0xFF4CD137), RoundedCornerShape(8.dp))
+                    .clickable { onAdd() }
+                    .padding(horizontal = 40.dp, vertical = 18.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = "添加服务器",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Color.Black,
+                )
             }
         }
     }
