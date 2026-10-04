@@ -92,6 +92,15 @@ class PanelLayer(
         private const val STEP_PX = 110f
         private const val FIRE_INTERVAL_MS = 130L
 
+        /**
+         * 指针离面板边缘多近算「贴边」。
+         *
+         * 摇杆被系统转成指针位移，指针顶到边缘后就没有位移了 —— 这时若还按同方向
+         * 继续推，位移恒为 0，方向信息丢失。解法：已判定过方向且指针贴边时，
+         * 按**同方向**继续滚（父亲 2026-10-04：光标在下方就滚不动的问题）。
+         */
+        private const val EDGE_PX = 40f
+
     }
 
     /** 面板是否可用（Presentation 已显示、decorView 已就绪） */
@@ -116,6 +125,9 @@ class PanelLayer(
     private var stepPx = 0f
     private var stepPy = 0f
     private var lastFireAt = 0L
+
+    /** 本次按下最后发出的方向键（指针贴边后按同方向续滚用） */
+    private var lastDirKey = 0
 
     /**
      * GL 线程建好 OES 纹理与 SurfaceTexture 后调用。
@@ -180,6 +192,10 @@ class PanelLayer(
             }
         }
     }
+
+    /** 指针是否贴在面板边缘（贴边后没有位移，需要按同方向续滚） */
+    private fun isNearEdge(px: Float, py: Float): Boolean =
+        px <= EDGE_PX || py <= EDGE_PX || px >= W - EDGE_PX || py >= H - EDGE_PX
 
     /**
      * 鼠标式点击（父亲 2026-10-04 要求「光标指哪儿、扣扳机就激活哪儿」）。
@@ -308,6 +324,7 @@ class PanelLayer(
                 isDown = true
                 isDragging = false
                 lastFireAt = now
+                lastDirKey = 0
             }
 
             MotionEvent.ACTION_MOVE -> {
@@ -331,18 +348,36 @@ class PanelLayer(
                 // 摇杆滚动：从上一次发键的位置算位移，够一格且过了限速就再发一格
                 val sx = px - stepPx
                 val sy = py - stepPy
-                if (kotlin.math.abs(sx) < STEP_PX && kotlin.math.abs(sy) < STEP_PX) return
-                if (now - lastFireAt < FIRE_INTERVAL_MS) return
-                stepPx = px
-                stepPy = py
-                lastFireAt = now
-                val code = if (kotlin.math.abs(sx) >= kotlin.math.abs(sy)) {
-                    if (sx > 0) KeyEvent.KEYCODE_DPAD_RIGHT else KeyEvent.KEYCODE_DPAD_LEFT
-                } else {
-                    if (sy > 0) KeyEvent.KEYCODE_DPAD_DOWN else KeyEvent.KEYCODE_DPAD_UP
+                val movedEnough =
+                    kotlin.math.abs(sx) >= STEP_PX || kotlin.math.abs(sy) >= STEP_PX
+
+                if (movedEnough) {
+                    if (now - lastFireAt < FIRE_INTERVAL_MS) return
+                    stepPx = px
+                    stepPy = py
+                    lastFireAt = now
+                    val code = if (kotlin.math.abs(sx) >= kotlin.math.abs(sy)) {
+                        if (sx > 0) KeyEvent.KEYCODE_DPAD_RIGHT else KeyEvent.KEYCODE_DPAD_LEFT
+                    } else {
+                        if (sy > 0) KeyEvent.KEYCODE_DPAD_DOWN else KeyEvent.KEYCODE_DPAD_UP
+                    }
+                    lastDirKey = code
+                    Log.i(
+                        TAG,
+                        "摇杆发键 位移=(${sx.toInt()},${sy.toInt()}) → key=$code（19上/20下/21左/22右）",
+                    )
+                    key(code)
+                    return
                 }
-                Log.i(TAG, "摇杆发键 位移=(${sx.toInt()},${sy.toInt()}) → key=$code（19上/20下/21左/22右）")
-                key(code)
+
+                // 没有新位移：多半是指针被顶到面板边缘了。
+                // 已经判定过方向 + 指针贴边 + 过了限速 → 按同方向继续滚，
+                // 否则「光标在下半屏就滚不动」。
+                if (lastDirKey != 0 && isNearEdge(px, py) && now - lastFireAt >= FIRE_INTERVAL_MS) {
+                    lastFireAt = now
+                    Log.i(TAG, "摇杆续滚（指针贴边）: key=$lastDirKey")
+                    key(lastDirKey)
+                }
             }
 
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
