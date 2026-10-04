@@ -15,7 +15,10 @@ import android.view.MotionEvent
 import android.view.Surface
 import android.view.View
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedDispatcher
+import androidx.activity.OnBackPressedDispatcherOwner
 import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
+import androidx.activity.setViewTreeOnBackPressedDispatcherOwner
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.ComposeView
@@ -256,7 +259,12 @@ class PanelLayer(
                     stepPx = px
                     stepPy = py
                     lastFireAt = now
-                    Log.i(TAG, "摇杆滚动开始: (${downPx.toInt()},${downPy.toInt()})")
+                    // 方向测量：起始点 → 当前点（判断 PICO 摇杆位移的符号）
+                    Log.i(
+                        TAG,
+                        "摇杆测量 起点=(${downPx.toInt()},${downPy.toInt()}) " +
+                            "当前=(${px.toInt()},${py.toInt()}) 位移=(${dx.toInt()},${dy.toInt()})",
+                    )
                     return
                 }
                 // 摇杆滚动：从上一次发键的位置算位移，够一格且过了限速就再发一格
@@ -272,6 +280,7 @@ class PanelLayer(
                 } else {
                     if (sy > 0) KeyEvent.KEYCODE_DPAD_DOWN else KeyEvent.KEYCODE_DPAD_UP
                 }
+                Log.i(TAG, "摇杆发键 位移=(${sx.toInt()},${sy.toInt()}) → key=$code（19上/20下/21左/22右）")
                 key(code)
             }
 
@@ -355,8 +364,19 @@ private class PanelPresentation(
          * Presentation 窗口里，不在 Activity 的 decorView 下，系统不会自动提供。
          * 把 Activity 自己（ComponentActivity 就是 OnBackPressedDispatcherOwner）提供进去即可。
          */
+        /*
+         * 返回键宿主：**必须用面板自己的**，不能直接把 Activity 给进去。
+         *
+         * 2026-10-04 实测（父亲反馈「按 B 返回变成黑屏」）：
+         * 把 Activity 当 OnBackPressedDispatcherOwner 时，面板里的 NavHost
+         * 把栈弹空之后会继续落到 Activity 的默认返回行为 → 整个应用退到
+         * PICO 桌面，看起来就是黑屏。这里用自带 no-op 兜底的调度器：
+         * 面板栈能弹就弹，弹不动就什么都不做。
+         */
+        val backOwner = PanelBackOwner(activity)
+        cv.setViewTreeOnBackPressedDispatcherOwner(backOwner)
         cv.setContent {
-            CompositionLocalProvider(LocalOnBackPressedDispatcherOwner provides activity) {
+            CompositionLocalProvider(LocalOnBackPressedDispatcherOwner provides backOwner) {
                 content()
             }
         }
@@ -370,4 +390,24 @@ private class PanelPresentation(
 
         onReady(window!!.decorView)
     }
+}
+
+/**
+ * 面板窗口的返回栈宿主。
+ *
+ * 生命周期/ViewModelStore/SavedStateRegistry 都委托给宿主 Activity
+ * （Compose 需要它们），但**返回栈是自己的**，且栈底是 no-op：
+ * 这样面板里的 NavHost 弹到根之后不会再触发 Activity 的返回（退出应用）。
+ */
+private class PanelBackOwner(activity: ComponentActivity) :
+    OnBackPressedDispatcherOwner,
+    androidx.lifecycle.LifecycleOwner by activity,
+    androidx.lifecycle.ViewModelStoreOwner by activity,
+    androidx.savedstate.SavedStateRegistryOwner by activity {
+
+    /** 兜底：面板栈已空 —— 什么都不做（不退出应用） */
+    private val dispatcher = OnBackPressedDispatcher(Runnable { })
+
+    override val onBackPressedDispatcher: OnBackPressedDispatcher
+        get() = dispatcher
 }
