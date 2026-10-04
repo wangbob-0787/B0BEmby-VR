@@ -66,6 +66,32 @@ class VrRenderer(
     var videoSurface: android.view.Surface? = null
         private set
 
+    // ---- 面板层（UI 复用验证，2026-10-04）：VirtualDisplay → SurfaceTexture(OES) → 贴到虚拟屏 ----
+    //
+    // 面板 = 电视版那套 Compose 界面。渲染路径与视频完全一样（都是 OES 外部纹理），
+    // 因此复用同一个着色器程序 videoProgram，只是换一个纹理与 SurfaceTexture。
+    private var panelTex = 0
+    private var panelSurfaceTexture: android.graphics.SurfaceTexture? = null
+
+    /** 面板输出 surface，交给 PanelLayer 建虚拟显示器 */
+    @Volatile
+    var panelSurface: android.view.Surface? = null
+        private set
+
+    /** 面板纹理是否可用（可用时虚拟屏显示复用的界面，而不是静态占位图） */
+    @Volatile
+    var panelActive = false
+        private set
+
+    /** 面板纹理就绪回调（在 GL 线程触发，Activity 侧负责切主线程） */
+    @Volatile
+    var onPanelSurfaceReady: ((android.graphics.SurfaceTexture) -> Unit)? = null
+
+    // 最近一帧的虚拟屏布局（面板像素换算用，见 panelPixelAt）
+    private var lastScreenCenterY = 0f
+    private var lastScreenHalfH = 0f
+    private var lastScreenHalfW = 0f
+
     /** 释放视频管线（Activity onDestroy 时调，GL 资源仍由 GL 线程上下文管理） */
     fun releaseVideoPipeline() {
         runCatching { videoSurface?.release() }
@@ -307,6 +333,7 @@ class VrRenderer(
 
         createPlaceholderTexture()
         createVideoPipeline()
+        createPanelPipeline()
 
         GLES30.glEnable(GLES30.GL_DEPTH_TEST)
         GLES30.glClearColor(0.03f, 0.03f, 0.04f, 1f)   // 近黑空间（与 TV 版底色一致）
@@ -474,6 +501,11 @@ class VrRenderer(
         val screenHalfW = screenHalfH * 16f / 9f
         val screenCenterY = 1f - topMargin - screenHalfH
 
+        // 记录布局：面板像素换算（panelPixelAt）要用，保证「看到的」和「点到的」一致
+        lastScreenCenterY = screenCenterY
+        lastScreenHalfH = screenHalfH
+        lastScreenHalfW = screenHalfW
+
         // 1) 虚拟屏：播放中采样视频帧，否则显示状态文字
         val screenModel = M.mul(
             M.translate(0f, screenCenterY, 0f),
@@ -481,7 +513,11 @@ class VrRenderer(
         )
         if (videoActive) {
             updateVideoFrame()
-            drawVideoQuad(screenQuad, screenModel, vp)
+            drawOesQuad(screenQuad, screenModel, vp, videoTex)
+        } else if (panelActive) {
+            // 面板层：虚拟屏显示复用的电视版界面（不是静态占位图）
+            updatePanelFrame()
+            drawOesQuad(screenQuad, screenModel, vp, panelTex)
         } else {
             val hasScreenTex = screenTex != 0
             drawQuad(
@@ -555,6 +591,70 @@ class VrRenderer(
         }
     }
 
+    /**
+     * 面板渲染管线：OES 纹理 + SurfaceTexture + Surface。
+     *
+     * 与视频管线同构（见 createVideoPipeline），只是这条的输出 surface 交给
+     * PanelLayer 的虚拟显示器，由系统把 Compose 界面合成进来。
+     */
+    private fun createPanelPipeline() {
+        if (videoProgram == 0) {
+            Log.w(TAG, "视频着色器不可用，跳过面板管线")
+            return
+        }
+        val texArr = IntArray(1)
+        GLES30.glGenTextures(1, texArr, 0)
+        panelTex = texArr[0]
+        GLES30.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, panelTex)
+        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+
+        panelSurfaceTexture?.release()
+        val st = android.graphics.SurfaceTexture(panelTex)
+        panelSurfaceTexture = st
+        panelSurface?.release()
+        panelSurface = android.view.Surface(st)
+        panelActive = true
+        Log.i(TAG, "面板管线就绪: panelTex=$panelTex")
+        onPanelSurfaceReady?.invoke(st)
+    }
+
+    /** 面板帧到达后取最新帧（每帧调，与视频同一套 SurfaceTexture 机制） */
+    private fun updatePanelFrame() {
+        val st = panelSurfaceTexture ?: return
+        try {
+            st.updateTexImage()
+        } catch (e: Exception) {
+            Log.w(TAG, "面板 updateTexImage 失败: ${e.message}")
+        }
+    }
+
+    /**
+     * 视口坐标 → 面板像素坐标。
+     *
+     * 入参是 GL 归一化坐标（x 右为正、y **上**为正，范围约
+     * [-aspect, aspect] × [-1, 1]），与 onDrawFrame 里的正交投影同一坐标系；
+     * 返回 [x, y] 面板像素（0..PANEL_W, 0..PANEL_H）。
+     *
+     * 光标不在虚拟屏范围内返回 null —— 调用方据此把事件留给别的层
+     * （父亲定的分派规则：光标在播放屏幕/选片墙上才有动作，其他位置无反应）。
+     */
+    fun panelPixelAt(nx: Float, ny: Float): FloatArray? {
+        val halfW = lastScreenHalfW
+        val halfH = lastScreenHalfH
+        if (halfW <= 0f || halfH <= 0f) return null
+        val left = -halfW
+        val right = halfW
+        val bottom = lastScreenCenterY - halfH
+        val top = lastScreenCenterY + halfH
+        if (nx < left || nx > right || ny < bottom || ny > top) return null
+        val u = (nx - left) / (right - left)
+        val v = (top - ny) / (top - bottom)
+        return floatArrayOf(u * PANEL_W, v * PANEL_H)
+    }
+
     private var loggedFirstFrame = false
 
     private var lastRenderedScreenText = ""
@@ -598,13 +698,13 @@ class VrRenderer(
      * 与 [drawQuad] 分开是因为它绑定的是另一个 program 和纹理目标，
      * 共用会导致普通纹理采样器读 OES 纹理（黑帧）。
      */
-    private fun drawVideoQuad(quad: Quad, model: FloatArray, viewProj: FloatArray) {
-        if (videoProgram == 0 || videoTex == 0) return
+    private fun drawOesQuad(quad: Quad, model: FloatArray, viewProj: FloatArray, tex: Int) {
+        if (videoProgram == 0 || tex == 0) return
         val mvp = M.mul(viewProj, model)
         GLES30.glUseProgram(videoProgram)
         GLES30.glUniformMatrix4fv(videoMvpHandle, 1, false, mvp, 0)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
-        GLES30.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, videoTex)
+        GLES30.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, tex)
         GLES30.glUniform1i(videoTexHandle, 0)
         quad.bindAttribs(posHandle, videoUvHandle)
         quad.draw()
@@ -874,6 +974,10 @@ class VrRenderer(
     companion object {
         private const val TAG = "B0BEmbyVR"
         private const val POSTER_COUNT = 10
+
+        /** 面板像素尺寸（与 PanelLayer 保持一致：1080p 电视版布局直接可用） */
+        private const val PANEL_W = 1920f
+        private const val PANEL_H = 1080f
 
         /** 焦点底色：纯绿 #7ED97A（TV 版 secondary，用于焦点卡底色） */
         private val GREEN_FOCUSED = floatArrayOf(0.494f, 0.851f, 0.478f, 1f)

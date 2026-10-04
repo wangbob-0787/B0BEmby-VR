@@ -10,6 +10,7 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import androidx.activity.ComponentActivity
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -18,6 +19,7 @@ import com.xxxx.emby_vr.data.EmbyContent
 import com.xxxx.emby_vr.data.model.BaseItemDto
 import com.xxxx.emby_vr.data.remote.EmbyApi
 import com.xxxx.emby_vr.data.remote.HttpClient as EmbyHttpClient
+import com.xxxx.emby_vr.panel.PanelLayer
 import com.xxxx.emby_vr.vr.InputRouter
 import com.xxxx.emby_vr.vr.VrRenderer
 import com.xxxx.emby_vr.vr.VrSession
@@ -45,11 +47,19 @@ import javax.microedition.khronos.opengles.GL10
  * 当前走 PICO 的 2D 面板模式（不声明 pvr.app.type），系统把画面贴成空间面板；
  * 做真双目立体渲染时再接 OpenXR runtime。
  */
-class MainActivity : Activity() {
+class MainActivity : ComponentActivity() {
 
     private lateinit var glView: GLSurfaceView
     private lateinit var renderer: VrRenderer
     private val vrSession = VrSession()
+
+    /**
+     * 面板层（2026-10-04 新增）：承载复用的电视版 Compose 界面。
+     *
+     * 渲染：VirtualDisplay → SurfaceTexture → OES 纹理 → 贴到虚拟屏。
+     * 输入：光标坐标换算成面板像素后同进程派发（不走 INJECT_EVENTS）。
+     */
+    private lateinit var panel: PanelLayer
 
     /**
      * 手柄/按键输入 → UI 动作。
@@ -482,6 +492,16 @@ class MainActivity : Activity() {
 
         renderer = VrRenderer(this, vrSession)
 
+        /*
+         * 面板层（UI 复用验证，2026-10-04）：
+         * 渲染器在 GL 线程建好面板纹理后回调，这里把 SurfaceTexture 交给
+         * PanelLayer（它内部切主线程建虚拟显示器与 Presentation）。
+         */
+        panel = PanelLayer(this) {
+            Log.i(TAG, "PANEL UI 按钮被点击: 次数=${panel.clickCount}")
+        }
+        renderer.onPanelSurfaceReady = { st -> panel.attach(st) }
+
         glView = GLSurfaceView(this).apply {
             setEGLContextClientVersion(3)
             setRenderer(renderer)
@@ -523,6 +543,28 @@ class MainActivity : Activity() {
 
         // 请求焦点：手柄的悬停/按键事件必须先有焦点才会送到本视图
         glView.requestFocus()
+
+        /*
+         * 面板层自动自测：面板就绪后自动派发一次点击。
+         *
+         * 为什么要自动点：验证「输入通道通不通」不该依赖人工操作 ——
+         * 自动点一次，日志里出现「PANEL UI 按钮被点击」就说明通道打通，
+         * 拿不到 logcat 时看屏上按钮数字也会涨。
+         */
+        val panelSelfTest = object : Runnable {
+            private var tries = 0
+            override fun run() {
+                if (panel.ready) {
+                    Log.i(TAG, "PANEL 自测: 派发一次点击 (220, 300)")
+                    panel.tap(220f, 300f)
+                } else if (tries++ < 20) {
+                    glView.postDelayed(this, 1000)
+                } else {
+                    Log.w(TAG, "PANEL 自测: 面板一直没就绪，跳过")
+                }
+            }
+        }
+        glView.postDelayed(panelSelfTest, 3000)
 
         // 启动 XR 会话（失败不崩，退化为普通 2D 渲染，便于在没有头显时调试）
         val ok = vrSession.start(this)
@@ -670,6 +712,7 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         stopPlaybackInternal()
+        if (::panel.isInitialized) panel.release()
         renderer.releaseVideoPipeline()
         scope.cancel()
         vrSession.stop()
@@ -707,6 +750,39 @@ class MainActivity : Activity() {
      * 因此在 Activity 最外层拦下所有触摸事件，交给 InputRouter 统一处理。
      */
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        /*
+         * 面板层优先（2026-10-04）：光标落在虚拟屏范围内时，事件换算成面板像素
+         * 后派发进复用的界面（同进程 dispatchTouchEvent，不需要 INJECT_EVENTS）。
+         *
+         * 换算与渲染共用同一套布局常量（renderer.panelPixelAt），
+         * 保证「看到的位置」和「点到的位置」一致。
+         */
+        if (::panel.isInitialized && panel.ready && renderer.panelActive &&
+            ::glView.isInitialized && glView.width > 0 && glView.height > 0
+        ) {
+            val aspect = glView.width.toFloat() / glView.height.toFloat().coerceAtLeast(1f)
+            val nx = (event.x / glView.width * 2f - 1f) * aspect
+            val ny = 1f - event.y / glView.height * 2f
+            val pix = renderer.panelPixelAt(nx, ny)
+            if (pix != null) {
+                val action = event.actionMasked
+                if (action == MotionEvent.ACTION_DOWN ||
+                    action == MotionEvent.ACTION_MOVE ||
+                    action == MotionEvent.ACTION_UP
+                ) {
+                    panel.dispatch(pix[0], pix[1], action)
+                    if (action != MotionEvent.ACTION_MOVE) {
+                        Log.i(
+                            TAG,
+                            "PANEL 光标→面板: (${event.x.toInt()},${event.y.toInt()}) → " +
+                                "(${pix[0].toInt()},${pix[1].toInt()}) action=$action",
+                        )
+                    }
+                    return true
+                }
+            }
+        }
+
         if (::glView.isInitialized) {
             val handled = input.onTouchEvent(
                 event = event,
