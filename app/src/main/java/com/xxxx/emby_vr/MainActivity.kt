@@ -533,6 +533,15 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        // 返回键先给面板：复用界面的导航栈（NavHost）在面板窗口里，
+        // 不进面板就等于「返回」失效（实测 PICO 面板模式基本不发按键，
+        // 这里做兜底，主通道是扳机手势，见 PanelLayer.dispatch）
+        if (keyCode == KeyEvent.KEYCODE_BACK && ::panel.isInitialized &&
+            panel.ready && renderer.panelActive
+        ) {
+            panel.key(KeyEvent.KEYCODE_BACK)
+            return true
+        }
         // 手柄/遥控按键先给 InputRouter；它不认的（如音量键）再交给系统
         if (input.onKeyDown(event)) return true
         return super.onKeyDown(keyCode, event)
@@ -579,22 +588,22 @@ class MainActivity : ComponentActivity() {
             val pix = renderer.panelPixelAt(nx, ny)
             if (pix != null) {
                 val action = event.actionMasked
-                if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_UP) {
+                if (action == MotionEvent.ACTION_DOWN ||
+                    action == MotionEvent.ACTION_MOVE ||
+                    action == MotionEvent.ACTION_UP
+                ) {
                     /*
-                     * 扳机 = OK 键（2026-10-04 实机定位）。
-                     *
-                     * 电视版界面是遥控器模型：输入框/按钮靠焦点 + OK 激活，
-                     * 光标位置对它没有意义（登录页的 clickable 都被注释掉了）。
-                     * 所以这里把扳机翻译成 DPAD_CENTER 发给面板，
-                     * 面板里当前获得焦点的元素即被激活。
+                     * 面板输入统一走 PanelLayer.dispatch：它把「扳机 + 光标」
+                     * 翻译成电视版界面认识的按键（轻扣=OK、扣住不动=返回、
+                     * 扣住拖动=方向键），详见 PanelLayer.dispatch 的说明。
                      */
+                    panel.dispatch(pix[0], pix[1], action)
                     if (action == MotionEvent.ACTION_DOWN) {
                         Log.i(
                             TAG,
-                            "面板 OK: 光标 (${event.x.toInt()},${event.y.toInt()}) → " +
+                            "面板光标: (${event.x.toInt()},${event.y.toInt()}) → " +
                                 "面板像素 (${pix[0].toInt()},${pix[1].toInt()})",
                         )
-                        panel.key(KeyEvent.KEYCODE_DPAD_CENTER)
                     }
                     return true
                 }

@@ -78,6 +78,12 @@ class PanelLayer(
          */
         private const val SLOP_PX = 12f
         private const val SLOP_PX2 = SLOP_PX * SLOP_PX
+
+        /** 拖动时每移动这么多面板像素，就发一次方向键（扣住扳机左右/上下拖 = 移动焦点） */
+        private const val STEP_PX = 72f
+
+        /** 扣住扳机不动超过这个时长 = 返回上一层 */
+        private const val LONG_PRESS_MS = 600L
     }
 
     /** 面板是否可用（Presentation 已显示、decorView 已就绪） */
@@ -98,6 +104,10 @@ class PanelLayer(
     /** 是否处于按下状态（含拖动），以及是否已越过阈值进入拖动 */
     private var isDown = false
     private var isDragging = false
+
+    /** 上一次发出方向键时的位置（拖动过程中按步长发键） */
+    private var lastStepPx = 0f
+    private var lastStepPy = 0f
 
     /**
      * GL 线程建好 OES 纹理与 SurfaceTexture 后调用。
@@ -169,70 +179,81 @@ class PanelLayer(
     }
 
     /**
-     * 把一次触摸事件派发进面板窗口。
+     * 把一次「扳机 + 光标」操作翻译成电视版界面认识的按键。
+     *
+     * ## 为什么不是触摸（2026-10-04 实机定位）
+     *
+     * 电视版界面是**遥控器（焦点 + OK）模型**：按钮/输入框靠焦点 + OK 激活，
+     * 列表靠方向键滚动，登录页的 `clickable` 甚至是注释掉的
+     * （LoginScreen.kt:315）。光标模拟触摸对这类组件不生效 ——
+     * 实测表现就是「光标能指到按钮，点不动」。
+     *
+     * PICO 面板模式只给两样输入：光标坐标 + 扳机（BTN_TOUCH DOWN/UP），
+     * 没有任何按键事件（实测 dispatchKeyEvent 一条都没收到）。所以在这两样上
+     * 合成一套遥控器语义：
+     *
+     * | 操作 | 含义 |
+     * |---|---|
+     * | 轻扣扳机（不动） | OK —— 激活当前焦点元素 |
+     * | 扣住不动 600ms | 返回 —— 上一层 |
+     * | 扣住并拖动 | 方向键 —— 按拖动主轴移动焦点，每 72px 发一次 |
      *
      * 坐标是**面板像素坐标**（0..W, 0..H），由调用方换算。
-     * 用 `dispatchTouchEvent` 而不是 `injectInputEvent`：同进程派发，
-     * 不需要 INJECT_EVENTS（该权限在 PICO 上拿不到）。
-     *
-     * ## 为什么要做「按下后小幅飘移不算拖动」（2026-10-04 实机定位）
-     *
-     * 实测日志：扳机按下与抬起时激光光标位置差约 100 像素（面板像素），
-     * Compose 的点击判定要求按下→抬起期间指针不超出 touch slop，
-     * 于是每一次点击都被判成「拖动」而取消 —— 表现就是**光标能指到按钮但点不动**。
-     * 电视版在电视上用遥控器按键导航，压根没有指针，所以这块在复用界面里无代码可抄，
-     * 必须在派发层补：按下时锁定位置，位移小于阈值当抖动吞掉，越过阈值才算拖动
-     * （拖动正是父亲定的「按住扳机拖 = 拖进度条 / 拖选片墙」所要的语义）。
      */
     fun dispatch(px: Float, py: Float, action: Int) {
-        val v = decor ?: return
+        if (decor == null) return
         val now = SystemClock.uptimeMillis()
         when (action) {
             MotionEvent.ACTION_DOWN -> {
                 downTime = now
                 downPx = px
                 downPy = py
+                lastStepPx = px
+                lastStepPy = py
                 isDown = true
                 isDragging = false
-                send(v, px, py, action, now)
             }
 
             MotionEvent.ACTION_MOVE -> {
                 if (!isDown) return
+                val dx = px - downPx
+                val dy = py - downPy
                 if (!isDragging) {
-                    val dx = px - downPx
-                    val dy = py - downPy
-                    if (dx * dx + dy * dy < SLOP_PX2) return   // 抖动：吞掉，不打扰界面
-                    isDragging = true                          // 越过阈值 → 进入拖动
-                    Log.i(TAG, "面板进入拖动: 从 (${downPx.toInt()},${downPy.toInt()}) 起")
+                    if (dx * dx + dy * dy < SLOP_PX2) return       // 手抖：不算拖动
+                    isDragging = true
+                    lastStepPx = px
+                    lastStepPy = py
+                    Log.i(TAG, "面板开始拖方向键: 起点 (${downPx.toInt()},${downPy.toInt()})")
+                    return
                 }
-                send(v, px, py, action, now)
+                // 拖动 = 方向键：按步长发，主轴决定方向
+                val sx = px - lastStepPx
+                val sy = py - lastStepPy
+                if (kotlin.math.abs(sx) < STEP_PX && kotlin.math.abs(sy) < STEP_PX) return
+                val code = if (kotlin.math.abs(sx) >= kotlin.math.abs(sy)) {
+                    if (sx > 0) KeyEvent.KEYCODE_DPAD_RIGHT else KeyEvent.KEYCODE_DPAD_LEFT
+                } else {
+                    if (sy > 0) KeyEvent.KEYCODE_DPAD_DOWN else KeyEvent.KEYCODE_DPAD_UP
+                }
+                lastStepPx = px
+                lastStepPy = py
+                key(code)
             }
 
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 if (!isDown) return
                 isDown = false
-                val dragging = isDragging
+                val dragged = isDragging
                 isDragging = false
-                // 没拖动 → 抬起仍用按下时的位置，让 Compose 收到一次干净的点击
-                val tx = if (dragging) px else downPx
-                val ty = if (dragging) py else downPy
-                send(v, tx, ty, action, now)
+                if (dragged) return                                // 拖动结束：不发 OK
+                if (now - downTime >= LONG_PRESS_MS) {
+                    Log.i(TAG, "面板长按 → 返回")
+                    key(KeyEvent.KEYCODE_BACK)
+                } else {
+                    Log.i(TAG, "面板轻扣 → OK (${px.toInt()},${py.toInt()})")
+                    key(KeyEvent.KEYCODE_DPAD_CENTER)
+                }
             }
-
-            else -> send(v, px, py, action, now)
-        }
-    }
-
-    private fun send(v: View, px: Float, py: Float, action: Int, now: Long) {
-        val ev = MotionEvent.obtain(downTime, now, action, px, py, 0)
-        ev.source = InputDevice.SOURCE_TOUCHSCREEN
-        try {
-            v.dispatchTouchEvent(ev)
-        } catch (t: Throwable) {
-            Log.e(TAG, "面板派发失败: ${t.javaClass.simpleName}: ${t.message}")
-        } finally {
-            ev.recycle()
         }
     }
 
