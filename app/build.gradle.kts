@@ -145,6 +145,10 @@ dependencies {
     implementation(libs.nanohttpd)
 
     implementation(libs.media3.exoplayer)
+    // HLS 模块（2026-10-05 父亲实测：电视直播、部分转码片源"起播失败"，
+    // 日志 ClassNotFoundException: media3.exoplayer.hls.HlsMediaSource$Factory
+    // —— Emby 给直播和需要转码的内容返回 HLS 播放列表，缺这个模块就放不出来）
+    implementation(libs.media3.exoplayer.hls)
     implementation(libs.media3.ui)
     implementation(libs.media3.session)
     implementation(libs.media3.datasource.okhttp)
