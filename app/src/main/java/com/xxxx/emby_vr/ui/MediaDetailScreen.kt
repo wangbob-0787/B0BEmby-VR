@@ -17,6 +17,7 @@ import androidx.compose.ui.res.stringResource
 import com.xxxx.emby_vr.R
 import androidx.compose.ui.layout.ContentScale
 import coil3.compose.AsyncImage
+import com.xxxx.emby_vr.panel.vrClickTarget
 import com.xxxx.emby_vr.ui.components.BuildItem
 import com.xxxx.emby_vr.Utils
 import androidx.compose.foundation.background
@@ -415,6 +416,11 @@ fun MediaDetailScreen(
                                     .width(DetailButtonWidth)
                                     .height(DetailButtonHeight)
                                     .focusRequester(seasonFocusers[index])
+                                    .vrClickTarget(
+                                        key = "season:$index",
+                                        focusRequester = seasonFocusers[index],
+                                        onActivate = { selectedSeasonIndex = index },
+                                    )
                                     .onFocusChanged { if (it.isFocused) lastPillIndex = index }
                                     .focusProperties {
                                         // 上键回「续播」按钮；下键进集行"上次停的那一集"（默认第一集）
@@ -872,6 +878,12 @@ private fun ActionTile(
             .width(DetailButtonWidth)
             .height(DetailButtonHeight)
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
+            // 登记进控件坐标表（VR：扣扳机按光点命中）
+            .vrClickTarget(
+                key = "action:$label",
+                focusRequester = focusRequester,
+                onActivate = onClick,
+            )
             // ↑ 回背景（顶部）；↓ 落到**当前季**那颗胶囊（多季时不会跑到第一季去）
             .focusProperties {
                 if (upFocus != null) up = upFocus
@@ -939,6 +951,12 @@ private fun EpisodeRow(
             .fillMaxWidth()
             .then(
                 if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier
+            )
+            // 登记进控件坐标表：扣扳机点集行 = 播这一集
+            .vrClickTarget(
+                key = "episode:${episode.id ?: index}",
+                focusRequester = focusRequester,
+                onActivate = onPlay,
             )
     ) {
         Row(

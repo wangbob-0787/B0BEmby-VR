@@ -16,6 +16,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -27,6 +28,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -70,6 +72,18 @@ import com.xxxx.emby_vr.ui.viewmodel.SearchViewModel
 fun PanelApp(onPlayRequested: (mediaId: String, positionTicks: Long) -> Unit) {
     val navController = rememberNavController()
     val mainViewModel: MainViewModel = viewModel()
+
+    /*
+     * 切屏 = 界面真的发生了动作。
+     *
+     * 点击生效的判定靠这个计数器（见 [PanelSignals]）：鼠标式点击之后
+     * 220ms 内计数器没变，就说明点击没起作用，补发 OK 键。
+     */
+    DisposableEffect(navController) {
+        val listener = NavController.OnDestinationChangedListener { _, _, _ -> PanelSignals.bump() }
+        navController.addOnDestinationChangedListener(listener)
+        onDispose { navController.removeOnDestinationChangedListener(listener) }
+    }
 
     val isLoaded = mainViewModel.isLoaded
     val isLoggedIn = mainViewModel.isLoggedIn

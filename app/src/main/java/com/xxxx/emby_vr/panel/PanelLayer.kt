@@ -76,10 +76,11 @@ class PanelLayer(
         /**
          * 点击/拖动的分界（面板像素）。
          *
-         * 240dpi 下面板 1dp = 1.5px，取系统惯例 8dp = 12px 的 touch slop：
-         * 按下后位移小于它算手抖（仍按点击处理），超过它才算拖动。
+         * 按控件实际尺寸反推（父亲 2026-10-04 定的算法）：面板 1920x1080 下，
+         * 详情页按钮约 162x66 像素，是界面上最小的可点控件 —— 分界不能超过它高度的一半，
+         * 否则扣扳机时手一飘就被当成拨摇杆。取 30 像素：30 内算点击，超过才算摇杆拖动。
          */
-        private const val SLOP_PX = 12f
+        private const val SLOP_PX = 30f
         private const val SLOP_PX2 = SLOP_PX * SLOP_PX
 
         /**
@@ -89,8 +90,8 @@ class PanelLayer(
          * 父亲 2026-10-04 定：摇杆用来滚动列表 —— 所以推住不放要能连续滚（按步长反复发方向键），
          * 但不能一次推就把焦点连飞十几格，因此加 130ms 限速（约每秒 7 格，滚动顺滑）。
          */
-        private const val STEP_PX = 110f
-        private const val FIRE_INTERVAL_MS = 130L
+        private const val STEP_PX = 40f
+        private const val FIRE_INTERVAL_MS = 120L
 
         /**
          * 指针离面板边缘多近算「贴边」。
@@ -104,6 +105,17 @@ class PanelLayer(
         /** 方向记忆的有效窗口：这段时间内滚过，贴边无位移时沿用同方向 */
         private const val DIR_MEMORY_MS = 2000L
 
+        /**
+         * 「鼠标式点击」之后等多久判定它有没有真的生效。
+         *
+         * 2026-10-04 父亲实测：指着海报扣扳机没反应。日志里
+         * `面板点击: 鼠标式被接住=true`，但界面一点动作都没有 —— 说明
+         * 「被接住」这个返回值不可信（悬停事件也会返回 true），不能拿它当
+         * 「点击生效」的证据。改成看**界面的真实反应**：导航变了 / 开始播放了
+         * 才算生效；否则补一个 OK 键（电视版界面本来就是「焦点 + OK」模型）。
+         */
+        private const val CLICK_VERIFY_MS = 220L
+
     }
 
     /** 面板是否可用（Presentation 已显示、decorView 已就绪） */
@@ -115,6 +127,13 @@ class PanelLayer(
     private var virtualDisplay: VirtualDisplay? = null
     private var presentation: PanelPresentation? = null
     private var decor: View? = null
+
+    /** 面板自己的返回栈宿主（Presentation 与本类共用同一个实例） */
+    private var backOwner: PanelBackOwner? = null
+
+    /** 点击前的界面动作序号：用来判定鼠标式点击有没有真生效 */
+    private var clickSignalBefore = 0L
+    private val clickVerify = Runnable { verifyClick() }
 
     /** 本次按下的锁定位置（抬起时若没拖动，就用它收尾成一次干净的点击） */
     private var downPx = 0f
@@ -181,7 +200,8 @@ class PanelLayer(
             )
             virtualDisplay = vd
 
-            val p = PanelPresentation(activity, vd.display, activity, content) { view ->
+            val owner = backOwner ?: PanelBackOwner(activity).also { backOwner = it }
+            val p = PanelPresentation(activity, vd.display, activity, content, owner) { view ->
                 decor = view
                 ready = true
                 Log.i(TAG, "面板层就绪: ${W}x$H dpi=$DPI displayId=${vd.display.displayId}")
@@ -216,9 +236,50 @@ class PanelLayer(
         }
     }
 
+    /** 方向名（日志用，方便一眼看出「发的是哪个方向」） */
+    private fun dirName(code: Int): String = when (code) {
+        KeyEvent.KEYCODE_DPAD_UP -> "上"
+        KeyEvent.KEYCODE_DPAD_DOWN -> "下"
+        KeyEvent.KEYCODE_DPAD_LEFT -> "左"
+        KeyEvent.KEYCODE_DPAD_RIGHT -> "右"
+        else -> "?"
+    }
+
+    /**
+     * 点击是否真的生效 —— 用**界面反应**判定，不看事件返回值。
+     *
+     * 2026-10-04 父亲实测：指着海报扣扳机没反应。日志里
+     * `鼠标式被接住=true`（悬停事件也返回 true，这个返回值不说明点击生效），
+     * 所以改成看界面自己动没动：导航序号变了 = 鼠标点击已生效，跳过 OK；
+     * 没变 = 电视版界面不吃鼠标，补发 OK 键（它就是「焦点 + OK」模型）。
+     */
+    private fun verifyClick() {
+        if (PanelSignals.seq != clickSignalBefore) {
+            Log.i(TAG, "面板点击: 鼠标式已生效（界面有动作），跳过 OK")
+            return
+        }
+        Log.i(TAG, "面板点击: 鼠标式无动作 → 补发 OK 键")
+        key(KeyEvent.KEYCODE_DPAD_CENTER)
+    }
+
     /** 指针是否贴在面板边缘（贴边后没有位移，需要按同方向续滚） */
     private fun isNearEdge(px: Float, py: Float): Boolean =
         px <= EDGE_PX || py <= EDGE_PX || px >= W - EDGE_PX || py >= H - EDGE_PX
+
+    /**
+     * 返回上一层（手柄 B 键 / 返回键）。
+     *
+     * 2026-10-04 实机定位「按 B 黑屏」的真正原因：以前是往面板窗口里派发
+     * 一个 BACK 按键，而面板窗口是 `Presentation`（本质是 Dialog），
+     * Dialog 对没人消费的 BACK 的默认行为就是**把自己关掉** ——
+     * 于是面板消失，只剩黑底。现在改成直接调面板自己的返回栈：
+     * 能弹就弹一层，弹不动就什么都不做，绝不关窗口。
+     */
+    fun back() {
+        val owner = backOwner ?: return
+        Log.i(TAG, "面板返回: 交给面板导航栈")
+        owner.onBackPressedDispatcher.onBackPressed()
+    }
 
     /**
      * 鼠标式点击（父亲 2026-10-04 要求「光标指哪儿、扣扳机就激活哪儿」）。
@@ -365,15 +426,28 @@ class PanelLayer(
                 if (!isDragging) {
                     if (dx * dx + dy * dy < SLOP_PX2) return       // 手抖：不算摇杆
                     isDragging = true
+                    /*
+                     * 识别成摇杆的**第一步立刻走**（父亲 2026-10-04 实测）：
+                     * 原来这一步只做标记、不发键，小推一下（几十像素）就完全没反应，
+                     * 手感是「光标明明在画面里，推了却不动」。
+                     * 方向就用「按下点 → 当前点」，这是摇杆这一次推动的主方向。
+                     */
                     stepPx = px
                     stepPy = py
                     lastFireAt = now
-                    // 方向测量：起始点 → 当前点（判断 PICO 摇杆位移的符号）
-                    Log.i(
-                        TAG,
-                        "摇杆测量 起点=(${downPx.toInt()},${downPy.toInt()}) " +
-                            "当前=(${px.toInt()},${py.toInt()}) 位移=(${dx.toInt()},${dy.toInt()})",
-                    )
+                    val dir = dirKeyOf(dx, dy)
+                    if (dir != 0) {
+                        lastDirKey = dir
+                        lastDirKeyGlobal = dir
+                        lastDirKeyGlobalAt = now
+                        pressArrows++
+                        Log.i(
+                            TAG,
+                            "摇杆起始步 位移=(${dx.toInt()},${dy.toInt()}) → " +
+                                "方向=${dirName(dir)} key=$dir",
+                        )
+                        key(dir)
+                    }
                     return
                 }
                 // 摇杆滚动：从上一次发键的位置算位移，够一格且过了限速就再发一格
@@ -387,18 +461,15 @@ class PanelLayer(
                     stepPx = px
                     stepPy = py
                     lastFireAt = now
-                    val code = if (kotlin.math.abs(sx) >= kotlin.math.abs(sy)) {
-                        if (sx > 0) KeyEvent.KEYCODE_DPAD_RIGHT else KeyEvent.KEYCODE_DPAD_LEFT
-                    } else {
-                        if (sy > 0) KeyEvent.KEYCODE_DPAD_DOWN else KeyEvent.KEYCODE_DPAD_UP
-                    }
+                    val code = dirKeyOf(sx, sy)
                     lastDirKey = code
                     lastDirKeyGlobal = code
                     lastDirKeyGlobalAt = now
                     pressArrows++
                     Log.i(
                         TAG,
-                        "摇杆发键 位移=(${sx.toInt()},${sy.toInt()}) → key=$code（19上/20下/21左/22右）",
+                        "摇杆发键 指针位移=(${sx.toInt()},${sy.toInt()}) → " +
+                            "方向=${dirName(code)} key=$code（19上/20下/21左/22右）",
                     )
                     key(code)
                     return
@@ -447,19 +518,42 @@ class PanelLayer(
                     return
                 }
                 /*
-                 * 双通道点击（2026-10-04 排查用）：
-                 *   1) 按光标位置送一次触摸点击 —— 对自绘 clickable 组件有效
-                 *   2) 送 OK 键 —— 对电视版「焦点 + OK」组件有效
-                 * 两条都发、各自记录是否被界面接住，实机看日志即可确定哪条有效，
-                 * 确认后删掉多余的那条（避免同一个按钮被激活两次）。
+                 * 一次点击 = 鼠标式点击 + 「真的没反应就补 OK 键」。
+                 *
+                 * 双通道的原因（2026-10-04 实机两轮反馈）：
+                 *   - 指针式点击对着自绘 `clickable` 组件有效（登录页、添加服务器按钮）
+                 *   - 电视版的海报卡是 TV 库的 Surface，实测吃鼠标事件但不动作
+                 * 所以先发鼠标式（保留「指哪儿点哪儿」），等 220ms 看界面有没有反应，
+                 * 没反应再补 OK —— OK 打在**当前焦点**上，而焦点已被悬停跟随指针移过来了。
                  */
+                /*
+                 * VR 语义（父亲 2026-10-04 定案）：扣扳机时才去算「光点落在哪个控件上」，
+                 * 命中就把焦点移过去并触发它；落在空白处则什么都不做。
+                 * 查表用的是**抬起时的光点位置**（他瞄哪儿就是哪儿）。
+                 */
+                val target = ClickTargets.findAt(px, py)
+                if (target != null) {
+                    Log.i(TAG, "落点命中控件: $target → 聚焦并触发")
+                    target.focus?.invoke()
+                    // 焦点事务要下一帧才生效，动作推到下一帧，避免"没聚焦就被点"
+                    decor?.post {
+                        runCatching { target.activate() }
+                            .onFailure { Log.e(TAG, "控件触发失败: ${it.javaClass.simpleName}: ${it.message}") }
+                    }
+                    return
+                }
+                if (ClickTargets.size() > 0) {
+                    // 这一屏已经接入坐标表，说明就是点在空白处 → 不动作
+                    Log.i(TAG, "落点未命中任何控件（空白处）→ 不动作 位置=(${px.toInt()},${py.toInt()})")
+                    return
+                }
+                // 这一屏还没接入坐标表：退回旧的「鼠标式点击 + 验证」通道，保证其它屏可用
+                Log.i(TAG, "该屏未接入坐标表 → 退回鼠标式点击")
+                clickSignalBefore = PanelSignals.seq
                 val mouseHit = mouseClick(px, py)
                 Log.i(TAG, "面板点击: 鼠标式被接住=$mouseHit 位置 (${px.toInt()},${py.toInt()})")
-                if (!mouseHit) {
-                    // 鼠标式没人接 → 回退到「焦点 + OK」通道（电视版原有语义）
-                    Log.i(TAG, "面板点击: 鼠标式无响应 → 回退发 OK 键")
-                    key(KeyEvent.KEYCODE_DPAD_CENTER)
-                }
+                decor?.removeCallbacks(clickVerify)
+                decor?.postDelayed(clickVerify, CLICK_VERIFY_MS)
             }
         }
     }
@@ -478,6 +572,7 @@ class PanelLayer(
         virtualDisplay = null
         decor = null
         ready = false
+        ClickTargets.clear()
     }
 }
 
@@ -493,12 +588,20 @@ private class PanelPresentation(
     display: Display,
     private val activity: ComponentActivity,
     private val content: @Composable () -> Unit,
+    private val backOwner: PanelBackOwner,
     private val onReady: (View) -> Unit,
 ) : Presentation(outer, display, android.R.style.Theme_Material_NoActionBar_Fullscreen) {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
+        /*
+         * 面板不是「弹窗」，绝不能按返回就被关掉（2026-10-04 父亲实测「按 B 黑屏」）：
+         * Presentation 继承 Dialog，Dialog 对没人消费的返回键默认行为是关闭自己
+         * —— 面板一关，VR 里就只剩黑底。这里两道保险：
+         *   1) 不可取消（isCancelable=false）
+         *   2) 返回键转交面板自己的导航栈（弹一层；栈空则什么都不做）
+         */
+        setCancelable(false)
         val cv = ComposeView(context)
         /*
          * 必须让面板视图拿到焦点，否则 Compose 收不到按键（2026-10-04 实测）：
@@ -527,13 +630,11 @@ private class PanelPresentation(
         /*
          * 返回键宿主：**必须用面板自己的**，不能直接把 Activity 给进去。
          *
-         * 2026-10-04 实测（父亲反馈「按 B 返回变成黑屏」）：
-         * 把 Activity 当 OnBackPressedDispatcherOwner 时，面板里的 NavHost
-         * 把栈弹空之后会继续落到 Activity 的默认返回行为 → 整个应用退到
-         * PICO 桌面，看起来就是黑屏。这里用自带 no-op 兜底的调度器：
-         * 面板栈能弹就弹，弹不动就什么都不做。
+         * 2026-10-04 实测（父亲反馈「按 B 返回变成黑屏」）：面板窗口是
+         * Presentation（Dialog），没人消费的 BACK 会让 Dialog 关掉自己 ——
+         * 面板一关就只剩黑底。所以：窗口不可取消 + BACK 一律转交面板导航栈
+         * （见 [PanelBackOwner] 与 [PanelLayer.back]）。
          */
-        val backOwner = PanelBackOwner(activity)
         cv.setViewTreeOnBackPressedDispatcherOwner(backOwner)
         cv.setContent {
             CompositionLocalProvider(LocalOnBackPressedDispatcherOwner provides backOwner) {
@@ -549,6 +650,16 @@ private class PanelPresentation(
         }
 
         onReady(window!!.decorView)
+    }
+
+    /**
+     * 返回键兜底：**绝不关面板**。
+     *
+     * 面板窗口是 Dialog，默认行为是把自己关掉（父亲实测就是「黑屏」）。
+     * 这里改成转交面板导航栈：能弹一层就弹一层，栈空什么都不做。
+     */
+    override fun onBackPressed() {
+        backOwner.onBackPressedDispatcher.onBackPressed()
     }
 }
 
@@ -570,4 +681,23 @@ private class PanelBackOwner(private val activity: ComponentActivity) : OnBackPr
     /** OnBackPressedDispatcherOwner 同时是 LifecycleOwner，直接用宿主的 */
     override val lifecycle: androidx.lifecycle.Lifecycle
         get() = activity.lifecycle
+}
+
+/**
+ * 面板界面的「动作信号」计数器。
+ *
+ * 2026-10-04 为什么需要它：判断一次点击有没有生效，**不能信事件返回值**
+ * （鼠标点击返回 true 只说明事件被视图接了，不代表界面有动作 ——
+ * 悬停事件也会返回 true，就是它把上一轮误导了）。这里让界面在真正
+ * 发生动作时（导航切屏 / 开始播放）把计数器加一，点击后对比计数：
+ * 变了 = 鼠标式点击生效；没变 = 补发 OK 键（电视版界面是「焦点 + OK」模型）。
+ */
+object PanelSignals {
+    @Volatile
+    var seq: Long = 0
+        private set
+
+    fun bump() {
+        seq++
+    }
 }

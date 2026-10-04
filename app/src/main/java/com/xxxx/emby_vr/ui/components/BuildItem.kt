@@ -30,6 +30,7 @@ import coil3.compose.AsyncImage
 import coil3.request.ImageRequest
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.focus.FocusRequester
@@ -37,6 +38,7 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import kotlinx.coroutines.delay
+import com.xxxx.emby_vr.panel.vrClickTarget
 import com.xxxx.emby_vr.ui.FocusMemory
 import com.xxxx.emby_vr.util.DiagLog
 import androidx.compose.ui.res.stringResource
@@ -116,27 +118,21 @@ fun BuildItem(
     Surface(
         onClick = onItemClick,
         shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(12.dp)),
-        // P1 视觉对齐（2026-09-27）：焦点态改官方 Emby 的绿色描边（原来是白色描边 + 白底反色）
-        border = ClickableSurfaceDefaults.border(
-            focusedBorder = Border(
-                BorderStroke(
-                    2.dp,
-                    MaterialTheme.colorScheme.secondary
-                )
-            )
-        ),
-        // 放大倍数收到 1.06：1.1 时会被所在行裁掉边缘（父亲 2026-10-02）
-        scale = ClickableSurfaceDefaults
-            .scale(focusedScale = 1.06f),
+        /*
+         * 焦点态视觉**不要**（父亲 2026-10-04）：VR 里用户靠光点判断位置，
+         * 电视版的绿框 + 放大是给遥控器用户看的，VR 里只会干扰。
+         * 焦点本身仍然要（扣扳机的确认键要打在它上面），只是不画出来。
+         */
+        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
         colors = ClickableSurfaceDefaults.colors(
             // 卡片底色改全透明（2026-10-02 GPU 实测）：原来每张卡垫一层 20% 黑，
             // 海报完全盖住它，却要多付一次整卡面积的混合（同屏十来张 = 一屏多余混合）。
             // 焦点态保留高亮（同屏只有一张卡带焦点）。
             containerColor = Color.Transparent,
-            focusedContainerColor = Color.Black.copy(alpha = 0.35f),
+            focusedContainerColor = Color.Transparent,
             contentColor = MaterialTheme.colorScheme.onSurface,
             pressedContentColor = MaterialTheme.colorScheme.secondary,
-            focusedContentColor = MaterialTheme.colorScheme.secondary
+            focusedContentColor = MaterialTheme.colorScheme.onSurface
         ),
 
         modifier = modifier
@@ -152,6 +148,15 @@ fun BuildItem(
                 }
             }
             .focusRequester(focusAnchor)
+            /*
+             * 登记进控件坐标表（VR 语义：扣扳机时按光点位置查表命中）。
+             * 卡片是列表项，滚动出去/切屏会自动摘除，不会留幽灵条目。
+             */
+            .vrClickTarget(
+                key = "card:$itemId",
+                focusRequester = focusAnchor,
+                onActivate = onItemClick,
+            )
             .focusProperties {
                 if (upFocus != null) up = upFocus
                 if (downFocus != null) down = downFocus

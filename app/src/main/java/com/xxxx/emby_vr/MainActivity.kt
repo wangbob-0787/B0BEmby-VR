@@ -102,7 +102,8 @@ class MainActivity : ComponentActivity() {
                 if (renderer.videoActive) togglePlayPause()
             }
             InputRouter.Action.BACK -> {
-                if (renderer.videoActive) stopPlayback() else panelKey(KeyEvent.KEYCODE_BACK)
+                if (renderer.videoActive) stopPlayback()
+                else if (::panel.isInitialized && panel.ready && renderer.panelActive) panel.back()
             }
             InputRouter.Action.PLAY_PAUSE -> if (renderer.videoActive) togglePlayPause()
             InputRouter.Action.SEEK_BACK -> if (renderer.videoActive) seekBy(-10_000)
@@ -531,6 +532,7 @@ class MainActivity : ComponentActivity() {
     private fun onPanelPlayRequested(mediaId: String, positionTicks: Long) {
         if (mediaId.isBlank()) return
         Log.i(TAG, "面板请求播放: mediaId=$mediaId positionTicks=$positionTicks")
+        com.xxxx.emby_vr.panel.PanelSignals.bump()
         playMedia(mediaId, positionTicks)
     }
 
@@ -567,7 +569,8 @@ class MainActivity : ComponentActivity() {
         if (keyCode == KeyEvent.KEYCODE_BACK && ::panel.isInitialized &&
             panel.ready && renderer.panelActive
         ) {
-            panel.key(KeyEvent.KEYCODE_BACK)
+            // 走面板自己的导航栈（2026-10-04：发 BACK 键会让面板窗把自己关掉=黑屏）
+            panel.back()
             return true
         }
         // 手柄/遥控按键先给 InputRouter；它不认的（如音量键）再交给系统

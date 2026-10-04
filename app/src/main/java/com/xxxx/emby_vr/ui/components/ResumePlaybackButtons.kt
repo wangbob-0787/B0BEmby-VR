@@ -1,5 +1,7 @@
 package com.xxxx.emby_vr.ui.components
 
+import com.xxxx.emby_vr.panel.vrClickTarget
+
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
@@ -87,7 +89,13 @@ fun ResumePlaybackButtons(
             // 从头开始按钮
             Surface(
                 onClick = onPlayFromStart,
-                modifier = Modifier.height(48.dp),
+                modifier = Modifier
+                    .height(48.dp)
+                    .vrClickTarget(
+                        key = "resume:fromStart",
+                        focusRequester = null,
+                        onActivate = onPlayFromStart,
+                    ),
                 shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(28.dp)),
                 scale = ClickableSurfaceDefaults.scale(focusedScale = 1.04f),
                 border = ClickableSurfaceDefaults.border(
@@ -121,7 +129,12 @@ fun ResumePlaybackButtons(
                 onClick = onContinue,
                 modifier = Modifier
                     .height(48.dp)
-                    .focusRequester(continueButtonFocusRequester),
+                    .focusRequester(continueButtonFocusRequester)
+                    .vrClickTarget(
+                        key = "resume:continue",
+                        focusRequester = continueButtonFocusRequester,
+                        onActivate = onContinue,
+                    ),
                 shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(28.dp)),
                 scale = ClickableSurfaceDefaults.scale(focusedScale = 1.04f),
                 border = ClickableSurfaceDefaults.border(
