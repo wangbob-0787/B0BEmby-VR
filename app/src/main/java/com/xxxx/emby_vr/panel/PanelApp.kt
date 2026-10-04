@@ -7,7 +7,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -26,7 +26,9 @@ import com.xxxx.emby_vr.ui.ProxySettingsScreen
 import com.xxxx.emby_vr.ui.SearchScreen
 import com.xxxx.emby_vr.ui.components.BuildGradientBackground
 import com.xxxx.emby_vr.ui.components.Loading
-import com.xxxx.emby_vr.ui.theme.Emby_tvTheme
+// 注意：电视版的 Theme.kt 没有 package 声明（顶层在默认包），所以按电视版
+// MainActivity 的写法直接 import 默认包符号，不能写成 ui.theme.Emby_tvTheme。
+import Emby_tvTheme
 import com.xxxx.emby_vr.ui.theme.ThemeColorManager
 import com.xxxx.emby_vr.ui.viewmodel.DetailViewModel
 import com.xxxx.emby_vr.ui.viewmodel.HomeViewModel
