@@ -1,15 +1,23 @@
 package com.xxxx.emby_vr.panel
 
+import android.util.Log
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
@@ -63,26 +71,13 @@ fun PanelApp(onPlayRequested: (mediaId: String, positionTicks: Long) -> Unit) {
         mainViewModel.initialize()
     }
 
-    // 与电视版一致：未加载完 → loading；已登录 → home；否则 → login
+    // 加载完成后一律进 home：
+    // 已登录 → 正常首页；未登录 → 首页显示「请添加 Emby 服务器」空状态
+    // （父亲 2026-10-04：登录面板取消，进入应用后自己添加服务器，支持多服务器切换）
     LaunchedEffect(isLoaded, isLoggedIn) {
-        when {
-            !isLoaded -> {
-                if (navController.currentDestination?.route != "loading") {
-                    navController.navigate("loading") { popUpTo(0) { inclusive = true } }
-                }
-            }
-
-            isLoggedIn -> {
-                if (navController.currentDestination?.route != "home") {
-                    navController.navigate("home") { popUpTo(0) { inclusive = true } }
-                }
-            }
-
-            else -> {
-                if (navController.currentDestination?.route != "login") {
-                    navController.navigate("login") { popUpTo(0) { inclusive = true } }
-                }
-            }
+        // 登录成功（isLoggedIn 变 true）也会触发，自动从登录页回到首页
+        if (isLoaded && navController.currentDestination?.route != "home") {
+            navController.navigate("home") { popUpTo(0) { inclusive = true } }
         }
     }
 
@@ -96,7 +91,24 @@ fun PanelApp(onPlayRequested: (mediaId: String, positionTicks: Long) -> Unit) {
             color = MaterialTheme.colorScheme.background,
         ) {
             BuildGradientBackground(context = context, themeColor = currentThemeColor) {
-                NavHost(navController = navController, startDestination = "loading") {
+                // 诊断（2026-10-04）：确认手柄触摸事件是否到达 Compose 树。
+                // 电视版界面点不动，先区分「事件没到 Compose」还是「组件不响应触摸」。
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(Unit) {
+                            awaitPointerEventScope {
+                                while (true) {
+                                    val e = awaitPointerEvent()
+                                    Log.i(
+                                        "PANEL 触摸",
+                                        "type=${e.type} pos=${e.changes.firstOrNull()?.position}",
+                                    )
+                                }
+                            }
+                        },
+                ) {
+                    NavHost(navController = navController, startDestination = "loading") {
                     composable("loading") {
                         Loading()
                     }
@@ -112,18 +124,25 @@ fun PanelApp(onPlayRequested: (mediaId: String, positionTicks: Long) -> Unit) {
 
                     composable("home") { backStackEntry ->
                         val homeViewModel: HomeViewModel = viewModel()
+                        val loginViewModel: LoginViewModel = viewModel()
                         var isInitialLoaded by rememberSaveable { mutableStateOf(false) }
 
                         LaunchedEffect(backStackEntry) {
                             if (isInitialLoaded) homeViewModel.loadData() else isInitialLoaded = true
                         }
 
-                        HomeScreen(
-                            homeViewModel = homeViewModel,
-                            mainViewModel = mainViewModel,
-                            navController = navController,
-                            onSwitchAccount = { navController.navigate("account") },
-                        )
+                        // 还没有添加任何 Emby 服务器 → 空状态引导添加
+                        // （父亲 2026-10-04：第一次进入应用，首页显示「请添加 Emby 服务器」）
+                        if (loginViewModel.savedAccounts.isEmpty()) {
+                            EmptyServerScreen(onAdd = { navController.navigate("login") })
+                        } else {
+                            HomeScreen(
+                                homeViewModel = homeViewModel,
+                                mainViewModel = mainViewModel,
+                                navController = navController,
+                                onSwitchAccount = { navController.navigate("account") },
+                            )
+                        }
                     }
 
                     composable("account") {
@@ -245,6 +264,33 @@ fun PanelApp(onPlayRequested: (mediaId: String, positionTicks: Long) -> Unit) {
                         )
                     }
                 }
+                } // 诊断 Box 结束
+            }
+        }
+    }
+}
+
+/**
+ * 空状态屏：还没有添加任何 Emby 服务器时显示（父亲 2026-10-04 要求）。
+ *
+ * 文案用父亲原话「请添加 Emby 服务器」；点「添加服务器」去登录页
+ * （登录页输入服务器地址 + 凭证，登录成功即添加了一个服务器）。
+ * 多服务器切换走账号管理页（AccountScreen，电视版已支持多账号）。
+ */
+@Composable
+private fun EmptyServerScreen(onAdd: () -> Unit) {
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                text = "请添加 Emby 服务器",
+                style = MaterialTheme.typography.headlineSmall,
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            androidx.tv.material3.Button(onClick = onAdd) {
+                Text(text = "添加服务器")
             }
         }
     }

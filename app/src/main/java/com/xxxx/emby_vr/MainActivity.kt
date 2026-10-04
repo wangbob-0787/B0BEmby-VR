@@ -552,8 +552,8 @@ class MainActivity : ComponentActivity() {
         val ok = vrSession.start(this)
         Log.i(TAG, "XR 会话启动: $ok")
 
-        // P2：接 Emby 拉真实影片与海报
-        loadLibrary()
+        // P2 海报墙已取消（父亲 2026-10-04：选片走电视版界面，不再需要 VR 原生海报墙）
+        // loadLibrary()
     }
 
     // ---- Emby 内容加载（P2）----
