@@ -594,7 +594,13 @@ class MainActivity : ComponentActivity() {
          * 换算与渲染共用同一套布局常量（renderer.panelPixelAt），
          * 保证「看到的位置」和「点到的位置」一致。
          */
-        if (::panel.isInitialized && panel.ready && renderer.panelActive &&
+        /*
+         * 播放中不喂面板（父亲 2026-10-04）：
+         * 播放时画面是视频，摇杆要用来快进快退（走下面的 onTriggerDrag / 摇杆轴通道），
+         * 若仍把事件派进面板，播放中摇杆就失效、还会在隐藏的界面上乱移焦点。
+         */
+        if (!renderer.videoActive &&
+            ::panel.isInitialized && panel.ready && renderer.panelActive &&
             ::glView.isInitialized && glView.width > 0 && glView.height > 0
         ) {
             val aspect = glView.width.toFloat() / glView.height.toFloat().coerceAtLeast(1f)
