@@ -488,7 +488,7 @@ fun TvInputButton(
                     MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                 )
             ),
-            focusedBorder = null),
+            focusedBorder = androidx.tv.material3.Border(androidx.compose.foundation.BorderStroke(androidx.compose.ui.unit.Dp(0f), androidx.compose.ui.graphics.Color.Transparent))),
         colors = ClickableSurfaceDefaults.colors(
             containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.3f),
             contentColor = MaterialTheme.colorScheme.onSurface,
@@ -548,7 +548,7 @@ fun ProtocolButton(
                     MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                 )
             ),
-            focusedBorder = null),
+            focusedBorder = androidx.tv.material3.Border(androidx.compose.foundation.BorderStroke(androidx.compose.ui.unit.Dp(0f), androidx.compose.ui.graphics.Color.Transparent))),
         colors = ClickableSurfaceDefaults.colors(
             containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.3f),
             contentColor = MaterialTheme.colorScheme.onSurface,

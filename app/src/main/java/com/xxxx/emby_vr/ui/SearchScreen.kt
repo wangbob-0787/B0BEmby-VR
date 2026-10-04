@@ -215,7 +215,7 @@ fun SearchScreen(
                                         MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
                                     )
                                 ) else Border(BorderStroke(0.dp, Color.Transparent)),
-                                focusedBorder = null),
+                                focusedBorder = androidx.tv.material3.Border(androidx.compose.foundation.BorderStroke(androidx.compose.ui.unit.Dp(0f), androidx.compose.ui.graphics.Color.Transparent))),
                             scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -282,7 +282,7 @@ fun SearchScreen(
                                     MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
                                 )
                             ) else Border(BorderStroke(0.dp, Color.Transparent)),
-                            focusedBorder = null),
+                            focusedBorder = androidx.tv.material3.Border(androidx.compose.foundation.BorderStroke(androidx.compose.ui.unit.Dp(0f), androidx.compose.ui.graphics.Color.Transparent))),
                         scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
                         modifier = Modifier
                             .fillMaxWidth()
@@ -363,7 +363,7 @@ fun SearchScreen(
                     scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
                     border = ClickableSurfaceDefaults.border(
                         border = Border(BorderStroke(1.dp, Color.White.copy(alpha = 0.2f))),
-                        focusedBorder = null),
+                        focusedBorder = androidx.tv.material3.Border(androidx.compose.foundation.BorderStroke(androidx.compose.ui.unit.Dp(0f), androidx.compose.ui.graphics.Color.Transparent))),
                     colors = ClickableSurfaceDefaults.colors(
                         containerColor = Color.White.copy(alpha = 0.1f),
                         contentColor = Color.White

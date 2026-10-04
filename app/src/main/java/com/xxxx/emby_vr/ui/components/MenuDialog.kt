@@ -298,10 +298,10 @@ fun ThemeSelectionDialog(
                             shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(16.dp)),
                             glow = ClickableSurfaceDefaults.glow(
                                 // 聚焦不发绿光（父亲 2026-10-05：VR 里焦点由光点表示，控件不再有焦点态）
-                                focusedGlow = null
+                                focusedGlow = androidx.tv.material3.Glow(elevationColor = androidx.compose.ui.graphics.Color.Transparent, elevation = androidx.compose.ui.unit.Dp(0f))
                             ),
                             border = ClickableSurfaceDefaults.border(
-                                focusedBorder = null),
+                                focusedBorder = androidx.tv.material3.Border(androidx.compose.foundation.BorderStroke(androidx.compose.ui.unit.Dp(0f), androidx.compose.ui.graphics.Color.Transparent))),
                             colors = ClickableSurfaceDefaults.colors(
                                 containerColor = Color.Transparent
                             )

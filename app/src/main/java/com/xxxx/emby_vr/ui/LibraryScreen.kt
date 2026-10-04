@@ -164,7 +164,7 @@ fun LibraryScreen(
                     contentColor = Color.White,
 ),
                 border = ClickableSurfaceDefaults.border(
-                    focusedBorder = null),
+                    focusedBorder = androidx.tv.material3.Border(androidx.compose.foundation.BorderStroke(androidx.compose.ui.unit.Dp(0f), androidx.compose.ui.graphics.Color.Transparent))),
                 modifier = Modifier.padding(end = 12.dp)
             ) {
                 Row(
@@ -216,7 +216,7 @@ fun LibraryScreen(
                         border = if (!isSelected) Border(
                             BorderStroke(1.dp, Color.White.copy(alpha = 0.3f))
                         ) else Border(BorderStroke(0.dp, Color.Transparent)),
-                        focusedBorder = null)
+                        focusedBorder = androidx.tv.material3.Border(androidx.compose.foundation.BorderStroke(androidx.compose.ui.unit.Dp(0f), androidx.compose.ui.graphics.Color.Transparent)))
                 ) {
                     Text(
                         text = label,

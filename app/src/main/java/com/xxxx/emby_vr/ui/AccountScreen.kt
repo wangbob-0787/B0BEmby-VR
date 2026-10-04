@@ -225,7 +225,7 @@ private fun AccountListItem(
                 } else {
                     Border(BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)))
                 },
-                focusedBorder = null),
+                focusedBorder = androidx.tv.material3.Border(androidx.compose.foundation.BorderStroke(androidx.compose.ui.unit.Dp(0f), androidx.compose.ui.graphics.Color.Transparent))),
             colors = ClickableSurfaceDefaults.colors(
                 containerColor = if (isCurrentAccount)  MaterialTheme.colorScheme.onTertiary.copy(alpha = 0.2f)
                 else  Color.White.copy(alpha = 0.05f)
@@ -298,7 +298,7 @@ private fun AccountListItem(
             scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
             border = ClickableSurfaceDefaults.border(
                 border = Border(BorderStroke(1.dp, Color.White.copy(alpha = 0.12f))),
-                focusedBorder = null),
+                focusedBorder = androidx.tv.material3.Border(androidx.compose.foundation.BorderStroke(androidx.compose.ui.unit.Dp(0f), androidx.compose.ui.graphics.Color.Transparent))),
             colors = ClickableSurfaceDefaults.colors(
                 containerColor = Color.White.copy(alpha = 0.05f),
                 contentColor = Color.White.copy(alpha = 0.6f),
