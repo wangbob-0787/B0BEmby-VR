@@ -192,7 +192,7 @@ class LocalServer private constructor(
 
                 val protocol = params["protocol"]?.firstOrNull() ?: "http"
                 val host = params["host"]?.firstOrNull() ?: ""
-                val port = params["port"]?.firstOrNull() ?: "8096"
+                val port = params["port"]?.firstOrNull() ?: "6908"
                 val username = params["username"]?.firstOrNull() ?: ""
                 val password = params["password"]?.firstOrNull() ?: ""
 
@@ -340,7 +340,7 @@ class LocalServer private constructor(
                             <input type="hidden" name="protocol" id="protocol-input" value="http">
                             <button type="button" class="protocol protocol-btn active" id="btn-protocol" onclick="toggleProtocol()">HTTP</button>
                             <input type="text" name="host" class="host" placeholder="192.168.1.x" required>
-                            <input type="text" name="port" class="port" placeholder="Port" value="8096">
+                            <input type="text" name="port" class="port" placeholder="Port" value="6908">
                         </div>
                         <label id="label-user">Username</label>
                         <input type="text" name="username" id="input-username" placeholder="Username" required>

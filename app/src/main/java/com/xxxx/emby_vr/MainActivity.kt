@@ -579,17 +579,22 @@ class MainActivity : ComponentActivity() {
             val pix = renderer.panelPixelAt(nx, ny)
             if (pix != null) {
                 val action = event.actionMasked
-                if (action == MotionEvent.ACTION_DOWN ||
-                    action == MotionEvent.ACTION_MOVE ||
-                    action == MotionEvent.ACTION_UP
-                ) {
-                    panel.dispatch(pix[0], pix[1], action)
-                    if (action != MotionEvent.ACTION_MOVE) {
+                if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_UP) {
+                    /*
+                     * 扳机 = OK 键（2026-10-04 实机定位）。
+                     *
+                     * 电视版界面是遥控器模型：输入框/按钮靠焦点 + OK 激活，
+                     * 光标位置对它没有意义（登录页的 clickable 都被注释掉了）。
+                     * 所以这里把扳机翻译成 DPAD_CENTER 发给面板，
+                     * 面板里当前获得焦点的元素即被激活。
+                     */
+                    if (action == MotionEvent.ACTION_DOWN) {
                         Log.i(
                             TAG,
-                            "PANEL 光标→面板: (${event.x.toInt()},${event.y.toInt()}) → " +
-                                "(${pix[0].toInt()},${pix[1].toInt()}) action=$action",
+                            "面板 OK: 光标 (${event.x.toInt()},${event.y.toInt()}) → " +
+                                "面板像素 (${pix[0].toInt()},${pix[1].toInt()})",
                         )
+                        panel.key(KeyEvent.KEYCODE_DPAD_CENTER)
                     }
                     return true
                 }

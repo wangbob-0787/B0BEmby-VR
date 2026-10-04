@@ -2,6 +2,9 @@ package com.xxxx.emby_vr.panel
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.runtime.remember
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -265,6 +268,8 @@ fun PanelApp(onPlayRequested: (mediaId: String, positionTicks: Long) -> Unit) {
  */
 @Composable
 private fun EmptyServerScreen(onAdd: () -> Unit) {
+    val addFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { runCatching { addFocus.requestFocus() } }
     Box(
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.Center,
@@ -286,7 +291,10 @@ private fun EmptyServerScreen(onAdd: () -> Unit) {
             Box(
                 modifier = Modifier
                     .background(Color(0xFF4CD137), RoundedCornerShape(8.dp))
+                    // clickable 同时认触摸点击和 OK 键（焦点状态下按 OK 即触发），
+                    // 所以遥控器通道和光标通道都走它；focusRequester 用于进屏抢焦点
                     .clickable { onAdd() }
+                    .focusRequester(addFocus)
                     .padding(horizontal = 40.dp, vertical = 18.dp),
                 contentAlignment = Alignment.Center,
             ) {

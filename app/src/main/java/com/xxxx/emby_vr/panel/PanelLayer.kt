@@ -10,6 +10,7 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.Display
 import android.view.InputDevice
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.Surface
 import android.view.View
@@ -137,6 +138,27 @@ class PanelLayer(
         } catch (t: Throwable) {
             // 失败不崩：渲染器会回落到原来的静态屏，日志里留明确原因
             Log.e(TAG, "面板层创建失败: ${t.javaClass.simpleName}: ${t.message}", t)
+        }
+    }
+
+    /**
+     * 给面板发一个按键（遥控器语义）。
+     *
+     * 电视版界面是「焦点 + OK」的遥控器模型：输入框、按钮的激活都走
+     * 方向键移动焦点 + OK 键确认，`clickable` 在登录页甚至被注释掉了
+     * （LoginScreen.kt:315）。所以复用电视版界面时，扳机必须翻译成 OK 键，
+     * 光标点击对这类组件不生效（父亲 2026-10-04 实测：登录按钮点不动）。
+     */
+    fun key(keyCode: Int) {
+        val v = decor ?: return
+        val now = SystemClock.uptimeMillis()
+        for (action in intArrayOf(KeyEvent.ACTION_DOWN, KeyEvent.ACTION_UP)) {
+            val ev = KeyEvent(now, now, action, keyCode, 0)
+            try {
+                v.dispatchKeyEvent(ev)
+            } catch (t: Throwable) {
+                Log.e(TAG, "按键派发失败: ${t.javaClass.simpleName}: ${t.message}")
+            }
         }
     }
 
