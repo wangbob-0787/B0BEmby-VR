@@ -121,6 +121,9 @@ class PanelLayer(
     private var isDown = false
     private var isDragging = false
 
+    /** 本次按下的时间戳（按压画像用） */
+    private var downTime = 0L
+
     /** 上一次发方向键的位置与时间（摇杆滚动：按步长 + 限速反复发） */
     private var stepPx = 0f
     private var stepPy = 0f
@@ -128,6 +131,12 @@ class PanelLayer(
 
     /** 本次按下最后发出的方向键（指针贴边后按同方向续滚用） */
     private var lastDirKey = 0
+
+    // ---- 按压画像（实机取证用，判断摇杆与扳机在事件流上的差异）----
+    private var pressMoveCount = 0      // 本次按下收到多少 MOVE
+    private var pressArrows = 0         // 本次按下发了多少方向键
+    private var pressMaxDx = 0f         // 位移绝对值最大值（x）
+    private var pressMaxDy = 0f         // 位移绝对值最大值（y）
 
     /**
      * GL 线程建好 OES 纹理与 SurfaceTexture 后调用。
@@ -319,18 +328,26 @@ class PanelLayer(
         val now = SystemClock.uptimeMillis()
         when (action) {
             MotionEvent.ACTION_DOWN -> {
+                downTime = now
                 downPx = px
                 downPy = py
                 isDown = true
                 isDragging = false
                 lastFireAt = now
                 lastDirKey = 0
+                pressMoveCount = 0
+                pressArrows = 0
+                pressMaxDx = 0f
+                pressMaxDy = 0f
             }
 
             MotionEvent.ACTION_MOVE -> {
                 if (!isDown) return
                 val dx = px - downPx
                 val dy = py - downPy
+                pressMoveCount++
+                if (kotlin.math.abs(dx) > pressMaxDx) pressMaxDx = kotlin.math.abs(dx)
+                if (kotlin.math.abs(dy) > pressMaxDy) pressMaxDy = kotlin.math.abs(dy)
                 if (!isDragging) {
                     if (dx * dx + dy * dy < SLOP_PX2) return       // 手抖：不算摇杆
                     isDragging = true
@@ -362,6 +379,7 @@ class PanelLayer(
                         if (sy > 0) KeyEvent.KEYCODE_DPAD_DOWN else KeyEvent.KEYCODE_DPAD_UP
                     }
                     lastDirKey = code
+                    pressArrows++
                     Log.i(
                         TAG,
                         "摇杆发键 位移=(${sx.toInt()},${sy.toInt()}) → key=$code（19上/20下/21左/22右）",
@@ -385,6 +403,13 @@ class PanelLayer(
                 isDown = false
                 val dragged = isDragging
                 isDragging = false
+                Log.i(
+                    TAG,
+                    "按压画像: MOVE=${pressMoveCount} 方向键=${pressArrows} " +
+                        "最大位移=(${pressMaxDx.toInt()},${pressMaxDy.toInt()}) " +
+                        "时长=${now - downTime}ms 判定=${if (dragged) "摇杆" else "点击"} " +
+                        "起点=(${downPx.toInt()},${downPy.toInt()})",
+                )
                 if (dragged) return                                // 摇杆推动：只发方向键，不发 OK
                 /*
                  * 双通道点击（2026-10-04 排查用）：
