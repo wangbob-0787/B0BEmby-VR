@@ -8,11 +8,21 @@ coil = "3.0.4"
 coroutines = "1.9.0"
 serialization = "1.7.3"
 gson = "2.11.0"
+lifecycle = "2.8.7"
+savedstate = "1.2.1"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 androidx-material3 = { group = "androidx.compose.material3", name = "material3", version.ref = "material3" }
 androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version = "1.9.3" }
+
+# 面板层（把 Compose 界面挂到虚拟显示器的 Presentation 窗口）需要手动设
+# ViewTree 三个 owner：Lifecycle / ViewModelStore / SavedStateRegistry。
+# 这三个 API 所在的 artifact 不在 activity-compose 的编译可见传递依赖里
+# （2026-10-04 CI 报 Unresolved reference，改为显式声明）。
+androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycle" }
+androidx-lifecycle-viewmodel-ktx = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-ktx", version.ref = "lifecycle" }
+androidx-savedstate-ktx = { group = "androidx.savedstate", name = "savedstate-ktx", version.ref = "savedstate" }
 
 # 播放：Media3 ExoPlayer（输出到 OpenXR 的 Android Surface）
 media3-exoplayer = { group = "androidx.media3", name = "media3-exoplayer", version.ref = "media3" }

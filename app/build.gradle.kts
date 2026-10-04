@@ -130,6 +130,11 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation(libs.androidx.activity.compose)
 
+    // 面板层：Compose 界面挂到虚拟显示器的窗口上，需要手动设 ViewTree 三个 owner
+    implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.viewmodel.ktx)
+    implementation(libs.androidx.savedstate.ktx)
+
     implementation(libs.media3.exoplayer)
     implementation(libs.media3.ui)
     implementation(libs.media3.session)

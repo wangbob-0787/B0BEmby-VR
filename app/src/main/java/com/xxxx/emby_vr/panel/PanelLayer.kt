@@ -15,9 +15,9 @@ import android.view.Surface
 import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.platform.ComposeView
-import androidx.lifecycle.ViewTreeLifecycleOwner
-import androidx.lifecycle.ViewTreeViewModelStoreOwner
-import androidx.savedstate.ViewTreeSavedStateRegistryOwner
+import androidx.lifecycle.setViewTreeLifecycleOwner
+import androidx.lifecycle.setViewTreeViewModelStoreOwner
+import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 
 /**
  * 面板层（UI 复用验证，2026-10-04）。
@@ -194,14 +194,14 @@ private class PanelPresentation(
         super.onCreate(savedInstanceState)
 
         val cv = ComposeView(context)
-        ViewTreeLifecycleOwner.set(cv, activity)
-        ViewTreeViewModelStoreOwner.set(cv, activity)
-        ViewTreeSavedStateRegistryOwner.set(cv, activity)
+        cv.setViewTreeLifecycleOwner(activity)
+        cv.setViewTreeViewModelStoreOwner(activity)
+        cv.setViewTreeSavedStateRegistryOwner(activity)
         cv.setContent {
             PanelUi(onClick = onUiClick)
         }
         setContentView(cv)
 
-        onReady(window.decorView)
+        onReady(window!!.decorView)
     }
 }
