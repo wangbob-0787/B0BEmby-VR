@@ -92,8 +92,6 @@ fun MenuDialog(
                     colors = SurfaceDefaults.colors(
                         containerColor = MaterialTheme.colorScheme.onPrimary,
                         contentColor = MaterialTheme.colorScheme.primary,
-                focusedContainerColor = MaterialTheme.colorScheme.onPrimary,
-                focusedContentColor = MaterialTheme.colorScheme.primary,
             )
                 ) {
                     Column(

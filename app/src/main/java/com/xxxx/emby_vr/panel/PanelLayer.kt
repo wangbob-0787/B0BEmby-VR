@@ -166,10 +166,29 @@ class PanelLayer(
         val h = if (horizontal) (if (dx > 0) SCROLL_NOTCH else -SCROLL_NOTCH) else 0f
         val v = if (!horizontal) (if (dy > 0) -SCROLL_NOTCH else SCROLL_NOTCH) else 0f
         val now = SystemClock.uptimeMillis()
-        val ev = MotionEvent.obtain(now, now, MotionEvent.ACTION_SCROLL, x, y, 0)
-        ev.source = InputDevice.SOURCE_MOUSE
-        if (h != 0f) ev.setAxisValue(MotionEvent.AXIS_HSCROLL, h)
-        if (v != 0f) ev.setAxisValue(MotionEvent.AXIS_VSCROLL, v)
+        // 注意：MotionEvent.setAxisValue 是隐藏 API（编译期 Unresolved），
+        // 滚轮量必须写在 PointerCoords 上再 obtain。
+        val props = arrayOf(
+            MotionEvent.PointerProperties().apply {
+                id = 0
+                toolType = MotionEvent.TOOL_TYPE_MOUSE
+            },
+        )
+        val coords = arrayOf(
+            MotionEvent.PointerCoords().apply {
+                this.x = x
+                this.y = y
+                pressure = 1f
+                size = 1f
+                if (h != 0f) setAxisValue(MotionEvent.AXIS_HSCROLL, h)
+                if (v != 0f) setAxisValue(MotionEvent.AXIS_VSCROLL, v)
+            },
+        )
+        @Suppress("DEPRECATION")
+        val ev = MotionEvent.obtain(
+            now, now, MotionEvent.ACTION_SCROLL, 1, props, coords,
+            0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_MOUSE, 0,
+        )
         val hit = decor?.dispatchGenericMotionEvent(ev) ?: false
         ev.recycle()
         Log.i(

@@ -368,8 +368,6 @@ private fun SortDialog(
                 colors = SurfaceDefaults.colors(
                     containerColor = Color(0xFF1A1A1A).copy(alpha = 0.95f),
                     contentColor = Color.White,
-                focusedContainerColor = Color(0xFF1A1A1A).copy(alpha = 0.95f),
-                focusedContentColor = Color.White,
             ),
                 border = Border(BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)))
             ) {

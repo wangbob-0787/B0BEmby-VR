@@ -76,8 +76,6 @@ fun AccountScreen(
             shape = RoundedCornerShape(28.dp),
             colors = SurfaceDefaults.colors(
                 containerColor = Color.Transparent,
-                focusedContainerColor = Color.Transparent,
-                focusedContentColor = androidx.compose.ui.graphics.Color.White,
             )
         ) {
             Column(
@@ -354,8 +352,6 @@ private fun DeleteConfirmDialog(
                 colors = SurfaceDefaults.colors(
                     containerColor = Color(0xFF1C1C1C),
                     contentColor = Color.White,
-                focusedContainerColor = Color(0xFF1C1C1C),
-                focusedContentColor = Color.White,
             )
             ) {
                 Column(
