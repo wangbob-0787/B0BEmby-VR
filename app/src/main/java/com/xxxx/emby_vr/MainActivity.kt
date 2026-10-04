@@ -72,25 +72,40 @@ class MainActivity : ComponentActivity() {
      */
     private val input = InputRouter { action ->
         when (action) {
+            /*
+             * 方向类动作有两条来源，都归一到面板的方向键（父亲 2026-10-04 定）：
+             *   1) 摇杆真走 joystick 轴事件（InputRouter.onGenericMotion，带死区+重复）
+             *   2) 摇杆/手柄被系统合成成「按下+拖动+抬起」（走 PanelLayer.dispatch）
+             * 播放中方向键仍然是快进快退，不喂给面板。
+             */
             InputRouter.Action.LEFT -> {
-                if (renderer.videoActive) seekBy(-10_000)
+                if (renderer.videoActive) seekBy(-10_000) else panelKey(KeyEvent.KEYCODE_DPAD_LEFT)
             }
             InputRouter.Action.RIGHT -> {
-                if (renderer.videoActive) seekBy(+10_000)
+                if (renderer.videoActive) seekBy(+10_000) else panelKey(KeyEvent.KEYCODE_DPAD_RIGHT)
             }
-            InputRouter.Action.UP,
-            InputRouter.Action.DOWN -> { /* 浏览在面板层靠触摸，方向键暂不接管 */ }
+            InputRouter.Action.UP -> {
+                if (!renderer.videoActive) panelKey(KeyEvent.KEYCODE_DPAD_UP)
+            }
+            InputRouter.Action.DOWN -> {
+                if (!renderer.videoActive) panelKey(KeyEvent.KEYCODE_DPAD_DOWN)
+            }
             InputRouter.Action.CONFIRM -> {
-                if (renderer.videoActive) togglePlayPause()
+                if (renderer.videoActive) togglePlayPause() else panelKey(KeyEvent.KEYCODE_DPAD_CENTER)
             }
             InputRouter.Action.BACK -> {
-                if (renderer.videoActive) stopPlayback()
+                if (renderer.videoActive) stopPlayback() else panelKey(KeyEvent.KEYCODE_BACK)
             }
             InputRouter.Action.PLAY_PAUSE -> if (renderer.videoActive) togglePlayPause()
             InputRouter.Action.SEEK_BACK -> if (renderer.videoActive) seekBy(-10_000)
             InputRouter.Action.SEEK_FORWARD -> if (renderer.videoActive) seekBy(+10_000)
             else -> { /* 余下动作后续接 */ }
         }
+    }
+
+    /** 面板按键入口：面板没就绪（还在启动/播放中）时静默忽略 */
+    private fun panelKey(keyCode: Int) {
+        if (::panel.isInitialized && panel.ready && renderer.panelActive) panel.key(keyCode)
     }
 
     /** 播放期状态反馈：写到视频画面上的状态条（屏幕大字被视频盖住，看不见） */

@@ -79,7 +79,12 @@ class PanelLayer(
         private const val SLOP_PX = 12f
         private const val SLOP_PX2 = SLOP_PX * SLOP_PX
 
-        /** 拖动时每移动这么多面板像素，就发一次方向键（扣住扳机左右/上下拖 = 移动焦点） */
+        /**
+         * 判定「一次方向操作」的位移（面板像素）。
+         *
+         * PICO 摇杆推一下 = 合成「按下 + 拖动 + 抬起」，位移可达 800+ 像素；
+         * 若按距离连续发键会一次飞十几格，所以**一次按下只走一格**（松手才能再走）。
+         */
         private const val STEP_PX = 72f
 
         /** 扣住扳机不动超过这个时长 = 返回上一层 */
@@ -105,9 +110,8 @@ class PanelLayer(
     private var isDown = false
     private var isDragging = false
 
-    /** 上一次发出方向键时的位置（拖动过程中按步长发键） */
-    private var lastStepPx = 0f
-    private var lastStepPy = 0f
+    /** 本次按下是否已经发过方向键（一次按下只走一格，防摇杆一次推飞焦点） */
+    private var arrowFired = false
 
     /**
      * GL 线程建好 OES 纹理与 SurfaceTexture 后调用。
@@ -208,35 +212,24 @@ class PanelLayer(
                 downTime = now
                 downPx = px
                 downPy = py
-                lastStepPx = px
-                lastStepPy = py
                 isDown = true
                 isDragging = false
+                arrowFired = false
             }
 
             MotionEvent.ACTION_MOVE -> {
-                if (!isDown) return
+                if (!isDown || arrowFired) return
                 val dx = px - downPx
                 val dy = py - downPy
-                if (!isDragging) {
-                    if (dx * dx + dy * dy < SLOP_PX2) return       // 手抖：不算拖动
-                    isDragging = true
-                    lastStepPx = px
-                    lastStepPy = py
-                    Log.i(TAG, "面板开始拖方向键: 起点 (${downPx.toInt()},${downPy.toInt()})")
-                    return
-                }
-                // 拖动 = 方向键：按步长发，主轴决定方向
-                val sx = px - lastStepPx
-                val sy = py - lastStepPy
-                if (kotlin.math.abs(sx) < STEP_PX && kotlin.math.abs(sy) < STEP_PX) return
-                val code = if (kotlin.math.abs(sx) >= kotlin.math.abs(sy)) {
-                    if (sx > 0) KeyEvent.KEYCODE_DPAD_RIGHT else KeyEvent.KEYCODE_DPAD_LEFT
+                if (dx * dx + dy * dy < STEP_PX * STEP_PX) return   // 没走够一格
+                isDragging = true
+                arrowFired = true
+                val code = if (kotlin.math.abs(dx) >= kotlin.math.abs(dy)) {
+                    if (dx > 0) KeyEvent.KEYCODE_DPAD_RIGHT else KeyEvent.KEYCODE_DPAD_LEFT
                 } else {
-                    if (sy > 0) KeyEvent.KEYCODE_DPAD_DOWN else KeyEvent.KEYCODE_DPAD_UP
+                    if (dy > 0) KeyEvent.KEYCODE_DPAD_DOWN else KeyEvent.KEYCODE_DPAD_UP
                 }
-                lastStepPx = px
-                lastStepPy = py
+                Log.i(TAG, "面板方向键: dx=${dx.toInt()} dy=${dy.toInt()}")
                 key(code)
             }
 
@@ -245,7 +238,7 @@ class PanelLayer(
                 isDown = false
                 val dragged = isDragging
                 isDragging = false
-                if (dragged) return                                // 拖动结束：不发 OK
+                if (dragged) return                                // 推过摇杆/拖动过：不发 OK
                 if (now - downTime >= LONG_PRESS_MS) {
                     Log.i(TAG, "面板长按 → 返回")
                     key(KeyEvent.KEYCODE_BACK)
