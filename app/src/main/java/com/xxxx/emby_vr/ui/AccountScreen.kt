@@ -75,7 +75,9 @@ fun AccountScreen(
                 .heightIn(min = 400.dp, max = 550.dp),
             shape = RoundedCornerShape(28.dp),
             colors = SurfaceDefaults.colors(
-                containerColor = Color.Transparent
+                containerColor = Color.Transparent,
+                focusedContainerColor = Color.Transparent,
+                focusedContentColor = androidx.compose.ui.graphics.Color.White,
             )
         ) {
             Column(
@@ -161,7 +163,9 @@ fun AccountScreen(
                         colors = ClickableSurfaceDefaults.colors(
                             containerColor = Color.White.copy(alpha = 0.08f),
                             contentColor = Color.White,
-)
+                focusedContainerColor = Color.White.copy(alpha = 0.08f),
+                focusedContentColor = Color.White,
+            )
                     ) {
                         Row(
                             modifier = Modifier.fillMaxSize(),
@@ -232,7 +236,11 @@ private fun AccountListItem(
                 ,
                 contentColor = if (isCurrentAccount)  MaterialTheme.colorScheme.primary
                         else MaterialTheme.colorScheme.tertiary,
-)
+                focusedContainerColor = if (isCurrentAccount)  MaterialTheme.colorScheme.onTertiary.copy(alpha = 0.2f)
+                else  Color.White.copy(alpha = 0.05f),
+                focusedContentColor = if (isCurrentAccount)  MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.tertiary,
+            )
         ) {
             Row(
                 modifier = Modifier
@@ -302,7 +310,9 @@ private fun AccountListItem(
             colors = ClickableSurfaceDefaults.colors(
                 containerColor = Color.White.copy(alpha = 0.05f),
                 contentColor = Color.White.copy(alpha = 0.6f),
-)
+                focusedContainerColor = Color.White.copy(alpha = 0.05f),
+                focusedContentColor = Color.White.copy(alpha = 0.6f),
+            )
         ) {
             Box(
                 modifier = Modifier.fillMaxSize(),
@@ -343,8 +353,10 @@ private fun DeleteConfirmDialog(
                 border = Border(BorderStroke(1.dp, Color.White.copy(alpha = 0.15f))),
                 colors = SurfaceDefaults.colors(
                     containerColor = Color(0xFF1C1C1C),
-                    contentColor = Color.White
-                )
+                    contentColor = Color.White,
+                focusedContainerColor = Color(0xFF1C1C1C),
+                focusedContentColor = Color.White,
+            )
             ) {
                 Column(
                     modifier = Modifier.padding(28.dp),
@@ -398,7 +410,9 @@ private fun DeleteConfirmDialog(
                             colors = ClickableSurfaceDefaults.colors(
                                 containerColor = Color.White.copy(alpha = 0.1f),
                                 contentColor = Color.White,
-)
+                focusedContainerColor = Color.White.copy(alpha = 0.1f),
+                focusedContentColor = Color.White,
+            )
                         ) {
                             Box(
                                 modifier = Modifier.fillMaxSize(),
@@ -423,7 +437,9 @@ private fun DeleteConfirmDialog(
                             colors = ClickableSurfaceDefaults.colors(
                                 containerColor = Color(0xFFEF5350).copy(alpha = 0.7f),
                                 contentColor = Color.White,
-)
+                focusedContainerColor = Color(0xFFEF5350).copy(alpha = 0.7f),
+                focusedContentColor = Color.White,
+            )
                         ) {
                             Box(
                                 modifier = Modifier.fillMaxSize(),

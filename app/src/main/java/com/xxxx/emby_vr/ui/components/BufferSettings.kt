@@ -63,8 +63,10 @@ fun BufferSettingsTab(
                 shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(8.dp)),
                 colors = ClickableSurfaceDefaults.colors(
                     containerColor = Color.Transparent,
-                    contentColor = MaterialTheme.colorScheme.onSurface
-                ),
+                    contentColor = MaterialTheme.colorScheme.onSurface,
+                focusedContainerColor = Color.Transparent,
+                focusedContentColor = MaterialTheme.colorScheme.onSurface,
+            ),
                 scale = ClickableSurfaceDefaults.scale(
                     focusedScale = 1f,
                 ),
@@ -177,8 +179,10 @@ fun BufferSettingsTab(
                 shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(8.dp)),
                 colors = ClickableSurfaceDefaults.colors(
                     containerColor = Color.Transparent,
-                    contentColor = TvMaterialTheme.colorScheme.onSecondary
-                ),
+                    contentColor = TvMaterialTheme.colorScheme.onSecondary,
+                focusedContainerColor = Color.Transparent,
+                focusedContentColor = TvMaterialTheme.colorScheme.onSecondary,
+            ),
                 scale = ClickableSurfaceDefaults.scale(
                     focusedScale = 1f,
                 ),
@@ -207,8 +211,10 @@ fun BufferSettingsTab(
                 shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(8.dp)),
                 colors = ClickableSurfaceDefaults.colors(
                     containerColor = Color.Transparent,
-                    contentColor = TvMaterialTheme.colorScheme.onSecondary
-                ),
+                    contentColor = TvMaterialTheme.colorScheme.onSecondary,
+                focusedContainerColor = Color.Transparent,
+                focusedContentColor = TvMaterialTheme.colorScheme.onSecondary,
+            ),
                 scale = ClickableSurfaceDefaults.scale(
                     focusedScale = 1f,
                 ),
@@ -298,7 +304,9 @@ private fun BufferSettingRow(
                         contentColor = MaterialTheme.colorScheme.onPrimary,
                         pressedContentColor = MaterialTheme.colorScheme.onSecondary,
                         pressedContainerColor = MaterialTheme.colorScheme.secondary,
-),
+                focusedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
+                focusedContentColor = MaterialTheme.colorScheme.onPrimary,
+            ),
                     modifier = Modifier
                         .onKeyEvent { keyEvent ->
                             when {

@@ -162,7 +162,9 @@ fun LibraryScreen(
                 colors = ClickableSurfaceDefaults.colors(
                     containerColor = Color.White.copy(alpha = 0.15f),
                     contentColor = Color.White,
-),
+                focusedContainerColor = Color.White.copy(alpha = 0.15f),
+                focusedContentColor = Color.White,
+            ),
                 border = ClickableSurfaceDefaults.border(
                     focusedBorder = androidx.tv.material3.Border(androidx.compose.foundation.BorderStroke(androidx.compose.ui.unit.Dp(0f), androidx.compose.ui.graphics.Color.Transparent))),
                 modifier = Modifier.padding(end = 12.dp)
@@ -211,7 +213,17 @@ fun LibraryScreen(
                         } else {
                             Color.White.copy(alpha = 0.7f)
                         },
-),
+                focusedContainerColor = if (isSelected) {
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                        } else {
+                            Color.Transparent
+                        },
+                focusedContentColor = if (isSelected) {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        } else {
+                            Color.White.copy(alpha = 0.7f)
+                        },
+            ),
                     border = ClickableSurfaceDefaults.border(
                         border = if (!isSelected) Border(
                             BorderStroke(1.dp, Color.White.copy(alpha = 0.3f))
@@ -355,8 +367,10 @@ private fun SortDialog(
                 shape = RoundedCornerShape(16.dp),
                 colors = SurfaceDefaults.colors(
                     containerColor = Color(0xFF1A1A1A).copy(alpha = 0.95f),
-                    contentColor = Color.White
-                ),
+                    contentColor = Color.White,
+                focusedContainerColor = Color(0xFF1A1A1A).copy(alpha = 0.95f),
+                focusedContentColor = Color.White,
+            ),
                 border = Border(BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)))
             ) {
                 Column(
@@ -403,7 +417,13 @@ private fun SortDialog(
                                         Color.Transparent
                                     },
                                     contentColor = Color.White,
-)
+                focusedContainerColor = if (isSelected) {
+                                        MaterialTheme.colorScheme.secondary.copy(alpha = 0.3f)
+                                    } else {
+                                        Color.Transparent
+                                    },
+                focusedContentColor = Color.White,
+            )
                             ) {
                                 Row(
                                     modifier = Modifier

@@ -90,7 +90,9 @@ fun TopStatusBar(
                         colors = ClickableSurfaceDefaults.colors(
                             containerColor = Color.Transparent,
                             contentColor = Color.White,
-)
+                focusedContainerColor = Color.Transparent,
+                focusedContentColor = Color.White,
+            )
                     ) {
                         Box(
                             modifier = Modifier
@@ -162,7 +164,9 @@ fun TopStatusBar(
                         colors = ClickableSurfaceDefaults.colors(
                             containerColor = Color.Transparent,
                             contentColor = Color.White,
-)
+                focusedContainerColor = Color.Transparent,
+                focusedContentColor = Color.White,
+            )
                     ) {
                         Box(
                             modifier = Modifier
@@ -196,7 +200,9 @@ fun TopStatusBar(
                         colors = ClickableSurfaceDefaults.colors(
                             containerColor = Color.Transparent,
                             contentColor = MaterialTheme.colorScheme.onSecondary,
-)
+                focusedContainerColor = Color.Transparent,
+                focusedContentColor = MaterialTheme.colorScheme.onSecondary,
+            )
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,

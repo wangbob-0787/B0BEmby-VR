@@ -128,8 +128,10 @@ private fun ChannelCard(
         scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
         colors = ClickableSurfaceDefaults.colors(
             containerColor = Color.Transparent,
-            contentColor = Color.White
-        ),
+            contentColor = Color.White,
+                focusedContainerColor = Color.Transparent,
+                focusedContentColor = Color.White,
+            ),
         modifier = Modifier
             .width(214.dp)
             .onFocusChanged { if (it.isFocused) FocusMemory.lastItemId = channel.id }

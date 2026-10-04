@@ -124,6 +124,14 @@ class PanelLayer(
          */
         private const val NEAR_MISS_PX = 16f
 
+        /**
+         * 摇杆滚动的步长（滚轮格数，父亲 2026-10-05 定案：摇杆=滚轮，不碰焦点）。
+         *
+         * Compose 把一格滚轮折合约 64dp（面板 240dpi ≈ 128px），一格滚一行多一点；
+         * 配合下面 120ms 的限速，连续推的感觉约每秒 4 格。手感不对就调这一个数。
+         */
+        private const val SCROLL_NOTCH = 0.5f
+
     }
 
     /**
@@ -143,22 +151,44 @@ class PanelLayer(
     }
 
     /**
-     * 把焦点挪到「光点底下的控件」上，供摇杆滚动用（父亲 2026-10-05 要求）。
+     * 摇杆滚动：往面板派发一次**鼠标滚轮**事件（父亲 2026-10-05 定案）。
      *
-     * 方向键打在当前焦点上，所以滚哪一排取决于焦点在哪一排 —— 先把焦点
-     * 落到光点指的卡片上，滚的就是他正看着的那一排。
-     * 光点落在空白上时不硬塞焦点（免得把焦点抢到没想动的地方）。
+     * 滚的是**光点底下的那个可滚容器** —— Compose 的 LazyRow / LazyColumn
+     * 认 ACTION_SCROLL，并且是按坐标做命中测试的，所以
+     * 「光点在第三排就滚第三排、在详情页就滚详情页」天然成立，
+     * 而且**完全不碰焦点**（焦点只在扣扳机那一刻按光点算）。
+     *
+     * @param dx,dy 这次位移（面板像素，向下/向右为正）
      */
-    private fun focusUnderPointer(x: Float, y: Float, why: String) {
-        val t = ClickTargets.findAt(x, y)
-            ?: ClickTargets.nearest(x, y, 1).firstOrNull()
-                ?.takeIf { it.second <= NEAR_MISS_PX }?.first
-        if (t == null) {
-            Log.i(TAG, "$why：光点下没有控件 → 沿用当前焦点滚")
-            return
+    private fun scrollAt(x: Float, y: Float, dx: Float, dy: Float, why: String) {
+        // 取移动量更轴的那一向：斜推时只滚主方向，免得两轴一起乱滚
+        val horizontal = kotlin.math.abs(dx) > kotlin.math.abs(dy)
+        val h = if (horizontal) (if (dx > 0) SCROLL_NOTCH else -SCROLL_NOTCH) else 0f
+        val v = if (!horizontal) (if (dy > 0) -SCROLL_NOTCH else SCROLL_NOTCH) else 0f
+        val now = SystemClock.uptimeMillis()
+        val ev = MotionEvent.obtain(now, now, MotionEvent.ACTION_SCROLL, x, y, 0)
+        ev.source = InputDevice.SOURCE_MOUSE
+        if (h != 0f) ev.setAxisValue(MotionEvent.AXIS_HSCROLL, h)
+        if (v != 0f) ev.setAxisValue(MotionEvent.AXIS_VSCROLL, v)
+        val hit = decor?.dispatchGenericMotionEvent(ev) ?: false
+        ev.recycle()
+        Log.i(
+            TAG,
+            "$why：滚轮 光点=(${x.toInt()},${y.toInt()}) 位移=(${dx.toInt()},${dy.toInt()}) " +
+                "Δ=($h,$v) 被接住=$hit",
+        )
+        /*
+         * 兜底：万一这条通道整条不被接住（界面里没有可滚容器 / 系统不认），
+         * 退化为方向键 —— 宁可滚得不够准，也不能"推了完全不动"。
+         * 滚轮正常工作的情况下这里不会执行，焦点依旧不受影响。
+         */
+        if (!hit) {
+            val code = dirKeyOf(dx, dy)
+            if (code != 0) {
+                Log.i(TAG, "$why：滚轮没被接住 → 退化为方向键 ${dirName(code)}")
+                key(code)
+            }
         }
-        Log.i(TAG, "$why：光点下是 ${t.label} → 先聚焦它，保证滚的是这一排")
-        t.focus?.invoke()
     }
 
     /** 面板是否可用（Presentation 已显示、decorView 已就绪） */
@@ -495,26 +525,16 @@ class PanelLayer(
                     stepPx = px
                     stepPy = py
                     lastFireAt = now
+                    pressArrows++
                     /*
-                     * 先聚焦「光点底下的那个控件」再滚（父亲 2026-10-05）：
-                     * 方向键是打在**当前焦点**上的，不先移焦点就会出现
-                     * 「推摇杆要么不滚、要么滚错了一排」。
-                     * 把焦点落到光点指向的卡片上，滚的就是那一排。
+                     * 摇杆滚动 = 往面板派发「鼠标滚轮」事件（父亲 2026-10-05 定案）。
+                     *
+                     * 规则：**摇杆一律不碰焦点**，滚的是光点底下那个可滚容器；
+                     * 焦点只在扣扳机那一刻按光点位置计算。
+                     * （原来发方向键：方向键打在当前焦点上，必然出现
+                     *  「要么不滚、要么滚错了一排」。）
                      */
-                    focusUnderPointer(px, py, "摇杆起始")
-                    val dir = dirKeyOf(dx, dy)
-                    if (dir != 0) {
-                        lastDirKey = dir
-                        lastDirKeyGlobal = dir
-                        lastDirKeyGlobalAt = now
-                        pressArrows++
-                        Log.i(
-                            TAG,
-                            "摇杆起始步 位移=(${dx.toInt()},${dy.toInt()}) → " +
-                                "方向=${dirName(dir)} key=$dir",
-                        )
-                        key(dir)
-                    }
+                    scrollAt(px, py, dx, dy, "摇杆起始步")
                     return
                 }
                 // 摇杆滚动：从上一次发键的位置算位移，够一格且过了限速就再发一格
@@ -528,30 +548,13 @@ class PanelLayer(
                     stepPx = px
                     stepPy = py
                     lastFireAt = now
-                    val code = dirKeyOf(sx, sy)
-                    lastDirKey = code
-                    lastDirKeyGlobal = code
-                    lastDirKeyGlobalAt = now
                     pressArrows++
-                    Log.i(
-                        TAG,
-                        "摇杆发键 指针位移=(${sx.toInt()},${sy.toInt()}) → " +
-                            "方向=${dirName(code)} key=$code（19上/20下/21左/22右）",
-                    )
-                    key(code)
+                    scrollAt(px, py, sx, sy, "摇杆续滚")
                     return
                 }
-
-                // 没有新位移：多半是指针被顶到面板边缘了。
-                // 已经判定过方向 + 指针贴边 + 过了限速 → 按同方向继续滚，
-                // 否则「光标在下半屏就滚不动」。
-                if (lastDirKey != 0 && isNearEdge(px, py) && now - lastFireAt >= FIRE_INTERVAL_MS) {
-                    lastFireAt = now
-                    lastDirKeyGlobal = lastDirKey
-                    lastDirKeyGlobalAt = now
-                    Log.i(TAG, "摇杆续滚（指针贴边）: key=$lastDirKey")
-                    key(lastDirKey)
-                }
+                // 位移不足一格：等下一次 MOVE。
+                // （滚轮事件按坐标命中，不存在"指针贴边就滚不动"的问题，
+                //  原来的贴边续滚与方向记忆一起废弃 —— 它们都是焦点模型的产物。）
             }
 
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
@@ -568,22 +571,6 @@ class PanelLayer(
                 )
                 if (dragged) return                                // 摇杆推动：只发方向键，不发 OK
 
-                /*
-                 * 贴边且这次一点位移都没有：方向信息丢了。
-                 * 若最近 2 秒内刚滚过，就沿用那个方向继续滚 ——
-                 * 对应父亲说的「B站里光标在可滚动区域就能滚」的体感。
-                 * 代价：贴边位置刚滚完马上想点按钮时，可能被当成继续滚动
-                 * （已打日志，实测若误判再收紧窗口或去掉）。
-                 */
-                val recentDir = lastDirKeyGlobal != 0 &&
-                    now - lastDirKeyGlobalAt < DIR_MEMORY_MS
-                val noMove = pressMaxDx < SLOP_PX && pressMaxDy < SLOP_PX
-                if (noMove && isNearEdge(px, py) && recentDir) {
-                    Log.i(TAG, "贴边沿用方向续滚: key=$lastDirKeyGlobal（无位移，不当点击）")
-                    lastDirKeyGlobalAt = now
-                    key(lastDirKeyGlobal)
-                    return
-                }
                 /*
                  * 一次点击 = 鼠标式点击 + 「真的没反应就补 OK 键」。
                  *

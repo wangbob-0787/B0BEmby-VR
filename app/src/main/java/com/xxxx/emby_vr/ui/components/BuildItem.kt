@@ -131,7 +131,9 @@ fun BuildItem(
             containerColor = Color.Transparent,
             contentColor = MaterialTheme.colorScheme.onSurface,
             pressedContentColor = MaterialTheme.colorScheme.secondary,
-),
+                focusedContainerColor = androidx.compose.ui.graphics.Color.Transparent,
+                focusedContentColor = MaterialTheme.colorScheme.onSurface,
+            ),
 
         modifier = modifier
             .width(imgWidth)

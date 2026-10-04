@@ -101,7 +101,9 @@ private fun DialogButton(
         colors = ClickableSurfaceDefaults.colors(
             containerColor = Color(0xFF333333),
             contentColor = Color.White,
-),
+                focusedContainerColor = Color(0xFF333333),
+                focusedContentColor = Color.White,
+            ),
         modifier = Modifier.then(
             if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier
         )

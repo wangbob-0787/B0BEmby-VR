@@ -333,8 +333,10 @@ fun LoginScreen(
                         },
                     colors = ButtonDefaults.colors(
                         containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.3f),
-                        contentColor = MaterialTheme.colorScheme.onSurface
-                    ),
+                        contentColor = MaterialTheme.colorScheme.onSurface,
+                focusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.3f),
+                focusedContentColor = MaterialTheme.colorScheme.onSurface,
+            ),
                     shape = ButtonDefaults.shape()
                 ) {
                     if (loginViewModel.isLoading) {
@@ -376,7 +378,9 @@ fun LoginScreen(
                     colors = ClickableSurfaceDefaults.colors(
                         containerColor = Color.Transparent,
                         contentColor = Color.White.copy(alpha = 0.5f),
-),
+                focusedContainerColor = Color.Transparent,
+                focusedContentColor = Color.White.copy(alpha = 0.5f),
+            ),
                     modifier = Modifier.fillMaxWidth(0.8f)
                 ) {
                     Box(
@@ -492,7 +496,9 @@ fun TvInputButton(
         colors = ClickableSurfaceDefaults.colors(
             containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.3f),
             contentColor = MaterialTheme.colorScheme.onSurface,
-        ),
+                focusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.3f),
+                focusedContentColor = MaterialTheme.colorScheme.onSurface,
+            ),
         modifier = modifier
             .fillMaxWidth(0.8f)
             .height(64.dp)
@@ -552,7 +558,9 @@ fun ProtocolButton(
         colors = ClickableSurfaceDefaults.colors(
             containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.3f),
             contentColor = MaterialTheme.colorScheme.onSurface,
-        ),
+                focusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.3f),
+                focusedContentColor = MaterialTheme.colorScheme.onSurface,
+            ),
         modifier = modifier.height(64.dp)
     ) {
         Box(

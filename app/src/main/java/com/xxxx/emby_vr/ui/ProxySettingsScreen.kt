@@ -321,8 +321,10 @@ fun ProxySettingsScreen(
                             },
                         colors = ButtonDefaults.colors(
                             containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.3f),
-                            contentColor = MaterialTheme.colorScheme.onSurface
-                        ),
+                            contentColor = MaterialTheme.colorScheme.onSurface,
+                focusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.3f),
+                focusedContentColor = MaterialTheme.colorScheme.onSurface,
+            ),
                         shape = ButtonDefaults.shape()
                     ) {
                         Box(
@@ -392,8 +394,9 @@ private fun ProxySwitchRow(
         colors = ClickableSurfaceDefaults.colors(
             containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.15f),
             contentColor = Color.White,
-            
-        ),
+                focusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.15f),
+                focusedContentColor = Color.White,
+            ),
         modifier = modifier.height(56.dp)
     ) {
         Row(
@@ -449,7 +452,9 @@ private fun ProxyTypeButton(
         colors = ClickableSurfaceDefaults.colors(
             containerColor = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surface.copy(alpha = 0.3f),
             contentColor = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-),
+                focusedContainerColor = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surface.copy(alpha = 0.3f),
+                focusedContentColor = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+            ),
         modifier = modifier.height(56.dp)
     ) {
         Box(
@@ -487,7 +492,9 @@ private fun ProxyTvInputButton(
         colors = ClickableSurfaceDefaults.colors(
             containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.3f),
             contentColor = MaterialTheme.colorScheme.onSurface,
-        ),
+                focusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.3f),
+                focusedContentColor = MaterialTheme.colorScheme.onSurface,
+            ),
         modifier = modifier
             .fillMaxWidth(0.8f)
             .height(64.dp)

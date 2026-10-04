@@ -91,8 +91,10 @@ fun MenuDialog(
                     border = Border(BorderStroke(1.dp, Color.White.copy(alpha = 0.1f))),
                     colors = SurfaceDefaults.colors(
                         containerColor = MaterialTheme.colorScheme.onPrimary,
-                        contentColor = MaterialTheme.colorScheme.primary
-                    )
+                        contentColor = MaterialTheme.colorScheme.primary,
+                focusedContainerColor = MaterialTheme.colorScheme.onPrimary,
+                focusedContentColor = MaterialTheme.colorScheme.primary,
+            )
                 ) {
                     Column(
                         modifier = Modifier.padding(32.dp),
@@ -232,8 +234,10 @@ fun MenuListItem(
         colors = ListItemDefaults.colors(
             containerColor = Color.White.copy(alpha = 0.05f),
             contentColor = Color.White.copy(alpha = 0.8f),
-// 聚焦时使用当前选中的主题色！
-),
+// 聚焦时使用当前选中的主题色！,
+                focusedContainerColor = Color.White.copy(alpha = 0.05f),
+                focusedContentColor = Color.White.copy(alpha = 0.8f),
+            ),
         headlineContent = {
             Text(text = text, fontSize = 24.sp, fontWeight = FontWeight.Medium)
         },
@@ -303,8 +307,10 @@ fun ThemeSelectionDialog(
                             border = ClickableSurfaceDefaults.border(
                                 focusedBorder = androidx.tv.material3.Border(androidx.compose.foundation.BorderStroke(androidx.compose.ui.unit.Dp(0f), androidx.compose.ui.graphics.Color.Transparent))),
                             colors = ClickableSurfaceDefaults.colors(
-                                containerColor = Color.Transparent
-                            )
+                                containerColor = Color.Transparent,
+                focusedContainerColor = Color.Transparent,
+                focusedContentColor = androidx.compose.ui.graphics.Color.White,
+            )
                         ) {
                             Box(modifier = Modifier.fillMaxSize()) {
                                 // 渐变背景叠加层

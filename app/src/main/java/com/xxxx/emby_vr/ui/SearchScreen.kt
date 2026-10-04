@@ -207,7 +207,11 @@ fun SearchScreen(
                                     alpha = 0.2f
                                 ) else Color.White.copy(alpha = 0.05f),
                                 contentColor = Color.White,
-),
+                focusedContainerColor = if (isAllSelected) MaterialTheme.colorScheme.primary.copy(
+                                    alpha = 0.2f
+                                ) else Color.White.copy(alpha = 0.05f),
+                focusedContentColor = Color.White,
+            ),
                             border = ClickableSurfaceDefaults.border(
                                 border = if (isAllSelected) Border(
                                     BorderStroke(
@@ -274,7 +278,11 @@ fun SearchScreen(
                                 alpha = 0.2f
                             ) else Color.White.copy(alpha = 0.05f),
                             contentColor = Color.White,
-),
+                focusedContainerColor = if (isSelected) MaterialTheme.colorScheme.primary.copy(
+                                alpha = 0.2f
+                            ) else Color.White.copy(alpha = 0.05f),
+                focusedContentColor = Color.White,
+            ),
                         border = ClickableSurfaceDefaults.border(
                             border = if (isSelected) Border(
                                 BorderStroke(
@@ -366,8 +374,10 @@ fun SearchScreen(
                         focusedBorder = androidx.tv.material3.Border(androidx.compose.foundation.BorderStroke(androidx.compose.ui.unit.Dp(0f), androidx.compose.ui.graphics.Color.Transparent))),
                     colors = ClickableSurfaceDefaults.colors(
                         containerColor = Color.White.copy(alpha = 0.1f),
-                        contentColor = Color.White
-                    )
+                        contentColor = Color.White,
+                focusedContainerColor = Color.White.copy(alpha = 0.1f),
+                focusedContentColor = Color.White,
+            )
                 ) {
                     Row(
                         modifier = Modifier

@@ -68,7 +68,9 @@ fun TvInputDialog(
                 colors = ButtonDefaults.colors(
                     containerColor = MaterialTheme.colorScheme.primary,
                     contentColor = androidx.compose.ui.graphics.Color.White,
-                ),
+                focusedContainerColor = MaterialTheme.colorScheme.primary,
+                focusedContentColor = androidx.compose.ui.graphics.Color.White,
+            ),
             ) {
                 Text(stringResource(R.string.confirm))
             }
@@ -80,7 +82,9 @@ fun TvInputDialog(
                 colors = ButtonDefaults.colors(
                     containerColor = MaterialTheme.colorScheme.primary,
                     contentColor = androidx.compose.ui.graphics.Color.White,
-                ),
+                focusedContainerColor = MaterialTheme.colorScheme.primary,
+                focusedContentColor = androidx.compose.ui.graphics.Color.White,
+            ),
             ) {
                 Text(stringResource(R.string.cancel))
             }
