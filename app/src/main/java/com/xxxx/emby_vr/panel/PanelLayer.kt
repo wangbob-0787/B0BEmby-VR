@@ -198,41 +198,71 @@ class PanelLayer(
         val now = SystemClock.uptimeMillis()
         var handled = false
 
-        MotionEvent.obtain(now, now, MotionEvent.ACTION_HOVER_MOVE, px, py, 0).let { e ->
-            e.source = InputDevice.SOURCE_MOUSE
-            try {
-                handled = v.dispatchGenericMotionEvent(e) || handled
-            } catch (t: Throwable) {
-                Log.e(TAG, "悬停派发失败: ${t.message}")
-            } finally {
-                e.recycle()
-            }
+        // 1) 悬停到该位置（建立 hover 状态）
+        val hover = mouseEvent(now, now, MotionEvent.ACTION_HOVER_MOVE, px, py, 0)
+        try {
+            handled = v.dispatchGenericMotionEvent(hover) || handled
+        } catch (t: Throwable) {
+            Log.e(TAG, "悬停派发失败: ${t.message}")
+        } finally {
+            hover.recycle()
         }
 
-        MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, px, py, 0).let { e ->
-            e.source = InputDevice.SOURCE_MOUSE
-            e.buttonState = MotionEvent.BUTTON_PRIMARY
-            try {
-                handled = v.dispatchTouchEvent(e) || handled
-            } catch (t: Throwable) {
-                Log.e(TAG, "鼠标按下派发失败: ${t.message}")
-            } finally {
-                e.recycle()
-            }
+        // 2) 主键按下 → 抬起（Compose 按鼠标点击处理，并把焦点落到被点元素）
+        val down = mouseEvent(now, now, MotionEvent.ACTION_DOWN, px, py, MotionEvent.BUTTON_PRIMARY)
+        try {
+            handled = v.dispatchTouchEvent(down) || handled
+        } catch (t: Throwable) {
+            Log.e(TAG, "鼠标按下派发失败: ${t.message}")
+        } finally {
+            down.recycle()
         }
 
-        MotionEvent.obtain(now, now + 60, MotionEvent.ACTION_UP, px, py, 0).let { e ->
-            e.source = InputDevice.SOURCE_MOUSE
-            e.buttonState = 0
-            try {
-                handled = v.dispatchTouchEvent(e) || handled
-            } catch (t: Throwable) {
-                Log.e(TAG, "鼠标抬起派发失败: ${t.message}")
-            } finally {
-                e.recycle()
-            }
+        val up = mouseEvent(now, now + 60, MotionEvent.ACTION_UP, px, py, 0)
+        try {
+            handled = v.dispatchTouchEvent(up) || handled
+        } catch (t: Throwable) {
+            Log.e(TAG, "鼠标抬起派发失败: ${t.message}")
+        } finally {
+            up.recycle()
         }
         return handled
+    }
+
+    /**
+     * 造一个鼠标事件。
+     *
+     * 必须用带 `buttonState` 的重载：`MotionEvent.setButtonState()` 是隐藏 API，
+     * Kotlin 侧 `buttonState` 只读（写成 `ev.buttonState = 1` 会编译不过）。
+     */
+    private fun mouseEvent(
+        downTime: Long,
+        eventTime: Long,
+        action: Int,
+        px: Float,
+        py: Float,
+        buttonState: Int,
+    ): MotionEvent {
+        val props = arrayOf(
+            MotionEvent.PointerProperties().apply {
+                id = 0
+                toolType = MotionEvent.TOOL_TYPE_MOUSE
+            },
+        )
+        val coords = arrayOf(
+            MotionEvent.PointerCoords().apply {
+                x = px
+                y = py
+                pressure = 1f
+                size = 1f
+            },
+        )
+        @Suppress("DEPRECATION")
+        return MotionEvent.obtain(
+            downTime, eventTime, action, 1, props, coords,
+            0, buttonState, 1f, 1f, 0, 0,
+            InputDevice.SOURCE_MOUSE, 0,
+        )
     }
 
     /**
