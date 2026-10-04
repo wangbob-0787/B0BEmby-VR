@@ -193,6 +193,38 @@ fun PanelApp(onPlayRequested: (mediaId: String, positionTicks: Long) -> Unit) {
                         )
                     }
 
+                    /*
+                     * 播放路由（VR 版专用，2026-10-05 补）。
+                     *
+                     * 电视版「播放」是面板里的一整屏（player 路由）；VR 版把播放屏换成了
+                     * 原生 VR 播放器，所以这里只做一件事：把请求转给 Activity，然后立刻
+                     * 退出这一屏 —— 原生播放时面板本来就不显示，退出后播放结束回到的
+                     * 就是刚才那一页（详情/首页）。
+                     *
+                     * 父亲 2026-10-05 实测「首页大海报、电视直播、继续观看扣扳机，
+                     * 焦点移过去了但不起播」，根因就是这个路由缺失：
+                     * navigate 抛 "destination ... cannot be found"，被兜底 try 吞掉，
+                     * 表现为静默无动作。凡是走 goPlay 的入口（都是直接播放）都踩这条。
+                     */
+                    composable(
+                        "player/{mediaId}?position={position}",
+                        arguments = listOf(
+                            navArgument("mediaId") { type = NavType.StringType },
+                            navArgument("position") {
+                                type = NavType.LongType
+                                defaultValue = 0L
+                            },
+                        ),
+                    ) { entry ->
+                        val mediaId = entry.arguments?.getString("mediaId").orEmpty()
+                        val position = entry.arguments?.getLong("position") ?: 0L
+                        LaunchedEffect(entry.id) {
+                            if (mediaId.isNotBlank()) onPlayRequested(mediaId, position)
+                            navController.popBackStack()
+                        }
+                        Loading()
+                    }
+
                     composable(
                         "library/{libraryId}?libraryName={libraryName}&type={type}",
                         arguments = listOf(
