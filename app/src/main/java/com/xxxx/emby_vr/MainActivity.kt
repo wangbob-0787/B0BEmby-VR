@@ -267,6 +267,11 @@ class MainActivity : ComponentActivity() {
                     startTimeTicks = startTicks,
                 )
                 val source = media.mediaSources?.firstOrNull()
+                // 记下这次播放的身份，供服务端上报（播放历史/继续观看靠它）
+                reportedItemId = mediaId
+                reportedPlaySessionId = media.playSessionId
+                reportedMediaSourceId = source?.id
+                reportedRunTimeTicks = source?.runTimeTicks ?: 0L
                 val path0 = source?.directStreamUrl ?: source?.transcodingUrl
                 if (path0 == null) {
                     hud("取不到播放地址（服务器未返回直链）")
@@ -303,6 +308,14 @@ class MainActivity : ComponentActivity() {
                 p.prepare()
                 p.playWhenReady = true
                 p.addListener(object : Player.Listener {
+                    override fun onPlaybackStateChanged(state: Int) {
+                        // 自然播完 → 上报停止（服务端据此记"已看"与进度）
+                        if (state == Player.STATE_ENDED) {
+                            Log.i(TAG, "播放结束 → 上报停止")
+                            reportPlaybackStopped(player?.duration ?: 0L)
+                        }
+                    }
+
                     override fun onPlayerError(error: PlaybackException) {
                         // 先停 videoActive（ticker 下一圈自行退出），再写错误提示，
                         // 否则每秒刷新的绿字会把错误盖掉
@@ -321,6 +334,7 @@ class MainActivity : ComponentActivity() {
             stickLastAt = 0L
             stickHoldFiredAt = 0L
             startHudTicker()
+            startPlaybackReporting()
             hud("播放中：左右拨动摇杆=快进快退 · 扳机=暂停 · 返回=退出")
             Log.i(TAG, "开始播放: $title url=${url.take(160)}")
         } catch (e: Exception) {
@@ -417,12 +431,101 @@ class MainActivity : ComponentActivity() {
 
     /** 停止播放，回到界面（面板层） */
     private fun stopPlayback() {
+        // 先取位置再释放播放器：这一条决定服务端记住看到哪儿
+        reportPlaybackStopped(player?.currentPosition?.times(10_000) ?: 0L)
         stopPlaybackInternal()
         renderer.videoActive = false
         hudJob?.cancel()
         hudJob = null
         renderer.setHudText("")
         Log.i(TAG, "停止播放，回到界面")
+    }
+
+    // ---- 播放进度上报（父亲 2026-10-05：app 记不住看到第几集） ----
+    //
+    // 为什么以前记不住：电视版的进度上报在**播放屏 ViewModel**里
+    // （PlayerViewModel.reportPlaying/Progress/Stopped），VR 版把播放屏换成了
+    // 原生播放器，那三个调用点跟着一起没了 —— 于是本地播得再欢，服务端一无所知，
+    // 「继续观看」和详情页永远停在别的客户端最后一次上报的位置（=第 17 集）。
+    //
+    // 现在按 Emby 的标准三件套上报：开始 / 每 10 秒进度 / 停止。
+    private var reportedItemId: String? = null
+    private var reportedPlaySessionId: String? = null
+    private var reportedMediaSourceId: String? = null
+    private var reportedRunTimeTicks: Long = 0L
+    private var progressJob: kotlinx.coroutines.Job? = null
+
+    private fun playbackReportBody(
+        itemId: String,
+        positionTicks: Long,
+        isPaused: Boolean,
+        eventName: String? = null,
+    ): Map<String, Any?> = buildMap {
+        put("ItemId", itemId)
+        put("MediaSourceId", reportedMediaSourceId ?: "")
+        put("PlaySessionId", reportedPlaySessionId ?: "")
+        put("PositionTicks", positionTicks)
+        put("IsPaused", isPaused)
+        put("IsMuted", false)
+        put("VolumeLevel", 100)
+        put("PlayMethod", "DirectStream")
+        put("CanSeek", true)
+        put("PlaybackStartTimeTicks", System.currentTimeMillis() * 10_000)
+        put("SeekableRanges", listOf(mapOf("start" to 0L, "end" to reportedRunTimeTicks)))
+        put("BufferedRanges", emptyList<Any>())
+        if (eventName != null) put("EventName", eventName)
+    }
+
+    private fun reportToServer(path: String, body: Map<String, Any?>, what: String) {
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                when (path) {
+                    "playing" -> EmbyApi.playing(
+                        this@MainActivity, BuildConfig.EMBY_SERVER, BuildConfig.EMBY_API_KEY,
+                        EmbyContent.DEVICE_ID, body,
+                    )
+                    "progress" -> EmbyApi.reportPlaybackProgress(
+                        this@MainActivity, BuildConfig.EMBY_SERVER, BuildConfig.EMBY_API_KEY,
+                        EmbyContent.DEVICE_ID, body,
+                    )
+                    else -> EmbyApi.stopped(
+                        this@MainActivity, BuildConfig.EMBY_SERVER, BuildConfig.EMBY_API_KEY,
+                        EmbyContent.DEVICE_ID, body,
+                    )
+                }
+            }.onFailure { Log.w(TAG, "上报$what失败: ${it.javaClass.simpleName}: ${it.message}") }
+        }
+    }
+
+    /** 起播后：立刻上报"开始播放"，随后每 10 秒上报一次进度 */
+    private fun startPlaybackReporting() {
+        val itemId = reportedItemId ?: return
+        val startTicks = (player?.currentPosition ?: 0L).times(10_000)
+        reportToServer("playing", playbackReportBody(itemId, startTicks, isPaused = false), "开始播放")
+        Log.i(TAG, "进度上报: 开始 item=$itemId playSession=${reportedPlaySessionId ?: "-"}")
+        progressJob?.cancel()
+        progressJob = scope.launch {
+            while (renderer.videoActive) {
+                kotlinx.coroutines.delay(10_000)
+                val p = player ?: continue
+                val item = reportedItemId ?: continue
+                reportToServer(
+                    "progress",
+                    playbackReportBody(item, p.currentPosition * 10_000, p.playWhenReady.not(), "timeupdate"),
+                    "进度",
+                )
+                Log.i(TAG, "进度上报: ${p.currentPosition / 1000}s item=$item")
+            }
+        }
+    }
+
+    private fun reportPlaybackStopped(positionTicks: Long) {
+        progressJob?.cancel()
+        progressJob = null
+        val itemId = reportedItemId ?: return
+        reportToServer("stopped", playbackReportBody(itemId, positionTicks, isPaused = false), "停止")
+        Log.i(TAG, "进度上报: 停止 ${positionTicks / 10_000_000}s item=$itemId")
+        reportedItemId = null
     }
 
     private fun stopPlaybackInternal() {
