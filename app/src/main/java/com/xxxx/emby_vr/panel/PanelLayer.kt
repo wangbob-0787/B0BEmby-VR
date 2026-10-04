@@ -182,6 +182,60 @@ class PanelLayer(
     }
 
     /**
+     * 鼠标式点击（父亲 2026-10-04 要求「光标指哪儿、扣扳机就激活哪儿」）。
+     *
+     * 为什么不用触摸式：实测合成触摸事件虽然被界面「接住」（dispatchTouchEvent 返回
+     * true），但电视版的组件不响应 —— 同一个位置用触摸点海报/播放按钮都没动作，
+     * 而把焦点移上去按 OK 就有动作。Compose 对 **MOUSE 源**的按下/抬起按鼠标点击处理
+     * （Android TV 本来就支持鼠标），所以这里改发鼠标事件：
+     *   1) ACTION_HOVER_MOVE 先把指针悬停到该位置（建立 hover 状态）
+     *   2) ACTION_DOWN（buttonState = 主键）→ ACTION_UP
+     *
+     * @return 是否有视图接住
+     */
+    private fun mouseClick(px: Float, py: Float): Boolean {
+        val v = decor ?: return false
+        val now = SystemClock.uptimeMillis()
+        var handled = false
+
+        MotionEvent.obtain(now, now, MotionEvent.ACTION_HOVER_MOVE, px, py, 0).let { e ->
+            e.source = InputDevice.SOURCE_MOUSE
+            try {
+                handled = v.dispatchGenericMotionEvent(e) || handled
+            } catch (t: Throwable) {
+                Log.e(TAG, "悬停派发失败: ${t.message}")
+            } finally {
+                e.recycle()
+            }
+        }
+
+        MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, px, py, 0).let { e ->
+            e.source = InputDevice.SOURCE_MOUSE
+            e.buttonState = MotionEvent.BUTTON_PRIMARY
+            try {
+                handled = v.dispatchTouchEvent(e) || handled
+            } catch (t: Throwable) {
+                Log.e(TAG, "鼠标按下派发失败: ${t.message}")
+            } finally {
+                e.recycle()
+            }
+        }
+
+        MotionEvent.obtain(now, now + 60, MotionEvent.ACTION_UP, px, py, 0).let { e ->
+            e.source = InputDevice.SOURCE_MOUSE
+            e.buttonState = 0
+            try {
+                handled = v.dispatchTouchEvent(e) || handled
+            } catch (t: Throwable) {
+                Log.e(TAG, "鼠标抬起派发失败: ${t.message}")
+            } finally {
+                e.recycle()
+            }
+        }
+        return handled
+    }
+
+    /**
      * 按面板像素位置送一次触摸点击（DOWN + UP）。
      *
      * @return 是否有视图接住（decor.dispatchTouchEvent 的返回值）
@@ -297,9 +351,13 @@ class PanelLayer(
                  * 两条都发、各自记录是否被界面接住，实机看日志即可确定哪条有效，
                  * 确认后删掉多余的那条（避免同一个按钮被激活两次）。
                  */
-                val touched = touchClick(px, py)
-                Log.i(TAG, "面板点击: 触摸被接住=$touched 位置 (${px.toInt()},${py.toInt()})")
-                key(KeyEvent.KEYCODE_DPAD_CENTER)
+                val mouseHit = mouseClick(px, py)
+                Log.i(TAG, "面板点击: 鼠标式被接住=$mouseHit 位置 (${px.toInt()},${py.toInt()})")
+                if (!mouseHit) {
+                    // 鼠标式没人接 → 回退到「焦点 + OK」通道（电视版原有语义）
+                    Log.i(TAG, "面板点击: 鼠标式无响应 → 回退发 OK 键")
+                    key(KeyEvent.KEYCODE_DPAD_CENTER)
+                }
             }
         }
     }
