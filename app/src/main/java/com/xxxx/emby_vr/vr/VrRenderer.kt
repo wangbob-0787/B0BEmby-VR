@@ -14,7 +14,6 @@ import android.util.Log
 import com.xxxx.emby_vr.scene.Quad
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.util.Locale
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 
@@ -106,47 +105,20 @@ class VrRenderer(
     var videoActive = false
 
     private lateinit var screenQuad: Quad
-    lateinit var posterQuads: List<Quad>
-    private lateinit var barQuad: Quad
 
     private var viewW = 1
     private var viewH = 1
 
     // ---- 纹理资源（GL 线程上创建）----
-    private var screenTex = 0
-    private var posterTexs = IntArray(POSTER_COUNT)
-    private var whiteTex = 0
 
     // 视频状态条（HUD）纹理与几何
     private var hudTex = 0
     private lateinit var hudQuad: Quad
     private var lastRenderedHudText: String = ""
 
-    // 屏幕纹理内容缓存（GL 线程）
-    private var screenBitmap: Bitmap? = null
-    private var pendingScreenText: String = ""
-
-    // 海报选中索引（-1 = 无）；焦点视觉用绿色描边渲染
-    @Volatile
-    var focusedPosterIndex: Int = -1
-
-    /** 模拟射线最近一次在屏幕平面上的 x/y（米），用于算出应聚焦哪张海报 */
-    @Volatile
-    var simRayX: Float = 0f
-    @Volatile
-    var simRayY: Float = 0f
-
-    /**
-     * 更新屏幕中央大字。
-     * 从主线程（输入回调）调用；数据写入后由 GL 线程在下一帧检测并重建位图。
-     */
-    fun setScreenText(text: String) {
-        synchronized(this) { pendingScreenText = text }
-    }
-
     // ---- 视频状态条（HUD）----
     //
-    // 播放中屏幕显示的是视频画面，setScreenText 写的状态全被盖住 —— 父亲反馈
+    // 播放中屏幕显示的是视频画面，别的状态提示会被盖住 —— 父亲反馈
     // 「左右快退快进没有反馈 / 返回没反应」，实际可能执行了但看不见。
     // HUD 独立成一条贴在视频画面上方（后画、z 靠前），显示最近收到的动作、
     // 播放位置、完整错误，作为播放期唯一的观测手段。
@@ -159,163 +131,14 @@ class VrRenderer(
         synchronized(this) { pendingHudText = text }
     }
 
-    // ---- 真实海报（P2）----
-
-    /** 待上传的海报位图：索引 → 位图。主线程写入，GL 线程消费 */
-    private val pendingPosters = HashMap<Int, Bitmap>()
-
-    /** 当前已上传的海报数量（用于日志） */
-    @Volatile
-    private var uploadedPosterCount = 0
-
-    /**
-     * 投递一张真实海报位图。
-     *
-     * 纹理必须在 GL 线程创建/上传，所以这里只把位图放进待处理队列，
-     * 由 onDrawFrame 在 GL 线程取出并绑成纹理。
-     *
-     * @param index 海报位（0-based，对应海报墙从左到右第几张）
-     */
-    fun setPosterBitmap(index: Int, bitmap: Bitmap) {
-        if (index < 0 || index >= posterCount) {
-            // 超出当前海报墙容量的直接丢弃并回收，避免内存泄漏
-            bitmap.recycle()
-            return
-        }
-        synchronized(pendingPosters) {
-            // 同一位置重复投递时，回收旧的那张（图片可能以大图换小图）
-            pendingPosters[index]?.takeIf { it !== bitmap }?.recycle()
-            pendingPosters[index] = bitmap
-        }
-    }
-
-    /**
-     * 本次海报墙实际要画的卡片数（数据条数可能少于容量）。
-     *
-     * 初值直接用伴生常量而不是 `posterCount`：实例属性按声明顺序初始化，
-     * 本行在 `posterCount` 声明之前，引用它会编译不过
-     * （Kotlin 报 "Variable 'posterCount' must be initialized"）。
-     */
-    @Volatile
-    var activePosterCount: Int = POSTER_COUNT
-
-    /** 清空海报墙（重新加载时调用） */
-    fun clearPosters() {
-        synchronized(pendingPosters) {
-            pendingPosters.values.forEach { it.recycle() }
-            pendingPosters.clear()
-        }
-    }
-
-    /** 在 GL 线程把待处理的海报位图上传成纹理 */
-    private fun flushPendingPosters() {
-        val ready: List<Pair<Int, Bitmap>>
-        synchronized(pendingPosters) {
-            if (pendingPosters.isEmpty()) return
-            ready = pendingPosters.map { it.key to it.value }
-            pendingPosters.clear()
-        }
-        for ((idx, bmp) in ready) {
-            if (posterTexs[idx] == 0) posterTexs[idx] = newTexture()
-            bindTexture(posterTexs[idx], bmp)
-            bmp.recycle()
-        }
-        uploadedPosterCount += ready.size
-        Log.i(TAG, "海报纹理已更新 ${ready.size} 张（累计 $uploadedPosterCount）")
-    }
-
-    /**
-     * 根据模拟射线位置更新焦点海报索引。
-     *
-     * 坐标口径：与渲染一致，用「视口归一化坐标」——半高 = 1，
-     * 横向上限 = 宽高比。射线 x 落在哪张海报的横向区间就聚焦哪张；
-     * 纵向命中作为附加条件（避免射线飞得太远还锁定卡片）。
-     */
-    fun updateFocusFromSimRay(screenBottomY: Float) {
-        val layout = posterLayout(screenBottomY)
-        var hit = -1
-        for (i in layout.indices) {
-            val (centerX, centerY, halfW, halfH) = layout[i]
-            val inX = simRayX in (centerX - halfW - POSTER_HIT_PAD)..(centerX + halfW + POSTER_HIT_PAD)
-            val inY = simRayY in (centerY - halfH - POSTER_HIT_PAD)..(centerY + halfH + POSTER_HIT_PAD)
-            if (inX && inY) {
-                hit = i
-                break
-            }
-        }
-        // 纵向没命中时退化为「只看横向」：VR 里手柄经常略微上抬，
-        // 严格双轴命中会导致指不到卡片。
-        if (hit < 0) {
-            for (i in layout.indices) {
-                val (centerX, _, halfW, _) = layout[i]
-                if (simRayX in (centerX - halfW - POSTER_HIT_PAD)..(centerX + halfW + POSTER_HIT_PAD)) {
-                    hit = i
-                    break
-                }
-            }
-        }
-        if (focusedPosterIndex != hit) focusedPosterIndex = hit
-    }
-
-    /**
-     * 海报墙布局：返回每张卡的 (centerX, centerY, halfW, halfH)，归一化坐标。
-     *
-     * 与 drawPosterWall 共用，保证「看到的」和「选中的」一致。
-     * 纵向位置由 [screenBottomY]（屏幕下缘）与视口下边界共同决定，
-     * 保证整行都落在可视区 [-1, 1] 内 —— 2026-10-03 就是因为没做这个约束，
-     * 海报行中心落到 -1.08，整行跑出画面，屏上什么都不显示。
-     */
-    private fun posterLayout(screenBottomY: Float): List<FloatArray> {
-        val aspect = viewW.toFloat() / viewH.toFloat().coerceAtLeast(1f)
-        val usableHalfW = 0.96f * aspect
-        val gap = POSTER_GAP
-        val totalGap = (posterCount - 1) * gap
-        val cardHalfW = (usableHalfW * 2f - totalGap) / posterCount / 2f
-        val cardHalfH = cardHalfW * 3f / 2f
-        val startX = -usableHalfW + cardHalfW
-        val y = posterCenterY(screenBottomY, cardHalfH)
-        return List(posterCount) { i ->
-            floatArrayOf(startX + i * (cardHalfW * 2f + gap), y, cardHalfW, cardHalfH)
-        }
-    }
-
-    /**
-     * 海报行的中心 y：贴在屏幕下缘下方，且整行不越出视口下边界。
-     *
-     * 若屏幕下缘与视口底部之间放不下完整的一行（卡片过高），
-     * 就把海报行**上移**到视口内（宁可压住屏幕一点，也不能整行看不见）。
-     */
-    private fun posterCenterY(screenBottomY: Float, cardHalfH: Float): Float {
-        val ideal = screenBottomY - POSTER_TOP_MARGIN - cardHalfH
-        val lowestAllowed = -1f + BOTTOM_MARGIN + cardHalfH   // 底边留安全边距
-        return if (ideal < lowestAllowed) lowestAllowed else ideal
-    }
-
     // 基准几何：这些 Quad 的绝对尺寸不重要（渲染时一律缩放到视口），
-    // 只用来定义宽高比 —— 屏幕 16:9、海报 2:3（与 TV 版一致）。
+    // 只用来定义宽高比 —— 屏幕 16:9（与 TV 版一致）。
     private val screenWidth = 16f
     private val screenHeight = 9f
 
     /** 屏幕 16:9 的半宽/半高（供缩放换算用） */
     private val halfWOfScreen = screenWidth / 2f
     private val halfHOfScreen = screenHeight / 2f
-
-    /** 视口下边界的安全边距 */
-    private val BOTTOM_MARGIN = 0.02f
-
-    // 海报墙参数：一行 10 张，2:3 比例；实际排布在 drawPosterWall 里按视口算
-    private val posterCount = POSTER_COUNT
-    private val posterW = 2f
-    private val posterH = 3f
-
-    /** 海报之间的横向间隙（归一化坐标，半高 = 1） */
-    private val POSTER_GAP = 0.024f
-
-    /** 屏幕下缘到海报行顶部的间距（归一化坐标） */
-    private val POSTER_TOP_MARGIN = 0.10f
-
-    /** 射线命中判定向外放宽的量（归一化坐标），避免边缘难指中 */
-    private val POSTER_HIT_PAD = 0.02f
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         Log.i(TAG, "onSurfaceCreated")
@@ -328,10 +151,8 @@ class VrRenderer(
         colorHandle = GLES30.glGetUniformLocation(program, "uColor")
 
         screenQuad = Quad(screenWidth, screenHeight)
-        barQuad = Quad(screenWidth, 0.22f)
-        posterQuads = List(posterCount) { Quad(posterW, posterH, textured = false) }
 
-        createPlaceholderTexture()
+        createHudResources()
         createVideoPipeline()
         createPanelPipeline()
 
@@ -390,34 +211,13 @@ class VrRenderer(
         GLES30.glViewport(0, 0, width, height)
     }
 
-    /** 占位资源：在 GL 线程一次性建好（GLSurfaceView 在 onSurfaceCreated 已绑定 EGL 上下文） */
-    private fun createPlaceholderTexture() {
-        // 屏幕位图：深色背景 + 大标题 + 网格参考（验证贴图方向/比例）
-        val screenBmp = buildScreenBitmap(1280, 720, "B0BEmby VR")
-        screenBitmap = screenBmp
-        screenTex = newTexture()
-        bindTexture(screenTex, screenBmp)
-
-        // 海报占位卡：每张生成一张不同渐变色 + 序号
-        for (i in posterTexs.indices) {
-            val bmp = buildPosterBitmap(i, 256, 384)
-            posterTexs[i] = newTexture()
-            bindTexture(posterTexs[i], bmp)
-            bmp.recycle()
-        }
-
-        whiteTex = newTexture()
-        val whiteBmp = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
-        whiteBmp.eraseColor(Color.WHITE)
-        bindTexture(whiteTex, whiteBmp)
-        whiteBmp.recycle()
-
-        // 视频状态条：宽扁四边形 + 初始空纹理（有文字时才画）
+    /** HUD 资源：GL 线程一次性建好（GLSurfaceView 在 onSurfaceCreated 已绑定 EGL 上下文） */
+    private fun createHudResources() {
         hudQuad = Quad(screenWidth, 1f)
         hudTex = newTexture()
         bindTexture(hudTex, buildHudBitmap(""))
 
-        Log.i(TAG, "占位纹理就绪: 屏幕 + ${posterTexs.size} 张海报")
+        Log.i(TAG, "HUD 资源就绪")
     }
 
     /**
@@ -443,17 +243,6 @@ class VrRenderer(
 
         GLES30.glUseProgram(program)
 
-        // 主线程更新了屏幕文字（或调试信息变化）→ 重建位图与纹理
-        val want = synchronized(this) { pendingScreenText }
-        if (want != lastRenderedScreenText || screenDirty) {
-            lastRenderedScreenText = want
-            screenDirty = false
-            val bmp = buildScreenBitmap(1280, 720, want)
-            screenBitmap?.recycle()
-            screenBitmap = bmp
-            bindTexture(screenTex, bmp)
-        }
-
         // HUD 文字变化 → 重建状态条纹理
         val hudWant = synchronized(this) { pendingHudText }
         if (hudWant != lastRenderedHudText) {
@@ -462,9 +251,6 @@ class VrRenderer(
             bindTexture(hudTex, hudBmp)
             hudBmp.recycle()
         }
-
-        // 主线程投递的真实海报 → 上传成 GL 纹理（必须在 GL 线程做）
-        flushPendingPosters()
 
         val aspect = viewW.toFloat() / viewH.toFloat().coerceAtLeast(1f)
 
@@ -486,20 +272,14 @@ class VrRenderer(
         /*
          * 布局（归一化坐标，纵向可用范围就是 [-1, 1]，**超出即不可见**）。
          *
-         * 2026-10-03 实机踩坑：改完正交投影后海报一直不显示，原因是布局没按
-         * 视口边界算 —— 屏幕中心 y=0.22、半高 0.96，屏幕顶到了 1.18（超出上边
-         * 0.18 被切），海报行中心落到 -1.08（整个跑出下边）。视觉上就是
-         * 「只有一块被切边的屏，下面什么都没有」。
-         *
-         * 现在按「上：屏幕 / 下：海报行」分区，两段都完整落在 [-1, 1] 内：
-         *   - 屏幕：高占视口 58%，顶边贴 y = 0.96
-         *   - 海报：紧贴屏幕下方，底边留 0.06 安全边距
-         * 屏幕宽度仍按 16:9 从高度反推，避免拉变形。
+         * 父亲 2026-10-04 定：删掉海报墙后，空间全部让给虚拟屏 ——
+         * **虚拟屏占满整个视口**（半高 = 1、中心在 0），不留下半部分空白。
+         * 屏幕本身保持 16:9 从高度反推宽度：PICO 面板视口是 1600x900（16:9），
+         * 半宽 = 16/9 恰好铺满整个视口宽度。
          */
-        val topMargin = 0.04f              // 屏幕上边距
-        val screenHalfH = 0.58f            // 屏幕半高（占视口 58%）
+        val screenHalfH = 1f                // 半高 = 1 → 占满视口全高
         val screenHalfW = screenHalfH * 16f / 9f
-        val screenCenterY = 1f - topMargin - screenHalfH
+        val screenCenterY = 0f              // 垂直居中
 
         // 记录布局：面板像素换算（panelPixelAt）要用，保证「看到的」和「点到的」一致
         lastScreenCenterY = screenCenterY
@@ -519,15 +299,8 @@ class VrRenderer(
             updatePanelFrame()
             drawOesQuad(screenQuad, screenModel, vp, panelTex)
         } else {
-            val hasScreenTex = screenTex != 0
-            drawQuad(
-                screenQuad,
-                screenModel,
-                vp,
-                if (hasScreenTex) 1f else 0.10f,
-                useTex = hasScreenTex,
-                tex = screenTex,
-            )
+            // 面板还没挂上（启动后的极短窗口）：画一块近黑底色
+            drawQuad(screenQuad, screenModel, vp, 0.10f)
         }
 
         // 1.5) 视频状态条（HUD）：贴在视频画面上层（z 更靠前，越过深度测试）
@@ -541,33 +314,6 @@ class VrRenderer(
             )
             drawQuad(hudQuad, hudModel, vp, 1f, useTex = true, tex = hudTex)
         }
-
-        // 2) 海报墙 + 3) 底部控制条底板：已删除（父亲 2026-10-04：色块没用途，全部删掉）
-        // screenBottomY 保留，后续焦点判定还需要
-        val screenBottomY = screenCenterY - screenHalfH
-
-        // 焦点判定要在布局确定之后做（依赖 screenBottomY）。
-        // 播放中跳过：光标在视频上时摇杆横移应驱动快进快退，
-        // 而不是继续给下面的海报换焦点（父亲 2026-10-04 实测反馈）。
-        if (!videoActive) {
-            updateFocusFromSimRay(screenBottomY)
-        }
-
-        // 把关键运行状态画到屏上（拿不到 logcat 时的唯一观测手段）
-        setDebugLines(
-            buildList {
-                add("视口 ${viewW}x$viewH aspect=${"%.3f".format(aspect)}")
-                add("屏幕 y=[${"%.2f".format(screenBottomY)}, ${"%.2f".format(screenCenterY + screenHalfH)}] 半宽=${"%.2f".format(screenHalfW)}")
-                val first = layoutForBar.firstOrNull()
-                if (first != null) {
-                    add("海报行 y=[${"%.2f".format(first[1] - first[3])}, ${"%.2f".format(first[1] + first[3])}] 卡半宽=${"%.3f".format(first[2])}")
-                }
-                add("海报 可见=${activePosterCount} 已传纹理=$uploadedPosterCount 焦点=$focusedPosterIndex")
-                val texOk = posterTexs.count { it != 0 }
-                add("纹理句柄有效=$texOk/${posterTexs.size} 屏幕纹理=$screenTex 白图=$whiteTex")
-                add("待上传海报=${synchronized(pendingPosters) { pendingPosters.size }}")
-            },
-        )
 
         // 首帧日志：实机排查「画面到底出来没有」时，这行是最直接的证据。
         if (!loggedFirstFrame) {
@@ -647,41 +393,6 @@ class VrRenderer(
 
     private var loggedFirstFrame = false
 
-    private var lastRenderedScreenText = ""
-
-    private fun drawPosterWall(vp: FloatArray, screenBottomY: Float) {
-        // 与 updateFocusFromSimRay 共用 posterLayout()，保证「看到的」和「指到的」一致。
-        // 只画有数据的卡片：activePosterCount 由 MainActivity 在加载完成后设置。
-        val layout = posterLayout(screenBottomY)
-        val visible = activePosterCount.coerceIn(0, posterCount)
-        for (i in 0 until visible) {
-            val (x, y, halfW, halfH) = layout[i]
-            val model = M.mul(
-                M.translate(x, y, 0f),
-                M.scale(halfW / (posterQuads[i].width / 2f), halfH / (posterQuads[i].height / 2f), 1f),
-            )
-            val focused = i == focusedPosterIndex
-            if (focused) {
-                // 焦点底色：纯绿 #7ED97A（secondary，与 TV 版焦点背景一致）
-                drawQuad(posterQuads[i], model, vp, 0.0f, useTex = true, tex = whiteTex, color = GREEN_FOCUSED)
-                // 卡片本身
-                drawQuad(posterQuads[i], model, vp, 1f, useTex = true, tex = posterTexs[i])
-                // 绿色描边：放大 1.10 倍画一次描边框（P1 用两层 quads 近似）
-                drawQuad(
-                    posterQuads[i],
-                    M.mul(model, M.scale(1.10f, 1.10f)),
-                    vp,
-                    0.0f,
-                    useTex = true,
-                    tex = whiteTex,
-                    color = GREEN_OUTLINE,
-                )
-            } else {
-                drawQuad(posterQuads[i], model, vp, 1f, useTex = true, tex = posterTexs[i])
-            }
-        }
-    }
-
     /**
      * 用视频程序画一个四边形（采样 OES 外部纹理）。
      *
@@ -727,26 +438,6 @@ class VrRenderer(
     // ---- 位图构建（主线程或 GL 线程皆可，只做 CPU 绘图）----
 
     /**
-     * 屏幕上的调试信息行。
-     *
-     * 2026-10-03 立：PICO 的 adb 连不上、拿不到 logcat，唯一能看见运行状态的地方
-     * 就是虚拟屏本身。把关键数值直接画到屏上，一眼就能看出卡在哪一步，
-     * 不用靠猜。父亲原话：「你在代码中加一些日志不行吗？在 pico 屏幕上显示出来」。
-     */
-    @Volatile
-    private var debugLines: List<String> = emptyList()
-
-    /** 屏幕纹理需要重建（文字或调试信息变了） */
-    private var screenDirty = false
-
-    /** 更新屏上调试信息（GL 线程调用；内容变化时才触发屏幕纹理重建） */
-    private fun setDebugLines(lines: List<String>) {
-        if (lines == debugLines) return          // 内容没变就不动，避免每帧重建纹理
-        debugLines = lines
-        screenDirty = true
-    }
-
-    /**
      * 构建视频状态条（HUD）位图：半透明黑底 + 单行文字（超长自动缩小）。
      *
      * 播放期唯一可见的状态输出 —— 屏幕大字被视频盖住，HUD 贴在视频上层。
@@ -770,79 +461,6 @@ class VrRenderer(
             val lines = if (p.measureText(text) <= w * 0.95f) listOf(text)
             else wrapText(text, p, w * 0.95f, maxLines = 1)
             for (line in lines) c.drawText(line, w / 2f, y, p)
-        }
-        return bmp
-    }
-
-    private fun buildScreenBitmap(w: Int, h: Int, title: String): Bitmap {
-        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        val c = Canvas(bmp)
-        c.drawColor(Color.rgb(10, 12, 16))
-        // 参考网格（验证贴图方向与 16:9 比例）
-        val grid = Paint().apply { color = Color.rgb(40, 44, 52); style = Paint.Style.STROKE; strokeWidth = 1f }
-        for (i in 1..5) c.drawLine(w * i / 6f, 0f, w * i / 6f, h.toFloat(), grid)
-        for (i in 1..3) c.drawLine(0f, h * i / 4f, w.toFloat(), h * i / 4f, grid)
-
-        /*
-         * 主标题：**按文字长度自动缩放 + 折行**。
-         *
-         * 2026-10-03 父亲反馈：错误信息（如「网络错误 [UnknownHostException: ...]」）
-         * 用固定 0.13h 字号会超出屏幕宽度被截断，看不到关键内容。
-         * 现在长文本自动降字号并在两侧留边距（左右各 6%），一行放不下就折行。
-         */
-        val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.rgb(0x4C, 0xD1, 0x37)   // 纯绿 primary，与 TV 版主题一致
-            textAlign = Paint.Align.CENTER
-        }
-        val maxWidth = w * 0.88f                 // 左右各留 6% 边距
-        val shortSize = h * 0.13f                // 短文本（片名等）用大字号
-        titlePaint.textSize = shortSize
-        val lines: List<String> = if (titlePaint.measureText(title) <= maxWidth) {
-            listOf(title)
-        } else {
-            // 太长：先降到小字号，再按宽度折行（最多 3 行，多出的截断加省略号）
-            titlePaint.textSize = h * 0.062f
-            wrapText(title, titlePaint, maxWidth, maxLines = 3)
-        }
-        val lineHeight = titlePaint.textSize * 1.28f
-        var y = h * 0.42f - (lines.size - 1) * lineHeight / 2f
-        for (line in lines) {
-            c.drawText(line, w / 2f, y, titlePaint)
-            y += lineHeight
-        }
-
-        // 副标题（状态提示）
-        val sp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.rgb(170, 175, 185)
-            textSize = h * 0.05f
-            textAlign = Paint.Align.CENTER
-        }
-        c.drawText("平面虚拟屏 · 16:9 · 距离 3m", w / 2f, h * 0.58f, sp)
-        // 底部操作提示
-        val hp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.rgb(110, 115, 125)
-            textSize = h * 0.035f
-            textAlign = Paint.Align.CENTER
-        }
-        c.drawText("方向键/摇杆：浏览 · A/扳机：确认 · B：返回", w / 2f, h * 0.9f, hp)
-
-        /*
-         * 调试信息区（左下角，暗青色小字）。
-         *
-         * 只在有内容时画；用于在拿不到 logcat 的头显上直接读运行状态。
-         */
-        val dbg = debugLines
-        if (dbg.isNotEmpty()) {
-            val dp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.rgb(120, 200, 220)
-                textSize = h * 0.030f
-                textAlign = Paint.Align.LEFT
-            }
-            var dy = h * 0.70f
-            for (line in dbg.take(8)) {
-                c.drawText(line, w * 0.04f, dy, dp)
-                dy += h * 0.038f
-            }
         }
         return bmp
     }
@@ -882,31 +500,6 @@ class VrRenderer(
             out[maxLines - 1] = "$last…"
         }
         return out.ifEmpty { listOf(text) }
-    }
-
-    private fun buildPosterBitmap(index: Int, w: Int, h: Int): Bitmap {
-        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        val c = Canvas(bmp)
-        // 占位卡：深色底 + 不同色调区分序号（P2 替换为 Emby 真实海报 URL）
-        val hue = (index * 36f % 360f)
-        c.drawColor(Color.HSVToColor(floatArrayOf(hue, 0.25f, 0.22f)))
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-        // 圆角框线：同色系亮一档，演示 TV 版海报卡的圆角视觉
-        // 注意：Color.HSVToColor 只有 (float[]) 与 (float[], float) 两种重载，
-        // 后者第二参是 alpha（0..1），不是 S/V 分量。
-        val borderColor = Color.HSVToColor(floatArrayOf(hue, 0.4f, 0.5f))
-        paint.color = Color.argb(153, Color.red(borderColor), Color.green(borderColor), Color.blue(borderColor))
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 4f
-        c.drawRoundRect(8f, 8f, w - 8f, h - 8f, 12f, 12f, paint)
-        // 序号
-        paint.style = Paint.Style.FILL
-        paint.color = Color.WHITE
-        paint.textSize = h * 0.32f
-        paint.textAlign = Paint.Align.CENTER
-        val label = String.format(Locale.US, "#%d", index + 1)
-        c.drawText(label, w / 2f, h * 0.58f, paint)
-        return bmp
     }
 
     /** 位图 → GL 纹理（GL 线程调用） */
@@ -963,17 +556,10 @@ class VrRenderer(
 
     companion object {
         private const val TAG = "B0BEmbyVR"
-        private const val POSTER_COUNT = 10
 
         /** 面板像素尺寸（与 PanelLayer 保持一致：1080p 电视版布局直接可用） */
         private const val PANEL_W = 1920f
         private const val PANEL_H = 1080f
-
-        /** 焦点底色：纯绿 #7ED97A（TV 版 secondary，用于焦点卡底色） */
-        private val GREEN_FOCUSED = floatArrayOf(0.494f, 0.851f, 0.478f, 1f)
-
-        /** 焦点描边：纯绿 #4CD137（TV 版 primary，描边比底色亮一档） */
-        private val GREEN_OUTLINE = floatArrayOf(0.298f, 0.820f, 0.216f, 1f)
 
         /**
          * 顶点着色器。

@@ -1,8 +1,6 @@
 package com.xxxx.emby_vr
 
 import android.app.Activity
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.opengl.GLSurfaceView
 import android.os.Bundle
 import android.util.Log
@@ -16,9 +14,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import com.xxxx.emby_vr.data.EmbyContent
-import com.xxxx.emby_vr.data.model.BaseItemDto
 import com.xxxx.emby_vr.data.remote.EmbyApi
-import com.xxxx.emby_vr.data.remote.HttpClient as EmbyHttpClient
 import com.xxxx.emby_vr.panel.PanelApp
 import com.xxxx.emby_vr.panel.PanelLayer
 import com.xxxx.emby_vr.vr.InputRouter
@@ -30,23 +26,20 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import okhttp3.Request
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 
 /**
  * B0BEmby VR 版 主 Activity。
  *
- * ## 阶段
+ * ## 架构（2026-10-04 父亲定稿）
  *
- * - **P0/P1（已完成）**：最小可用平面虚拟屏 —— 头显里一块 16:9 平面，
- *   手柄能指向、能确认。实机验收 2026-10-03 通过。
- * - **P2（本版）**：接 Emby —— 拉真实影片列表，海报墙显示真实海报。
- * - **P3（下一步）**：点海报播放影片。
- *
- * 渲染路线：GLSurfaceView + OpenGL ES 3.0。
- * 当前走 PICO 的 2D 面板模式（不声明 pvr.app.type），系统把画面贴成空间面板；
- * 做真双目立体渲染时再接 OpenXR runtime。
+ * - **面板层**：电视版 B0BEmby 的整套界面（登录 / 首页 / 片库 / 搜索 / 详情 /
+ *   账号 / 设置）渲染进虚拟显示器，再贴到虚拟屏；手柄光标换算成面板像素后
+ *   同进程派发（见 [PanelLayer]）。虚拟屏占满整个视口。
+ * - **播放屏**：VR 原生（视频帧 → OES 纹理 → 虚拟屏，状态条见 VrRenderer.setHudText）。
+ * - 渲染路线：GLSurfaceView + OpenGL ES 3.0；当前走 PICO 的 2D 面板模式
+ *   （不声明 pvr.app.type），系统把画面贴成空间面板；做真双目立体渲染时再接 OpenXR。
  */
 class MainActivity : ComponentActivity() {
 
@@ -80,24 +73,22 @@ class MainActivity : ComponentActivity() {
     private val input = InputRouter { action ->
         when (action) {
             InputRouter.Action.LEFT -> {
-                if (renderer.videoActive) seekBy(-10_000) else moveFocus(-1)
+                if (renderer.videoActive) seekBy(-10_000)
             }
             InputRouter.Action.RIGHT -> {
-                if (renderer.videoActive) seekBy(+10_000) else moveFocus(+1)
+                if (renderer.videoActive) seekBy(+10_000)
             }
             InputRouter.Action.UP,
-            InputRouter.Action.DOWN -> { /* 海报墙只有一行，上下暂忽略 */ }
+            InputRouter.Action.DOWN -> { /* 浏览在面板层靠触摸，方向键暂不接管 */ }
             InputRouter.Action.CONFIRM -> {
-                if (renderer.videoActive) togglePlayPause() else confirmCurrent()
+                if (renderer.videoActive) togglePlayPause()
             }
             InputRouter.Action.BACK -> {
-                if (renderer.videoActive) stopPlayback() else clearFocus()
+                if (renderer.videoActive) stopPlayback()
             }
             InputRouter.Action.PLAY_PAUSE -> if (renderer.videoActive) togglePlayPause()
             InputRouter.Action.SEEK_BACK -> if (renderer.videoActive) seekBy(-10_000)
             InputRouter.Action.SEEK_FORWARD -> if (renderer.videoActive) seekBy(+10_000)
-            InputRouter.Action.RAY_POS,
-            InputRouter.Action.RAY_DIR -> applyRayFocus()
             else -> { /* 余下动作后续接 */ }
         }
     }
@@ -106,24 +97,9 @@ class MainActivity : ComponentActivity() {
     private fun hud(text: String) = renderer.setHudText(text)
 
     /**
-     * 指针位置变化的统一入口（触摸通道 `applyRay` 和按键通道 `applyRayFocus`
-     * 都走这里）。
-     *
-     * **指针只用来移动海报焦点，不参与快进快退**（父亲 2026-10-04 明确：
-     * 「晃动手柄不应该触发快进，我并没有拨动摇杆」）。PICO 的指针是跟手的，
-     * 手一晃坐标就变，任何基于位移的阈值判断都会误触发 —— 所以这条通道
-     * 与 seek 完全解耦。
-     *
-     * 播放中的快进快退只认**摇杆**：走 InputRouter.onGenericMotion 的
-     * 轴事件（超死区 → LEFT/RIGHT 动作），见 `input` 分发里的
-     * `Action.LEFT/RIGHT → seekBy`。
+     * 指针位置变化（触摸通道 `applyRay`）。正式版里指针只驱动面板光标
+     * （dispatchTouchEvent 的面板分支直接用事件坐标），不再喂给渲染器。
      */
-    private fun applyRay(ray: FloatArray) {
-        renderer.simRayX = ray[0]
-        renderer.simRayY = ray[1]
-        // 不再从指针流里猜摇杆手势：实测证明拨摇杆会合成 DOWN/拖动/UP 事件，
-        // 走 onTriggerDrag；悬停移动只移动光标（父亲 2026-10-04 定案）。
-    }
 
     // ---- 摇杆手势识别（父亲 2026-10-04 规格）----
     //
@@ -242,50 +218,18 @@ class MainActivity : ComponentActivity() {
         dragFiredSteps = 0
     }
 
-    private fun applyRayFocus() {
-        val ray = InputRouter.currentSimRay ?: return
-        applyRay(ray)
-    }
-
-    private fun moveFocus(delta: Int) {
-        val maxIdx = renderer.posterQuads.size - 1
-        val next = (renderer.focusedPosterIndex + delta).coerceIn(0, maxIdx)
-        if (next != renderer.focusedPosterIndex) {
-            renderer.focusedPosterIndex = next
-            if (next >= 0) {
-                renderer.setScreenText("第 ${next + 1} / ${maxIdx + 1} 张海报")
-            }
-        }
-    }
-
     /**
-     * 确认：取播放地址并起播（P3）。
+     * 起播指定媒体（面板层点播放时调用）。
      *
      * 链路（与 TV 版一致）：`getPlaybackInfo` → `mediaSources.first()`
      * 的 `directStreamUrl`（没有就用 `transcodingUrl`）→ `${server}/emby<path}` →
      * ExoPlayer 解码 → Surface → 渲染器 OES 纹理贴到虚拟屏。
-     *
-     * **播放中先拦截**：扳机走的是触摸通道（onConfirm 直调本函数，不经过
-     * input 分发），不拦就会在播放中重新走起播流程 —— 父亲 2026-10-04 实测
-     * 「扣扳机/拨摇杆都让视频从头开始播放」就是这个原因。
      */
-    private fun confirmCurrent() {
+    private fun playMedia(mediaId: String, startTicks: Long) {
         if (renderer.videoActive) {
             togglePlayPause()
             return
         }
-        val i = renderer.focusedPosterIndex
-        if (i < 0 || i >= movies.size) {
-            renderer.setScreenText("未选中任何海报")
-            return
-        }
-        val item = movies[i]
-        val id = item.id
-        if (id == null) {
-            renderer.setScreenText("条目无 id，无法播放")
-            return
-        }
-        renderer.setScreenText("正在获取播放地址…")
         scope.launch {
             try {
                 val media = EmbyApi.getPlaybackInfo(
@@ -294,13 +238,13 @@ class MainActivity : ComponentActivity() {
                     apiKey = BuildConfig.EMBY_API_KEY,
                     deviceId = EmbyContent.DEVICE_ID,
                     userId = BuildConfig.EMBY_USER_ID,
-                    mediaId = id,
-                    startTimeTicks = 0L,
+                    mediaId = mediaId,
+                    startTimeTicks = startTicks,
                 )
                 val source = media.mediaSources?.firstOrNull()
                 val path0 = source?.directStreamUrl ?: source?.transcodingUrl
                 if (path0 == null) {
-                    renderer.setScreenText("取不到播放地址（服务器未返回直链）")
+                    hud("取不到播放地址（服务器未返回直链）")
                     return@launch
                 }
                 var path = path0
@@ -310,13 +254,11 @@ class MainActivity : ComponentActivity() {
                 }
                 val url = "${BuildConfig.EMBY_SERVER}/emby$path"
                 withContext(Dispatchers.Main) {
-                    startPlayer(url, item.name ?: "")
+                    startPlayer(url, mediaId)
                 }
             } catch (e: Exception) {
-                // 取地址失败（网络/服务器错）：屏幕给一句人话，
-                // 否则永远停在「正在获取播放地址…」（父亲 2026-10-04 实测）
                 Log.e(TAG, "取播放地址失败", e)
-                renderer.setScreenText("取播放地址失败：${friendlyError(e)}")
+                hud("取播放地址失败：${friendlyError(e)}")
             }
         }
     }
@@ -325,7 +267,7 @@ class MainActivity : ComponentActivity() {
     private fun startPlayer(url: String, title: String) {
         val surface = renderer.videoSurface
         if (surface == null) {
-            renderer.setScreenText("视频纹理未就绪（GL 还没建好）")
+            hud("视频纹理未就绪（GL 还没建好）")
             return
         }
         try {
@@ -355,7 +297,6 @@ class MainActivity : ComponentActivity() {
             stickHoldFiredAt = 0L
             startHudTicker()
             hud("播放中：左右拨动摇杆=快进快退 · 扳机=暂停 · 返回=退出")
-            renderer.setScreenText(title)
             Log.i(TAG, "开始播放: $title url=${url.take(160)}")
         } catch (e: Exception) {
             Log.e(TAG, "起播失败", e)
@@ -449,15 +390,14 @@ class MainActivity : ComponentActivity() {
         hud("${seekHudLabel} → ${sec / 60}:${"%02d".format(sec % 60)}")
     }
 
-    /** 停止播放并回到海报墙 */
+    /** 停止播放，回到界面（面板层） */
     private fun stopPlayback() {
         stopPlaybackInternal()
         renderer.videoActive = false
         hudJob?.cancel()
         hudJob = null
         renderer.setHudText("")
-        renderer.setScreenText(movies.firstOrNull()?.name ?: "B0BEmby VR")
-        Log.i(TAG, "停止播放，回到海报墙")
+        Log.i(TAG, "停止播放，回到界面")
     }
 
     private fun stopPlaybackInternal() {
@@ -467,11 +407,6 @@ class MainActivity : ComponentActivity() {
         }
         player = null
         seekTargetMs = null
-    }
-
-    private fun clearFocus() {
-        renderer.focusedPosterIndex = -1
-        renderer.setScreenText("B0BEmby VR")
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -525,8 +460,8 @@ class MainActivity : ComponentActivity() {
                     event = e,
                     viewW = width,
                     viewH = height,
-                    onPointer = { ray -> applyRay(ray) },
-                    onConfirm = { confirmCurrent() },
+                    onPointer = { },
+                    onConfirm = { },
                     onDrag = { dx -> onTriggerDrag(dx) },
                     onDown = { onPointerDown() },
                 )
@@ -536,8 +471,8 @@ class MainActivity : ComponentActivity() {
                     event = e,
                     viewW = width,
                     viewH = height,
-                    onPointer = { ray -> applyRay(ray) },
-                    onConfirm = { confirmCurrent() },
+                    onPointer = { },
+                    onConfirm = { },
                     onDrag = { dx -> onTriggerDrag(dx) },
                     onDown = { onPointerDown() },
                 )
@@ -567,131 +502,14 @@ class MainActivity : ComponentActivity() {
      */
     private fun onPanelPlayRequested(mediaId: String, positionTicks: Long) {
         if (mediaId.isBlank()) return
-        Log.i(TAG, "PANEL 请求播放: mediaId=$mediaId positionTicks=$positionTicks")
-        renderer.setHudText("面板请求播放: $mediaId")
+        Log.i(TAG, "面板请求播放: mediaId=$mediaId positionTicks=$positionTicks")
+        playMedia(mediaId, positionTicks)
     }
 
-    /** 已加载的影片列表，海报墙按它的顺序排 */
-    private var movies: List<BaseItemDto> = emptyList()
-
-    /** 播放器：点海报起播，返回键释放 */
+    /** 播放器：面板点播放起播，返回键释放 */
     private var player: ExoPlayer? = null
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-
-    /**
-     * 拉取影片 + 下载海报。
-     *
-     * 流程：拉列表 → 更新海报墙可见数量 → 逐张下载海报位图 → 投递给渲染器。
-     * 海报下载用 OkHttp 直接取字节（不用 Coil 的 ImageLoader，因为它面向
-     * Compose 的 AsyncImage；这里要的是原始 Bitmap 交给 GL，直接取更直接）。
-     *
-     * ## 为什么把错误直接写到虚拟屏上
-     *
-     * 2026-10-03 实机排查：PICO 的 adb 端口连不上，拿不到 logcat，
-     * 只能靠「屏上显示什么」来定位。所以这里把失败原因（异常类型 + 消息 +
-     * 服务器地址）直接渲染到虚拟屏，不用 adb 也能看到卡在哪一步。
-     */
-    private fun loadLibrary() {
-        val apiKey = BuildConfig.EMBY_API_KEY
-        val server = BuildConfig.EMBY_SERVER
-        Log.i(TAG, "Emby 配置: server=$server keyLen=${apiKey.length} userId=${BuildConfig.EMBY_USER_ID}")
-        if (apiKey.isBlank()) {
-            renderer.setScreenText("未配置 Emby Key")
-            Log.w(TAG, "BuildConfig.EMBY_API_KEY 为空，跳过内容加载")
-            return
-        }
-        renderer.setScreenText("正在连接 $server")
-
-        scope.launch {
-            val result = EmbyContent.loadMoviesDetailed(
-                context = this@MainActivity,
-                apiKey = apiKey,
-                serverUrl = server,
-                userId = BuildConfig.EMBY_USER_ID,
-                limit = POSTER_SLOTS,
-            )
-            when (result) {
-                is EmbyContent.Result.Ok -> {
-                    val list = result.items
-                    movies = list
-                    Log.i(TAG, "影片加载完成: ${list.size} 条")
-                    if (list.isEmpty()) {
-                        renderer.setScreenText("库返回 0 条影片")
-                        return@launch
-                    }
-                    renderer.clearPosters()
-                    renderer.activePosterCount = list.size
-                    renderer.setScreenText("${list.first().name ?: ""}")
-                    downloadPosters(list, apiKey)
-                }
-                is EmbyContent.Result.Err -> {
-                    // 屏上直接显示失败原因，避免「黑盒」排查；详情留给日志
-                    Log.e(TAG, "拉取影片失败: ${result.reason}")
-                    renderer.setScreenText("连不上服务器（详情见日志）")
-                }
-            }
-        }
-    }
-
-    /**
-     * 逐张下载海报并投递给渲染器（顺序下载，避免一次性打开过多连接）。
-     *
-     * 把成功/失败数量回报到虚拟屏上：2026-10-03 实机排查时 adb 不通、
-     * 拿不到 logcat，只能靠屏上文字判断海报到底下没下来。
-     */
-    private fun downloadPosters(list: List<BaseItemDto>, apiKey: String) {
-        scope.launch(Dispatchers.IO) {
-            var ok = 0
-            var fail = 0
-            var lastReason = ""
-            list.forEachIndexed { index, item ->
-                val id = item.id
-                if (id == null) {
-                    fail++
-                    lastReason = "条目无 id"
-                    return@forEachIndexed
-                }
-                val tag = item.imageTags?.get("Primary")
-                val url = EmbyContent.posterUrl(
-                    serverUrl = BuildConfig.EMBY_SERVER,
-                    itemId = id,
-                    imageTag = tag,
-                    apiKey = apiKey,
-                )
-                val r = runCatching { downloadBitmap(url) }
-                val bmp = r.getOrNull()
-                if (bmp != null) {
-                    renderer.setPosterBitmap(index, bmp)
-                    ok++
-                } else {
-                    fail++
-                    lastReason = r.exceptionOrNull()?.let { friendlyError(it) } ?: "图片为空"
-                    Log.w(TAG, "海报下载失败 #$index ${item.name}: ${lastReason}", r.exceptionOrNull())
-                }
-            }
-            Log.i(TAG, "海报下载完成: 成功 $ok / 失败 $fail")
-            if (fail > 0) {
-                // 屏上给出失败概况 + 最后一条原因，便于无 adb 时定位
-                renderer.setScreenText("海报 $ok 张成功、$fail 张失败：$lastReason")
-            }
-        }
-    }
-
-    /** 下载图片为 Bitmap；失败时抛出便于上层记录原因 */
-    private fun downloadBitmap(url: String): Bitmap? {
-        val client = EmbyHttpClient.getClient(this)
-        val request = Request.Builder().url(url).build()
-        client.newCall(request).execute().use { resp ->
-            if (!resp.isSuccessful) {
-                throw IllegalStateException("HTTP ${resp.code}")
-            }
-            val bytes = resp.body?.bytes() ?: throw IllegalStateException("响应体为空")
-            val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                ?: throw IllegalStateException("图片解码失败(${bytes.size}字节)")
-            return bmp
-        }
-    }
 
     override fun onResume() {
         super.onResume()
@@ -783,8 +601,8 @@ class MainActivity : ComponentActivity() {
                 event = event,
                 viewW = glView.width,
                 viewH = glView.height,
-                onPointer = { ray -> applyRay(ray) },
-                onConfirm = { confirmCurrent() },
+                onPointer = { },
+                onConfirm = { },
                 onDrag = { dx -> onTriggerDrag(dx) },
                 onDown = { onPointerDown() },
             )
@@ -828,14 +646,6 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val TAG = "B0BEmbyVR"
-
-        /**
-         * 海报墙槽位数。
-         *
-         * 与渲染器的 POSTER_COUNT 保持一致（渲染器按一行排布，
-         * 每个槽位有固定的横向区间，超出槽位的数据会被丢弃）。
-         */
-        private const val POSTER_SLOTS = 10
 
         /**
          * 按住扳机拖拽触发一次快进/快退的横向位移（归一化坐标，半高 = 1）。

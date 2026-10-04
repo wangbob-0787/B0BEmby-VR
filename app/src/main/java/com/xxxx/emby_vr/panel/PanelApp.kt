@@ -1,6 +1,5 @@
 package com.xxxx.emby_vr.panel
 
-import android.util.Log
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -18,7 +17,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -93,23 +91,6 @@ fun PanelApp(onPlayRequested: (mediaId: String, positionTicks: Long) -> Unit) {
             color = MaterialTheme.colorScheme.background,
         ) {
             BuildGradientBackground(context = context, themeColor = currentThemeColor) {
-                // 诊断（2026-10-04）：确认手柄触摸事件是否到达 Compose 树。
-                // 电视版界面点不动，先区分「事件没到 Compose」还是「组件不响应触摸」。
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .pointerInput(Unit) {
-                            awaitPointerEventScope {
-                                while (true) {
-                                    val e = awaitPointerEvent()
-                                    Log.i(
-                                        "PANEL 触摸",
-                                        "type=${e.type} pos=${e.changes.firstOrNull()?.position}",
-                                    )
-                                }
-                            }
-                        },
-                ) {
                     NavHost(navController = navController, startDestination = "loading") {
                     composable("loading") {
                         Loading()
@@ -266,7 +247,6 @@ fun PanelApp(onPlayRequested: (mediaId: String, positionTicks: Long) -> Unit) {
                         )
                     }
                 }
-                } // 诊断 Box 结束
             }
         }
     }
