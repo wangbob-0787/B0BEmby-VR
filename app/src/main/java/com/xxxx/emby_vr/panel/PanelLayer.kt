@@ -170,11 +170,35 @@ class PanelLayer(
         for (action in intArrayOf(KeyEvent.ACTION_DOWN, KeyEvent.ACTION_UP)) {
             val ev = KeyEvent(now, now, action, keyCode, 0)
             try {
-                v.dispatchKeyEvent(ev)
+                val consumed = v.dispatchKeyEvent(ev)
+                Log.i(TAG, "面板按键 key=$keyCode action=$action 被界面接收=$consumed")
             } catch (t: Throwable) {
                 Log.e(TAG, "按键派发失败: ${t.javaClass.simpleName}: ${t.message}")
             }
         }
+    }
+
+    /**
+     * 按面板像素位置送一次触摸点击（DOWN + UP）。
+     *
+     * @return 是否有视图接住（decor.dispatchTouchEvent 的返回值）
+     */
+    private fun touchClick(px: Float, py: Float): Boolean {
+        val v = decor ?: return false
+        val now = SystemClock.uptimeMillis()
+        var handled = false
+        for (action in intArrayOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP)) {
+            val ev = MotionEvent.obtain(now, now, action, px, py, 0)
+            ev.source = InputDevice.SOURCE_TOUCHSCREEN
+            try {
+                handled = v.dispatchTouchEvent(ev) || handled
+            } catch (t: Throwable) {
+                Log.e(TAG, "触摸派发失败: ${t.javaClass.simpleName}: ${t.message}")
+            } finally {
+                ev.recycle()
+            }
+        }
+        return handled
     }
 
     /** 一次点击（自动自测用）：DOWN + UP 同点 */
@@ -257,7 +281,15 @@ class PanelLayer(
                 val dragged = isDragging
                 isDragging = false
                 if (dragged) return                                // 摇杆推动：只发方向键，不发 OK
-                Log.i(TAG, "面板 OK (${px.toInt()},${py.toInt()})")
+                /*
+                 * 双通道点击（2026-10-04 排查用）：
+                 *   1) 按光标位置送一次触摸点击 —— 对自绘 clickable 组件有效
+                 *   2) 送 OK 键 —— 对电视版「焦点 + OK」组件有效
+                 * 两条都发、各自记录是否被界面接住，实机看日志即可确定哪条有效，
+                 * 确认后删掉多余的那条（避免同一个按钮被激活两次）。
+                 */
+                val touched = touchClick(px, py)
+                Log.i(TAG, "面板点击: 触摸被接住=$touched 位置 (${px.toInt()},${py.toInt()})")
                 key(KeyEvent.KEYCODE_DPAD_CENTER)
             }
         }
@@ -299,6 +331,15 @@ private class PanelPresentation(
         super.onCreate(savedInstanceState)
 
         val cv = ComposeView(context)
+        /*
+         * 必须让面板视图拿到焦点，否则 Compose 收不到按键（2026-10-04 实测）：
+         * 「添加服务器」按钮是 clickable，clickable 只在**节点获得焦点**时
+         * 才响应 OK/Enter 键；而按键要先经 Android 视图焦点路由到 ComposeView。
+         * 面板挂在 Presentation 窗口里，系统不会自动给焦点。
+         */
+        cv.isFocusable = true
+        cv.isFocusableInTouchMode = true
+        cv.requestFocus()
         cv.setViewTreeLifecycleOwner(activity)
         cv.setViewTreeViewModelStoreOwner(activity)
         cv.setViewTreeSavedStateRegistryOwner(activity)
@@ -320,6 +361,12 @@ private class PanelPresentation(
             }
         }
         setContentView(cv)
+        window?.decorView?.let { root ->
+            root.isFocusable = true
+            root.isFocusableInTouchMode = true
+            root.requestFocus()
+            root.post { cv.requestFocus() }
+        }
 
         onReady(window!!.decorView)
     }
