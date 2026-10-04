@@ -1,0 +1,273 @@
+<resources>
+    <string name="new_version_available">新版本可用: %1$s</string>
+    <string name="info">信息</string>
+    <string name="server_url">服务器地址</string>
+    <string name="host">域名</string>
+    <string name="port">端口</string>
+    <string name="username">用户名</string>
+    <string name="password">密码</string>
+    <string name="logging_in">登录中…</string>
+    <string name="login">登录</string>
+    <string name="login_failed">登录失败</string>
+    <string name="back">返回</string>
+    <string name="logout">退出登录</string>
+    <string name="download_latest_version">下载最新版本</string>
+    <string name="my_libraries">我的媒体库</string>
+    <string name="live_tv">电视直播</string>
+    <string name="continue_watching">继续观看</string>
+    <string name="press_menu_to_show_menu">按菜单键打开菜单</string>
+    <string name="press_menu_down_to_show_menu">按菜单键或下方向键打开菜单</string>
+    <string name="resume_play">续播</string>
+    <string name="resume">继续</string>
+    <string name="play">播放</string>
+    <string name="details">详情</string>
+    <string name="genres">类型</string>
+    <string name="studios">制作公司</string>
+    <string name="premiere">首播</string>
+    <string name="end">结束</string>
+    <string name="status">状态</string>
+    <string name="tagline">标语</string>
+    <string name="crew">导演编剧</string>
+    <string name="cast">演员</string>
+    <string name="provider_ids">提供者 ID</string>
+    <string name="path">路径</string>
+    <string name="counts">统计</string>
+    <string name="seasons">季</string>
+    <string name="season">季</string>
+    <string name="unknown">未知</string>
+    <string name="failed_get_playback_info">获取播放信息失败</string>
+    <string name="streaming">流媒体</string>
+    <string name="video">视频</string>
+    <string name="audio_label">音频</string>
+    <string name="episodes">选集</string>
+    <string name="playback">播放</string>
+    <string name="subtitles">字幕</string>
+    <string name="subtitle_position">字幕位置</string>
+    <string name="subtitle_position_default">默认</string>
+    <string name="subtitle_move_up">上移</string>
+    <string name="subtitle_move_down">下移</string>
+    <string name="subtitle_sync">字幕同步</string>
+    <string name="subtitle_earlier">提前</string>
+    <string name="subtitle_later">延后</string>
+    <string name="subtitle_position_hint">文本字幕均会移动到设定位置；图形字幕（PGS）保持原位</string>
+    <string name="audio">音频</string>
+    <string name="disable_subtitles">关闭字幕</string>
+    <string name="no_episodes_found">未找到分集</string>
+    <string name="list_loop">列表循环</string>
+    <string name="single_loop">单集循环</string>
+    <string name="no_loop">不循环</string>
+    <string name="direct_play">直接播放</string>
+    <string name="direct_stream">直接串流</string>
+    <string name="transcode">转码</string>
+    <string name="hardware_acceleration">硬件加速</string>
+    <string name="stereo">立体声</string>
+    <string name="default_marker">(默认)</string>
+    <string name="fps_suffix">fps</string>
+    <string name="playback_correction">播放校正</string>
+    <string name="playback_correction_off">关闭</string>
+    <string name="playback_correction_server">服务器转码为H.264</string>
+    <string name="footer_notice">这是一个用于学习和技术交流的开源免费 Emby 客户端，不收集任何个人信息，禁止商业用途。\n开源地址：https://github.com/shareven/openemby_tv</string>
+
+    <string name="Unknown">未知原因</string>
+    <string name="ContainerNotSupported">容器格式不受支持</string>
+    <string name="VideoCodecNotSupported">正在转换视频为兼容的编解码器</string>
+    <string name="AudioCodecNotSupported">正在转换音频为兼容的编解码器</string>
+    <string name="SubtitleCodecNotSupported">正在转换字幕为兼容的格式</string>
+    <string name="VideoResolutionNotSupported">视频分辨率不受支持</string>
+    <string name="VideoBitDepthNotSupported">视频位深不受支持</string>
+    <string name="VideoFramerateNotSupported">视频帧率不受支持</string>
+    <string name="VideoProfileNotSupported">视频配置 (Profile) 不受支持</string>
+    <string name="VideoLevelNotSupported">视频层级 (Level) 不受支持</string>
+    <string name="VideoBitrateNotSupported">视频码率超过限制</string>
+    <string name="AudioBitrateNotSupported">音频码率超过限制</string>
+    <string name="AudioChannelsNotSupported">音频声道数不受支持</string>
+    <string name="AudioProfileNotSupported">音频配置 (Profile) 不受支持</string>
+    <string name="AudioSampleRateNotSupported">音频采样率不受支持</string>
+    <string name="AnamorphicVideoNotSupported">变形视频不受支持</string>
+    <string name="InterlacedVideoNotSupported">隔行扫描视频不受支持</string>
+    <string name="RefFramesNotSupported">参考帧数过多</string>
+    <string name="DirectPlayError">直接播放失败，自动切换转码</string>
+    <string name="SecondaryAudioNotSupported">辅助音频流不受支持</string>
+    <string name="BitrateExceedsLimit">码率超过限制</string>
+
+    <string name="scan_qr_hint">局域网内扫码录入信息</string>
+    <string name="starting_server">正在启动本地服务器...</string>
+    <string name="local_server_url">服务器地址</string>
+    <string name="update_title">应用更新</string>
+    <string name="update_completed">更新完成</string>
+    <string name="update_install_hint">安装完成，请重启应用</string>
+    <string name="update_failed">更新失败</string>
+    <string name="update_retry">重试下载</string>
+    <string name="update_downloading">正在下载更新...</string>
+    <string name="update_start_failed">启动下载失败: %1$s</string>
+    <string name="play_mode">播放模式</string>
+    <string name="close">关闭</string>
+    <string name="not_series_content">非剧集内容</string>
+    <string name="subtitles_off">关闭字幕</string>
+    <string name="off_default">关闭 (默认)</string>
+    <string name="server_transcode">服务器转码</string>
+    <string name="loop_list">列表循环</string>
+    <string name="loop_single">单集循环</string>
+    <string name="loop_off">不循环</string>
+    <string name="input_label">输入</string>
+    <string name="confirm">确认</string>
+    <string name="cancel">取消</string>
+    <string name="no_data">暂无数据</string>
+    <string name="need_activity_context">需要Activity上下文</string>
+    <string name="download_failed">下载失败: %1$s</string>
+    <string name="unknown_version">未知版本</string>
+    <string name="no_image">暂无图片</string>
+    <!-- Theme Color Names -->
+    <string name="theme_color">主题颜色</string>
+    <string name="theme_color_rose">玫红</string>
+    <string name="theme_color_blue">海蓝</string>
+    <string name="theme_color_purple">紫罗兰</string>
+    <string name="theme_color_teal">青绿</string>
+    <string name="theme_color_orange">橙色</string>
+    <string name="theme_color_indigo">靛蓝</string>
+    <string name="theme_color_green">翠绿</string>
+    <string name="theme_color_amber">琥珀</string>
+
+    <!-- Account Management -->
+    <string name="switch_account">切换账号</string>
+    <string name="account_management">账号管理</string>
+    <string name="current_account">当前账号</string>
+    <string name="saved_accounts">已保存账号</string>
+    <string name="add_account">添加账号</string>
+    <string name="delete_account">删除账号</string>
+    <string name="confirm_delete_account">确定要删除此账号吗？</string>
+    <string name="no_saved_accounts">暂无已保存账号</string>
+    <string name="account_switched">账号切换成功</string>
+    <string name="account_deleted">账号已删除</string>
+
+    <!-- Favorite -->
+    <string name="favorite">收藏</string>
+    <string name="add_to_favorite">添加收藏</string>
+    <string name="remove_from_favorite">取消收藏</string>
+    <string name="added_to_favorite">已添加到收藏</string>
+    <string name="removed_from_favorite">已取消收藏</string>
+    <string name="no_favorite_items">暂无收藏内容</string>
+
+    <!-- Player Resume Dialog -->
+    <string name="play_from_start">从头开始</string>
+    <string name="continue_playback">继续播放</string>
+
+    <!-- Error Messages -->
+    <string name="error_network_unavailable">网络连接失败，请检查网络设置</string>
+    <string name="error_connection_timeout">连接超时，请重试</string>
+    <string name="error_server_unreachable">无法连接到服务器</string>
+    <string name="error_ssl_failed">安全连接失败</string>
+    <string name="error_network_error">网络错误，请重试</string>
+    <string name="error_unknown">未知错误</string>
+    <string name="error_proxy_connection">代理连接失败，请检查代理信息是否正确</string>
+    <string name="audio_output_degraded">电视音频服务异常，本次播放暂无声音</string>
+
+    <!-- Intro Skip -->
+    <string name="skip_intro">跳过片头</string>
+    <string name="auto_skip_intro">自动跳过片头</string>
+    <string name="manual_skip_intro">手动跳过片头</string>
+    <string name="intro_detected">检测到片头</string>
+
+    <!-- Search -->
+    <string name="search">搜索</string>
+    <string name="menu">菜单</string>
+    <string name="search_hint">输入搜索关键词</string>
+    <string name="search_results">搜索结果</string>
+    <string name="no_search_results">未找到搜索结果</string>
+    <string name="search_placeholder">搜索电影、剧集&#8230;</string>
+    <string name="search_failed">搜索失败: %1$s</string>
+    <string name="all_accounts">全部</string>
+    <string name="searching">正在搜索</string>
+    <string name="filtered">(已过滤)</string>
+    <string name="dolby_vision_profiles">支持杜比视界: %1$s</string>
+    <string name="dolby_vision_decoder">杜比视界解码器: %1$s</string>
+    <string name="hevc_decoder">HEVC解码器: %1$s</string>
+    <string name="video_decoder">解码器: %1$s</string>
+    <string name="not_support_dolby_vision">不支持杜比视界</string>
+    <string name="dolby_downgrade">杜比降级</string>
+    <string name="tunneling_mode">隧道模式：开</string>
+    <string name="replay">重新播放</string>
+    <string name="apply_to_playback">应用到播放</string>
+    <string name="current_version">当前版本: %1$s</string>
+    <string name="latest_version">最新版本: %1$s</string>
+    <string name="update_log">更新日志:</string>
+
+    <!-- Playback Speed -->
+    <string name="playback_speed">播放速度</string>
+    <string name="speed_normal">正常</string>
+
+    <!-- Buffer Settings -->
+    <string name="buffer_settings">缓冲设置</string>
+    <string name="min_buffer">最小缓冲</string>
+    <string name="min_buffer_desc">保持的最小缓冲时间。值越高，在不稳定网络上越不容易卡顿。</string>
+    <string name="min_buffer_recommend">推荐：正常网络30-60秒，不稳定网络60-90秒</string>
+
+    <string name="max_buffer">最大缓冲</string>
+    <string name="max_buffer_desc">最大缓冲限制。值越高越流畅，但占用更多存储。</string>
+    <string name="max_buffer_recommend">推荐：60-120秒</string>
+
+    <string name="playback_buffer">起播缓冲</string>
+    <string name="playback_buffer_desc">首次播放所需的缓冲。值越低起播越快，但可能需要重新缓冲。</string>
+    <string name="playback_buffer_recommend">推荐：快速网络1-3秒，慢速网络3-5秒</string>
+
+    <string name="rebuffer">重新缓冲</string>
+    <string name="rebuffer_desc">卡顿后恢复播放所需的缓冲。值越高越不易反复卡顿。</string>
+    <string name="rebuffer_recommend">推荐：5-10秒</string>
+
+    <string name="buffer_size">缓冲大小</string>
+    <string name="buffer_size_desc">4K/HDR内容的缓冲字节数。越大需要越多内存。</string>
+    <string name="buffer_size_recommend">推荐：普通64-128MB，4K HDR 256MB以上</string>
+
+    <string name="reset_default">恢复默认</string>
+    <string name="seconds">%1$d秒</string>
+    <string name="mega_bytes">%1$dMB</string>
+
+    <!-- 代理设置 -->
+    <string name="proxy_settings">代理设置</string>
+    <string name="proxy_enable">启用代理</string>
+    <string name="proxy_disable">关闭代理</string>
+    <string name="proxy_type">代理类型</string>
+    <string name="proxy_type_http">HTTP</string>
+    <string name="proxy_type_socks5">SOCKS5</string>
+    <string name="proxy_host">代理地址</string>
+    <string name="proxy_port">代理端口</string>
+    <string name="proxy_username">用户名</string>
+    <string name="proxy_password">密码</string>
+    <string name="proxy_optional">可选</string>
+    <string name="proxy_only_emby">仅代理Emby服务</string>
+    <string name="proxy_indicator">代理</string>
+    <string name="proxy_save">保存</string>
+    <string name="proxy_saved">代理设置已保存</string>
+    <string name="proxy_scan_hint">扫码配置代理信息</string>
+    <string name="proxy_status_on">代理：已开启</string>
+    <string name="proxy_status_off">代理：已关闭</string>
+    <string name="playing">播放中</string>
+
+    <string name="sort">排序</string>
+    <string name="sort_name">名称</string>
+    <string name="sort_premiere_date">上映日期</string>
+    <string name="sort_date_added">添加日期</string>
+    <string name="sort_date_modified">修改日期</string>
+    <string name="sort_date_last_saved">最后保存日期</string>
+    <string name="sort_rating">评论评分</string>
+    <string name="sort_community_rating">社区评分</string>
+    <string name="sort_random">随机</string>
+    <string name="sort_runtime">时长</string>
+    <string name="sort_date_played">播放日期</string>
+    <string name="sort_year">年份</string>
+    <string name="sort_official_rating">分级</string>
+    <string name="sort_studio">制作公司</string>
+    <string name="sort_resolution">分辨率</string>
+    <string name="sort_framerate">帧率</string>
+
+    <string name="filter_all">全部</string>
+    <string name="filter_watched">已观看</string>
+    <string name="filter_unwatched">未观看</string>
+    <string name="filter_favorite">收藏</string>
+    <string name="tracks">曲目</string>
+    <string name="play_all">全部播放</string>
+    <string name="shuffle">随机播放</string>
+    <string name="exit_confirm_title">退出 B0BEmby？</string>
+    <string name="exit_confirm_ok">退出</string>
+    <string name="exit_confirm_cancel">取消</string>
+</resources>

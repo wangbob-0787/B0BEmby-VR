@@ -135,6 +135,15 @@ dependencies {
     implementation(libs.androidx.lifecycle.viewmodel.ktx)
     implementation(libs.androidx.savedstate.ktx)
 
+    // 面板层承载电视版真实界面所需（版本与电视版对齐）
+    implementation(libs.androidx.tv.material)
+    implementation(libs.androidx.tv.foundation)
+    implementation(libs.androidx.navigation.compose)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.compose.material.icons.extended)
+    implementation(libs.zxing.core)
+    implementation(libs.nanohttpd)
+
     implementation(libs.media3.exoplayer)
     implementation(libs.media3.ui)
     implementation(libs.media3.session)

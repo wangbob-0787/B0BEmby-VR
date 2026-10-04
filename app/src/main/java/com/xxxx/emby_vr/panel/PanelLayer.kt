@@ -14,6 +14,7 @@ import android.view.MotionEvent
 import android.view.Surface
 import android.view.View
 import androidx.activity.ComponentActivity
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.ComposeView
 import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.lifecycle.setViewTreeViewModelStoreOwner
@@ -53,7 +54,7 @@ import androidx.savedstate.setViewTreeSavedStateRegistryOwner
  */
 class PanelLayer(
     private val activity: ComponentActivity,
-    private val onUiClick: () -> Unit,
+    private val content: @Composable () -> Unit,
 ) {
 
     companion object {
@@ -70,11 +71,6 @@ class PanelLayer(
     /** 面板是否可用（Presentation 已显示、decorView 已就绪） */
     @Volatile
     var ready = false
-        private set
-
-    /** 面板里按钮被点击的次数（自动自测与实机点击都会累加） */
-    @Volatile
-    var clickCount = 0
         private set
 
     private var surfaceTexture: SurfaceTexture? = null
@@ -112,7 +108,7 @@ class PanelLayer(
             )
             virtualDisplay = vd
 
-            val p = PanelPresentation(activity, vd.display, activity, onUiClick) { view ->
+            val p = PanelPresentation(activity, vd.display, activity, content) { view ->
                 decor = view
                 ready = true
                 Log.i(TAG, "面板层就绪: ${W}x$H dpi=$DPI displayId=${vd.display.displayId}")
@@ -154,11 +150,6 @@ class PanelLayer(
     }
 
     /** 面板 UI 内按钮点击回调（Compose 侧触发） */
-    fun onPanelClick() {
-        clickCount += 1
-        onUiClick()
-    }
-
     fun release() {
         try {
             presentation?.dismiss()
@@ -186,7 +177,7 @@ private class PanelPresentation(
     outer: Context,
     display: Display,
     private val activity: ComponentActivity,
-    private val onUiClick: () -> Unit,
+    private val content: @Composable () -> Unit,
     private val onReady: (View) -> Unit,
 ) : Presentation(outer, display, android.R.style.Theme_Material_NoActionBar_Fullscreen) {
 
@@ -197,9 +188,7 @@ private class PanelPresentation(
         cv.setViewTreeLifecycleOwner(activity)
         cv.setViewTreeViewModelStoreOwner(activity)
         cv.setViewTreeSavedStateRegistryOwner(activity)
-        cv.setContent {
-            PanelUi(onClick = onUiClick)
-        }
+        cv.setContent { content() }
         setContentView(cv)
 
         onReady(window!!.decorView)

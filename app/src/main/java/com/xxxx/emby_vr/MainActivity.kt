@@ -19,6 +19,7 @@ import com.xxxx.emby_vr.data.EmbyContent
 import com.xxxx.emby_vr.data.model.BaseItemDto
 import com.xxxx.emby_vr.data.remote.EmbyApi
 import com.xxxx.emby_vr.data.remote.HttpClient as EmbyHttpClient
+import com.xxxx.emby_vr.panel.PanelApp
 import com.xxxx.emby_vr.panel.PanelLayer
 import com.xxxx.emby_vr.vr.InputRouter
 import com.xxxx.emby_vr.vr.VrRenderer
@@ -498,7 +499,10 @@ class MainActivity : ComponentActivity() {
          * PanelLayer（它内部切主线程建虚拟显示器与 Presentation）。
          */
         panel = PanelLayer(this) {
-            Log.i(TAG, "PANEL UI 按钮被点击: 次数=${panel.clickCount}")
+            // 面板里放的就是电视版的界面：PanelApp 是它的导航装配（见 panel/PanelApp.kt）
+            PanelApp(onPlayRequested = { mediaId, positionTicks ->
+                onPanelPlayRequested(mediaId, positionTicks)
+            })
         }
         renderer.onPanelSurfaceReady = { st -> panel.attach(st) }
 
@@ -544,28 +548,6 @@ class MainActivity : ComponentActivity() {
         // 请求焦点：手柄的悬停/按键事件必须先有焦点才会送到本视图
         glView.requestFocus()
 
-        /*
-         * 面板层自动自测：面板就绪后自动派发一次点击。
-         *
-         * 为什么要自动点：验证「输入通道通不通」不该依赖人工操作 ——
-         * 自动点一次，日志里出现「PANEL UI 按钮被点击」就说明通道打通，
-         * 拿不到 logcat 时看屏上按钮数字也会涨。
-         */
-        val panelSelfTest = object : Runnable {
-            private var tries = 0
-            override fun run() {
-                if (panel.ready) {
-                    Log.i(TAG, "PANEL 自测: 派发一次点击 (220, 300)")
-                    panel.tap(220f, 300f)
-                } else if (tries++ < 20) {
-                    glView.postDelayed(this, 1000)
-                } else {
-                    Log.w(TAG, "PANEL 自测: 面板一直没就绪，跳过")
-                }
-            }
-        }
-        glView.postDelayed(panelSelfTest, 3000)
-
         // 启动 XR 会话（失败不崩，退化为普通 2D 渲染，便于在没有头显时调试）
         val ok = vrSession.start(this)
         Log.i(TAG, "XR 会话启动: $ok")
@@ -575,6 +557,19 @@ class MainActivity : ComponentActivity() {
     }
 
     // ---- Emby 内容加载（P2）----
+
+    /**
+     * 面板层请求播放（在电视版界面上点了播放）。
+     *
+     * 播放屏是 VR 原生的（视频画面 + 弹幕 + 字幕 + 控制条），
+     * 本轮先把请求记录下来，下一步接 VR 原生播放：按 mediaId 取播放地址 →
+     * 交给现有的 ExoPlayer 管线渲染到虚拟屏，面板同时收起。
+     */
+    private fun onPanelPlayRequested(mediaId: String, positionTicks: Long) {
+        if (mediaId.isBlank()) return
+        Log.i(TAG, "PANEL 请求播放: mediaId=$mediaId positionTicks=$positionTicks")
+        renderer.setHudText("面板请求播放: $mediaId")
+    }
 
     /** 已加载的影片列表，海报墙按它的顺序排 */
     private var movies: List<BaseItemDto> = emptyList()
