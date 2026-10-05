@@ -1066,6 +1066,30 @@ double nowMs() {
 }
 
 /**
+ * 清掉 JNI 调用挂起的 Java 异常（run 109 闪退的根因）。
+ *
+ * Java 回调（updateTexImage / 输入回调）出错时会在渲染线程留下挂起异常；
+ * 原生代码不查，它就一直挂着，直到**下一次** CallVoidMethod 才被抛出来 ——
+ * 实测表现：面板偶尔 updateTexImage 报错没人管，父亲一抬手让光柱指到屏幕，
+ * 异常从输入回调里炸出来，进程直接挂掉。
+ *
+ * 这里统一在每次 Java 回调后检查并清除；前几次把堆栈打到日志里便于定位，
+ * 之后只计数（避免刷屏）。
+ */
+void clearJavaException(JNIEnv *env, const char *what) {
+    if (env == nullptr || !env->ExceptionCheck()) return;
+    static int cleared = 0;
+    cleared++;
+    if (cleared <= 5) {
+        LOGW("Java 异常（来自 %s，第 %d 次）—— 堆栈如下，已清除：", what, cleared);
+        env->ExceptionDescribe();
+    } else if (cleared == 6) {
+        LOGW("Java 异常继续出现，后续只计数不再打堆栈");
+    }
+    env->ExceptionClear();
+}
+
+/**
  * 把本帧的手柄状态回推给 Java —— VR 模式的唯一输入通道（2026-10-05）。
  *
  * VR 里没有系统合成的触摸流，所以光柱指向 / 扳机 / 摇杆 / B 键全从这里下发。
@@ -1090,6 +1114,7 @@ void pushInput(VrContext &c) {
         if (c.bDown[h] && !c.sinkLastBack[h] && c.sinkBack != nullptr) {
             LOGI("VR 输入：%s B 键 → 返回", handName[h]);
             env->CallVoidMethod(c.inputSink, c.sinkBack);
+            clearJavaException(env, "输入回调 onBack");
         }
         c.sinkLastBack[h] = c.bDown[h];
 
@@ -1106,6 +1131,7 @@ void pushInput(VrContext &c) {
         if (!c.sinkPointerValid || fabsf(px - c.sinkPointerX) > 2.f ||
             fabsf(py - c.sinkPointerY) > 2.f) {
             if (c.sinkPointer != nullptr) env->CallVoidMethod(c.inputSink, c.sinkPointer, px, py);
+            clearJavaException(env, "输入回调 onPointer");
             c.sinkPointerX = px;
             c.sinkPointerY = py;
             c.sinkPointerValid = true;
@@ -1115,6 +1141,7 @@ void pushInput(VrContext &c) {
         if (c.triggerDown[h] && !c.sinkLastTrigger[h] && c.sinkClick != nullptr) {
             LOGI("VR 输入：%s 扳机 → 面板点击 (%d, %d)", handName[h], (int) px, (int) py);
             env->CallVoidMethod(c.inputSink, c.sinkClick, px, py);
+            clearJavaException(env, "输入回调 onClick");
         }
         c.sinkLastTrigger[h] = c.triggerDown[h];
 
@@ -1128,6 +1155,7 @@ void pushInput(VrContext &c) {
                     // 面板像素位移：向右为正、向下为正（与 2D 面板模式同一套方向约定）
                     env->CallVoidMethod(c.inputSink, c.sinkScroll, px, py,
                                         sx * kStickStepPx, -sy * kStickStepPx);
+                    clearJavaException(env, "输入回调 onScroll");
                 }
             }
         } else {
@@ -1576,6 +1604,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeCreatePanelSurfaceTexture(JNIEnv *env,
             if (g.jvm == nullptr) return;
             if (g.jvm->GetEnv(reinterpret_cast<void **>(&e), JNI_VERSION_1_6) != JNI_OK) return;
             e->CallVoidMethod(globalRef, updateTexImage);
+            clearJavaException(e, "面板 updateTexImage");
         };
     }
     LOGI("面板纹理与 SurfaceTexture 已创建（在 VR 上下文里）：tex=%u", tex);
@@ -1640,6 +1669,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeCreateVideoSurfaceTexture(JNIEnv *env,
             if (g.jvm == nullptr) return;
             if (g.jvm->GetEnv(reinterpret_cast<void **>(&e), JNI_VERSION_1_6) != JNI_OK) return;
             e->CallVoidMethod(globalRef, updateTexImage);
+            clearJavaException(e, "播放画面 updateTexImage");
         };
     }
     LOGI("视频纹理与 SurfaceTexture 已创建（在 VR 上下文里）：tex=%u", tex);
