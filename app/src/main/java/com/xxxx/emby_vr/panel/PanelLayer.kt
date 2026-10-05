@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
 import android.view.Display
+import android.view.Choreographer
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -132,13 +133,11 @@ class PanelLayer(
          */
         private const val SCROLL_NOTCH = 0.16f
 
-        /**
-         * 摇杆滚动的节拍（父亲 2026-10-05 第二轮：要平滑、要松手就停）。
-         *
-         * 滚动由定时器主导：每 [SCROLL_REPEAT_MS] 派发一小格滚轮（[SCROLL_NOTCH]），
-         * 所以是**匀速连续滚**而不是"一顿一顿"；指针的 MOVE 只用来更新方向与落点。
+        /*
+         * 滚动节奏（2026-10-05 定稿）：不再用固定节拍定时器，改成**每渲染帧**回调一次，
+         * 按这一帧实际时长算位移（见 [frameTick]）。历史上试过 160ms → 60ms → 33ms，
+         * 与刷新率对不齐始终"一跳一跳"。
          */
-        private const val SCROLL_REPEAT_MS = 60L
 
         /**
          * 「推住不动」的判定：光点安静超过这么久，就认为摇杆被压在一个方向上没动。
@@ -160,10 +159,16 @@ class PanelLayer(
          * 设上下限，避免"几乎不动"和"飞出去"。
          */
         private const val RATE_MIN = 1.2f
-        private const val RATE_MAX = 10f
+        private const val RATE_MAX = 26f
 
-        /** 光点速度（像素/秒）→ 滚动速度（格/秒）：每 220 像素/秒记 1 格/秒 */
-        private const val SPEED_TO_RATE = 1f / 220f
+        /**
+         * 光点速度（像素/秒）→ 滚动速度（格/秒）：每 120 像素/秒记 1 格/秒。
+         *
+         * 2026-10-05 父亲要「最大速度再快一点」：原来 1/220 时，要 2200px/s 才到
+         * 10 格/秒，实测拨动多在 800~3500px/s，很难摸到上限；改成 1/120 后
+         * 常见拨动就能进入 7~18 格/秒。
+         */
+        private const val SPEED_TO_RATE = 1f / 90f
 
         /**
          * 惯性：松手后按松手瞬间的速度继续滑，**线性减速到 0，总时长 1 秒**
@@ -360,41 +365,65 @@ class PanelLayer(
     private var scrollAnchorY = -1f
 
     /**
-     * 摇杆滚动节拍器：只要还处于"摇杆推动"状态就每 [SCROLL_REPEAT_MS] 滚一小格。
+     * 滚动驱动：**跟着渲染帧走**（父亲 2026-10-05 定案）。
      *
-     * 父亲 2026-10-05 两轮反馈：
-     *  - 「扳一下动一下，能不能扳住一个方向不动持续滚动」→ 改成定时器主导；
-     *  - 「松手不停，而且一顿一顿的」→ 加大节拍密度、每格变小（平滑），
-     *    并按"光点是否还在动 / 是否贴边"判定松手。
+     * 为什么不用定时器：定时器（原来 60ms，约 30 次/秒）和面板刷新率对不上，
+     * 每帧分到的位移不均匀，观感是「一跳一跳」。改成每渲染帧回调一次，
+     * 按**这一帧实际过了多少毫秒**算该滚多少（位移量切碎到每帧十几像素），
+     * 天然与刷新率对齐，最平滑。
+     *
+     * 每帧只做两件事：① 惯性阶段按时间线性减速；② 按住阶段按速度档位滚。
      */
-    private val scrollRepeat = object : Runnable {
-        override fun run() {
+    private var frameScheduled = false
+    private var lastFrameAt = 0L
+
+    private val choreographer: Choreographer
+        get() = Choreographer.getInstance()
+
+    private val frameTick = object : Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            frameScheduled = false
+            // 这一帧过了多久（首帧给 16ms；长卡顿钳到 40ms，避免一帧挪一大段）。
+            // 注意：帧时间戳只用来算"间隔"，惯性/安静的判定统一用 uptimeMillis（同一基准，
+            // 否则两套时钟混用会让惯性一上来就判成超时结束）。
+            val dtMs = if (lastFrameAt > 0L) {
+                ((frameTimeNanos - lastFrameAt) / 1_000_000L).coerceIn(1L, 40L)
+            } else {
+                16L
+            }
+            lastFrameAt = frameTimeNanos
             val now = SystemClock.uptimeMillis()
 
-            // ① 惯性阶段（松手之后）：按松手速度线性减速，1 秒内停
+            // ① 惯性阶段（松手之后）：按松手初速线性减速，1 秒内停
             if (inertiaRate > 0f) {
-                val elapsed = now - inertiaStartAt
+                val elapsed = (now - inertiaStartAt).coerceAtLeast(0L)
                 val rate = inertiaRate * (1f - elapsed.toFloat() / INERTIA_MS.toFloat())
-                if (rate < INERTIA_MIN_RATE || elapsed > INERTIA_MS + 120L) {
+                if (rate < INERTIA_MIN_RATE) {
                     inertiaRate = 0f
                     Log.i(TAG, "惯性结束：滑行 ${elapsed}ms")
                     return
                 }
-                scrollAt(lastScrollX, lastScrollY, inertiaDx, inertiaDy, "惯性滑行", notchOf(rate))
-                postTicker()
+                scrollAt(
+                    lastScrollX, lastScrollY, inertiaDx, inertiaDy, "惯性滑行",
+                    rate * dtMs / 1000f,
+                )
+                scheduleFrame()
                 return
             }
 
             // ② 按住阶段：轻推慢滚、猛推快滚；推住不动按猛推速度继续滚
             if (!isDown || !isDragging) return
-            val quiet = now - lastMoveAt
+            val quiet = SystemClock.uptimeMillis() - lastMoveAt
             if (quiet > HOLD_SAFETY_MS) {
                 Log.i(TAG, "摇杆滚动停止：光点静了 ${quiet}ms（抬起事件疑似丢失，兜底停）")
                 return
             }
             val rate = if (quiet > HOLD_QUIET_MS) RATE_MAX else rateOf(pointerSpeed)
-            scrollAt(lastScrollX, lastScrollY, lastScrollDx, lastScrollDy, "摇杆保持", notchOf(rate))
-            postTicker()
+            scrollAt(
+                lastScrollX, lastScrollY, lastScrollDx, lastScrollDy, "摇杆保持",
+                rate * dtMs / 1000f,
+            )
+            scheduleFrame()
         }
     }
 
@@ -402,13 +431,16 @@ class PanelLayer(
     private fun rateOf(speedPx: Float): Float =
         (speedPx * SPEED_TO_RATE).coerceIn(RATE_MIN, RATE_MAX)
 
-    /** 一个节拍滚多少格 = 速度 × 节拍时长 */
-    private fun notchOf(ratePerSecond: Float): Float =
-        ratePerSecond * (SCROLL_REPEAT_MS / 1000f)
+    private fun scheduleFrame() {
+        if (frameScheduled) return
+        frameScheduled = true
+        runCatching { choreographer.postFrameCallback(frameTick) }
+    }
 
-    private fun postTicker() {
-        decor?.removeCallbacks(scrollRepeat)
-        decor?.postDelayed(scrollRepeat, SCROLL_REPEAT_MS)
+    private fun stopFrames() {
+        frameScheduled = false
+        lastFrameAt = 0L
+        runCatching { choreographer.removeFrameCallback(frameTick) }
     }
 
     /**
@@ -778,8 +810,8 @@ class PanelLayer(
                     lastMoveAt = now
                     scrollAnchorX = px
                     scrollAnchorY = py
-                    scrollAt(px, py, dx, dy, "摇杆起始步", notchOf(rateOf(pointerSpeed)))
-                    postTicker()
+                    scrollAt(px, py, dx, dy, "摇杆起始步", rateOf(pointerSpeed) * 0.03f)
+                    scheduleFrame()
                     return
                 }
                 // 摇杆滚动：从上一次发键的位置算位移，够一格且过了限速就再发一格
@@ -816,9 +848,9 @@ class PanelLayer(
                 isDown = false
                 scrollAnchorX = -1f
                 scrollAnchorY = -1f
-                decor?.removeCallbacks(scrollRepeat)
-                val dragged = isDragging
-                isDragging = false
+                stopFrames()
+                    scrollAt(px, py, dx, dy, "摇杆起始步", rateOf(pointerSpeed) * 0.03f)
+                    scheduleFrame()
                 /*
                  * 惯性（父亲 2026-10-05 定，第二轮修正）：**不管怎么松手都滑**。
                  *
@@ -842,7 +874,7 @@ class PanelLayer(
                             "松手滑行：光点静了 ${quietAtRelease}ms 速度 ${pointerSpeed.toInt()}px/s " +
                                 "→ 初速 ${"%.1f".format(inertiaRate)}格/秒，1 秒内减速停",
                         )
-                        postTicker()
+                        scheduleFrame()
                     }
                 }
                 Log.i(
@@ -911,7 +943,7 @@ class PanelLayer(
 
     /** 面板 UI 内按钮点击回调（Compose 侧触发） */
     fun release() {
-        runCatching { decor?.removeCallbacks(scrollRepeat) }
+        stopFrames()
         try {
             presentation?.dismiss()
         } catch (_: Throwable) {
