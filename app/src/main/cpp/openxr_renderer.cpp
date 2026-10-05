@@ -396,6 +396,7 @@ struct VrContext {
     bool sinkPointerValid = false;      // 上一次回推的指针位置（只在明显移动时回推）
     float sinkPointerX = 0.f;
     float sinkPointerY = 0.f;
+    double sinkLastToggleMs = 0.0;      // 上一次开关控制条的时刻（去抖）
     bool sinkOsdPointerValid = false;   // 控制条上的指针位置
     float sinkOsdPointerX = 0.f;
     float sinkOsdPointerY = 0.f;
@@ -425,6 +426,7 @@ struct VrContext {
      */
     GLuint osdTex = 0;
     std::atomic<bool> osdVisible{false};
+    std::atomic<int> osdFrames{0};   // 控制条取到的帧数：>0 才画（空纹理不画）
 
     // ---- 手柄输入 ----
     XrActionSet actionSet = XR_NULL_HANDLE;
@@ -1078,12 +1080,12 @@ constexpr float kPanelPxH = 1080.f;
  * 仰角 [kOsdTiltDeg]。后续「指着它扣扳机拖走」也基于这几个量。
  */
 constexpr float kOsdPxW = 1920.f;
-constexpr float kOsdPxH = 270.f;
-constexpr float kOsdWidth = 1.30f;                        // 米
+constexpr float kOsdPxH = 300.f;
+constexpr float kOsdWidth = 1.45f;                        // 米（父亲：再宽一点）
 constexpr float kOsdHeight = kOsdWidth * kOsdPxH / kOsdPxW;
-constexpr float kOsdDistance = 1.20f;                     // 正前方距离（米）
-constexpr float kOsdCenterY = -0.45f;                     // 视线下方（米）
-constexpr float kOsdTiltDeg = -20.f;                      // 上仰角（度），正对观影者
+constexpr float kOsdDistance = 0.85f;                     // 正前方距离（米，父亲：再近些）
+constexpr float kOsdCenterY = -0.62f;                     // 视线下方（米，父亲：再靠下）
+constexpr float kOsdTiltDeg = -24.f;                      // 上仰角（度），正对观影者
 
 /** 控制条平面：中心与两条轴（含仰角）。返回法线 n 与面内 x/y 轴 */
 void osdBasis(float *cx, float *cy, float *cz, float *nx, float *ny, float *nz, float *ux,
@@ -1228,7 +1230,10 @@ void pushInput(VrContext &c) {
          *    播放时主面板被视频画面盖着，看不见也不该点。
          */
         if (c.videoActive.load()) {
-            if (c.triggerDown[h] && !c.sinkLastTrigger[h] && c.sinkToggleOsd != nullptr) {
+            const double nowToggle = nowMs();
+            if (c.triggerDown[h] && !c.sinkLastTrigger[h] && c.sinkToggleOsd != nullptr &&
+                nowToggle - c.sinkLastToggleMs > 300.0) {
+                c.sinkLastToggleMs = nowToggle;
                 LOGI("VR 输入：%s 扳机 → 控制条开关", handName[h]);
                 env->CallVoidMethod(c.inputSink, c.sinkToggleOsd);
                 clearJavaException(env, "输入回调 onToggleOsd");
@@ -1391,7 +1396,7 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
          * 控制条（近场小面板，2026-10-05）：贴在观影者正前方偏下、上仰一点，
          * 与主画面同一套着色器与属性布局，只是换一张纹理、换一个模型矩阵。
          */
-        if (c.osdVisible.load() && c.osdTex != 0) {
+        if (c.osdVisible.load() && c.osdTex != 0 && c.osdFrames.load() > 0) {
             const float th = kOsdTiltDeg * 3.14159265358979f / 180.f;
             XrPosef osdPose{};
             osdPose.position = {0.f, kOsdCenterY, -kOsdDistance};
@@ -1439,9 +1444,26 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
             float planeT = 0.f;
             float hitX = 0.f, hitY = 0.f;
             const bool hit = rayHitsPanel(c, c.aimPose[h], &planeT, &hitX, &hitY);
-            // 打到面板就收在命中距离；穿过面板平面也收住（没有深度缓冲）；
-            // 其余情况用官方默认的 100m —— 看上去是一束射向远处的光。
-            const float rayLength = planeT > 0.f ? planeT : kNoHitDistance;
+
+            /*
+             * 控制条挡在面板前面，射线也得在它上面收住（父亲：光线穿过控制条了）。
+             * 取两者里更近的那个命中点：控制条命中 → 光线与控制条齐平，光点落在控制条上。
+             */
+            float osdT = 0.f, osdU = 0.f, osdV = 0.f;
+            const bool osdHit = c.osdVisible.load() && c.osdTex != 0 && c.osdFrames.load() > 0 &&
+                                rayHitsOsd(c, c.aimPose[h], &osdT, &osdU, &osdV);
+
+            float rayLength = kNoHitDistance;
+            bool dotOnPanel = false, dotOnOsd = false;
+            if (hit && planeT > 0.f) {
+                rayLength = planeT;
+                dotOnPanel = true;
+            }
+            if (osdHit && osdT > 0.f && osdT < rayLength) {
+                rayLength = osdT;
+                dotOnPanel = false;
+                dotOnOsd = true;
+            }
 
             // 光线：从手柄沿指向射出
             const Mat4 rayModel = poseScaleModel(c.aimPose[h], kRayNear, kRayNear, rayLength);
@@ -1449,10 +1471,26 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
                      multiply(multiply(proj, view4), rayModel),
                      0.30f, 0.82f, 0.22f, false);   // 与 TV 版强调色一致的绿
 
-            // 光点：贴在面板命中点上（稍微朝眼睛方向抬 5mm，避免和面板抢像素）
-            if (hit) {
+            // 光点：贴在命中点上（朝眼睛方向抬几毫米，避免和面抢像素）
+            if (dotOnPanel) {
                 const Mat4 dotModel = translateScale(
                         hitX, hitY, -c.panelDistance + 0.005f, kDotSize, kDotSize);
+                drawMesh(c, c.vbo, 6, multiply(multiply(proj, view4), dotModel),
+                         0.55f, 0.98f, 0.45f, true);
+            } else if (dotOnOsd) {
+                // 控制条是斜的：光点跟着斜，落在命中点上
+                float dx = 0.f, dy = 0.f, dz = 0.f;
+                aimDirection(c.aimPose[h], &dx, &dy, &dz);
+                float cx, cy, cz, nx, ny, nz, ux, uy, uz, vx, vy, vz;
+                osdBasis(&cx, &cy, &cz, &nx, &ny, &nz, &ux, &uy, &uz, &vx, &vy, &vz);
+                const float hxw = c.aimPose[h].position.x + dx * osdT + nx * 0.006f;
+                const float hyw = c.aimPose[h].position.y + dy * osdT + ny * 0.006f;
+                const float hzw = c.aimPose[h].position.z + dz * osdT + nz * 0.006f;
+                const float thd = kOsdTiltDeg * 3.14159265358979f / 180.f;
+                XrPosef dotPose{};
+                dotPose.position = {hxw, hyw, hzw};
+                dotPose.orientation = {sinf(thd * 0.5f), 0.f, 0.f, cosf(thd * 0.5f)};
+                const Mat4 dotModel = poseScaleModel(dotPose, kDotSize, kDotSize, 1.f);
                 drawMesh(c, c.vbo, 6, multiply(multiply(proj, view4), dotModel),
                          0.55f, 0.98f, 0.45f, true);
             }
@@ -1535,6 +1573,7 @@ void frameLoop(VrContext &c) {
         // 控制条：近场小面板，每帧取一次（与面板/视频同一套 SurfaceTexture 机制）
         if (c.osdVisible.load() && gOsdUpdate != nullptr) {
             gOsdUpdate();
+            c.osdFrames.fetch_add(1);
         }
 
         // 手柄状态（诊断阶段：变化即打日志，先看清 PICO 到底发哪些事件）
@@ -1887,6 +1926,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeCreateOsdSurfaceTexture(JNIEnv *env, jo
             if (g.jvm->GetEnv(reinterpret_cast<void **>(&e), JNI_VERSION_1_6) != JNI_OK) return;
             e->CallVoidMethod(globalRef, updateTexImage);
             clearJavaException(e, "控制条 updateTexImage");
+            if (g.osdFrames.load() == 0) LOGI("控制条取到首帧画面（纹理有内容了）");
         };
     }
     LOGI("控制条纹理与 SurfaceTexture 已创建：tex=%u", tex);

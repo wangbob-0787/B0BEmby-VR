@@ -759,7 +759,7 @@ class MainActivity : ComponentActivity() {
             this,
             content = { com.xxxx.emby_vr.panel.PlayerOsdBar(osdState) },
             panelW = 1920,
-            panelH = 270,
+            panelH = 300,
             name = "b0bemby-osd",
             activatesVrPanel = false,
         )

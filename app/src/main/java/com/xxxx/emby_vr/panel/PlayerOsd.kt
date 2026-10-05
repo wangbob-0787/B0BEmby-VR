@@ -91,20 +91,20 @@ fun PlayerOsdBar(state: OsdState) {
         modifier = Modifier
             .fillMaxSize()
             .background(Color(0xF0141618))
-            .padding(horizontal = 28.dp, vertical = 14.dp),
+            .padding(horizontal = 24.dp, vertical = 16.dp),
     ) {
         // ① 进度行：当前时间 + 进度条 + 总时长
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 text = osdTimeText(state.positionMs),
                 color = Color.White,
-                fontSize = 22.sp,
+                fontSize = 24.sp,
                 fontWeight = FontWeight.Medium,
             )
             Box(
                 modifier = Modifier
                     .weight(1f)
-                    .padding(horizontal = 18.dp)
+                    .padding(horizontal = 40.dp)
                     .height(8.dp)
                     .background(Color(0x40FFFFFF), RoundedCornerShape(4.dp)),
             ) {
@@ -123,7 +123,7 @@ fun PlayerOsdBar(state: OsdState) {
             Text(
                 text = osdTimeText(state.durationMs),
                 color = Color(0xFFBDBDBD),
-                fontSize = 22.sp,
+                fontSize = 24.sp,
             )
         }
 
