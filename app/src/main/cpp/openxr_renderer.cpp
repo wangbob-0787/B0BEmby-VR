@@ -1266,11 +1266,11 @@ void drawSpinner(VrContext &c, const Mat4 &proj, const Mat4 &view4) {
     if (c.vbo == 0 || c.program == 0) return;
     const double now = std::chrono::duration<double>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
-    constexpr int kSegs = 24;         // 整圈分 24 段
-    constexpr int kGapSegs = 5;       // 缺口占 5 段（约 75°）
-    constexpr float kRadius = 0.16f;  // 环半径（米）
-    constexpr float kThick = 0.018f;  // 环的粗细（米）
-    const float segLen = 2.f * 3.14159265358979f * kRadius / (float) kSegs;
+    constexpr int kSegs = 48;         // 整圈分 48 段（段短 = 看起来是实线，父亲 2026-10-06）
+    constexpr int kGapSegs = 14;      // 缺口占 14 段（约 105°），缺口那头就是箭头尖
+    constexpr float kRadius = 0.10f;  // 环半径（米，父亲：原来太大）
+    constexpr float kThick = 0.012f;  // 环的粗细（米，细一点更像实线）
+    const float segLen = 2.f * 3.14159265358979f * kRadius / (float) kSegs * 1.15f;  // 稍长一点，段间不留缝
     const float step = 2.f * 3.14159265358979f / (float) kSegs;
     const float base = (float) (-now * 2.6);   // 角度递减 = 顺时针
     for (int i = 0; i < kSegs - kGapSegs; i++) {
@@ -1286,6 +1286,21 @@ void drawSpinner(VrContext &c, const Mat4 &proj, const Mat4 &view4) {
         const Mat4 m = poseScaleModel(seg, segLen, kThick, 1.f);
         drawMesh(c, c.vbo, 6, multiply(multiply(proj, view4), m),
                  0.16f * fade, 0.85f * fade, 0.32f * fade, false);
+    }
+    /*
+     * 箭头尖（父亲 2026-10-06：「没有看见箭头」）：在缺口那一端的头上一颗亮绿圆点，
+     * 加上后面渐暗的环，看起来就是一个带箭头的转圈。
+     */
+    {
+        const float ang = base + (float) (kSegs - kGapSegs) * step;
+        XrPosef tip{};
+        tip.position = {kFrontScreen.cx + cosf(ang) * kRadius,
+                        kFrontScreen.cy + sinf(ang) * kRadius,
+                        kFrontScreen.cz + 0.013f};
+        const float half = ang * 0.5f;
+        tip.orientation = {0.f, 0.f, sinf(half), cosf(half)};
+        const Mat4 m = poseScaleModel(tip, kThick * 2.6f, kThick * 2.6f, 1.f);
+        drawMesh(c, c.vbo, 6, multiply(multiply(proj, view4), m), 0.16f, 0.90f, 0.32f, true);
     }
 }
 
@@ -1453,6 +1468,91 @@ void pushInput(VrContext &c) {
          */
         const ScreenPlacement place = panelPlacement(c);
         float planeT = 0.f, hu = 0.f, hv = 0.f, wx = 0.f, wy = 0.f, wz = 0.f;
+        /*
+         * 握把键（Grip / squeeze，手柄侧面中指那个）按住 = 抓住海报墙：
+         *   球心 = 手柄位置，半径 = 按下那一刻手柄到面板中心的距离；按住期间
+         *   面板中心 = 球心 + 半径 × 手柄指向，朝向反解成"正对球心"。
+         *   松开握把键就是松手。父亲 2026-10-06 定：拖动归握把键，别和点击打架。
+         *
+         * 这一段**刻意不放在 onPanel 分支里**（父亲 2026-10-06 报"按住握把键推摇杆
+         * 调远近没生效"）：拖的时候手一动，光柱就扫出海报墙边界，onPanel 变 false，
+         * 整段被跳过 —— 摇杆调远近也跟着没了。抓取只认握把键，不认光柱落点。
+         */
+        if (c.squeezeDown[h]) {
+            const XrVector3f hand = c.aimPose[h].position;
+            if (!c.panelDragActive[h]) {
+                c.panelDragActive[h] = true;
+                c.panelDragMoved[h] = false;
+                const float dx = c.panelPosX.load() - hand.x;
+                const float dy = c.panelPosY.load() - hand.y;
+                const float dz = c.panelPosZ.load() - hand.z;
+                c.panelDragRadius[h] = sqrtf(dx * dx + dy * dy + dz * dz);
+                c.panelDragStartX[h] = c.panelPosX.load();
+                c.panelDragStartY[h] = c.panelPosY.load();
+                c.panelDragStartZ[h] = c.panelPosZ.load();
+                c.panelAdjustAt[h] = t;
+                LOGI("海报墙：%s 握把键按住 → 抓住（半径 %.2f 米）", handName[h],
+                     (double) c.panelDragRadius[h]);
+            } else {
+                float ddx = 0.f, ddy = 0.f, ddz = 0.f;
+                aimDirection(c.aimPose[h], &ddx, &ddy, &ddz);
+                const float r = c.panelDragRadius[h];
+                const float tx = hand.x + ddx * r;
+                const float ty = hand.y + ddy * r;
+                const float tz = hand.z + ddz * r;
+                const float mx = tx - c.panelDragStartX[h];
+                const float my = ty - c.panelDragStartY[h];
+                const float mz = tz - c.panelDragStartZ[h];
+                if (sqrtf(mx * mx + my * my + mz * mz) > kPanelDragSlop) {
+                    c.panelDragMoved[h] = true;
+                }
+                if (c.panelDragMoved[h]) {
+                    c.panelPosX = tx;
+                    c.panelPosY = ty;
+                    c.panelPosZ = tz;
+                    // 法线指回球心（= 手柄指向的反向），反解偏航与仰角
+                    const float kRad2Deg = 180.f / 3.14159265358979f;
+                    c.panelPitchDeg = asinf(ddy) * kRad2Deg;
+                    c.panelYawDeg = atan2f(-ddx, -ddz) * kRad2Deg;
+                }
+            }
+
+            /*
+             * 握着握把键推摇杆（父亲 2026-10-06 定）：
+             *   前后推 = 调远近（以观影者为原点，沿面板当前方向前后走；前推推远），
+             *   左右推 = 缩放海报墙（左小右大）。
+             */
+            const float sx2 = c.thumbstick[h].x;
+            const float sy2 = c.thumbstick[h].y;
+            const double dt = t - c.panelAdjustAt[h];
+            const float step = (float) ((dt > 0.0 && dt < 0.2) ? dt : 0.016);
+            if (fabsf(sy2) > kStickDeadzone) {
+                const float cx = c.panelPosX.load();
+                const float cy = c.panelPosY.load();
+                const float cz = c.panelPosZ.load();
+                const float d = sqrtf(cx * cx + cy * cy + cz * cz);
+                if (d > 0.3f) {
+                    const float k = (d + sy2 * kPanelDistSpeed * step) / d;
+                    c.panelPosX = cx * k;
+                    c.panelPosY = cy * k;
+                    c.panelPosZ = cz * k;
+                    LOGI("海报墙：摇杆远近 → 距离 %.2f 米", (double) (d + sy2 * kPanelDistSpeed * step));
+                }
+            }
+            if (fabsf(sx2) > kStickDeadzone) {
+                const float w = c.panelWidth.load() + sx2 * kPanelSizeSpeed * step;
+                c.panelWidth = fminf(kPanelMaxWidth, fmaxf(kPanelMinWidth, w));
+                LOGI("海报墙：摇杆缩放 → 宽 %.2f 米", (double) c.panelWidth.load());
+            }
+            c.panelAdjustAt[h] = t;
+        } else if (c.panelDragActive[h]) {
+            c.panelDragActive[h] = false;
+            c.panelDragMoved[h] = false;
+            LOGI("海报墙：挪到 (%.2f, %.2f, %.2f) 朝向 %.0f°/%.0f° 宽 %.2f 米",
+                 c.panelPosX.load(), c.panelPosY.load(), c.panelPosZ.load(),
+                 c.panelYawDeg.load(), c.panelPitchDeg.load(), c.panelWidth.load());
+        }
+
         const bool onPanel = c.panelShown.load() &&
                              rayHitsPlacement(c.aimPose[h], place, &planeT, &hu, &hv,
                                               &wx, &wy, &wz);
@@ -1489,83 +1589,6 @@ void pushInput(VrContext &c) {
                 clearJavaException(env, "输入回调 onClick");
             }
             c.sinkLastTrigger[h] = c.triggerDown[h];
-
-            /*
-             * ② 握把键（Grip / squeeze，手柄侧面中指那个）按住 = 抓住海报墙：
-             *    球心 = 手柄位置，半径 = 按下那一刻手柄到面板中心的距离；按住期间
-             *    面板中心 = 球心 + 半径 × 光柱方向，朝向反解成"正对球心"。
-             *    松开握把键就是松手。父亲 2026-10-06 定：拖动归握把键，别和点击打架。
-             */
-            if (c.squeezeDown[h]) {
-                const XrVector3f hand = c.aimPose[h].position;
-                if (!c.panelDragActive[h]) {
-                    c.panelDragActive[h] = true;
-                    c.panelDragMoved[h] = false;
-                    const float dx = c.panelPosX.load() - hand.x;
-                    const float dy = c.panelPosY.load() - hand.y;
-                    const float dz = c.panelPosZ.load() - hand.z;
-                    c.panelDragRadius[h] = sqrtf(dx * dx + dy * dy + dz * dz);
-                    c.panelDragStartX[h] = c.panelPosX.load();
-                    c.panelDragStartY[h] = c.panelPosY.load();
-                    c.panelDragStartZ[h] = c.panelPosZ.load();
-                    c.panelAdjustAt[h] = t;
-                } else {
-                    float ddx = 0.f, ddy = 0.f, ddz = 0.f;
-                    aimDirection(c.aimPose[h], &ddx, &ddy, &ddz);
-                    const float r = c.panelDragRadius[h];
-                    const float tx = hand.x + ddx * r;
-                    const float ty = hand.y + ddy * r;
-                    const float tz = hand.z + ddz * r;
-                    const float mx = tx - c.panelDragStartX[h];
-                    const float my = ty - c.panelDragStartY[h];
-                    const float mz = tz - c.panelDragStartZ[h];
-                    if (sqrtf(mx * mx + my * my + mz * mz) > kPanelDragSlop) {
-                        c.panelDragMoved[h] = true;
-                    }
-                    if (c.panelDragMoved[h]) {
-                        c.panelPosX = tx;
-                        c.panelPosY = ty;
-                        c.panelPosZ = tz;
-                        // 法线指回球心（= 光柱方向的反向），反解偏航与仰角
-                        const float kRad2Deg = 180.f / 3.14159265358979f;
-                        c.panelPitchDeg = asinf(ddy) * kRad2Deg;
-                        c.panelYawDeg = atan2f(-ddx, -ddz) * kRad2Deg;
-                    }
-                }
-
-                /*
-                 * ③ 握着握把键推摇杆（父亲 2026-10-06 定）：
-                 *    前后推 = 调远近（以观影者为原点，沿面板当前方向前后走；前推推远），
-                 *    左右推 = 缩放海报墙（左小右大）。
-                 */
-                const float sx2 = c.thumbstick[h].x;
-                const float sy2 = c.thumbstick[h].y;
-                const double dt = t - c.panelAdjustAt[h];
-                const float step = (float) ((dt > 0.0 && dt < 0.2) ? dt : 0.016);
-                if (fabsf(sy2) > kStickDeadzone) {
-                    const float cx = c.panelPosX.load();
-                    const float cy = c.panelPosY.load();
-                    const float cz = c.panelPosZ.load();
-                    const float d = sqrtf(cx * cx + cy * cy + cz * cz);
-                    if (d > 0.3f) {
-                        const float k = (d + sy2 * kPanelDistSpeed * step) / d;
-                        c.panelPosX = cx * k;
-                        c.panelPosY = cy * k;
-                        c.panelPosZ = cz * k;
-                    }
-                }
-                if (fabsf(sx2) > kStickDeadzone) {
-                    const float w = c.panelWidth.load() + sx2 * kPanelSizeSpeed * step;
-                    c.panelWidth = fminf(kPanelMaxWidth, fmaxf(kPanelMinWidth, w));
-                }
-                c.panelAdjustAt[h] = t;
-            } else if (c.panelDragActive[h]) {
-                c.panelDragActive[h] = false;
-                c.panelDragMoved[h] = false;
-                LOGI("海报墙：挪到 (%.2f, %.2f, %.2f) 朝向 %.0f°/%.0f° 宽 %.2f 米",
-                     c.panelPosX.load(), c.panelPosY.load(), c.panelPosZ.load(),
-                     c.panelYawDeg.load(), c.panelPitchDeg.load(), c.panelWidth.load());
-            }
 
             // ④ 摇杆滚动：连状态上报（30Hz）；回中补一帧零值，Java 侧据此进入惯性滑行。
             //    按着握把键时不滚 —— 那时候的摇杆在调远近与大小（见 ③）
@@ -1707,7 +1730,7 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
                 glUniform4f(c.colorLoc, 1.f, 1.f, 1.f, 1.f);
             } else {
                 glUniform1i(c.useTexLoc, 0);
-                glUniform4f(c.colorLoc, 0.10f, 0.11f, 0.12f, 1.f);   // 黑灰、微微亮（父亲 2026-10-06）
+                glUniform4f(c.colorLoc, 0.030f, 0.032f, 0.036f, 1.f);  // 近黑、只留一点灰（父亲 2026-10-06）
             }
             glBindBuffer(GL_ARRAY_BUFFER, c.vbo);
             glEnableVertexAttribArray(0);

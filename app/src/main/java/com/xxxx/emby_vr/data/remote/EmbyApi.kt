@@ -876,15 +876,16 @@ object EmbyApi {
             val capabilities = getDeviceCapabilities(context)
 
             val videoCodecs = capabilities.videoCodecs.toMutableList()
-            // 电视/投影芯片普遍具备 HEVC(含 10bit)硬解;MediaCodecList 探测偶发不全时会漏掉 hevc,
-            // 导致下面 hardwareSupportsHevc=false → 服务端把 4K HDR 降级转码成 h264(丢分辨率与 HDR)。
-            // 这里补一次,让服务端改为"只换封装"(视频流原样 copy)。
-            if (videoCodecs.none {
-                    it.equals("hevc", true) || it.equals("h265", true) || it.equals("hevc10", true)
-                }) {
-                Log.i("EmbyApi", "设备能力未报 HEVC,按电视芯片常规能力补上 hevc(避免服务端降级转码)")
-                videoCodecs.add("hevc")
+            /*
+             * 2026-10-06（VR 版）改向：这一段原来会强制补上 hevc（那是给电视/投影写的，
+             * 它们能输出 HDR）。头显是 SDR 屏，服务端于是「只换封装」把 10bit HDR 的
+             * HEVC 原样送过来 —— 实测《兰香如故》4K HEVC Main10 直通，画面发灰。
+             * 所以反过来：不声明 hevc，让服务端把这类片转成 8bit H.264 SDR。
+             */
+            videoCodecs.removeAll {
+                it.equals("hevc", true) || it.equals("h265", true) || it.equals("hevc10", true)
             }
+            Log.i("EmbyApi", "VR 版不声明 HEVC（头显是 SDR 屏，避免 10bit 直通发灰）")
             val audioCodecs = capabilities.audioCodecs.toMutableList()
             val videoProfiles = capabilities.videoProfiles
             val hardwareSupportsHevc = videoCodecs.any { codec ->

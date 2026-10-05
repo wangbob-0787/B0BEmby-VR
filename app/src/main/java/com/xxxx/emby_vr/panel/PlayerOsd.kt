@@ -91,9 +91,9 @@ fun PlayerOsdBar(state: OsdState) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            // 父亲 2026-10-06 定：整条倒圆角、底色黑灰（原来是近黑）
+            // 父亲 2026-10-06 定：整条倒圆角、底色近黑（要暗到纯黑只留一点灰）
             .clip(RoundedCornerShape(56.dp))
-            .background(Color(0xFF23262A))
+            .background(Color(0xFF141518))
             .padding(horizontal = 30.dp, vertical = 18.dp),
     ) {
         // ① 进度行：当前时间 + 进度条 + 总时长

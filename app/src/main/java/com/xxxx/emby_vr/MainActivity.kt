@@ -409,10 +409,12 @@ class MainActivity : ComponentActivity() {
      * ExoPlayer 解码 → Surface → 渲染器 OES 纹理贴到虚拟屏。
      */
     private fun playMedia(mediaId: String, startTicks: Long) {
-        if (renderer.videoActive) {
-            togglePlayPause()
-            return
-        }
+        /*
+         * 父亲 2026-10-06：播放中点海报墙的片子起不来、反而把正在播的暂停了。
+         * 原因是这里原来有一句"正在播就切播放/暂停"的老逻辑 —— 那是给面板上的
+         * 播放键用的，不该拦起播。现在点谁就播谁，旧片由 startPlayer 里的
+         * stopPlaybackInternal 收掉。
+         */
         scope.launch {
             try {
                 val media = EmbyApi.getPlaybackInfo(
