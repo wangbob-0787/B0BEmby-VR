@@ -569,64 +569,104 @@ void pumpEvents(VrContext &c) {
     }
 }
 
-void renderEye(VrContext &c, int eyeIndex, const XrView &view) {
+bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
     EyeSwapchain &eye = c.eyes[eyeIndex];
     uint32_t imageIndex = 0;
     XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
-    if (XR_FAILED(api.AcquireSwapchainImage(eye.handle, &ai, &imageIndex))) return;
+    const XrResult ar = api.AcquireSwapchainImage(eye.handle, &ai, &imageIndex);
+    if (XR_FAILED(ar)) {
+        LOGE("取图失败（眼 %d）：%d", eyeIndex, (int) ar);
+        return false;
+    }
     XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
     wi.timeout = XR_INFINITE_DURATION;
-    if (XR_FAILED(api.WaitSwapchainImage(eye.handle, &wi))) {
+    const XrResult wr = api.WaitSwapchainImage(eye.handle, &wi);
+    if (XR_FAILED(wr)) {
+        LOGE("等图失败（眼 %d）：%d", eyeIndex, (int) wr);
         XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
         api.ReleaseSwapchainImage(eye.handle, &ri);
-        return;
+        return false;
+    }
+
+    if (imageIndex >= eye.fbos.size() || eye.fbos[imageIndex] == 0) {
+        LOGE("FBO 下标越界（眼 %d，index=%u，共 %zu）", eyeIndex, imageIndex, eye.fbos.size());
+        XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+        api.ReleaseSwapchainImage(eye.handle, &ri);
+        return false;
     }
 
     glBindFramebuffer(GL_FRAMEBUFFER, eye.fbos[imageIndex]);
     glViewport(0, 0, eye.width, eye.height);
-    glClearColor(0.f, 0.f, 0.f, 1.f);   // 黑底
+    glClearColor(0.f, 0.f, 0.f, 1.f);
     glClear(GL_COLOR_BUFFER_BIT);
 
-    // 投影（由该眼的 FOV 生成）× 头姿 × 平面位置
-    Mat4 proj = perspectiveFromFov(view.fov, 0.05f, 100.f);
-    Mat4 view4 = viewMatrixFromPose(view.pose);
-    Mat4 model = translateScale(0.f, 0.f, -c.panelDistance, c.panelWidth, c.panelWidth * 9.f / 16.f);
-    Mat4 mvp = multiply(multiply(proj, view4), model);
+    if (c.program != 0 && c.mvpLoc >= 0) {
+        const Mat4 proj = perspectiveFromFov(view.fov, 0.05f, 100.f);
+        const Mat4 view4 = viewMatrixFromPose(view.pose);
+        const Mat4 model = translateScale(
+                0.f, 0.f, -c.panelDistance, c.panelWidth, c.panelWidth * 9.f / 16.f);
+        const Mat4 mvp = multiply(multiply(proj, view4), model);
 
-    glUseProgram(c.program);
-    glUniformMatrix4fv(c.mvpLoc, 1, GL_FALSE, mvp.m);
-    glUniform4f(c.colorLoc, 0.15f, 0.16f, 0.20f, 1.f);   // 深灰平面：先证明能出画面
-    glBindBuffer(GL_ARRAY_BUFFER, c.vbo);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void *) 0);
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
-                          (void *) (3 * sizeof(float)));
-    glDrawArrays(GL_TRIANGLES, 0, 6);
-    glDisableVertexAttribArray(0);
-    glDisableVertexAttribArray(1);
+        glUseProgram(c.program);
+        glUniformMatrix4fv(c.mvpLoc, 1, GL_FALSE, mvp.m);
+        glUniform4f(c.colorLoc, 0.15f, 0.16f, 0.20f, 1.f);
+        glBindBuffer(GL_ARRAY_BUFFER, c.vbo);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void *) 0);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
+                              (void *) (3 * sizeof(float)));
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glDisableVertexAttribArray(0);
+        glDisableVertexAttribArray(1);
+    }
+
+    // 画完必须解绑 FBO，否则下一只眼/下一帧会画进同一个附件
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
-    api.ReleaseSwapchainImage(eye.handle, &ri);
+    const XrResult rr = api.ReleaseSwapchainImage(eye.handle, &ri);
+    if (XR_FAILED(rr)) {
+        LOGE("交回图失败（眼 %d）：%d", eyeIndex, (int) rr);
+        return false;
+    }
+    return true;
 }
 
 void frameLoop(VrContext &c) {
-    std::vector<XrCompositionLayerProjectionView> projViews(c.viewConfigs.size());
+    /*
+     * 图层结构（run 95 实机崩溃后按官方示例重写）：
+     *
+     * 崩溃栈显示 #02/#04 落在 libb0bvr.so、#01/#00 落在 XRRuntime，
+     * Cause: null pointer dereference。
+     * 原来的写法把 projViews / layer 建在进入循环之前，并且用
+     * `reinterpret_cast<const XrCompositionLayerBaseHeader *const *>(&layer)`
+     * 取单元素数组地址 —— 这个取址方式与运行时对图层数组的读取方式不一致，
+     * 运行时拿到无效指针就崩在它自己的图层处理里。
+     *
+     * 现在按官方示例（hello_xr）的写法：
+     *  - 每帧把视图结构与图层结构都重置为带 type 的干净值；
+     *  - 用真正的指针数组 layerPtrs 交给 xrEndFrame；
+     *  - 只在 LocateViews 真的成功、且每只眼都取到图时才提交图层。
+     */
     std::vector<XrView> views(c.viewConfigs.size(), {XR_TYPE_VIEW});
+    std::vector<XrCompositionLayerProjectionView> projViews(c.viewConfigs.size());
+    for (auto &pv : projViews) pv = {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW};
+
     XrCompositionLayerProjection layer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
     layer.space = c.localSpace;
     layer.viewCount = (uint32_t) projViews.size();
     layer.views = projViews.data();
+
+    const XrCompositionLayerBaseHeader *layerPtrs[1] = {
+            reinterpret_cast<const XrCompositionLayerBaseHeader *>(&layer),
+    };
 
     int loggedFrames = 0;
     while (!gRequestStop) {
         pumpEvents(c);
         if (gRequestStop) break;
 
-        /*
-         * 会话没进入 Running 之前不能调 xrWaitFrame（会直接返回错误，
-         * 那样一上来就退出循环、黑屏）。这里等 READY → xrBeginSession。
-         */
         if (!c.sessionRunning) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             continue;
@@ -649,35 +689,46 @@ void frameLoop(VrContext &c) {
             vli.space = c.localSpace;
             XrViewState vs{XR_TYPE_VIEW_STATE};
             uint32_t viewCount = 0;
-            if (XR_SUCCEEDED(api.LocateViews(c.session, &vli, &vs, (uint32_t) views.size(),
-                                             &viewCount, views.data()))) {
+            const XrResult lr = api.LocateViews(
+                    c.session, &vli, &vs, (uint32_t) views.size(), &viewCount, views.data());
+            /*
+             * 必须确认视图状态有效（XR_VIEW_STATE_ORIENTATION_VALID_BIT /
+             * POSITION_VALID_BIT），否则 pose 里的数据可能是垃圾，
+             * 拿它去算 MVP 会得到 NaN 矩阵。
+             */
+            const bool viewsValid =
+                    XR_SUCCEEDED(lr) && viewCount == c.viewConfigs.size() &&
+                    (vs.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) != 0 &&
+                    (vs.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) != 0;
+            if (viewsValid) {
+                bool eyesOk = true;
                 for (uint32_t i = 0; i < viewCount; i++) {
-                    renderEye(c, (int) i, views[i]);
-                    projViews[i] = {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW};
+                    if (!renderEye(c, (int) i, views[i])) {
+                        eyesOk = false;
+                        break;
+                    }
                     projViews[i].pose = views[i].pose;
                     projViews[i].fov = views[i].fov;
                     projViews[i].subImage.swapchain = c.eyes[i].handle;
                     projViews[i].subImage.imageRect.offset = {0, 0};
                     projViews[i].subImage.imageRect.extent = {c.eyes[i].width, c.eyes[i].height};
                 }
-                rendered = true;
-                if (loggedFrames < 3) {
+                rendered = eyesOk;
+                if (rendered && loggedFrames < 3) {
                     LOGI("已渲染第 %d 帧（%u 眼）", loggedFrames + 1, viewCount);
                     loggedFrames++;
                 }
+            } else if (loggedFrames < 3) {
+                LOGI("本帧跳过：LocateViews=%d 视图数=%u 状态位=0x%x",
+                     (int) lr, viewCount, (unsigned) vs.viewStateFlags);
             }
         }
 
         XrFrameEndInfo fei{XR_TYPE_FRAME_END_INFO};
         fei.displayTime = fs.predictedDisplayTime;
         fei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
-        if (rendered) {
-            fei.layerCount = 1;
-            fei.layers = reinterpret_cast<const XrCompositionLayerBaseHeader *const *>(&layer);
-        } else {
-            fei.layerCount = 0;
-            fei.layers = nullptr;
-        }
+        fei.layerCount = rendered ? 1 : 0;
+        fei.layers = rendered ? layerPtrs : nullptr;
         api.EndFrame(c.session, &fei);
     }
     LOGI("渲染循环结束");
