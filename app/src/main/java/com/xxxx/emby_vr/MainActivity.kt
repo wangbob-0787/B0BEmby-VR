@@ -779,24 +779,36 @@ class MainActivity : ComponentActivity() {
             val nx = (event.x / glView.width * 2f - 1f) * aspect
             val ny = 1f - event.y / glView.height * 2f
             val pix = renderer.panelPixelAt(nx, ny)
-            if (pix != null) {
-                val action = event.actionMasked
+            val action = event.actionMasked
+            /*
+             * 抬起/取消**即使落点在面板外也必须转发**（父亲 2026-10-05 根因）：
+             * 摇杆一次拨动的落点经常滑出面板（实测抬起坐标 y=-131），
+             * 而 panelPixelAt 对面板外返回 null —— 原来这条 UP 就被丢掉了，
+             * 面板一直以为还按着，于是"松手还在滚"。落点用最后一次面板坐标收尾。
+             * ACTION_CANCEL 原来也整个被过滤掉，一并补上（系统常以 CANCEL 结束拨动）。
+             */
+            val isRelease = action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL
+            if (pix != null || (isRelease && panel.pressActive)) {
+                val px = pix?.get(0) ?: panel.lastPanelX
+                val py = pix?.get(1) ?: panel.lastPanelY
                 if (action == MotionEvent.ACTION_DOWN ||
                     action == MotionEvent.ACTION_MOVE ||
-                    action == MotionEvent.ACTION_UP
+                    isRelease
                 ) {
                     /*
                      * 面板输入统一走 PanelLayer.dispatch：它把「扳机 + 光标」
                      * 翻译成电视版界面认识的按键（轻扣=OK、扣住不动=返回、
                      * 扣住拖动=方向键），详见 PanelLayer.dispatch 的说明。
                      */
-                    panel.dispatch(pix[0], pix[1], action)
+                    panel.dispatch(px, py, action)
                     if (action == MotionEvent.ACTION_DOWN) {
                         Log.i(
                             TAG,
                             "面板光标: (${event.x.toInt()},${event.y.toInt()}) → " +
-                                "面板像素 (${pix[0].toInt()},${pix[1].toInt()})",
+                                "面板像素 (${px.toInt()},${py.toInt()})",
                         )
+                    } else if (isRelease && pix == null) {
+                        Log.i(TAG, "面板外的抬起也转发: action=$action 收尾于 (${px.toInt()},${py.toInt()})")
                     }
                     return true
                 }

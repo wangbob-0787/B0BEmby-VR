@@ -244,6 +244,22 @@ class PanelLayer(
     var ready = false
         private set
 
+    /**
+     * 面板当前是否处于「按下」状态。
+     *
+     * 用途（父亲 2026-10-05 实测根因）：摇杆一次拨动的落点常会滑出面板
+     * （实测抬起坐标 y=-131），而 `panelPixelAt` 对面板外的点返回 null，
+     * 于是「抬起」根本没被转发进面板 → 面板一直以为还按着 →
+     * 松手后还在滚。MainActivity 靠这个标志决定「落点在面板外也要转发抬起」。
+     */
+    val pressActive: Boolean get() = isDown
+
+    /** 最近一次派发进面板的面板像素坐标（抬起落在面板外时用它收尾） */
+    var lastPanelX = 0f
+        private set
+    var lastPanelY = 0f
+        private set
+
     private var surfaceTexture: SurfaceTexture? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var presentation: PanelPresentation? = null
@@ -582,6 +598,8 @@ class PanelLayer(
      */
     fun dispatch(px: Float, py: Float, action: Int) {
         if (decor == null) return
+        lastPanelX = px
+        lastPanelY = py
         val now = SystemClock.uptimeMillis()
         when (action) {
             MotionEvent.ACTION_DOWN -> {
