@@ -561,7 +561,7 @@ class MainActivity : ComponentActivity() {
      */
     private fun togglePicking() {
         val show = !com.xxxx.emby_vr.vr.VrNative.panelShown
-        com.xxxx.emby_vr.vr.VrNative.setPanelShown(show)
+        com.xxxx.emby_vr.vr.VrNative.updatePanelShown(show)
         Log.i(TAG, if (show) "选片：海报墙摆出来" else "选片：海报墙收起来")
     }
 
@@ -707,7 +707,7 @@ class MainActivity : ComponentActivity() {
         osdJob = null
         setOsdVisible(false)
         // 回海报墙的时候确保它摆着（播放中可以把它收起来，别让收起来的状态带回去）
-        com.xxxx.emby_vr.vr.VrNative.setPanelShown(true)
+        com.xxxx.emby_vr.vr.VrNative.updatePanelShown(true)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {

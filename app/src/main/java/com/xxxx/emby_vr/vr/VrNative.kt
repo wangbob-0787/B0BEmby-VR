@@ -118,8 +118,15 @@ object VrNative {
      */
     @Volatile
     var panelShown = true
+        private set
 
-    fun setPanelShown(shown: Boolean) {
+    /**
+     * 改海报墙显示状态并告诉原生层。
+     *
+     * 方法名不能叫 setPanelShown —— 那样会和上面 panelShown 自动生成的 setter
+     * 撞成同一个 JVM 签名（run 123 编译失败：Platform declaration clash）。
+     */
+    fun updatePanelShown(shown: Boolean) {
         panelShown = shown
         try {
             if (loaded) nativeSetPanelShown(shown)
