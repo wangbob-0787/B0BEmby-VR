@@ -720,7 +720,45 @@ class MainActivity : ComponentActivity() {
      *
      * 因此在 Activity 最外层拦下所有触摸事件，交给 InputRouter 统一处理。
      */
+    // ---- 原始触摸流取证（父亲 2026-10-05）----
+    //
+    // 争议点：摇杆松手时到底有没有「抬起」事件。
+    // 结论要能分辨两种可能 ——「系统没送」vs「送了被我们的判断吃掉」，
+    // 所以这一层打在**最外层**（任何分支之前）：只要是系统送进 Activity 的
+    // DOWN/MOVE/UP 都会留下一条，之后再对比 PanelLayer 的「按压画像」日志，
+    // 就能确定是哪一种。
+    private var rawMoveCount = 0
+    private var rawLastTraceAt = 0L
+
+    private fun traceRawTouch(event: MotionEvent) {
+        val now = android.os.SystemClock.uptimeMillis()
+        val xy = "(${event.x.toInt()},${event.y.toInt()})"
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                rawMoveCount = 0
+                rawLastTraceAt = now
+                Log.i(TAG, "触摸流: DOWN $xy source=0x${Integer.toHexString(event.source)}")
+            }
+            MotionEvent.ACTION_UP -> {
+                Log.i(TAG, "触摸流: UP $xy 本窗口MOVE=$rawMoveCount source=0x${Integer.toHexString(event.source)}")
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                Log.i(TAG, "触摸流: CANCEL $xy 本窗口MOVE=$rawMoveCount")
+            }
+            MotionEvent.ACTION_MOVE, MotionEvent.ACTION_HOVER_MOVE -> {
+                rawMoveCount++
+                // 限流：最多每 100ms 一条，避免刷屏掩盖 UP
+                if (now - rawLastTraceAt >= 100L) {
+                    rawLastTraceAt = now
+                    val kind = if (event.actionMasked == MotionEvent.ACTION_MOVE) "MOVE" else "HOVER"
+                    Log.i(TAG, "触摸流: $kind#$rawMoveCount $xy 按下键=0x${Integer.toHexString(event.buttonState)}")
+                }
+            }
+        }
+    }
+
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        traceRawTouch(event)
         /*
          * 面板层优先（2026-10-04）：光标落在虚拟屏范围内时，事件换算成面板像素
          * 后派发进复用的界面（同进程 dispatchTouchEvent，不需要 INJECT_EVENTS）。
