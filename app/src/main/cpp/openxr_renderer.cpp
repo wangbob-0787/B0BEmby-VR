@@ -544,11 +544,6 @@ struct VrContext {
     bool aDown[2] = {false, false};
     bool bDown[2] = {false, false};
     bool menuDown[2] = {false, false};
-
-    // 平面放在正前方：3.2m 远，3.2m 宽（约 53° 视场），16:9
-    float panelDistance = 3.2f;
-    // 面板宽 3.5m ≈ 水平 58° 视角，3.2m 远，与影院前排观感接近
-    float panelWidth = 3.5f;
 };
 
 VrContext g;
