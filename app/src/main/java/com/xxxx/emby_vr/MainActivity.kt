@@ -494,6 +494,11 @@ class MainActivity : ComponentActivity() {
                             val a = videoSize.width * videoSize.pixelWidthHeightRatio /
                                 videoSize.height
                             com.xxxx.emby_vr.vr.VrNative.setVideoAspect(a)
+                            // 纹理尺寸也要给（锐化的邻域步长按真实像素算）
+                            com.xxxx.emby_vr.vr.VrNative.setVideoSize(
+                                videoSize.width,
+                                videoSize.height,
+                            )
                             Log.i(TAG, "视频尺寸 ${videoSize.width}x${videoSize.height} 比例 $a")
                         }
                     }
@@ -574,17 +579,40 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * 画面亮度加减（控制条上的「调暗 / 调亮」两颗按钮）。
+     * 画面调整（父亲 2026-10-06：「亮度、对比度、饱和度、锐度等等」都加上）。
      *
-     * 父亲 2026-10-06：「画面太亮，能不能在控制条加个调亮度」。
-     * 范围 0.35~1.60，每按一次走 0.05，1.0 是原样；着色器里乘在最终颜色上，
-     * 视频画面和界面一起变。
+     * 流程：他在控制条上手动调好 → 我读日志里最后那组数值 → 抄成代码默认值 →
+     * 再把这几颗按钮撤掉。
+     * 每按一次走一格：亮度/对比度/饱和度 0.05，锐度 0.1，色温 0.1。
      */
-    private fun adjustBrightness(delta: Float) {
-        val v = (osdState.brightness + delta).coerceIn(0.35f, 1.6f)
-        osdState.brightness = v
-        com.xxxx.emby_vr.vr.VrNative.setBrightness(v)
-        Log.i(TAG, "画面亮度 → ${"%.2f".format(v)}")
+    private fun adjustImage(delta: Float) {
+        when (osdState.imageField) {
+            0 -> osdState.brightness = (osdState.brightness + delta * 0.05f).coerceIn(0.3f, 1.8f)
+            1 -> osdState.contrast = (osdState.contrast + delta * 0.05f).coerceIn(0.3f, 1.8f)
+            2 -> osdState.saturation = (osdState.saturation + delta * 0.05f).coerceIn(0f, 1.8f)
+            3 -> osdState.sharpen = (osdState.sharpen + delta * 0.1f).coerceIn(0f, 2f)
+            else -> osdState.temperature =
+                (osdState.temperature + delta * 0.1f).coerceIn(-1f, 1f)
+        }
+        com.xxxx.emby_vr.vr.VrNative.setImageAdjust(
+            osdState.brightness,
+            osdState.contrast,
+            osdState.saturation,
+            osdState.sharpen,
+            osdState.temperature,
+        )
+    }
+
+    /** 切换正在调的那一项（亮度 → 对比度 → 饱和度 → 锐度 → 色温 → 回到亮度）*/
+    private fun cycleImageField() {
+        osdState.imageField = (osdState.imageField + 1) % 5
+        Log.i(
+            TAG,
+            "调图项 → ${com.xxxx.emby_vr.panel.imageFieldName(osdState.imageField)}" +
+                "（亮度 ${"%.2f".format(osdState.brightness)} 对比度 ${"%.2f".format(osdState.contrast)}" +
+                " 饱和度 ${"%.2f".format(osdState.saturation)} 锐度 ${"%.2f".format(osdState.sharpen)}" +
+                " 色温 ${"%+.2f".format(osdState.temperature)}）",
+        )
     }
 
     /** 控制条上的一颗按钮被点了 */
@@ -595,9 +623,10 @@ class MainActivity : ComponentActivity() {
             com.xxxx.emby_vr.panel.OsdButton.SEEK_BACK -> if (player != null) seekBy(-10_000)
             com.xxxx.emby_vr.panel.OsdButton.SEEK_FWD -> if (player != null) seekBy(+10_000)
             com.xxxx.emby_vr.panel.OsdButton.SPEED -> cycleSpeed()
-            /* 画面亮度（父亲 2026-10-06：「画面太亮，能不能在控制条加个调亮度」）*/
-            com.xxxx.emby_vr.panel.OsdButton.DIM_DOWN -> adjustBrightness(-0.05f)
-            com.xxxx.emby_vr.panel.OsdButton.DIM_UP -> adjustBrightness(+0.05f)
+            /* 画面调整（父亲 2026-10-06）：两颗加减按钮调当前项，中间那颗切换要调哪一项 */
+            com.xxxx.emby_vr.panel.OsdButton.DIM_DOWN -> adjustImage(-1f)
+            com.xxxx.emby_vr.panel.OsdButton.DIM_UP -> adjustImage(+1f)
+            com.xxxx.emby_vr.panel.OsdButton.IMG_FIELD -> cycleImageField()
             com.xxxx.emby_vr.panel.OsdButton.PICK -> togglePicking()
             com.xxxx.emby_vr.panel.OsdButton.EXIT -> {
                 Log.i(TAG, "控制条：退出应用")

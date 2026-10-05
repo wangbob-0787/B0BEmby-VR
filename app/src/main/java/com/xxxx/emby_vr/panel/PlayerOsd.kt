@@ -22,6 +22,7 @@ import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material3.Icon
@@ -57,9 +58,10 @@ enum class OsdButton(val label: String, val icon: ImageVector) {
     SEEK_FWD("快进10秒", Icons.Filled.FastForward),
     SPEED("倍速", Icons.Filled.Speed),
 
-    /** 画面亮度（父亲 2026-10-06：「画面太亮，能不能在控制条加个调亮度」）*/
-    DIM_DOWN("调暗", Icons.Filled.BrightnessLow),
-    DIM_UP("调亮", Icons.Filled.BrightnessHigh),
+    /** 画面调整（父亲 2026-10-06）：IMG_FIELD 切换要调哪一项，两颗加减按钮调当前项 */
+    DIM_DOWN("调图 -", Icons.Filled.BrightnessLow),
+    DIM_UP("调图 +", Icons.Filled.BrightnessHigh),
+    IMG_FIELD("调图项", Icons.Filled.Tune),
 
     PICK("选片", Icons.Filled.GridView),
     EXIT("退出", Icons.Filled.Close),
@@ -77,14 +79,47 @@ class OsdState {
     var durationMs by mutableStateOf(0L)
     var speed by mutableStateOf(1f)
 
-    /** 画面亮度倍率（1.0 = 原样），控制条上加减 */
+    /** 画面亮度倍率（1.0 = 原样）*/
     var brightness by mutableStateOf(1f)
+
+    /** 对比度（1.0 = 原样）*/
+    var contrast by mutableStateOf(1f)
+
+    /** 饱和度（1.0 = 原样）*/
+    var saturation by mutableStateOf(1f)
+
+    /** 锐度（0 = 不锐化）*/
+    var sharpen by mutableStateOf(0f)
+
+    /** 色温（-1 冷 … 0 原样 … +1 暖）*/
+    var temperature by mutableStateOf(0f)
+
+    /** 正在调哪一项：0 亮度 / 1 对比度 / 2 饱和度 / 3 锐度 / 4 色温 */
+    var imageField by mutableStateOf(0)
 
     /** 播放/暂停按钮显示的图标：跟真实播放态走 */
     val playIcon: ImageVector get() = if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow
 
     /** 每颗按钮点了之后干什么（Agent 侧接 ExoPlayer） */
     var onButton: ((OsdButton) -> Unit)? = null
+}
+
+/** 调图项名字（0 亮度 / 1 对比度 / 2 饱和度 / 3 锐度 / 4 色温）*/
+fun imageFieldName(field: Int): String = when (field) {
+    0 -> "亮度"
+    1 -> "对比度"
+    2 -> "饱和度"
+    3 -> "锐度"
+    else -> "色温"
+}
+
+/** 加减按钮上显示「当前项 + 当前值」，调哪一项一眼能看见 */
+fun imageFieldText(state: OsdState): String = when (state.imageField) {
+    0 -> "亮度 ${(state.brightness * 100).roundToInt()}%"
+    1 -> "对比 ${(state.contrast * 100).roundToInt()}%"
+    2 -> "饱和 ${(state.saturation * 100).roundToInt()}%"
+    3 -> "锐度 ${"%.1f".format(state.sharpen)}"
+    else -> "色温 ${"%+.1f".format(state.temperature)}"
 }
 
 /** 毫秒 → mm:ss（超过一小时给 h:mm:ss） */
@@ -174,8 +209,8 @@ private fun OsdButtonView(button: OsdButton, state: OsdState) {
         Text(
             text = when (button) {
                 OsdButton.SPEED -> "倍速 ${"%.1f".format(state.speed)}x"
-                OsdButton.DIM_UP, OsdButton.DIM_DOWN ->
-                    "亮度 ${(state.brightness * 100).roundToInt()}%"
+                OsdButton.IMG_FIELD -> "调图项：${imageFieldName(state.imageField)}"
+                OsdButton.DIM_UP, OsdButton.DIM_DOWN -> imageFieldText(state)
                 else -> button.label
             },
             color = Color(0xFFDDDDDD),

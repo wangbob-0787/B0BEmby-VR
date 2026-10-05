@@ -299,6 +299,11 @@ uniform int uUseTexture;
 uniform int uCircle;          // 1 = 只保留方形里的内切圆（光点用）
 uniform int uExpandRange;     // 1 = 把「有限范围」(16-235) 的视频拉回全范围
 uniform float uBrightness;    // 画面亮度（控制条上可调，1.0 = 原样）
+uniform float uContrast;      // 对比度（1.0 = 原样）
+uniform float uSaturation;    // 饱和度（1.0 = 原样）
+uniform float uSharpen;       // 锐度（0 = 不锐化）
+uniform float uTemperature;   // 色温（-1 冷 … 0 原样 … +1 暖）
+uniform vec2 uTexel;          // 视频纹理一个像素的 UV 步长（锐化用）
 uniform samplerExternalOES uTexture;
 out vec4 fragColor;
 void main() {
@@ -324,8 +329,31 @@ void main() {
     } else {
         outColor = uColor;
     }
-    /* 画面亮度：控制条上加减（父亲 2026-10-06「画面太亮，能不能在控制条加个调亮度」）*/
+    /*
+     * 画面调整（父亲 2026-10-06「画面太亮」+「调图像的功能都加上」）。
+     * 顺序固定：亮度 → 对比度 → 饱和度，最后夹到 0~1。
+     * 父亲手动调好后，把日志里最后那组数值硬编码成默认值即可。
+     */
     outColor.rgb *= uBrightness;
+    outColor.rgb = (outColor.rgb - 0.5) * uContrast + 0.5;
+    float luma = dot(outColor.rgb, vec3(0.2126, 0.7152, 0.0722));
+    outColor.rgb = mix(vec3(luma), outColor.rgb, uSaturation);
+    if (uTemperature != 0.0) {
+        // 色温：暖了抬红压蓝，冷了反过来
+        outColor.rgb *= vec3(1.0 + uTemperature * 0.10, 1.0, 1.0 - uTemperature * 0.10);
+    }
+    if (uSharpen > 0.001 && uUseTexture == 1) {
+        /*
+         * 锐化：中心与四邻域均值之差加回去（近似 unsharp mask）。
+         * 只在视频上做 —— 面板/控制条是文字界面，锐化只会生出毛边。
+         */
+        vec3 nb = texture(uTexture, vUv + vec2(uTexel.x, 0.0)).rgb
+                + texture(uTexture, vUv - vec2(uTexel.x, 0.0)).rgb
+                + texture(uTexture, vUv + vec2(0.0, uTexel.y)).rgb
+                + texture(uTexture, vUv - vec2(0.0, uTexel.y)).rgb;
+        outColor.rgb += (outColor.rgb - nb * 0.25) * uSharpen;
+    }
+    outColor.rgb = clamp(outColor.rgb, 0.0, 1.0);
     fragColor = outColor;
 }
 )";
@@ -419,6 +447,11 @@ struct VrContext {
     GLint circleLoc = -1;          // uCircle：纯色画成圆点还是方块
     GLint expandLoc = -1;          // uExpandRange：视频有限范围 → 全范围
     GLint brightLoc = -1;          // uBrightness：画面亮度（控制条上可调）
+    GLint contrastLoc = -1;        // uContrast：对比度
+    GLint satLoc = -1;             // uSaturation：饱和度
+    GLint sharpenLoc = -1;         // uSharpen：锐度
+    GLint tempLoc = -1;            // uTemperature：色温
+    GLint texelLoc = -1;           // uTexel：视频纹理像素步长
     GLuint vbo = 0;                // 单位方块（面板 / 光点）
     GLuint rayVbo = 0;             // 手柄射线网格（圆锥）
     int rayVertexCount = 0;
@@ -461,8 +494,17 @@ struct VrContext {
      * 银幕按它调高度 —— 否则 2.35:1 的片子会被拉成 16:9（父亲 2026-10-06）。
      */
     std::atomic<float> videoAspect{16.f / 9.f};
-    /** 画面亮度：控制条上加减，1.0 = 原样（父亲 2026-10-06 要的调亮度） */
+    /**
+     * 画面亮度/对比度/饱和度（父亲 2026-10-06：「调图像的功能都加上」）。
+     */
     std::atomic<float> brightness{1.f};
+    std::atomic<float> contrast{1.f};
+    std::atomic<float> saturation{1.f};
+    std::atomic<float> sharpen{0.f};
+    std::atomic<float> temperature{0.f};
+    /** 视频纹理一个像素的 UV 步长（锐化用，随视频尺寸更新）*/
+    std::atomic<float> texelX{1.f / 1920.f};
+    std::atomic<float> texelY{1.f / 1080.f};
 
     /** 握把键按住时，上一帧处理摇杆调整的时刻（算增量用，秒） */
     double panelAdjustAt[2] = {0.0, 0.0};
@@ -1755,9 +1797,14 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
     glBindFramebuffer(GL_FRAMEBUFFER, eye.fbos[imageIndex]);
     glViewport(0, 0, eye.width, eye.height);
     glClearColor(0.f, 0.f, 0.f, 1.f);
-    /* 每帧统一刷一次亮度（着色器里乘在最终颜色上，视频与界面一起变）*/
+    /* 每帧统一刷一次画面调整（亮度/对比度/饱和度，视频与界面一起变）*/
     glUseProgram(c.program);
     if (c.brightLoc >= 0) glUniform1f(c.brightLoc, c.brightness.load());
+    if (c.contrastLoc >= 0) glUniform1f(c.contrastLoc, c.contrast.load());
+    if (c.satLoc >= 0) glUniform1f(c.satLoc, c.saturation.load());
+    if (c.sharpenLoc >= 0) glUniform1f(c.sharpenLoc, c.sharpen.load());
+    if (c.tempLoc >= 0) glUniform1f(c.tempLoc, c.temperature.load());
+    if (c.texelLoc >= 0) glUniform2f(c.texelLoc, c.texelX.load(), c.texelY.load());
     glClear(GL_COLOR_BUFFER_BIT);
 
     const Mat4 proj = perspectiveFromFov(view.fov, 0.05f, 100.f);
@@ -2164,6 +2211,11 @@ void renderThreadMain() {
         c.circleLoc = glGetUniformLocation(c.program, "uCircle");
         c.expandLoc = glGetUniformLocation(c.program, "uExpandRange");
         c.brightLoc = glGetUniformLocation(c.program, "uBrightness");
+        c.contrastLoc = glGetUniformLocation(c.program, "uContrast");
+        c.satLoc = glGetUniformLocation(c.program, "uSaturation");
+        c.sharpenLoc = glGetUniformLocation(c.program, "uSharpen");
+        c.tempLoc = glGetUniformLocation(c.program, "uTemperature");
+        c.texelLoc = glGetUniformLocation(c.program, "uTexel");
         makeQuadBuffers(c);
         makeRayBuffer(c);
         LOGI("GL 资源就绪（program=%u）", c.program);
@@ -2379,17 +2431,34 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetVideoAspect(JNIEnv *env, jobject /* 
 }
 
 /**
- * 画面亮度（父亲 2026-10-06：「画面太亮，能不能在控制条加个调亮度」）。
+ * 画面调整（父亲 2026-10-06：「画面太亮」→「调图像的功能都加上」→ 亮度/对比度/饱和度/锐度…）。
  *
- * 着色器里统一乘在最终颜色上，视频与界面一起变。范围 0.35~1.60，
- * 1.0 是原样；控制条上每按一次走 0.05。
+ * 调好后把日志里最后那组数值抄成默认值，再把这些调节入口撤掉（父亲定的流程）。
+ * 各项含义：亮度/对比度/饱和度 1.0 = 原样；锐度 0 = 不锐化；色温 -1 冷 … +1 暖。
  */
 extern "C" JNIEXPORT void JNICALL
-Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetBrightness(JNIEnv *env, jobject /* this */,
-                                                       jfloat value) {
-    if (value > 0.2f && value < 2.f) {
-        g.brightness.store(value);
-        LOGI("画面亮度 → %.2f", (double) value);
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetImageAdjust(JNIEnv *env, jobject /* this */,
+                                                        jfloat brightness, jfloat contrast,
+                                                        jfloat saturation, jfloat sharpen,
+                                                        jfloat temperature) {
+    if (brightness > 0.2f && brightness < 2.f) g.brightness.store(brightness);
+    if (contrast > 0.2f && contrast < 2.f) g.contrast.store(contrast);
+    if (saturation > 0.f && saturation < 2.f) g.saturation.store(saturation);
+    if (sharpen >= 0.f && sharpen < 3.f) g.sharpen.store(sharpen);
+    if (temperature > -1.f && temperature < 1.f) g.temperature.store(temperature);
+    LOGI("画面调整 → 亮度 %.2f 对比度 %.2f 饱和度 %.2f 锐度 %.2f 色温 %+.2f",
+         (double) g.brightness.load(), (double) g.contrast.load(),
+         (double) g.saturation.load(), (double) g.sharpen.load(),
+         (double) g.temperature.load());
+}
+
+/** 视频纹理尺寸（锐化的邻域步长要用真实像素）*/
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetVideoSize(JNIEnv *env, jobject /* this */,
+                                                      jint width, jint height) {
+    if (width > 0 && height > 0) {
+        g.texelX.store(1.f / (float) width);
+        g.texelY.store(1.f / (float) height);
     }
 }
 

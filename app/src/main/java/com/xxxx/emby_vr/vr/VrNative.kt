@@ -137,18 +137,45 @@ object VrNative {
 
     private external fun nativeSetVideoAspect(aspect: Float)
 
-    private external fun nativeSetBrightness(value: Float)
+    private external fun nativeSetImageAdjust(
+        brightness: Float,
+        contrast: Float,
+        saturation: Float,
+        sharpen: Float,
+        temperature: Float,
+    )
+
+    private external fun nativeSetVideoSize(width: Int, height: Int)
 
     /**
-     * 画面亮度（1.0 = 原样）。控制条上的「调暗 / 调亮」按钮走这里。
+     * 画面调整五件套：亮度、对比度、饱和度、锐度、色温。
      *
-     * 父亲 2026-10-06：「画面太亮，能不能在控制条加个调亮度」。
+     * 父亲 2026-10-06 定的流程：先在控制条上手动调好，再把数值抄进代码当默认值，
+     * 最后把这些调节入口撤掉。
+     * 亮度/对比度/饱和度 1.0 = 原样；锐度 0 = 不锐化；色温 -1 冷 … +1 暖。
      */
-    fun setBrightness(value: Float) {
+    fun setImageAdjust(
+        brightness: Float,
+        contrast: Float,
+        saturation: Float,
+        sharpen: Float,
+        temperature: Float,
+    ) {
         try {
-            if (loaded) nativeSetBrightness(value)
+            if (loaded) {
+                nativeSetImageAdjust(brightness, contrast, saturation, sharpen, temperature)
+            }
         } catch (t: Throwable) {
-            Log.e(TAG, "设置画面亮度失败：${t.message}")
+            Log.e(TAG, "设置画面调整失败：${t.message}")
+        }
+    }
+
+    /** 视频纹理尺寸（锐化邻域步长用）*/
+    fun setVideoSize(width: Int, height: Int) {
+        try {
+            if (loaded) nativeSetVideoSize(width, height)
+        } catch (t: Throwable) {
+            Log.e(TAG, "设置视频尺寸失败：${t.message}")
         }
     }
 
