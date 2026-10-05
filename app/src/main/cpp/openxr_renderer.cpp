@@ -1288,19 +1288,26 @@ void drawSpinner(VrContext &c, const Mat4 &proj, const Mat4 &view4) {
                  0.16f * fade, 0.85f * fade, 0.32f * fade, false);
     }
     /*
-     * 箭头尖（父亲 2026-10-06：「没有看见箭头」）：在缺口那一端的头上一颗亮绿圆点，
-     * 加上后面渐暗的环，看起来就是一个带箭头的转圈。
+     * 箭头尖（父亲 2026-10-06：「没有箭头，是个圆点」）：改成两撇组成的 V 形箭头，
+     * 顶点落在缺口那一端，配上后面渐暗的环，看起来就是一支带箭头的转圈。
      */
     {
         const float ang = base + (float) (kSegs - kGapSegs) * step;
-        XrPosef tip{};
-        tip.position = {kFrontScreen.cx + cosf(ang) * kRadius,
-                        kFrontScreen.cy + sinf(ang) * kRadius,
-                        kFrontScreen.cz + 0.013f};
-        const float half = ang * 0.5f;
-        tip.orientation = {0.f, 0.f, sinf(half), cosf(half)};
-        const Mat4 m = poseScaleModel(tip, kThick * 2.6f, kThick * 2.6f, 1.f);
-        drawMesh(c, c.vbo, 6, multiply(multiply(proj, view4), m), 0.16f, 0.90f, 0.32f, true);
+        const float armLen = kThick * 3.2f;
+        const float rr = kRadius * 0.88f;
+        for (int s = 0; s < 2; s++) {
+            const float dir = (s == 0) ? 1.f : -1.f;   // 两撇分别朝缺口两侧
+            const float a = ang + dir * 2.5f;
+            XrPosef arm{};
+            arm.position = {kFrontScreen.cx + cosf(ang + dir * 0.62f) * rr,
+                            kFrontScreen.cy + sinf(ang + dir * 0.62f) * rr,
+                            kFrontScreen.cz + 0.013f};
+            const float half = a * 0.5f;
+            arm.orientation = {0.f, 0.f, sinf(half), cosf(half)};
+            const Mat4 m = poseScaleModel(arm, armLen, kThick * 0.95f, 1.f);
+            drawMesh(c, c.vbo, 6, multiply(multiply(proj, view4), m),
+                     0.20f, 0.95f, 0.36f, false);
+        }
     }
 }
 
@@ -1701,13 +1708,6 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
     glBindFramebuffer(GL_FRAMEBUFFER, eye.fbos[imageIndex]);
     glViewport(0, 0, eye.width, eye.height);
     glClearColor(0.f, 0.f, 0.f, 1.f);
-    /*
-     * 控制条要圆角（父亲 2026-10-06：「叠了两层，下层没有倒圆角」）：
-     * Java 侧把控制条窗口背景清成透明，这里按 alpha 混合画 —— 圆角外的像素 alpha=0，
-     * 直接透出后面的影院背景，不再是一块黑方块。视频/海报层是不透明的，混合对它们无影响。
-     */
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glClear(GL_COLOR_BUFFER_BIT);
 
     const Mat4 proj = perspectiveFromFov(view.fov, 0.05f, 100.f);
@@ -1737,7 +1737,7 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
                 glUniform4f(c.colorLoc, 1.f, 1.f, 1.f, 1.f);
             } else {
                 glUniform1i(c.useTexLoc, 0);
-                glUniform4f(c.colorLoc, 0.030f, 0.032f, 0.036f, 1.f);  // 近黑、只留一点灰（父亲 2026-10-06）
+                glUniform4f(c.colorLoc, 0.018f, 0.019f, 0.022f, 1.f);  // 近黑微光（父亲 2026-10-06：再暗一点）
             }
             glBindBuffer(GL_ARRAY_BUFFER, c.vbo);
             glEnableVertexAttribArray(0);
@@ -1769,6 +1769,14 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
          * 与主画面同一套着色器与属性布局，只是换一张纹理、换一个模型矩阵。
          */
         if (c.osdVisible.load() && c.osdTex != 0 && c.osdHasFrame.load()) {
+            /*
+             * 只给控制条开 alpha 混合（父亲 2026-10-06：「叠了两层，下层没有倒圆角」）：
+             * Java 侧把控制条窗口背景清成透明，圆角外 alpha=0，这里混合后透出影院背景。
+             * 上一版把这个 enable 放在全局，结果视频层也被混合成半透明 ——
+             * 父亲随即报「视频屏幕像蒙了一层纱」，所以改成只在控制条这一段开。
+             */
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             const float th = kOsdTiltDeg * 3.14159265358979f / 180.f;
             XrPosef osdPose{};
             osdPose.position = {0.f, kOsdCenterY, -kOsdDistance};
@@ -1791,6 +1799,7 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
             glDrawArrays(GL_TRIANGLES, 0, 6);
             glDisableVertexAttribArray(0);
             glDisableVertexAttribArray(1);
+            glDisable(GL_BLEND);
         }
     }
 

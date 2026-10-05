@@ -46,8 +46,14 @@ object EmbyContent {
     const val DEFAULT_USER_ID = "40a02f8503ce4de49d58331a282dcea1"
     const val DEFAULT_USER_NAME = "wangbob"
 
-    /** 设备标识：同一台 PICO 固定，服务端按它区分播放会话（播放链路也用它） */
-    const val DEVICE_ID = "b0bemby-vr-pico4"
+    /**
+     * 设备标识：同一台 PICO 固定，服务端按它区分播放会话（播放链路也用它）。
+     *
+     * 2026-10-06 加 v2 后缀：改了设备能力声明（不声明 EAC3 / HEVC）之后，服务端转码日志里
+     * 音频仍是 `eac3 → copy`、视频仍是直通 —— 像是按 DeviceId 记住了旧能力。
+     * 换个新 id，服务端会当成新设备重新读一遍能力声明。
+     */
+    const val DEVICE_ID = "b0bemby-vr-pico4-v2"
 
     /**
      * 带错误详情的结果。
