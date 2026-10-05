@@ -724,6 +724,36 @@ class PanelLayer(
     }
 
     /**
+     * ---- VR 模式（OpenXR 光柱）输入口，2026-10-05 起 ----
+     *
+     * VR 模式下不再有系统合成的触摸流：光柱坐标、扳机、摇杆、B 键都由原生层
+     * 直接推上来（VrNative.InputSink）。因此这里给三条干净入口，不走
+     * dispatch() 里那套「从合成触摸反推摇杆」的启发式：
+     *
+     *   vrPointer —— 光柱指到面板上的位置（面板像素）
+     *   vrClick   —— 扣扳机：在光柱位置做一次点击（等同 tap）
+     *   vrScroll  —— 拨摇杆：滚光柱底下的那一排（走鼠标滚轮，不碰焦点）
+     */
+    fun vrPointer(px: Float, py: Float) {
+        lastPanelX = px
+        lastPanelY = py
+        scrollAnchorX = px
+        scrollAnchorY = py
+    }
+
+    /** 扣扳机 = 在光柱位置点一下（焦点先落到光点所在控件，再看有没有动作） */
+    fun vrClick(px: Float, py: Float) {
+        vrPointer(px, py)
+        tap(px, py)
+    }
+
+    /** 拨摇杆 = 滚光柱底下那一排；dx/dy 为面板像素位移（向下/向右为正） */
+    fun vrScroll(px: Float, py: Float, dx: Float, dy: Float) {
+        vrPointer(px, py)
+        scrollAt(px, py, dx, dy, "VR 摇杆")
+    }
+
+    /**
      * 把一次「扳机 + 光标」操作翻译成电视版界面认识的按键。
      *
      * ## 为什么不是触摸（2026-10-04 实机定位）

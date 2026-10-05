@@ -65,6 +65,30 @@ object VrNative {
         false
     }
 
+    /**
+     * VR 输入回调（2026-10-05）。
+     *
+     * VR 模式下没有系统合成的触摸流，光柱指向、扳机、摇杆、B 键全部由原生层
+     * 在渲染线程里推过来。坐标是**面板像素**（1920×1080，与 PanelLayer 一致）。
+     * 实现方要注意：回调不在主线程，操作界面元素前自己切主线程。
+     */
+    interface InputSink {
+        fun onPointer(px: Float, py: Float)
+        fun onClick(px: Float, py: Float)
+        fun onScroll(px: Float, py: Float, dx: Float, dy: Float)
+        fun onBack()
+    }
+
+    private external fun nativeAttachInputSink(sink: InputSink)
+
+    fun attachInputSink(sink: InputSink) {
+        try {
+            if (loaded) nativeAttachInputSink(sink)
+        } catch (t: Throwable) {
+            Log.e(TAG, "注册 VR 输入回调失败：${t.message}")
+        }
+    }
+
     fun stopVr() {
         try {
             if (loaded) nativeStopVr()

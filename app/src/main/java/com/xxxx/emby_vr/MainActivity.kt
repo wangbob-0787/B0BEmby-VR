@@ -56,6 +56,45 @@ class MainActivity : ComponentActivity() {
     private lateinit var panel: PanelLayer
 
     /**
+     * VR 模式下的输入源是否已经活了（2026-10-05）。
+     *
+     * VR 模式里没有系统合成的触摸流，光柱坐标/扳机/摇杆由原生层直接推上来。
+     * 一旦收到第一条，就把老的触摸通道关掉，避免两套坐标同时喂面板
+     * （否则又回到「光柱指这里、点到的却是旁边」）。
+     */
+    private var vrInputLive = false
+
+    /** 光柱输入 → 面板（坐标已是面板像素，与 PanelLayer 的 1920×1080 同一套） */
+    private val vrInput = object : com.xxxx.emby_vr.vr.VrNative.InputSink {
+        override fun onPointer(px: Float, py: Float) {
+            if (!vrInputLive) {
+                vrInputLive = true
+                Log.i(TAG, "VR 光柱输入已接管（老的触摸通道关闭）")
+            }
+            runOnUiThread { if (panelInputReady()) panel.vrPointer(px, py) }
+        }
+
+        override fun onClick(px: Float, py: Float) {
+            vrInputLive = true
+            runOnUiThread { if (panelInputReady()) panel.vrClick(px, py) }
+        }
+
+        override fun onScroll(px: Float, py: Float, dx: Float, dy: Float) {
+            vrInputLive = true
+            runOnUiThread { if (panelInputReady()) panel.vrScroll(px, py, dx, dy) }
+        }
+
+        override fun onBack() {
+            vrInputLive = true
+            runOnUiThread { if (panelInputReady()) panel.back() }
+        }
+    }
+
+    /** 面板此刻能不能接输入：界面就绪、没在播放 */
+    private fun panelInputReady(): Boolean =
+        !renderer.videoActive && ::panel.isInitialized && panel.ready && renderer.panelActive
+
+    /**
      * 手柄/按键输入 → UI 动作。
      *
      * ## 与 TV 版 B0BEmby 的交互模型对齐 + VR 手柄适配
@@ -599,6 +638,8 @@ class MainActivity : ComponentActivity() {
          */
         val vrOk = com.xxxx.emby_vr.vr.VrNative.startVr(this)
         Log.i(TAG, "OpenXR 会话启动: $vrOk")
+        // 光柱输入回推（VR 模式下唯一的输入源：指向 / 扳机 / 摇杆 / B 键）
+        com.xxxx.emby_vr.vr.VrNative.attachInputSink(vrInput)
 
         // P2 海报墙已取消（父亲 2026-10-04：选片走电视版界面，不再需要 VR 原生海报墙）
         // loadLibrary()
@@ -750,7 +791,8 @@ class MainActivity : ComponentActivity() {
          * 播放时画面是视频，摇杆要用来快进快退（走摇杆通道 / InputRouter 的方向动作），
          * 若仍把事件派进面板，播放中摇杆就失效、还会在隐藏的界面上乱移焦点。
          */
-        if (!renderer.videoActive &&
+        if (!vrInputLive &&
+            !renderer.videoActive &&
             ::panel.isInitialized && panel.ready && renderer.panelActive &&
             ::glView.isInitialized && glView.width > 0 && glView.height > 0
         ) {

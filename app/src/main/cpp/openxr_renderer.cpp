@@ -384,6 +384,19 @@ struct VrContext {
     GLuint rayVbo = 0;             // 手柄射线网格（圆锥）
     int rayVertexCount = 0;
 
+    // ---- VR 输入回推给 Java（光柱 → 面板点击/滚动，2026-10-05）----
+    jobject inputSink = nullptr;        // VrNative.InputSink 的全局引用
+    jmethodID sinkPointer = nullptr;
+    jmethodID sinkClick = nullptr;
+    jmethodID sinkScroll = nullptr;
+    jmethodID sinkBack = nullptr;
+    bool sinkPointerValid = false;      // 上一次回推的指针位置（只在明显移动时回推）
+    float sinkPointerX = 0.f;
+    float sinkPointerY = 0.f;
+    bool sinkLastTrigger[2] = {false, false};
+    bool sinkLastBack[2] = {false, false};
+    double sinkStickAt[2] = {0.0, 0.0}; // 摇杆滚动节拍（毫秒）
+
     /*
      * 面板（现有 Compose 界面）纹理：由 Java 侧的 SurfaceTexture 提供。
      * 画面来源链路与 2D 模式下完全一样，只是"贴到哪"变了：
@@ -1030,6 +1043,91 @@ bool rayHitsPanel(const VrContext &c, const XrPosef &aim, float *outPlaneT, floa
     return true;
 }
 
+/** 面板像素尺寸：与 PanelLayer 的常量（1920×1080）保持一致 */
+constexpr float kPanelPxW = 1920.f;
+constexpr float kPanelPxH = 1080.f;
+
+/** 摇杆滚动节拍：拨住不放就按这个节奏连续滚（与 2D 面板模式的 60ms 档接近） */
+constexpr double kStickStepMs = 70.0;
+constexpr float kStickStepPx = 54.f;
+constexpr float kStickDeadzone = 0.55f;
+
+double nowMs() {
+    using namespace std::chrono;
+    return (double) duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
+/**
+ * 把本帧的手柄状态回推给 Java —— VR 模式的唯一输入通道（2026-10-05）。
+ *
+ * VR 里没有系统合成的触摸流，所以光柱指向 / 扳机 / 摇杆 / B 键全从这里下发。
+ * 坐标换算：光柱命中点（米，落在面板平面上）→ 面板像素（0..1920 / 0..1080），
+ * 与 2D 面板模式共用同一套坐标，界面代码一行都不用改。
+ * 语义（父亲定）：指哪儿扣扳机就点哪儿；摇杆滚光柱底下那一排；B 键返回；
+ * 指到面板外只留光柱，不点不滚。
+ */
+void pushInput(VrContext &c) {
+    if (c.inputSink == nullptr || c.jvm == nullptr) return;
+    JNIEnv *env = nullptr;
+    if (c.jvm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6) != JNI_OK ||
+        env == nullptr) {
+        return;
+    }
+
+    const double t = nowMs();
+    const char *handName[2] = {"左手", "右手"};
+
+    for (int h = 0; h < 2; h++) {
+        // B 键 → 返回
+        if (c.bDown[h] && !c.sinkLastBack[h] && c.sinkBack != nullptr) {
+            LOGI("VR 输入：%s B 键 → 返回", handName[h]);
+            env->CallVoidMethod(c.inputSink, c.sinkBack);
+        }
+        c.sinkLastBack[h] = c.bDown[h];
+
+        if (!c.aimValid[h]) continue;
+
+        float planeT = 0.f, hx = 0.f, hy = 0.f;
+        const bool hit = rayHitsPanel(c, c.aimPose[h], &planeT, &hx, &hy);
+        if (!hit) continue;   // 指到面板外：不点也不滚
+
+        const float px = (hx / c.panelWidth + 0.5f) * kPanelPxW;
+        const float py = (0.5f - hy / (c.panelWidth * 9.f / 16.f)) * kPanelPxH;
+
+        // 指针移动：超过 2px 才回推，避免每帧刷屏
+        if (!c.sinkPointerValid || fabsf(px - c.sinkPointerX) > 2.f ||
+            fabsf(py - c.sinkPointerY) > 2.f) {
+            if (c.sinkPointer != nullptr) env->CallVoidMethod(c.inputSink, c.sinkPointer, px, py);
+            c.sinkPointerX = px;
+            c.sinkPointerY = py;
+            c.sinkPointerValid = true;
+        }
+
+        // 扳机（按下那一刻）→ 在光柱位置点一下
+        if (c.triggerDown[h] && !c.sinkLastTrigger[h] && c.sinkClick != nullptr) {
+            LOGI("VR 输入：%s 扳机 → 面板点击 (%d, %d)", handName[h], (int) px, (int) py);
+            env->CallVoidMethod(c.inputSink, c.sinkClick, px, py);
+        }
+        c.sinkLastTrigger[h] = c.triggerDown[h];
+
+        // 摇杆 → 滚光柱所在的那一排（拨住不放按节拍续滚，松手即停）
+        const float sx = c.thumbstick[h].x;
+        const float sy = c.thumbstick[h].y;
+        if (fabsf(sx) > kStickDeadzone || fabsf(sy) > kStickDeadzone) {
+            if (t - c.sinkStickAt[h] >= kStickStepMs) {
+                c.sinkStickAt[h] = t;
+                if (c.sinkScroll != nullptr) {
+                    // 面板像素位移：向右为正、向下为正（与 2D 面板模式同一套方向约定）
+                    env->CallVoidMethod(c.inputSink, c.sinkScroll, px, py,
+                                        sx * kStickStepPx, -sy * kStickStepPx);
+                }
+            }
+        } else {
+            c.sinkStickAt[h] = 0.0;   // 回中：下次拨动立即出第一步
+        }
+    }
+}
+
 /** 处理会话事件：READY→Begin，STOPPING→End，EXITING/LOSS_PENDING→退出 */
 void pumpEvents(VrContext &c) {
     XrEventDataBuffer ev{XR_TYPE_EVENT_DATA_BUFFER};
@@ -1246,6 +1344,7 @@ void frameLoop(VrContext &c) {
         // 手柄状态（诊断阶段：变化即打日志，先看清 PICO 到底发哪些事件）
         c.frameDisplayTime = fs.predictedDisplayTime;
         syncInput(c);
+        pushInput(c);   // 光柱指向 / 扳机 / 摇杆 / B 键 → Java（VR 模式的输入通道）
         if (c.aimValid[0] || c.aimValid[1]) {
             static int aimLog = 0;
             if (aimLog < 6) {
@@ -1475,6 +1574,36 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetPanelActive(JNIEnv *env, jobject /* 
                                                        jboolean active) {
     g.panelActive = (active == JNI_TRUE);
     LOGI("面板激活状态 → %s", g.panelActive.load() ? "true" : "false");
+}
+
+/**
+ * 注册 VR 输入回调（Java 侧实现 VrNative.InputSink）。
+ *
+ * 渲染线程每帧把光柱指向 / 扳机 / 摇杆 / B 键回推过去。持有全局引用，
+ * 传 null 表示注销；重复注册会替换旧的。
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachInputSink(JNIEnv *env, jobject /* this */,
+                                                        jobject sink) {
+    if (g.inputSink != nullptr) {
+        env->DeleteGlobalRef(g.inputSink);
+        g.inputSink = nullptr;
+    }
+    g.sinkPointer = g.sinkClick = g.sinkScroll = g.sinkBack = nullptr;
+    if (sink == nullptr) {
+        LOGI("VR 输入回调已注销");
+        return;
+    }
+    g.inputSink = env->NewGlobalRef(sink);
+    jclass cls = env->GetObjectClass(sink);
+    g.sinkPointer = env->GetMethodID(cls, "onPointer", "(FF)V");
+    g.sinkClick = env->GetMethodID(cls, "onClick", "(FF)V");
+    g.sinkScroll = env->GetMethodID(cls, "onScroll", "(FFFF)V");
+    g.sinkBack = env->GetMethodID(cls, "onBack", "()V");
+    env->DeleteLocalRef(cls);
+    LOGI("VR 输入回调已注册（指针=%d 点击=%d 滚动=%d 返回=%d）",
+         g.sinkPointer != nullptr ? 1 : 0, g.sinkClick != nullptr ? 1 : 0,
+         g.sinkScroll != nullptr ? 1 : 0, g.sinkBack != nullptr ? 1 : 0);
 }
 
 extern "C" JNIEXPORT void JNICALL
