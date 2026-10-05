@@ -1701,6 +1701,13 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
     glBindFramebuffer(GL_FRAMEBUFFER, eye.fbos[imageIndex]);
     glViewport(0, 0, eye.width, eye.height);
     glClearColor(0.f, 0.f, 0.f, 1.f);
+    /*
+     * 控制条要圆角（父亲 2026-10-06：「叠了两层，下层没有倒圆角」）：
+     * Java 侧把控制条窗口背景清成透明，这里按 alpha 混合画 —— 圆角外的像素 alpha=0，
+     * 直接透出后面的影院背景，不再是一块黑方块。视频/海报层是不透明的，混合对它们无影响。
+     */
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glClear(GL_COLOR_BUFFER_BIT);
 
     const Mat4 proj = perspectiveFromFov(view.fov, 0.05f, 100.f);

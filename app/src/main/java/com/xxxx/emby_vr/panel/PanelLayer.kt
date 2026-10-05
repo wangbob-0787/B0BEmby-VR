@@ -2,7 +2,9 @@ package com.xxxx.emby_vr.panel
 
 import android.app.Presentation
 import android.content.Context
+import android.graphics.Color
 import android.graphics.SurfaceTexture
+import android.graphics.drawable.ColorDrawable
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.os.Bundle
@@ -10,6 +12,7 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.Display
 import android.view.Choreographer
+import android.view.WindowManager
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -20,6 +23,9 @@ import androidx.activity.OnBackPressedDispatcher
 import androidx.activity.OnBackPressedDispatcherOwner
 import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.activity.setViewTreeOnBackPressedDispatcherOwner
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.gestures.BringIntoViewSpec
+import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.platform.ComposeView
@@ -569,7 +575,10 @@ class PanelLayer(
             virtualDisplay = vd
 
             val owner = backOwner ?: PanelBackOwner(activity).also { backOwner = it }
-            val p = PanelPresentation(activity, vd.display, activity, content, owner) { view ->
+            val p = PanelPresentation(
+                activity, vd.display, activity, content, owner,
+                transparentWindow = !activatesVrPanel,
+            ) { view ->
                 decor = view
                 ready = true
                 /*
@@ -1119,10 +1128,23 @@ private class PanelPresentation(
     private val content: @Composable () -> Unit,
     private val backOwner: PanelBackOwner,
     private val onReady: (View) -> Unit,
+    /**
+     * 控制条专用：窗口自己不能有黑底。
+     *
+     * 父亲 2026-10-06 报「控制条叠了两层，下层没有倒圆角」—— 圆角只画在内容那一层，
+     * 底下是 Presentation 窗口自己的黑底，圆角外面就露出一块黑方块。
+     * 这里把窗口背景清成透明，配合 GL 侧的 alpha 混合，圆角外才真的透出去。
+     */
+    private val transparentWindow: Boolean = false,
 ) : Presentation(outer, display, android.R.style.Theme_Material_NoActionBar_Fullscreen) {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (transparentWindow) {
+            window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            window?.setDimAmount(0f)
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+        }
         /*
          * 面板不是「弹窗」，绝不能按返回就被关掉（2026-10-04 父亲实测「按 B 黑屏」）：
          * Presentation 继承 Dialog，Dialog 对没人消费的返回键默认行为是关闭自己
@@ -1166,7 +1188,23 @@ private class PanelPresentation(
          */
         cv.setViewTreeOnBackPressedDispatcherOwner(backOwner)
         cv.setContent {
-            CompositionLocalProvider(LocalOnBackPressedDispatcherOwner provides backOwner) {
+            @OptIn(ExperimentalFoundationApi::class)
+            CompositionLocalProvider(
+                LocalOnBackPressedDispatcherOwner provides backOwner,
+                /*
+                 * 父亲 2026-10-06：「扣扳机点继续播放列时，列会左右滚」。
+                 * 那是 Compose 的焦点自动滚动 —— 控件一拿到焦点就被滚进视野中央。
+                 * 面板模式没有方向键，滚动全靠摇杆派发滚轮事件（scrollAt），
+                 * 不依赖这套自动滚动，所以把滚动距离固定为 0：点谁就是点谁，列表不动。
+                 */
+                LocalBringIntoViewSpec provides object : BringIntoViewSpec {
+                    override fun calculateScrollDistance(
+                        offset: Float,
+                        size: Float,
+                        containerSize: Float,
+                    ) = 0f
+                },
+            ) {
                 content()
             }
         }
