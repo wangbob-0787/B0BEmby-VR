@@ -61,7 +61,6 @@ import androidx.savedstate.setViewTreeSavedStateRegistryOwner
  */
 class PanelLayer(
     private val activity: ComponentActivity,
-    private val content: @Composable () -> Unit,
     /** 面板像素尺寸：默认 1920x1080（电视版布局）；控制条面板走 1920x270 这种矮条 */
     private val panelW: Int = W,
     private val panelH: Int = H,
@@ -69,6 +68,11 @@ class PanelLayer(
     private val name: String = "b0bemby-panel",
     /** 是否把"面板已就绪"告诉 VR 侧：主面板 true，控制条 false（各管各的） */
     private val activatesVrPanel: Boolean = true,
+    /*
+     * 内容必须放在**最后一个参数**：Kotlin 的尾随 lambda 只绑最后一个参数，
+     * 放到中间会让 `PanelLayer(this) { … }` 这种写法去匹配别的参数（run 112 编译失败）。
+     */
+    private val content: @Composable () -> Unit,
 ) {
 
     companion object {

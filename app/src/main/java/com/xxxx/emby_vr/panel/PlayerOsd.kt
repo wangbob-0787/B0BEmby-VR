@@ -20,8 +20,8 @@ import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.automirrored.filled.FastForward
-import androidx.compose.material.icons.automirrored.filled.FastRewind
+import androidx.compose.material.icons.filled.FastForward
+import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -49,8 +49,8 @@ import androidx.compose.ui.unit.sp
  */
 enum class OsdButton(val label: String, val icon: ImageVector) {
     PLAY_PAUSE("播放/暂停", Icons.Filled.PlayArrow),
-    SEEK_BACK("快退10秒", Icons.AutoMirrored.Filled.FastRewind),
-    SEEK_FWD("快进10秒", Icons.AutoMirrored.Filled.FastForward),
+    SEEK_BACK("快退10秒", Icons.Filled.FastRewind),
+    SEEK_FWD("快进10秒", Icons.Filled.FastForward),
     SPEED("倍速", Icons.Filled.Speed),
     PICK("选片", Icons.Filled.GridView),
     EXIT("退出", Icons.Filled.Close),
