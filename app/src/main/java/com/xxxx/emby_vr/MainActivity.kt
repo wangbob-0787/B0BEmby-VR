@@ -76,23 +76,41 @@ class MainActivity : ComponentActivity() {
 
         override fun onClick(px: Float, py: Float) {
             vrInputLive = true
-            runOnUiThread { if (panelInputReady()) panel.vrClick(px, py) }
+            runOnUiThread {
+                if (panelInputReady()) {
+                    Log.i(TAG, "光柱点击 (${px.toInt()}, ${py.toInt()}) → 交给面板")
+                    panel.vrClick(px, py)
+                } else if (!renderer.videoActive) {
+                    Log.w(TAG, "光柱点击被丢弃：面板未就绪（已激活=${com.xxxx.emby_vr.vr.VrNative.panelActive}）")
+                }
+            }
         }
 
         override fun onScroll(px: Float, py: Float, dx: Float, dy: Float) {
             vrInputLive = true
-            runOnUiThread { if (panelInputReady()) panel.vrScroll(px, py, dx, dy) }
+            runOnUiThread {
+                if (panelInputReady()) {
+                    Log.i(TAG, "光柱滚轮 (${px.toInt()}, ${py.toInt()}) 位移=(${dx.toInt()}, ${dy.toInt()}) → 交给面板")
+                    panel.vrScroll(px, py, dx, dy)
+                }
+            }
         }
 
         override fun onBack() {
             vrInputLive = true
-            runOnUiThread { if (panelInputReady()) panel.back() }
+            runOnUiThread {
+                if (panelInputReady()) {
+                    Log.i(TAG, "光柱 B 键 → 返回")
+                    panel.back()
+                }
+            }
         }
     }
 
     /** 面板此刻能不能接输入：界面就绪、没在播放 */
     private fun panelInputReady(): Boolean =
-        !renderer.videoActive && ::panel.isInitialized && panel.ready && renderer.panelActive
+        !renderer.videoActive && ::panel.isInitialized && panel.ready &&
+            com.xxxx.emby_vr.vr.VrNative.panelActive
 
     /**
      * 手柄/按键输入 → UI 动作。

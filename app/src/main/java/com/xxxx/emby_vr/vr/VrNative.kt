@@ -50,12 +50,24 @@ object VrNative {
 
     /** 界面开始往面板 Surface 上画了 → 允许贴纹理 */
     fun setPanelActive(active: Boolean) {
+        panelActive = active
         try {
             if (loaded) nativeSetPanelActive(active)
         } catch (t: Throwable) {
             Log.e(TAG, "设置面板激活状态失败：${t.message}")
         }
     }
+
+    /**
+     * 界面是否已经在往面板上画（面板就绪）。
+     *
+     * 与 VrRenderer.panelActive 不是一回事：那个只在老的 2D 管线里被置位，
+     * VR 模式下永远是 false —— 拿它当输入前置条件会把光柱输入全部丢掉
+     * （run 109 实机现象：原生日志里点击一条条都在，界面却完全没反应）。
+     */
+    @Volatile
+    var panelActive = false
+        private set
 
     /** 起 VR 会话（原生渲染线程）；失败返回 false，应用继续按 2D 面板模式跑 */
     fun startVr(activity: android.app.Activity): Boolean = try {
