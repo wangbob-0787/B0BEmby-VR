@@ -245,6 +245,37 @@ Mat4 translateScale(float tx, float ty, float tz, float sx, float sy) {
     return r;
 }
 
+/**
+ * 四元数 → 旋转矩阵（列主序）。
+ * 与官方 XrQuaternionf_RotateVector3f（xr_linear.h，PICO Native OpenXR SDK 自带）同一套公式。
+ */
+Mat4 rotationFromQuat(const XrQuaternionf &q) {
+    const float x = q.x, y = q.y, z = q.z, w = q.w;
+    // 行主序的 3x3
+    const float r[9] = {
+            1 - 2 * (y * y + z * z), 2 * (x * y - z * w),       2 * (x * z + y * w),
+            2 * (x * y + z * w),     1 - 2 * (x * x + z * z),   2 * (y * z - x * w),
+            2 * (x * z - y * w),     2 * (y * z + x * w),       1 - 2 * (x * x + y * y),
+    };
+    Mat4 m = identity();
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++) m.m[j * 4 + i] = r[i * 3 + j];
+    return m;
+}
+
+/** 位移 × 旋转 × 缩放（官方 UpdateRay 里的 handScale 就是这么用的） */
+Mat4 poseScaleModel(const XrPosef &pose, float sx, float sy, float sz) {
+    Mat4 s = identity();
+    s.m[0] = sx;
+    s.m[5] = sy;
+    s.m[10] = sz;
+    Mat4 m = multiply(rotationFromQuat(pose.orientation), s);
+    m.m[12] = pose.position.x;
+    m.m[13] = pose.position.y;
+    m.m[14] = pose.position.z;
+    return m;
+}
+
 // ---------------------------------------------------------------- 着色器
 const char *kQuadVs = R"(
 #version 300 es
@@ -265,11 +296,17 @@ precision mediump float;
 in vec2 vUv;
 uniform vec4 uColor;
 uniform int uUseTexture;
+uniform int uCircle;          // 1 = 只保留方形里的内切圆（光点用）
 uniform samplerExternalOES uTexture;
 out vec4 fragColor;
 void main() {
     if (uUseTexture == 1) {
         fragColor = texture(uTexture, vUv);
+    } else if (uCircle == 1) {
+        // 圆形光点：方形面片上按 UV 半径裁掉四角，边缘做 1 像素软化
+        float d = length(vUv - vec2(0.5));
+        if (d > 0.5) discard;
+        fragColor = vec4(uColor.rgb, uColor.a * smoothstep(0.5, 0.44, d));
     } else {
         fragColor = uColor;
     }
@@ -342,7 +379,10 @@ struct VrContext {
     GLint colorLoc = -1;
     GLint useTexLoc = -1;
     GLint texLoc = -1;
-    GLuint vbo = 0;
+    GLint circleLoc = -1;          // uCircle：纯色画成圆点还是方块
+    GLuint vbo = 0;                // 单位方块（面板 / 光点）
+    GLuint rayVbo = 0;             // 手柄射线网格（圆锥）
+    int rayVertexCount = 0;
 
     /*
      * 面板（现有 Compose 界面）纹理：由 Java 侧的 SurfaceTexture 提供。
@@ -411,6 +451,68 @@ void makeQuadBuffers(VrContext &c) {
     glGenBuffers(1, &c.vbo);
     glBindBuffer(GL_ARRAY_BUFFER, c.vbo);
     glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
+}
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+/**
+ * 手柄射线网格 —— 形状**照抄官方** PICO Native OpenXR SDK：
+ *   framework/src/model/objects/TruncatedCone.cpp  GenerateRayMeshAtDefaultRadius(1.0, 32, 85°)
+ *   → 近端半径 1、远端半径 1 - 1/tan(85°) ≈ 0.9125、长度 1、沿局部 -Z、32 段。
+ * 绘制时按官方 AndroidOpenXrProgram::UpdateRay 只给缩放 (0.001, 0.001, 命中距离)，
+ * 所以到眼睛前就是一根 1mm 粗的细光柱。
+ */
+void makeRayBuffer(VrContext &c) {
+    const int segments = 32;
+    const float r1 = 1.0f;
+    const float r2 = 1.0f - 1.0f / tanf(85.0f * (float) M_PI / 180.0f);
+
+    std::vector<float> verts;
+    verts.reserve(segments * 6 * 5);
+    for (int i = 0; i < segments; i++) {
+        const float a0 = 2.0f * (float) M_PI * (float) i / (float) segments;
+        const float a1 = 2.0f * (float) M_PI * (float) (i + 1) / (float) segments;
+        const float b0x = r1 * cosf(a0), b0y = r1 * sinf(a0);   // 近端（贴手柄）
+        const float b1x = r1 * cosf(a1), b1y = r1 * sinf(a1);
+        const float t0x = r2 * cosf(a0), t0y = r2 * sinf(a0);   // 远端
+        const float t1x = r2 * cosf(a1), t1y = r2 * sinf(a1);
+        const float quad[] = {
+                b0x, b0y, 0.f, 0.f, 1.f,
+                b1x, b1y, 0.f, 1.f, 1.f,
+                t1x, t1y, -1.f, 1.f, 0.f,
+                b0x, b0y, 0.f, 0.f, 1.f,
+                t1x, t1y, -1.f, 1.f, 0.f,
+                t0x, t0y, -1.f, 0.f, 0.f,
+        };
+        verts.insert(verts.end(), quad, quad + 30);
+    }
+
+    glGenBuffers(1, &c.rayVbo);
+    glBindBuffer(GL_ARRAY_BUFFER, c.rayVbo);
+    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr) (verts.size() * sizeof(float)), verts.data(),
+                 GL_STATIC_DRAW);
+    c.rayVertexCount = (int) (verts.size() / 5);
+}
+
+/** 用当前 program 画一个网格：纯色 / 圆点两种（都走同一个 VBO 布局：pos(3) + uv(2)） */
+void drawMesh(VrContext &c, GLuint vbo, int vertexCount, const Mat4 &mvp, float r, float g, float b,
+              bool circle) {
+    glUseProgram(c.program);
+    glUniformMatrix4fv(c.mvpLoc, 1, GL_FALSE, mvp.m);
+    glUniform1i(c.useTexLoc, 0);
+    glUniform4f(c.colorLoc, r, g, b, 1.f);
+    if (c.circleLoc >= 0) glUniform1i(c.circleLoc, circle ? 1 : 0);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void *) 0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
+                          (void *) (3 * sizeof(float)));
+    glDrawArrays(GL_TRIANGLES, 0, vertexCount);
+    glDisableVertexAttribArray(0);
+    glDisableVertexAttribArray(1);
 }
 
 /**
@@ -882,60 +984,50 @@ void syncInput(VrContext &c) {
 }
 
 /**
- * 激光的模型矩阵（2026-10-05 run 104 重写：run 103 实机看不到激光）。
- *
- * run 103 的写法把四边形沿 -Z 缩放成"细长条"，再整体平移 -len/2。
- * 问题：先缩放后平移，且缩放矩阵的 z 分量带负号，等于把片子翻到身后，
- * 加上 vbo 顶点本来就是 ±0.5 的方形，最终几何落在手柄背后、朝向也反了，
- * 所以视野里什么都没有。
- *
- * 现在改成几何上无歧义的做法：
- *   - 顶点数据用 ±0.5 的方形（vbo 里本来就是）
- *   - 模型矩阵直接给"宽 half*2、高 half*2、长 len"的缩放（**不加负号**）
- *   - 平移把它推到手柄前方 len/2 处，让光束从手柄出发向前伸
- *   - 光线朝向由手柄姿态的旋转矩阵决定
- * 这样无论 vbo 里是朝 +Z 还是 -Z 的片子，光束都从手柄沿指向射出。
+ * 手柄指向 → 世界方向。**官方做法**（PICO Native OpenXR SDK v3.0.0，
+ * Samples/framework/src/model/collision/SampleCollisionDetector.cpp）：
+ *   XrVector3f rayDir = {0, 0, -1};
+ *   XrQuaternionf_RotateVector3f(&rayDir, &aimQuat, &rayDir);
+ * 也就是把本地 -Z（手柄指向）按姿态四元数旋转出来。
  */
-Mat4 laserModelFrom(const XrPosef &pose) {
-    const float len = 6.0f;      // 6 米，足够指到面前的银幕
-    const float half = 0.012f;   // 加粗一点，细线在 VR 里容易看不见
+void aimDirection(const XrPosef &aim, float *dx, float *dy, float *dz) {
+    const float vx = 0.f, vy = 0.f, vz = -1.f;
+    const float x = aim.orientation.x, y = aim.orientation.y;
+    const float z = aim.orientation.z, w = aim.orientation.w;
+    const float tx = 2.f * (y * vz - z * vy);   // t = 2 * (q × v)
+    const float ty = 2.f * (z * vx - x * vz);
+    const float tz = 2.f * (x * vy - y * vx);
+    *dx = vx + w * tx + (y * tz - z * ty);      // v' = v + w·t + q × t
+    *dy = vy + w * ty + (z * tx - x * tz);
+    *dz = vz + w * tz + (x * ty - y * tx);
+}
 
-    // 姿态四元数 → 旋转矩阵（列主序）
-    const float x = pose.orientation.x, y = pose.orientation.y;
-    const float z = pose.orientation.z, w = pose.orientation.w;
-    Mat4 rot = identity();
-    rot.m[0] = 1 - 2 * (y * y + z * z);
-    rot.m[1] = 2 * (x * y + z * w);
-    rot.m[2] = 2 * (x * z - y * w);
-    rot.m[4] = 2 * (x * y - z * w);
-    rot.m[5] = 1 - 2 * (x * x + z * z);
-    rot.m[6] = 2 * (y * z + x * w);
-    rot.m[8] = 2 * (x * z + y * w);
-    rot.m[9] = 2 * (y * z - x * w);
-    rot.m[10] = 1 - 2 * (x * x + y * y);
-
-    // 缩放：细长条（宽度 half*2，长度 len）
-    Mat4 scale = identity();
-    scale.m[0] = half * 2.f;
-    scale.m[5] = half * 2.f;
-    scale.m[10] = len;
-
-    /*
-     * 平移：先沿手柄本地 -Z 前进 len/2（光束中心在前方半个长度处），
-     * 再把手柄位置加上去。旋转体现在 rot 里，所以本地 -Z 就是"手柄指向"。
-     *
-     * OpenXR 的手柄姿态：-Z 是手柄指向（与 OpenGL 相机朝向一致）。
-     */
-    const float fwdX = -rot.m[8] * (len * 0.5f);
-    const float fwdY = -rot.m[9] * (len * 0.5f);
-    const float fwdZ = -rot.m[10] * (len * 0.5f);
-
-    Mat4 trans = identity();
-    trans.m[12] = pose.position.x + fwdX;
-    trans.m[13] = pose.position.y + fwdY;
-    trans.m[14] = pose.position.z + fwdZ;
-
-    return multiply(trans, multiply(rot, scale));
+/**
+ * 手柄射线 × 面板平面 —— 官方 DetectRayPlaneIntersection 的等价写法
+ * （SampleCollisionDetector.cpp：t > 0 且交点落在矩形内才算命中）。
+ *
+ * 比官方多输出一个量：只要**穿过**面板所在平面（t > 0）就把 t 交出去，
+ * 即使交点落在矩形外 —— 本地没有深度缓冲，光束不收住会画到面板背后。
+ * 返回值仍是"是否命中矩形"（决定要不要画圆点）。
+ * 面板：中心 (0, 0, -panelDistance)、法线 +Z、宽 panelWidth、高 panelWidth × 9/16。
+ */
+bool rayHitsPanel(const VrContext &c, const XrPosef &aim, float *outPlaneT, float *outX,
+                  float *outY) {
+    float dx = 0.f, dy = 0.f, dz = 0.f;
+    aimDirection(aim, &dx, &dy, &dz);
+    *outPlaneT = 0.f;
+    if (fabsf(dz) < 1e-6f) return false;                        // 与面板平行，永不相交
+    const float t = (-c.panelDistance - aim.position.z) / dz;   // 平面 z = -panelDistance
+    if (t <= 0.f) return false;                                 // 交点在身后
+    *outPlaneT = t;
+    const float hx = aim.position.x + dx * t;
+    const float hy = aim.position.y + dy * t;
+    const float halfW = c.panelWidth * 0.5f;
+    const float halfH = c.panelWidth * 9.f / 16.f * 0.5f;
+    if (fabsf(hx) > halfW || fabsf(hy) > halfH) return false;    // 交点出了面板范围
+    *outX = hx;
+    *outY = hy;
+    return true;
 }
 
 /** 处理会话事件：READY→Begin，STOPPING→End，EXITING/LOSS_PENDING→退出 */
@@ -1014,6 +1106,7 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
 
         glUseProgram(c.program);
         glUniformMatrix4fv(c.mvpLoc, 1, GL_FALSE, mvp.m);
+        if (c.circleLoc >= 0) glUniform1i(c.circleLoc, 0);   // 面板是方的，不做圆形裁剪
         /*
          * 有面板纹理就贴纹理（现有界面），没有就画纯色（证明能出画面）。
          * 用外部纹理（OES）：面板来自 SurfaceTexture，与 2D 模式同一套链路。
@@ -1041,27 +1134,44 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
     }
 
     /*
-     * 激光：从手柄 aim 出发点沿朝向画一条细线。
-     * 诊断阶段先"有激光可看"，交互逻辑（指到哪、扣扳机干什么）随后接。
+     * 手柄射线 + 光点 —— 按官方 PICO Native OpenXR SDK 的做法来（不再靠试）：
+     *
+     *   · 指向：aim 姿态把本地 -Z 旋转出来（SampleCollisionDetector.cpp）
+     *   · 长度：射线打到面板就用命中距离；没打到用官方默认的 100m
+     *     （AndroidOpenXrProgram::HandleCollisionDetection 里 distance = 100.0f）
+     *   · 形状：圆锥（TruncatedCone::GenerateRayMeshAtDefaultRadius）
+     *     缩放 (0.001, 0.001, 距离) —— AndroidOpenXrProgram::UpdateRay
+     *   · 光点：只在**射线打到面板**时出现，画成圆点（父亲 2026-10-05 定的规范：
+     *     指到空处只有光线、没有光点）
      */
-    if (c.program != 0 && c.mvpLoc >= 0) {
+    if (c.program != 0 && c.mvpLoc >= 0 && c.rayVbo != 0) {
+        const float kRayNear = 0.001f;    // 近端半径 1mm（官方 handScale 的 x/y 分量）
+        const float kNoHitDistance = 100.f;
+        const float kDotSize = 0.022f;    // 光点直径 2.2cm ≈ 面板上 12px
+
         for (int h = 0; h < 2; h++) {
             if (!c.aimValid[h]) continue;
-            const Mat4 laserModel = laserModelFrom(c.aimPose[h]);
-            const Mat4 laserMvp = multiply(multiply(proj, view4), laserModel);
-            glUseProgram(c.program);
-            glUniformMatrix4fv(c.mvpLoc, 1, GL_FALSE, laserMvp.m);
-            glUniform1i(c.useTexLoc, 0);
-            glUniform4f(c.colorLoc, 0.30f, 0.82f, 0.22f, 1.f);   // 与 TV 版强调色一致的绿
-            glBindBuffer(GL_ARRAY_BUFFER, c.vbo);
-            glEnableVertexAttribArray(0);
-            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void *) 0);
-            glEnableVertexAttribArray(1);
-            glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
-                                  (void *) (3 * sizeof(float)));
-            glDrawArrays(GL_TRIANGLES, 0, 6);
-            glDisableVertexAttribArray(0);
-            glDisableVertexAttribArray(1);
+
+            float planeT = 0.f;
+            float hitX = 0.f, hitY = 0.f;
+            const bool hit = rayHitsPanel(c, c.aimPose[h], &planeT, &hitX, &hitY);
+            // 打到面板就收在命中距离；穿过面板平面也收住（没有深度缓冲）；
+            // 其余情况用官方默认的 100m —— 看上去是一束射向远处的光。
+            const float rayLength = planeT > 0.f ? planeT : kNoHitDistance;
+
+            // 光线：从手柄沿指向射出
+            const Mat4 rayModel = poseScaleModel(c.aimPose[h], kRayNear, kRayNear, rayLength);
+            drawMesh(c, c.rayVbo, c.rayVertexCount,
+                     multiply(multiply(proj, view4), rayModel),
+                     0.30f, 0.82f, 0.22f, false);   // 与 TV 版强调色一致的绿
+
+            // 光点：贴在面板命中点上（稍微朝眼睛方向抬 5mm，避免和面板抢像素）
+            if (hit) {
+                const Mat4 dotModel = translateScale(
+                        hitX, hitY, -c.panelDistance + 0.005f, kDotSize, kDotSize);
+                drawMesh(c, c.vbo, 6, multiply(multiply(proj, view4), dotModel),
+                         0.55f, 0.98f, 0.45f, true);
+            }
         }
     }
 
@@ -1208,6 +1318,7 @@ void teardown(VrContext &c) {
     }
     c.eyes.clear();
     if (c.vbo) glDeleteBuffers(1, &c.vbo);
+    if (c.rayVbo) glDeleteBuffers(1, &c.rayVbo);
     if (c.program) glDeleteProgram(c.program);
     if (c.localSpace != XR_NULL_HANDLE) xrDestroySpace(c.localSpace);
     if (c.session != XR_NULL_HANDLE) api.DestroySession(c.session);
@@ -1264,7 +1375,9 @@ void renderThreadMain() {
         c.colorLoc = glGetUniformLocation(c.program, "uColor");
         c.useTexLoc = glGetUniformLocation(c.program, "uUseTexture");
         c.texLoc = glGetUniformLocation(c.program, "uTexture");
+        c.circleLoc = glGetUniformLocation(c.program, "uCircle");
         makeQuadBuffers(c);
+        makeRayBuffer(c);
         LOGI("GL 资源就绪（program=%u）", c.program);
 
         frameLoop(c);
