@@ -877,15 +877,15 @@ object EmbyApi {
 
             val videoCodecs = capabilities.videoCodecs.toMutableList()
             /*
-             * 2026-10-06（VR 版）改向：这一段原来会强制补上 hevc（那是给电视/投影写的，
-             * 它们能输出 HDR）。头显是 SDR 屏，服务端于是「只换封装」把 10bit HDR 的
-             * HEVC 原样送过来 —— 实测《兰香如故》4K HEVC Main10 直通，画面发灰。
-             * 所以反过来：不声明 hevc，让服务端把这类片转成 8bit H.264 SDR。
+             * 2026-10-06（VR 版）第二改：**恢复声明 HEVC**。
+             *
+             * 上一版为了治「发灰」把 hevc 拿掉、逼服务端转 H.264 —— 结果仍灰，
+             * 而父亲给了关键经验：投影上「Emby 转码就发灰、走 direct 客户端自己处理就正常」。
+             * 也就是灰出在服务端转码链路（QSV 的 vpp_qsv 色彩转换），不在解码。
+             * 所以改回让服务端**视频原样 copy**（DirectStream），画面交给头显自己解。
+             * 无声那条另修（转码输出只留 aac/mp3，服务端会把 EAC3 转成 AAC）。
              */
-            videoCodecs.removeAll {
-                it.equals("hevc", true) || it.equals("h265", true) || it.equals("hevc10", true)
-            }
-            Log.i("EmbyApi", "VR 版不声明 HEVC（头显是 SDR 屏，避免 10bit 直通发灰）")
+            Log.i("EmbyApi", "VR 版声明 HEVC 直通（避免服务端转码导致发灰）")
             val audioCodecs = capabilities.audioCodecs.toMutableList()
             val videoProfiles = capabilities.videoProfiles
             val hardwareSupportsHevc = videoCodecs.any { codec ->
@@ -954,7 +954,11 @@ object EmbyApi {
                     add(JsonObject().apply {
                         addProperty("Container", "ts")
                         addProperty("Type", "Video")
-                        addProperty("AudioCodec", "aac,ac3,eac3,mp3")
+                        // 转码输出能力（父亲 2026-10-06 报「无声」的根因就在这里）：
+                        // 原来写死 aac,ac3,eac3,mp3 —— 源片是 EAC3 时服务端认为「输出 eac3
+                        // 客户端也认」，于是音频原样 copy 过来，头显解不了就是静音。
+                        // 只留 AAC/MP3，服务端就会把 EAC3/DTS 转成 AAC。
+                        addProperty("AudioCodec", "aac,mp3")
                         addProperty("VideoCodec", if (actualDisableHevc) "h264" else supportedVideo)
                         addProperty("Context", "Streaming")
                         addProperty("Protocol", "hls")

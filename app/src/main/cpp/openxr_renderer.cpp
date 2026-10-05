@@ -1534,17 +1534,21 @@ void pushInput(VrContext &c) {
             const double dt = t - c.panelAdjustAt[h];
             const float step = (float) ((dt > 0.0 && dt < 0.2) ? dt : 0.016);
             if (fabsf(sy2) > kStickDeadzone) {
-                const float cx = c.panelPosX.load();
-                const float cy = c.panelPosY.load();
-                const float cz = c.panelPosZ.load();
-                const float d = sqrtf(cx * cx + cy * cy + cz * cz);
-                if (d > 0.3f) {
-                    const float k = (d + sy2 * kPanelDistSpeed * step) / d;
-                    c.panelPosX = cx * k;
-                    c.panelPosY = cy * k;
-                    c.panelPosZ = cz * k;
-                    LOGI("海报墙：摇杆远近 → 距离 %.2f 米", (double) (d + sy2 * kPanelDistSpeed * step));
-                }
+                /*
+                 * 远近调的是「球面半径」，不是坐标本身 —— 父亲 2026-10-06 实测：
+                 * 缩放好用、远近完全没用。原因是按住握把键期间，上面那段拖动
+                 * 每帧都按「半径 × 手柄指向」重算面板位置，直接改坐标会被下一帧覆盖，
+                 * 所以必须改半径。
+                 */
+                c.panelDragRadius[h] =
+                        fmaxf(0.8f, c.panelDragRadius[h] + sy2 * kPanelDistSpeed * step);
+                float ddx = 0.f, ddy = 0.f, ddz = 0.f;
+                aimDirection(c.aimPose[h], &ddx, &ddy, &ddz);
+                const float rr = c.panelDragRadius[h];
+                c.panelPosX = hand.x + ddx * rr;
+                c.panelPosY = hand.y + ddy * rr;
+                c.panelPosZ = hand.z + ddz * rr;
+                LOGI("海报墙：摇杆远近 → 半径 %.2f 米", (double) rr);
             }
             if (fabsf(sx2) > kStickDeadzone) {
                 const float w = c.panelWidth.load() + sx2 * kPanelSizeSpeed * step;
