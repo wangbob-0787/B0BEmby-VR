@@ -30,22 +30,36 @@ object VrNative {
 
     private external fun nativeStopVr()
 
-    private external fun nativeCreatePanelSurfaceTexture(): android.graphics.SurfaceTexture?
-
     private external fun nativeSetPanelActive(active: Boolean)
 
     /**
-     * 建面板纹理与 SurfaceTexture —— **在 VR 渲染线程的 GL 上下文里建**。
+     * 三张画面纹理的回调（2026-10-05 晚修）。
      *
-     * 踩坑（run 97）：由 2D 线程建纹理再传 id 过来，VR 里全黑，
-     * 因为 GL 纹理 id 只在创建它的上下文里有效。
-     * 这里的 native 调用内部会切到渲染线程执行，返回可直接建 Surface 的对象。
+     * 纹理由**原生渲染线程在自己的 GL 上下文里**建好 —— 这是关键：之前建在 2D
+     * 那条 GL 线程的上下文里，VR 侧按同一个编号取到的是另一张纹理，三块屏因此
+     * 互相串画面（控制条贴视频 / 播放屏贴控制条）。
+     * 建好后原生主动回调这里，界面层拿 SurfaceTexture 去建虚拟显示器或交给播放器。
      */
-    fun createPanelSurfaceTexture(): android.graphics.SurfaceTexture? = try {
-        if (loaded) nativeCreatePanelSurfaceTexture() else null
-    } catch (t: Throwable) {
-        Log.e(TAG, "创建面板纹理失败：${t.message}")
-        null
+    interface TextureSink {
+        /** 主面板（电视版界面）画面 */
+        fun onPanelTexture(st: android.graphics.SurfaceTexture)
+
+        /** 播放画面（交给 ExoPlayer 输出视频） */
+        fun onVideoTexture(st: android.graphics.SurfaceTexture)
+
+        /** 控制条画面 */
+        fun onOsdTexture(st: android.graphics.SurfaceTexture)
+    }
+
+    private external fun nativeAttachTextureSink(sink: TextureSink)
+
+    /** 注册纹理回调：原生那边建好会立刻回调；如果已经建好，注册时补推一次 */
+    fun attachTextureSink(sink: TextureSink) {
+        try {
+            if (loaded) nativeAttachTextureSink(sink)
+        } catch (t: Throwable) {
+            Log.e(TAG, "注册纹理回调失败：${t.message}")
+        }
     }
 
     /** 界面开始往面板 Surface 上画了 → 允许贴纹理 */
@@ -84,19 +98,6 @@ object VrNative {
     @Volatile
     var vrRunning = false
         private set
-
-    /**
-     * 建播放画面用的纹理与 SurfaceTexture（VR 原生播放屏，2026-10-05）。
-     *
-     * 与面板纹理同一个套路：VR 上下文里建 OES 外部纹理 → 包成 SurfaceTexture 交回，
-     * ExoPlayer 直接往这个 Surface 输出视频帧 → 贴到 VR 里那块平面上。
-     */
-    fun createVideoSurfaceTexture(): android.graphics.SurfaceTexture? = try {
-        if (loaded && vrRunning) nativeCreateVideoSurfaceTexture() else null
-    } catch (t: Throwable) {
-        Log.e(TAG, "创建播放画面纹理失败：${t.message}")
-        null
-    }
 
     /** 播放开始/结束：true 贴视频画面，false 回到面板 */
     fun setVideoActive(active: Boolean) {
@@ -140,26 +141,9 @@ object VrNative {
 
     private external fun nativeAttachInputSink(sink: InputSink)
 
-    private external fun nativeCreateVideoSurfaceTexture(): android.graphics.SurfaceTexture?
-
     private external fun nativeSetVideoActive(active: Boolean)
 
-    private external fun nativeCreateOsdSurfaceTexture(): android.graphics.SurfaceTexture?
-
     private external fun nativeSetOsdVisible(visible: Boolean)
-
-    /**
-     * 建控制条（OSD）用的纹理与 SurfaceTexture（2026-10-05）。
-     *
-     * 控制条是一块架在观影者身前近场的小面板（1920×270），与主面板/视频同一套
-     * VirtualDisplay + SurfaceTexture 机制，只是尺寸与位置不同。
-     */
-    fun createOsdSurfaceTexture(): android.graphics.SurfaceTexture? = try {
-        if (loaded && vrRunning) nativeCreateOsdSurfaceTexture() else null
-    } catch (t: Throwable) {
-        Log.e(TAG, "创建控制条纹理失败：${t.message}")
-        null
-    }
 
     /** 控制条显示/隐藏 */
     fun setOsdVisible(visible: Boolean) {

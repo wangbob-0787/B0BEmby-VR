@@ -65,31 +65,17 @@ class VrRenderer(
     var videoSurface: android.view.Surface? = null
         private set
 
-    // ---- 面板层（UI 复用验证，2026-10-04）：VirtualDisplay → SurfaceTexture(OES) → 贴到虚拟屏 ----
-    //
-    // 面板 = 电视版那套 Compose 界面。渲染路径与视频完全一样（都是 OES 外部纹理），
-    // 因此复用同一个着色器程序 videoProgram，只是换一个纹理与 SurfaceTexture。
-    private var panelTex = 0
-    private var panelSurfaceTexture: android.graphics.SurfaceTexture? = null
-
-    /** 面板输出 surface，交给 PanelLayer 建虚拟显示器 */
-    @Volatile
-    var panelSurface: android.view.Surface? = null
-        private set
-
-    /** 面板纹理是否可用（可用时虚拟屏显示复用的界面，而不是静态占位图） */
-    @Volatile
-    var panelActive = false
-        private set
-
-    /** 面板纹理就绪回调（在 GL 线程触发，Activity 侧负责切主线程） */
-    @Volatile
-    var onPanelSurfaceReady: ((android.graphics.SurfaceTexture) -> Unit)? = null
+    /*
+     * 面板 / 播放画面 / 控制条这三张纹理，2026-10-05 晚修后统一由**原生渲染线程**
+     * 在自己的 GL 上下文里创建（openxr_renderer.cpp 的 createOesSources），
+     * 再经 VrNative.TextureSink 推给界面层。本类不再创建面板/控制条纹理：
+     * 跨 GL 上下文用纹理会拿到同编号的另一张，三块屏互相串画面就是这么来的。
+     */
 
     /**
      * VR 原生播放画面（2026-10-05）：输出 surface 交给 ExoPlayer。
      *
-     * 与面板纹理一样在 VR 上下文里建（[VrNative.createVideoSurfaceTexture]），
+     * 与播放画面一样由渲染线程提供（见 [VrNative.TextureSink]），
      * 播放时原生渲染线程贴这张纹理、收起面板；非 VR 模式下为 null，
      * 播放继续走老的 2D 画面管线（videoSurface）。
      */
@@ -98,17 +84,7 @@ class VrRenderer(
         private set
     private var vrVideoSurfaceTexture: android.graphics.SurfaceTexture? = null
 
-    /** 控制条（OSD）输出 surface：交给控制条那台 1920×270 的虚拟显示器 */
-    @Volatile
-    var vrOsdSurface: android.view.Surface? = null
-        private set
-    private var vrOsdSurfaceTexture: android.graphics.SurfaceTexture? = null
-
-    /** 控制条 surface 就绪回调（在 GL 线程触发，Activity 侧切主线程） */
-    @Volatile
-    var onOsdSurfaceReady: ((android.graphics.SurfaceTexture) -> Unit)? = null
-
-    // 最近一帧的虚拟屏布局（面板像素换算用，见 panelPixelAt）
+    /** 最近一帧的虚拟屏布局（面板像素换算用，见 panelPixelAt） */
     private var lastScreenCenterY = 0f
     private var lastScreenHalfH = 0f
     private var lastScreenHalfW = 0f
@@ -119,8 +95,6 @@ class VrRenderer(
         videoSurface = null
         runCatching { vrVideoSurface?.release() }
         vrVideoSurface = null
-        runCatching { vrOsdSurface?.release() }
-        vrOsdSurface = null
         runCatching { surfaceTexture?.release() }
         surfaceTexture = null
         videoActive = false
@@ -180,7 +154,6 @@ class VrRenderer(
 
         createHudResources()
         createVideoPipeline()
-        createPanelPipeline()
 
         GLES30.glEnable(GLES30.GL_DEPTH_TEST)
         GLES30.glClearColor(0.03f, 0.03f, 0.04f, 1f)   // 近黑空间（与 TV 版底色一致）
@@ -354,70 +327,18 @@ class VrRenderer(
     }
 
     /**
-     * 面板渲染管线：OES 纹理 + SurfaceTexture + Surface。
+     * VR 播放画面（2026-10-05 晚修后改由原生推送）。
      *
-     * 与视频管线同构（见 createVideoPipeline），只是这条的输出 surface 交给
-     * PanelLayer 的虚拟显示器，由系统把 Compose 界面合成进来。
+     * 纹理不再在这里创建：原生渲染线程在自己的 GL 上下文里建好三张画面，
+     * 通过 VrNative.TextureSink.onVideoTexture 推过来。这里只把 SurfaceTexture
+     * 包成 Surface，交给 ExoPlayer 输出视频帧。
      */
-    private fun createPanelPipeline() {
-        /*
-         * 面板纹理改由 **VR 渲染线程**创建（2026-10-05 run 98 修正）。
-         *
-         * run 97 的写法在这里（GLSurfaceView 的 GL 线程）建纹理，再把 id 传给
-         * VR 线程使用 → VR 里全黑，日志刷
-         *   OpenGLRenderer: [SurfaceTexture-3-…] checkAndUpdateEglState:
-         *   invalid current EGLContext
-         * 根因：GL 纹理 id 只在创建它的 EGL 上下文里有效，而 VR 渲染是另一个上下文。
-         *
-         * 现在改为：向原生层要一个「在 VR 上下文里建好的」SurfaceTexture，
-         * 由它交给面板层去承载界面画面。本线程不再建面板纹理。
-         */
-        panelSurfaceTexture?.release()
-        panelSurfaceTexture = null
-        panelTex = 0
-        panelActive = false
-
-        val st = VrNative.createPanelSurfaceTexture()
-        if (st == null) {
-            Log.w(TAG, "VR 上下文未就绪，面板纹理暂不可用（2D 面板模式不受影响）")
-            return
-        }
-        panelSurfaceTexture = st
-        panelSurface?.release()
-        panelSurface = android.view.Surface(st)
-        Log.i(TAG, "面板管线就绪（纹理由 VR 上下文创建）")
-        onPanelSurfaceReady?.invoke(st)
-
-        /*
-         * VR 原生播放画面（2026-10-05）：再要一张 OES 纹理给 ExoPlayer 当视频输出。
-         * 只在 VR 会话在跑的时候建 —— 非 VR 模式（PICO 2D 面板模式）继续用老的
-         * videoSurface 管线，不受影响。
-         */
-        if (VrNative.vrRunning) {
-            // 控制条：与视频同一套路，VR 上下文里建纹理
-            val ost = VrNative.createOsdSurfaceTexture()
-            if (ost != null) {
-                vrOsdSurfaceTexture?.release()
-                vrOsdSurfaceTexture = ost
-                vrOsdSurface?.release()
-                vrOsdSurface = android.view.Surface(ost)
-                Log.i(TAG, "控制条画面就绪（纹理由 VR 上下文创建）")
-                onOsdSurfaceReady?.invoke(ost)
-            } else {
-                Log.w(TAG, "控制条画面不可用（播放时不会有控制条）")
-            }
-
-            val vst = VrNative.createVideoSurfaceTexture()
-            if (vst != null) {
-                vrVideoSurfaceTexture?.release()
-                vrVideoSurfaceTexture = vst
-                vrVideoSurface?.release()
-                vrVideoSurface = android.view.Surface(vst)
-                Log.i(TAG, "VR 播放画面就绪（纹理由 VR 上下文创建）")
-            } else {
-                Log.w(TAG, "VR 播放画面不可用，播放将走老的 2D 管线")
-            }
-        }
+    fun setVrVideoSurface(st: android.graphics.SurfaceTexture) {
+        vrVideoSurfaceTexture?.release()
+        vrVideoSurfaceTexture = st
+        vrVideoSurface?.release()
+        vrVideoSurface = android.view.Surface(st)
+        Log.i(TAG, "VR 播放画面就绪（纹理由渲染线程创建）")
     }
 
     /**

@@ -448,6 +448,27 @@ struct VrContext {
      */
     std::atomic<bool> osdHasFrame{false};
 
+    /*
+     * ---- 纹理的创建者：VR 渲染线程自己（2026-10-05 晚修）----
+     *
+     * 前面三块屏互相串画面的真正根因：纹理是在 Java 那条 GL 线程的上下文里
+     * （Java 调 nativeCreateXxxSurfaceTexture）建的，却拿到 VR 渲染线程的
+     * **另一个** EGL 上下文里采样。两个上下文不共享纹理对象，同编号在 VR 侧
+     * 指向的是别的纹理 —— 于是谁先出画面、画面就串到谁身上（控制条贴视频、
+     * 播放屏贴控制条，来回换）。加「有帧才贴」只换了串的方向，治不了根。
+     *
+     * 现在改成本线程（VR 上下文）里建纹理 + SurfaceTexture，建好再通过
+     * Java 侧注册进来的 textureSink 推过去，由界面层拿去建虚拟显示器 /
+     * 交给播放器。这些 SurfaceTexture 的全局引用留在下面这三个字段里。
+     */
+    jobject panelSt = nullptr;
+    jobject videoSt = nullptr;
+    jobject osdSt = nullptr;
+    jobject textureSink = nullptr;
+    jmethodID sinkPanelTex = nullptr;
+    jmethodID sinkVideoTex = nullptr;
+    jmethodID sinkOsdTex = nullptr;
+
     // ---- 手柄输入 ----
     XrActionSet actionSet = XR_NULL_HANDLE;
     XrAction aimPoseAction = XR_NULL_HANDLE;      // 手柄指向（激光方向）
@@ -1730,6 +1751,12 @@ void renderThreadMain() {
         if (!setupInput(c)) LOGW("手柄输入不可用，继续渲染（诊断阶段先保画面）");
         if (!createSwapchains(c)) break;
 
+        /*
+         * 三张画面纹理：**必须在 EGL 上下文就绪之后、本线程里建**（2026-10-05 晚修）。
+         * 建好立刻推给 Java 侧的界面层（面板 / 播放画面 / 控制条）。
+         */
+        if (!createOesSources(c)) LOGW("画面纹理没建起来，VR 里只会看到底色");
+
         c.program = buildProgram();
         c.mvpLoc = glGetUniformLocation(c.program, "uMvp");
         c.colorLoc = glGetUniformLocation(c.program, "uColor");
@@ -1744,7 +1771,134 @@ void renderThreadMain() {
     } while (false);
 
     teardown(c);
+    // 建纹理时把渲染线程附加到了 JVM（之后每帧都要回调 Java），退出前摘掉
+    if (c.jvm != nullptr) c.jvm->DetachCurrentThread();
     LOGI("VR 渲染线程结束");
+}
+
+/** 建一张 OES 外部纹理（用的是**当前** GL 上下文，所以必须在渲染线程调） */
+GLuint genOesTexture() {
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    if (tex == 0) return 0;
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, tex);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, 0);
+    return tex;
+}
+
+/**
+ * 把 SurfaceTexture 挂到这张纹理上，并装好「每帧取帧 + 首帧判定」。
+ * 返回全局引用（调用方保存/释放）；失败返回 nullptr。
+ */
+jobject makeOesSurface(JNIEnv *env, GLuint tex, std::function<void()> &out,
+                       std::atomic<bool> &hasFrame, const char *what) {
+    jclass stClass = env->FindClass("android/graphics/SurfaceTexture");
+    if (stClass == nullptr) {
+        LOGE("%s：找不到 SurfaceTexture 类", what);
+        return nullptr;
+    }
+    jmethodID ctor = env->GetMethodID(stClass, "<init>", "(I)V");
+    jmethodID updateTexImage = env->GetMethodID(stClass, "updateTexImage", "()V");
+    jmethodID getTimestamp = env->GetMethodID(stClass, "getTimestamp", "()J");
+    if (ctor == nullptr || updateTexImage == nullptr) {
+        LOGE("%s：SurfaceTexture 方法缺失", what);
+        return nullptr;
+    }
+    jobject local = env->NewObject(stClass, ctor, (jint) tex);
+    if (local == nullptr) {
+        LOGE("%s：SurfaceTexture 创建失败", what);
+        return nullptr;
+    }
+
+    hasFrame = false;
+    auto *globalRef = env->NewGlobalRef(local);
+    env->DeleteLocalRef(local);   // 原生线程的局部引用不会自动回收，自己删掉
+    out = [globalRef, updateTexImage, getTimestamp, &hasFrame, what]() {
+        JNIEnv *e = nullptr;
+        if (g.jvm == nullptr) return;
+        if (g.jvm->GetEnv(reinterpret_cast<void **>(&e), JNI_VERSION_1_6) != JNI_OK ||
+            e == nullptr) {
+            return;
+        }
+        e->CallVoidMethod(globalRef, updateTexImage);
+        clearJavaException(e, what);
+        if (!hasFrame.load() && getTimestamp != nullptr) {
+            const jlong ts = e->CallLongMethod(globalRef, getTimestamp);
+            clearJavaException(e, "getTimestamp");
+            if (ts > 0) {
+                hasFrame = true;
+                LOGI("%s首帧到位（timestamp=%lld）—— 可以画了", what, (long long) ts);
+            }
+        }
+    };
+    return globalRef;
+}
+
+/** 把已经建好的三张画面推给 Java 侧（注册回调时补推也走这里） */
+void pushTexturesToJava(VrContext &c, JNIEnv *env) {
+    if (env == nullptr || c.textureSink == nullptr || c.sinkPanelTex == nullptr) return;
+    if (c.panelSt != nullptr) {
+        env->CallVoidMethod(c.textureSink, c.sinkPanelTex, c.panelSt);
+        clearJavaException(env, "回调 onPanelTexture");
+    }
+    if (c.sinkVideoTex != nullptr && c.videoSt != nullptr) {
+        env->CallVoidMethod(c.textureSink, c.sinkVideoTex, c.videoSt);
+        clearJavaException(env, "回调 onVideoTexture");
+    }
+    if (c.sinkOsdTex != nullptr && c.osdSt != nullptr) {
+        env->CallVoidMethod(c.textureSink, c.sinkOsdTex, c.osdSt);
+        clearJavaException(env, "回调 onOsdTexture");
+    }
+    LOGI("三张画面已推给界面层（面板 / 播放画面 / 控制条）");
+}
+
+/**
+ * 在渲染线程（VR 自己的 EGL 上下文）里建三张画面纹理。
+ *
+ * 这是 2026-10-05 晚修的关键：纹理必须建在**用它的那个上下文**里。
+ * 之前建在 Java 那条 GL 线程的上下文，VR 侧按同一个编号取到的是另一张纹理，
+ * 三块屏因此互相串画面（控制条贴视频 / 播放屏贴控制条）。
+ */
+bool createOesSources(VrContext &c) {
+    JNIEnv *env = nullptr;
+    if (c.jvm == nullptr) return false;
+    if (c.jvm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6) != JNI_OK ||
+        env == nullptr) {
+        if (c.jvm->AttachCurrentThread(&env, nullptr) != JNI_OK || env == nullptr) {
+            LOGE("建画面纹理：渲染线程附加 JVM 失败");
+            return false;
+        }
+        LOGI("建画面纹理：渲染线程已附加到 JVM（不摘除，之后每帧要回调 Java）");
+    }
+
+    c.panelTex = genOesTexture();
+    c.videoTex = genOesTexture();
+    c.osdTex = genOesTexture();
+    if (c.panelTex == 0 || c.videoTex == 0 || c.osdTex == 0) {
+        LOGE("建画面纹理失败：panel=%u video=%u osd=%u", c.panelTex, c.videoTex, c.osdTex);
+        return false;
+    }
+
+    c.panelSt = makeOesSurface(env, c.panelTex, gPanelUpdate, c.panelHasFrame, "面板");
+    c.videoSt = makeOesSurface(env, c.videoTex, gVideoUpdate, c.videoHasFrame, "播放画面");
+    c.osdSt = makeOesSurface(env, c.osdTex, gOsdUpdate, c.osdHasFrame, "控制条");
+    if (c.panelSt == nullptr || c.videoSt == nullptr || c.osdSt == nullptr) {
+        LOGE("画面纹理不完整，VR 贴图不可用");
+        return false;
+    }
+
+    c.panelActive = false;
+    c.videoActive = false;
+    c.osdVisible = false;
+    LOGI("三张画面纹理已在本渲染线程的上下文里创建：panel=%u video=%u osd=%u",
+         c.panelTex, c.videoTex, c.osdTex);
+
+    pushTexturesToJava(c, env);
+    return true;
 }
 
 }  // namespace
@@ -1765,82 +1919,6 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeStartVr(JNIEnv *env, jobject /* this */
     return JNI_TRUE;
 }
 
-/**
- * 绑定面板纹理（现有 Compose 界面）。
- *
- * Java 侧建好 SurfaceTexture 后，在 GL 线程里把它的纹理 id 传进来；
- * 之后每帧 updateTexImage 取最新帧，贴到 VR 平面。
- * 传 0 表示解绑（回到纯色）。
- */
-/**
- * 创建面板纹理与 SurfaceTexture（**必须在 VR 渲染线程的 GL 上下文里做**）。
- *
- * run 97 实机踩坑：最初由 Java 侧的 GLSurfaceView 线程建纹理、把纹理 id 传进来，
- * 结果 VR 里全黑，日志刷 `checkAndUpdateEglState: invalid current EGLContext`。
- * 根因：GL 纹理 id 只在**创建它的 EGL 上下文**里有效，VR 渲染用的是另一个上下文。
- * 因此这里自己建纹理 + SurfaceTexture，再交回 Java 侧去建虚拟显示器和界面。
- */
-extern "C" JNIEXPORT jobject JNICALL
-Java_com_xxxx_emby_1vr_vr_VrNative_nativeCreatePanelSurfaceTexture(JNIEnv *env,
-                                                                  jobject /* this */) {
-    GLuint tex = 0;
-    glGenTextures(1, &tex);
-    if (tex == 0) {
-        LOGE("创建面板纹理失败");
-        return nullptr;
-    }
-    glBindTexture(GL_TEXTURE_EXTERNAL_OES, tex);
-    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glBindTexture(GL_TEXTURE_EXTERNAL_OES, 0);
-
-    jclass stClass = env->FindClass("android/graphics/SurfaceTexture");
-    if (stClass == nullptr) {
-        LOGE("找不到 SurfaceTexture 类");
-        return nullptr;
-    }
-    jmethodID ctor = env->GetMethodID(stClass, "<init>", "(I)V");
-    if (ctor == nullptr) {
-        LOGE("找不到 SurfaceTexture 构造方法");
-        return nullptr;
-    }
-    jobject st = env->NewObject(stClass, ctor, (jint) tex);
-    if (st == nullptr) {
-        LOGE("创建 SurfaceTexture 失败");
-        return nullptr;
-    }
-
-    g.panelTex = tex;
-    g.panelActive = false;   // 等界面真的画上来了再置 true
-
-    g.panelHasFrame = false;
-
-    auto *globalRef = env->NewGlobalRef(st);
-    jmethodID updateTexImage = env->GetMethodID(stClass, "updateTexImage", "()V");
-    jmethodID getTimestamp = env->GetMethodID(stClass, "getTimestamp", "()J");
-    if (updateTexImage != nullptr) {
-        gPanelUpdate = [globalRef, updateTexImage, getTimestamp]() {
-            JNIEnv *e = nullptr;
-            if (g.jvm == nullptr) return;
-            if (g.jvm->GetEnv(reinterpret_cast<void **>(&e), JNI_VERSION_1_6) != JNI_OK) return;
-            e->CallVoidMethod(globalRef, updateTexImage);
-            clearJavaException(e, "面板 updateTexImage");
-            if (!g.panelHasFrame.load() && getTimestamp != nullptr) {
-                const jlong ts = e->CallLongMethod(globalRef, getTimestamp);
-                clearJavaException(e, "面板 getTimestamp");
-                if (ts > 0) {
-                    g.panelHasFrame = true;
-                    LOGI("面板首帧到位（timestamp=%lld）—— 可以画了", (long long) ts);
-                }
-            }
-        };
-    }
-    LOGI("面板纹理与 SurfaceTexture 已创建（在 VR 上下文里）：tex=%u", tex);
-    return st;
-}
-
 /** 界面开始往面板 Surface 上画了，可以贴纹理了 */
 extern "C" JNIEXPORT void JNICALL
 Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetPanelActive(JNIEnv *env, jobject /* this */,
@@ -1849,73 +1927,6 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetPanelActive(JNIEnv *env, jobject /* 
     LOGI("面板激活状态 → %s", g.panelActive.load() ? "true" : "false");
 }
 
-/**
- * 建播放画面用的纹理与 SurfaceTexture（2026-10-05）。
- *
- * 与面板纹理同一个套路：在 VR 上下文里建 OES 外部纹理，包成 SurfaceTexture
- * 交回 Java 侧，由 ExoPlayer 直接往这个 Surface 输出视频帧。播放时它就取代面板
- * 贴到同一块平面上（原生播放屏），这也是方案里「播放屏 VR 原生」的第一步。
- */
-extern "C" JNIEXPORT jobject JNICALL
-Java_com_xxxx_emby_1vr_vr_VrNative_nativeCreateVideoSurfaceTexture(JNIEnv *env,
-                                                                  jobject /* this */) {
-    GLuint tex = 0;
-    glGenTextures(1, &tex);
-    if (tex == 0) {
-        LOGE("创建视频纹理失败");
-        return nullptr;
-    }
-    glBindTexture(GL_TEXTURE_EXTERNAL_OES, tex);
-    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glBindTexture(GL_TEXTURE_EXTERNAL_OES, 0);
-
-    jclass stClass = env->FindClass("android/graphics/SurfaceTexture");
-    if (stClass == nullptr) {
-        LOGE("找不到 SurfaceTexture 类");
-        return nullptr;
-    }
-    jmethodID ctor = env->GetMethodID(stClass, "<init>", "(I)V");
-    if (ctor == nullptr) {
-        LOGE("找不到 SurfaceTexture 构造方法");
-        return nullptr;
-    }
-    jobject st = env->NewObject(stClass, ctor, (jint) tex);
-    if (st == nullptr) {
-        LOGE("创建视频 SurfaceTexture 失败");
-        return nullptr;
-    }
-
-    g.videoTex = tex;
-    g.videoActive = false;
-
-    g.videoHasFrame = false;
-
-    auto *globalRef = env->NewGlobalRef(st);
-    jmethodID updateTexImage = env->GetMethodID(stClass, "updateTexImage", "()V");
-    jmethodID getTimestamp = env->GetMethodID(stClass, "getTimestamp", "()J");
-    if (updateTexImage != nullptr) {
-        gVideoUpdate = [globalRef, updateTexImage, getTimestamp]() {
-            JNIEnv *e = nullptr;
-            if (g.jvm == nullptr) return;
-            if (g.jvm->GetEnv(reinterpret_cast<void **>(&e), JNI_VERSION_1_6) != JNI_OK) return;
-            e->CallVoidMethod(globalRef, updateTexImage);
-            clearJavaException(e, "播放画面 updateTexImage");
-            if (!g.videoHasFrame.load() && getTimestamp != nullptr) {
-                const jlong ts = e->CallLongMethod(globalRef, getTimestamp);
-                clearJavaException(e, "播放画面 getTimestamp");
-                if (ts > 0) {
-                    g.videoHasFrame = true;
-                    LOGI("播放画面首帧到位（timestamp=%lld）—— 可以画了", (long long) ts);
-                }
-            }
-        };
-    }
-    LOGI("视频纹理与 SurfaceTexture 已创建（在 VR 上下文里）：tex=%u", tex);
-    return st;
-}
 
 /** 是否正在播放：true 时贴视频纹理、收起面板，false 时回到面板 */
 extern "C" JNIEXPORT void JNICALL
@@ -1930,69 +1941,6 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetVideoActive(JNIEnv *env, jobject /* 
     LOGI("播放画面状态 → %s", g.videoActive.load() ? "true" : "false");
 }
 
-/**
- * 建控制条（OSD）用的纹理与 SurfaceTexture（2026-10-05）。
- *
- * 与面板/视频同一个套路：VR 上下文里建 OES 纹理 → 包成 SurfaceTexture 交回 Java 侧，
- * 由控制条那台 1920×270 的虚拟显示器往这个 Surface 上画。
- */
-extern "C" JNIEXPORT jobject JNICALL
-Java_com_xxxx_emby_1vr_vr_VrNative_nativeCreateOsdSurfaceTexture(JNIEnv *env, jobject /* this */) {
-    GLuint tex = 0;
-    glGenTextures(1, &tex);
-    if (tex == 0) {
-        LOGE("创建控制条纹理失败");
-        return nullptr;
-    }
-    glBindTexture(GL_TEXTURE_EXTERNAL_OES, tex);
-    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glBindTexture(GL_TEXTURE_EXTERNAL_OES, 0);
-
-    jclass stClass = env->FindClass("android/graphics/SurfaceTexture");
-    if (stClass == nullptr) {
-        LOGE("找不到 SurfaceTexture 类");
-        return nullptr;
-    }
-    jmethodID ctor = env->GetMethodID(stClass, "<init>", "(I)V");
-    if (ctor == nullptr) {
-        LOGE("找不到 SurfaceTexture 构造方法");
-        return nullptr;
-    }
-    jobject st = env->NewObject(stClass, ctor, (jint) tex);
-    if (st == nullptr) {
-        LOGE("创建控制条 SurfaceTexture 失败");
-        return nullptr;
-    }
-
-    g.osdTex = tex;
-    g.osdVisible = false;
-
-    auto *globalRef = env->NewGlobalRef(st);
-    jmethodID updateTexImage = env->GetMethodID(stClass, "updateTexImage", "()V");
-    jmethodID getTimestamp = env->GetMethodID(stClass, "getTimestamp", "()J");
-    if (updateTexImage != nullptr) {
-        gOsdUpdate = [globalRef, updateTexImage, getTimestamp]() {
-            JNIEnv *e = nullptr;
-            if (g.jvm == nullptr) return;
-            if (g.jvm->GetEnv(reinterpret_cast<void **>(&e), JNI_VERSION_1_6) != JNI_OK) return;
-            e->CallVoidMethod(globalRef, updateTexImage);
-            clearJavaException(e, "控制条 updateTexImage");
-            g.osdFrames.fetch_add(1);
-            if (!g.osdHasFrame.load() && getTimestamp != nullptr) {
-                const jlong ts = e->CallLongMethod(globalRef, getTimestamp);
-                if (ts > 0) {
-                    g.osdHasFrame = true;
-                    LOGI("控制条首帧到位（timestamp=%lld）—— 可以画了", (long long) ts);
-                }
-            }
-        };
-    }
-    LOGI("控制条纹理与 SurfaceTexture 已创建：tex=%u", tex);
-    return st;
-}
 
 /** 控制条显示/隐藏（播放中扣扳机切换，由 Java 侧决定） */
 extern "C" JNIEXPORT void JNICALL
@@ -2036,6 +1984,40 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachInputSink(JNIEnv *env, jobject /*
          g.sinkStick != nullptr ? 1 : 0, g.sinkBack != nullptr ? 1 : 0,
          g.sinkOsdPointer != nullptr ? 1 : 0, g.sinkOsdClick != nullptr ? 1 : 0,
          g.sinkToggleOsd != nullptr ? 1 : 0);
+}
+
+/*
+ * 注册纹理回调（Java 侧实现 VrNative.TextureSink）。
+ *
+ * 三张画面纹理由渲染线程在自己的上下文里建，建好从这里推给界面层；
+ * 如果 Java 注册得晚（纹理已经建好），立刻补推一次，避免"建好了没人接"。
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachTextureSink(JNIEnv *env, jobject /* this */,
+                                                           jobject sink) {
+    if (g.textureSink != nullptr) {
+        env->DeleteGlobalRef(g.textureSink);
+        g.textureSink = nullptr;
+    }
+    g.sinkPanelTex = g.sinkVideoTex = g.sinkOsdTex = nullptr;
+    if (sink == nullptr) {
+        LOGI("纹理回调已注销");
+        return;
+    }
+    g.textureSink = env->NewGlobalRef(sink);
+    jclass cls = env->GetObjectClass(sink);
+    g.sinkPanelTex = env->GetMethodID(cls, "onPanelTexture",
+                                      "(Landroid/graphics/SurfaceTexture;)V");
+    g.sinkVideoTex = env->GetMethodID(cls, "onVideoTexture",
+                                      "(Landroid/graphics/SurfaceTexture;)V");
+    g.sinkOsdTex = env->GetMethodID(cls, "onOsdTexture",
+                                    "(Landroid/graphics/SurfaceTexture;)V");
+    env->DeleteLocalRef(cls);
+    LOGI("纹理回调已注册（面板=%d 播放画面=%d 控制条=%d）",
+         g.sinkPanelTex != nullptr ? 1 : 0, g.sinkVideoTex != nullptr ? 1 : 0,
+         g.sinkOsdTex != nullptr ? 1 : 0);
+
+    if (g.panelSt != nullptr) pushTexturesToJava(g, env);
 }
 
 extern "C" JNIEXPORT void JNICALL

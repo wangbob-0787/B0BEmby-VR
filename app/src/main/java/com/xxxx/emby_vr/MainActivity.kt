@@ -234,7 +234,7 @@ class MainActivity : ComponentActivity() {
             }
             InputRouter.Action.BACK -> {
                 if (renderer.videoActive) stopPlayback()
-                else if (::panel.isInitialized && panel.ready && renderer.panelActive) panel.back()
+                else if (::panel.isInitialized && panel.ready && com.xxxx.emby_vr.vr.VrNative.panelActive) panel.back()
             }
             InputRouter.Action.PLAY_PAUSE -> if (renderer.videoActive) togglePlayPause()
             InputRouter.Action.SEEK_BACK -> if (renderer.videoActive) seekBy(-10_000)
@@ -245,7 +245,7 @@ class MainActivity : ComponentActivity() {
 
     /** 面板按键入口：面板没就绪（还在启动/播放中）时静默忽略 */
     private fun panelKey(keyCode: Int) {
-        if (::panel.isInitialized && panel.ready && renderer.panelActive) panel.key(keyCode)
+        if (::panel.isInitialized && panel.ready && com.xxxx.emby_vr.vr.VrNative.panelActive) panel.key(keyCode)
     }
 
     /** 播放期状态反馈：写到视频画面上的状态条（屏幕大字被视频盖住，看不见） */
@@ -740,8 +740,9 @@ class MainActivity : ComponentActivity() {
 
         /*
          * 面板层（UI 复用验证，2026-10-04）：
-         * 渲染器在 GL 线程建好面板纹理后回调，这里把 SurfaceTexture 交给
-         * PanelLayer（它内部切主线程建虚拟显示器与 Presentation）。
+         * 画面纹理由原生渲染线程建好后推过来（2026-10-05 晚修，见
+         * VrNative.TextureSink），这里负责把 SurfaceTexture 交给 PanelLayer
+         * （它内部切主线程建虚拟显示器与 Presentation）。
          */
         panel = PanelLayer(this) {
             // 面板里放的就是电视版的界面：PanelApp 是它的导航装配（见 panel/PanelApp.kt）
@@ -749,7 +750,6 @@ class MainActivity : ComponentActivity() {
                 onPanelPlayRequested(mediaId, positionTicks)
             })
         }
-        renderer.onPanelSurfaceReady = { st -> panel.attach(st) }
 
         /*
          * 控制条（2026-10-05）：独立的一块 1920×270 小面板，放在观影者身前近场。
@@ -763,7 +763,26 @@ class MainActivity : ComponentActivity() {
             name = "b0bemby-osd",
             activatesVrPanel = false,
         )
-        renderer.onOsdSurfaceReady = { st -> osd.attach(st) }
+        /*
+         * 三张画面的接收口（2026-10-05 晚修）：纹理由原生渲染线程在自己的 GL
+         * 上下文里建好，建好立刻回调这里（如果已经建好，注册时补推一次）。
+         * 之前是反过来（Java 建好纹理再给原生用），跨上下文导致三块屏互相串画面。
+         */
+        com.xxxx.emby_vr.vr.VrNative.attachTextureSink(
+            object : com.xxxx.emby_vr.vr.VrNative.TextureSink {
+                override fun onPanelTexture(st: android.graphics.SurfaceTexture) {
+                    panel.attach(st)
+                }
+
+                override fun onVideoTexture(st: android.graphics.SurfaceTexture) {
+                    renderer.setVrVideoSurface(st)
+                }
+
+                override fun onOsdTexture(st: android.graphics.SurfaceTexture) {
+                    osd.attach(st)
+                }
+            },
+        )
         osdState.onButton = { button -> onOsdButton(button) }
 
         glView = GLSurfaceView(this).apply {
@@ -890,7 +909,7 @@ class MainActivity : ComponentActivity() {
         // 不进面板就等于「返回」失效（实测 PICO 面板模式基本不发按键，
         // 这里做兜底，主通道是扳机手势，见 PanelLayer.dispatch）
         if (keyCode == KeyEvent.KEYCODE_BACK && ::panel.isInitialized &&
-            panel.ready && renderer.panelActive
+            panel.ready && com.xxxx.emby_vr.vr.VrNative.panelActive
         ) {
             // 走面板自己的导航栈（2026-10-04：发 BACK 键会让面板窗把自己关掉=黑屏）
             panel.back()
@@ -978,7 +997,7 @@ class MainActivity : ComponentActivity() {
          */
         if (!vrInputLive &&
             !renderer.videoActive &&
-            ::panel.isInitialized && panel.ready && renderer.panelActive &&
+            ::panel.isInitialized && panel.ready && com.xxxx.emby_vr.vr.VrNative.panelActive &&
             ::glView.isInitialized && glView.width > 0 && glView.height > 0
         ) {
             val aspect = glView.width.toFloat() / glView.height.toFloat().coerceAtLeast(1f)
