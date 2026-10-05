@@ -60,6 +60,7 @@ namespace {
 // 按 Khronos 要求：用到的入口点都要先经 xrGetInstanceProcAddr 取一次
 // （loader 需要知道应用用了哪些函数，运行时也可以覆盖实现）。
 struct XrApi {
+    PFN_xrInitializeLoaderKHR InitializeLoaderKHR = nullptr;
     PFN_xrGetSystem GetSystem = nullptr;
     PFN_xrEnumerateViewConfigurationViews EnumerateViewConfigurationViews = nullptr;
     PFN_xrEnumerateEnvironmentBlendModes EnumerateEnvironmentBlendModes = nullptr;
@@ -320,6 +321,39 @@ void makeQuadBuffers(VrContext &c) {
     glGenBuffers(1, &c.vbo);
     glBindBuffer(GL_ARRAY_BUFFER, c.vbo);
     glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
+}
+
+/**
+ * 关键前置步骤（run 94 实测踩坑）：官方 Android 加载器要求应用在 xrCreateInstance
+ * **之前**先调 xrInitializeLoaderKHR，把 JavaVM 与 Activity 交给它，
+ * 否则报：
+ *   Error [GENERAL | xrCreateInstance | OpenXR-Loader] :
+ *     RuntimeInterface::LoadRuntime cannot run because xrInitializeLoaderKHR
+ *     was not successfully called.
+ *   xrCreateInstance 失败：-6（XR_ERROR_RUNTIME_UNAVAILABLE）
+ * 注意这一步要通过 xrGetInstanceProcAddr(XR_NULL_HANDLE, ...) 取函数
+ * （还没有 instance，只能从 loader 本身取）。
+ */
+bool initializeLoader(VrContext &c) {
+    PFN_xrVoidFunction fn = nullptr;
+    XrResult r = xrGetInstanceProcAddr(XR_NULL_HANDLE, "xrInitializeLoaderKHR", &fn);
+    if (XR_FAILED(r) || fn == nullptr) {
+        LOGE("取不到 xrInitializeLoaderKHR：%d", (int) r);
+        return false;
+    }
+    auto initLoader = reinterpret_cast<PFN_xrInitializeLoaderKHR>(fn);
+
+    XrLoaderInitInfoAndroidKHR androidInit{XR_TYPE_LOADER_INIT_INFO_ANDROID_KHR};
+    androidInit.applicationVM = c.jvm;
+    androidInit.applicationContext = c.activity;
+
+    r = initLoader(reinterpret_cast<const XrLoaderInitInfoBaseHeaderKHR *>(&androidInit));
+    if (XR_FAILED(r)) {
+        LOGE("xrInitializeLoaderKHR 失败：%d", (int) r);
+        return false;
+    }
+    LOGI("OpenXR loader 已初始化（JavaVM + Activity 已交付）");
+    return true;
 }
 
 bool createInstance(VrContext &c) {
@@ -680,6 +714,7 @@ void renderThreadMain() {
     LOGI("VR 渲染线程启动");
 
     do {
+        if (!initializeLoader(c)) break;
         if (!createInstance(c)) break;
         if (!initEgl(c)) break;
 
