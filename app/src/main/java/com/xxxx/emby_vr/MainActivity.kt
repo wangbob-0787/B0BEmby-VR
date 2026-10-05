@@ -256,10 +256,12 @@ class MainActivity : ComponentActivity() {
                  * 播放中：光柱指在海报墙上时，B 给面板导航栈（父亲 2026-10-06：
                  * 播放期间海报墙也要能操作）；指别处时 B = 退出播放。
                  */
-                val panelTakesBack = panelPointerOnPanel && ::panel.isInitialized &&
-                    panel.ready && com.xxxx.emby_vr.vr.VrNative.panelActive
-                if (panelTakesBack) panel.back()
-                else if (renderer.videoActive) stopPlayback()
+                /*
+                 * 父亲 2026-10-06：B 键只管面板返回，不再顺手把片子退掉 ——
+                 * 播放中要退出，用控制条上的「退出」按钮。
+                 */
+                if (::panel.isInitialized && panel.ready &&
+                    com.xxxx.emby_vr.vr.VrNative.panelActive) panel.back()
             }
             InputRouter.Action.PLAY_PAUSE -> if (renderer.videoActive) togglePlayPause()
             InputRouter.Action.SEEK_BACK -> if (renderer.videoActive) seekBy(-10_000)

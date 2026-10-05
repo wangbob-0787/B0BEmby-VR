@@ -525,7 +525,8 @@ struct VrContext {
     XrAction aimPoseAction = XR_NULL_HANDLE;      // 手柄指向（激光方向）
     XrAction triggerAction = XR_NULL_HANDLE;      // 扳机（布尔按下）
     XrAction triggerValueAction = XR_NULL_HANDLE; // 扳机（浮点力度）
-    XrAction squeezeAction = XR_NULL_HANDLE;      // 侧握
+    XrAction squeezeAction = XR_NULL_HANDLE;      // 侧握（按键式）
+    XrAction squeezeValueAction = XR_NULL_HANDLE; // 侧握力度（有些运行时只给这个）
     XrAction thumbstickAction = XR_NULL_HANDLE;   // 摇杆二维轴
     XrAction aAction = XR_NULL_HANDLE;            // A / X
     XrAction bAction = XR_NULL_HANDLE;            // B / Y
@@ -540,6 +541,8 @@ struct VrContext {
     bool triggerDown[2] = {false, false};
     float triggerValue[2] = {0.f, 0.f};
     bool squeezeDown[2] = {false, false};
+    float squeezeValue[2] = {0.f, 0.f};   // 侧握模拟量（0-1）
+    double videoActiveAtMs = 0.0;         // 本次开播的时刻（转圈延迟出现用）
     XrVector2f thumbstick[2] = {{0.f, 0.f}, {0.f, 0.f}};
     bool aDown[2] = {false, false};
     bool bDown[2] = {false, false};
@@ -909,6 +912,8 @@ bool setupInput(VrContext &c) {
     ok &= makeAction("trigger", "扳机", XR_ACTION_TYPE_BOOLEAN_INPUT, &c.triggerAction);
     ok &= makeAction("trigger_value", "扳机力度", XR_ACTION_TYPE_FLOAT_INPUT, &c.triggerValueAction);
     ok &= makeAction("squeeze", "侧握", XR_ACTION_TYPE_BOOLEAN_INPUT, &c.squeezeAction);
+    ok &= makeAction("squeeze_value", "侧握力度", XR_ACTION_TYPE_FLOAT_INPUT,
+                     &c.squeezeValueAction);
     ok &= makeAction("thumbstick", "摇杆", XR_ACTION_TYPE_VECTOR2F_INPUT, &c.thumbstickAction);
     ok &= makeAction("a_click", "A 键", XR_ACTION_TYPE_BOOLEAN_INPUT, &c.aAction);
     ok &= makeAction("b_click", "B 键", XR_ACTION_TYPE_BOOLEAN_INPUT, &c.bAction);
@@ -968,6 +973,7 @@ bool setupInput(VrContext &c) {
             {"/user/hand/left/input/trigger/value", "/user/hand/right/input/trigger/value", c.triggerAction},
             {"/user/hand/left/input/trigger/value", "/user/hand/right/input/trigger/value", c.triggerValueAction},
             {"/user/hand/left/input/squeeze/click", "/user/hand/right/input/squeeze/click", c.squeezeAction},
+            {"/user/hand/left/input/squeeze/value", "/user/hand/right/input/squeeze/value", c.squeezeValueAction},
             {"/user/hand/left/input/thumbstick", "/user/hand/right/input/thumbstick", c.thumbstickAction},
             {"/user/hand/left/input/x/click",    "/user/hand/right/input/a/click",    c.aAction},
             {"/user/hand/left/input/y/click",    "/user/hand/right/input/b/click",    c.bAction},
@@ -1077,6 +1083,20 @@ void syncInput(VrContext &c) {
 
         readBool(c.triggerAction, c.triggerDown[i], "扳机");
         readBool(c.squeezeAction, c.squeezeDown[i], "侧握");
+        /*
+         * 侧握力度也要读：run 128 实测握把键没反应（拖动、远近都不动），
+         * 怀疑运行时只给 /input/squeeze/value、不给 click。两个通道任一过半即算按住。
+         */
+        if (api.GetActionStateFloat != nullptr && c.squeezeValueAction != XR_NULL_HANDLE) {
+            XrActionStateGetInfo gi{XR_TYPE_ACTION_STATE_GET_INFO};
+            gi.action = c.squeezeValueAction;
+            gi.subactionPath = handPaths[i];
+            XrActionStateFloat st{XR_TYPE_ACTION_STATE_FLOAT};
+            if (XR_SUCCEEDED(api.GetActionStateFloat(c.session, &gi, &st))) {
+                c.squeezeValue[i] = st.isActive ? st.currentState : 0.f;
+            }
+        }
+        if (c.squeezeValue[i] > 0.5f) c.squeezeDown[i] = true;
         readBool(c.aAction, c.aDown[i], "A");
         readBool(c.bAction, c.bDown[i], "B");
         readBool(c.menuAction, c.menuDown[i], "菜单");
@@ -1672,7 +1692,7 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
                 glUniform4f(c.colorLoc, 1.f, 1.f, 1.f, 1.f);
             } else {
                 glUniform1i(c.useTexLoc, 0);
-                glUniform4f(c.colorLoc, 0.15f, 0.16f, 0.20f, 1.f);
+                glUniform4f(c.colorLoc, 0.10f, 0.11f, 0.12f, 1.f);   // 黑灰、微微亮（父亲 2026-10-06）
             }
             glBindBuffer(GL_ARRAY_BUFFER, c.vbo);
             glEnableVertexAttribArray(0);
@@ -1694,7 +1714,10 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
         if (panelReady && c.panelShown.load()) drawScreen(panelPlacement(c), c.panelTex);
 
         // 起播 / 换片到第一帧之间：银幕上转圈，别留上一部的画面（父亲 2026-10-05 要求）
-        if (c.videoActive.load() && !videoReady) drawSpinner(c, proj, view4);
+        // 换片时先让银幕空一拍，再出转圈 —— 父亲 2026-10-06："先清屏，再显示加载箭头"
+        if (c.videoActive.load() && !videoReady && nowMs() - c.videoActiveAtMs > 250.0) {
+            drawSpinner(c, proj, view4);
+        }
 
         /*
          * 控制条（近场小面板，2026-10-05）：贴在观影者正前方偏下、上仰一点，
@@ -2206,6 +2229,8 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetVideoActive(JNIEnv *env, jobject /* 
      * 清掉之后到第一帧到位之间，银幕上显示转圈提示（见 drawSpinner）。
      */
     g.videoHasFrame = false;
+    // 记下开播时刻：转圈延迟一拍才出现，看起来是"先清屏、再显示加载箭头"
+    g.videoActiveAtMs = nowMs();
     LOGI("播放画面状态 → %s", g.videoActive.load() ? "true" : "false");
 }
 
