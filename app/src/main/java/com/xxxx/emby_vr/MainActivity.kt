@@ -522,6 +522,8 @@ class MainActivity : ComponentActivity() {
     private fun reportPlaybackStopped(positionTicks: Long) {
         progressJob?.cancel()
         progressJob = null
+        // 让首页/详情页重新拉数据：面板没销毁，不主动刷新就一直是播放前的旧进度
+        com.xxxx.emby_vr.data.PlaybackSync.bump()
         val itemId = reportedItemId ?: return
         reportToServer("stopped", playbackReportBody(itemId, positionTicks, isPaused = false), "停止")
         Log.i(TAG, "进度上报: 停止 ${positionTicks / 10_000_000}s item=$itemId")

@@ -108,6 +108,15 @@ fun MediaDetailScreen(
         detailViewModel.loadMediaInfo(seriesId)
     }
 
+    /*
+     * 播放回来要重新拉详情（父亲 2026-10-05）：续播位置/"看到第几集" 都在服务端，
+     * 面板没销毁就一直是旧的。loadMediaInfo 会带着季/集一起重新加载。
+     */
+    val playbackVersion = com.xxxx.emby_vr.data.PlaybackSync.version.intValue
+    LaunchedEffect(playbackVersion) {
+        if (playbackVersion > 0) detailViewModel.loadMediaInfo(seriesId)
+    }
+
     LaunchedEffect(mediaInfo) {
         seasons = null
         episodes = null

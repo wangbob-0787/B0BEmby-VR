@@ -78,6 +78,15 @@ fun HomeScreen(
             .onFailure { ErrorHandler.logError("HomeScreen", "取剧集元数据失败", it) }
     }
 
+    /*
+     * 播放回来要重新拉数据（父亲 2026-10-05：进度/继续观看不跟服务端同步）。
+     * 面板在播放期间没销毁，不主动刷新就一直是播放前的那份。
+     */
+    val playbackVersion = com.xxxx.emby_vr.data.PlaybackSync.version.intValue
+    LaunchedEffect(playbackVersion) {
+        if (playbackVersion > 0) homeViewModel.refresh()
+    }
+
     LaunchedEffect(errorMessage) {
         if (errorMessage != null) {
             android.widget.Toast.makeText(context, errorMessage, android.widget.Toast.LENGTH_LONG).show()

@@ -132,6 +132,17 @@ class PanelLayer(
          */
         private const val SCROLL_NOTCH = 0.5f
 
+        /**
+         * 「扳住一个方向不动就持续滚」的重复间隔（父亲 2026-10-05 要求）。
+         *
+         * 摇杆是被系统当**指针位移**送进来的：光点顶到面板边缘后位移恒为 0，
+         * MOVE 事件也就没了 —— 所以"扳住不动"必须自己定时补滚。
+         */
+        private const val SCROLL_REPEAT_MS = 160L
+
+        /** 超过这么久没有新的 MOVE，才算"光点顶住了"，自动重复才接管 */
+        private const val SCROLL_STUCK_MS = 220L
+
     }
 
     /**
@@ -165,6 +176,16 @@ class PanelLayer(
         val horizontal = kotlin.math.abs(dx) > kotlin.math.abs(dy)
         val h = if (horizontal) (if (dx > 0) SCROLL_NOTCH else -SCROLL_NOTCH) else 0f
         val v = if (!horizontal) (if (dy > 0) -SCROLL_NOTCH else SCROLL_NOTCH) else 0f
+        // 记住这一步的方向与落点：光点顶住之后靠它继续滚
+        lastScrollX = x
+        lastScrollY = y
+        lastScrollDx = dx
+        lastScrollDy = dy
+        lastScrollAt = SystemClock.uptimeMillis()
+        if (h != 0f || v != 0f) {
+            decor?.removeCallbacks(scrollRepeat)
+            decor?.postDelayed(scrollRepeat, SCROLL_REPEAT_MS)
+        }
         val now = SystemClock.uptimeMillis()
         // 注意：MotionEvent.setAxisValue 是隐藏 API（编译期 Unresolved），
         // 滚轮量必须写在 PointerCoords 上再 obtain。
@@ -222,6 +243,34 @@ class PanelLayer(
 
     /** 面板自己的返回栈宿主（Presentation 与本类共用同一个实例） */
     private var backOwner: PanelBackOwner? = null
+
+    /** 摇杆滚动的最近一次方向/落点，供"扳住不动"时定时补滚 */
+    private var lastScrollX = 0f
+    private var lastScrollY = 0f
+    private var lastScrollDx = 0f
+    private var lastScrollDy = 0f
+    private var lastScrollAt = 0L
+
+    /**
+     * 自动重复：按住摇杆不动时每 [SCROLL_REPEAT_MS] 补一次滚轮。
+     *
+     * 父亲 2026-10-05：「扳动摇杆上下左右滚动现在扳一下动一下，
+     * 能不能扳向某一个方向不动，持续滚动？」——根因是指针位移在面板边缘
+     * 会被顶住（不再有 MOVE），所以只能靠定时器续。
+     */
+    private val scrollRepeat = object : Runnable {
+        override fun run() {
+            if (!isDown || !isDragging) return
+            val now = SystemClock.uptimeMillis()
+            if (now - lastScrollAt < SCROLL_STUCK_MS) {
+                // 光点还在动：这一步交给 MOVE 处理，别叠加成"双倍速"
+                decor?.postDelayed(this, SCROLL_REPEAT_MS)
+                return
+            }
+            // 光点停住了：按最后一次方向继续滚
+            scrollAt(lastScrollX, lastScrollY, lastScrollDx, lastScrollDy, "摇杆保持")
+        }
+    }
 
     /** 点击前的界面动作序号：用来判定鼠标式点击有没有真生效 */
     private var clickSignalBefore = 0L
@@ -579,6 +628,7 @@ class PanelLayer(
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 if (!isDown) return
                 isDown = false
+                decor?.removeCallbacks(scrollRepeat)
                 val dragged = isDragging
                 isDragging = false
                 Log.i(
@@ -647,6 +697,7 @@ class PanelLayer(
 
     /** 面板 UI 内按钮点击回调（Compose 侧触发） */
     fun release() {
+        runCatching { decor?.removeCallbacks(scrollRepeat) }
         try {
             presentation?.dismiss()
         } catch (_: Throwable) {
