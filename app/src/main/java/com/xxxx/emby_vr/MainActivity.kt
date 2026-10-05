@@ -553,22 +553,16 @@ class MainActivity : ComponentActivity() {
      * 「再点一次选片」仍然点得到；选中别的片（面板里点卡片）会自动起播并关掉选片态。
      * 关闭：画面切回视频、继续播放。
      */
+    /**
+     * 「选片」开关（父亲 2026-10-05 定：点一下把海报墙收起来，再点一下摆出来）。
+     *
+     * 海报墙现在常驻左手边、斜着摆，播放不受影响 —— 这个按钮只控制它出不出现，
+     * 不再像以前那样为了看海报把播放画面顶掉。
+     */
     private fun togglePicking() {
-        if (player == null) return
-        if (!picking) {
-            picking = true
-            player?.playWhenReady = false
-            renderer.videoActive = false
-            com.xxxx.emby_vr.vr.VrNative.setVideoActive(false)
-            setOsdVisible(true)
-            Log.i(TAG, "选片：打开海报墙（画面切回面板，控制条留着）")
-        } else {
-            picking = false
-            com.xxxx.emby_vr.vr.VrNative.setVideoActive(true)
-            renderer.videoActive = true
-            player?.playWhenReady = true
-            Log.i(TAG, "选片：关闭海报墙，回到视频")
-        }
+        val show = !com.xxxx.emby_vr.vr.VrNative.panelShown
+        com.xxxx.emby_vr.vr.VrNative.setPanelShown(show)
+        Log.i(TAG, if (show) "选片：海报墙摆出来" else "选片：海报墙收起来")
     }
 
     private fun togglePlayPause() {
@@ -712,6 +706,8 @@ class MainActivity : ComponentActivity() {
         osdJob?.cancel()
         osdJob = null
         setOsdVisible(false)
+        // 回海报墙的时候确保它摆着（播放中可以把它收起来，别让收起来的状态带回去）
+        com.xxxx.emby_vr.vr.VrNative.setPanelShown(true)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {

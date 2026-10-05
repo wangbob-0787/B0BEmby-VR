@@ -108,6 +108,26 @@ object VrNative {
         }
     }
 
+    private external fun nativeSetPanelShown(shown: Boolean)
+
+    /**
+     * 海报墙显示 / 收起（控制条上的「选片」按钮切换，父亲 2026-10-05 定）。
+     *
+     * 海报墙常驻在左手边，播放不受影响；这个开关只决定它出不出现。
+     * 状态记在这里，界面层随时可查当前是开还是关。
+     */
+    @Volatile
+    var panelShown = true
+
+    fun setPanelShown(shown: Boolean) {
+        panelShown = shown
+        try {
+            if (loaded) nativeSetPanelShown(shown)
+        } catch (t: Throwable) {
+            Log.e(TAG, "设置海报墙状态失败：${t.message}")
+        }
+    }
+
     /**
      * VR 输入回调（2026-10-05）。
      *

@@ -438,6 +438,12 @@ struct VrContext {
      */
     GLuint osdTex = 0;
     std::atomic<bool> osdVisible{false};
+
+    /**
+     * 海报墙是否摆出来（父亲 2026-10-05：控制条上的「选片」按钮切换它）。
+     * 只是"要不要画"，和 panelActive（界面有没有在画）是两回事。
+     */
+    std::atomic<bool> panelShown{true};
     std::atomic<int> osdFrames{0};      // 控制条 updateTexImage 的调用次数（诊断用）
     /*
      * 控制条纹理是否真的拿到过帧（2026-10-05）。
@@ -1155,6 +1161,33 @@ bool rayHitsPlacement(const XrPosef &aim, const ScreenPlacement &p, float *outT,
     return true;
 }
 
+/**
+ * 银幕上的转圈提示（父亲 2026-10-05 要求）。
+ *
+ * 起播/换片到第一帧之间可能有好几秒（服务端选流、转码、缓冲），这段时间银幕上
+ * 要看得见"在加载"，不能是一块死屏。做法：一圈小点绕着银幕中心转，越靠"头"越亮。
+ */
+void drawSpinner(VrContext &c, const Mat4 &proj, const Mat4 &view4) {
+    if (c.vbo == 0 || c.program == 0) return;
+    const double now = std::chrono::duration<double>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+    constexpr int kDots = 10;
+    constexpr float kRadius = 0.17f;      // 转圈半径（米）
+    constexpr float kDotSize = 0.055f;    // 每颗点直径（米）
+    for (int i = 0; i < kDots; i++) {
+        const float ang = (float) (now * 3.2) + (float) i * (6.2831853f / (float) kDots);
+        // 尾巴暗、头亮：转起来才有方向感
+        const float fade = 0.20f + 0.80f * (float) (kDots - i) / (float) kDots;
+        XrPosef dot{};
+        dot.position = {kFrontScreen.cx + cosf(ang) * kRadius,
+                        kFrontScreen.cy + sinf(ang) * kRadius,
+                        kFrontScreen.cz + 0.012f};   // 稍微抬出来，别和银幕抢像素
+        dot.orientation = {0.f, 0.f, 0.f, 1.f};
+        const Mat4 m = poseScaleModel(dot, kDotSize, kDotSize, 1.f);
+        drawMesh(c, c.vbo, 6, multiply(multiply(proj, view4), m), fade, fade, fade, true);
+    }
+}
+
 /** 面板像素尺寸：与 PanelLayer 的常量（1920×1080）保持一致 */
 constexpr float kPanelPxW = 1920.f;
 constexpr float kPanelPxH = 1080.f;
@@ -1330,9 +1363,10 @@ void pushInput(VrContext &c) {
         }
 
         /*
-         * 光柱命中哪块屏 —— 海报墙（浏览时正前方，播放时挪到左前方）。
-         * 播放时海报墙换了位置，命中判定必须跟着摆位走，否则点击坐标会整体错位。
+         * ③ 海报墙：常驻左前方斜放，光柱要按它的摆位求交（含朝向），
+         *    否则点击坐标会整体错位。收起来了（选片开关）就不接输入。
          */
+        if (!c.panelShown.load()) continue;
         const ScreenPlacement place = panelPlacement(c);
         float planeT = 0.f, hu = 0.f, hv = 0.f, wx = 0.f, wy = 0.f, wz = 0.f;
         const bool hit = rayHitsPlacement(c.aimPose[h], place, &planeT, &hu, &hv, &wx, &wy, &wz);
@@ -1492,9 +1526,12 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
         const bool videoReady = c.videoActive.load() && c.videoTex != 0 && c.videoHasFrame.load();
         drawScreen(kFrontScreen, videoReady ? c.videoTex : 0);
 
-        // 海报墙：常驻左前方斜放；没出帧就先不画（等出帧，不闪也不串）
+        // 海报墙：常驻左前方斜放；收起时不画，没出帧也先不画（不闪也不串）
         const bool panelReady = c.panelActive.load() && c.panelTex != 0 && c.panelHasFrame.load();
-        if (panelReady) drawScreen(kSideScreen, c.panelTex);
+        if (panelReady && c.panelShown.load()) drawScreen(kSideScreen, c.panelTex);
+
+        // 起播 / 换片到第一帧之间：银幕上转圈，别留上一部的画面（父亲 2026-10-05 要求）
+        if (c.videoActive.load() && !videoReady) drawSpinner(c, proj, view4);
 
         /*
          * 控制条（近场小面板，2026-10-05）：贴在观影者正前方偏下、上仰一点，
@@ -1548,7 +1585,8 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
             const ScreenPlacement place = panelPlacement(c);
             float planeT = 0.f, hu = 0.f, hv = 0.f;
             float hitX = 0.f, hitY = 0.f, hitZ = 0.f;
-            const bool hit = rayHitsPlacement(c.aimPose[h], place, &planeT, &hu, &hv,
+            const bool hit = c.panelShown.load() &&
+                             rayHitsPlacement(c.aimPose[h], place, &planeT, &hu, &hv,
                                               &hitX, &hitY, &hitZ);
 
             /*
@@ -1999,10 +2037,12 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetVideoActive(JNIEnv *env, jobject /* 
                                                        jboolean active) {
     g.videoActive = (active == JNI_TRUE);
     /*
-     * 每次起播都重新等"这一部片子的第一帧"：否则上一部留下的旧帧会被当成
-     * 本部的画面先画出来（换片时会闪一下上一部）。
+     * 不管开播还是停播，都把"出过帧"的标记清掉（父亲 2026-10-05 要求换片先清屏）：
+     *  · 开播 → 等这一部自己的第一帧，上一部的旧帧不会先闪一下
+     *  · 停播 → 银幕立刻清空，不留上一部的画面
+     * 清掉之后到第一帧到位之间，银幕上显示转圈提示（见 drawSpinner）。
      */
-    if (active == JNI_TRUE) g.videoHasFrame = false;
+    g.videoHasFrame = false;
     LOGI("播放画面状态 → %s", g.videoActive.load() ? "true" : "false");
 }
 
@@ -2013,6 +2053,14 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetOsdVisible(JNIEnv *env, jobject /* t
                                                       jboolean visible) {
     g.osdVisible = (visible == JNI_TRUE);
     LOGI("控制条状态 → %s", g.osdVisible.load() ? "显示" : "隐藏");
+}
+
+/** 海报墙显示/隐藏（控制条上的「选片」按钮切换，由 Java 侧决定） */
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetPanelShown(JNIEnv *env, jobject /* this */,
+                                                       jboolean shown) {
+    g.panelShown = (shown == JNI_TRUE);
+    LOGI("海报墙状态 → %s", g.panelShown.load() ? "摆出来" : "收起");
 }
 
 /**
