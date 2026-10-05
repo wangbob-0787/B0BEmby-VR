@@ -1186,7 +1186,13 @@ object EmbyApi {
                         // type.equals("audio/eac3-joc", true) -> audioCodecs.add("eac3")
                         type.equals("audio/ac4", true) -> audioCodecs.add("ac4")
                     }
-                    audioCodecs.addAll(listOf("flac", "alac", "pcm_mulaw", "pcm_alaw", "mp3", "aac", "ac3", "eac3", "dca", "mlp", "truehd"))
+                    /*
+                     * 2026-10-06 父亲报「有些片子没有声音」：这里原来把
+                     * ac3 / eac3 / dca / mlp / truehd 全声明成支持，服务端于是照原样直通
+                     * 这些音轨；而头显只有 AAC / MP3 / FLAC / Opus 这类解码器，解不了就是静音。
+                     * 改成只报真正解得动的，服务端会把 AC3 / DTS 这类转成 AAC。
+                     */
+                    audioCodecs.addAll(listOf("flac", "alac", "pcm_mulaw", "pcm_alaw", "mp3", "aac", "opus", "vorbis"))
                     // audioCodecs.addAll(listOf("truehd","mlp","dca","ac3","eac3","ape","alac"))
 
 //                     audioCodecs.add("truehd")

@@ -135,6 +135,22 @@ object VrNative {
         }
     }
 
+    private external fun nativeSetVideoAspect(aspect: Float)
+
+    /**
+     * 告诉原生层当前片子的宽高比（宽/高），银幕按它调高度。
+     *
+     * 父亲 2026-10-06：「有些片子长宽比不对」—— 银幕原来固定 16:9，
+     * 2.35:1 或 4:3 的片子贴上去被拉伸。
+     */
+    fun setVideoAspect(aspect: Float) {
+        try {
+            if (loaded) nativeSetVideoAspect(aspect)
+        } catch (t: Throwable) {
+            Log.e(TAG, "设置视频比例失败：${t.message}")
+        }
+    }
+
     /**
      * VR 输入回调（2026-10-05）。
      *

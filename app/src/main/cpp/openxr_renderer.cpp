@@ -361,10 +361,11 @@ struct ScreenPlacement {
     float yawDeg;    // 绕 Y 轴偏航（左右）
     float pitchDeg;  // 绕 X 轴仰角（上下；拖动时用来始终正对人）
     float width;
+    float aspect;    // 宽/高（银幕按片子实际比例调，父亲 2026-10-06）
 };
 
 /** 正前方那块屏（银幕）：播放时贴视频，没播时是暗色空屏 */
-constexpr ScreenPlacement kFrontScreen{0.f, 0.f, -3.2f, 0.f, 0.f, 3.5f};
+constexpr ScreenPlacement kFrontScreen{0.f, 0.f, -3.2f, 0.f, 0.f, 3.5f, 16.f / 9.f};
 /**
  * 海报墙的**初始**摆位：左前方、斜着正对观影者。
  *
@@ -372,7 +373,7 @@ constexpr ScreenPlacement kFrontScreen{0.f, 0.f, -3.2f, 0.f, 0.f, 3.5f};
  * 之后可以用光柱按住扳机把它拖走（球面移动，见 pushInput），
  * 所以真正的位置记在 VrContext 的 panelPos* 里，这里只是起点。
  */
-constexpr ScreenPlacement kSideScreen{-2.25f, -0.05f, -2.05f, 46.f, 0.f, 2.8f};
+constexpr ScreenPlacement kSideScreen{-2.25f, -0.05f, -2.05f, 46.f, 0.f, 2.8f, 16.f / 9.f};
 
 struct VrContext {
     JavaVM *jvm = nullptr;
@@ -435,6 +436,12 @@ struct VrContext {
 
     /** 海报墙宽度（米）：握着握把键推摇杆左右可以缩放（父亲 2026-10-06） */
     std::atomic<float> panelWidth{kSideScreen.width};
+
+    /**
+     * 当前片子的宽高比（宽/高）。ExoPlayer 报一次、Java 侧推过来，
+     * 银幕按它调高度 —— 否则 2.35:1 的片子会被拉成 16:9（父亲 2026-10-06）。
+     */
+    std::atomic<float> videoAspect{16.f / 9.f};
 
     /** 握把键按住时，上一帧处理摇杆调整的时刻（算增量用，秒） */
     double panelAdjustAt[2] = {0.0, 0.0};
@@ -1177,6 +1184,13 @@ ScreenPlacement panelPlacement(const VrContext &c) {
     return p;
 }
 
+/** 银幕当前摆位（宽高比跟着片子的实际比例走，父亲 2026-10-06） */
+ScreenPlacement frontScreen(const VrContext &c) {
+    ScreenPlacement p = kFrontScreen;
+    p.aspect = c.videoAspect.load();
+    return p;
+}
+
 /**
  * 摆位 → 模型矩阵（位置 + 偏航/仰角 + 尺寸；复用控制条那套 poseScaleModel）。
  * 旋转顺序：先绕 X 轴仰角、再绕 Y 轴偏航 → q = qYaw ⊗ qPitch。
@@ -1189,7 +1203,8 @@ Mat4 placementModel(const ScreenPlacement &p) {
     XrPosef pose{};
     pose.position = {p.cx, p.cy, p.cz};
     pose.orientation = {cy * sp, sy * cp, -sy * sp, cy * cp};
-    return poseScaleModel(pose, p.width, p.width * 9.f / 16.f, 1.f);
+    const float asp = p.aspect > 0.1f ? p.aspect : (16.f / 9.f);
+    return poseScaleModel(pose, p.width, p.width / asp, 1.f);
 }
 
 /**
@@ -1583,7 +1598,7 @@ void pushInput(VrContext &c) {
          */
         if (c.videoActive.load()) {
             float vT = 0.f, vu = 0.f, vv = 0.f, vwx = 0.f, vwy = 0.f, vwz = 0.f;
-            const bool onScreen = rayHitsPlacement(c.aimPose[h], kFrontScreen, &vT, &vu, &vv,
+            const bool onScreen = rayHitsPlacement(c.aimPose[h], frontScreen(c), &vT, &vu, &vv,
                                                    &vwx, &vwy, &vwz);
             const double nowToggle = nowMs();
             if (onScreen && c.triggerDown[h] && !c.sinkLastTrigger[h] &&
@@ -1707,7 +1722,7 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
 
         // 前方银幕：播放时贴视频；没播时是一块空屏（暗色），空间里有"银幕"在
         const bool videoReady = c.videoActive.load() && c.videoTex != 0 && c.videoHasFrame.load();
-        drawScreen(kFrontScreen, videoReady ? c.videoTex : 0);
+        drawScreen(frontScreen(c), videoReady ? c.videoTex : 0);
 
         // 海报墙：常驻左前方斜放；收起时不画，没出帧也先不画（不闪也不串）
         const bool panelReady = c.panelActive.load() && c.panelTex != 0 && c.panelHasFrame.load();
@@ -2249,6 +2264,21 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetPanelShown(JNIEnv *env, jobject /* t
                                                        jboolean shown) {
     g.panelShown = (shown == JNI_TRUE);
     LOGI("海报墙状态 → %s", g.panelShown.load() ? "摆出来" : "收起");
+}
+
+/**
+ * 片子的宽高比变了 → 银幕高度跟着变。
+ *
+ * 父亲 2026-10-06：「有些片子长宽比不对」—— 银幕原来固定 16:9，2.35:1 或 4:3 的
+ * 片子贴上去就被拉伸。ExoPlayer 报出真实尺寸后由 Java 侧推过来。
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetVideoAspect(JNIEnv *env, jobject /* this */,
+                                                        jfloat aspect) {
+    if (aspect > 0.2f && aspect < 6.f) {
+        g.videoAspect = aspect;
+        LOGI("视频比例 → %.3f", (double) aspect);
+    }
 }
 
 /**

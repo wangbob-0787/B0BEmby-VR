@@ -430,7 +430,17 @@ class MainActivity : ComponentActivity() {
                 reportedPlaySessionId = media.playSessionId
                 reportedMediaSourceId = source?.id
                 reportedRunTimeTicks = source?.runTimeTicks ?: 0L
-                val path0 = source?.directStreamUrl ?: source?.transcodingUrl
+                /*
+                 * 按服务端给的判定挑地址（2026-10-06 父亲报「长宽比不对 / 没声音 / 灰蒙蒙」）。
+                 * 原来无脑优先 directStreamUrl，等于把服务端的转码决定（音频转 AAC、
+                 * HDR 转 SDR、换封装）全绕过去了。现在照 TV 版那套判定走。
+                 */
+                val method = Utils.determinePlayMethod(media)
+                val path0 = when (method) {
+                    "DirectPlay" -> source?.directStreamUrl
+                    else -> source?.transcodingUrl ?: source?.directStreamUrl
+                }
+                Log.i(TAG, "播放方式=$method")
                 if (path0 == null) {
                     hud("取不到播放地址（服务器未返回直链）")
                     return@launch
@@ -473,6 +483,19 @@ class MainActivity : ComponentActivity() {
                 p.prepare()
                 p.playWhenReady = true
                 p.addListener(object : Player.Listener {
+                    override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
+                        /*
+                         * 片子实际比例 → 银幕高度（父亲 2026-10-06：有些片子长宽比不对）。
+                         * pixelWidthHeightRatio 是像素长宽比，非方形像素的片子要靠它纠正。
+                         */
+                        if (videoSize.width > 0 && videoSize.height > 0) {
+                            val a = videoSize.width * videoSize.pixelWidthHeightRatio /
+                                videoSize.height
+                            com.xxxx.emby_vr.vr.VrNative.setVideoAspect(a)
+                            Log.i(TAG, "视频尺寸 ${videoSize.width}x${videoSize.height} 比例 $a")
+                        }
+                    }
+
                     override fun onPlaybackStateChanged(state: Int) {
                         // 自然播完 → 上报停止（服务端据此记"已看"与进度）
                         if (state == Player.STATE_ENDED) {
