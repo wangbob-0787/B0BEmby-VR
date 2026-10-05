@@ -688,51 +688,80 @@ bool setupInput(VrContext &c) {
     if (!ok) return false;
 
     /*
-     * 交互配置建议：把同一批动作绑到多种手柄配置上。
-     * PICO 4 手柄走 khr_simple_controller / oculus touch controller 这两套之一，
-     * 两套都绑一遍，哪套匹配上都能用（多绑不影响）。
+     * 交互配置建议（2026-10-05 run 101 实机踩坑后重写）。
+     *
+     * 原来一次性绑 four 套配置、每套 16 条，运行时**全部退回 -22
+     * （XR_ERROR_PATH_UNSUPPORTED）** —— 只要一条绑定的路径该配置不支持，
+     * 整批建议就被拒。正确做法是每套配置只绑它真正支持的输入，逐套独立提交。
+     *
+     * 配置名取自 PICO 运行时的实际清单（从 /system/priv-app/XRRuntime/XRRuntime.apk
+     * 里提取的字符串）：
+     *   /interaction_profiles/bytedance/pico4_controller   ← PICO 4 手柄
+     *   /interaction_profiles/bytedance/pico_neo3_controller
+     *   /interaction_profiles/khr/simple_controller        ← 兜底（只有 select/menu）
+     *   /interaction_profiles/oculus/touch_controller      ← 兼容写法
      */
-    const char *profiles[] = {
-            "/interaction_profiles/khr/simple_controller",
-            "/interaction_profiles/oculus/touch_controller",
-            "/interaction_profiles/bytedance/pico_neo3_controller",
-            "/interaction_profiles/bytedance/pico4_controller",
+    struct BindingSpec {
+        const char *leftPath;
+        const char *rightPath;
+        XrAction action;
     };
-    const char *handPaths[2] = {"/user/hand/left", "/user/hand/right"};
 
-    for (const char *prof : profiles) {
-        const XrPath profilePath = pathOf(c, prof);
-        if (profilePath == XR_NULL_PATH) continue;
+    auto bindProfile = [&](const char *profile, const std::vector<BindingSpec> &specs) -> bool {
+        const XrPath profilePath = pathOf(c, profile);
+        if (profilePath == XR_NULL_PATH) return false;
 
-        struct Binding {
-            XrAction action;
-            const char *path;
-        };
         std::vector<XrActionSuggestedBinding> bindings;
-        for (const char *hand : handPaths) {
-            const bool right = strstr(hand, "right") != nullptr;
-            bindings.push_back({c.aimPoseAction, pathOf(c, (std::string(hand) + "/input/aim/pose").c_str())});
-            bindings.push_back({c.triggerAction, pathOf(c, (std::string(hand) + "/input/trigger/value").c_str())});
-            bindings.push_back({c.triggerValueAction, pathOf(c, (std::string(hand) + "/input/trigger/value").c_str())});
-            bindings.push_back({c.squeezeAction, pathOf(c, (std::string(hand) + "/input/squeeze/value").c_str())});
-            bindings.push_back({c.thumbstickAction, pathOf(c, (std::string(hand) + "/input/thumbstick").c_str())});
-            bindings.push_back({c.aAction, pathOf(c, (std::string(hand) + (right ? "/input/a/click" : "/input/x/click")).c_str())});
-            bindings.push_back({c.bAction, pathOf(c, (std::string(hand) + (right ? "/input/b/click" : "/input/y/click")).c_str())});
-            bindings.push_back({c.menuAction, pathOf(c, "/input/menu/click")});
+        for (const auto &s : specs) {
+            if (s.leftPath != nullptr) {
+                const XrPath p = pathOf(c, s.leftPath);
+                if (p != XR_NULL_PATH) bindings.push_back({s.action, p});
+            }
+            if (s.rightPath != nullptr) {
+                const XrPath p = pathOf(c, s.rightPath);
+                if (p != XR_NULL_PATH) bindings.push_back({s.action, p});
+            }
         }
-        // 丢掉取不到路径的绑定（该配置不支持这个输入）
-        std::vector<XrActionSuggestedBinding> valid;
-        for (auto &b : bindings) {
-            if (b.binding != XR_NULL_PATH) valid.push_back(b);
-        }
+        if (bindings.empty()) return false;
 
         XrInteractionProfileSuggestedBinding sbi{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
         sbi.interactionProfile = profilePath;
-        sbi.countSuggestedBindings = (uint32_t) valid.size();
-        sbi.suggestedBindings = valid.data();
+        sbi.countSuggestedBindings = (uint32_t) bindings.size();
+        sbi.suggestedBindings = bindings.data();
         const XrResult sr = api.SuggestInteractionProfileBindings(c.instance, &sbi);
-        LOGI("绑定交互配置 %s：%u 条（xrResult=%d）", prof, sbi.countSuggestedBindings, (int) sr);
-    }
+        LOGI("绑定交互配置 %s：%u 条 → xrResult=%d%s", profile, sbi.countSuggestedBindings,
+             (int) sr, XR_SUCCEEDED(sr) ? "（成功）" : "（被拒）");
+        return XR_SUCCEEDED(sr);
+    };
+
+    // PICO 4 / Neo3 手柄：完整输入（姿态、扳机、侧握、摇杆、A/B/X/Y、菜单）
+    const std::vector<BindingSpec> fullSpecs = {
+            {"/user/hand/left/input/aim/pose",   "/user/hand/right/input/aim/pose",   c.aimPoseAction},
+            {"/user/hand/left/input/trigger/value", "/user/hand/right/input/trigger/value", c.triggerAction},
+            {"/user/hand/left/input/trigger/value", "/user/hand/right/input/trigger/value", c.triggerValueAction},
+            {"/user/hand/left/input/squeeze/value", "/user/hand/right/input/squeeze/value", c.squeezeAction},
+            {"/user/hand/left/input/thumbstick", "/user/hand/right/input/thumbstick", c.thumbstickAction},
+            {"/user/hand/left/input/x/click",    "/user/hand/right/input/a/click",    c.aAction},
+            {"/user/hand/left/input/y/click",    "/user/hand/right/input/b/click",    c.bAction},
+            {"/user/hand/left/input/menu/click", "/user/hand/right/input/menu/click", c.menuAction},
+    };
+
+    /*
+     * simple_controller 只有 select / menu / aim，没有 thumbstick 与 A/B，
+     * 给它绑全套同样会被整批拒 —— 这是 run 101 四套全废的关键。
+     */
+    const std::vector<BindingSpec> simpleSpecs = {
+            {"/user/hand/left/input/aim/pose",   "/user/hand/right/input/aim/pose",   c.aimPoseAction},
+            {"/user/hand/left/input/select/click", "/user/hand/right/input/select/click", c.triggerAction},
+            {"/user/hand/left/input/menu/click", "/user/hand/right/input/menu/click", c.menuAction},
+    };
+
+    bool anyBound = false;
+    anyBound |= bindProfile("/interaction_profiles/bytedance/pico4_controller", fullSpecs);
+    anyBound |= bindProfile("/interaction_profiles/bytedance/pico_neo3_controller", fullSpecs);
+    anyBound |= bindProfile("/interaction_profiles/oculus/touch_controller", fullSpecs);
+    anyBound |= bindProfile("/interaction_profiles/khr/simple_controller", simpleSpecs);
+    if (!anyBound) LOGE("四套交互配置都没绑上，手柄事件将收不到");
 
     XrSessionActionSetsAttachInfo attach{XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
     attach.countActionSets = 1;
