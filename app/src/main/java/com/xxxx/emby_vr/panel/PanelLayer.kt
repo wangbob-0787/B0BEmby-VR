@@ -577,7 +577,7 @@ class PanelLayer(
             val owner = backOwner ?: PanelBackOwner(activity).also { backOwner = it }
             val p = PanelPresentation(
                 activity, vd.display, activity, content, owner,
-                transparentWindow = !activatesVrPanel,
+                !activatesVrPanel,
             ) { view ->
                 decor = view
                 ready = true
@@ -1127,15 +1127,17 @@ private class PanelPresentation(
     private val activity: ComponentActivity,
     private val content: @Composable () -> Unit,
     private val backOwner: PanelBackOwner,
-    private val onReady: (View) -> Unit,
     /**
      * 控制条专用：窗口自己不能有黑底。
      *
      * 父亲 2026-10-06 报「控制条叠了两层，下层没有倒圆角」—— 圆角只画在内容那一层，
      * 底下是 Presentation 窗口自己的黑底，圆角外面就露出一块黑方块。
      * 这里把窗口背景清成透明，配合 GL 侧的 alpha 混合，圆角外才真的透出去。
+     *
+     * 注意：它必须排在 [onReady] 前面 —— onReady 是尾随 lambda，得留在最后一个形参位。
      */
     private val transparentWindow: Boolean = false,
+    private val onReady: (View) -> Unit,
 ) : Presentation(outer, display, android.R.style.Theme_Material_NoActionBar_Fullscreen) {
 
     override fun onCreate(savedInstanceState: Bundle?) {
