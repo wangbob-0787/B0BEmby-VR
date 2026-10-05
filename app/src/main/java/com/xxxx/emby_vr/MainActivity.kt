@@ -334,11 +334,18 @@ class MainActivity : ComponentActivity() {
 
     /** 起播 */
     private fun startPlayer(url: String, title: String) {
-        val surface = renderer.videoSurface
+        /*
+         * 播放画面走哪条线（2026-10-05）：
+         *   VR 模式 → VR 上下文里建的那张纹理（原生播放屏，贴到 VR 里那块平面上）
+         *   非 VR   → 老的 2D 画面管线（renderer.videoSurface）
+         */
+        val vrSurface = if (com.xxxx.emby_vr.vr.VrNative.vrRunning) renderer.vrVideoSurface else null
+        val surface = vrSurface ?: renderer.videoSurface
         if (surface == null) {
             hud("视频纹理未就绪（GL 还没建好）")
             return
         }
+        val useVrScreen = vrSurface != null
         try {
             stopPlaybackInternal()
             player = ExoPlayer.Builder(this).build().also { p ->
@@ -364,6 +371,11 @@ class MainActivity : ComponentActivity() {
                 })
             }
             renderer.videoActive = true
+            if (useVrScreen) {
+                // 播放时贴视频画面、收起面板（VR 原生播放屏）
+                com.xxxx.emby_vr.vr.VrNative.setVideoActive(true)
+                Log.i(TAG, "播放画面已切到 VR 原生（面板收起）")
+            }
             dragFiredSteps = 0
             lastSeekAt = 0L
             stickRunDir = 0
@@ -542,6 +554,8 @@ class MainActivity : ComponentActivity() {
         }
         player = null
         seekTargetMs = null
+        // 播放结束：VR 画面切回面板（非 VR 模式下这条调用没有副作用）
+        com.xxxx.emby_vr.vr.VrNative.setVideoActive(false)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {

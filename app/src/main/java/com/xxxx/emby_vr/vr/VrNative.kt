@@ -59,10 +59,40 @@ object VrNative {
 
     /** 起 VR 会话（原生渲染线程）；失败返回 false，应用继续按 2D 面板模式跑 */
     fun startVr(activity: android.app.Activity): Boolean = try {
-        if (loaded) nativeStartVr(activity) else false
+        val ok = if (loaded) nativeStartVr(activity) else false
+        vrRunning = ok
+        ok
     } catch (t: Throwable) {
         Log.e(TAG, "启动 VR 会话失败：${t.message}")
+        vrRunning = false
         false
+    }
+
+    /** VR 会话是否在跑：决定播放画面走 VR 原生纹理还是老的 2D 画面管线 */
+    @Volatile
+    var vrRunning = false
+        private set
+
+    /**
+     * 建播放画面用的纹理与 SurfaceTexture（VR 原生播放屏，2026-10-05）。
+     *
+     * 与面板纹理同一个套路：VR 上下文里建 OES 外部纹理 → 包成 SurfaceTexture 交回，
+     * ExoPlayer 直接往这个 Surface 输出视频帧 → 贴到 VR 里那块平面上。
+     */
+    fun createVideoSurfaceTexture(): android.graphics.SurfaceTexture? = try {
+        if (loaded && vrRunning) nativeCreateVideoSurfaceTexture() else null
+    } catch (t: Throwable) {
+        Log.e(TAG, "创建播放画面纹理失败：${t.message}")
+        null
+    }
+
+    /** 播放开始/结束：true 贴视频画面，false 回到面板 */
+    fun setVideoActive(active: Boolean) {
+        try {
+            if (loaded) nativeSetVideoActive(active)
+        } catch (t: Throwable) {
+            Log.e(TAG, "设置播放画面状态失败：${t.message}")
+        }
     }
 
     /**
@@ -80,6 +110,10 @@ object VrNative {
     }
 
     private external fun nativeAttachInputSink(sink: InputSink)
+
+    private external fun nativeCreateVideoSurfaceTexture(): android.graphics.SurfaceTexture?
+
+    private external fun nativeSetVideoActive(active: Boolean)
 
     fun attachInputSink(sink: InputSink) {
         try {

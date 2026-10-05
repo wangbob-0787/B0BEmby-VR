@@ -405,6 +405,13 @@ struct VrContext {
     GLuint panelTex = 0;
     std::atomic<bool> panelActive{false};
 
+    /*
+     * 播放画面（VR 原生，2026-10-05）：与面板同一个套路 —— 在 VR 上下文里建一张
+     * 外部纹理 + SurfaceTexture 交给 ExoPlayer 当视频输出，播放时取代面板贴到同一块平面上。
+     */
+    GLuint videoTex = 0;
+    std::atomic<bool> videoActive{false};
+
     // ---- 手柄输入 ----
     XrActionSet actionSet = XR_NULL_HANDLE;
     XrAction aimPoseAction = XR_NULL_HANDLE;      // 手柄指向（激光方向）
@@ -447,6 +454,7 @@ std::thread gThread;
  * （VrNative.attachPanelUpdater），每帧回调过去让它 updateTexImage。
  */
 std::function<void()> gPanelUpdate;
+std::function<void()> gVideoUpdate;   // 播放画面取帧（同面板：必须在 VR 渲染线程调）
 std::atomic<bool> gRunning{false};
 std::atomic<bool> gRequestStop{false};
 
@@ -1209,10 +1217,11 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
          * 有面板纹理就贴纹理（现有界面），没有就画纯色（证明能出画面）。
          * 用外部纹理（OES）：面板来自 SurfaceTexture，与 2D 模式同一套链路。
          */
-        const bool usePanel = c.panelActive.load() && c.panelTex != 0;
-        if (usePanel) {
+        const bool useVideo = c.videoActive.load() && c.videoTex != 0;
+        const bool usePanel = !useVideo && c.panelActive.load() && c.panelTex != 0;
+        if (useVideo || usePanel) {
             glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_EXTERNAL_OES, c.panelTex);
+            glBindTexture(GL_TEXTURE_EXTERNAL_OES, useVideo ? c.videoTex : c.panelTex);
             glUniform1i(c.texLoc, 0);
             glUniform1i(c.useTexLoc, 1);
             glUniform4f(c.colorLoc, 1.f, 1.f, 1.f, 1.f);
@@ -1339,6 +1348,11 @@ void frameLoop(VrContext &c) {
          */
         if (c.panelActive.load() && gPanelUpdate != nullptr) {
             gPanelUpdate();
+        }
+
+        // 播放画面：同样必须在渲染线程取帧（与视频纹理同一个 GL 上下文）
+        if (c.videoActive.load() && gVideoUpdate != nullptr) {
+            gVideoUpdate();
         }
 
         // 手柄状态（诊断阶段：变化即打日志，先看清 PICO 到底发哪些事件）
@@ -1574,6 +1588,70 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetPanelActive(JNIEnv *env, jobject /* 
                                                        jboolean active) {
     g.panelActive = (active == JNI_TRUE);
     LOGI("面板激活状态 → %s", g.panelActive.load() ? "true" : "false");
+}
+
+/**
+ * 建播放画面用的纹理与 SurfaceTexture（2026-10-05）。
+ *
+ * 与面板纹理同一个套路：在 VR 上下文里建 OES 外部纹理，包成 SurfaceTexture
+ * 交回 Java 侧，由 ExoPlayer 直接往这个 Surface 输出视频帧。播放时它就取代面板
+ * 贴到同一块平面上（原生播放屏），这也是方案里「播放屏 VR 原生」的第一步。
+ */
+extern "C" JNIEXPORT jobject JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeCreateVideoSurfaceTexture(JNIEnv *env,
+                                                                  jobject /* this */) {
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    if (tex == 0) {
+        LOGE("创建视频纹理失败");
+        return nullptr;
+    }
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, tex);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, 0);
+
+    jclass stClass = env->FindClass("android/graphics/SurfaceTexture");
+    if (stClass == nullptr) {
+        LOGE("找不到 SurfaceTexture 类");
+        return nullptr;
+    }
+    jmethodID ctor = env->GetMethodID(stClass, "<init>", "(I)V");
+    if (ctor == nullptr) {
+        LOGE("找不到 SurfaceTexture 构造方法");
+        return nullptr;
+    }
+    jobject st = env->NewObject(stClass, ctor, (jint) tex);
+    if (st == nullptr) {
+        LOGE("创建视频 SurfaceTexture 失败");
+        return nullptr;
+    }
+
+    g.videoTex = tex;
+    g.videoActive = false;
+
+    auto *globalRef = env->NewGlobalRef(st);
+    jmethodID updateTexImage = env->GetMethodID(stClass, "updateTexImage", "()V");
+    if (updateTexImage != nullptr) {
+        gVideoUpdate = [globalRef, updateTexImage]() {
+            JNIEnv *e = nullptr;
+            if (g.jvm == nullptr) return;
+            if (g.jvm->GetEnv(reinterpret_cast<void **>(&e), JNI_VERSION_1_6) != JNI_OK) return;
+            e->CallVoidMethod(globalRef, updateTexImage);
+        };
+    }
+    LOGI("视频纹理与 SurfaceTexture 已创建（在 VR 上下文里）：tex=%u", tex);
+    return st;
+}
+
+/** 是否正在播放：true 时贴视频纹理、收起面板，false 时回到面板 */
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetVideoActive(JNIEnv *env, jobject /* this */,
+                                                       jboolean active) {
+    g.videoActive = (active == JNI_TRUE);
+    LOGI("播放画面状态 → %s", g.videoActive.load() ? "true" : "false");
 }
 
 /**
