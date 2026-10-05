@@ -864,17 +864,23 @@ void syncInput(VrContext &c) {
 }
 
 /**
- * 激光的模型矩阵。
+ * 激光的模型矩阵（2026-10-05 run 104 重写：run 103 实机看不到激光）。
  *
- * 思路：vbo 里的四边形是 1x1 大小、朝 +Z 的片子；这里把它
- *   - 缩成 0.006 宽（细线）x 0.006 高 x 5 长（够到面前 5 米）
- *   - 沿 -Z 延伸（OpenGL 视线方向），使射线从手柄往前射
- *   - 平移到手柄 aim 的位置并按 aim 的朝向旋转
- * 由此得到一条从手柄射向前方的绿色细光束。
+ * run 103 的写法把四边形沿 -Z 缩放成"细长条"，再整体平移 -len/2。
+ * 问题：先缩放后平移，且缩放矩阵的 z 分量带负号，等于把片子翻到身后，
+ * 加上 vbo 顶点本来就是 ±0.5 的方形，最终几何落在手柄背后、朝向也反了，
+ * 所以视野里什么都没有。
+ *
+ * 现在改成几何上无歧义的做法：
+ *   - 顶点数据用 ±0.5 的方形（vbo 里本来就是）
+ *   - 模型矩阵直接给"宽 half*2、高 half*2、长 len"的缩放（**不加负号**）
+ *   - 平移把它推到手柄前方 len/2 处，让光束从手柄出发向前伸
+ *   - 光线朝向由手柄姿态的旋转矩阵决定
+ * 这样无论 vbo 里是朝 +Z 还是 -Z 的片子，光束都从手柄沿指向射出。
  */
 Mat4 laserModelFrom(const XrPosef &pose) {
-    const float len = 5.0f;
-    const float half = 0.003f;
+    const float len = 6.0f;      // 6 米，足够指到面前的银幕
+    const float half = 0.012f;   // 加粗一点，细线在 VR 里容易看不见
 
     // 姿态四元数 → 旋转矩阵（列主序）
     const float x = pose.orientation.x, y = pose.orientation.y;
@@ -890,17 +896,26 @@ Mat4 laserModelFrom(const XrPosef &pose) {
     rot.m[9] = 2 * (y * z - x * w);
     rot.m[10] = 1 - 2 * (x * x + y * y);
 
-    // 缩放：细线，沿 -Z 拉长（负号让光往前走）
+    // 缩放：细长条（宽度 half*2，长度 len）
     Mat4 scale = identity();
-    scale.m[0] = half;
-    scale.m[5] = half;
-    scale.m[10] = -len;
+    scale.m[0] = half * 2.f;
+    scale.m[5] = half * 2.f;
+    scale.m[10] = len;
 
-    // 平移：手柄位置，沿 -Z 退半个长度，使光从手柄出发向前
+    /*
+     * 平移：先沿手柄本地 -Z 前进 len/2（光束中心在前方半个长度处），
+     * 再把手柄位置加上去。旋转体现在 rot 里，所以本地 -Z 就是"手柄指向"。
+     *
+     * OpenXR 的手柄姿态：-Z 是手柄指向（与 OpenGL 相机朝向一致）。
+     */
+    const float fwdX = -rot.m[8] * (len * 0.5f);
+    const float fwdY = -rot.m[9] * (len * 0.5f);
+    const float fwdZ = -rot.m[10] * (len * 0.5f);
+
     Mat4 trans = identity();
-    trans.m[12] = pose.position.x;
-    trans.m[13] = pose.position.y;
-    trans.m[14] = pose.position.z - len * 0.5f;
+    trans.m[12] = pose.position.x + fwdX;
+    trans.m[13] = pose.position.y + fwdY;
+    trans.m[14] = pose.position.z + fwdZ;
 
     return multiply(trans, multiply(rot, scale));
 }
@@ -1102,6 +1117,16 @@ void frameLoop(VrContext &c) {
 
         // 手柄状态（诊断阶段：变化即打日志，先看清 PICO 到底发哪些事件）
         syncInput(c);
+        if (c.aimValid[0] || c.aimValid[1]) {
+            static int aimLog = 0;
+            if (aimLog < 2) {
+                const XrPosef &p0 = c.aimValid[0] ? c.aimPose[0] : c.aimPose[1];
+                LOGI("手柄指向可用：pos=(%.2f, %.2f, %.2f) 朝向=(%.2f, %.2f, %.2f, %.2f)",
+                     p0.position.x, p0.position.y, p0.position.z,
+                     p0.orientation.x, p0.orientation.y, p0.orientation.z, p0.orientation.w);
+                aimLog++;
+            }
+        }
 
         bool rendered = false;
         if (fs.shouldRender && c.sessionRunning) {
