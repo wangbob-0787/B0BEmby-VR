@@ -42,6 +42,13 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var errorMessage by mutableStateOf<String?>(null)
         private set
+    /**
+     * 首页最后一处错误（2026-10-05 立）：errorMessage 会被清掉换成 Toast，
+     * 而 VR 里看不见系统 Toast —— 父亲遇到「首页暂无数据」时无从判断原因。
+     * 这个字段只增不清，直接画在面板上。
+     */
+    var lastError by mutableStateOf<String?>(null)
+        private set
 
     // === 首屏缓存:上次首页数据先画出来,网络请求在后台刷新(大库首查约 6 秒,不能干等) ===
     private val cacheFile = java.io.File(application.filesDir, "home_cache.json")
@@ -78,6 +85,9 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun loadData() {
         if (!repository.isLoggedIn) {
+            val why = "没有登录会话（服务器=${repository.serverUrl ?: "无"}）"
+            lastError = why
+            android.util.Log.w("B0BEmbyVR", "首页：$why —— 首页会显示暂无数据")
             resumeItems = emptyList()
             libraryLatestItems = emptyList()
             favoriteItems = emptyList()
@@ -92,15 +102,30 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val resumeDeferred = async {
                     try { repository.getResumeItems() }
-                    catch (e: Exception) { errorMessage = e.message; emptyList() }
+                    catch (e: Exception) {
+                        errorMessage = e.message
+                        lastError = "继续观看：${e.message}"
+                        android.util.Log.w("B0BEmbyVR", "首页「继续观看」失败：${e.message}")
+                        emptyList()
+                    }
                 }
                 val latestDeferred = async {
                     try { repository.getLatestItems() }
-                    catch (e: Exception) { errorMessage = e.message; emptyList() }
+                    catch (e: Exception) {
+                        errorMessage = e.message
+                        lastError = "继续观看：${e.message}"
+                        android.util.Log.w("B0BEmbyVR", "首页「继续观看」失败：${e.message}")
+                        emptyList()
+                    }
                 }
                 val favDeferred = async {
                     try { repository.getFavoriteItems() }
-                    catch (e: Exception) { errorMessage = e.message; emptyList() }
+                    catch (e: Exception) {
+                        errorMessage = e.message
+                        lastError = "继续观看：${e.message}"
+                        android.util.Log.w("B0BEmbyVR", "首页「继续观看」失败：${e.message}")
+                        emptyList()
+                    }
                 }
                 // 直播频道：失败不影响首页其余部分（服务器没配直播源时就是空行）
                 val liveDeferred = async {
@@ -119,7 +144,9 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 liveTvView = viewsDeferred.await()
                     .firstOrNull { it.collectionType.equals("livetv", ignoreCase = true) }
             } catch (e: Exception) {
+                android.util.Log.w("B0BEmbyVR", "首页加载整体失败：${e.message}")
                 if (errorMessage == null) errorMessage = e.message
+                if (lastError == null) lastError = "首页加载失败：${e.message}"
                 resumeItems = emptyList()
                 libraryLatestItems = emptyList()
                 favoriteItems = emptyList()

@@ -95,6 +95,24 @@ fun PanelApp(onPlayRequested: (mediaId: String, positionTicks: Long) -> Unit) {
     // 加载完成后一律进 home：
     // 已登录 → 正常首页；未登录 → 首页显示「请添加 Emby 服务器」空状态
     // （父亲 2026-10-04：登录面板取消，进入应用后自己添加服务器，支持多服务器切换）
+    /*
+     * 已保存服务器/账号，但当前没有会话（例如上次退出时会话没落住）→ 自动切回第一个账号。
+     * 不这么做的话首页一片「暂无数据」，而 VR 里没有进「账号」页的入口
+     * （2026-10-05 父亲实测：首页拉不到数据）。
+     */
+    val accountViewModel: LoginViewModel = viewModel()
+    val savedAccounts = accountViewModel.savedAccounts
+    LaunchedEffect(isLoaded, isLoggedIn, savedAccounts.size) {
+        if (isLoaded && !isLoggedIn && savedAccounts.isNotEmpty()) {
+            android.util.Log.w("B0BEmbyVR", "有 ${savedAccounts.size} 个已保存服务器但没有会话，自动切回第一个")
+            accountViewModel.switchAccount(savedAccounts.first().id, onSuccess = {
+                android.util.Log.i("B0BEmbyVR", "自动切回账号成功")
+            }, onError = { msg ->
+                android.util.Log.e("B0BEmbyVR", "自动切回账号失败：$msg")
+            })
+        }
+    }
+
     LaunchedEffect(isLoaded, isLoggedIn) {
         // 登录成功（isLoggedIn 变 true）也会触发，自动从登录页回到首页
         if (isLoaded && navController.currentDestination?.route != "home") {

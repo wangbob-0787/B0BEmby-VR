@@ -61,6 +61,7 @@ fun HomeScreen(
     val liveTvView = homeViewModel.liveTvView
     val isLoading = homeViewModel.isLoading
     val errorMessage = homeViewModel.errorMessage
+    val lastError = homeViewModel.lastError
 
     // 焦点是否还在顶部大片头上（离开就暂停自动轮播，父亲 2026-09-30 定）
     var heroFocused by remember { mutableStateOf(false) }
@@ -220,6 +221,18 @@ fun HomeScreen(
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
+        /*
+         * 首页数据出问题时，把原因写在屏幕最上面（VR 里看不到系统 Toast）。
+         */
+        if (!lastError.isNullOrBlank()) {
+            Text(
+                text = "首页数据异常：$lastError",
+                color = Color(0xFFFF7A7A),
+                fontSize = 18.sp,
+                modifier = Modifier.padding(start = 32.dp, top = 8.dp),
+            )
+        }
+
         // 顶部状态栏
         TopStatusBar(
             currentVersion = mainViewModel.currentVersion,
