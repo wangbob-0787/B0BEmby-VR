@@ -245,8 +245,11 @@ class MainActivity : ComponentActivity() {
                  * 指着哪里就激活哪里（由 PanelLayer 用光标位置发鼠标点击实现）。
                  * 若在这里再补一个 OK，就会出现「指着空白处扣扳机却激活了当前焦点元素」，
                  * 与鼠标语义冲突（父亲 2026-10-04 定）。
+                 *
+                 * 2026-10-06 补：播放中光柱指在海报墙上时，这一下是"点海报墙"，
+                 * 不能再当成播放/暂停（否则点海报把片子按停了）。
                  */
-                if (renderer.videoActive) togglePlayPause()
+                if (renderer.videoActive && !panelPointerOnPanel) togglePlayPause()
             }
             InputRouter.Action.BACK -> {
                 /*

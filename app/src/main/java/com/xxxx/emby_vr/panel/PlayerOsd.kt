@@ -30,6 +30,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
@@ -90,8 +91,10 @@ fun PlayerOsdBar(state: OsdState) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xF0141618))
-            .padding(horizontal = 24.dp, vertical = 16.dp),
+            // 父亲 2026-10-06 定：整条倒圆角、底色改暗灰（原来是近黑）
+            .clip(RoundedCornerShape(36.dp))
+            .background(Color(0xFF2B2E33))
+            .padding(horizontal = 30.dp, vertical = 18.dp),
     ) {
         // ① 进度行：当前时间 + 进度条 + 总时长
         Row(verticalAlignment = Alignment.CenterVertically) {

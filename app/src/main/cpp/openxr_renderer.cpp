@@ -355,6 +355,25 @@ struct EyeSwapchain {
     std::vector<GLuint> fbos;
 };
 
+/** 一块虚拟屏的摆位：中心、朝向（偏航 + 仰角）、宽度（米） */
+struct ScreenPlacement {
+    float cx, cy, cz;
+    float yawDeg;    // 绕 Y 轴偏航（左右）
+    float pitchDeg;  // 绕 X 轴仰角（上下；拖动时用来始终正对人）
+    float width;
+};
+
+/** 正前方那块屏（银幕）：播放时贴视频，没播时是暗色空屏 */
+constexpr ScreenPlacement kFrontScreen{0.f, 0.f, -3.2f, 0.f, 0.f, 3.5f};
+/**
+ * 海报墙的**初始**摆位：左前方、斜着正对观影者。
+ *
+ * 父亲 2026-10-05 定：进 VR 空间就是「前方一块银幕、左侧斜放海报墙」。
+ * 之后可以用光柱按住扳机把它拖走（球面移动，见 pushInput），
+ * 所以真正的位置记在 VrContext 的 panelPos* 里，这里只是起点。
+ */
+constexpr ScreenPlacement kSideScreen{-2.25f, -0.05f, -2.05f, 46.f, 0.f, 2.8f};
+
 struct VrContext {
     JavaVM *jvm = nullptr;
     jobject activity = nullptr;   // 全局引用
@@ -405,17 +424,22 @@ struct VrContext {
     bool sinkPanelFocusOn[2] = {false, false};   // 上一次回推的"光柱在海报墙上"状态
 
     /**
-     * 海报墙的额外位移（父亲用光柱按住扳机拖着挪，2026-10-06）。基准是 kSideScreen。
+     * 海报墙当前位置与朝向（父亲 2026-10-06：按住扳机拖它，在以手柄为球心的球面上挪）。
+     * 初值 = kSideScreen（左前方斜放）；拖动时更新位置，朝向始终对着观影者。
      */
-    std::atomic<float> panelOffX{0.f};
-    std::atomic<float> panelOffY{0.f};
-    std::atomic<float> panelOffZ{0.f};
+    std::atomic<float> panelPosX{kSideScreen.cx};
+    std::atomic<float> panelPosY{kSideScreen.cy};
+    std::atomic<float> panelPosZ{kSideScreen.cz};
+    std::atomic<float> panelYawDeg{kSideScreen.yawDeg};
+    std::atomic<float> panelPitchDeg{kSideScreen.pitchDeg};
 
-    /** 拖海报墙的手感状态：是否抓着、是否真拖动过、按下那一刻的面内坐标 */
+    /** 拖海报墙的手感状态：是否抓着、是否真拖动过、按下那一刻的球面半径与起点 */
     bool panelDragActive[2] = {false, false};
     bool panelDragMoved[2] = {false, false};
-    float panelDragU0[2] = {0.f, 0.f};
-    float panelDragV0[2] = {0.f, 0.f};
+    float panelDragRadius[2] = {0.f, 0.f};
+    float panelDragStartX[2] = {0.f, 0.f};
+    float panelDragStartY[2] = {0.f, 0.f};
+    float panelDragStartZ[2] = {0.f, 0.f};
     bool sinkStickPushed[2] = {false, false};   // 摇杆是否处在"推着"的状态（回中要补一帧零值）
     bool sinkLastBack[2] = {false, false};
     double sinkStickAt[2] = {0.0, 0.0}; // 摇杆滚动节拍（毫秒）
@@ -1108,23 +1132,7 @@ void aimDirection(const XrPosef &aim, float *dx, float *dy, float *dz) {
  * 中心点 + 绕 Y 轴偏航（度）+ 宽度（米），高按 16:9 推。
  * 想调"两块屏离多远、斜多少、多大"，只改下面两个常量。
  */
-struct ScreenPlacement {
-    float cx, cy, cz;
-    float yawDeg;
-    float width;
-};
-
-/** 正前方那块屏：浏览时是海报墙，播放时是播放画面 */
-constexpr ScreenPlacement kFrontScreen{0.f, 0.f, -3.2f, 0.f, 3.5f};
-/**
- * 播放时的海报墙：挪到左前方、朝右前方斜放，正对观影者。
- *
- * 摆位由父亲 2026-10-05 定：进入 VR 空间就是「前方一块银幕、左侧斜放海报墙」，
- * 两块屏常驻，不再随播放状态来回挪。
- */
-constexpr ScreenPlacement kSideScreen{-2.25f, -0.05f, -2.05f, 46.f, 2.8f};
-
-/** 拖海报墙时"算不算动了"的阈值（米，面内） */
+/** 拖海报墙时"算不算动了"的阈值（米，面板中心位移） */
 constexpr float kPanelDragSlop = 0.02f;
 
 /**
@@ -1133,18 +1141,26 @@ constexpr float kPanelDragSlop = 0.02f;
  */
 ScreenPlacement panelPlacement(const VrContext &c) {
     ScreenPlacement p = kSideScreen;
-    p.cx += c.panelOffX.load();
-    p.cy += c.panelOffY.load();
-    p.cz += c.panelOffZ.load();
+    p.cx = c.panelPosX.load();
+    p.cy = c.panelPosY.load();
+    p.cz = c.panelPosZ.load();
+    p.yawDeg = c.panelYawDeg.load();
+    p.pitchDeg = c.panelPitchDeg.load();
     return p;
 }
 
-/** 摆位 → 模型矩阵（位置 + 绕 Y 轴旋转 + 尺寸；复用控制条那套 poseScaleModel） */
+/**
+ * 摆位 → 模型矩阵（位置 + 偏航/仰角 + 尺寸；复用控制条那套 poseScaleModel）。
+ * 旋转顺序：先绕 X 轴仰角、再绕 Y 轴偏航 → q = qYaw ⊗ qPitch。
+ */
 Mat4 placementModel(const ScreenPlacement &p) {
-    const float half = p.yawDeg * 3.14159265358979f / 360.f;
+    const float hy = p.yawDeg * 3.14159265358979f / 360.f;
+    const float hp = p.pitchDeg * 3.14159265358979f / 360.f;
+    const float sy = sinf(hy), cy = cosf(hy);
+    const float sp = sinf(hp), cp = cosf(hp);
     XrPosef pose{};
     pose.position = {p.cx, p.cy, p.cz};
-    pose.orientation = {0.f, sinf(half), 0.f, cosf(half)};
+    pose.orientation = {cy * sp, sy * cp, -sy * sp, cy * cp};
     return poseScaleModel(pose, p.width, p.width * 9.f / 16.f, 1.f);
 }
 
@@ -1160,21 +1176,26 @@ bool rayHitsPlacement(const XrPosef &aim, const ScreenPlacement &p, float *outT,
     float dx = 0.f, dy = 0.f, dz = 0.f;
     aimDirection(aim, &dx, &dy, &dz);
     *outT = 0.f;
-    // 屏的基向量：法线 (0,0,1) 与面内 x 轴 (1,0,0) 各绕 Y 轴转 yaw；面内 y 轴不动
-    const float th = p.yawDeg * 3.14159265358979f / 180.f;
-    const float ct = cosf(th), st = sinf(th);
-    const float nx = st, nz = ct;
-    const float ux = ct, uz = -st;
-    const float denom = dx * nx + dz * nz;
+    // 屏的基向量：由偏航 + 仰角算（先绕 X 仰角、再绕 Y 偏航）
+    const float yaw = p.yawDeg * 3.14159265358979f / 180.f;
+    const float pitch = p.pitchDeg * 3.14159265358979f / 180.f;
+    const float cyaw = cosf(yaw), syaw = sinf(yaw);
+    const float cpit = cosf(pitch), spit = sinf(pitch);
+    const float nx = syaw * cpit, ny = -spit, nz = cyaw * cpit;      // 法线
+    const float ux = cyaw, uy = 0.f, uz = -syaw;                     // 面内 x 轴
+    const float vx = syaw * spit, vy = cpit, vz = cyaw * spit;       // 面内 y 轴
+    const float denom = dx * nx + dy * ny + dz * nz;
     if (fabsf(denom) < 1e-6f) return false;                        // 与屏平行，永不相交
-    const float t = ((p.cx - aim.position.x) * nx + (p.cz - aim.position.z) * nz) / denom;
+    const float t = ((p.cx - aim.position.x) * nx + (p.cy - aim.position.y) * ny +
+                     (p.cz - aim.position.z) * nz) / denom;
     if (t <= 0.f) return false;                                    // 交点在身后
     *outT = t;
     const float wx = aim.position.x + dx * t;
     const float wy = aim.position.y + dy * t;
     const float wz = aim.position.z + dz * t;
-    const float u = (wx - p.cx) * ux + (wz - p.cz) * uz;
-    const float v = wy - p.cy;
+    const float rx = wx - p.cx, ry = wy - p.cy, rz = wz - p.cz;
+    const float u = rx * ux + ry * uy + rz * uz;
+    const float v = rx * vx + ry * vy + rz * vz;
     const float halfW = p.width * 0.5f;
     const float halfH = p.width * 9.f / 16.f * 0.5f;
     if (fabsf(u) > halfW || fabsf(v) > halfH) return false;         // 交点出了屏范围
@@ -1192,24 +1213,36 @@ bool rayHitsPlacement(const XrPosef &aim, const ScreenPlacement &p, float *outT,
  * 起播/换片到第一帧之间可能有好几秒（服务端选流、转码、缓冲），这段时间银幕上
  * 要看得见"在加载"，不能是一块死屏。做法：一圈小点绕着银幕中心转，越靠"头"越亮。
  */
+/**
+ * 银幕上的加载转圈（父亲 2026-10-06 定：绿色、带缺口的圆环箭头、顺时针旋转）。
+ *
+ * 用一圈小方块拼出细环，缺口处不画 —— 缺口就是"箭头"，转起来方向一眼能看出。
+ * 只在「已开播但第一帧还没到」这段时间画（换片清屏后的等待）。
+ */
 void drawSpinner(VrContext &c, const Mat4 &proj, const Mat4 &view4) {
     if (c.vbo == 0 || c.program == 0) return;
     const double now = std::chrono::duration<double>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
-    constexpr int kDots = 10;
-    constexpr float kRadius = 0.17f;      // 转圈半径（米）
-    constexpr float kDotSize = 0.055f;    // 每颗点直径（米）
-    for (int i = 0; i < kDots; i++) {
-        const float ang = (float) (now * 3.2) + (float) i * (6.2831853f / (float) kDots);
-        // 尾巴暗、头亮：转起来才有方向感
-        const float fade = 0.20f + 0.80f * (float) (kDots - i) / (float) kDots;
-        XrPosef dot{};
-        dot.position = {kFrontScreen.cx + cosf(ang) * kRadius,
+    constexpr int kSegs = 24;         // 整圈分 24 段
+    constexpr int kGapSegs = 5;       // 缺口占 5 段（约 75°）
+    constexpr float kRadius = 0.16f;  // 环半径（米）
+    constexpr float kThick = 0.018f;  // 环的粗细（米）
+    const float segLen = 2.f * 3.14159265358979f * kRadius / (float) kSegs;
+    const float step = 2.f * 3.14159265358979f / (float) kSegs;
+    const float base = (float) (-now * 2.6);   // 角度递减 = 顺时针
+    for (int i = 0; i < kSegs - kGapSegs; i++) {
+        const float ang = base + (float) i * step;
+        // 尾巴暗、缺口那头亮：看起来像个箭头在转
+        const float fade = 0.45f + 0.55f * (1.f - (float) i / (float) (kSegs - kGapSegs));
+        XrPosef seg{};
+        seg.position = {kFrontScreen.cx + cosf(ang) * kRadius,
                         kFrontScreen.cy + sinf(ang) * kRadius,
                         kFrontScreen.cz + 0.012f};   // 稍微抬出来，别和银幕抢像素
-        dot.orientation = {0.f, 0.f, 0.f, 1.f};
-        const Mat4 m = poseScaleModel(dot, kDotSize, kDotSize, 1.f);
-        drawMesh(c, c.vbo, 6, multiply(multiply(proj, view4), m), fade, fade, fade, true);
+        const float half = ang * 0.5f;
+        seg.orientation = {0.f, 0.f, sinf(half), cosf(half)};   // 绕 Z 轴摆到这一段
+        const Mat4 m = poseScaleModel(seg, segLen, kThick, 1.f);
+        drawMesh(c, c.vbo, 6, multiply(multiply(proj, view4), m),
+                 0.16f * fade, 0.85f * fade, 0.32f * fade, false);
     }
 }
 
@@ -1405,30 +1438,46 @@ void pushInput(VrContext &c) {
             }
 
             /*
-             * 按住扳机拖海报墙（父亲 2026-10-06）：抓哪跟哪 ——
-             * 记下按下时的面内坐标，按住期间把光点位移换算成面板中心位移；
-             * 松手时若几乎没动，才算一次点击（不然"想拖一下"会顺手点开片子）。
+             * 按住扳机拖海报墙（父亲 2026-10-06 定：以手柄为球心，海报墙在球面上挪）。
+             *
+             * 球心 = 手柄位置，半径 = 按下那一刻手柄到海报墙中心的距离；按住期间
+             * 海报墙中心 = 球心 + 半径 × 光柱方向 —— 光柱扫到哪儿它跟到哪儿，
+             * 朝向同时反解成"正对球心"（也就是正对观影者）。
+             * 松手时若中心几乎没动，才算一次点击（不然"想拖一下"会顺手点开片子）。
              */
             if (c.triggerDown[h]) {
+                const XrVector3f hand = c.aimPose[h].position;
                 if (!c.panelDragActive[h]) {
                     c.panelDragActive[h] = true;
                     c.panelDragMoved[h] = false;
-                    c.panelDragU0[h] = hu;
-                    c.panelDragV0[h] = hv;
+                    const float dx = c.panelPosX.load() - hand.x;
+                    const float dy = c.panelPosY.load() - hand.y;
+                    const float dz = c.panelPosZ.load() - hand.z;
+                    c.panelDragRadius[h] = sqrtf(dx * dx + dy * dy + dz * dz);
+                    c.panelDragStartX[h] = c.panelPosX.load();
+                    c.panelDragStartY[h] = c.panelPosY.load();
+                    c.panelDragStartZ[h] = c.panelPosZ.load();
                 } else {
-                    const float th = place.yawDeg * 3.14159265358979f / 180.f;
-                    const float du = hu - c.panelDragU0[h];
-                    const float dv = hv - c.panelDragV0[h];
-                    if (fabsf(du) > kPanelDragSlop || fabsf(dv) > kPanelDragSlop) {
+                    float ddx = 0.f, ddy = 0.f, ddz = 0.f;
+                    aimDirection(c.aimPose[h], &ddx, &ddy, &ddz);
+                    const float r = c.panelDragRadius[h];
+                    const float tx = hand.x + ddx * r;
+                    const float ty = hand.y + ddy * r;
+                    const float tz = hand.z + ddz * r;
+                    const float mx = tx - c.panelDragStartX[h];
+                    const float my = ty - c.panelDragStartY[h];
+                    const float mz = tz - c.panelDragStartZ[h];
+                    if (sqrtf(mx * mx + my * my + mz * mz) > kPanelDragSlop) {
                         c.panelDragMoved[h] = true;
                     }
                     if (c.panelDragMoved[h]) {
-                        // 面内 x 轴 = (cos, 0, -sin)；面内 y 轴 = (0, 1, 0)
-                        c.panelOffX = c.panelOffX.load() + du * cosf(th);
-                        c.panelOffZ = c.panelOffZ.load() - du * sinf(th);
-                        c.panelOffY = c.panelOffY.load() + dv;
-                        c.panelDragU0[h] = hu;
-                        c.panelDragV0[h] = hv;
+                        c.panelPosX = tx;
+                        c.panelPosY = ty;
+                        c.panelPosZ = tz;
+                        // 法线指回球心（= 光柱方向的反向），反解偏航与仰角
+                        const float kRad2Deg = 180.f / 3.14159265358979f;
+                        c.panelPitchDeg = asinf(ddy) * kRad2Deg;
+                        c.panelYawDeg = atan2f(-ddx, -ddz) * kRad2Deg;
                     }
                 }
             } else if (c.panelDragActive[h]) {
@@ -1436,8 +1485,9 @@ void pushInput(VrContext &c) {
                 c.panelDragActive[h] = false;
                 c.panelDragMoved[h] = false;
                 if (moved) {
-                    LOGI("海报墙：挪到 偏移=(%.2f, %.2f, %.2f)", c.panelOffX.load(),
-                         c.panelOffY.load(), c.panelOffZ.load());
+                    LOGI("海报墙：挪到 (%.2f, %.2f, %.2f) 朝向 %.0f°/%.0f°", c.panelPosX.load(),
+                         c.panelPosY.load(), c.panelPosZ.load(), c.panelYawDeg.load(),
+                         c.panelPitchDeg.load());
                 } else if (c.sinkClick != nullptr) {
                     LOGI("VR 输入：%s 扳机 → 面板点击 (%d, %d)", handName[h], (int) px, (int) py);
                     env->CallVoidMethod(c.inputSink, c.sinkClick, px, py);
