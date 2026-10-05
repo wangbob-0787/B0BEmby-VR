@@ -820,22 +820,27 @@ class PanelLayer(
                 val dragged = isDragging
                 isDragging = false
                 /*
-                 * 惯性（父亲 2026-10-05 定）：松手时若光点还在动（= 推得快），
-                 * 就按当时速度继续滑，1 秒内线性减速到 0；
-                 * 推住不动再松手（光点是静的）→ 没速度 → 直接停，不滑行。
+                 * 惯性（父亲 2026-10-05 定，第二轮修正）：**不管怎么松手都滑**。
+                 *
+                 *  - 松手时光点还在动（快拨）→ 初速 = 当时的光点速度；
+                 *  - 推住不动再松手 → 初速 = 快档速度（RATE_MAX）。
+                 *    （第一版按"没速度就不滑"做，结果父亲实测推住再松手完全不滑 —— 不对）
+                 * 松手后 1 秒内线性减速到 0。
                  * 轮播区里不滑行（否则会连着切好几张，不好控制）。
                  */
                 if (dragged) {
                     val quietAtRelease = now - lastMoveAt
                     val inZone = ClickTargets.zoneAt(px, py) != null
-                    if (quietAtRelease <= HOLD_QUIET_MS + 80L && pointerSpeed > 200f && !inZone) {
-                        inertiaRate = rateOf(pointerSpeed)
+                    if (!inZone) {
+                        inertiaRate =
+                            if (quietAtRelease > HOLD_QUIET_MS) RATE_MAX else rateOf(pointerSpeed)
                         inertiaStartAt = now
                         inertiaDx = lastScrollDx
                         inertiaDy = lastScrollDy
                         Log.i(
                             TAG,
-                            "松手带速度：光点 ${pointerSpeed.toInt()}px/s → 惯性 ${"%.1f".format(inertiaRate)}格/秒，1 秒内减速停",
+                            "松手滑行：光点静了 ${quietAtRelease}ms 速度 ${pointerSpeed.toInt()}px/s " +
+                                "→ 初速 ${"%.1f".format(inertiaRate)}格/秒，1 秒内减速停",
                         )
                         postTicker()
                     }
