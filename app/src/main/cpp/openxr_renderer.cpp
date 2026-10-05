@@ -364,6 +364,7 @@ struct VrContext {
     XrAction menuAction = XR_NULL_HANDLE;         // 菜单
     XrSpace aimSpaces[2] = {XR_NULL_HANDLE, XR_NULL_HANDLE};
     bool inputReady = false;
+    XrTime frameDisplayTime = 0;   // 本帧预测显示时间（定位手柄姿态要用它）
 
     // 每帧记录的手柄状态（供打日志与后续交互使用）
     XrPosef aimPose[2];
@@ -805,13 +806,30 @@ void syncInput(VrContext &c) {
     for (int i = 0; i < 2; i++) {
         // --- aim 姿态 ---
         XrSpaceLocation loc{XR_TYPE_SPACE_LOCATION};
-        if (api.LocateSpace != nullptr &&
-            XR_SUCCEEDED(api.LocateSpace(c.aimSpaces[i], c.localSpace,
-                                         /*time=*/0, &loc))) {
+        /*
+         * 用本帧预测显示时间定位（原来传 0）。
+         * time=0 在部分运行时下"该时刻的姿态无法确定"，会一直返回无效 ——
+         * run 104 实机就是这样：按键全通，但姿态始终拿不到，画不出激光。
+         */
+        const bool located = api.LocateSpace != nullptr &&
+                XR_SUCCEEDED(api.LocateSpace(c.aimSpaces[i], c.localSpace,
+                                             c.frameDisplayTime, &loc));
+        if (located) {
             const bool posValid = (loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0;
             const bool oriValid = (loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0;
             c.aimValid[i] = posValid && oriValid;
             if (c.aimValid[i]) c.aimPose[i] = loc.pose;
+            if (!c.aimValid[i] && loc.locationFlags != 0) {
+                // 首次拿到"有标志位但不可用"的情况，打一次便于定位原因
+                static int flagLog = 0;
+                if (flagLog < 4) {
+                    LOGI("手柄姿态标志位（%s）=0x%x（含位置位=%d 朝向位=%d）",
+                         handName[i], (unsigned) loc.locationFlags,
+                         (loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) ? 1 : 0,
+                         (loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) ? 1 : 0);
+                    flagLog++;
+                }
+            }
         } else {
             c.aimValid[i] = false;
         }
@@ -1116,10 +1134,11 @@ void frameLoop(VrContext &c) {
         }
 
         // 手柄状态（诊断阶段：变化即打日志，先看清 PICO 到底发哪些事件）
+        c.frameDisplayTime = fs.predictedDisplayTime;
         syncInput(c);
         if (c.aimValid[0] || c.aimValid[1]) {
             static int aimLog = 0;
-            if (aimLog < 2) {
+            if (aimLog < 6) {
                 const XrPosef &p0 = c.aimValid[0] ? c.aimPose[0] : c.aimPose[1];
                 LOGI("手柄指向可用：pos=(%.2f, %.2f, %.2f) 朝向=(%.2f, %.2f, %.2f, %.2f)",
                      p0.position.x, p0.position.y, p0.position.z,
