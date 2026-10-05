@@ -1082,30 +1082,76 @@ void aimDirection(const XrPosef &aim, float *dx, float *dy, float *dz) {
 }
 
 /**
- * 手柄射线 × 面板平面 —— 官方 DetectRayPlaneIntersection 的等价写法
- * （SampleCollisionDetector.cpp：t > 0 且交点落在矩形内才算命中）。
+ * 一块虚拟屏的摆位（2026-10-05 父亲定：海报墙与播放屏要分开）。
  *
- * 比官方多输出一个量：只要**穿过**面板所在平面（t > 0）就把 t 交出去，
- * 即使交点落在矩形外 —— 本地没有深度缓冲，光束不收住会画到面板背后。
- * 返回值仍是"是否命中矩形"（决定要不要画圆点）。
- * 面板：中心 (0, 0, -panelDistance)、法线 +Z、宽 panelWidth、高 panelWidth × 9/16。
+ * 中心点 + 绕 Y 轴偏航（度）+ 宽度（米），高按 16:9 推。
+ * 想调"两块屏离多远、斜多少、多大"，只改下面两个常量。
  */
-bool rayHitsPanel(const VrContext &c, const XrPosef &aim, float *outPlaneT, float *outX,
-                  float *outY) {
+struct ScreenPlacement {
+    float cx, cy, cz;
+    float yawDeg;
+    float width;
+};
+
+/** 正前方那块屏：浏览时是海报墙，播放时是播放画面 */
+constexpr ScreenPlacement kFrontScreen{0.f, 0.f, -3.2f, 0.f, 3.5f};
+/**
+ * 播放时的海报墙：挪到左前方、斜着朝人。
+ *
+ * 以前播放屏就是把海报墙这块屏的贴图换掉 —— 两块屏抢同一块屏，父亲看到的
+ * 就是"海报墙被顶掉"。现在播放时海报墙移到侧位，两块屏同时在。
+ */
+constexpr ScreenPlacement kSideScreen{-2.55f, -0.05f, -2.30f, 34.f, 2.6f};
+
+/** 海报墙当前在哪：浏览时正前方，播放时侧位 */
+ScreenPlacement panelPlacement(const VrContext &c) {
+    return c.videoActive.load() ? kSideScreen : kFrontScreen;
+}
+
+/** 摆位 → 模型矩阵（位置 + 绕 Y 轴旋转 + 尺寸；复用控制条那套 poseScaleModel） */
+Mat4 placementModel(const ScreenPlacement &p) {
+    const float half = p.yawDeg * 3.14159265358979f / 360.f;
+    XrPosef pose{};
+    pose.position = {p.cx, p.cy, p.cz};
+    pose.orientation = {0.f, sinf(half), 0.f, cosf(half)};
+    return poseScaleModel(pose, p.width, p.width * 9.f / 16.f, 1.f);
+}
+
+/**
+ * 手柄射线 × 某块屏的平面 —— 官方 DetectRayPlaneIntersection 的等价写法
+ * （t > 0 且交点落在矩形内才算命中）。
+ *
+ * 输出：平面距离 t（只要穿过平面就给，用于把光束收在屏上）、面内坐标 u/v
+ * （米，右正 / 上正，用来换算面板像素）、世界命中点（画光点用）。
+ */
+bool rayHitsPlacement(const XrPosef &aim, const ScreenPlacement &p, float *outT, float *outU,
+                      float *outV, float *outWx, float *outWy, float *outWz) {
     float dx = 0.f, dy = 0.f, dz = 0.f;
     aimDirection(aim, &dx, &dy, &dz);
-    *outPlaneT = 0.f;
-    if (fabsf(dz) < 1e-6f) return false;                        // 与面板平行，永不相交
-    const float t = (-c.panelDistance - aim.position.z) / dz;   // 平面 z = -panelDistance
-    if (t <= 0.f) return false;                                 // 交点在身后
-    *outPlaneT = t;
-    const float hx = aim.position.x + dx * t;
-    const float hy = aim.position.y + dy * t;
-    const float halfW = c.panelWidth * 0.5f;
-    const float halfH = c.panelWidth * 9.f / 16.f * 0.5f;
-    if (fabsf(hx) > halfW || fabsf(hy) > halfH) return false;    // 交点出了面板范围
-    *outX = hx;
-    *outY = hy;
+    *outT = 0.f;
+    // 屏的基向量：法线 (0,0,1) 与面内 x 轴 (1,0,0) 各绕 Y 轴转 yaw；面内 y 轴不动
+    const float th = p.yawDeg * 3.14159265358979f / 180.f;
+    const float ct = cosf(th), st = sinf(th);
+    const float nx = st, nz = ct;
+    const float ux = ct, uz = -st;
+    const float denom = dx * nx + dz * nz;
+    if (fabsf(denom) < 1e-6f) return false;                        // 与屏平行，永不相交
+    const float t = ((p.cx - aim.position.x) * nx + (p.cz - aim.position.z) * nz) / denom;
+    if (t <= 0.f) return false;                                    // 交点在身后
+    *outT = t;
+    const float wx = aim.position.x + dx * t;
+    const float wy = aim.position.y + dy * t;
+    const float wz = aim.position.z + dz * t;
+    const float u = (wx - p.cx) * ux + (wz - p.cz) * uz;
+    const float v = wy - p.cy;
+    const float halfW = p.width * 0.5f;
+    const float halfH = p.width * 9.f / 16.f * 0.5f;
+    if (fabsf(u) > halfW || fabsf(v) > halfH) return false;         // 交点出了屏范围
+    *outU = u;
+    *outV = v;
+    *outWx = wx;
+    *outWy = wy;
+    *outWz = wz;
     return true;
 }
 
@@ -1283,12 +1329,17 @@ void pushInput(VrContext &c) {
             continue;
         }
 
-        float planeT = 0.f, hx = 0.f, hy = 0.f;
-        const bool hit = rayHitsPanel(c, c.aimPose[h], &planeT, &hx, &hy);
-        if (!hit) continue;   // 指到面板外：不点也不滚
+        /*
+         * 光柱命中哪块屏 —— 海报墙（浏览时正前方，播放时挪到左前方）。
+         * 播放时海报墙换了位置，命中判定必须跟着摆位走，否则点击坐标会整体错位。
+         */
+        const ScreenPlacement place = panelPlacement(c);
+        float planeT = 0.f, hu = 0.f, hv = 0.f, wx = 0.f, wy = 0.f, wz = 0.f;
+        const bool hit = rayHitsPlacement(c.aimPose[h], place, &planeT, &hu, &hv, &wx, &wy, &wz);
+        if (!hit) continue;   // 指到屏外：不点也不滚
 
-        const float px = (hx / c.panelWidth + 0.5f) * kPanelPxW;
-        const float py = (0.5f - hy / (c.panelWidth * 9.f / 16.f)) * kPanelPxH;
+        const float px = (hu / place.width + 0.5f) * kPanelPxW;
+        const float py = (0.5f - hv / (place.width * 9.f / 16.f)) * kPanelPxH;
 
         // 指针移动：超过 2px 才回推，避免每帧刷屏
         if (!c.sinkPointerValid || fabsf(px - c.sinkPointerX) > 2.f ||
@@ -1400,45 +1451,55 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
     const Mat4 proj = perspectiveFromFov(view.fov, 0.05f, 100.f);
     const Mat4 view4 = viewMatrixFromPose(view.pose);
     if (c.program != 0 && c.mvpLoc >= 0) {
-        const Mat4 model = translateScale(
-                0.f, 0.f, -c.panelDistance, c.panelWidth, c.panelWidth * 9.f / 16.f);
-        const Mat4 mvp = multiply(multiply(proj, view4), model);
+        /*
+         * 一块屏：摆位 → 位置/朝向/尺寸，贴 tex（tex = 0 就画底色）。
+         *
+         * 播放画面与海报墙走同一条绘制路径，只有摆位不同 —— 2026-10-05 父亲要求
+         * 「海报墙与播放屏分开」：以前是同一块屏来回换贴图，播放一开海报墙就被顶掉。
+         */
+        auto drawScreen = [&](const ScreenPlacement &place, unsigned tex) {
+            const Mat4 mvp = multiply(multiply(proj, view4), placementModel(place));
+            glUseProgram(c.program);
+            glUniformMatrix4fv(c.mvpLoc, 1, GL_FALSE, mvp.m);
+            if (c.circleLoc >= 0) glUniform1i(c.circleLoc, 0);   // 屏是方的，不做圆形裁剪
+            /*
+             * 三块屏统一规矩：**只有这块纹理自己拿到过帧，才贴它**；没有帧就画底色。
+             * 不这么做的后果（见 panelHasFrame 的注释）：显卡会把另一张外部纹理的画面
+             * 借过来 —— 上一轮是控制条贴上视频，这一轮是播放屏贴上控制条按钮。
+             */
+            if (tex != 0) {
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_EXTERNAL_OES, tex);
+                glUniform1i(c.texLoc, 0);
+                glUniform1i(c.useTexLoc, 1);
+                glUniform4f(c.colorLoc, 1.f, 1.f, 1.f, 1.f);
+            } else {
+                glUniform1i(c.useTexLoc, 0);
+                glUniform4f(c.colorLoc, 0.15f, 0.16f, 0.20f, 1.f);
+            }
+            glBindBuffer(GL_ARRAY_BUFFER, c.vbo);
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void *) 0);
+            glEnableVertexAttribArray(1);
+            glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
+                                  (void *) (3 * sizeof(float)));
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+            glDisableVertexAttribArray(0);
+            glDisableVertexAttribArray(1);
+        };
 
-        glUseProgram(c.program);
-        glUniformMatrix4fv(c.mvpLoc, 1, GL_FALSE, mvp.m);
-        if (c.circleLoc >= 0) glUniform1i(c.circleLoc, 0);   // 面板是方的，不做圆形裁剪
-        /*
-         * 有面板纹理就贴纹理（现有界面），没有就画纯色（证明能出画面）。
-         * 用外部纹理（OES）：面板来自 SurfaceTexture，与 2D 模式同一套链路。
-         */
-        /*
-         * 三块屏统一规矩：**只有这块纹理自己拿到过帧，才贴它**；没有帧就画底色。
-         * 不这么做的后果（见 panelHasFrame 的注释）：显卡会把另一张外部纹理的画面
-         * 借过来 —— 上一轮是控制条贴上视频，这一轮是播放屏贴上控制条按钮。
-         * 播放中视频还没出帧时先继续显示面板，等视频真有帧再切，不闪也不串。
-         */
-        const bool useVideo = c.videoActive.load() && c.videoTex != 0 && c.videoHasFrame.load();
-        const bool usePanel = !useVideo && c.panelActive.load() && c.panelTex != 0 &&
-                              c.panelHasFrame.load();
-        if (useVideo || usePanel) {
-            glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_EXTERNAL_OES, useVideo ? c.videoTex : c.panelTex);
-            glUniform1i(c.texLoc, 0);
-            glUniform1i(c.useTexLoc, 1);
-            glUniform4f(c.colorLoc, 1.f, 1.f, 1.f, 1.f);
-        } else {
-            glUniform1i(c.useTexLoc, 0);
-            glUniform4f(c.colorLoc, 0.15f, 0.16f, 0.20f, 1.f);
+        // 播放画面：播放中占正前方
+        const bool videoReady = c.videoActive.load() && c.videoTex != 0 && c.videoHasFrame.load();
+        if (videoReady) drawScreen(kFrontScreen, c.videoTex);
+
+        // 海报墙：浏览时正前方，播放时挪到左前方；没出帧就先不画（等出帧，不闪也不串）
+        const bool panelReady = c.panelActive.load() && c.panelTex != 0 && c.panelHasFrame.load();
+        if (panelReady) {
+            drawScreen(panelPlacement(c), c.panelTex);
+        } else if (!videoReady) {
+            // 两块都没出帧：在面板该在的位置画一块底色，说明渲染在跑
+            drawScreen(panelPlacement(c), 0);
         }
-        glBindBuffer(GL_ARRAY_BUFFER, c.vbo);
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void *) 0);
-        glEnableVertexAttribArray(1);
-        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
-                              (void *) (3 * sizeof(float)));
-        glDrawArrays(GL_TRIANGLES, 0, 6);
-        glDisableVertexAttribArray(0);
-        glDisableVertexAttribArray(1);
 
         /*
          * 控制条（近场小面板，2026-10-05）：贴在观影者正前方偏下、上仰一点，
@@ -1489,9 +1550,11 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
         for (int h = 0; h < 2; h++) {
             if (!c.aimValid[h]) continue;
 
-            float planeT = 0.f;
-            float hitX = 0.f, hitY = 0.f;
-            const bool hit = rayHitsPanel(c, c.aimPose[h], &planeT, &hitX, &hitY);
+            const ScreenPlacement place = panelPlacement(c);
+            float planeT = 0.f, hu = 0.f, hv = 0.f;
+            float hitX = 0.f, hitY = 0.f, hitZ = 0.f;
+            const bool hit = rayHitsPlacement(c.aimPose[h], place, &planeT, &hu, &hv,
+                                              &hitX, &hitY, &hitZ);
 
             /*
              * 控制条挡在面板前面，射线也得在它上面收住（父亲：光线穿过控制条了）。
@@ -1521,8 +1584,12 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
 
             // 光点：贴在命中点上（朝眼睛方向抬几毫米，避免和面抢像素）
             if (dotOnPanel) {
-                const Mat4 dotModel = translateScale(
-                        hitX, hitY, -c.panelDistance + 0.005f, kDotSize, kDotSize);
+                // 屏可能斜着（播放时的海报墙在左边、朝右前方）：光点跟着屏的朝向转
+                const float pth = place.yawDeg * 3.14159265358979f / 180.f;
+                XrPosef dotPose{};
+                dotPose.position = {hitX + sinf(pth) * 0.005f, hitY, hitZ + cosf(pth) * 0.005f};
+                dotPose.orientation = {0.f, sinf(pth * 0.5f), 0.f, cosf(pth * 0.5f)};
+                const Mat4 dotModel = poseScaleModel(dotPose, kDotSize, kDotSize, 1.f);
                 drawMesh(c, c.vbo, 6, multiply(multiply(proj, view4), dotModel),
                          0.55f, 0.98f, 0.45f, true);
             } else if (dotOnOsd) {
