@@ -18,6 +18,8 @@
 #include <chrono>
 #include <functional>
 #include <cstring>
+#include <string>
+#include <cstring>
 #include <thread>
 #include <vector>
 
@@ -61,6 +63,20 @@ namespace {
 // 按 Khronos 要求：用到的入口点都要先经 xrGetInstanceProcAddr 取一次
 // （loader 需要知道应用用了哪些函数，运行时也可以覆盖实现）。
 struct XrApi {
+    // 手柄输入（XR_EXT / KHR 的标准动作集：aim + trigger + squeeze + thumbstick + 按钮）
+    PFN_xrCreateActionSet CreateActionSet = nullptr;
+    PFN_xrCreateAction CreateAction = nullptr;
+    PFN_xrSuggestInteractionProfileBindings SuggestInteractionProfileBindings = nullptr;
+    PFN_xrAttachSessionActionSets AttachSessionActionSets = nullptr;
+    PFN_xrCreateActionSpace CreateActionSpace = nullptr;
+    PFN_xrLocateSpace LocateSpace = nullptr;
+    PFN_xrSyncActions SyncActions = nullptr;
+    PFN_xrGetActionStateBoolean GetActionStateBoolean = nullptr;
+    PFN_xrGetActionStateFloat GetActionStateFloat = nullptr;
+    PFN_xrGetActionStateVector2f GetActionStateVector2f = nullptr;
+    PFN_xrGetActionStatePose GetActionStatePose = nullptr;
+    PFN_xrPathStringToPath PathStringToPath = nullptr;
+
     PFN_xrInitializeLoaderKHR InitializeLoaderKHR = nullptr;
     PFN_xrGetSystem GetSystem = nullptr;
     PFN_xrEnumerateViewConfigurationViews EnumerateViewConfigurationViews = nullptr;
@@ -123,6 +139,26 @@ bool fetchAll(XrInstance instance) {
     ok &= fetch(instance, "xrLocateViews", api.LocateViews);
     ok &= fetch(instance, "xrGetOpenGLESGraphicsRequirementsKHR",
                 api.GetOpenGLESGraphicsRequirementsKHR);
+
+    /*
+     * 手柄输入相关入口点。这些是扩展函数，某些运行时可能不提供；
+     * 单独取、失败只记日志不整体失败 —— 没有它们画面照样能渲染，
+     * 只是收不到手柄输入（诊断阶段这点很重要，别因为输入不可用就黑屏）。
+     */
+    const bool inputOk = fetch(instance, "xrCreateActionSet", api.CreateActionSet)
+            && fetch(instance, "xrCreateAction", api.CreateAction)
+            && fetch(instance, "xrSuggestInteractionProfileBindings",
+                     api.SuggestInteractionProfileBindings)
+            && fetch(instance, "xrAttachSessionActionSets", api.AttachSessionActionSets)
+            && fetch(instance, "xrCreateActionSpace", api.CreateActionSpace)
+            && fetch(instance, "xrLocateSpace", api.LocateSpace)
+            && fetch(instance, "xrSyncActions", api.SyncActions)
+            && fetch(instance, "xrGetActionStateBoolean", api.GetActionStateBoolean)
+            && fetch(instance, "xrGetActionStateFloat", api.GetActionStateFloat)
+            && fetch(instance, "xrGetActionStateVector2f", api.GetActionStateVector2f)
+            && fetch(instance, "xrGetActionStatePose", api.GetActionStatePose)
+            && fetch(instance, "xrPathStringToPath", api.PathStringToPath);
+    LOGI("手柄输入入口点：%s", inputOk ? "齐备" : "部分缺失（输入不可用，渲染不受影响）");
     return ok;
 }
 
@@ -314,6 +350,30 @@ struct VrContext {
      */
     GLuint panelTex = 0;
     std::atomic<bool> panelActive{false};
+
+    // ---- 手柄输入 ----
+    XrActionSet actionSet = XR_NULL_HANDLE;
+    XrAction aimPoseAction = XR_NULL_HANDLE;      // 手柄指向（激光方向）
+    XrAction triggerAction = XR_NULL_HANDLE;      // 扳机（布尔按下）
+    XrAction triggerValueAction = XR_NULL_HANDLE; // 扳机（浮点力度）
+    XrAction squeezeAction = XR_NULL_HANDLE;      // 侧握
+    XrAction thumbstickAction = XR_NULL_HANDLE;   // 摇杆二维轴
+    XrAction aAction = XR_NULL_HANDLE;            // A / X
+    XrAction bAction = XR_NULL_HANDLE;            // B / Y
+    XrAction menuAction = XR_NULL_HANDLE;         // 菜单
+    XrSpace aimSpaces[2] = {XR_NULL_HANDLE, XR_NULL_HANDLE};
+    bool inputReady = false;
+
+    // 每帧记录的手柄状态（供打日志与后续交互使用）
+    XrPosef aimPose[2];
+    bool aimValid[2] = {false, false};
+    bool triggerDown[2] = {false, false};
+    float triggerValue[2] = {0.f, 0.f};
+    bool squeezeDown[2] = {false, false};
+    XrVector2f thumbstick[2] = {{0.f, 0.f}, {0.f, 0.f}};
+    bool aDown[2] = {false, false};
+    bool bDown[2] = {false, false};
+    bool menuDown[2] = {false, false};
 
     // 平面放在正前方：3.2m 远，3.2m 宽（约 53° 视场），16:9
     float panelDistance = 3.2f;
@@ -561,6 +621,258 @@ bool createSession(VrContext &c) {
     return true;
 }
 
+/* ------------------------------------------------------------------ 手柄输入
+ *
+ * 走 OpenXR 标准动作集（Khronos 官方 loader 那套）：
+ *   动作集 emby  →  交互配置建议（simple_controller / oculus touch 等都绑一遍）
+ *   →  会话附加动作集  →  每帧 SyncActions 后读状态。
+ *
+ * aim 姿态单独建 ActionSpace，就是激光的起点与朝向；
+ * 没有它就没有激光可画。
+ */
+
+/** 交互配置里用到的路径 → XrPath，失败返回 XR_NULL_PATH */
+XrPath pathOf(VrContext &c, const char *s) {
+    XrPath p = XR_NULL_PATH;
+    if (api.PathStringToPath == nullptr) return p;
+    if (XR_FAILED(api.PathStringToPath(c.instance, s, &p))) return XR_NULL_PATH;
+    return p;
+}
+
+bool setupInput(VrContext &c) {
+    if (api.CreateActionSet == nullptr || api.AttachSessionActionSets == nullptr) {
+        LOGW("运行时未提供动作集接口，跳过手柄输入");
+        return false;
+    }
+
+    XrActionSetCreateInfo asci{XR_TYPE_ACTION_SET_CREATE_INFO};
+    strncpy(asci.actionSetName, "emby", sizeof(asci.actionSetName) - 1);
+    strncpy(asci.localizedActionSetName, "Emby 控制", sizeof(asci.localizedActionSetName) - 1);
+    asci.priority = 0;
+    XrResult r = api.CreateActionSet(c.instance, &asci, &c.actionSet);
+    if (XR_FAILED(r)) {
+        LOGE("创建动作集失败：%d", (int) r);
+        return false;
+    }
+
+    auto makeAction = [&](const char *name, const char *label, XrActionType type,
+                          XrAction *out) -> bool {
+        XrActionCreateInfo aci{XR_TYPE_ACTION_CREATE_INFO};
+        strncpy(aci.actionName, name, sizeof(aci.actionName) - 1);
+        strncpy(aci.localizedActionName, label, sizeof(aci.localizedActionName) - 1);
+        aci.actionType = type;
+        aci.countSubactionPaths = 2;
+        const char *hands[2] = {"/user/hand/left", "/user/hand/right"};
+        aci.subactionPaths[0] = pathOf(c, hands[0]);
+        aci.subactionPaths[1] = pathOf(c, hands[1]);
+        const XrResult ar = api.CreateAction(c.actionSet, &aci, out);
+        if (XR_FAILED(ar)) {
+            LOGE("创建动作失败 %s：%d", name, (int) ar);
+            return false;
+        }
+        return true;
+    };
+
+    bool ok = true;
+    ok &= makeAction("aim_pose", "手柄指向", XR_ACTION_TYPE_POSE_INPUT, &c.aimPoseAction);
+    ok &= makeAction("trigger", "扳机", XR_ACTION_TYPE_BOOLEAN_INPUT, &c.triggerAction);
+    ok &= makeAction("trigger_value", "扳机力度", XR_ACTION_TYPE_FLOAT_INPUT, &c.triggerValueAction);
+    ok &= makeAction("squeeze", "侧握", XR_ACTION_TYPE_BOOLEAN_INPUT, &c.squeezeAction);
+    ok &= makeAction("thumbstick", "摇杆", XR_ACTION_TYPE_VECTOR2F_INPUT, &c.thumbstickAction);
+    ok &= makeAction("a_click", "A 键", XR_ACTION_TYPE_BOOLEAN_INPUT, &c.aAction);
+    ok &= makeAction("b_click", "B 键", XR_ACTION_TYPE_BOOLEAN_INPUT, &c.bAction);
+    ok &= makeAction("menu_click", "菜单键", XR_ACTION_TYPE_BOOLEAN_INPUT, &c.menuAction);
+    if (!ok) return false;
+
+    /*
+     * 交互配置建议：把同一批动作绑到多种手柄配置上。
+     * PICO 4 手柄走 khr_simple_controller / oculus touch controller 这两套之一，
+     * 两套都绑一遍，哪套匹配上都能用（多绑不影响）。
+     */
+    const char *profiles[] = {
+            "/interaction_profiles/khr/simple_controller",
+            "/interaction_profiles/oculus/touch_controller",
+            "/interaction_profiles/bytedance/pico_neo3_controller",
+            "/interaction_profiles/bytedance/pico4_controller",
+    };
+    const char *handPaths[2] = {"/user/hand/left", "/user/hand/right"};
+
+    for (const char *prof : profiles) {
+        const XrPath profilePath = pathOf(c, prof);
+        if (profilePath == XR_NULL_PATH) continue;
+
+        struct Binding {
+            XrAction action;
+            const char *path;
+        };
+        std::vector<XrActionSuggestedBinding> bindings;
+        for (const char *hand : handPaths) {
+            const bool right = strstr(hand, "right") != nullptr;
+            bindings.push_back({c.aimPoseAction, pathOf(c, (std::string(hand) + "/input/aim/pose").c_str())});
+            bindings.push_back({c.triggerAction, pathOf(c, (std::string(hand) + "/input/trigger/value").c_str())});
+            bindings.push_back({c.triggerValueAction, pathOf(c, (std::string(hand) + "/input/trigger/value").c_str())});
+            bindings.push_back({c.squeezeAction, pathOf(c, (std::string(hand) + "/input/squeeze/value").c_str())});
+            bindings.push_back({c.thumbstickAction, pathOf(c, (std::string(hand) + "/input/thumbstick").c_str())});
+            bindings.push_back({c.aAction, pathOf(c, (std::string(hand) + (right ? "/input/a/click" : "/input/x/click")).c_str())});
+            bindings.push_back({c.bAction, pathOf(c, (std::string(hand) + (right ? "/input/b/click" : "/input/y/click")).c_str())});
+            bindings.push_back({c.menuAction, pathOf(c, "/input/menu/click")});
+        }
+        // 丢掉取不到路径的绑定（该配置不支持这个输入）
+        std::vector<XrActionSuggestedBinding> valid;
+        for (auto &b : bindings) {
+            if (b.binding != XR_NULL_PATH) valid.push_back(b);
+        }
+
+        XrInteractionProfileSuggestedBinding sbi{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+        sbi.interactionProfile = profilePath;
+        sbi.countSuggestedBindings = (uint32_t) valid.size();
+        sbi.suggestedBindings = valid.data();
+        const XrResult sr = api.SuggestInteractionProfileBindings(c.instance, &sbi);
+        LOGI("绑定交互配置 %s：%u 条（xrResult=%d）", prof, sbi.countSuggestedBindings, (int) sr);
+    }
+
+    XrSessionActionSetsAttachInfo attach{XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
+    attach.countActionSets = 1;
+    attach.actionSets = &c.actionSet;
+    r = api.AttachSessionActionSets(c.session, &attach);
+    if (XR_FAILED(r)) {
+        LOGE("附加动作集失败：%d", (int) r);
+        return false;
+    }
+
+    // aim 姿态空间：激光的起点与朝向
+    for (int i = 0; i < 2; i++) {
+        XrActionSpaceCreateInfo asci2{XR_TYPE_ACTION_SPACE_CREATE_INFO};
+        asci2.action = c.aimPoseAction;
+        asci2.subactionPath = pathOf(c, handPaths[i]);
+        asci2.poseInActionSpace = {{0, 0, 0, 1}, {0, 0, 0}};
+        const XrResult sr2 = api.CreateActionSpace(c.session, &asci2, &c.aimSpaces[i]);
+        if (XR_FAILED(sr2)) {
+            LOGE("创建手柄姿态空间失败（%d）：%d", i, (int) sr2);
+        }
+    }
+
+    c.inputReady = true;
+    LOGI("手柄输入已就绪（动作集 + 姿态空间）");
+    return true;
+}
+
+/** 每帧同步动作并读状态；变化时打日志（诊断阶段的主要输出） */
+void syncInput(VrContext &c) {
+    if (!c.inputReady || api.SyncActions == nullptr) return;
+
+    XrActiveActionSet active{c.actionSet, XR_NULL_PATH};
+    XrActionsSyncInfo syncInfo{XR_TYPE_ACTIONS_SYNC_INFO};
+    syncInfo.countActiveActionSets = 1;
+    syncInfo.activeActionSets = &active;
+    if (XR_FAILED(api.SyncActions(c.session, &syncInfo))) return;
+
+    const char *handName[2] = {"左手", "右手"};
+    XrPath handPaths[2] = {pathOf(c, "/user/hand/left"), pathOf(c, "/user/hand/right")};
+
+    for (int i = 0; i < 2; i++) {
+        // --- aim 姿态 ---
+        XrSpaceLocation loc{XR_TYPE_SPACE_LOCATION};
+        if (api.LocateSpace != nullptr &&
+            XR_SUCCEEDED(api.LocateSpace(c.aimSpaces[i], c.localSpace,
+                                         /*time=*/0, &loc))) {
+            const bool posValid = (loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0;
+            const bool oriValid = (loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0;
+            c.aimValid[i] = posValid && oriValid;
+            if (c.aimValid[i]) c.aimPose[i] = loc.pose;
+        } else {
+            c.aimValid[i] = false;
+        }
+
+        auto readBool = [&](XrAction action, bool &prev, const char *label) {
+            if (action == XR_NULL_HANDLE || api.GetActionStateBoolean == nullptr) return;
+            XrActionStateGetInfo gi{XR_TYPE_ACTION_STATE_GET_INFO};
+            gi.action = action;
+            gi.subactionPath = handPaths[i];
+            XrActionStateBoolean st{XR_TYPE_ACTION_STATE_BOOLEAN};
+            if (XR_FAILED(api.GetActionStateBoolean(c.session, &gi, &st))) return;
+            const bool now = st.isActive && st.currentState == XR_TRUE;
+            if (now != prev) {
+                LOGI("手柄事件：%s %s %s", handName[i], label, now ? "按下" : "松开");
+                prev = now;
+            }
+        };
+
+        readBool(c.triggerAction, c.triggerDown[i], "扳机");
+        readBool(c.squeezeAction, c.squeezeDown[i], "侧握");
+        readBool(c.aAction, c.aDown[i], "A");
+        readBool(c.bAction, c.bDown[i], "B");
+        readBool(c.menuAction, c.menuDown[i], "菜单");
+
+        if (api.GetActionStateFloat != nullptr && c.triggerValueAction != XR_NULL_HANDLE) {
+            XrActionStateGetInfo gi{XR_TYPE_ACTION_STATE_GET_INFO};
+            gi.action = c.triggerValueAction;
+            gi.subactionPath = handPaths[i];
+            XrActionStateFloat st{XR_TYPE_ACTION_STATE_FLOAT};
+            if (XR_SUCCEEDED(api.GetActionStateFloat(c.session, &gi, &st))) {
+                c.triggerValue[i] = st.isActive ? st.currentState : 0.f;
+            }
+        }
+
+        if (api.GetActionStateVector2f != nullptr && c.thumbstickAction != XR_NULL_HANDLE) {
+            XrActionStateGetInfo gi{XR_TYPE_ACTION_STATE_GET_INFO};
+            gi.action = c.thumbstickAction;
+            gi.subactionPath = handPaths[i];
+            XrActionStateVector2f st{XR_TYPE_ACTION_STATE_VECTOR2F};
+            if (XR_SUCCEEDED(api.GetActionStateVector2f(c.session, &gi, &st))) {
+                const XrVector2f v = st.isActive ? st.currentState : XrVector2f{0.f, 0.f};
+                const XrVector2f prev = c.thumbstick[i];
+                if (fabsf(v.x - prev.x) > 0.25f || fabsf(v.y - prev.y) > 0.25f) {
+                    LOGI("手柄事件：%s 摇杆 (%.2f, %.2f)", handName[i], v.x, v.y);
+                }
+                c.thumbstick[i] = v;
+            }
+        }
+    }
+}
+
+/**
+ * 激光的模型矩阵。
+ *
+ * 思路：vbo 里的四边形是 1x1 大小、朝 +Z 的片子；这里把它
+ *   - 缩成 0.006 宽（细线）x 0.006 高 x 5 长（够到面前 5 米）
+ *   - 沿 -Z 延伸（OpenGL 视线方向），使射线从手柄往前射
+ *   - 平移到手柄 aim 的位置并按 aim 的朝向旋转
+ * 由此得到一条从手柄射向前方的绿色细光束。
+ */
+Mat4 laserModelFrom(const XrPosef &pose) {
+    const float len = 5.0f;
+    const float half = 0.003f;
+
+    // 姿态四元数 → 旋转矩阵（列主序）
+    const float x = pose.orientation.x, y = pose.orientation.y;
+    const float z = pose.orientation.z, w = pose.orientation.w;
+    Mat4 rot = identity();
+    rot.m[0] = 1 - 2 * (y * y + z * z);
+    rot.m[1] = 2 * (x * y + z * w);
+    rot.m[2] = 2 * (x * z - y * w);
+    rot.m[4] = 2 * (x * y - z * w);
+    rot.m[5] = 1 - 2 * (x * x + z * z);
+    rot.m[6] = 2 * (y * z + x * w);
+    rot.m[8] = 2 * (x * z + y * w);
+    rot.m[9] = 2 * (y * z - x * w);
+    rot.m[10] = 1 - 2 * (x * x + y * y);
+
+    // 缩放：细线，沿 -Z 拉长（负号让光往前走）
+    Mat4 scale = identity();
+    scale.m[0] = half;
+    scale.m[5] = half;
+    scale.m[10] = -len;
+
+    // 平移：手柄位置，沿 -Z 退半个长度，使光从手柄出发向前
+    Mat4 trans = identity();
+    trans.m[12] = pose.position.x;
+    trans.m[13] = pose.position.y;
+    trans.m[14] = pose.position.z - len * 0.5f;
+
+    return multiply(trans, multiply(rot, scale));
+}
+
 /** 处理会话事件：READY→Begin，STOPPING→End，EXITING/LOSS_PENDING→退出 */
 void pumpEvents(VrContext &c) {
     XrEventDataBuffer ev{XR_TYPE_EVENT_DATA_BUFFER};
@@ -663,6 +975,31 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
         glDisableVertexAttribArray(1);
     }
 
+    /*
+     * 激光：从手柄 aim 出发点沿朝向画一条细线。
+     * 诊断阶段先"有激光可看"，交互逻辑（指到哪、扣扳机干什么）随后接。
+     */
+    if (c.program != 0 && c.mvpLoc >= 0) {
+        for (int h = 0; h < 2; h++) {
+            if (!c.aimValid[h]) continue;
+            const Mat4 laserModel = laserModelFrom(c.aimPose[h]);
+            const Mat4 laserMvp = multiply(multiply(proj, view4), laserModel);
+            glUseProgram(c.program);
+            glUniformMatrix4fv(c.mvpLoc, 1, GL_FALSE, laserMvp.m);
+            glUniform1i(c.useTexLoc, 0);
+            glUniform4f(c.colorLoc, 0.30f, 0.82f, 0.22f, 1.f);   // 与 TV 版强调色一致的绿
+            glBindBuffer(GL_ARRAY_BUFFER, c.vbo);
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void *) 0);
+            glEnableVertexAttribArray(1);
+            glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
+                                  (void *) (3 * sizeof(float)));
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+            glDisableVertexAttribArray(0);
+            glDisableVertexAttribArray(1);
+        }
+    }
+
     // 画完必须解绑 FBO，否则下一只眼/下一帧会画进同一个附件
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
@@ -730,6 +1067,9 @@ void frameLoop(VrContext &c) {
         if (c.panelActive.load() && gPanelUpdate != nullptr) {
             gPanelUpdate();
         }
+
+        // 手柄状态（诊断阶段：变化即打日志，先看清 PICO 到底发哪些事件）
+        syncInput(c);
 
         bool rendered = false;
         if (fs.shouldRender && c.sessionRunning) {
@@ -840,6 +1180,7 @@ void renderThreadMain() {
         LOGI("视图数 = %u", count);
 
         if (!createSession(c)) break;
+        if (!setupInput(c)) LOGW("手柄输入不可用，继续渲染（诊断阶段先保画面）");
         if (!createSwapchains(c)) break;
 
         c.program = buildProgram();
