@@ -130,18 +130,31 @@ class PanelLayer(
          * Compose 把一格滚轮折合约 64dp（面板 240dpi ≈ 128px），一格滚一行多一点；
          * 配合下面 120ms 的限速，连续推的感觉约每秒 4 格。手感不对就调这一个数。
          */
-        private const val SCROLL_NOTCH = 0.5f
+        private const val SCROLL_NOTCH = 0.16f
 
         /**
-         * 「扳住一个方向不动就持续滚」的重复间隔（父亲 2026-10-05 要求）。
+         * 摇杆滚动的节拍（父亲 2026-10-05 第二轮：要平滑、要松手就停）。
          *
-         * 摇杆是被系统当**指针位移**送进来的：光点顶到面板边缘后位移恒为 0，
-         * MOVE 事件也就没了 —— 所以"扳住不动"必须自己定时补滚。
+         * 滚动由定时器主导：每 [SCROLL_REPEAT_MS] 派发一小格滚轮（[SCROLL_NOTCH]），
+         * 所以是**匀速连续滚**而不是"一顿一顿"；指针的 MOVE 只用来更新方向与落点。
          */
-        private const val SCROLL_REPEAT_MS = 160L
+        private const val SCROLL_REPEAT_MS = 60L
 
-        /** 超过这么久没有新的 MOVE，才算"光点顶住了"，自动重复才接管 */
-        private const val SCROLL_STUCK_MS = 220L
+        /**
+         * 松手判定 1：光点安静超过这么久、且不在面板边缘 → 当已松手，停止补滚。
+         * （摇杆被系统转成指针位移；若扳机还按着，松摇杆后不会有"抬起"事件，
+         *   唯一信号就是光点不再移动 —— 父亲 2026-10-05 实测"松手不停"。）
+         */
+        private const val HOLD_GRACE_MS = 1200L
+
+        /**
+         * 松手判定 2：光点贴在面板边缘时位移恒为 0，与"松手"无法区分，
+         * 只能给一个上限，超过就停（免得一直滚下去）。期间只要有新位移就重新计时。
+         */
+        private const val HOLD_EDGE_MAX_MS = 5000L
+
+        /** 距面板边缘多近算"贴边"（比例，用于上面那条判定） */
+        private const val EDGE_BAND = 0.12f
 
     }
 
@@ -176,16 +189,11 @@ class PanelLayer(
         val horizontal = kotlin.math.abs(dx) > kotlin.math.abs(dy)
         val h = if (horizontal) (if (dx > 0) SCROLL_NOTCH else -SCROLL_NOTCH) else 0f
         val v = if (!horizontal) (if (dy > 0) -SCROLL_NOTCH else SCROLL_NOTCH) else 0f
-        // 记住这一步的方向与落点：光点顶住之后靠它继续滚
+        // 记住这一步的方向与落点：节拍器按它继续滚
         lastScrollX = x
         lastScrollY = y
         lastScrollDx = dx
         lastScrollDy = dy
-        lastScrollAt = SystemClock.uptimeMillis()
-        if (h != 0f || v != 0f) {
-            decor?.removeCallbacks(scrollRepeat)
-            decor?.postDelayed(scrollRepeat, SCROLL_REPEAT_MS)
-        }
         val now = SystemClock.uptimeMillis()
         // 注意：MotionEvent.setAxisValue 是隐藏 API（编译期 Unresolved），
         // 滚轮量必须写在 PointerCoords 上再 obtain。
@@ -244,32 +252,48 @@ class PanelLayer(
     /** 面板自己的返回栈宿主（Presentation 与本类共用同一个实例） */
     private var backOwner: PanelBackOwner? = null
 
-    /** 摇杆滚动的最近一次方向/落点，供"扳住不动"时定时补滚 */
+    /** 摇杆滚动的最近一次方向/落点，供"扳住不动"时持续滚 */
     private var lastScrollX = 0f
     private var lastScrollY = 0f
     private var lastScrollDx = 0f
     private var lastScrollDy = 0f
-    private var lastScrollAt = 0L
+
+    /** 光点最后一次移动的时间（松手判定的唯一依据） */
+    private var lastMoveAt = 0L
 
     /**
-     * 自动重复：按住摇杆不动时每 [SCROLL_REPEAT_MS] 补一次滚轮。
+     * 摇杆滚动节拍器：只要还处于"摇杆推动"状态就每 [SCROLL_REPEAT_MS] 滚一小格。
      *
-     * 父亲 2026-10-05：「扳动摇杆上下左右滚动现在扳一下动一下，
-     * 能不能扳向某一个方向不动，持续滚动？」——根因是指针位移在面板边缘
-     * 会被顶住（不再有 MOVE），所以只能靠定时器续。
+     * 父亲 2026-10-05 两轮反馈：
+     *  - 「扳一下动一下，能不能扳住一个方向不动持续滚动」→ 改成定时器主导；
+     *  - 「松手不停，而且一顿一顿的」→ 加大节拍密度、每格变小（平滑），
+     *    并按"光点是否还在动 / 是否贴边"判定松手。
      */
     private val scrollRepeat = object : Runnable {
         override fun run() {
             if (!isDown || !isDragging) return
-            val now = SystemClock.uptimeMillis()
-            if (now - lastScrollAt < SCROLL_STUCK_MS) {
-                // 光点还在动：这一步交给 MOVE 处理，别叠加成"双倍速"
-                decor?.postDelayed(this, SCROLL_REPEAT_MS)
+            val quiet = SystemClock.uptimeMillis() - lastMoveAt
+            val pinned = nearPanelEdge(lastScrollX, lastScrollY)
+            if (quiet > HOLD_EDGE_MAX_MS || (quiet > HOLD_GRACE_MS && !pinned)) {
+                Log.i(TAG, "摇杆滚动停止：光点静了 ${quiet}ms 贴边=$pinned")
                 return
             }
-            // 光点停住了：按最后一次方向继续滚
             scrollAt(lastScrollX, lastScrollY, lastScrollDx, lastScrollDy, "摇杆保持")
+            decor?.postDelayed(this, SCROLL_REPEAT_MS)
         }
+    }
+
+    /** 这一步主要是横向还是纵向 */
+    private fun scrollAxisIsHorizontal(dx: Float, dy: Float): Boolean =
+        kotlin.math.abs(dx) > kotlin.math.abs(dy)
+
+    /** 光点是否贴在面板边缘（贴边时位移恒为 0，与松手无法区分，只能靠时间上限兜） */
+    private fun nearPanelEdge(x: Float, y: Float): Boolean {
+        val w = (decor?.width ?: 0).toFloat()
+        val h = (decor?.height ?: 0).toFloat()
+        if (w <= 0f || h <= 0f) return false
+        return x < w * EDGE_BAND || x > w * (1 - EDGE_BAND) ||
+            y < h * EDGE_BAND || y > h * (1 - EDGE_BAND)
     }
 
     /** 点击前的界面动作序号：用来判定鼠标式点击有没有真生效 */
@@ -567,6 +591,7 @@ class PanelLayer(
                 isDown = true
                 isDragging = false
                 lastFireAt = now
+                lastMoveAt = now
                 lastDirKey = 0
                 pressMoveCount = 0
                 pressArrows = 0
@@ -602,7 +627,10 @@ class PanelLayer(
                      * （原来发方向键：方向键打在当前焦点上，必然出现
                      *  「要么不滚、要么滚错了一排」。）
                      */
+                    lastMoveAt = now
                     scrollAt(px, py, dx, dy, "摇杆起始步")
+                    decor?.removeCallbacks(scrollRepeat)
+                    decor?.postDelayed(scrollRepeat, SCROLL_REPEAT_MS)
                     return
                 }
                 // 摇杆滚动：从上一次发键的位置算位移，够一格且过了限速就再发一格
@@ -612,12 +640,21 @@ class PanelLayer(
                     kotlin.math.abs(sx) >= STEP_PX || kotlin.math.abs(sy) >= STEP_PX
 
                 if (movedEnough) {
-                    if (now - lastFireAt < FIRE_INTERVAL_MS) return
                     stepPx = px
                     stepPy = py
-                    lastFireAt = now
+                    lastMoveAt = now
                     pressArrows++
-                    scrollAt(px, py, sx, sy, "摇杆续滚")
+                    // 同向继续推：只刷新方向与落点，滚动交给节拍器（否则"指针 + 定时器"
+                    // 叠加成双倍速，一顿一顿的其中一半原因就在这）
+                    val sameDir = (scrollAxisIsHorizontal(sx, sy) == scrollAxisIsHorizontal(lastScrollDx, lastScrollDy)) &&
+                        (if (scrollAxisIsHorizontal(sx, sy)) (sx > 0) == (lastScrollDx > 0)
+                         else (sy > 0) == (lastScrollDy > 0))
+                    if (sameDir) {
+                        lastScrollX = px
+                        lastScrollY = py
+                    } else {
+                        scrollAt(px, py, sx, sy, "摇杆换向")
+                    }
                     return
                 }
                 // 位移不足一格：等下一次 MOVE。
