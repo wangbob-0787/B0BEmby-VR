@@ -141,20 +141,45 @@ class PanelLayer(
         private const val SCROLL_REPEAT_MS = 60L
 
         /**
-         * 松手判定 1：光点安静超过这么久、且不在面板边缘 → 当已松手，停止补滚。
-         * （摇杆被系统转成指针位移；若扳机还按着，松摇杆后不会有"抬起"事件，
-         *   唯一信号就是光点不再移动 —— 父亲 2026-10-05 实测"松手不停"。）
+         * 「推住不动」的判定：光点安静超过这么久，就认为摇杆被压在一个方向上没动。
+         * 这时滚动速度按**猛推速度**（父亲 2026-10-05 定：推住不动松手没有滑行，
+         * 但按住期间要快，按猛推的速度滚）。
          */
-        private const val HOLD_GRACE_MS = 1200L
+        private const val HOLD_QUIET_MS = 120L
 
         /**
-         * 松手判定 2：光点贴在面板边缘时位移恒为 0，与"松手"无法区分，
-         * 只能给一个上限，超过就停（免得一直滚下去）。期间只要有新位移就重新计时。
+         * 兜底上限：万一某次「抬起」彻底丢失（历史上真发生过），不让它无限滚下去。
+         * 正常路径靠抬起事件停，不依赖这个数。
          */
-        private const val HOLD_EDGE_MAX_MS = 5000L
+        private const val HOLD_SAFETY_MS = 15000L
 
-        /** 距面板边缘多近算"贴边"（比例，用于上面那条判定） */
-        private const val EDGE_BAND = 0.12f
+        /**
+         * 滚动速度（格/秒）：轻推慢滚、猛推快滚（父亲 2026-10-05 定）。
+         *
+         * 摇杆不给力度值，只能拿**光点移动速度**换算：[SPEED_TO_RATE]。
+         * 设上下限，避免"几乎不动"和"飞出去"。
+         */
+        private const val RATE_MIN = 1.2f
+        private const val RATE_MAX = 10f
+
+        /** 光点速度（像素/秒）→ 滚动速度（格/秒）：每 220 像素/秒记 1 格/秒 */
+        private const val SPEED_TO_RATE = 1f / 220f
+
+        /**
+         * 惯性：松手后按松手瞬间的速度继续滑，**线性减速到 0，总时长 1 秒**
+         * （父亲 2026-10-05 定：不要急停，减速停 1 秒就够）。
+         * 松手时光点是静止的（推住不动再松手）→ 没速度 → 不滑行。
+         */
+        private const val INERTIA_MS = 1000L
+
+        /** 低于这个速度就不滑了（格/秒） */
+        private const val INERTIA_MIN_RATE = 0.8f
+
+        /**
+         * 轮播区（首页大海报）步进限速：横向拨动落在轮播区里时不滚列表、改切一张，
+         * 最快 200ms 一张（按住不放就连着切）。
+         */
+        private const val ZONE_STEP_MS = 200L
 
     }
 
@@ -184,11 +209,16 @@ class PanelLayer(
      *
      * @param dx,dy 这次位移（面板像素，向下/向右为正）
      */
-    private fun scrollAt(x: Float, y: Float, dx: Float, dy: Float, why: String) {
+    private fun scrollAt(
+        x: Float,
+        y: Float,
+        dx: Float,
+        dy: Float,
+        why: String,
+        notch: Float = SCROLL_NOTCH,
+    ) {
         // 取移动量更轴的那一向：斜推时只滚主方向，免得两轴一起乱滚
         val horizontal = kotlin.math.abs(dx) > kotlin.math.abs(dy)
-        val h = if (horizontal) (if (dx > 0) SCROLL_NOTCH else -SCROLL_NOTCH) else 0f
-        val v = if (!horizontal) (if (dy > 0) -SCROLL_NOTCH else SCROLL_NOTCH) else 0f
         // 记住这一步的方向与落点：节拍器按它继续滚
         lastScrollX = x
         lastScrollY = y
@@ -197,6 +227,29 @@ class PanelLayer(
         // 派发点用锚点（他按下时看着的那一片），不是光点当前可能已顶到边缘的位置
         val (ax, ay) = scrollAnchorPoint()
         val now = SystemClock.uptimeMillis()
+
+        /*
+         * 轮播区（首页大海报）：它不是可滚列表，是自己按索引切换的轮播，
+         * 滚轮事件落上去它不认 —— 所以左右拨没反应（父亲 2026-10-05 实测）。
+         * 这里分流：横向拨动且锚点落在轮播区里 → 直接调它的「上一张 / 下一张」。
+         */
+        if (horizontal && dx != 0f) {
+            val zone = ClickTargets.zoneAt(ax, ay)
+            if (zone != null) {
+                if (now - lastZoneStepAt >= ZONE_STEP_MS) {
+                    lastZoneStepAt = now
+                    Log.i(
+                        TAG,
+                        "$why：横向拨动落在轮播区(${zone.label}) → 切${if (dx > 0) "下一张" else "上一张"}",
+                    )
+                    zone.onStep(if (dx > 0) 1 else -1)
+                }
+                return
+            }
+        }
+
+        val h = if (horizontal) (if (dx > 0) notch else -notch) else 0f
+        val v = if (!horizontal) (if (dy > 0) -notch else notch) else 0f
         // 注意：MotionEvent.setAxisValue 是隐藏 API（编译期 Unresolved），
         // 滚轮量必须写在 PointerCoords 上再 obtain。
         val props = arrayOf(
@@ -276,8 +329,24 @@ class PanelLayer(
     private var lastScrollDx = 0f
     private var lastScrollDy = 0f
 
-    /** 光点最后一次移动的时间（松手判定的唯一依据） */
+    /** 光点最后一次移动的时间（"推住不动"判定的唯一依据） */
     private var lastMoveAt = 0L
+
+    /** 上一次移动采样的位置：用来算光点速度（→ 滚动快慢） */
+    private var lastMovePx = 0f
+    private var lastMovePy = 0f
+
+    /** 光点速度（面板像素/秒，指数平滑）—— 摇杆没有力度值，只能用它估 */
+    private var pointerSpeed = 0f
+
+    /** 惯性：松手瞬间的滚动速度（格/秒）、起始时刻、方向 */
+    private var inertiaRate = 0f
+    private var inertiaStartAt = 0L
+    private var inertiaDx = 0f
+    private var inertiaDy = 0f
+
+    /** 轮播区上次步进的时刻（限速用） */
+    private var lastZoneStepAt = 0L
 
     /**
      * 滚轮事件的**派发锚点** = 这次摇杆推动的起点（父亲 2026-10-05 实测）。
@@ -300,16 +369,46 @@ class PanelLayer(
      */
     private val scrollRepeat = object : Runnable {
         override fun run() {
-            if (!isDown || !isDragging) return
-            val quiet = SystemClock.uptimeMillis() - lastMoveAt
-            val pinned = nearPanelEdge(lastScrollX, lastScrollY)
-            if (quiet > HOLD_EDGE_MAX_MS || (quiet > HOLD_GRACE_MS && !pinned)) {
-                Log.i(TAG, "摇杆滚动停止：光点静了 ${quiet}ms 贴边=$pinned")
+            val now = SystemClock.uptimeMillis()
+
+            // ① 惯性阶段（松手之后）：按松手速度线性减速，1 秒内停
+            if (inertiaRate > 0f) {
+                val elapsed = now - inertiaStartAt
+                val rate = inertiaRate * (1f - elapsed.toFloat() / INERTIA_MS.toFloat())
+                if (rate < INERTIA_MIN_RATE || elapsed > INERTIA_MS + 120L) {
+                    inertiaRate = 0f
+                    Log.i(TAG, "惯性结束：滑行 ${elapsed}ms")
+                    return
+                }
+                scrollAt(lastScrollX, lastScrollY, inertiaDx, inertiaDy, "惯性滑行", notchOf(rate))
+                postTicker()
                 return
             }
-            scrollAt(lastScrollX, lastScrollY, lastScrollDx, lastScrollDy, "摇杆保持")
-            decor?.postDelayed(this, SCROLL_REPEAT_MS)
+
+            // ② 按住阶段：轻推慢滚、猛推快滚；推住不动按猛推速度继续滚
+            if (!isDown || !isDragging) return
+            val quiet = now - lastMoveAt
+            if (quiet > HOLD_SAFETY_MS) {
+                Log.i(TAG, "摇杆滚动停止：光点静了 ${quiet}ms（抬起事件疑似丢失，兜底停）")
+                return
+            }
+            val rate = if (quiet > HOLD_QUIET_MS) RATE_MAX else rateOf(pointerSpeed)
+            scrollAt(lastScrollX, lastScrollY, lastScrollDx, lastScrollDy, "摇杆保持", notchOf(rate))
+            postTicker()
         }
+    }
+
+    /** 光点速度（像素/秒）→ 滚动速度（格/秒），带上下限 */
+    private fun rateOf(speedPx: Float): Float =
+        (speedPx * SPEED_TO_RATE).coerceIn(RATE_MIN, RATE_MAX)
+
+    /** 一个节拍滚多少格 = 速度 × 节拍时长 */
+    private fun notchOf(ratePerSecond: Float): Float =
+        ratePerSecond * (SCROLL_REPEAT_MS / 1000f)
+
+    private fun postTicker() {
+        decor?.removeCallbacks(scrollRepeat)
+        decor?.postDelayed(scrollRepeat, SCROLL_REPEAT_MS)
     }
 
     /**
@@ -329,15 +428,6 @@ class PanelLayer(
     /** 这一步主要是横向还是纵向 */
     private fun scrollAxisIsHorizontal(dx: Float, dy: Float): Boolean =
         kotlin.math.abs(dx) > kotlin.math.abs(dy)
-
-    /** 光点是否贴在面板边缘（贴边时位移恒为 0，与松手无法区分，只能靠时间上限兜） */
-    private fun nearPanelEdge(x: Float, y: Float): Boolean {
-        val w = (decor?.width ?: 0).toFloat()
-        val h = (decor?.height ?: 0).toFloat()
-        if (w <= 0f || h <= 0f) return false
-        return x < w * EDGE_BAND || x > w * (1 - EDGE_BAND) ||
-            y < h * EDGE_BAND || y > h * (1 - EDGE_BAND)
-    }
 
     /** 点击前的界面动作序号：用来判定鼠标式点击有没有真生效 */
     private var clickSignalBefore = 0L
@@ -637,6 +727,10 @@ class PanelLayer(
                 isDragging = false
                 lastFireAt = now
                 lastMoveAt = now
+                lastMovePx = px
+                lastMovePy = py
+                pointerSpeed = 0f
+                inertiaRate = 0f
                 lastDirKey = 0
                 pressMoveCount = 0
                 pressArrows = 0
@@ -646,6 +740,15 @@ class PanelLayer(
 
             MotionEvent.ACTION_MOVE -> {
                 if (!isDown) return
+                // 光点速度（指数平滑）：摇杆没有力度值，轻推/猛推只能靠它区分
+                val dtMs = (now - lastMoveAt).coerceAtLeast(1L)
+                val inst = kotlin.math.hypot(
+                    (px - lastMovePx).toDouble(),
+                    (py - lastMovePy).toDouble(),
+                ).toFloat() / dtMs * 1000f
+                pointerSpeed = if (pointerSpeed <= 0f) inst else pointerSpeed * 0.6f + inst * 0.4f
+                lastMovePx = px
+                lastMovePy = py
                 val dx = px - downPx
                 val dy = py - downPy
                 pressMoveCount++
@@ -675,9 +778,8 @@ class PanelLayer(
                     lastMoveAt = now
                     scrollAnchorX = px
                     scrollAnchorY = py
-                    scrollAt(px, py, dx, dy, "摇杆起始步")
-                    decor?.removeCallbacks(scrollRepeat)
-                    decor?.postDelayed(scrollRepeat, SCROLL_REPEAT_MS)
+                    scrollAt(px, py, dx, dy, "摇杆起始步", notchOf(rateOf(pointerSpeed)))
+                    postTicker()
                     return
                 }
                 // 摇杆滚动：从上一次发键的位置算位移，够一格且过了限速就再发一格
@@ -717,6 +819,27 @@ class PanelLayer(
                 decor?.removeCallbacks(scrollRepeat)
                 val dragged = isDragging
                 isDragging = false
+                /*
+                 * 惯性（父亲 2026-10-05 定）：松手时若光点还在动（= 推得快），
+                 * 就按当时速度继续滑，1 秒内线性减速到 0；
+                 * 推住不动再松手（光点是静的）→ 没速度 → 直接停，不滑行。
+                 * 轮播区里不滑行（否则会连着切好几张，不好控制）。
+                 */
+                if (dragged) {
+                    val quietAtRelease = now - lastMoveAt
+                    val inZone = ClickTargets.zoneAt(px, py) != null
+                    if (quietAtRelease <= HOLD_QUIET_MS + 80L && pointerSpeed > 200f && !inZone) {
+                        inertiaRate = rateOf(pointerSpeed)
+                        inertiaStartAt = now
+                        inertiaDx = lastScrollDx
+                        inertiaDy = lastScrollDy
+                        Log.i(
+                            TAG,
+                            "松手带速度：光点 ${pointerSpeed.toInt()}px/s → 惯性 ${"%.1f".format(inertiaRate)}格/秒，1 秒内减速停",
+                        )
+                        postTicker()
+                    }
+                }
                 Log.i(
                     TAG,
                     "按压画像: MOVE=${pressMoveCount} 方向键=${pressArrows} " +

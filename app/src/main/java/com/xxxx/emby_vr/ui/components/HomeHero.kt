@@ -29,6 +29,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import com.xxxx.emby_vr.panel.vrClickTarget
+import com.xxxx.emby_vr.panel.vrScrollZone
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -133,6 +134,14 @@ fun HomeHeroCarousel(
         modifier = modifier
             .fillMaxWidth()
             .height(400.dp)          // 参考图实测：大图底边 1340/1800 = 74.4% 屏高
+            /*
+             * 登记成「轮播区」（父亲 2026-10-05）：光点指在大海报上左右拨摇杆 = 切上一张/下一张。
+             * 为什么不能靠滚轮：这块不是可滚列表，是自己按索引切换的轮播，
+             * 滚轮事件落上来它不认（实测左右拨没反应）。
+             */
+            .vrScrollZone(key = "hero") { delta ->
+                index = ((index + delta) % list.size + list.size) % list.size
+            }
     ) {
         // 焦点层只覆盖左侧 55%（与信息块同宽）。
         // 原因：整块全宽可聚焦时，大片头的焦点中心落在屏幕正中，按 ↓ 时系统按"水平最近"

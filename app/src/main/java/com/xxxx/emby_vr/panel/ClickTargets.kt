@@ -63,6 +63,52 @@ object ClickTargets {
             "$label (${left.toInt()},${top.toInt()})-(${right.toInt()},${bottom.toInt()})"
     }
 
+    /**
+     * 轮播/翻页区（大海报这种「左右拨一格」的地方，父亲 2026-10-05 定案）。
+     *
+     * 与 [Target] 分开一张表：Target 是「扣扳机命中并触发」，
+     * Zone 是「横向拨摇杆步进一格」—— 两者语义不同，也不该互相覆盖。
+     */
+    class Zone(
+        val key: Any,
+        val label: String,
+        val left: Float,
+        val top: Float,
+        val right: Float,
+        val bottom: Float,
+        val onStep: (Int) -> Unit,
+    ) {
+        val area: Float get() = (right - left) * (bottom - top)
+
+        fun contains(x: Float, y: Float): Boolean =
+            x >= left && x <= right && y >= top && y <= bottom
+    }
+
+    private val zones = LinkedHashMap<Any, Zone>()
+
+    fun putZone(
+        key: Any,
+        label: String,
+        left: Float,
+        top: Float,
+        right: Float,
+        bottom: Float,
+        onStep: (Int) -> Unit,
+    ) {
+        synchronized(zones) {
+            zones[key] = Zone(key, label, left, top, right, bottom, onStep)
+        }
+    }
+
+    fun removeZone(key: Any) {
+        synchronized(zones) { zones.remove(key) }
+    }
+
+    /** 光点落在哪个轮播区里（有嵌套时取面积最小的） */
+    fun zoneAt(x: Float, y: Float): Zone? = synchronized(zones) {
+        zones.values.filter { it.contains(x, y) }.minByOrNull { it.area }
+    }
+
     private val targets = LinkedHashMap<Any, Target>()
 
     /** 登记/查表诊断计数（首次装机时用来核对坐标是否与面板像素一致） */
@@ -102,6 +148,9 @@ object ClickTargets {
         synchronized(targets) {
             targets.clear()
         }
+        synchronized(zones) {
+            zones.clear()
+        }
     }
 
     fun size(): Int = synchronized(targets) { targets.size }
@@ -129,6 +178,37 @@ object ClickTargets {
                 .sortedBy { it.second }
                 .take(count)
         }
+}
+
+/**
+ * 把一个「轮播区」登记进 [ClickTargets]（横向拨摇杆 = 步进一格）。
+ *
+ * 用法（贴在轮播容器自己的 modifier 链上）：
+ * ```
+ * Modifier.vrScrollZone(key = "hero") { delta -> index = index + delta }
+ * ```
+ */
+@Composable
+fun Modifier.vrScrollZone(key: Any, onStep: (Int) -> Unit): Modifier {
+    val step by rememberUpdatedState(onStep)
+    val instance = remember { Any() }
+    DisposableEffect(instance) {
+        onDispose { ClickTargets.removeZone(instance) }
+    }
+    return this.onGloballyPositioned { coords ->
+        if (!coords.isAttached) return@onGloballyPositioned
+        val b: Rect = coords.boundsInWindow()
+        if (b.width <= 1f || b.height <= 1f) return@onGloballyPositioned
+        ClickTargets.putZone(
+            key = instance,
+            label = key.toString(),
+            left = b.left,
+            top = b.top,
+            right = b.right,
+            bottom = b.bottom,
+            onStep = { delta -> step(delta) },
+        )
+    }
 }
 
 /**
