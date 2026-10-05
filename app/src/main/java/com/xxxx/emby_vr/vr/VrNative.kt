@@ -117,7 +117,15 @@ object VrNative {
     interface InputSink {
         fun onPointer(px: Float, py: Float)
         fun onClick(px: Float, py: Float)
-        fun onScroll(px: Float, py: Float, dx: Float, dy: Float)
+
+        /**
+         * 摇杆状态（不是单次滚动量）。
+         *
+         * 原生层按 30Hz 把当前摇杆量送过来，回中时补一帧 (0,0) ——
+         * 平滑与惯性都交给面板层逐帧算，原生不掺和节奏。
+         * 方向：sx 右为正、sy **上**为正（与 OpenXR 一致），面板层内部再翻成面板坐标。
+         */
+        fun onStick(px: Float, py: Float, sx: Float, sy: Float)
         fun onBack()
     }
 

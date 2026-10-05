@@ -86,12 +86,13 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        override fun onScroll(px: Float, py: Float, dx: Float, dy: Float) {
+        override fun onStick(px: Float, py: Float, sx: Float, sy: Float) {
             vrInputLive = true
             runOnUiThread {
                 if (panelInputReady()) {
-                    Log.i(TAG, "光柱滚轮 (${px.toInt()}, ${py.toInt()}) 位移=(${dx.toInt()}, ${dy.toInt()}) → 交给面板")
-                    panel.vrScroll(px, py, dx, dy)
+                    panel.vrStick(px, py, sx, sy)
+                } else if (!renderer.videoActive && (kotlin.math.abs(sx) > 0.2f || kotlin.math.abs(sy) > 0.2f)) {
+                    Log.w(TAG, "光柱摇杆被丢弃：面板未就绪（已激活=${com.xxxx.emby_vr.vr.VrNative.panelActive}）")
                 }
             }
         }
@@ -99,8 +100,16 @@ class MainActivity : ComponentActivity() {
         override fun onBack() {
             vrInputLive = true
             runOnUiThread {
-                if (panelInputReady()) {
-                    Log.i(TAG, "光柱 B 键 → 返回")
+                /*
+                 * 播放中 B 键 = 停止播放回面板（2026-10-05 父亲实测：点了播放就回不来）。
+                 * 原来这里用 panelInputReady() 当门，而它在播放时恒为 false（playing 期间
+                 * 面板不接输入）→ B 键被静默丢弃，只能杀应用。
+                 */
+                if (renderer.videoActive) {
+                    Log.i(TAG, "光柱 B 键 → 停止播放回面板")
+                    stopPlayback()
+                } else if (panelInputReady()) {
+                    Log.i(TAG, "光柱 B 键 → 面板返回")
                     panel.back()
                 }
             }

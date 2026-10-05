@@ -133,6 +133,17 @@ class PanelLayer(
          */
         private const val SCROLL_NOTCH = 0.16f
 
+        /**
+         * VR 摇杆的死区与速度档（格/秒，2026-10-05）。
+         *
+         * 摇杆量过 [VR_STICK_DEAD] 才开始滚，推到顶是 [VR_RATE_MAX]；
+         * 中间按 1.3 次方曲线过渡（轻推好控、猛推够快）。
+         * 速度不准就调这两个数 —— 上限落在既有 RATE_MAX(22) 以内，避免被二次钳制。
+         */
+        private const val VR_STICK_DEAD = 0.55f
+        private const val VR_RATE_MIN = 3f
+        private const val VR_RATE_MAX = 12f
+
         /*
          * 滚动节奏（2026-10-05 定稿）：不再用固定节拍定时器，改成**每渲染帧**回调一次，
          * 按这一帧实际时长算位移（见 [frameTick]）。历史上试过 160ms → 60ms → 33ms，
@@ -343,6 +354,9 @@ class PanelLayer(
 
     /** 光点速度（面板像素/秒，指数平滑）—— 摇杆没有力度值，只能用它估 */
     private var pointerSpeed = 0f
+
+    /** VR 摇杆当前速度（格/秒）；回中时用它作为惯性初速 */
+    private var vrStickRate = 0f
 
     /** 惯性：松手瞬间的滚动速度（格/秒）、起始时刻、方向 */
     private var inertiaRate = 0f
@@ -751,6 +765,65 @@ class PanelLayer(
     fun vrScroll(px: Float, py: Float, dx: Float, dy: Float) {
         vrPointer(px, py)
         scrollAt(px, py, dx, dy, "VR 摇杆")
+    }
+
+    /**
+     * VR 摇杆（状态式，2026-10-05 父亲定案：要平滑、要惯性减速后停住）。
+     *
+     * 原生层按 30Hz 送当前摇杆量，回中时补一帧 (0,0)；这里把它喂进**已有的**
+     * 逐帧滚动机制（[frameTick]，与 2D 面板模式同一套，父亲 2026-10-05 验收过：
+     * 轻推慢滚、猛推快滚、松手线性减速 1 秒内停）：
+     *
+     *   推着 → 每帧按当前速度派发一次滚轮（速度由摇杆量换算，见 [VR_RATE_MIN]/[VR_RATE_MAX]）
+     *   回中 → 用最后一次的速度进入惯性滑行，线性减速到停
+     *
+     * 复用既有机制的好处：手感与 2D 面板模式一致，不用重新调一套参数。
+     *
+     * @param sx,sy 摇杆量：x 右为正、**y 上为正**（OpenXR 约定），面板坐标 y 向下为正，故取反。
+     */
+    fun vrStick(px: Float, py: Float, sx: Float, sy: Float) {
+        vrPointer(px, py)
+        val ax = kotlin.math.abs(sx)
+        val ay = kotlin.math.abs(sy)
+        val mag = if (ax > ay) ax else ay
+        val now = SystemClock.uptimeMillis()
+
+        if (mag < VR_STICK_DEAD) {
+            // 回中：进入惯性滑行（速度取最后一次推着的速度）
+            if (isDown || isDragging) {
+                isDown = false
+                isDragging = false
+                if (vrStickRate > 0f) {
+                    inertiaDx = lastScrollDx
+                    inertiaDy = lastScrollDy
+                    inertiaRate = vrStickRate
+                    inertiaStartAt = now
+                    scheduleFrame()
+                    Log.i(TAG, "VR 摇杆回中：惯性滑行 速度=${"%.1f".format(vrStickRate)}格/秒 方向=(${inertiaDx.toInt()}, ${inertiaDy.toInt()})")
+                }
+                vrStickRate = 0f
+            }
+            return
+        }
+
+        // 主方向：横拨滚横向、竖拨滚竖向（斜推只取更轴的一向，免得两轴一起乱滚）
+        val horizontal = ax > ay
+        lastScrollDx = if (horizontal) (if (sx > 0f) 1f else -1f) else 0f
+        lastScrollDy = if (horizontal) 0f else (if (sy > 0f) -1f else 1f)
+        lastScrollX = px
+        lastScrollY = py
+
+        // 摇杆量 → 速度（格/秒）：过死区后线性上升，轻微曲线让轻推更细腻
+        val t = ((mag - VR_STICK_DEAD) / (1f - VR_STICK_DEAD)).coerceIn(0f, 1f)
+        val curved = Math.pow(t.toDouble(), 1.3).toFloat()
+        vrStickRate = VR_RATE_MIN + (VR_RATE_MAX - VR_RATE_MIN) * curved
+
+        // 复用既有的「速度(px/s) → 格/秒」换算：反推一个等价的指针速度喂给逐帧回调
+        pointerSpeed = vrStickRate / SPEED_TO_RATE
+        isDown = true
+        isDragging = true
+        lastMoveAt = now
+        scheduleFrame()
     }
 
     /**

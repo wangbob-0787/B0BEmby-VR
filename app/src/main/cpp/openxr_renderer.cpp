@@ -388,12 +388,13 @@ struct VrContext {
     jobject inputSink = nullptr;        // VrNative.InputSink 的全局引用
     jmethodID sinkPointer = nullptr;
     jmethodID sinkClick = nullptr;
-    jmethodID sinkScroll = nullptr;
+    jmethodID sinkStick = nullptr;
     jmethodID sinkBack = nullptr;
     bool sinkPointerValid = false;      // 上一次回推的指针位置（只在明显移动时回推）
     float sinkPointerX = 0.f;
     float sinkPointerY = 0.f;
     bool sinkLastTrigger[2] = {false, false};
+    bool sinkStickPushed[2] = {false, false};   // 摇杆是否处在"推着"的状态（回中要补一帧零值）
     bool sinkLastBack[2] = {false, false};
     double sinkStickAt[2] = {0.0, 0.0}; // 摇杆滚动节拍（毫秒）
 
@@ -1055,10 +1056,15 @@ bool rayHitsPanel(const VrContext &c, const XrPosef &aim, float *outPlaneT, floa
 constexpr float kPanelPxW = 1920.f;
 constexpr float kPanelPxH = 1080.f;
 
-/** 摇杆滚动节拍：拨住不放就按这个节奏连续滚（与 2D 面板模式的 60ms 档接近） */
-constexpr double kStickStepMs = 70.0;
-constexpr float kStickStepPx = 54.f;
-constexpr float kStickDeadzone = 0.55f;
+/**
+ * 摇杆状态上报（2026-10-05 改）：按状态而不是按步长。
+ *
+ * 平滑与惯性由 Java 侧统一算（PanelLayer 的逐帧滚动 + 松手线性减速），
+ * 原生只负责"把摇杆当前量送过去"。30Hz 上报，回中时补一帧零值 ——
+ * 那一帧零值就是惯性滑行的触发点。
+ */
+constexpr double kStickStateMs = 33.0;
+constexpr float kStickDeadzone = 0.15f;   // 上报阈值取得低，死区交给 Java 侧判
 
 double nowMs() {
     using namespace std::chrono;
@@ -1145,21 +1151,24 @@ void pushInput(VrContext &c) {
         }
         c.sinkLastTrigger[h] = c.triggerDown[h];
 
-        // 摇杆 → 滚光柱所在的那一排（拨住不放按节拍续滚，松手即停）
+        // 摇杆 → 连状态上报（30Hz）；回中补一帧零值，Java 侧据此进入惯性滑行
         const float sx = c.thumbstick[h].x;
         const float sy = c.thumbstick[h].y;
         if (fabsf(sx) > kStickDeadzone || fabsf(sy) > kStickDeadzone) {
-            if (t - c.sinkStickAt[h] >= kStickStepMs) {
+            if (t - c.sinkStickAt[h] >= kStickStateMs) {
                 c.sinkStickAt[h] = t;
-                if (c.sinkScroll != nullptr) {
-                    // 面板像素位移：向右为正、向下为正（与 2D 面板模式同一套方向约定）
-                    env->CallVoidMethod(c.inputSink, c.sinkScroll, px, py,
-                                        sx * kStickStepPx, -sy * kStickStepPx);
-                    clearJavaException(env, "输入回调 onScroll");
+                c.sinkStickPushed[h] = true;
+                if (c.sinkStick != nullptr) {
+                    // 坐标 + 摇杆量（x 右正、y 上正，与 OpenXR 一致；方向语义在 Java 侧翻）
+                    env->CallVoidMethod(c.inputSink, c.sinkStick, px, py, sx, sy);
+                    clearJavaException(env, "输入回调 onStick");
                 }
             }
-        } else {
-            c.sinkStickAt[h] = 0.0;   // 回中：下次拨动立即出第一步
+        } else if (c.sinkStickPushed[h] && c.sinkStick != nullptr) {
+            c.sinkStickPushed[h] = false;
+            c.sinkStickAt[h] = 0.0;
+            env->CallVoidMethod(c.inputSink, c.sinkStick, px, py, 0.f, 0.f);
+            clearJavaException(env, "输入回调 onStick(回中)");
         }
     }
 }
@@ -1697,7 +1706,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachInputSink(JNIEnv *env, jobject /*
         env->DeleteGlobalRef(g.inputSink);
         g.inputSink = nullptr;
     }
-    g.sinkPointer = g.sinkClick = g.sinkScroll = g.sinkBack = nullptr;
+    g.sinkPointer = g.sinkClick = g.sinkStick = g.sinkBack = nullptr;
     if (sink == nullptr) {
         LOGI("VR 输入回调已注销");
         return;
@@ -1706,12 +1715,12 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachInputSink(JNIEnv *env, jobject /*
     jclass cls = env->GetObjectClass(sink);
     g.sinkPointer = env->GetMethodID(cls, "onPointer", "(FF)V");
     g.sinkClick = env->GetMethodID(cls, "onClick", "(FF)V");
-    g.sinkScroll = env->GetMethodID(cls, "onScroll", "(FFFF)V");
+    g.sinkStick = env->GetMethodID(cls, "onStick", "(FFFF)V");
     g.sinkBack = env->GetMethodID(cls, "onBack", "()V");
     env->DeleteLocalRef(cls);
-    LOGI("VR 输入回调已注册（指针=%d 点击=%d 滚动=%d 返回=%d）",
+    LOGI("VR 输入回调已注册（指针=%d 点击=%d 摇杆=%d 返回=%d）",
          g.sinkPointer != nullptr ? 1 : 0, g.sinkClick != nullptr ? 1 : 0,
-         g.sinkScroll != nullptr ? 1 : 0, g.sinkBack != nullptr ? 1 : 0);
+         g.sinkStick != nullptr ? 1 : 0, g.sinkBack != nullptr ? 1 : 0);
 }
 
 extern "C" JNIEXPORT void JNICALL
