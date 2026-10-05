@@ -306,8 +306,17 @@ uniform float uTemperature;   // 色温（-1 冷 … 0 原样 … +1 暖）
 uniform vec2 uTexel;          // 视频纹理一个像素的 UV 步长（锐化用）
 uniform vec2 uScreenStep;     // 银幕上一个屏幕像素对应的 UV 步长（降采样用）
 uniform int uDownsample;      // 1 = 视频降采样（4×4 盒式平均）
+uniform float uJitter;        // 每帧变的抖动种子（打散 8 位量化的色带）
 uniform samplerExternalOES uTexture;
 out vec4 fragColor;
+
+/* 抖动用的哈希（打散 8 位量化色带）*/
+float hash21(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+}
+
 void main() {
     vec4 outColor;
     if (uUseTexture == 1) {
@@ -353,8 +362,8 @@ void main() {
     }
     /*
      * 画面调整（父亲 2026-10-06「画面太亮」+「调图像的功能都加上」）。
-     * 顺序固定：亮度 → 对比度 → 饱和度，最后夹到 0~1。
-     * 父亲手动调好后，把日志里最后那组数值硬编码成默认值即可。
+     * 顺序固定：亮度 → 对比度 → 饱和度 → 锐度，最后夹到 0~1。
+     * 这些都在「显示空间」里做，跟人眼直觉一致（先调，再做输出转换）。
      */
     outColor.rgb *= uBrightness;
     outColor.rgb = (outColor.rgb - 0.5) * uContrast + 0.5;
@@ -376,6 +385,22 @@ void main() {
         outColor.rgb += (outColor.rgb - nb * 0.25) * uSharpen;
     }
     outColor.rgb = clamp(outColor.rgb, 0.0, 1.0);
+
+    /*
+     * 输出到 sRGB 交换链（父亲 2026-10-06：画面「有色斑」）。
+     *
+     * 来龙去脉：先把交换链改成线性，是为了治「蒙了一层纱」—— 那时候怀疑硬件做了两遍 sRGB。
+     * 改完亮度是对了，但暗部的色带冒出来了：8 位线性在暗部只有几个码值，天空、暗场景的
+     * 渐变就会一条一条的（色斑）。
+     * 正确做法是两头都要：交换链留在 sRGB（暗部码值多、不色带），但我们写进去的值必须先
+     * 转成线性 —— 这样硬件再编码一次正好还原成原来的值，亮度不会像当初那样被抬亮。
+     * 最后再撒一点点抖动，把 8 位量化剩下的色带打散成看不清的噪点。
+     */
+    outColor.rgb = mix(
+            outColor.rgb / 12.92,
+            pow((outColor.rgb + 0.055) / 1.055, vec3(2.4)),
+            step(vec3(0.04045), outColor.rgb));
+    outColor.rgb += (hash21(vUv * 1024.0 + uJitter) - 0.5) / 255.0;
     fragColor = outColor;
 }
 )";
@@ -490,6 +515,7 @@ struct VrContext {
     GLint texelLoc = -1;           // uTexel：视频纹理像素步长
     GLint screenStepLoc = -1;      // uScreenStep：屏幕像素对应的 UV 步长（降采样）
     GLint downLoc = -1;            // uDownsample：是否对视频做盒式降采样
+    GLint jitterLoc = -1;          // uJitter：抖动种子
     GLuint vbo = 0;                // 单位方块（面板 / 光点）
     GLuint rayVbo = 0;             // 手柄射线网格（圆锥）
     int rayVertexCount = 0;
@@ -897,8 +923,8 @@ bool createSwapchains(VrContext &c) {
      */
     int64_t chosen = formats[0];
     for (int64_t f : formats) {
-        if (f == GL_RGBA8) { chosen = f; break; }
-        if (f == GL_SRGB8_ALPHA8) chosen = f;
+        if (f == GL_SRGB8_ALPHA8) { chosen = f; break; }
+        if (f == GL_RGBA8) chosen = f;
     }
     LOGI("swapchain 格式选定 0x%llx（候选 %u 个）", (unsigned long long) chosen, count);
 
@@ -1861,6 +1887,11 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
     if (c.sharpenLoc >= 0) glUniform1f(c.sharpenLoc, c.sharpen.load());
     if (c.tempLoc >= 0) glUniform1f(c.tempLoc, c.temperature.load());
     if (c.texelLoc >= 0) glUniform2f(c.texelLoc, c.texelX.load(), c.texelY.load());
+    /* 抖动种子每帧换一个：固定图案会被看成一层噪点纹理，随机的才是杂讯 */
+    if (c.jitterLoc >= 0) {
+        static uint32_t jitterTick = 0;
+        glUniform1f(c.jitterLoc, (float) (jitterTick++ % 64u) * 1.7f);
+    }
     glClear(GL_COLOR_BUFFER_BIT);
 
     const Mat4 proj = perspectiveFromFov(view.fov, 0.05f, 100.f);
@@ -2290,6 +2321,7 @@ void renderThreadMain() {
         c.texelLoc = glGetUniformLocation(c.program, "uTexel");
         c.screenStepLoc = glGetUniformLocation(c.program, "uScreenStep");
         c.downLoc = glGetUniformLocation(c.program, "uDownsample");
+        c.jitterLoc = glGetUniformLocation(c.program, "uJitter");
         makeQuadBuffers(c);
         makeRayBuffer(c);
         LOGI("GL 资源就绪（program=%u）", c.program);
