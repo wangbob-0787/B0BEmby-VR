@@ -780,10 +780,12 @@ bool createSwapchains(VrContext &c) {
         /*
          * 渲染分辨率超采样（父亲 2026-10-06：「感觉没有投影和小米电视清晰」）。
          *
-         * 推荐值只是"够用"档，画面在银幕上会明显发软。这里按 1.25 倍渲染再让运行时
-         * 降采样回去，边缘会锐一截；上限 3200 是防意外（运行时推荐值异常大时别把显存撑爆）。
+         * 推荐值只是"够用"档，画面在银幕上会明显发软。这里按 1.6 倍渲染再让运行时
+         * 降采样回去，边缘会锐一截。倍数依据：实测同期 PICO 自带 VR 播放器与 4XVR，
+         * 它们的合成开销（ATWGPU 5.8ms）是我们的 5 倍多，说明它们的渲染分辨率远高于
+         * 推荐值 —— 我们还有一半 GPU 预算没用。上限 3200 防显存意外。
          */
-        constexpr float kSuperSample = 1.25f;
+        constexpr float kSuperSample = 1.6f;
         eye.width = (int32_t) fminf(3200.f, vc.recommendedImageRectWidth * kSuperSample);
         eye.height = (int32_t) fminf(3200.f, vc.recommendedImageRectHeight * kSuperSample);
         LOGI("渲染分辨率：推荐 %ux%u → 实际 %dx%d（超采样 %.2f 倍）",
