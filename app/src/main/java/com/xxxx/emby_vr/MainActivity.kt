@@ -573,6 +573,20 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * 画面亮度加减（控制条上的「调暗 / 调亮」两颗按钮）。
+     *
+     * 父亲 2026-10-06：「画面太亮，能不能在控制条加个调亮度」。
+     * 范围 0.35~1.60，每按一次走 0.05，1.0 是原样；着色器里乘在最终颜色上，
+     * 视频画面和界面一起变。
+     */
+    private fun adjustBrightness(delta: Float) {
+        val v = (osdState.brightness + delta).coerceIn(0.35f, 1.6f)
+        osdState.brightness = v
+        com.xxxx.emby_vr.vr.VrNative.setBrightness(v)
+        Log.i(TAG, "画面亮度 → ${"%.2f".format(v)}")
+    }
+
     /** 控制条上的一颗按钮被点了 */
     private fun onOsdButton(button: com.xxxx.emby_vr.panel.OsdButton) {
         Log.i(TAG, "控制条按钮：${button.label}")
@@ -581,6 +595,9 @@ class MainActivity : ComponentActivity() {
             com.xxxx.emby_vr.panel.OsdButton.SEEK_BACK -> if (player != null) seekBy(-10_000)
             com.xxxx.emby_vr.panel.OsdButton.SEEK_FWD -> if (player != null) seekBy(+10_000)
             com.xxxx.emby_vr.panel.OsdButton.SPEED -> cycleSpeed()
+            /* 画面亮度（父亲 2026-10-06：「画面太亮，能不能在控制条加个调亮度」）*/
+            com.xxxx.emby_vr.panel.OsdButton.DIM_DOWN -> adjustBrightness(-0.05f)
+            com.xxxx.emby_vr.panel.OsdButton.DIM_UP -> adjustBrightness(+0.05f)
             com.xxxx.emby_vr.panel.OsdButton.PICK -> togglePicking()
             com.xxxx.emby_vr.panel.OsdButton.EXIT -> {
                 Log.i(TAG, "控制条：退出应用")

@@ -298,9 +298,11 @@ uniform vec4 uColor;
 uniform int uUseTexture;
 uniform int uCircle;          // 1 = 只保留方形里的内切圆（光点用）
 uniform int uExpandRange;     // 1 = 把「有限范围」(16-235) 的视频拉回全范围
+uniform float uBrightness;    // 画面亮度（控制条上可调，1.0 = 原样）
 uniform samplerExternalOES uTexture;
 out vec4 fragColor;
 void main() {
+    vec4 outColor;
     if (uUseTexture == 1) {
         vec4 c = texture(uTexture, vUv);
         if (uExpandRange == 1) {
@@ -313,15 +315,18 @@ void main() {
              */
             c.rgb = clamp((c.rgb - 0.0625) * 1.164, 0.0, 1.0);
         }
-        fragColor = c;
+        outColor = c;
     } else if (uCircle == 1) {
         // 圆形光点：方形面片上按 UV 半径裁掉四角，边缘做 1 像素软化
         float d = length(vUv - vec2(0.5));
         if (d > 0.5) discard;
-        fragColor = vec4(uColor.rgb, uColor.a * smoothstep(0.5, 0.44, d));
+        outColor = vec4(uColor.rgb, uColor.a * smoothstep(0.5, 0.44, d));
     } else {
-        fragColor = uColor;
+        outColor = uColor;
     }
+    /* 画面亮度：控制条上加减（父亲 2026-10-06「画面太亮，能不能在控制条加个调亮度」）*/
+    outColor.rgb *= uBrightness;
+    fragColor = outColor;
 }
 )";
 
@@ -413,6 +418,7 @@ struct VrContext {
     GLint texLoc = -1;
     GLint circleLoc = -1;          // uCircle：纯色画成圆点还是方块
     GLint expandLoc = -1;          // uExpandRange：视频有限范围 → 全范围
+    GLint brightLoc = -1;          // uBrightness：画面亮度（控制条上可调）
     GLuint vbo = 0;                // 单位方块（面板 / 光点）
     GLuint rayVbo = 0;             // 手柄射线网格（圆锥）
     int rayVertexCount = 0;
@@ -455,6 +461,8 @@ struct VrContext {
      * 银幕按它调高度 —— 否则 2.35:1 的片子会被拉成 16:9（父亲 2026-10-06）。
      */
     std::atomic<float> videoAspect{16.f / 9.f};
+    /** 画面亮度：控制条上加减，1.0 = 原样（父亲 2026-10-06 要的调亮度） */
+    std::atomic<float> brightness{1.f};
 
     /** 握把键按住时，上一帧处理摇杆调整的时刻（算增量用，秒） */
     double panelAdjustAt[2] = {0.0, 0.0};
@@ -1747,6 +1755,9 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
     glBindFramebuffer(GL_FRAMEBUFFER, eye.fbos[imageIndex]);
     glViewport(0, 0, eye.width, eye.height);
     glClearColor(0.f, 0.f, 0.f, 1.f);
+    /* 每帧统一刷一次亮度（着色器里乘在最终颜色上，视频与界面一起变）*/
+    glUseProgram(c.program);
+    if (c.brightLoc >= 0) glUniform1f(c.brightLoc, c.brightness.load());
     glClear(GL_COLOR_BUFFER_BIT);
 
     const Mat4 proj = perspectiveFromFov(view.fov, 0.05f, 100.f);
@@ -2152,6 +2163,7 @@ void renderThreadMain() {
         c.texLoc = glGetUniformLocation(c.program, "uTexture");
         c.circleLoc = glGetUniformLocation(c.program, "uCircle");
         c.expandLoc = glGetUniformLocation(c.program, "uExpandRange");
+        c.brightLoc = glGetUniformLocation(c.program, "uBrightness");
         makeQuadBuffers(c);
         makeRayBuffer(c);
         LOGI("GL 资源就绪（program=%u）", c.program);
@@ -2363,6 +2375,21 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetVideoAspect(JNIEnv *env, jobject /* 
     if (aspect > 0.2f && aspect < 6.f) {
         g.videoAspect = aspect;
         LOGI("视频比例 → %.3f", (double) aspect);
+    }
+}
+
+/**
+ * 画面亮度（父亲 2026-10-06：「画面太亮，能不能在控制条加个调亮度」）。
+ *
+ * 着色器里统一乘在最终颜色上，视频与界面一起变。范围 0.35~1.60，
+ * 1.0 是原样；控制条上每按一次走 0.05。
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetBrightness(JNIEnv *env, jobject /* this */,
+                                                       jfloat value) {
+    if (value > 0.2f && value < 2.f) {
+        g.brightness.store(value);
+        LOGI("画面亮度 → %.2f", (double) value);
     }
 }
 

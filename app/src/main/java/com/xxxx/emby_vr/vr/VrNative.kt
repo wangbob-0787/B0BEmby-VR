@@ -137,6 +137,21 @@ object VrNative {
 
     private external fun nativeSetVideoAspect(aspect: Float)
 
+    private external fun nativeSetBrightness(value: Float)
+
+    /**
+     * 画面亮度（1.0 = 原样）。控制条上的「调暗 / 调亮」按钮走这里。
+     *
+     * 父亲 2026-10-06：「画面太亮，能不能在控制条加个调亮度」。
+     */
+    fun setBrightness(value: Float) {
+        try {
+            if (loaded) nativeSetBrightness(value)
+        } catch (t: Throwable) {
+            Log.e(TAG, "设置画面亮度失败：${t.message}")
+        }
+    }
+
     /**
      * 告诉原生层当前片子的宽高比（宽/高），银幕按它调高度。
      *

@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.BrightnessHigh
+import androidx.compose.material.icons.filled.BrightnessLow
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Pause
@@ -36,6 +38,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.roundToInt
 
 /**
  * 播放控制条（VR 原生播放屏的 OSD，2026-10-05 起）。
@@ -53,6 +56,11 @@ enum class OsdButton(val label: String, val icon: ImageVector) {
     SEEK_BACK("快退10秒", Icons.Filled.FastRewind),
     SEEK_FWD("快进10秒", Icons.Filled.FastForward),
     SPEED("倍速", Icons.Filled.Speed),
+
+    /** 画面亮度（父亲 2026-10-06：「画面太亮，能不能在控制条加个调亮度」）*/
+    DIM_DOWN("调暗", Icons.Filled.BrightnessLow),
+    DIM_UP("调亮", Icons.Filled.BrightnessHigh),
+
     PICK("选片", Icons.Filled.GridView),
     EXIT("退出", Icons.Filled.Close),
 }
@@ -68,6 +76,9 @@ class OsdState {
     var positionMs by mutableStateOf(0L)
     var durationMs by mutableStateOf(0L)
     var speed by mutableStateOf(1f)
+
+    /** 画面亮度倍率（1.0 = 原样），控制条上加减 */
+    var brightness by mutableStateOf(1f)
 
     /** 播放/暂停按钮显示的图标：跟真实播放态走 */
     val playIcon: ImageVector get() = if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow
@@ -161,7 +172,12 @@ private fun OsdButtonView(button: OsdButton, state: OsdState) {
         )
         Spacer(modifier = Modifier.height(4.dp))
         Text(
-            text = if (button == OsdButton.SPEED) "倍速 ${"%.1f".format(state.speed)}x" else button.label,
+            text = when (button) {
+                OsdButton.SPEED -> "倍速 ${"%.1f".format(state.speed)}x"
+                OsdButton.DIM_UP, OsdButton.DIM_DOWN ->
+                    "亮度 ${(state.brightness * 100).roundToInt()}%"
+                else -> button.label
+            },
             color = Color(0xFFDDDDDD),
             fontSize = 18.sp,
         )
