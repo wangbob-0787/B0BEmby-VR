@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstdio>
 #include <chrono>
+#include <functional>
 #include <cstring>
 #include <thread>
 #include <vector>
@@ -222,12 +223,19 @@ void main() {
 
 const char *kQuadFs = R"(
 #version 300 es
+#extension GL_OES_EGL_image_external_essl3 : require
 precision mediump float;
 in vec2 vUv;
 uniform vec4 uColor;
+uniform int uUseTexture;
+uniform samplerExternalOES uTexture;
 out vec4 fragColor;
 void main() {
-    fragColor = uColor;
+    if (uUseTexture == 1) {
+        fragColor = texture(uTexture, vUv);
+    } else {
+        fragColor = uColor;
+    }
 }
 )";
 
@@ -295,15 +303,35 @@ struct VrContext {
     GLuint program = 0;
     GLint mvpLoc = -1;
     GLint colorLoc = -1;
+    GLint useTexLoc = -1;
+    GLint texLoc = -1;
     GLuint vbo = 0;
+
+    /*
+     * 面板（现有 Compose 界面）纹理：由 Java 侧的 SurfaceTexture 提供。
+     * 画面来源链路与 2D 模式下完全一样，只是"贴到哪"变了：
+     *   面板 SurfaceTexture（Kotlin 建）→ 这里 updateTexImage 取帧 → 贴到 VR 平面。
+     */
+    GLuint panelTex = 0;
+    std::atomic<bool> panelActive{false};
 
     // 平面放在正前方：3.2m 远，3.2m 宽（约 53° 视场），16:9
     float panelDistance = 3.2f;
-    float panelWidth = 3.2f;
+    // 面板宽 3.5m ≈ 水平 58° 视角，3.2m 远，与影院前排观感接近
+    float panelWidth = 3.5f;
 };
 
 VrContext g;
 std::thread gThread;
+
+/**
+ * 面板帧更新回调。
+ *
+ * updateTexImage 必须在**创建该纹理的 GL 上下文**里调用，也就是本渲染线程；
+ * 但 SurfaceTexture 对象在 Java 侧，所以这里存一个由 Java 提供的函数指针
+ * （VrNative.attachPanelUpdater），每帧回调过去让它 updateTexImage。
+ */
+std::function<void()> gPanelUpdate;
 std::atomic<bool> gRunning{false};
 std::atomic<bool> gRequestStop{false};
 
@@ -609,7 +637,21 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
 
         glUseProgram(c.program);
         glUniformMatrix4fv(c.mvpLoc, 1, GL_FALSE, mvp.m);
-        glUniform4f(c.colorLoc, 0.15f, 0.16f, 0.20f, 1.f);
+        /*
+         * 有面板纹理就贴纹理（现有界面），没有就画纯色（证明能出画面）。
+         * 用外部纹理（OES）：面板来自 SurfaceTexture，与 2D 模式同一套链路。
+         */
+        const bool usePanel = c.panelActive.load() && c.panelTex != 0;
+        if (usePanel) {
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_EXTERNAL_OES, c.panelTex);
+            glUniform1i(c.texLoc, 0);
+            glUniform1i(c.useTexLoc, 1);
+            glUniform4f(c.colorLoc, 1.f, 1.f, 1.f, 1.f);
+        } else {
+            glUniform1i(c.useTexLoc, 0);
+            glUniform4f(c.colorLoc, 0.15f, 0.16f, 0.20f, 1.f);
+        }
         glBindBuffer(GL_ARRAY_BUFFER, c.vbo);
         glEnableVertexAttribArray(0);
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void *) 0);
@@ -680,6 +722,14 @@ void frameLoop(VrContext &c) {
         }
         XrFrameBeginInfo fbi{XR_TYPE_FRAME_BEGIN_INFO};
         api.BeginFrame(c.session, &fbi);
+
+        /*
+         * 取面板新一帧。必须在渲染线程做（与面板纹理同一个 GL 上下文），
+         * 且要在画之前 —— 否则贴上去的永远是上一帧。
+         */
+        if (c.panelActive.load() && gPanelUpdate != nullptr) {
+            gPanelUpdate();
+        }
 
         bool rendered = false;
         if (fs.shouldRender && c.sessionRunning) {
@@ -795,6 +845,8 @@ void renderThreadMain() {
         c.program = buildProgram();
         c.mvpLoc = glGetUniformLocation(c.program, "uMvp");
         c.colorLoc = glGetUniformLocation(c.program, "uColor");
+        c.useTexLoc = glGetUniformLocation(c.program, "uUseTexture");
+        c.texLoc = glGetUniformLocation(c.program, "uTexture");
         makeQuadBuffers(c);
         LOGI("GL 资源就绪（program=%u）", c.program);
 
@@ -821,6 +873,55 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeStartVr(JNIEnv *env, jobject /* this */
     gRunning = true;
     gThread = std::thread(renderThreadMain);
     return JNI_TRUE;
+}
+
+/**
+ * 绑定面板纹理（现有 Compose 界面）。
+ *
+ * Java 侧建好 SurfaceTexture 后，在 GL 线程里把它的纹理 id 传进来；
+ * 之后每帧 updateTexImage 取最新帧，贴到 VR 平面。
+ * 传 0 表示解绑（回到纯色）。
+ */
+/**
+ * 注册面板帧更新器：Java 侧把 SurfaceTexture 对象传进来，
+ * 之后渲染线程每帧调它的 updateTexImage()。
+ *
+ * 为什么不让 Java 自己更新：updateTexImage 必须在持有该外部纹理的 GL 线程调用，
+ * 那个线程就是这里的渲染线程。
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachPanelSurfaceTexture(JNIEnv *env, jobject /* this */,
+                                                                  jobject surfaceTexture) {
+    if (surfaceTexture == nullptr) {
+        gPanelUpdate = nullptr;
+        LOGI("面板帧更新器已注销");
+        return;
+    }
+    auto *globalRef = env->NewGlobalRef(surfaceTexture);
+    jclass cls = env->GetObjectClass(surfaceTexture);
+    jmethodID updateTexImage = env->GetMethodID(cls, "updateTexImage", "()V");
+    if (updateTexImage == nullptr) {
+        LOGE("找不到 SurfaceTexture.updateTexImage");
+        env->DeleteGlobalRef(globalRef);
+        return;
+    }
+    gPanelUpdate = [globalRef, updateTexImage]() {
+        JNIEnv *e = nullptr;
+        if (g.jvm == nullptr) return;
+        const jint envResult =
+                g.jvm->GetEnv(reinterpret_cast<void **>(&e), JNI_VERSION_1_6);
+        if (envResult != JNI_OK || e == nullptr) return;
+        e->CallVoidMethod(globalRef, updateTexImage);
+    };
+    LOGI("面板帧更新器已注册");
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetPanelTexture(JNIEnv *env, jobject /* this */,
+                                                        jint textureId) {
+    g.panelTex = (GLuint) textureId;
+    g.panelActive = textureId != 0;
+    LOGI("面板纹理已绑定：id=%d", textureId);
 }
 
 extern "C" JNIEXPORT void JNICALL

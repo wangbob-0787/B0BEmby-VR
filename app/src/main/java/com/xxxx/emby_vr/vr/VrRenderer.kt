@@ -354,6 +354,16 @@ class VrRenderer(
         panelSurface = android.view.Surface(st)
         panelActive = true
         Log.i(TAG, "面板管线就绪: panelTex=$panelTex")
+
+        /*
+         * 交给 VR 渲染线程（2026-10-05）：
+         *  - setPanelTexture：纹理 id，用于把界面贴到 VR 平面
+         *  - attachPanelSurfaceTexture：每帧在渲染线程 updateTexImage
+         *    （外部纹理的更新必须在持有它的 GL 线程做）
+         */
+        VrNative.setPanelTexture(panelTex)
+        VrNative.attachPanelSurfaceTexture(st)
+
         onPanelSurfaceReady?.invoke(st)
     }
 

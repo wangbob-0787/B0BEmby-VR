@@ -30,6 +30,33 @@ object VrNative {
 
     private external fun nativeStopVr()
 
+    private external fun nativeSetPanelTexture(textureId: Int)
+
+    private external fun nativeAttachPanelSurfaceTexture(surfaceTexture: android.graphics.SurfaceTexture?)
+
+    /**
+     * 把现有面板界面（Compose 那套）的纹理交给 VR 渲染线程。
+     *
+     * 调用时机：GL 线程里建好外部纹理之后（VrRenderer.createPanelPipeline）。
+     * textureId = 0 表示解绑。
+     */
+    fun setPanelTexture(textureId: Int) {
+        try {
+            if (loaded) nativeSetPanelTexture(textureId)
+        } catch (t: Throwable) {
+            Log.e(TAG, "绑定面板纹理失败：${t.message}")
+        }
+    }
+
+    /** 注册面板帧更新器（内部每帧调 SurfaceTexture.updateTexImage） */
+    fun attachPanelSurfaceTexture(st: android.graphics.SurfaceTexture?) {
+        try {
+            if (loaded) nativeAttachPanelSurfaceTexture(st)
+        } catch (t: Throwable) {
+            Log.e(TAG, "注册面板帧更新器失败：${t.message}")
+        }
+    }
+
     /** 起 VR 会话（原生渲染线程）；失败返回 false，应用继续按 2D 面板模式跑 */
     fun startVr(activity: android.app.Activity): Boolean = try {
         if (loaded) nativeStartVr(activity) else false
