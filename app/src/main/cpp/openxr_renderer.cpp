@@ -297,11 +297,23 @@ in vec2 vUv;
 uniform vec4 uColor;
 uniform int uUseTexture;
 uniform int uCircle;          // 1 = 只保留方形里的内切圆（光点用）
+uniform int uExpandRange;     // 1 = 把「有限范围」(16-235) 的视频拉回全范围
 uniform samplerExternalOES uTexture;
 out vec4 fragColor;
 void main() {
     if (uUseTexture == 1) {
-        fragColor = texture(uTexture, vUv);
+        vec4 c = texture(uTexture, vUv);
+        if (uExpandRange == 1) {
+            /*
+             * 父亲 2026-10-06：「视频还是灰蒙蒙，像蒙了一层纱」。
+             *
+             * 片源是「有限范围」（黑=16、白=235），硬件按「全范围」显示时整体被压扁：
+             * 黑不黑、白不白、对比度低，观感就是蒙了一层纱。这里按标准公式拉回全范围。
+             * 只对视频纹理开 —— 面板/控制条是我们自己按全范围画的，动了会过曝。
+             */
+            c.rgb = clamp((c.rgb - 0.0625) * 1.164, 0.0, 1.0);
+        }
+        fragColor = c;
     } else if (uCircle == 1) {
         // 圆形光点：方形面片上按 UV 半径裁掉四角，边缘做 1 像素软化
         float d = length(vUv - vec2(0.5));
@@ -400,6 +412,7 @@ struct VrContext {
     GLint useTexLoc = -1;
     GLint texLoc = -1;
     GLint circleLoc = -1;          // uCircle：纯色画成圆点还是方块
+    GLint expandLoc = -1;          // uExpandRange：视频有限范围 → 全范围
     GLuint vbo = 0;                // 单位方块（面板 / 光点）
     GLuint rayVbo = 0;             // 手柄射线网格（圆锥）
     int rayVertexCount = 0;
@@ -766,10 +779,20 @@ bool createSwapchains(VrContext &c) {
     }
     std::vector<int64_t> formats(count);
     api.EnumerateSwapchainFormats(c.session, count, &count, formats.data());
+    /*
+     * 交换链格式：**优先非 sRGB（GL_RGBA8）**，这是「灰蒙蒙」的真正根因（2026-10-06）。
+     *
+     * 我们喂进去的两路纹理都是 sRGB 编码值：视频是 OES 外部纹理（硬件已把 BT.709 YUV
+     * 转成 sRGB 编码的 RGB），面板是 Compose 画到虚拟显示器后的 sRGB 输出。
+     * 而交换链选 GL_SRGB8_ALPHA8 时，硬件会把我们写入的值当成"线性"再编码一次 ——
+     * 等于做了两遍 sRGB，画面整体被抬亮、对比度被压扁，观感就是蒙了一层纱。
+     * 这也解释了为什么底色一直"太亮"：设 0.018 的灰会被抬到 0.16 上下。
+     * 原生 VR 播放器（Unity 系）用的也是线性交换链。
+     */
     int64_t chosen = formats[0];
     for (int64_t f : formats) {
-        if (f == GL_SRGB8_ALPHA8) { chosen = f; break; }
-        if (f == GL_RGBA8) chosen = f;
+        if (f == GL_RGBA8) { chosen = f; break; }
+        if (f == GL_SRGB8_ALPHA8) chosen = f;
     }
     LOGI("swapchain 格式选定 0x%llx（候选 %u 个）", (unsigned long long) chosen, count);
 
@@ -1735,7 +1758,7 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
          * 播放画面与海报墙走同一条绘制路径，只有摆位不同 —— 2026-10-05 父亲要求
          * 「海报墙与播放屏分开」：以前是同一块屏来回换贴图，播放一开海报墙就被顶掉。
          */
-        auto drawScreen = [&](const ScreenPlacement &place, unsigned tex) {
+        auto drawScreen = [&](const ScreenPlacement &place, unsigned tex, bool expandRange = false) {
             const Mat4 mvp = multiply(multiply(proj, view4), placementModel(place));
             glUseProgram(c.program);
             glUniformMatrix4fv(c.mvpLoc, 1, GL_FALSE, mvp.m);
@@ -1750,6 +1773,7 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
                 glBindTexture(GL_TEXTURE_EXTERNAL_OES, tex);
                 glUniform1i(c.texLoc, 0);
                 glUniform1i(c.useTexLoc, 1);
+                if (c.expandLoc >= 0) glUniform1i(c.expandLoc, expandRange ? 1 : 0);
                 glUniform4f(c.colorLoc, 1.f, 1.f, 1.f, 1.f);
             } else {
                 glUniform1i(c.useTexLoc, 0);
@@ -1768,7 +1792,11 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
 
         // 前方银幕：播放时贴视频；没播时是一块空屏（暗色），空间里有"银幕"在
         const bool videoReady = c.videoActive.load() && c.videoTex != 0 && c.videoHasFrame.load();
-        drawScreen(frontScreen(c), videoReady ? c.videoTex : 0);
+        /*
+         * 视频屏：色彩范围拉伸暂不启用（先单独验交换链格式这一条，两个变量一起动会分不清）。
+         * 开关代码留在 drawScreen 里，需要时传 true。
+         */
+        drawScreen(frontScreen(c), videoReady ? c.videoTex : 0, false);
 
         // 海报墙：常驻左前方斜放；收起时不画，没出帧也先不画（不闪也不串）
         const bool panelReady = c.panelActive.load() && c.panelTex != 0 && c.panelHasFrame.load();
@@ -1805,6 +1833,7 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
             glBindTexture(GL_TEXTURE_EXTERNAL_OES, c.osdTex);
             glUniform1i(c.texLoc, 0);
             glUniform1i(c.useTexLoc, 1);
+            if (c.expandLoc >= 0) glUniform1i(c.expandLoc, 0);   // 控制条按全范围画，不拉
             glUniform4f(c.colorLoc, 1.f, 1.f, 1.f, 1.f);
             glBindBuffer(GL_ARRAY_BUFFER, c.vbo);
             glEnableVertexAttribArray(0);
@@ -2122,6 +2151,7 @@ void renderThreadMain() {
         c.useTexLoc = glGetUniformLocation(c.program, "uUseTexture");
         c.texLoc = glGetUniformLocation(c.program, "uTexture");
         c.circleLoc = glGetUniformLocation(c.program, "uCircle");
+        c.expandLoc = glGetUniformLocation(c.program, "uExpandRange");
         makeQuadBuffers(c);
         makeRayBuffer(c);
         LOGI("GL 资源就绪（program=%u）", c.program);
