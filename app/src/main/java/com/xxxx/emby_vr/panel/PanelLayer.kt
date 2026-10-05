@@ -194,6 +194,8 @@ class PanelLayer(
         lastScrollY = y
         lastScrollDx = dx
         lastScrollDy = dy
+        // 派发点用锚点（他按下时看着的那一片），不是光点当前可能已顶到边缘的位置
+        val (ax, ay) = scrollAnchorPoint()
         val now = SystemClock.uptimeMillis()
         // 注意：MotionEvent.setAxisValue 是隐藏 API（编译期 Unresolved），
         // 滚轮量必须写在 PointerCoords 上再 obtain。
@@ -205,8 +207,8 @@ class PanelLayer(
         )
         val coords = arrayOf(
             MotionEvent.PointerCoords().apply {
-                this.x = x
-                this.y = y
+                this.x = ax
+                this.y = ay
                 pressure = 1f
                 size = 1f
                 if (h != 0f) setAxisValue(MotionEvent.AXIS_HSCROLL, h)
@@ -222,8 +224,8 @@ class PanelLayer(
         ev.recycle()
         Log.i(
             TAG,
-            "$why：滚轮 光点=(${x.toInt()},${y.toInt()}) 位移=(${dx.toInt()},${dy.toInt()}) " +
-                "Δ=($h,$v) 被接住=$hit",
+            "$why：滚轮 光点=(${x.toInt()},${y.toInt()}) 派发点=(${ax.toInt()},${ay.toInt()}) " +
+                "位移=(${dx.toInt()},${dy.toInt()}) Δ=($h,$v) 被接住=$hit",
         )
         /*
          * 兜底：万一这条通道整条不被接住（界面里没有可滚容器 / 系统不认），
@@ -278,6 +280,17 @@ class PanelLayer(
     private var lastMoveAt = 0L
 
     /**
+     * 滚轮事件的**派发锚点** = 这次摇杆推动的起点（父亲 2026-10-05 实测）。
+     *
+     * 为什么不能打在光点当前位置：推上滚时，光点会被一路顶到面板最上沿
+     * （实测 y=1），那里是顶部状态栏那一排、不是可滚容器 —— 滚轮事件落在那里
+     * 就没人接，表现成「上滚只滚一下就停」（下滚时锚点在底部内容区里，所以正常）。
+     * 锚点固定用按下时的位置（用户当时看着的那一片），并把极边缘往内收一点。
+     */
+    private var scrollAnchorX = -1f
+    private var scrollAnchorY = -1f
+
+    /**
      * 摇杆滚动节拍器：只要还处于"摇杆推动"状态就每 [SCROLL_REPEAT_MS] 滚一小格。
      *
      * 父亲 2026-10-05 两轮反馈：
@@ -297,6 +310,20 @@ class PanelLayer(
             scrollAt(lastScrollX, lastScrollY, lastScrollDx, lastScrollDy, "摇杆保持")
             decor?.postDelayed(this, SCROLL_REPEAT_MS)
         }
+    }
+
+    /**
+     * 滚动派发点：这次推动的起点，并把极边缘往内容区里收一点
+     * （顶部那一条是状态栏、最底部是安全区，都不属于可滚容器）。
+     */
+    private fun scrollAnchorPoint(): Pair<Float, Float> {
+        val w = (decor?.width ?: 0).toFloat()
+        val h = (decor?.height ?: 0).toFloat()
+        var x = if (scrollAnchorX >= 0f) scrollAnchorX else downPx
+        var y = if (scrollAnchorY >= 0f) scrollAnchorY else downPy
+        if (w > 0f) x = x.coerceIn(w * 0.10f, w * 0.90f)
+        if (h > 0f) y = y.coerceIn(h * 0.20f, h * 0.80f)
+        return x to y
     }
 
     /** 这一步主要是横向还是纵向 */
@@ -646,6 +673,8 @@ class PanelLayer(
                      *  「要么不滚、要么滚错了一排」。）
                      */
                     lastMoveAt = now
+                    scrollAnchorX = px
+                    scrollAnchorY = py
                     scrollAt(px, py, dx, dy, "摇杆起始步")
                     decor?.removeCallbacks(scrollRepeat)
                     decor?.postDelayed(scrollRepeat, SCROLL_REPEAT_MS)
@@ -683,6 +712,8 @@ class PanelLayer(
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 if (!isDown) return
                 isDown = false
+                scrollAnchorX = -1f
+                scrollAnchorY = -1f
                 decor?.removeCallbacks(scrollRepeat)
                 val dragged = isDragging
                 isDragging = false
