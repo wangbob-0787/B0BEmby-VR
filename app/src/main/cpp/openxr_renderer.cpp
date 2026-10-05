@@ -1718,6 +1718,9 @@ void teardown(VrContext &c) {
     c.localSpace = XR_NULL_HANDLE;
 }
 
+/** 建三张画面纹理（实现放在文件末尾，渲染线程启动时调用） */
+bool createOesSources(VrContext &c);
+
 void renderThreadMain() {
     VrContext &c = g;
     LOGI("VR 渲染线程启动");
