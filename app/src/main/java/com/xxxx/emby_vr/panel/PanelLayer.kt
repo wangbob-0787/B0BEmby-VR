@@ -849,8 +849,8 @@ class PanelLayer(
                 scrollAnchorX = -1f
                 scrollAnchorY = -1f
                 stopFrames()
-                    scrollAt(px, py, dx, dy, "摇杆起始步", rateOf(pointerSpeed) * 0.03f)
-                    scheduleFrame()
+                val dragged = isDragging
+                isDragging = false
                 /*
                  * 惯性（父亲 2026-10-05 定，第二轮修正）：**不管怎么松手都滑**。
                  *
