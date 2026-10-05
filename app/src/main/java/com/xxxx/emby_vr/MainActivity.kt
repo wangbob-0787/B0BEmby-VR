@@ -320,22 +320,22 @@ class MainActivity : ComponentActivity() {
                         // 先停 videoActive（ticker 下一圈自行退出），再写错误提示，
                         // 否则每秒刷新的绿字会把错误盖掉
                         renderer.videoActive = false
-                        hudJob?.cancel()
                         hud("播放出错：${friendlyError(error)}")
                     }
                 })
             }
             renderer.videoActive = true
-            seekHudLabel = null
             dragFiredSteps = 0
             lastSeekAt = 0L
             stickRunDir = 0
             stickRunStart = 0f
             stickLastAt = 0L
             stickHoldFiredAt = 0L
-            startHudTicker()
             startPlaybackReporting()
-            hud("播放中：左右拨动摇杆=快进快退 · 扳机=暂停 · 返回=退出")
+            /*
+             * 播放期绿色状态字取消（父亲 2026-10-05：「播放界面的绿色快进快退字体取消」）。
+             * 报错提示（起播失败 / 播放出错 / 取不到播放地址）仍保留 —— 那是故障信息。
+             */
             Log.i(TAG, "开始播放: $title url=${url.take(160)}")
         } catch (e: Exception) {
             Log.e(TAG, "起播失败", e)
@@ -344,38 +344,10 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // ---- 播放期绿字：时间随播放实时刷新 ----
-
-    /** 绿字前缀（快进/快退/已暂停…），时间部分由 ticker 每秒刷新 */
-    private var seekHudLabel: String? = null
-    private var seekHudLabelAt = 0L
-    private var hudJob: kotlinx.coroutines.Job? = null
-
-    /**
-     * 播放中每秒刷新一次绿字：前缀 + 当前播放位置。
-     * 父亲 2026-10-04 实测：「快进 10 秒 → 0:28」写死后不随播放变化，
-     * 要求时间跟着播放走。seek/暂停标签显示 5 秒后回落为「播放中」；
-     * 出错/退出时 videoActive=false，ticker 自行停掉，不覆盖错误提示。
-     */
-    private fun startHudTicker() {
-        hudJob?.cancel()
-        hudJob = scope.launch {
-            while (renderer.videoActive) {
-                val p = player
-                if (p != null) {
-                    val sec = p.currentPosition / 1000
-                    val stale = System.currentTimeMillis() - seekHudLabelAt > 5000
-                    val prefix = when {
-                        seekHudLabel == null -> "播放中"
-                        stale -> "播放中"
-                        else -> seekHudLabel!!
-                    }
-                    hud("$prefix → ${sec / 60}:${"%02d".format(sec % 60)}")
-                }
-                kotlinx.coroutines.delay(1000)
-            }
-        }
-    }
+    // ---- 播放期状态字：已取消（父亲 2026-10-05）----
+    //
+    // 原来播放中每秒刷一行绿字（播放中 / 快进 10 秒 / 已暂停 → 时间），父亲要求取消；
+    // 只有报错提示还走 hud()。
 
     /**
      * 把技术错误翻成一句人话（给父亲看的屏上提示，不出现英文异常名）。
@@ -399,9 +371,7 @@ class MainActivity : ComponentActivity() {
     private fun togglePlayPause() {
         val p = player ?: return
         p.playWhenReady = !p.playWhenReady
-        seekHudLabel = if (p.playWhenReady) "继续播放" else "已暂停"
-        seekHudLabelAt = System.currentTimeMillis()
-        hud("${seekHudLabel} → ${p.currentPosition / 1000 / 60}:${"%02d".format(p.currentPosition / 1000 % 60)}")
+        Log.i(TAG, if (p.playWhenReady) "继续播放" else "已暂停")
     }
 
     /** 最近一次 seek 的目标位置与发起时间（毫秒）；用于连跳时的基准 */
@@ -423,10 +393,8 @@ class MainActivity : ComponentActivity() {
         p.seekTo(target)
         val sec = target / 1000
         Log.i(TAG, "seek ${deltaMs / 1000}s → ${sec / 60}:${"%02d".format(sec % 60)} (基准 ${if (withinChain) "连跳" else "实时"})")
-        // 绿字只设前缀，时间交给 ticker 每秒刷新（随播放走）
-        seekHudLabel = if (deltaMs < 0) "快退 10 秒" else "快进 10 秒"
-        seekHudLabelAt = System.currentTimeMillis()
-        hud("${seekHudLabel} → ${sec / 60}:${"%02d".format(sec % 60)}")
+        // 状态绿字已取消（父亲 2026-10-05），跳转结果只进日志
+        Log.i(TAG, "跳转落点 ${sec / 60}:${"%02d".format(sec % 60)}")
     }
 
     /** 停止播放，回到界面（面板层） */
@@ -435,8 +403,6 @@ class MainActivity : ComponentActivity() {
         reportPlaybackStopped(player?.currentPosition?.times(10_000) ?: 0L)
         stopPlaybackInternal()
         renderer.videoActive = false
-        hudJob?.cancel()
-        hudJob = null
         renderer.setHudText("")
         Log.i(TAG, "停止播放，回到界面")
     }

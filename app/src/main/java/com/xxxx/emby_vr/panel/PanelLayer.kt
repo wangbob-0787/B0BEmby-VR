@@ -159,7 +159,7 @@ class PanelLayer(
          * 设上下限，避免"几乎不动"和"飞出去"。
          */
         private const val RATE_MIN = 1.2f
-        private const val RATE_MAX = 26f
+        private const val RATE_MAX = 22f
 
         /**
          * 光点速度（像素/秒）→ 滚动速度（格/秒）：每 120 像素/秒记 1 格/秒。
