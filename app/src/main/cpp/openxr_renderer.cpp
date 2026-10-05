@@ -433,6 +433,12 @@ struct VrContext {
     std::atomic<float> panelYawDeg{kSideScreen.yawDeg};
     std::atomic<float> panelPitchDeg{kSideScreen.pitchDeg};
 
+    /** 海报墙宽度（米）：握着握把键推摇杆左右可以缩放（父亲 2026-10-06） */
+    std::atomic<float> panelWidth{kSideScreen.width};
+
+    /** 握把键按住时，上一帧处理摇杆调整的时刻（算增量用，秒） */
+    double panelAdjustAt[2] = {0.0, 0.0};
+
     /** 拖海报墙的手感状态：是否抓着、是否真拖动过、按下那一刻的球面半径与起点 */
     bool panelDragActive[2] = {false, false};
     bool panelDragMoved[2] = {false, false};
@@ -966,7 +972,7 @@ bool setupInput(VrContext &c) {
             {"/user/hand/left/input/aim/pose",   "/user/hand/right/input/aim/pose",   c.aimPoseAction},
             {"/user/hand/left/input/trigger/value", "/user/hand/right/input/trigger/value", c.triggerAction},
             {"/user/hand/left/input/trigger/value", "/user/hand/right/input/trigger/value", c.triggerValueAction},
-            {"/user/hand/left/input/squeeze/value", "/user/hand/right/input/squeeze/value", c.squeezeAction},
+            {"/user/hand/left/input/squeeze/click", "/user/hand/right/input/squeeze/click", c.squeezeAction},
             {"/user/hand/left/input/thumbstick", "/user/hand/right/input/thumbstick", c.thumbstickAction},
             {"/user/hand/left/input/x/click",    "/user/hand/right/input/a/click",    c.aAction},
             {"/user/hand/left/input/y/click",    "/user/hand/right/input/b/click",    c.bAction},
@@ -1134,6 +1140,12 @@ void aimDirection(const XrPosef &aim, float *dx, float *dy, float *dz) {
  */
 /** 拖海报墙时"算不算动了"的阈值（米，面板中心位移） */
 constexpr float kPanelDragSlop = 0.02f;
+/** 握着握把键推摇杆：前后推的远近速度（米/秒）与左右推的缩放速度（米/秒） */
+constexpr float kPanelDistSpeed = 2.0f;
+constexpr float kPanelSizeSpeed = 1.6f;
+/** 海报墙宽度范围（米），防止缩没了或者糊满视野 */
+constexpr float kPanelMinWidth = 1.2f;
+constexpr float kPanelMaxWidth = 5.0f;
 
 /**
  * 海报墙常驻左前方（浏览、播放都在那儿；前方那块留给银幕）。
@@ -1146,6 +1158,7 @@ ScreenPlacement panelPlacement(const VrContext &c) {
     p.cz = c.panelPosZ.load();
     p.yawDeg = c.panelYawDeg.load();
     p.pitchDeg = c.panelPitchDeg.load();
+    p.width = c.panelWidth.load();
     return p;
 }
 
@@ -1437,15 +1450,23 @@ void pushInput(VrContext &c) {
                 c.sinkPointerValid = true;
             }
 
+            // ① 扳机（按下那一刻）→ 在光柱位置点一下。拖动改由握把键承担，
+            //    所以这里不用再等松手判断（父亲 2026-10-06：原来两者会打架）
+            if (!c.squeezeDown[h] && c.triggerDown[h] && !c.sinkLastTrigger[h] &&
+                c.sinkClick != nullptr) {
+                LOGI("VR 输入：%s 扳机 → 面板点击 (%d, %d)", handName[h], (int) px, (int) py);
+                env->CallVoidMethod(c.inputSink, c.sinkClick, px, py);
+                clearJavaException(env, "输入回调 onClick");
+            }
+            c.sinkLastTrigger[h] = c.triggerDown[h];
+
             /*
-             * 按住扳机拖海报墙（父亲 2026-10-06 定：以手柄为球心，海报墙在球面上挪）。
-             *
-             * 球心 = 手柄位置，半径 = 按下那一刻手柄到海报墙中心的距离；按住期间
-             * 海报墙中心 = 球心 + 半径 × 光柱方向 —— 光柱扫到哪儿它跟到哪儿，
-             * 朝向同时反解成"正对球心"（也就是正对观影者）。
-             * 松手时若中心几乎没动，才算一次点击（不然"想拖一下"会顺手点开片子）。
+             * ② 握把键（Grip / squeeze，手柄侧面中指那个）按住 = 抓住海报墙：
+             *    球心 = 手柄位置，半径 = 按下那一刻手柄到面板中心的距离；按住期间
+             *    面板中心 = 球心 + 半径 × 光柱方向，朝向反解成"正对球心"。
+             *    松开握把键就是松手。父亲 2026-10-06 定：拖动归握把键，别和点击打架。
              */
-            if (c.triggerDown[h]) {
+            if (c.squeezeDown[h]) {
                 const XrVector3f hand = c.aimPose[h].position;
                 if (!c.panelDragActive[h]) {
                     c.panelDragActive[h] = true;
@@ -1457,6 +1478,7 @@ void pushInput(VrContext &c) {
                     c.panelDragStartX[h] = c.panelPosX.load();
                     c.panelDragStartY[h] = c.panelPosY.load();
                     c.panelDragStartZ[h] = c.panelPosZ.load();
+                    c.panelAdjustAt[h] = t;
                 } else {
                     float ddx = 0.f, ddy = 0.f, ddz = 0.f;
                     aimDirection(c.aimPose[h], &ddx, &ddy, &ddz);
@@ -1480,40 +1502,62 @@ void pushInput(VrContext &c) {
                         c.panelYawDeg = atan2f(-ddx, -ddz) * kRad2Deg;
                     }
                 }
-            } else if (c.panelDragActive[h]) {
-                const bool moved = c.panelDragMoved[h];
-                c.panelDragActive[h] = false;
-                c.panelDragMoved[h] = false;
-                if (moved) {
-                    LOGI("海报墙：挪到 (%.2f, %.2f, %.2f) 朝向 %.0f°/%.0f°", c.panelPosX.load(),
-                         c.panelPosY.load(), c.panelPosZ.load(), c.panelYawDeg.load(),
-                         c.panelPitchDeg.load());
-                } else if (c.sinkClick != nullptr) {
-                    LOGI("VR 输入：%s 扳机 → 面板点击 (%d, %d)", handName[h], (int) px, (int) py);
-                    env->CallVoidMethod(c.inputSink, c.sinkClick, px, py);
-                    clearJavaException(env, "输入回调 onClick");
-                }
-            }
-            c.sinkLastTrigger[h] = c.triggerDown[h];
 
-            // 摇杆 → 连状态上报（30Hz）；回中补一帧零值，Java 侧据此进入惯性滑行
-            const float sx = c.thumbstick[h].x;
-            const float sy = c.thumbstick[h].y;
-            if (fabsf(sx) > kStickDeadzone || fabsf(sy) > kStickDeadzone) {
-                if (t - c.sinkStickAt[h] >= kStickStateMs) {
-                    c.sinkStickAt[h] = t;
-                    c.sinkStickPushed[h] = true;
-                    if (c.sinkStick != nullptr) {
-                        // 坐标 + 摇杆量（x 右正、y 上正，与 OpenXR 一致；方向语义在 Java 侧翻）
-                        env->CallVoidMethod(c.inputSink, c.sinkStick, px, py, sx, sy);
-                        clearJavaException(env, "输入回调 onStick");
+                /*
+                 * ③ 握着握把键推摇杆（父亲 2026-10-06 定）：
+                 *    前后推 = 调远近（以观影者为原点，沿面板当前方向前后走；前推推远），
+                 *    左右推 = 缩放海报墙（左小右大）。
+                 */
+                const float sx2 = c.thumbstick[h].x;
+                const float sy2 = c.thumbstick[h].y;
+                const double dt = t - c.panelAdjustAt[h];
+                const float step = (float) ((dt > 0.0 && dt < 0.2) ? dt : 0.016);
+                if (fabsf(sy2) > kStickDeadzone) {
+                    const float cx = c.panelPosX.load();
+                    const float cy = c.panelPosY.load();
+                    const float cz = c.panelPosZ.load();
+                    const float d = sqrtf(cx * cx + cy * cy + cz * cz);
+                    if (d > 0.3f) {
+                        const float k = (d + sy2 * kPanelDistSpeed * step) / d;
+                        c.panelPosX = cx * k;
+                        c.panelPosY = cy * k;
+                        c.panelPosZ = cz * k;
                     }
                 }
-            } else if (c.sinkStickPushed[h] && c.sinkStick != nullptr) {
-                c.sinkStickPushed[h] = false;
-                c.sinkStickAt[h] = 0.0;
-                env->CallVoidMethod(c.inputSink, c.sinkStick, px, py, 0.f, 0.f);
-                clearJavaException(env, "输入回调 onStick(回中)");
+                if (fabsf(sx2) > kStickDeadzone) {
+                    const float w = c.panelWidth.load() + sx2 * kPanelSizeSpeed * step;
+                    c.panelWidth = fminf(kPanelMaxWidth, fmaxf(kPanelMinWidth, w));
+                }
+                c.panelAdjustAt[h] = t;
+            } else if (c.panelDragActive[h]) {
+                c.panelDragActive[h] = false;
+                c.panelDragMoved[h] = false;
+                LOGI("海报墙：挪到 (%.2f, %.2f, %.2f) 朝向 %.0f°/%.0f° 宽 %.2f 米",
+                     c.panelPosX.load(), c.panelPosY.load(), c.panelPosZ.load(),
+                     c.panelYawDeg.load(), c.panelPitchDeg.load(), c.panelWidth.load());
+            }
+
+            // ④ 摇杆滚动：连状态上报（30Hz）；回中补一帧零值，Java 侧据此进入惯性滑行。
+            //    按着握把键时不滚 —— 那时候的摇杆在调远近与大小（见 ③）
+            if (!c.squeezeDown[h]) {
+                const float sx = c.thumbstick[h].x;
+                const float sy = c.thumbstick[h].y;
+                if (fabsf(sx) > kStickDeadzone || fabsf(sy) > kStickDeadzone) {
+                    if (t - c.sinkStickAt[h] >= kStickStateMs) {
+                        c.sinkStickAt[h] = t;
+                        c.sinkStickPushed[h] = true;
+                        if (c.sinkStick != nullptr) {
+                            // 坐标 + 摇杆量（x 右正、y 上正，与 OpenXR 一致；方向语义在 Java 侧翻）
+                            env->CallVoidMethod(c.inputSink, c.sinkStick, px, py, sx, sy);
+                            clearJavaException(env, "输入回调 onStick");
+                        }
+                    }
+                } else if (c.sinkStickPushed[h] && c.sinkStick != nullptr) {
+                    c.sinkStickPushed[h] = false;
+                    c.sinkStickAt[h] = 0.0;
+                    env->CallVoidMethod(c.inputSink, c.sinkStick, px, py, 0.f, 0.f);
+                    clearJavaException(env, "输入回调 onStick(回中)");
+                }
             }
             continue;
         }
