@@ -776,7 +776,7 @@ bool setupInput(VrContext &c) {
     for (int i = 0; i < 2; i++) {
         XrActionSpaceCreateInfo asci2{XR_TYPE_ACTION_SPACE_CREATE_INFO};
         asci2.action = c.aimPoseAction;
-        asci2.subactionPath = pathOf(c, handPaths[i]);
+        asci2.subactionPath = pathOf(c, i == 0 ? "/user/hand/left" : "/user/hand/right");
         asci2.poseInActionSpace = {{0, 0, 0, 1}, {0, 0, 0}};
         const XrResult sr2 = api.CreateActionSpace(c.session, &asci2, &c.aimSpaces[i]);
         if (XR_FAILED(sr2)) {
