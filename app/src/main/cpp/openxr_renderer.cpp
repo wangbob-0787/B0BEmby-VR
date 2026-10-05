@@ -23,10 +23,20 @@
 #include <android/log.h>
 #include <jni.h>
 
+/*
+ * 头文件顺序有讲究（run 91 实测踩坑）：
+ * OpenXR 的 openxr_platform.h 依赖 GLES 的类型定义，必须在 GLES 头**之后**；
+ * 但 NDK 的 GLES2/gl2ext.h 又要求 gl2.h 先定义 GL_APIENTRYP 等宏，
+ * 单独先引 gl2ext.h 会报「expected ')' / unknown type name 'GLenum'」。
+ * 因此：GLES3/gl3.h（它自己引 gl2.h）→ GLES2/gl2ext.h → openxr 头。
+ */
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
-#include <GLES2/gl2ext.h>
 #include <GLES3/gl3.h>
+#include <GLES2/gl2ext.h>
+
+#include <openxr/openxr.h>
+#include <openxr/openxr_platform.h>
 
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
