@@ -35,6 +35,15 @@
 #include <GLES3/gl3.h>
 #include <GLES2/gl2ext.h>
 
+/*
+ * 平台扩展类型（XrInstanceCreateInfoAndroidKHR / XrGraphicsBindingOpenGLESAndroidKHR /
+ * XrSwapchainImageOpenGLESKHR …）都被 openxr_platform.h 用宏开关包着，
+ * 不定义这两个宏整段就被跳过 —— run 92 报「unknown type name
+ * XrInstanceCreateInfoAndroidKHR」就是这个原因。必须在包含前定义。
+ */
+#define XR_USE_PLATFORM_ANDROID 1
+#define XR_USE_GRAPHICS_API_OPENGL_ES 1
+
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 
