@@ -148,9 +148,26 @@ Mat4 multiply(const Mat4 &a, const Mat4 &b) {
     return r;
 }
 
-Mat4 fromXrMatrix(const XrMatrix4x4f &x) {
+/*
+ * 注意：OpenXR 核心头里**没有** XrMatrix4x4f（那是 OpenXR-SDK 示例工程
+ * （hello_xr 的 xr_linear.h）里的工具类型）。这里自己做投影矩阵。
+ */
+Mat4 perspectiveFromFov(const XrFovf &fov, float nearZ, float farZ) {
+    const float tanL = tanf(fov.angleLeft);
+    const float tanR = tanf(fov.angleRight);
+    const float tanU = tanf(fov.angleUp);
+    const float tanD = tanf(fov.angleDown);
+    const float tanW = tanR - tanL;
+    const float tanH = tanU - tanD;
+
     Mat4 r{};
-    memcpy(r.m, x.m, sizeof(r.m));
+    r.m[0] = 2.f / tanW;                                   // 列 0
+    r.m[5] = 2.f / tanH;                                   // 列 1
+    r.m[8] = (tanR + tanL) / tanW;                         // 列 2
+    r.m[9] = (tanU + tanD) / tanH;
+    r.m[10] = -(farZ + nearZ) / (farZ - nearZ);
+    r.m[11] = -1.f;
+    r.m[14] = -(2.f * farZ * nearZ) / (farZ - nearZ);
     return r;
 }
 
@@ -431,7 +448,7 @@ bool createSwapchains(VrContext &c) {
             glGenFramebuffers(1, &eye.fbos[k]);
             glBindFramebuffer(GL_FRAMEBUFFER, eye.fbos[k]);
             glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
-                                   eye.images[k].colorTexture, 0);
+                                   static_cast<GLuint>(eye.images[k].image), 0);
             if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
                 LOGE("FBO 不完整（眼 %zu 图 %u）", i, k);
                 return false;
@@ -536,8 +553,8 @@ void renderEye(VrContext &c, int eyeIndex, const XrView &view) {
     glClearColor(0.f, 0.f, 0.f, 1.f);   // 黑底
     glClear(GL_COLOR_BUFFER_BIT);
 
-    // 投影 × 头姿 × 平面位置
-    Mat4 proj = fromXrMatrix(view.projectionMatrix);
+    // 投影（由该眼的 FOV 生成）× 头姿 × 平面位置
+    Mat4 proj = perspectiveFromFov(view.fov, 0.05f, 100.f);
     Mat4 view4 = viewMatrixFromPose(view.pose);
     Mat4 model = translateScale(0.f, 0.f, -c.panelDistance, c.panelWidth, c.panelWidth * 9.f / 16.f);
     Mat4 mvp = multiply(multiply(proj, view4), model);
