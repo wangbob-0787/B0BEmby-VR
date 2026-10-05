@@ -15,6 +15,8 @@ tvFoundation = "1.0.0-alpha11"
 navigation = "2.9.6"
 zxing = "3.5.2"
 nanohttpd = "2.3.1"
+# Khronos 官方 Android OpenXR loader（prefab 包，含头文件与 .so）
+openxrLoader = "1.1.49"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -38,6 +40,7 @@ androidx-lifecycle-viewmodel-compose = { group = "androidx.lifecycle", name = "l
 compose-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended", version = "1.7.8" }
 zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" }
 nanohttpd = { group = "org.nanohttpd", name = "nanohttpd", version.ref = "nanohttpd" }
+openxr-loader = { group = "org.khronos.openxr", name = "openxr_loader_for_android", version.ref = "openxrLoader" }
 
 # 播放：Media3 ExoPlayer（输出到 OpenXR 的 Android Surface）
 media3-exoplayer = { group = "androidx.media3", name = "media3-exoplayer", version.ref = "media3" }

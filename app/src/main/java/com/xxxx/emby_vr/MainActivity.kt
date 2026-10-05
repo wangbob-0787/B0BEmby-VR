@@ -508,6 +508,11 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Log.i(TAG, "onCreate: B0BEmby VR 启动")
+        /*
+         * VR 影院模式的第一步（2026-10-05）：确认原生层能编出来、官方 OpenXR loader
+         * 能链上。加载失败不影响 2D 面板模式（VrNative 内部已吞异常）。
+         */
+        Log.i(TAG, "原生层探针：${com.xxxx.emby_vr.vr.VrNative.probe()}")
 
         // VR 应用需保持屏幕常亮（头显内不存在系统熄屏，但某些盒子/模拟器需要）
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)

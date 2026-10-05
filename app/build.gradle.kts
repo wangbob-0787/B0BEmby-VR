@@ -40,6 +40,22 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+        // OpenXR loader 是 AAR 里的原生库，需要 prefab 才能被 CMake 找到
+        // （见 app/src/main/cpp/CMakeLists.txt 的 find_package(openxr_loader)）
+        prefab = true
+    }
+
+    /*
+     * VR 影院模式（2026-10-05 起）：接官方 OpenXR，需要原生代码。
+     * NDK 版本显式写死，避免 CI 上跟着 AGP 默认值漂移。
+     */
+    ndkVersion = "27.0.12077973"
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     defaultConfig {
@@ -67,6 +83,12 @@ android {
 
         ndk {
             abiFilters += listOf("arm64-v8a")
+        }
+
+        externalNativeBuild {
+            cmake {
+                cppFlags += "-std=c++17"
+            }
         }
 
         // Emby 连接参数：从 local.properties 或环境变量注入，不进源码
@@ -126,6 +148,7 @@ android {
 }
 
 dependencies {
+    implementation(libs.openxr.loader)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.material3)
     implementation(libs.androidx.activity.compose)
