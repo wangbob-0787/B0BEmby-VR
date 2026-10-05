@@ -11,6 +11,7 @@
  *  - 本机实测系统版本 5.13.7（adb getprop ro.build.display.id）
  *  - loader prefab 包：org.khronos.openxr:openxr_loader_for_android
  */
+#include <cstdio>
 #include <jni.h>
 #include <android/log.h>
 #include <openxr/openxr.h>
