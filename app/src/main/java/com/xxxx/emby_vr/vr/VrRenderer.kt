@@ -98,6 +98,16 @@ class VrRenderer(
         private set
     private var vrVideoSurfaceTexture: android.graphics.SurfaceTexture? = null
 
+    /** 控制条（OSD）输出 surface：交给控制条那台 1920×270 的虚拟显示器 */
+    @Volatile
+    var vrOsdSurface: android.view.Surface? = null
+        private set
+    private var vrOsdSurfaceTexture: android.graphics.SurfaceTexture? = null
+
+    /** 控制条 surface 就绪回调（在 GL 线程触发，Activity 侧切主线程） */
+    @Volatile
+    var onOsdSurfaceReady: ((android.graphics.SurfaceTexture) -> Unit)? = null
+
     // 最近一帧的虚拟屏布局（面板像素换算用，见 panelPixelAt）
     private var lastScreenCenterY = 0f
     private var lastScreenHalfH = 0f
@@ -109,6 +119,8 @@ class VrRenderer(
         videoSurface = null
         runCatching { vrVideoSurface?.release() }
         vrVideoSurface = null
+        runCatching { vrOsdSurface?.release() }
+        vrOsdSurface = null
         runCatching { surfaceTexture?.release() }
         surfaceTexture = null
         videoActive = false
@@ -382,6 +394,19 @@ class VrRenderer(
          * videoSurface 管线，不受影响。
          */
         if (VrNative.vrRunning) {
+            // 控制条：与视频同一套路，VR 上下文里建纹理
+            val ost = VrNative.createOsdSurfaceTexture()
+            if (ost != null) {
+                vrOsdSurfaceTexture?.release()
+                vrOsdSurfaceTexture = ost
+                vrOsdSurface?.release()
+                vrOsdSurface = android.view.Surface(ost)
+                Log.i(TAG, "控制条画面就绪（纹理由 VR 上下文创建）")
+                onOsdSurfaceReady?.invoke(ost)
+            } else {
+                Log.w(TAG, "控制条画面不可用（播放时不会有控制条）")
+            }
+
             val vst = VrNative.createVideoSurfaceTexture()
             if (vst != null) {
                 vrVideoSurfaceTexture?.release()

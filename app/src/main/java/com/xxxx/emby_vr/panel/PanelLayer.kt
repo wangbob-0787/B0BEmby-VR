@@ -62,6 +62,13 @@ import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 class PanelLayer(
     private val activity: ComponentActivity,
     private val content: @Composable () -> Unit,
+    /** 面板像素尺寸：默认 1920x1080（电视版布局）；控制条面板走 1920x270 这种矮条 */
+    private val panelW: Int = W,
+    private val panelH: Int = H,
+    /** 虚拟显示器名字（日志与 dumpsys 里区分主面板 / 控制条） */
+    private val name: String = "b0bemby-panel",
+    /** 是否把"面板已就绪"告诉 VR 侧：主面板 true，控制条 false（各管各的） */
+    private val activatesVrPanel: Boolean = true,
 ) {
 
     companion object {
@@ -310,6 +317,11 @@ class PanelLayer(
         }
     }
 
+    /** 控制条实例是否就绪（只有 activatesVrPanel=false 的控制条会用到） */
+    @Volatile
+    var osdReady = false
+        private set
+
     /** 面板是否可用（Presentation 已显示、decorView 已就绪） */
     @Volatile
     var ready = false
@@ -526,7 +538,7 @@ class PanelLayer(
 
     private fun buildDisplay(st: SurfaceTexture) {
         try {
-            st.setDefaultBufferSize(W, H)
+            st.setDefaultBufferSize(panelW, panelH)
             val surface = Surface(st)
             val dm = activity.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
 
@@ -535,9 +547,9 @@ class PanelLayer(
              * 不接收其他应用投屏（PUBLIC 会让别人也能往里投）。
              */
             val vd = dm.createVirtualDisplay(
-                "b0bemby-panel",
-                W,
-                H,
+                name,
+                panelW,
+                panelH,
                 DPI,
                 surface,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY,
@@ -552,8 +564,9 @@ class PanelLayer(
                  * 界面真的开始画了 → 通知 VR 侧可以贴面板纹理了
                  * （2026-10-05：纹理建在 VR 上下文里，激活状态也归它管）。
                  */
-                com.xxxx.emby_vr.vr.VrNative.setPanelActive(true)
-                Log.i(TAG, "面板层就绪: ${W}x$H dpi=$DPI displayId=${vd.display.displayId}")
+                if (activatesVrPanel) com.xxxx.emby_vr.vr.VrNative.setPanelActive(true)
+                osdReady = true
+                Log.i(TAG, "面板层就绪: ${panelW}x$panelH dpi=$DPI displayId=${vd.display.displayId} name=$name")
             }
             p.show()
             presentation = p

@@ -390,9 +390,15 @@ struct VrContext {
     jmethodID sinkClick = nullptr;
     jmethodID sinkStick = nullptr;
     jmethodID sinkBack = nullptr;
+    jmethodID sinkOsdPointer = nullptr; // 控制条上的指针
+    jmethodID sinkOsdClick = nullptr;   // 控制条上的点击
+    jmethodID sinkToggleOsd = nullptr;  // 播放中扣扳机 = 开关控制条
     bool sinkPointerValid = false;      // 上一次回推的指针位置（只在明显移动时回推）
     float sinkPointerX = 0.f;
     float sinkPointerY = 0.f;
+    bool sinkOsdPointerValid = false;   // 控制条上的指针位置
+    float sinkOsdPointerX = 0.f;
+    float sinkOsdPointerY = 0.f;
     bool sinkLastTrigger[2] = {false, false};
     bool sinkStickPushed[2] = {false, false};   // 摇杆是否处在"推着"的状态（回中要补一帧零值）
     bool sinkLastBack[2] = {false, false};
@@ -412,6 +418,13 @@ struct VrContext {
      */
     GLuint videoTex = 0;
     std::atomic<bool> videoActive{false};
+
+    /*
+     * 控制条（OSD，2026-10-05）：架在视频屏下方的矮条，与面板/视频同一套
+     * SurfaceTexture 机制，只是尺寸 1920×270、位置在视频下面。
+     */
+    GLuint osdTex = 0;
+    std::atomic<bool> osdVisible{false};
 
     // ---- 手柄输入 ----
     XrActionSet actionSet = XR_NULL_HANDLE;
@@ -456,6 +469,7 @@ std::thread gThread;
  */
 std::function<void()> gPanelUpdate;
 std::function<void()> gVideoUpdate;   // 播放画面取帧（同面板：必须在 VR 渲染线程调）
+std::function<void()> gOsdUpdate;     // 控制条取帧（同上）
 std::atomic<bool> gRunning{false};
 std::atomic<bool> gRequestStop{false};
 
@@ -1057,6 +1071,60 @@ constexpr float kPanelPxW = 1920.f;
 constexpr float kPanelPxH = 1080.f;
 
 /**
+ * 控制条几何（2026-10-05 父亲定）：**贴近观影者**，在他正前方偏下，像一块
+ * 悬在身前的手柄面板，而不是贴在远处的视频屏下面。上仰一点正对他的眼睛。
+ *
+ * 位置/尺寸都在这里调：距离 [kOsdDistance]、高度 [kOsdCenterY]、宽度 [kOsdWidth]、
+ * 仰角 [kOsdTiltDeg]。后续「指着它扣扳机拖走」也基于这几个量。
+ */
+constexpr float kOsdPxW = 1920.f;
+constexpr float kOsdPxH = 270.f;
+constexpr float kOsdWidth = 1.30f;                        // 米
+constexpr float kOsdHeight = kOsdWidth * kOsdPxH / kOsdPxW;
+constexpr float kOsdDistance = 1.20f;                     // 正前方距离（米）
+constexpr float kOsdCenterY = -0.45f;                     // 视线下方（米）
+constexpr float kOsdTiltDeg = -20.f;                      // 上仰角（度），正对观影者
+
+/** 控制条平面：中心与两条轴（含仰角）。返回法线 n 与面内 x/y 轴 */
+void osdBasis(float *cx, float *cy, float *cz, float *nx, float *ny, float *nz, float *ux,
+              float *uy, float *uz, float *vx, float *vy, float *vz) {
+    const float th = kOsdTiltDeg * 3.14159265358979f / 180.f;
+    const float ct = cosf(th), st = sinf(th);
+    *cx = 0.f; *cy = kOsdCenterY; *cz = -kOsdDistance;
+    // 绕 X 轴转 th：法线 (0,0,1) → (0,-sin,cos)；面内 y 轴 (0,1,0) → (0,cos,sin)
+    *nx = 0.f; *ny = -st; *nz = ct;
+    *ux = 1.f; *uy = 0.f; *uz = 0.f;
+    *vx = 0.f; *vy = ct;  *vz = st;
+}
+
+/** 射线与控制条矩形的交点；命中返回 true（同一套路：交点必须在矩形内） */
+bool rayHitsOsd(const VrContext &c, const XrPosef &aim, float *outT, float *outX, float *outY) {
+    (void) c;
+    float dx = 0.f, dy = 0.f, dz = 0.f;
+    aimDirection(aim, &dx, &dy, &dz);
+    *outT = 0.f;
+    float cx, cy, cz, nx, ny, nz, ux, uy, uz, vx, vy, vz;
+    osdBasis(&cx, &cy, &cz, &nx, &ny, &nz, &ux, &uy, &uz, &vx, &vy, &vz);
+    const float denom = dx * nx + dy * ny + dz * nz;
+    if (fabsf(denom) < 1e-6f) return false;                 // 与平面平行
+    const float t = ((cx - aim.position.x) * nx + (cy - aim.position.y) * ny +
+                     (cz - aim.position.z) * nz) / denom;
+    if (t <= 0.f) return false;                             // 交点在身后
+    const float hx = aim.position.x + dx * t;
+    const float hy = aim.position.y + dy * t;
+    const float hz = aim.position.z + dz * t;
+    const float relx = hx - cx, rely = hy - cy, relz = hz - cz;
+    const float u = relx * ux + rely * uy + relz * uz;      // 面内横向
+    const float v = relx * vx + rely * vy + relz * vz;      // 面内纵向
+    if (fabsf(u) > kOsdWidth * 0.5f) return false;
+    if (fabsf(v) > kOsdHeight * 0.5f) return false;
+    *outT = t;
+    *outX = u;
+    *outY = v;
+    return true;
+}
+
+/**
  * 摇杆状态上报（2026-10-05 改）：按状态而不是按步长。
  *
  * 平滑与惯性由 Java 侧统一算（PanelLayer 的逐帧滚动 + 松手线性减速），
@@ -1125,6 +1193,49 @@ void pushInput(VrContext &c) {
         c.sinkLastBack[h] = c.bDown[h];
 
         if (!c.aimValid[h]) continue;
+
+        /*
+         * ① 控制条优先：指着控制条时，指针与点击都给控制条，不碰主面板。
+         *    （控制条是近场小面板，尺寸 1920×270，坐标单独换算。）
+         */
+        if (c.osdVisible.load() && c.osdTex != 0) {
+            float osdT = 0.f, ou = 0.f, ov = 0.f;
+            if (rayHitsOsd(c, c.aimPose[h], &osdT, &ou, &ov)) {
+                const float opx = (ou / kOsdWidth + 0.5f) * kOsdPxW;
+                const float opy = (0.5f - ov / kOsdHeight) * kOsdPxH;
+                if (!c.sinkOsdPointerValid || fabsf(opx - c.sinkOsdPointerX) > 2.f ||
+                    fabsf(opy - c.sinkOsdPointerY) > 2.f) {
+                    if (c.sinkOsdPointer != nullptr) {
+                        env->CallVoidMethod(c.inputSink, c.sinkOsdPointer, opx, opy);
+                        clearJavaException(env, "输入回调 onOsdPointer");
+                    }
+                    c.sinkOsdPointerX = opx;
+                    c.sinkOsdPointerY = opy;
+                    c.sinkOsdPointerValid = true;
+                }
+                if (c.triggerDown[h] && !c.sinkLastTrigger[h] && c.sinkOsdClick != nullptr) {
+                    LOGI("VR 输入：%s 扳机 → 控制条点击 (%d, %d)", handName[h], (int) opx, (int) opy);
+                    env->CallVoidMethod(c.inputSink, c.sinkOsdClick, opx, opy);
+                    clearJavaException(env, "输入回调 onOsdClick");
+                }
+                c.sinkLastTrigger[h] = c.triggerDown[h];
+                continue;
+            }
+        }
+
+        /*
+         * ② 播放中：扳机 = 开关控制条（指哪儿都算），不再往主面板送输入 ——
+         *    播放时主面板被视频画面盖着，看不见也不该点。
+         */
+        if (c.videoActive.load()) {
+            if (c.triggerDown[h] && !c.sinkLastTrigger[h] && c.sinkToggleOsd != nullptr) {
+                LOGI("VR 输入：%s 扳机 → 控制条开关", handName[h]);
+                env->CallVoidMethod(c.inputSink, c.sinkToggleOsd);
+                clearJavaException(env, "输入回调 onToggleOsd");
+            }
+            c.sinkLastTrigger[h] = c.triggerDown[h];
+            continue;
+        }
 
         float planeT = 0.f, hx = 0.f, hy = 0.f;
         const bool hit = rayHitsPanel(c, c.aimPose[h], &planeT, &hx, &hy);
@@ -1275,6 +1386,35 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
         glDrawArrays(GL_TRIANGLES, 0, 6);
         glDisableVertexAttribArray(0);
         glDisableVertexAttribArray(1);
+
+        /*
+         * 控制条（近场小面板，2026-10-05）：贴在观影者正前方偏下、上仰一点，
+         * 与主画面同一套着色器与属性布局，只是换一张纹理、换一个模型矩阵。
+         */
+        if (c.osdVisible.load() && c.osdTex != 0) {
+            const float th = kOsdTiltDeg * 3.14159265358979f / 180.f;
+            XrPosef osdPose{};
+            osdPose.position = {0.f, kOsdCenterY, -kOsdDistance};
+            osdPose.orientation = {sinf(th * 0.5f), 0.f, 0.f, cosf(th * 0.5f)};
+            const Mat4 osdModel = poseScaleModel(osdPose, kOsdWidth, kOsdHeight, 1.f);
+            const Mat4 osdMvp = multiply(multiply(proj, view4), osdModel);
+            glUniformMatrix4fv(c.mvpLoc, 1, GL_FALSE, osdMvp.m);
+            if (c.circleLoc >= 0) glUniform1i(c.circleLoc, 0);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_EXTERNAL_OES, c.osdTex);
+            glUniform1i(c.texLoc, 0);
+            glUniform1i(c.useTexLoc, 1);
+            glUniform4f(c.colorLoc, 1.f, 1.f, 1.f, 1.f);
+            glBindBuffer(GL_ARRAY_BUFFER, c.vbo);
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void *) 0);
+            glEnableVertexAttribArray(1);
+            glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
+                                  (void *) (3 * sizeof(float)));
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+            glDisableVertexAttribArray(0);
+            glDisableVertexAttribArray(1);
+        }
     }
 
     /*
@@ -1390,6 +1530,11 @@ void frameLoop(VrContext &c) {
         // 播放画面：同样必须在渲染线程取帧（与视频纹理同一个 GL 上下文）
         if (c.videoActive.load() && gVideoUpdate != nullptr) {
             gVideoUpdate();
+        }
+
+        // 控制条：近场小面板，每帧取一次（与面板/视频同一套 SurfaceTexture 机制）
+        if (c.osdVisible.load() && gOsdUpdate != nullptr) {
+            gOsdUpdate();
         }
 
         // 手柄状态（诊断阶段：变化即打日志，先看清 PICO 到底发哪些事件）
@@ -1694,6 +1839,69 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetVideoActive(JNIEnv *env, jobject /* 
 }
 
 /**
+ * 建控制条（OSD）用的纹理与 SurfaceTexture（2026-10-05）。
+ *
+ * 与面板/视频同一个套路：VR 上下文里建 OES 纹理 → 包成 SurfaceTexture 交回 Java 侧，
+ * 由控制条那台 1920×270 的虚拟显示器往这个 Surface 上画。
+ */
+extern "C" JNIEXPORT jobject JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeCreateOsdSurfaceTexture(JNIEnv *env, jobject /* this */) {
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    if (tex == 0) {
+        LOGE("创建控制条纹理失败");
+        return nullptr;
+    }
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, tex);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, 0);
+
+    jclass stClass = env->FindClass("android/graphics/SurfaceTexture");
+    if (stClass == nullptr) {
+        LOGE("找不到 SurfaceTexture 类");
+        return nullptr;
+    }
+    jmethodID ctor = env->GetMethodID(stClass, "<init>", "(I)V");
+    if (ctor == nullptr) {
+        LOGE("找不到 SurfaceTexture 构造方法");
+        return nullptr;
+    }
+    jobject st = env->NewObject(stClass, ctor, (jint) tex);
+    if (st == nullptr) {
+        LOGE("创建控制条 SurfaceTexture 失败");
+        return nullptr;
+    }
+
+    g.osdTex = tex;
+    g.osdVisible = false;
+
+    auto *globalRef = env->NewGlobalRef(st);
+    jmethodID updateTexImage = env->GetMethodID(stClass, "updateTexImage", "()V");
+    if (updateTexImage != nullptr) {
+        gOsdUpdate = [globalRef, updateTexImage]() {
+            JNIEnv *e = nullptr;
+            if (g.jvm == nullptr) return;
+            if (g.jvm->GetEnv(reinterpret_cast<void **>(&e), JNI_VERSION_1_6) != JNI_OK) return;
+            e->CallVoidMethod(globalRef, updateTexImage);
+            clearJavaException(e, "控制条 updateTexImage");
+        };
+    }
+    LOGI("控制条纹理与 SurfaceTexture 已创建：tex=%u", tex);
+    return st;
+}
+
+/** 控制条显示/隐藏（播放中扣扳机切换，由 Java 侧决定） */
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetOsdVisible(JNIEnv *env, jobject /* this */,
+                                                      jboolean visible) {
+    g.osdVisible = (visible == JNI_TRUE);
+    LOGI("控制条状态 → %s", g.osdVisible.load() ? "显示" : "隐藏");
+}
+
+/**
  * 注册 VR 输入回调（Java 侧实现 VrNative.InputSink）。
  *
  * 渲染线程每帧把光柱指向 / 扳机 / 摇杆 / B 键回推过去。持有全局引用，
@@ -1707,6 +1915,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachInputSink(JNIEnv *env, jobject /*
         g.inputSink = nullptr;
     }
     g.sinkPointer = g.sinkClick = g.sinkStick = g.sinkBack = nullptr;
+    g.sinkOsdPointer = g.sinkOsdClick = g.sinkToggleOsd = nullptr;
     if (sink == nullptr) {
         LOGI("VR 输入回调已注销");
         return;
@@ -1716,11 +1925,16 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachInputSink(JNIEnv *env, jobject /*
     g.sinkPointer = env->GetMethodID(cls, "onPointer", "(FF)V");
     g.sinkClick = env->GetMethodID(cls, "onClick", "(FF)V");
     g.sinkStick = env->GetMethodID(cls, "onStick", "(FFFF)V");
+    g.sinkOsdPointer = env->GetMethodID(cls, "onOsdPointer", "(FF)V");
+    g.sinkOsdClick = env->GetMethodID(cls, "onOsdClick", "(FF)V");
+    g.sinkToggleOsd = env->GetMethodID(cls, "onToggleOsd", "()V");
     g.sinkBack = env->GetMethodID(cls, "onBack", "()V");
     env->DeleteLocalRef(cls);
-    LOGI("VR 输入回调已注册（指针=%d 点击=%d 摇杆=%d 返回=%d）",
+    LOGI("VR 输入回调已注册（指针=%d 点击=%d 摇杆=%d 返回=%d 控制条=%d/%d 开关=%d）",
          g.sinkPointer != nullptr ? 1 : 0, g.sinkClick != nullptr ? 1 : 0,
-         g.sinkStick != nullptr ? 1 : 0, g.sinkBack != nullptr ? 1 : 0);
+         g.sinkStick != nullptr ? 1 : 0, g.sinkBack != nullptr ? 1 : 0,
+         g.sinkOsdPointer != nullptr ? 1 : 0, g.sinkOsdClick != nullptr ? 1 : 0,
+         g.sinkToggleOsd != nullptr ? 1 : 0);
 }
 
 extern "C" JNIEXPORT void JNICALL

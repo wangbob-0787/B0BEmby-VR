@@ -56,6 +56,23 @@ class MainActivity : ComponentActivity() {
     private lateinit var panel: PanelLayer
 
     /**
+     * 控制条（OSD，2026-10-05）：架在观影者身前近场的一块小面板（1920×270）。
+     *
+     * 与主面板同一套 VirtualDisplay + SurfaceTexture 机制，只是尺寸与位置不同；
+     * 播放中扣扳机开关它，按钮语义沿用电视版播放页（另加「选片」「退出」）。
+     */
+    private lateinit var osd: PanelLayer
+    private val osdState = com.xxxx.emby_vr.panel.OsdState()
+    private var osdVisible = false
+    private var osdJob: kotlinx.coroutines.Job? = null
+
+    /** 正在挑片（控制条上的「选片」打开的海报墙）：此时画面回到面板、控制条留着 */
+    private var picking = false
+
+    /** 当前倍速（控制条倍速按钮循环切换） */
+    private var playSpeed = 1f
+
+    /**
      * VR 模式下的输入源是否已经活了（2026-10-05）。
      *
      * VR 模式里没有系统合成的触摸流，光柱坐标/扳机/摇杆由原生层直接推上来。
@@ -97,6 +114,26 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        override fun onOsdPointer(px: Float, py: Float) {
+            vrInputLive = true
+            runOnUiThread { if (osdReady()) osd.vrPointer(px, py) }
+        }
+
+        override fun onOsdClick(px: Float, py: Float) {
+            vrInputLive = true
+            runOnUiThread {
+                if (osdReady()) {
+                    Log.i(TAG, "控制条点击 (${px.toInt()}, ${py.toInt()})")
+                    osd.vrClick(px, py)
+                }
+            }
+        }
+
+        override fun onToggleOsd() {
+            vrInputLive = true
+            runOnUiThread { setOsdVisible(!osdVisible) }
+        }
+
         override fun onBack() {
             vrInputLive = true
             runOnUiThread {
@@ -113,6 +150,34 @@ class MainActivity : ComponentActivity() {
                     panel.back()
                 }
             }
+        }
+    }
+
+    /** 控制条能不能接输入 */
+    private fun osdReady(): Boolean = ::osd.isInitialized && osd.osdReady && osdVisible
+
+    /** 控制条显隐（VR 侧画不画那块面板） */
+    private fun setOsdVisible(visible: Boolean) {
+        osdVisible = visible
+        com.xxxx.emby_vr.vr.VrNative.setOsdVisible(visible)
+        Log.i(TAG, if (visible) "控制条显示" else "控制条隐藏")
+    }
+
+    /** 播放进度 → 控制条（每秒刷一次，进度条才走得动） */
+    private fun startOsdTicker() {
+        osdJob?.cancel()
+        osdJob = scope.launch {
+            while (renderer.videoActive || picking) {
+                val p = player
+                if (p != null) {
+                    osdState.playing = p.playWhenReady
+                    osdState.positionMs = p.currentPosition
+                    val d = p.duration
+                    if (d > 0L) osdState.durationMs = d
+                }
+                kotlinx.coroutines.delay(1000)
+            }
+            osdState.playing = false
         }
     }
 
@@ -398,6 +463,15 @@ class MainActivity : ComponentActivity() {
                 })
             }
             renderer.videoActive = true
+            picking = false
+            osdState.title = title
+            osdState.durationMs = reportedRunTimeTicks / 10_000
+            osdState.positionMs = 0L
+            osdState.speed = playSpeed
+            if (com.xxxx.emby_vr.vr.VrNative.vrRunning) {
+                setOsdVisible(true)      // 播放中默认把控制条亮出来（扣扳机可收起）
+                startOsdTicker()
+            }
             if (useVrScreen) {
                 // 播放时贴视频画面、收起面板（VR 原生播放屏）
                 com.xxxx.emby_vr.vr.VrNative.setVideoActive(true)
@@ -443,6 +517,57 @@ class MainActivity : ComponentActivity() {
             msg.contains("解码", false) || msg.contains("图片", false) -> "图片解码失败"
             msg.contains("HTTP", false) -> "请求失败"
             else -> "播放失败（详情见日志）"
+        }
+    }
+
+    /** 控制条上的一颗按钮被点了 */
+    private fun onOsdButton(button: com.xxxx.emby_vr.panel.OsdButton) {
+        Log.i(TAG, "控制条按钮：${button.label}")
+        when (button) {
+            com.xxxx.emby_vr.panel.OsdButton.PLAY_PAUSE -> togglePlayPause()
+            com.xxxx.emby_vr.panel.OsdButton.SEEK_BACK -> if (player != null) seekBy(-10_000)
+            com.xxxx.emby_vr.panel.OsdButton.SEEK_FWD -> if (player != null) seekBy(+10_000)
+            com.xxxx.emby_vr.panel.OsdButton.SPEED -> cycleSpeed()
+            com.xxxx.emby_vr.panel.OsdButton.PICK -> togglePicking()
+            com.xxxx.emby_vr.panel.OsdButton.EXIT -> {
+                Log.i(TAG, "控制条：退出应用")
+                finish()
+            }
+        }
+    }
+
+    /** 倍速循环：1.0 → 1.25 → 1.5 → 2.0 → 0.75 → 1.0 */
+    private fun cycleSpeed() {
+        val steps = floatArrayOf(1f, 1.25f, 1.5f, 2f, 0.75f)
+        val idx = steps.indexOfFirst { kotlin.math.abs(it - playSpeed) < 0.01f }
+        playSpeed = steps[(idx + 1) % steps.size]
+        player?.setPlaybackSpeed(playSpeed)
+        osdState.speed = playSpeed
+        Log.i(TAG, "倍速 → ${playSpeed}x")
+    }
+
+    /**
+     * 「选片」开关（父亲 2026-10-05 定：点击打开海报，再点关闭海报）。
+     *
+     * 打开：暂停播放、画面切回面板（面板本身就是海报墙），控制条留着 —— 于是
+     * 「再点一次选片」仍然点得到；选中别的片（面板里点卡片）会自动起播并关掉选片态。
+     * 关闭：画面切回视频、继续播放。
+     */
+    private fun togglePicking() {
+        if (player == null) return
+        if (!picking) {
+            picking = true
+            player?.playWhenReady = false
+            renderer.videoActive = false
+            com.xxxx.emby_vr.vr.VrNative.setVideoActive(false)
+            setOsdVisible(true)
+            Log.i(TAG, "选片：打开海报墙（画面切回面板，控制条留着）")
+        } else {
+            picking = false
+            com.xxxx.emby_vr.vr.VrNative.setVideoActive(true)
+            renderer.videoActive = true
+            player?.playWhenReady = true
+            Log.i(TAG, "选片：关闭海报墙，回到视频")
         }
     }
 
@@ -583,6 +708,10 @@ class MainActivity : ComponentActivity() {
         seekTargetMs = null
         // 播放结束：VR 画面切回面板（非 VR 模式下这条调用没有副作用）
         com.xxxx.emby_vr.vr.VrNative.setVideoActive(false)
+        picking = false
+        osdJob?.cancel()
+        osdJob = null
+        setOsdVisible(false)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -621,6 +750,21 @@ class MainActivity : ComponentActivity() {
             })
         }
         renderer.onPanelSurfaceReady = { st -> panel.attach(st) }
+
+        /*
+         * 控制条（2026-10-05）：独立的一块 1920×270 小面板，放在观影者身前近场。
+         * 按钮语义沿用电视版播放页，第一批六颗（其余随后补）。
+         */
+        osd = PanelLayer(
+            this,
+            content = { com.xxxx.emby_vr.panel.PlayerOsdBar(osdState) },
+            panelW = 1920,
+            panelH = 270,
+            name = "b0bemby-osd",
+            activatesVrPanel = false,
+        )
+        renderer.onOsdSurfaceReady = { st -> osd.attach(st) }
+        osdState.onButton = { button -> onOsdButton(button) }
 
         glView = GLSurfaceView(this).apply {
             setEGLContextClientVersion(3)

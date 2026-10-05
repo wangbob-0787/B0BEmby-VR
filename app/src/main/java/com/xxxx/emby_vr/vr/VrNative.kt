@@ -127,6 +127,15 @@ object VrNative {
          */
         fun onStick(px: Float, py: Float, sx: Float, sy: Float)
         fun onBack()
+
+        /** 控制条上的指针（坐标是控制条面板像素：1920×270） */
+        fun onOsdPointer(px: Float, py: Float)
+
+        /** 控制条上的一次点击（扣扳机） */
+        fun onOsdClick(px: Float, py: Float)
+
+        /** 播放中扣扳机 = 开关控制条（由 Activity 决定显隐） */
+        fun onToggleOsd()
     }
 
     private external fun nativeAttachInputSink(sink: InputSink)
@@ -134,6 +143,32 @@ object VrNative {
     private external fun nativeCreateVideoSurfaceTexture(): android.graphics.SurfaceTexture?
 
     private external fun nativeSetVideoActive(active: Boolean)
+
+    private external fun nativeCreateOsdSurfaceTexture(): android.graphics.SurfaceTexture?
+
+    private external fun nativeSetOsdVisible(visible: Boolean)
+
+    /**
+     * 建控制条（OSD）用的纹理与 SurfaceTexture（2026-10-05）。
+     *
+     * 控制条是一块架在观影者身前近场的小面板（1920×270），与主面板/视频同一套
+     * VirtualDisplay + SurfaceTexture 机制，只是尺寸与位置不同。
+     */
+    fun createOsdSurfaceTexture(): android.graphics.SurfaceTexture? = try {
+        if (loaded && vrRunning) nativeCreateOsdSurfaceTexture() else null
+    } catch (t: Throwable) {
+        Log.e(TAG, "创建控制条纹理失败：${t.message}")
+        null
+    }
+
+    /** 控制条显示/隐藏 */
+    fun setOsdVisible(visible: Boolean) {
+        try {
+            if (loaded) nativeSetOsdVisible(visible)
+        } catch (t: Throwable) {
+            Log.e(TAG, "设置控制条状态失败：${t.message}")
+        }
+    }
 
     fun attachInputSink(sink: InputSink) {
         try {
