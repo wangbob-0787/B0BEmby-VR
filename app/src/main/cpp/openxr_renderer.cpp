@@ -454,6 +454,24 @@ struct EyeSwapchain {
     std::vector<GLuint> fbos;
 };
 
+/**
+ * 视频独立合成层用的交换链（父亲 2026-10-06 定的大方向）。
+ *
+ * 原来的路子：视频先缩到银幕在单眼画面里占的那点像素（约三分之一），再随整幅画面
+ * 一起被镜片校正重采样 —— 「缩小」发生在我们这里，细信息就丢在这一步。
+ * 换成独立图层：我们只把视频原样搬进一块和视频同尺寸的缓冲，缩放到面板分辨率那一步
+ * 交给系统合成器做，不再经过我们自己的画面缓冲。这是专业 VR 播放器的做法。
+ */
+struct VideoLayerBuf {
+    bool built = false;              // 交换链建好了（尺寸匹配当前视频）
+    bool submitted = false;          // 本帧有内容、可以提交
+    XrSwapchain handle = XR_NULL_HANDLE;
+    int32_t width = 0, height = 0;   // 缓冲尺寸 = 视频分辨率（上限 3840×2160）
+    std::vector<XrSwapchainImageOpenGLESKHR> images;
+    std::vector<GLuint> fbos;
+    uint32_t index = 0;              // 本帧写好待提交的那张
+};
+
 /** 一块虚拟屏的摆位：中心、朝向（偏航 + 仰角）、宽度（米） */
 struct ScreenPlacement {
     float cx, cy, cz;
@@ -576,6 +594,11 @@ struct VrContext {
     /** 视频纹理一个像素的 UV 步长（锐化用，随视频尺寸更新）*/
     std::atomic<float> texelX{1.f / 1920.f};
     std::atomic<float> texelY{1.f / 1080.f};
+    /** 视频独立合成层（父亲 2026-10-06）：建不起来就退回老路，画进我们自己的画面 */
+    VideoLayerBuf videoLayer;
+    bool videoLayerOk = true;      // 运行时拒绝过就永久关掉，免得每帧报错
+    GLuint videoLayerVao = 0;
+    GLuint videoLayerVbo = 0;
 
     /** 握把键按住时，上一帧处理摇杆调整的时刻（算增量用，秒） */
     double panelAdjustAt[2] = {0.0, 0.0};
@@ -1885,7 +1908,11 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
 
     glBindFramebuffer(GL_FRAMEBUFFER, eye.fbos[imageIndex]);
     glViewport(0, 0, eye.width, eye.height);
-    glClearColor(0.f, 0.f, 0.f, 1.f);
+    /*
+     * 背景透明（alpha 0）：视频走独立图层之后，我们这一层必须让出银幕那块位置，
+     * 不然整幅清屏色会把系统合成的视频盖住（配合投影层的源透明度标志）。
+     */
+    glClearColor(0.f, 0.f, 0.f, 0.f);
     /* 每帧统一刷一次画面调整（亮度/对比度/饱和度，视频与界面一起变）*/
     glUseProgram(c.program);
     if (c.brightLoc >= 0) glUniform1f(c.brightLoc, c.brightness.load());
@@ -1960,10 +1987,14 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
         // 前方银幕：播放时贴视频；没播时是一块空屏（暗色），空间里有"银幕"在
         const bool videoReady = c.videoActive.load() && c.videoTex != 0 && c.videoHasFrame.load();
         /*
-         * 视频屏：开 4×4 盒式降采样（治「画面有失真」）。色彩范围拉伸暂不启用
-         * （先单独验降采样这一条，两个变量一起动会分不清）。
+         * 视频屏：交给独立图层时这里留空（背景是透明的），交给系统合成器去缩；
+         * 独立层建不起来才退回老路 —— 画进我们自己的画面，带 4×4 降采样。
          */
-        drawScreen(frontScreen(c), videoReady ? c.videoTex : 0, true);
+        if (c.videoLayer.submitted) {
+            // 留空：视频在上面那层，位置一致
+        } else {
+            drawScreen(frontScreen(c), videoReady ? c.videoTex : 0, true);
+        }
 
         // 海报墙：常驻左前方斜放；收起时不画，没出帧也先不画（不闪也不串）
         const bool panelReady = c.panelActive.load() && c.panelTex != 0 && c.panelHasFrame.load();
@@ -2110,6 +2141,191 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
     return true;
 }
 
+/* ===================== 视频独立合成层（父亲 2026-10-06） ===================== */
+
+/** 单位矩阵（全屏四边形的顶点已经是 NDC 坐标，不再需要任何变换） */
+Mat4 identityMat() {
+    Mat4 m{};
+    m.m[0] = 1.f;
+    m.m[5] = 1.f;
+    m.m[10] = 1.f;
+    m.m[15] = 1.f;
+    return m;
+}
+
+/** 全屏四边形（pos 3 分量 + uv 2 分量，与主着色器的顶点布局一致） */
+void ensureVideoLayerQuad(VrContext &c) {
+    if (c.videoLayerVao != 0) return;
+    /*
+     * 顶点约定与单位方块保持一致：v=0 在图像顶部、v=1 在底部。
+     * 反过来写的话视频会上下颠倒（这层是我们自己新起的一条渲染路径，不能想当然）。
+     */
+    const float verts[] = {
+            -1.f, -1.f, 0.f, 0.f, 1.f,
+            1.f, -1.f, 0.f, 1.f, 1.f,
+            -1.f, 1.f, 0.f, 0.f, 0.f,
+            1.f, 1.f, 0.f, 1.f, 0.f,
+    };
+    glGenVertexArrays(1, &c.videoLayerVao);
+    glGenBuffers(1, &c.videoLayerVbo);
+    glBindVertexArray(c.videoLayerVao);
+    glBindBuffer(GL_ARRAY_BUFFER, c.videoLayerVbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void *) 0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
+                          (void *) (3 * sizeof(float)));
+    glBindVertexArray(0);
+}
+
+/**
+ * 建（或按新尺寸重建）视频层的交换链。
+ *
+ * 尺寸就用视频的真实分辨率（上限 4K）—— 这是这条路的全部意义：视频以原始尺寸
+ * 交给系统合成器，缩到面板那一步由它做，我们不再先缩一次。
+ */
+bool buildVideoLayer(VrContext &c, int32_t w, int32_t h) {
+    if (c.videoLayer.built && c.videoLayer.width == w && c.videoLayer.height == h) return true;
+
+    if (c.videoLayer.handle != XR_NULL_HANDLE) {
+        api.DestroySwapchain(c.videoLayer.handle);
+        c.videoLayer.handle = XR_NULL_HANDLE;
+        c.videoLayer.built = false;
+        c.videoLayer.fbos.clear();
+        c.videoLayer.images.clear();
+    }
+
+    /*
+     * 格式先按 sRGB 试（与主画面输出一致：我们在着色器里已经把值转成线性，
+     * 由运行时再编码回 sRGB）；不支持就退回普通 8 位。
+     */
+    const int64_t candidates[2] = {GL_SRGB8_ALPHA8, GL_RGBA8};
+    bool created = false;
+    for (int64_t fmt : candidates) {
+        XrSwapchainCreateInfo sci{XR_TYPE_SWAPCHAIN_CREATE_INFO};
+        sci.arraySize = 1;
+        sci.mipCount = 1;
+        sci.faceCount = 1;
+        sci.format = fmt;
+        sci.width = w;
+        sci.height = h;
+        sci.sampleCount = 1;
+        sci.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
+        if (XR_SUCCEEDED(api.CreateSwapchain(c.session, &sci, &c.videoLayer.handle))) {
+            created = true;
+            break;
+        }
+        c.videoLayer.handle = XR_NULL_HANDLE;
+    }
+    if (!created) {
+        LOGE("视频层交换链创建失败（%dx%d），这一版仍走老路", w, h);
+        return false;
+    }
+
+    uint32_t imgCount = 0;
+    api.EnumerateSwapchainImages(c.videoLayer.handle, 0, &imgCount, nullptr);
+    if (imgCount == 0) {
+        LOGE("视频层交换链没有可用图像");
+        api.DestroySwapchain(c.videoLayer.handle);
+        c.videoLayer.handle = XR_NULL_HANDLE;
+        return false;
+    }
+    c.videoLayer.images.assign(imgCount, {XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR});
+    if (XR_FAILED(api.EnumerateSwapchainImages(
+                c.videoLayer.handle, imgCount, &imgCount,
+                reinterpret_cast<XrSwapchainImageBaseHeader *>(c.videoLayer.images.data())))) {
+        LOGE("视频层图像枚举失败");
+        api.DestroySwapchain(c.videoLayer.handle);
+        c.videoLayer.handle = XR_NULL_HANDLE;
+        return false;
+    }
+    c.videoLayer.fbos.assign(imgCount, 0);
+    for (uint32_t k = 0; k < imgCount; k++) {
+        glGenFramebuffers(1, &c.videoLayer.fbos[k]);
+        glBindFramebuffer(GL_FRAMEBUFFER, c.videoLayer.fbos[k]);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                               static_cast<GLuint>(c.videoLayer.images[k].image), 0);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+            LOGE("视频层 FBO 不完整（图 %u）", k);
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            api.DestroySwapchain(c.videoLayer.handle);
+            c.videoLayer.handle = XR_NULL_HANDLE;
+            return false;
+        }
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    c.videoLayer.width = w;
+    c.videoLayer.height = h;
+    c.videoLayer.built = true;
+    LOGI("视频独立层已就绪：%dx%d，%u 张图（缩放交给系统合成器）", w, h, imgCount);
+    return true;
+}
+
+/**
+ * 把当前视频帧搬进视频层缓冲。
+ *
+ * 1:1 原样拷贝，只带我们自己的画面调整（亮度/对比度/饱和度/锐度/色温），
+ * 不做降采样 —— 缩放由系统合成器在面板分辨率上完成，这是清晰度的关键。
+ */
+bool renderVideoLayer(VrContext &c) {
+    if (!c.videoLayer.built || c.videoTex == 0 || c.program == 0) return false;
+
+    XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+    uint32_t idx = 0;
+    if (XR_FAILED(api.AcquireSwapchainImage(c.videoLayer.handle, &ai, &idx))) return false;
+    if (idx >= c.videoLayer.fbos.size()) return false;
+    XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+    wi.timeout = XR_INFINITE_DURATION;
+    if (XR_FAILED(api.WaitSwapchainImage(c.videoLayer.handle, &wi))) {
+        XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+        api.ReleaseSwapchainImage(c.videoLayer.handle, &ri);
+        return false;
+    }
+
+    ensureVideoLayerQuad(c);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, c.videoLayer.fbos[idx]);
+    glViewport(0, 0, c.videoLayer.width, c.videoLayer.height);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glClearColor(0.f, 0.f, 0.f, 1.f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    glUseProgram(c.program);
+    const Mat4 id = identityMat();
+    glUniformMatrix4fv(c.mvpLoc, 1, GL_FALSE, id.m);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, c.videoTex);
+    glUniform1i(c.texLoc, 0);
+    glUniform1i(c.useTexLoc, 1);
+    if (c.circleLoc >= 0) glUniform1i(c.circleLoc, 0);
+    if (c.expandLoc >= 0) glUniform1i(c.expandLoc, 0);
+    if (c.downLoc >= 0) glUniform1i(c.downLoc, 0);   // 这一层不缩，不做降采样
+    glUniform4f(c.colorLoc, 1.f, 1.f, 1.f, 1.f);
+    /* 画面调整值与主画面保持一致 */
+    if (c.brightLoc >= 0) glUniform1f(c.brightLoc, c.brightness.load());
+    if (c.contrastLoc >= 0) glUniform1f(c.contrastLoc, c.contrast.load());
+    if (c.satLoc >= 0) glUniform1f(c.satLoc, c.saturation.load());
+    if (c.sharpenLoc >= 0) glUniform1f(c.sharpenLoc, c.sharpen.load());
+    if (c.tempLoc >= 0) glUniform1f(c.tempLoc, c.temperature.load());
+    if (c.texelLoc >= 0) glUniform2f(c.texelLoc, c.texelX.load(), c.texelY.load());
+    if (c.jitterLoc >= 0) {
+        static uint32_t layerJitter = 0;
+        glUniform1f(c.jitterLoc, (float) (layerJitter++ % 64u) * 1.7f);
+    }
+
+    glBindVertexArray(c.videoLayerVao);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindVertexArray(0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+    if (XR_FAILED(api.ReleaseSwapchainImage(c.videoLayer.handle, &ri))) return false;
+    c.videoLayer.index = idx;
+    return true;
+}
+
 void frameLoop(VrContext &c) {
     /*
      * 图层结构（run 95 实机崩溃后按官方示例重写）：
@@ -2134,10 +2350,23 @@ void frameLoop(VrContext &c) {
     layer.space = c.localSpace;
     layer.viewCount = (uint32_t) projViews.size();
     layer.views = projViews.data();
+    /*
+     * 投影层按源透明度混合：视频改走独立图层后，我们这层在银幕位置是透明的，
+     * 不声明这个标志的话运行时会把透明区当黑色，视频就被一块黑板盖住了。
+     */
+    layer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
 
-    const XrCompositionLayerBaseHeader *layerPtrs[1] = {
-            reinterpret_cast<const XrCompositionLayerBaseHeader *>(&layer),
-    };
+    /*
+     * 视频独立合成层（父亲 2026-10-06 定的方向）：
+     * 视频以原始分辨率交给系统合成器，缩放到面板那一步由它做，不再经过我们的画面缓冲。
+     * 位置与朝向跟我们的银幕完全一致，否则画面会和边框、控制条错位。
+     */
+    XrCompositionLayerQuad videoQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+    videoQuad.space = c.localSpace;
+    videoQuad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+    videoQuad.layerFlags = 0;
+
+    const XrCompositionLayerBaseHeader *layerPtrs[2] = {nullptr, nullptr};
 
     int loggedFrames = 0;
     while (!gRequestStop) {
@@ -2169,6 +2398,29 @@ void frameLoop(VrContext &c) {
         // 播放画面：同样必须在渲染线程取帧（与视频纹理同一个 GL 上下文）
         if (c.videoActive.load() && gVideoUpdate != nullptr) {
             gVideoUpdate();
+        }
+
+        /*
+         * 视频独立层：每帧把刚取到的帧原样搬进它自己的缓冲。
+         * 尺寸取视频真实分辨率（上限 4K），缩放交给系统合成器做 —— 这是清晰度的关键。
+         * 建不起来（运行时不支持）就退回老路，功能不受影响。
+         */
+        c.videoLayer.submitted = false;
+        if (c.videoLayerOk && c.videoActive.load() && c.videoHasFrame.load() &&
+            c.videoTex != 0) {
+            int32_t vw = (int32_t) lroundf(1.f / fmaxf(1e-6f, c.texelX.load()));
+            int32_t vh = (int32_t) lroundf(1.f / fmaxf(1e-6f, c.texelY.load()));
+            constexpr int32_t kMaxVideoW = 3840;
+            constexpr int32_t kMaxVideoH = 2160;
+            if (vw > kMaxVideoW || vh > kMaxVideoH) {
+                const float k = fminf((float) kMaxVideoW / (float) vw,
+                                      (float) kMaxVideoH / (float) vh);
+                vw = (int32_t) ((float) vw * k);
+                vh = (int32_t) ((float) vh * k);
+            }
+            if (vw >= 64 && vh >= 64 && buildVideoLayer(c, vw, vh)) {
+                c.videoLayer.submitted = renderVideoLayer(c);
+            }
         }
 
         // 控制条：近场小面板，每帧取一次（与面板/视频同一套 SurfaceTexture 机制）
@@ -2237,9 +2489,44 @@ void frameLoop(VrContext &c) {
         XrFrameEndInfo fei{XR_TYPE_FRAME_END_INFO};
         fei.displayTime = fs.predictedDisplayTime;
         fei.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
-        fei.layerCount = rendered ? 1 : 0;
-        fei.layers = rendered ? layerPtrs : nullptr;
-        api.EndFrame(c.session, &fei);
+
+        /*
+         * 图层顺序：视频层在下，我们的界面层在上 —— 控制条、转圈要压在画面上。
+         * 视频层没有内容（没开播、还没出帧、或运行时拒绝）时只提交界面层。
+         */
+        uint32_t layerCount = 0;
+        if (rendered && c.videoLayer.submitted) {
+            const ScreenPlacement sp = frontScreen(c);
+            const float hy = sp.yawDeg * 3.14159265358979f / 360.f;
+            const float hp = sp.pitchDeg * 3.14159265358979f / 360.f;
+            const float sy2 = sinf(hy), cy2 = cosf(hy);
+            const float sp2 = sinf(hp), cp2 = cosf(hp);
+            videoQuad.pose.position = {sp.cx, sp.cy, sp.cz};
+            videoQuad.pose.orientation = {cy2 * sp2, sy2 * cp2, -sy2 * sp2, cy2 * cp2};
+            videoQuad.size = {sp.width, sp.width / fmaxf(0.1f, sp.aspect)};
+            videoQuad.subImage.swapchain = c.videoLayer.handle;
+            videoQuad.subImage.imageRect.offset = {0, 0};
+            videoQuad.subImage.imageRect.extent = {c.videoLayer.width, c.videoLayer.height};
+            videoQuad.subImage.imageArrayIndex = 0;
+            layerPtrs[layerCount++] =
+                    reinterpret_cast<const XrCompositionLayerBaseHeader *>(&videoQuad);
+        }
+        if (rendered) {
+            layerPtrs[layerCount++] =
+                    reinterpret_cast<const XrCompositionLayerBaseHeader *>(&layer);
+        }
+        fei.layerCount = layerCount;
+        fei.layers = layerCount > 0 ? layerPtrs : nullptr;
+        const XrResult endRes = api.EndFrame(c.session, &fei);
+        if (XR_FAILED(endRes) && c.videoLayer.submitted) {
+            /*
+             * 运行时不接受独立视频层：永久退回老路（画进我们自己的画面），
+             * 否则每帧都会失败、画面直接黑掉。
+             */
+            LOGE("提交独立视频层失败（xrResult=%d），退回老路", (int) endRes);
+            c.videoLayerOk = false;
+            c.videoLayer.submitted = false;
+        }
     }
     LOGI("渲染循环结束");
 }
