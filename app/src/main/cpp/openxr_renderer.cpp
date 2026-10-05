@@ -1096,16 +1096,16 @@ struct ScreenPlacement {
 /** 正前方那块屏：浏览时是海报墙，播放时是播放画面 */
 constexpr ScreenPlacement kFrontScreen{0.f, 0.f, -3.2f, 0.f, 3.5f};
 /**
- * 播放时的海报墙：挪到左前方、斜着朝人。
+ * 播放时的海报墙：挪到左前方、朝右前方斜放，正对观影者。
  *
- * 以前播放屏就是把海报墙这块屏的贴图换掉 —— 两块屏抢同一块屏，父亲看到的
- * 就是"海报墙被顶掉"。现在播放时海报墙移到侧位，两块屏同时在。
+ * 摆位由父亲 2026-10-05 定：进入 VR 空间就是「前方一块银幕、左侧斜放海报墙」，
+ * 两块屏常驻，不再随播放状态来回挪。
  */
-constexpr ScreenPlacement kSideScreen{-2.55f, -0.05f, -2.30f, 34.f, 2.6f};
+constexpr ScreenPlacement kSideScreen{-2.25f, -0.05f, -2.05f, 46.f, 2.8f};
 
-/** 海报墙当前在哪：浏览时正前方，播放时侧位 */
-ScreenPlacement panelPlacement(const VrContext &c) {
-    return c.videoActive.load() ? kSideScreen : kFrontScreen;
+/** 海报墙常驻左前方（浏览、播放都在那儿；前方那块留给银幕） */
+ScreenPlacement panelPlacement(const VrContext &) {
+    return kSideScreen;
 }
 
 /** 摆位 → 模型矩阵（位置 + 绕 Y 轴旋转 + 尺寸；复用控制条那套 poseScaleModel） */
@@ -1488,18 +1488,13 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
             glDisableVertexAttribArray(1);
         };
 
-        // 播放画面：播放中占正前方
+        // 前方银幕：播放时贴视频；没播时是一块空屏（暗色），空间里有"银幕"在
         const bool videoReady = c.videoActive.load() && c.videoTex != 0 && c.videoHasFrame.load();
-        if (videoReady) drawScreen(kFrontScreen, c.videoTex);
+        drawScreen(kFrontScreen, videoReady ? c.videoTex : 0);
 
-        // 海报墙：浏览时正前方，播放时挪到左前方；没出帧就先不画（等出帧，不闪也不串）
+        // 海报墙：常驻左前方斜放；没出帧就先不画（等出帧，不闪也不串）
         const bool panelReady = c.panelActive.load() && c.panelTex != 0 && c.panelHasFrame.load();
-        if (panelReady) {
-            drawScreen(panelPlacement(c), c.panelTex);
-        } else if (!videoReady) {
-            // 两块都没出帧：在面板该在的位置画一块底色，说明渲染在跑
-            drawScreen(panelPlacement(c), 0);
-        }
+        if (panelReady) drawScreen(kSideScreen, c.panelTex);
 
         /*
          * 控制条（近场小面板，2026-10-05）：贴在观影者正前方偏下、上仰一点，
