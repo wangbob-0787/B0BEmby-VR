@@ -883,45 +883,68 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeStartVr(JNIEnv *env, jobject /* this */
  * 传 0 表示解绑（回到纯色）。
  */
 /**
- * 注册面板帧更新器：Java 侧把 SurfaceTexture 对象传进来，
- * 之后渲染线程每帧调它的 updateTexImage()。
+ * 创建面板纹理与 SurfaceTexture（**必须在 VR 渲染线程的 GL 上下文里做**）。
  *
- * 为什么不让 Java 自己更新：updateTexImage 必须在持有该外部纹理的 GL 线程调用，
- * 那个线程就是这里的渲染线程。
+ * run 97 实机踩坑：最初由 Java 侧的 GLSurfaceView 线程建纹理、把纹理 id 传进来，
+ * 结果 VR 里全黑，日志刷 `checkAndUpdateEglState: invalid current EGLContext`。
+ * 根因：GL 纹理 id 只在**创建它的 EGL 上下文**里有效，VR 渲染用的是另一个上下文。
+ * 因此这里自己建纹理 + SurfaceTexture，再交回 Java 侧去建虚拟显示器和界面。
  */
-extern "C" JNIEXPORT void JNICALL
-Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachPanelSurfaceTexture(JNIEnv *env, jobject /* this */,
-                                                                  jobject surfaceTexture) {
-    if (surfaceTexture == nullptr) {
-        gPanelUpdate = nullptr;
-        LOGI("面板帧更新器已注销");
-        return;
+extern "C" JNIEXPORT jobject JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeCreatePanelSurfaceTexture(JNIEnv *env,
+                                                                  jobject /* this */) {
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    if (tex == 0) {
+        LOGE("创建面板纹理失败");
+        return nullptr;
     }
-    auto *globalRef = env->NewGlobalRef(surfaceTexture);
-    jclass cls = env->GetObjectClass(surfaceTexture);
-    jmethodID updateTexImage = env->GetMethodID(cls, "updateTexImage", "()V");
-    if (updateTexImage == nullptr) {
-        LOGE("找不到 SurfaceTexture.updateTexImage");
-        env->DeleteGlobalRef(globalRef);
-        return;
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, tex);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, 0);
+
+    jclass stClass = env->FindClass("android/graphics/SurfaceTexture");
+    if (stClass == nullptr) {
+        LOGE("找不到 SurfaceTexture 类");
+        return nullptr;
     }
-    gPanelUpdate = [globalRef, updateTexImage]() {
-        JNIEnv *e = nullptr;
-        if (g.jvm == nullptr) return;
-        const jint envResult =
-                g.jvm->GetEnv(reinterpret_cast<void **>(&e), JNI_VERSION_1_6);
-        if (envResult != JNI_OK || e == nullptr) return;
-        e->CallVoidMethod(globalRef, updateTexImage);
-    };
-    LOGI("面板帧更新器已注册");
+    jmethodID ctor = env->GetMethodID(stClass, "<init>", "(I)V");
+    if (ctor == nullptr) {
+        LOGE("找不到 SurfaceTexture 构造方法");
+        return nullptr;
+    }
+    jobject st = env->NewObject(stClass, ctor, (jint) tex);
+    if (st == nullptr) {
+        LOGE("创建 SurfaceTexture 失败");
+        return nullptr;
+    }
+
+    g.panelTex = tex;
+    g.panelActive = false;   // 等界面真的画上来了再置 true
+
+    auto *globalRef = env->NewGlobalRef(st);
+    jmethodID updateTexImage = env->GetMethodID(stClass, "updateTexImage", "()V");
+    if (updateTexImage != nullptr) {
+        gPanelUpdate = [globalRef, updateTexImage]() {
+            JNIEnv *e = nullptr;
+            if (g.jvm == nullptr) return;
+            if (g.jvm->GetEnv(reinterpret_cast<void **>(&e), JNI_VERSION_1_6) != JNI_OK) return;
+            e->CallVoidMethod(globalRef, updateTexImage);
+        };
+    }
+    LOGI("面板纹理与 SurfaceTexture 已创建（在 VR 上下文里）：tex=%u", tex);
+    return st;
 }
 
+/** 界面开始往面板 Surface 上画了，可以贴纹理了 */
 extern "C" JNIEXPORT void JNICALL
-Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetPanelTexture(JNIEnv *env, jobject /* this */,
-                                                        jint textureId) {
-    g.panelTex = (GLuint) textureId;
-    g.panelActive = textureId != 0;
-    LOGI("面板纹理已绑定：id=%d", textureId);
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetPanelActive(JNIEnv *env, jobject /* this */,
+                                                       jboolean active) {
+    g.panelActive = (active == JNI_TRUE);
+    LOGI("面板激活状态 → %s", g.panelActive.load() ? "true" : "false");
 }
 
 extern "C" JNIEXPORT void JNICALL

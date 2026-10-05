@@ -534,6 +534,11 @@ class PanelLayer(
             val p = PanelPresentation(activity, vd.display, activity, content, owner) { view ->
                 decor = view
                 ready = true
+                /*
+                 * 界面真的开始画了 → 通知 VR 侧可以贴面板纹理了
+                 * （2026-10-05：纹理建在 VR 上下文里，激活状态也归它管）。
+                 */
+                com.xxxx.emby_vr.vr.VrNative.setPanelActive(true)
                 Log.i(TAG, "面板层就绪: ${W}x$H dpi=$DPI displayId=${vd.display.displayId}")
             }
             p.show()

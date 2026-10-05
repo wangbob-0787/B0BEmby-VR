@@ -30,30 +30,30 @@ object VrNative {
 
     private external fun nativeStopVr()
 
-    private external fun nativeSetPanelTexture(textureId: Int)
+    private external fun nativeCreatePanelSurfaceTexture(): android.graphics.SurfaceTexture?
 
-    private external fun nativeAttachPanelSurfaceTexture(surfaceTexture: android.graphics.SurfaceTexture?)
+    private external fun nativeSetPanelActive(active: Boolean)
 
     /**
-     * 把现有面板界面（Compose 那套）的纹理交给 VR 渲染线程。
+     * 建面板纹理与 SurfaceTexture —— **在 VR 渲染线程的 GL 上下文里建**。
      *
-     * 调用时机：GL 线程里建好外部纹理之后（VrRenderer.createPanelPipeline）。
-     * textureId = 0 表示解绑。
+     * 踩坑（run 97）：由 2D 线程建纹理再传 id 过来，VR 里全黑，
+     * 因为 GL 纹理 id 只在创建它的上下文里有效。
+     * 这里的 native 调用内部会切到渲染线程执行，返回可直接建 Surface 的对象。
      */
-    fun setPanelTexture(textureId: Int) {
-        try {
-            if (loaded) nativeSetPanelTexture(textureId)
-        } catch (t: Throwable) {
-            Log.e(TAG, "绑定面板纹理失败：${t.message}")
-        }
+    fun createPanelSurfaceTexture(): android.graphics.SurfaceTexture? = try {
+        if (loaded) nativeCreatePanelSurfaceTexture() else null
+    } catch (t: Throwable) {
+        Log.e(TAG, "创建面板纹理失败：${t.message}")
+        null
     }
 
-    /** 注册面板帧更新器（内部每帧调 SurfaceTexture.updateTexImage） */
-    fun attachPanelSurfaceTexture(st: android.graphics.SurfaceTexture?) {
+    /** 界面开始往面板 Surface 上画了 → 允许贴纹理 */
+    fun setPanelActive(active: Boolean) {
         try {
-            if (loaded) nativeAttachPanelSurfaceTexture(st)
+            if (loaded) nativeSetPanelActive(active)
         } catch (t: Throwable) {
-            Log.e(TAG, "注册面板帧更新器失败：${t.message}")
+            Log.e(TAG, "设置面板激活状态失败：${t.message}")
         }
     }
 

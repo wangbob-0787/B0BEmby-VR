@@ -291,15 +291,15 @@ class VrRenderer(
             M.translate(0f, screenCenterY, 0f),
             M.scale(screenHalfW / halfWOfScreen, screenHalfH / halfHOfScreen, 1f),
         )
+        /*
+         * 面板画面（复用的电视版界面）现在由 VR 渲染线程自己贴（2026-10-05）：
+         * 本渲染器的纹理与 VR 线程的上下文不互通，这里不再参与面板显示。
+         * 2D 面板模式下 PICO 直接把 Presentation 显示出来，不经过这里。
+         */
         if (videoActive) {
             updateVideoFrame()
             drawOesQuad(screenQuad, screenModel, vp, videoTex)
-        } else if (panelActive) {
-            // 面板层：虚拟屏显示复用的电视版界面（不是静态占位图）
-            updatePanelFrame()
-            drawOesQuad(screenQuad, screenModel, vp, panelTex)
         } else {
-            // 面板还没挂上（启动后的极短窗口）：画一块近黑底色
             drawQuad(screenQuad, screenModel, vp, 0.10f)
         }
 
@@ -334,47 +334,33 @@ class VrRenderer(
      * PanelLayer 的虚拟显示器，由系统把 Compose 界面合成进来。
      */
     private fun createPanelPipeline() {
-        if (videoProgram == 0) {
-            Log.w(TAG, "视频着色器不可用，跳过面板管线")
+        /*
+         * 面板纹理改由 **VR 渲染线程**创建（2026-10-05 run 98 修正）。
+         *
+         * run 97 的写法在这里（GLSurfaceView 的 GL 线程）建纹理，再把 id 传给
+         * VR 线程使用 → VR 里全黑，日志刷
+         *   OpenGLRenderer: [SurfaceTexture-3-…] checkAndUpdateEglState:
+         *   invalid current EGLContext
+         * 根因：GL 纹理 id 只在创建它的 EGL 上下文里有效，而 VR 渲染是另一个上下文。
+         *
+         * 现在改为：向原生层要一个「在 VR 上下文里建好的」SurfaceTexture，
+         * 由它交给面板层去承载界面画面。本线程不再建面板纹理。
+         */
+        panelSurfaceTexture?.release()
+        panelSurfaceTexture = null
+        panelTex = 0
+        panelActive = false
+
+        val st = VrNative.createPanelSurfaceTexture()
+        if (st == null) {
+            Log.w(TAG, "VR 上下文未就绪，面板纹理暂不可用（2D 面板模式不受影响）")
             return
         }
-        val texArr = IntArray(1)
-        GLES30.glGenTextures(1, texArr, 0)
-        panelTex = texArr[0]
-        GLES30.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, panelTex)
-        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
-        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
-        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
-        GLES30.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
-
-        panelSurfaceTexture?.release()
-        val st = android.graphics.SurfaceTexture(panelTex)
         panelSurfaceTexture = st
         panelSurface?.release()
         panelSurface = android.view.Surface(st)
-        panelActive = true
-        Log.i(TAG, "面板管线就绪: panelTex=$panelTex")
-
-        /*
-         * 交给 VR 渲染线程（2026-10-05）：
-         *  - setPanelTexture：纹理 id，用于把界面贴到 VR 平面
-         *  - attachPanelSurfaceTexture：每帧在渲染线程 updateTexImage
-         *    （外部纹理的更新必须在持有它的 GL 线程做）
-         */
-        VrNative.setPanelTexture(panelTex)
-        VrNative.attachPanelSurfaceTexture(st)
-
+        Log.i(TAG, "面板管线就绪（纹理由 VR 上下文创建）")
         onPanelSurfaceReady?.invoke(st)
-    }
-
-    /** 面板帧到达后取最新帧（每帧调，与视频同一套 SurfaceTexture 机制） */
-    private fun updatePanelFrame() {
-        val st = panelSurfaceTexture ?: return
-        try {
-            st.updateTexImage()
-        } catch (e: Exception) {
-            Log.w(TAG, "面板 updateTexImage 失败: ${e.message}")
-        }
     }
 
     /**
