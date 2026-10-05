@@ -69,6 +69,9 @@ class MainActivity : ComponentActivity() {
     /** 正在挑片（控制条上的「选片」打开的海报墙）：此时画面回到面板、控制条留着 */
     private var picking = false
 
+    /** 光柱当前是否落在海报墙上（原生回推，播放期间决定面板接不接输入） */
+    private var panelPointerOnPanel = false
+
     /** 当前倍速（控制条倍速按钮循环切换） */
     private var playSpeed = 1f
 
@@ -89,6 +92,11 @@ class MainActivity : ComponentActivity() {
                 Log.i(TAG, "VR 光柱输入已接管（老的触摸通道关闭）")
             }
             runOnUiThread { if (panelInputReady()) panel.vrPointer(px, py) }
+        }
+
+        override fun onPanelFocus(onPanel: Boolean) {
+            // 原生只在变化时推：光柱是否落在海报墙上
+            runOnUiThread { panelPointerOnPanel = onPanel }
         }
 
         override fun onClick(px: Float, py: Float) {
@@ -182,9 +190,17 @@ class MainActivity : ComponentActivity() {
     }
 
     /** 面板此刻能不能接输入：界面就绪、没在播放 */
+    /**
+     * 面板能不能接光柱输入。
+     *
+     * 2026-10-06 父亲要求：播放期间海报墙照样能操作（点、滚、拖、B 返回）。
+     * 所以不再因为"在播放"就整块关掉 —— 改由光柱位置决定：光柱指在海报墙上
+     * （原生回推 onPanelFocus）时就接，指别处时不接。
+     */
     private fun panelInputReady(): Boolean =
-        !renderer.videoActive && ::panel.isInitialized && panel.ready &&
-            com.xxxx.emby_vr.vr.VrNative.panelActive
+        ::panel.isInitialized && panel.ready &&
+            com.xxxx.emby_vr.vr.VrNative.panelActive &&
+            (!renderer.videoActive || panelPointerOnPanel)
 
     /**
      * 手柄/按键输入 → UI 动作。
@@ -233,8 +249,14 @@ class MainActivity : ComponentActivity() {
                 if (renderer.videoActive) togglePlayPause()
             }
             InputRouter.Action.BACK -> {
-                if (renderer.videoActive) stopPlayback()
-                else if (::panel.isInitialized && panel.ready && com.xxxx.emby_vr.vr.VrNative.panelActive) panel.back()
+                /*
+                 * 播放中：光柱指在海报墙上时，B 给面板导航栈（父亲 2026-10-06：
+                 * 播放期间海报墙也要能操作）；指别处时 B = 退出播放。
+                 */
+                val panelTakesBack = panelPointerOnPanel && ::panel.isInitialized &&
+                    panel.ready && com.xxxx.emby_vr.vr.VrNative.panelActive
+                if (panelTakesBack) panel.back()
+                else if (renderer.videoActive) stopPlayback()
             }
             InputRouter.Action.PLAY_PAUSE -> if (renderer.videoActive) togglePlayPause()
             InputRouter.Action.SEEK_BACK -> if (renderer.videoActive) seekBy(-10_000)
@@ -469,7 +491,8 @@ class MainActivity : ComponentActivity() {
             osdState.positionMs = 0L
             osdState.speed = playSpeed
             if (com.xxxx.emby_vr.vr.VrNative.vrRunning) {
-                setOsdVisible(true)      // 播放中默认把控制条亮出来（扣扳机可收起）
+                // 起播不再自动亮控制条（父亲 2026-10-06）：要看控制条，指着银幕扣扳机
+                setOsdVisible(false)
                 startOsdTicker()
             }
             if (useVrScreen) {

@@ -393,6 +393,7 @@ struct VrContext {
     jmethodID sinkOsdPointer = nullptr; // 控制条上的指针
     jmethodID sinkOsdClick = nullptr;   // 控制条上的点击
     jmethodID sinkToggleOsd = nullptr;  // 播放中扣扳机 = 开关控制条
+    jmethodID sinkPanelFocus = nullptr; // 光柱是否落在海报墙上（决定 B 键给谁）
     bool sinkPointerValid = false;      // 上一次回推的指针位置（只在明显移动时回推）
     float sinkPointerX = 0.f;
     float sinkPointerY = 0.f;
@@ -401,6 +402,20 @@ struct VrContext {
     float sinkOsdPointerX = 0.f;
     float sinkOsdPointerY = 0.f;
     bool sinkLastTrigger[2] = {false, false};
+    bool sinkPanelFocusOn[2] = {false, false};   // 上一次回推的"光柱在海报墙上"状态
+
+    /**
+     * 海报墙的额外位移（父亲用光柱按住扳机拖着挪，2026-10-06）。基准是 kSideScreen。
+     */
+    std::atomic<float> panelOffX{0.f};
+    std::atomic<float> panelOffY{0.f};
+    std::atomic<float> panelOffZ{0.f};
+
+    /** 拖海报墙的手感状态：是否抓着、是否真拖动过、按下那一刻的面内坐标 */
+    bool panelDragActive[2] = {false, false};
+    bool panelDragMoved[2] = {false, false};
+    float panelDragU0[2] = {0.f, 0.f};
+    float panelDragV0[2] = {0.f, 0.f};
     bool sinkStickPushed[2] = {false, false};   // 摇杆是否处在"推着"的状态（回中要补一帧零值）
     bool sinkLastBack[2] = {false, false};
     double sinkStickAt[2] = {0.0, 0.0}; // 摇杆滚动节拍（毫秒）
@@ -1109,9 +1124,19 @@ constexpr ScreenPlacement kFrontScreen{0.f, 0.f, -3.2f, 0.f, 3.5f};
  */
 constexpr ScreenPlacement kSideScreen{-2.25f, -0.05f, -2.05f, 46.f, 2.8f};
 
-/** 海报墙常驻左前方（浏览、播放都在那儿；前方那块留给银幕） */
-ScreenPlacement panelPlacement(const VrContext &) {
-    return kSideScreen;
+/** 拖海报墙时"算不算动了"的阈值（米，面内） */
+constexpr float kPanelDragSlop = 0.02f;
+
+/**
+ * 海报墙常驻左前方（浏览、播放都在那儿；前方那块留给银幕）。
+ * 父亲可以用光柱按住扳机把它拖走，位移量记在 VrContext 里。
+ */
+ScreenPlacement panelPlacement(const VrContext &c) {
+    ScreenPlacement p = kSideScreen;
+    p.cx += c.panelOffX.load();
+    p.cy += c.panelOffY.load();
+    p.cz += c.panelOffZ.load();
+    return p;
 }
 
 /** 摆位 → 模型矩阵（位置 + 绕 Y 轴旋转 + 尺寸；复用控制条那套 poseScaleModel） */
@@ -1346,71 +1371,120 @@ void pushInput(VrContext &c) {
         }
 
         /*
-         * ② 播放中：扳机 = 开关控制条（指哪儿都算），不再往主面板送输入 ——
-         *    播放时主面板被视频画面盖着，看不见也不该点。
+         * ② 海报墙优先（2026-10-06 父亲：播放期间海报墙照样能操作）：
+         *    光柱指在海报墙上 → 指针 / 点击 / 摇杆 / 拖动都给它，与是否正在播放无关。
+         *    命中判定按摆位求交（含朝向），否则点击坐标会整体错位。
          */
-        if (c.videoActive.load()) {
-            const double nowToggle = nowMs();
-            if (c.triggerDown[h] && !c.sinkLastTrigger[h] && c.sinkToggleOsd != nullptr &&
-                nowToggle - c.sinkLastToggleMs > 300.0) {
-                c.sinkLastToggleMs = nowToggle;
-                LOGI("VR 输入：%s 扳机 → 控制条开关", handName[h]);
-                env->CallVoidMethod(c.inputSink, c.sinkToggleOsd);
-                clearJavaException(env, "输入回调 onToggleOsd");
+        const ScreenPlacement place = panelPlacement(c);
+        float planeT = 0.f, hu = 0.f, hv = 0.f, wx = 0.f, wy = 0.f, wz = 0.f;
+        const bool onPanel = c.panelShown.load() &&
+                             rayHitsPlacement(c.aimPose[h], place, &planeT, &hu, &hv,
+                                              &wx, &wy, &wz);
+
+        // 告诉界面层：光柱在不在海报墙上（决定 B 键给谁、面板接不接输入）
+        if (onPanel != c.sinkPanelFocusOn[h]) {
+            c.sinkPanelFocusOn[h] = onPanel;
+            if (c.sinkPanelFocus != nullptr) {
+                env->CallVoidMethod(c.inputSink, c.sinkPanelFocus, (jboolean) onPanel);
+                clearJavaException(env, "输入回调 onPanelFocus");
+            }
+        }
+
+        if (onPanel) {
+            const float px = (hu / place.width + 0.5f) * kPanelPxW;
+            const float py = (0.5f - hv / (place.width * 9.f / 16.f)) * kPanelPxH;
+
+            // 指针移动：超过 2px 才回推，避免每帧刷屏
+            if (!c.sinkPointerValid || fabsf(px - c.sinkPointerX) > 2.f ||
+                fabsf(py - c.sinkPointerY) > 2.f) {
+                if (c.sinkPointer != nullptr) env->CallVoidMethod(c.inputSink, c.sinkPointer, px, py);
+                clearJavaException(env, "输入回调 onPointer");
+                c.sinkPointerX = px;
+                c.sinkPointerY = py;
+                c.sinkPointerValid = true;
+            }
+
+            /*
+             * 按住扳机拖海报墙（父亲 2026-10-06）：抓哪跟哪 ——
+             * 记下按下时的面内坐标，按住期间把光点位移换算成面板中心位移；
+             * 松手时若几乎没动，才算一次点击（不然"想拖一下"会顺手点开片子）。
+             */
+            if (c.triggerDown[h]) {
+                if (!c.panelDragActive[h]) {
+                    c.panelDragActive[h] = true;
+                    c.panelDragMoved[h] = false;
+                    c.panelDragU0[h] = hu;
+                    c.panelDragV0[h] = hv;
+                } else {
+                    const float th = place.yawDeg * 3.14159265358979f / 180.f;
+                    const float du = hu - c.panelDragU0[h];
+                    const float dv = hv - c.panelDragV0[h];
+                    if (fabsf(du) > kPanelDragSlop || fabsf(dv) > kPanelDragSlop) {
+                        c.panelDragMoved[h] = true;
+                    }
+                    if (c.panelDragMoved[h]) {
+                        // 面内 x 轴 = (cos, 0, -sin)；面内 y 轴 = (0, 1, 0)
+                        c.panelOffX = c.panelOffX.load() + du * cosf(th);
+                        c.panelOffZ = c.panelOffZ.load() - du * sinf(th);
+                        c.panelOffY = c.panelOffY.load() + dv;
+                        c.panelDragU0[h] = hu;
+                        c.panelDragV0[h] = hv;
+                    }
+                }
+            } else if (c.panelDragActive[h]) {
+                const bool moved = c.panelDragMoved[h];
+                c.panelDragActive[h] = false;
+                c.panelDragMoved[h] = false;
+                if (moved) {
+                    LOGI("海报墙：挪到 偏移=(%.2f, %.2f, %.2f)", c.panelOffX.load(),
+                         c.panelOffY.load(), c.panelOffZ.load());
+                } else if (c.sinkClick != nullptr) {
+                    LOGI("VR 输入：%s 扳机 → 面板点击 (%d, %d)", handName[h], (int) px, (int) py);
+                    env->CallVoidMethod(c.inputSink, c.sinkClick, px, py);
+                    clearJavaException(env, "输入回调 onClick");
+                }
             }
             c.sinkLastTrigger[h] = c.triggerDown[h];
+
+            // 摇杆 → 连状态上报（30Hz）；回中补一帧零值，Java 侧据此进入惯性滑行
+            const float sx = c.thumbstick[h].x;
+            const float sy = c.thumbstick[h].y;
+            if (fabsf(sx) > kStickDeadzone || fabsf(sy) > kStickDeadzone) {
+                if (t - c.sinkStickAt[h] >= kStickStateMs) {
+                    c.sinkStickAt[h] = t;
+                    c.sinkStickPushed[h] = true;
+                    if (c.sinkStick != nullptr) {
+                        // 坐标 + 摇杆量（x 右正、y 上正，与 OpenXR 一致；方向语义在 Java 侧翻）
+                        env->CallVoidMethod(c.inputSink, c.sinkStick, px, py, sx, sy);
+                        clearJavaException(env, "输入回调 onStick");
+                    }
+                }
+            } else if (c.sinkStickPushed[h] && c.sinkStick != nullptr) {
+                c.sinkStickPushed[h] = false;
+                c.sinkStickAt[h] = 0.0;
+                env->CallVoidMethod(c.inputSink, c.sinkStick, px, py, 0.f, 0.f);
+                clearJavaException(env, "输入回调 onStick(回中)");
+            }
             continue;
         }
 
         /*
-         * ③ 海报墙：常驻左前方斜放，光柱要按它的摆位求交（含朝向），
-         *    否则点击坐标会整体错位。收起来了（选片开关）就不接输入。
+         * ③ 播放中、光柱不在海报墙上：扳机 = 开关控制条，而且**只有指着银幕**才算
+         *    （父亲 2026-10-06：指别处扣扳机，控制条保持现状）。
          */
-        if (!c.panelShown.load()) continue;
-        const ScreenPlacement place = panelPlacement(c);
-        float planeT = 0.f, hu = 0.f, hv = 0.f, wx = 0.f, wy = 0.f, wz = 0.f;
-        const bool hit = rayHitsPlacement(c.aimPose[h], place, &planeT, &hu, &hv, &wx, &wy, &wz);
-        if (!hit) continue;   // 指到屏外：不点也不滚
-
-        const float px = (hu / place.width + 0.5f) * kPanelPxW;
-        const float py = (0.5f - hv / (place.width * 9.f / 16.f)) * kPanelPxH;
-
-        // 指针移动：超过 2px 才回推，避免每帧刷屏
-        if (!c.sinkPointerValid || fabsf(px - c.sinkPointerX) > 2.f ||
-            fabsf(py - c.sinkPointerY) > 2.f) {
-            if (c.sinkPointer != nullptr) env->CallVoidMethod(c.inputSink, c.sinkPointer, px, py);
-            clearJavaException(env, "输入回调 onPointer");
-            c.sinkPointerX = px;
-            c.sinkPointerY = py;
-            c.sinkPointerValid = true;
-        }
-
-        // 扳机（按下那一刻）→ 在光柱位置点一下
-        if (c.triggerDown[h] && !c.sinkLastTrigger[h] && c.sinkClick != nullptr) {
-            LOGI("VR 输入：%s 扳机 → 面板点击 (%d, %d)", handName[h], (int) px, (int) py);
-            env->CallVoidMethod(c.inputSink, c.sinkClick, px, py);
-            clearJavaException(env, "输入回调 onClick");
-        }
-        c.sinkLastTrigger[h] = c.triggerDown[h];
-
-        // 摇杆 → 连状态上报（30Hz）；回中补一帧零值，Java 侧据此进入惯性滑行
-        const float sx = c.thumbstick[h].x;
-        const float sy = c.thumbstick[h].y;
-        if (fabsf(sx) > kStickDeadzone || fabsf(sy) > kStickDeadzone) {
-            if (t - c.sinkStickAt[h] >= kStickStateMs) {
-                c.sinkStickAt[h] = t;
-                c.sinkStickPushed[h] = true;
-                if (c.sinkStick != nullptr) {
-                    // 坐标 + 摇杆量（x 右正、y 上正，与 OpenXR 一致；方向语义在 Java 侧翻）
-                    env->CallVoidMethod(c.inputSink, c.sinkStick, px, py, sx, sy);
-                    clearJavaException(env, "输入回调 onStick");
-                }
+        if (c.videoActive.load()) {
+            float vT = 0.f, vu = 0.f, vv = 0.f, vwx = 0.f, vwy = 0.f, vwz = 0.f;
+            const bool onScreen = rayHitsPlacement(c.aimPose[h], kFrontScreen, &vT, &vu, &vv,
+                                                   &vwx, &vwy, &vwz);
+            const double nowToggle = nowMs();
+            if (onScreen && c.triggerDown[h] && !c.sinkLastTrigger[h] &&
+                c.sinkToggleOsd != nullptr && nowToggle - c.sinkLastToggleMs > 300.0) {
+                c.sinkLastToggleMs = nowToggle;
+                LOGI("VR 输入：%s 扳机 → 控制条开关（指着银幕）", handName[h]);
+                env->CallVoidMethod(c.inputSink, c.sinkToggleOsd);
+                clearJavaException(env, "输入回调 onToggleOsd");
             }
-        } else if (c.sinkStickPushed[h] && c.sinkStick != nullptr) {
-            c.sinkStickPushed[h] = false;
-            c.sinkStickAt[h] = 0.0;
-            env->CallVoidMethod(c.inputSink, c.sinkStick, px, py, 0.f, 0.f);
-            clearJavaException(env, "输入回调 onStick(回中)");
+            c.sinkLastTrigger[h] = c.triggerDown[h];
         }
     }
 }
@@ -1528,7 +1602,7 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
 
         // 海报墙：常驻左前方斜放；收起时不画，没出帧也先不画（不闪也不串）
         const bool panelReady = c.panelActive.load() && c.panelTex != 0 && c.panelHasFrame.load();
-        if (panelReady && c.panelShown.load()) drawScreen(kSideScreen, c.panelTex);
+        if (panelReady && c.panelShown.load()) drawScreen(panelPlacement(c), c.panelTex);
 
         // 起播 / 换片到第一帧之间：银幕上转圈，别留上一部的画面（父亲 2026-10-05 要求）
         if (c.videoActive.load() && !videoReady) drawSpinner(c, proj, view4);
@@ -2091,12 +2165,13 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachInputSink(JNIEnv *env, jobject /*
     g.sinkOsdClick = env->GetMethodID(cls, "onOsdClick", "(FF)V");
     g.sinkToggleOsd = env->GetMethodID(cls, "onToggleOsd", "()V");
     g.sinkBack = env->GetMethodID(cls, "onBack", "()V");
+    g.sinkPanelFocus = env->GetMethodID(cls, "onPanelFocus", "(Z)V");
     env->DeleteLocalRef(cls);
-    LOGI("VR 输入回调已注册（指针=%d 点击=%d 摇杆=%d 返回=%d 控制条=%d/%d 开关=%d）",
+    LOGI("VR 输入回调已注册（指针=%d 点击=%d 摇杆=%d 返回=%d 控制条=%d/%d 开关=%d 面板焦点=%d）",
          g.sinkPointer != nullptr ? 1 : 0, g.sinkClick != nullptr ? 1 : 0,
          g.sinkStick != nullptr ? 1 : 0, g.sinkBack != nullptr ? 1 : 0,
          g.sinkOsdPointer != nullptr ? 1 : 0, g.sinkOsdClick != nullptr ? 1 : 0,
-         g.sinkToggleOsd != nullptr ? 1 : 0);
+         g.sinkToggleOsd != nullptr ? 1 : 0, g.sinkPanelFocus != nullptr ? 1 : 0);
 }
 
 /*
