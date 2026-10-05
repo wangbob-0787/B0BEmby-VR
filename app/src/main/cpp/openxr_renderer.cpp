@@ -55,6 +55,7 @@
 
 #define TAG "B0BEmbyVR-Native"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
+#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
 namespace {
@@ -75,7 +76,7 @@ struct XrApi {
     PFN_xrGetActionStateFloat GetActionStateFloat = nullptr;
     PFN_xrGetActionStateVector2f GetActionStateVector2f = nullptr;
     PFN_xrGetActionStatePose GetActionStatePose = nullptr;
-    PFN_xrPathStringToPath PathStringToPath = nullptr;
+    PFN_xrStringToPath StringToPath = nullptr;
 
     PFN_xrInitializeLoaderKHR InitializeLoaderKHR = nullptr;
     PFN_xrGetSystem GetSystem = nullptr;
@@ -157,7 +158,7 @@ bool fetchAll(XrInstance instance) {
             && fetch(instance, "xrGetActionStateFloat", api.GetActionStateFloat)
             && fetch(instance, "xrGetActionStateVector2f", api.GetActionStateVector2f)
             && fetch(instance, "xrGetActionStatePose", api.GetActionStatePose)
-            && fetch(instance, "xrPathStringToPath", api.PathStringToPath);
+            && fetch(instance, "xrStringToPath", api.StringToPath);
     LOGI("手柄输入入口点：%s", inputOk ? "齐备" : "部分缺失（输入不可用，渲染不受影响）");
     return ok;
 }
@@ -634,8 +635,8 @@ bool createSession(VrContext &c) {
 /** 交互配置里用到的路径 → XrPath，失败返回 XR_NULL_PATH */
 XrPath pathOf(VrContext &c, const char *s) {
     XrPath p = XR_NULL_PATH;
-    if (api.PathStringToPath == nullptr) return p;
-    if (XR_FAILED(api.PathStringToPath(c.instance, s, &p))) return XR_NULL_PATH;
+    if (api.StringToPath == nullptr) return p;
+    if (XR_FAILED(api.StringToPath(c.instance, s, &p))) return XR_NULL_PATH;
     return p;
 }
 
@@ -662,9 +663,11 @@ bool setupInput(VrContext &c) {
         strncpy(aci.localizedActionName, label, sizeof(aci.localizedActionName) - 1);
         aci.actionType = type;
         aci.countSubactionPaths = 2;
-        const char *hands[2] = {"/user/hand/left", "/user/hand/right"};
-        aci.subactionPaths[0] = pathOf(c, hands[0]);
-        aci.subactionPaths[1] = pathOf(c, hands[1]);
+        const XrPath subPaths[2] = {
+                pathOf(c, "/user/hand/left"),
+                pathOf(c, "/user/hand/right"),
+        };
+        aci.subactionPaths = subPaths;
         const XrResult ar = api.CreateAction(c.actionSet, &aci, out);
         if (XR_FAILED(ar)) {
             LOGE("创建动作失败 %s：%d", name, (int) ar);
@@ -940,9 +943,9 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
     glClearColor(0.f, 0.f, 0.f, 1.f);
     glClear(GL_COLOR_BUFFER_BIT);
 
+    const Mat4 proj = perspectiveFromFov(view.fov, 0.05f, 100.f);
+    const Mat4 view4 = viewMatrixFromPose(view.pose);
     if (c.program != 0 && c.mvpLoc >= 0) {
-        const Mat4 proj = perspectiveFromFov(view.fov, 0.05f, 100.f);
-        const Mat4 view4 = viewMatrixFromPose(view.pose);
         const Mat4 model = translateScale(
                 0.f, 0.f, -c.panelDistance, c.panelWidth, c.panelWidth * 9.f / 16.f);
         const Mat4 mvp = multiply(multiply(proj, view4), model);
