@@ -412,6 +412,17 @@ struct VrContext {
      */
     GLuint panelTex = 0;
     std::atomic<bool> panelActive{false};
+    /*
+     * 这块纹理自己拿到过帧没有 —— 三块屏（面板/播放画面/控制条）都必须有这一位。
+     *
+     * 为什么：没拿到帧的 OES 外部纹理在 Adreno 上采样出来不是黑的，而是**上一张
+     * 外部纹理的画面**（同一纹理单元的 image 被顶替）。所以"谁先有帧，另一块屏就会
+     * 借它的画面"：
+     *   · 2026-10-05 上半天：控制条借了视频 → 控制条上贴的是视频（那次只给控制条加了判据）
+     *   · 2026-10-05 晚上：播放画面借了控制条 → 播放屏上贴的是控制条按钮
+     * 两块屏是同一个根因的两面，所以判据必须三块屏都有、统一走 OesSource。
+     */
+    std::atomic<bool> panelHasFrame{false};
 
     /*
      * 播放画面（VR 原生，2026-10-05）：与面板同一个套路 —— 在 VR 上下文里建一张
@@ -419,6 +430,7 @@ struct VrContext {
      */
     GLuint videoTex = 0;
     std::atomic<bool> videoActive{false};
+    std::atomic<bool> videoHasFrame{false};   // 见 panelHasFrame 的注释
 
     /*
      * 控制条（OSD，2026-10-05）：架在视频屏下方的矮条，与面板/视频同一套
@@ -1208,7 +1220,7 @@ void pushInput(VrContext &c) {
          * ① 控制条优先：指着控制条时，指针与点击都给控制条，不碰主面板。
          *    （控制条是近场小面板，尺寸 1920×270，坐标单独换算。）
          */
-        if (c.osdVisible.load() && c.osdTex != 0) {
+        if (c.osdVisible.load() && c.osdTex != 0 && c.osdHasFrame.load()) {
             float osdT = 0.f, ou = 0.f, ov = 0.f;
             if (rayHitsOsd(c, c.aimPose[h], &osdT, &ou, &ov)) {
                 const float opx = (ou / kOsdWidth + 0.5f) * kOsdPxW;
@@ -1378,8 +1390,15 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
          * 有面板纹理就贴纹理（现有界面），没有就画纯色（证明能出画面）。
          * 用外部纹理（OES）：面板来自 SurfaceTexture，与 2D 模式同一套链路。
          */
-        const bool useVideo = c.videoActive.load() && c.videoTex != 0;
-        const bool usePanel = !useVideo && c.panelActive.load() && c.panelTex != 0;
+        /*
+         * 三块屏统一规矩：**只有这块纹理自己拿到过帧，才贴它**；没有帧就画底色。
+         * 不这么做的后果（见 panelHasFrame 的注释）：显卡会把另一张外部纹理的画面
+         * 借过来 —— 上一轮是控制条贴上视频，这一轮是播放屏贴上控制条按钮。
+         * 播放中视频还没出帧时先继续显示面板，等视频真有帧再切，不闪也不串。
+         */
+        const bool useVideo = c.videoActive.load() && c.videoTex != 0 && c.videoHasFrame.load();
+        const bool usePanel = !useVideo && c.panelActive.load() && c.panelTex != 0 &&
+                              c.panelHasFrame.load();
         if (useVideo || usePanel) {
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_EXTERNAL_OES, useVideo ? c.videoTex : c.panelTex);
@@ -1796,15 +1815,26 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeCreatePanelSurfaceTexture(JNIEnv *env,
     g.panelTex = tex;
     g.panelActive = false;   // 等界面真的画上来了再置 true
 
+    g.panelHasFrame = false;
+
     auto *globalRef = env->NewGlobalRef(st);
     jmethodID updateTexImage = env->GetMethodID(stClass, "updateTexImage", "()V");
+    jmethodID getTimestamp = env->GetMethodID(stClass, "getTimestamp", "()J");
     if (updateTexImage != nullptr) {
-        gPanelUpdate = [globalRef, updateTexImage]() {
+        gPanelUpdate = [globalRef, updateTexImage, getTimestamp]() {
             JNIEnv *e = nullptr;
             if (g.jvm == nullptr) return;
             if (g.jvm->GetEnv(reinterpret_cast<void **>(&e), JNI_VERSION_1_6) != JNI_OK) return;
             e->CallVoidMethod(globalRef, updateTexImage);
             clearJavaException(e, "面板 updateTexImage");
+            if (!g.panelHasFrame.load() && getTimestamp != nullptr) {
+                const jlong ts = e->CallLongMethod(globalRef, getTimestamp);
+                clearJavaException(e, "面板 getTimestamp");
+                if (ts > 0) {
+                    g.panelHasFrame = true;
+                    LOGI("面板首帧到位（timestamp=%lld）—— 可以画了", (long long) ts);
+                }
+            }
         };
     }
     LOGI("面板纹理与 SurfaceTexture 已创建（在 VR 上下文里）：tex=%u", tex);
@@ -1861,15 +1891,26 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeCreateVideoSurfaceTexture(JNIEnv *env,
     g.videoTex = tex;
     g.videoActive = false;
 
+    g.videoHasFrame = false;
+
     auto *globalRef = env->NewGlobalRef(st);
     jmethodID updateTexImage = env->GetMethodID(stClass, "updateTexImage", "()V");
+    jmethodID getTimestamp = env->GetMethodID(stClass, "getTimestamp", "()J");
     if (updateTexImage != nullptr) {
-        gVideoUpdate = [globalRef, updateTexImage]() {
+        gVideoUpdate = [globalRef, updateTexImage, getTimestamp]() {
             JNIEnv *e = nullptr;
             if (g.jvm == nullptr) return;
             if (g.jvm->GetEnv(reinterpret_cast<void **>(&e), JNI_VERSION_1_6) != JNI_OK) return;
             e->CallVoidMethod(globalRef, updateTexImage);
             clearJavaException(e, "播放画面 updateTexImage");
+            if (!g.videoHasFrame.load() && getTimestamp != nullptr) {
+                const jlong ts = e->CallLongMethod(globalRef, getTimestamp);
+                clearJavaException(e, "播放画面 getTimestamp");
+                if (ts > 0) {
+                    g.videoHasFrame = true;
+                    LOGI("播放画面首帧到位（timestamp=%lld）—— 可以画了", (long long) ts);
+                }
+            }
         };
     }
     LOGI("视频纹理与 SurfaceTexture 已创建（在 VR 上下文里）：tex=%u", tex);
@@ -1881,6 +1922,11 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetVideoActive(JNIEnv *env, jobject /* this */,
                                                        jboolean active) {
     g.videoActive = (active == JNI_TRUE);
+    /*
+     * 每次起播都重新等"这一部片子的第一帧"：否则上一部留下的旧帧会被当成
+     * 本部的画面先画出来（换片时会闪一下上一部）。
+     */
+    if (active == JNI_TRUE) g.videoHasFrame = false;
     LOGI("播放画面状态 → %s", g.videoActive.load() ? "true" : "false");
 }
 
