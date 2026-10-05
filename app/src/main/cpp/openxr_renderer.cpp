@@ -426,7 +426,15 @@ struct VrContext {
      */
     GLuint osdTex = 0;
     std::atomic<bool> osdVisible{false};
-    std::atomic<int> osdFrames{0};   // 控制条取到的帧数：>0 才画（空纹理不画）
+    std::atomic<int> osdFrames{0};      // 控制条 updateTexImage 的调用次数（诊断用）
+    /*
+     * 控制条纹理是否真的拿到过帧（2026-10-05）。
+     *
+     * 为什么不能只看"调用过 updateTexImage"：没画面的 OES 纹理在 Adreno 上采样出来
+     * 不是黑的，而是上一张 OES 图（实测：控制条那块显示的是视频画面被压扁的副本）。
+     * SurfaceTexture.getTimestamp() 在第一帧之前恒为 0 —— 用它当"有画面"的判据。
+     */
+    std::atomic<bool> osdHasFrame{false};
 
     // ---- 手柄输入 ----
     XrActionSet actionSet = XR_NULL_HANDLE;
@@ -1396,7 +1404,7 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
          * 控制条（近场小面板，2026-10-05）：贴在观影者正前方偏下、上仰一点，
          * 与主画面同一套着色器与属性布局，只是换一张纹理、换一个模型矩阵。
          */
-        if (c.osdVisible.load() && c.osdTex != 0 && c.osdFrames.load() > 0) {
+        if (c.osdVisible.load() && c.osdTex != 0 && c.osdHasFrame.load()) {
             const float th = kOsdTiltDeg * 3.14159265358979f / 180.f;
             XrPosef osdPose{};
             osdPose.position = {0.f, kOsdCenterY, -kOsdDistance};
@@ -1450,7 +1458,7 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
              * 取两者里更近的那个命中点：控制条命中 → 光线与控制条齐平，光点落在控制条上。
              */
             float osdT = 0.f, osdU = 0.f, osdV = 0.f;
-            const bool osdHit = c.osdVisible.load() && c.osdTex != 0 && c.osdFrames.load() > 0 &&
+            const bool osdHit = c.osdVisible.load() && c.osdTex != 0 && c.osdHasFrame.load() &&
                                 rayHitsOsd(c, c.aimPose[h], &osdT, &osdU, &osdV);
 
             float rayLength = kNoHitDistance;
@@ -1573,7 +1581,6 @@ void frameLoop(VrContext &c) {
         // 控制条：近场小面板，每帧取一次（与面板/视频同一套 SurfaceTexture 机制）
         if (c.osdVisible.load() && gOsdUpdate != nullptr) {
             gOsdUpdate();
-            c.osdFrames.fetch_add(1);
         }
 
         // 手柄状态（诊断阶段：变化即打日志，先看清 PICO 到底发哪些事件）
@@ -1919,14 +1926,22 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeCreateOsdSurfaceTexture(JNIEnv *env, jo
 
     auto *globalRef = env->NewGlobalRef(st);
     jmethodID updateTexImage = env->GetMethodID(stClass, "updateTexImage", "()V");
+    jmethodID getTimestamp = env->GetMethodID(stClass, "getTimestamp", "()J");
     if (updateTexImage != nullptr) {
-        gOsdUpdate = [globalRef, updateTexImage]() {
+        gOsdUpdate = [globalRef, updateTexImage, getTimestamp]() {
             JNIEnv *e = nullptr;
             if (g.jvm == nullptr) return;
             if (g.jvm->GetEnv(reinterpret_cast<void **>(&e), JNI_VERSION_1_6) != JNI_OK) return;
             e->CallVoidMethod(globalRef, updateTexImage);
             clearJavaException(e, "控制条 updateTexImage");
-            if (g.osdFrames.load() == 0) LOGI("控制条取到首帧画面（纹理有内容了）");
+            g.osdFrames.fetch_add(1);
+            if (!g.osdHasFrame.load() && getTimestamp != nullptr) {
+                const jlong ts = e->CallLongMethod(globalRef, getTimestamp);
+                if (ts > 0) {
+                    g.osdHasFrame = true;
+                    LOGI("控制条首帧到位（timestamp=%lld）—— 可以画了", (long long) ts);
+                }
+            }
         };
     }
     LOGI("控制条纹理与 SurfaceTexture 已创建：tex=%u", tex);
