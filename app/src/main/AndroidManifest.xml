@@ -64,6 +64,22 @@
             </intent-filter>
 
             <!--
+              VR 应用声明（2026-10-05 重新加回）。
+
+              历史：build-6/build-7 加过它 → 全黑。当时的原因是**没有接 VR 运行时**：
+             PICO 按 VR 应用合成后，应用必须自己通过 OpenXR 提交立体帧，
+             而那时我们还是单眼普通投影，所以什么都没提交 → 黑屏。
+
+              现在已接入官方 OpenXR（app/src/main/cpp/openxr_renderer.cpp），
+              由原生线程提交立体帧，因此按 VR 应用走才是对的：
+              这样才能拿原始手柄输入（⭕/A/B 键、摇杆轴值），
+              也才能把视频/字幕/弹幕/控制条画成各自独立的 VR 图层。
+            -->
+            <meta-data
+                android:name="pvr.app.type"
+                android:value="vr" />
+
+            <!--
               关于 `pvr.app.type=vr`（2026-10-03 实机结论，重要）：
 
               build-6/build-7 声明了它，结果 PICO 按 **VR 应用**合成 ——

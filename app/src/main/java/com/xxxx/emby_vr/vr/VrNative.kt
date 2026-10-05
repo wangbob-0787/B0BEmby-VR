@@ -26,6 +26,26 @@ object VrNative {
 
     private external fun nativeProbe(): String
 
+    private external fun nativeStartVr(activity: android.app.Activity): Boolean
+
+    private external fun nativeStopVr()
+
+    /** 起 VR 会话（原生渲染线程）；失败返回 false，应用继续按 2D 面板模式跑 */
+    fun startVr(activity: android.app.Activity): Boolean = try {
+        if (loaded) nativeStartVr(activity) else false
+    } catch (t: Throwable) {
+        Log.e(TAG, "启动 VR 会话失败：${t.message}")
+        false
+    }
+
+    fun stopVr() {
+        try {
+            if (loaded) nativeStopVr()
+        } catch (t: Throwable) {
+            Log.e(TAG, "停止 VR 会话失败：${t.message}")
+        }
+    }
+
     /** 打一行探针日志（失败也只是日志缺失，不影响界面） */
     fun probe(): String = try {
         if (loaded) nativeProbe() else "原生库未加载"

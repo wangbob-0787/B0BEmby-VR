@@ -592,6 +592,14 @@ class MainActivity : ComponentActivity() {
         val ok = vrSession.start(this)
         Log.i(TAG, "XR 会话启动: $ok")
 
+        /*
+         * VR 影院模式（2026-10-05）：起官方 OpenXR 会话，由原生线程做立体渲染。
+         * 第一步只画黑底 + 正前方一块平面（先证明 VR 模式能出画面），
+         * 面板纹理与手柄输入随后接。失败不影响应用活着（原生线程自己吞错误）。
+         */
+        val vrOk = com.xxxx.emby_vr.vr.VrNative.startVr(this)
+        Log.i(TAG, "OpenXR 会话启动: $vrOk")
+
         // P2 海报墙已取消（父亲 2026-10-04：选片走电视版界面，不再需要 VR 原生海报墙）
         // loadLibrary()
     }

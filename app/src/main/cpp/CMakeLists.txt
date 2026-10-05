@@ -14,6 +14,7 @@ find_package(OpenXR REQUIRED CONFIG)
 
 add_library(b0bvr SHARED
         native_bridge.cpp
+        openxr_renderer.cpp
 )
 
 target_link_libraries(b0bvr
