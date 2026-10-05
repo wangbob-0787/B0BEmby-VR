@@ -304,12 +304,34 @@ uniform float uSaturation;    // 饱和度（1.0 = 原样）
 uniform float uSharpen;       // 锐度（0 = 不锐化）
 uniform float uTemperature;   // 色温（-1 冷 … 0 原样 … +1 暖）
 uniform vec2 uTexel;          // 视频纹理一个像素的 UV 步长（锐化用）
+uniform vec2 uScreenStep;     // 银幕上一个屏幕像素对应的 UV 步长（降采样用）
+uniform int uDownsample;      // 1 = 视频降采样（4×4 盒式平均）
 uniform samplerExternalOES uTexture;
 out vec4 fragColor;
 void main() {
     vec4 outColor;
     if (uUseTexture == 1) {
-        vec4 c = texture(uTexture, vUv);
+        vec4 c;
+        if (uDownsample == 1) {
+            /*
+             * 视频降采样（父亲 2026-10-06：画面「有失真」）。
+             *
+             * 4K 画面贴到银幕上时，银幕在单眼画面里只占一千多像素宽 —— 缩到三分之一。
+             * 单点采样（双线性）只看周围 4 个像素，缩这么狠时细节和细线条会直接丢，
+             * 观感就是发虚、有失真。这里按「一个屏幕像素对应多大一块纹理」取 4×4=16 点
+             * 做盒式平均，等于把缩小这件事做对。偏移量由 uScreenStep 给，随银幕大小自适应。
+             */
+            vec3 acc = vec3(0.0);
+            for (int i = 0; i < 4; i++) {
+                for (int j = 0; j < 4; j++) {
+                    vec2 o = (vec2(float(i), float(j)) - vec2(1.5)) * 0.5 * uScreenStep;
+                    acc += texture(uTexture, vUv + o).rgb;
+                }
+            }
+            c = vec4(acc * 0.0625, 1.0);
+        } else {
+            c = texture(uTexture, vUv);
+        }
         if (uExpandRange == 1) {
             /*
              * 父亲 2026-10-06：「视频还是灰蒙蒙，像蒙了一层纱」。
@@ -420,6 +442,18 @@ constexpr ScreenPlacement kFrontScreen{0.f, 0.f, -3.2f, 0.f, 0.f, 3.5f, 16.f / 9
  */
 constexpr ScreenPlacement kSideScreen{-2.25f, -0.05f, -2.05f, 46.f, 0.f, 2.8f, 16.f / 9.f};
 
+/*
+ * 刷新率切换（XR_FB_display_refresh_rate，父亲 2026-10-06）：
+ * 头文件（Khronos loader prefab 自带的 openxr.h）未必包含这个厂商扩展，缺了就自己声明，
+ * 名字与规范一致。PICO 运行时支持它（PICO 自带播放器播片时就在跑 72Hz）。
+ */
+#ifndef XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME
+#define XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME "XR_FB_display_refresh_rate"
+#endif
+
+typedef XrResult(XRAPI_PTR *PFN_xrRequestDisplayRefreshRateAVS)(XrSession session,
+                                                               float displayRefreshRate);
+
 struct VrContext {
     JavaVM *jvm = nullptr;
     jobject activity = nullptr;   // 全局引用
@@ -427,6 +461,8 @@ struct VrContext {
     XrInstance instance = XR_NULL_HANDLE;
     XrSystemId systemId = XR_NULL_SYSTEM_ID;
     XrSession session = XR_NULL_HANDLE;
+    /** 刷新率切换（XR_FB_display_refresh_rate）：播放中 72Hz，界面 90Hz */
+    PFN_xrRequestDisplayRefreshRateAVS requestRefreshRate = nullptr;
     XrSpace localSpace = XR_NULL_HANDLE;
     XrSessionState state = XR_SESSION_STATE_UNKNOWN;
     bool sessionRunning = false;
@@ -452,6 +488,8 @@ struct VrContext {
     GLint sharpenLoc = -1;         // uSharpen：锐度
     GLint tempLoc = -1;            // uTemperature：色温
     GLint texelLoc = -1;           // uTexel：视频纹理像素步长
+    GLint screenStepLoc = -1;      // uScreenStep：屏幕像素对应的 UV 步长（降采样）
+    GLint downLoc = -1;            // uDownsample：是否对视频做盒式降采样
     GLuint vbo = 0;                // 单位方块（面板 / 光点）
     GLuint rayVbo = 0;             // 手柄射线网格（圆锥）
     int rayVertexCount = 0;
@@ -754,6 +792,7 @@ bool createInstance(VrContext &c) {
     const char *exts[] = {
             XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME,
             XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME,
+            XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME,
     };
 
     XrInstanceCreateInfo ci{XR_TYPE_INSTANCE_CREATE_INFO};
@@ -773,6 +812,23 @@ bool createInstance(VrContext &c) {
          XR_VERSION_MAJOR(XR_CURRENT_API_VERSION),
          XR_VERSION_MINOR(XR_CURRENT_API_VERSION),
          XR_VERSION_PATCH(XR_CURRENT_API_VERSION));
+
+    /*
+     * 取刷新率切换函数（父亲 2026-10-06：学 PICO 自带播放器，播放时把刷新率降到 72Hz）。
+     *
+     * 实测 PICO 自带播放器播片时跑 72Hz，每帧比 90Hz 多出约三成时间，那些时间用来
+     * 把画面渲染得更实。我们播放时也这么干，停播回 90Hz（界面滑动更顺）。
+     * 扩展名和函数名按 XR_FB_display_refresh_rate 规范；头文件未必带，所以这里自己声明。
+     */
+    PFN_xrVoidFunction refreshFn = nullptr;
+    if (XR_SUCCEEDED(xrGetInstanceProcAddr(c.instance, "xrRequestDisplayRefreshRateFB",
+                                          &refreshFn)) &&
+        refreshFn != nullptr) {
+        c.requestRefreshRate = reinterpret_cast<PFN_xrRequestDisplayRefreshRateAVS>(refreshFn);
+        LOGI("刷新率切换可用：播放中 72Hz / 界面 90Hz");
+    } else {
+        LOGW("刷新率扩展不可用，保持运行时默认刷新率");
+    }
     return fetchAll(c.instance);
 }
 
@@ -1816,7 +1872,7 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
          * 播放画面与海报墙走同一条绘制路径，只有摆位不同 —— 2026-10-05 父亲要求
          * 「海报墙与播放屏分开」：以前是同一块屏来回换贴图，播放一开海报墙就被顶掉。
          */
-        auto drawScreen = [&](const ScreenPlacement &place, unsigned tex, bool expandRange = false) {
+        auto drawScreen = [&](const ScreenPlacement &place, unsigned tex, bool isVideo = false) {
             const Mat4 mvp = multiply(multiply(proj, view4), placementModel(place));
             glUseProgram(c.program);
             glUniformMatrix4fv(c.mvpLoc, 1, GL_FALSE, mvp.m);
@@ -1831,10 +1887,25 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
                 glBindTexture(GL_TEXTURE_EXTERNAL_OES, tex);
                 glUniform1i(c.texLoc, 0);
                 glUniform1i(c.useTexLoc, 1);
-                if (c.expandLoc >= 0) glUniform1i(c.expandLoc, expandRange ? 1 : 0);
+                if (c.expandLoc >= 0) glUniform1i(c.expandLoc, 0);
+                if (c.downLoc >= 0) glUniform1i(c.downLoc, isVideo ? 1 : 0);
+                if (isVideo && c.screenStepLoc >= 0) {
+                    /*
+                     * 银幕上一个屏幕像素对应多大一块 UV —— 按投影的水平视角、银幕宽度、
+                     * 银幕距离和渲染缓冲宽度算出来。缩得越狠这个步长越大，
+                     * 4×4 平均覆盖的纹理范围也越大，正好抵消缩小带来的细节丢失。
+                     */
+                    const float fovH = 2.f * atanf(1.f / fmaxf(0.1f, proj.m[0]));
+                    const float dist = fmaxf(0.5f, fabsf(place.cz));
+                    const float px = place.width * (float) c.eyes[0].width /
+                                     (2.f * dist * tanf(fovH * 0.5f));
+                    const float step = 1.f / fmaxf(128.f, px);
+                    glUniform2f(c.screenStepLoc, step, step);
+                }
                 glUniform4f(c.colorLoc, 1.f, 1.f, 1.f, 1.f);
             } else {
                 glUniform1i(c.useTexLoc, 0);
+                if (c.downLoc >= 0) glUniform1i(c.downLoc, 0);
                 glUniform4f(c.colorLoc, 0.018f, 0.019f, 0.022f, 1.f);  // 近黑微光（父亲 2026-10-06：再暗一点）
             }
             glBindBuffer(GL_ARRAY_BUFFER, c.vbo);
@@ -1851,10 +1922,10 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
         // 前方银幕：播放时贴视频；没播时是一块空屏（暗色），空间里有"银幕"在
         const bool videoReady = c.videoActive.load() && c.videoTex != 0 && c.videoHasFrame.load();
         /*
-         * 视频屏：色彩范围拉伸暂不启用（先单独验交换链格式这一条，两个变量一起动会分不清）。
-         * 开关代码留在 drawScreen 里，需要时传 true。
+         * 视频屏：开 4×4 盒式降采样（治「画面有失真」）。色彩范围拉伸暂不启用
+         * （先单独验降采样这一条，两个变量一起动会分不清）。
          */
-        drawScreen(frontScreen(c), videoReady ? c.videoTex : 0, false);
+        drawScreen(frontScreen(c), videoReady ? c.videoTex : 0, true);
 
         // 海报墙：常驻左前方斜放；收起时不画，没出帧也先不画（不闪也不串）
         const bool panelReady = c.panelActive.load() && c.panelTex != 0 && c.panelHasFrame.load();
@@ -1892,6 +1963,7 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
             glUniform1i(c.texLoc, 0);
             glUniform1i(c.useTexLoc, 1);
             if (c.expandLoc >= 0) glUniform1i(c.expandLoc, 0);   // 控制条按全范围画，不拉
+            if (c.downLoc >= 0) glUniform1i(c.downLoc, 0);       // 控制条不做降采样
             glUniform4f(c.colorLoc, 1.f, 1.f, 1.f, 1.f);
             glBindBuffer(GL_ARRAY_BUFFER, c.vbo);
             glEnableVertexAttribArray(0);
@@ -2216,6 +2288,8 @@ void renderThreadMain() {
         c.sharpenLoc = glGetUniformLocation(c.program, "uSharpen");
         c.tempLoc = glGetUniformLocation(c.program, "uTemperature");
         c.texelLoc = glGetUniformLocation(c.program, "uTexel");
+        c.screenStepLoc = glGetUniformLocation(c.program, "uScreenStep");
+        c.downLoc = glGetUniformLocation(c.program, "uDownsample");
         makeQuadBuffers(c);
         makeRayBuffer(c);
         LOGI("GL 资源就绪（program=%u）", c.program);
@@ -2395,6 +2469,15 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetVideoActive(JNIEnv *env, jobject /* 
     g.videoHasFrame = false;
     // 记下开播时刻：转圈延迟一拍才出现，看起来是"先清屏、再显示加载箭头"
     g.videoActiveAtMs = nowMs();
+    /*
+     * 播放画面时切 72Hz（学 PICO 自带播放器）：视频 24/25fps，72 是它的整数倍，
+     * 画面不抖，而且每帧多出的时间可以换成更高的渲染分辨率。停播回 90Hz。
+     */
+    if (g.requestRefreshRate != nullptr && g.session != XR_NULL_HANDLE) {
+        const float hz = g.videoActive.load() ? 72.f : 90.f;
+        const XrResult rr = g.requestRefreshRate(g.session, hz);
+        LOGI("刷新率 → %.0fHz（结果 %d）", (double) hz, (int) rr);
+    }
     LOGI("播放画面状态 → %s", g.videoActive.load() ? "true" : "false");
 }
 
