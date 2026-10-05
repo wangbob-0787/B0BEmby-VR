@@ -762,6 +762,8 @@ class MainActivity : ComponentActivity() {
             panelH = 300,
             name = "b0bemby-osd",
             activatesVrPanel = false,
+            // 控制条是纯 Compose 界面，没登记进电视版那张控件坐标表 → 点击要直通派发
+            directClick = true,
         )
         /*
          * 三张画面的接收口（2026-10-05 晚修）：纹理由原生渲染线程在自己的 GL

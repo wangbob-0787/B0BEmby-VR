@@ -68,6 +68,14 @@ class PanelLayer(
     private val name: String = "b0bemby-panel",
     /** 是否把"面板已就绪"告诉 VR 侧：主面板 true，控制条 false（各管各的） */
     private val activatesVrPanel: Boolean = true,
+    /**
+     * 直通点击（2026-10-05）：控制条这类**纯 Compose 界面**用 true。
+     *
+     * 背景：主面板的点击先查 ClickTargets 坐标表（电视版海报墙那套），表里一旦有条目，
+     * 查不中就直接返回、不再往下派发真实点击。控制条从没登记过这张表，于是表现成
+     * 「按钮看得到、扣扳机点不动」。开这个开关就跳过查表，直接派发鼠标式点击。
+     */
+    private val directClick: Boolean = false,
     /*
      * 内容必须放在**最后一个参数**：Kotlin 的尾随 lambda 只绑最后一个参数，
      * 放到中间会让 `PanelLayer(this) { … }` 这种写法去匹配别的参数（run 112 编译失败）。
@@ -1025,6 +1033,18 @@ class PanelLayer(
                  * 命中就把焦点移过去并触发它；落在空白处则什么都不做。
                  * 查表用的是**抬起时的光点位置**（他瞄哪儿就是哪儿）。
                  */
+                /*
+                 * 直通点击（控制条这类纯 Compose 界面，2026-10-05）：
+                 * 它们没登记进 ClickTargets，而表里已有主面板条目 → 查表不中会直接
+                 * return，「按钮看得到、扣扳机点不动」就是这么来的。这类层直接派发。
+                 */
+                if (directClick) {
+                    clickSignalBefore = PanelSignals.seq
+                    val hit = mouseClick(px, py)
+                    Log.i(TAG, "直通点击($name): 鼠标式被接住=$hit 位置 (${px.toInt()},${py.toInt()})")
+                    return
+                }
+
                 val target = ClickTargets.findAt(px, py)
                 if (target != null) {
                     fireTarget(target)
