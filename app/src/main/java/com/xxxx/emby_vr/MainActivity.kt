@@ -762,7 +762,7 @@ class MainActivity : ComponentActivity() {
                 }
                 val url = "${BuildConfig.EMBY_SERVER}/emby$path"
                 withContext(Dispatchers.Main) {
-                    startPlayer(url, mediaId)
+                    startPlayer(url, mediaId, effectiveStart / 10_000L)
                 }
                 // 取这一集的详情（剧集 id / 季 id / 简介 / 演员），给选集与信息菜单用
                 loadItemDetail()
@@ -774,7 +774,7 @@ class MainActivity : ComponentActivity() {
     }
 
     /** 起播 */
-    private fun startPlayer(url: String, title: String) {
+    private fun startPlayer(url: String, title: String, startMs: Long) {
         /*
          * 播放画面走哪条线（2026-10-05）：
          *   VR 模式 → VR 上下文里建的那张纹理（原生播放屏，贴到 VR 里那块平面上）
@@ -804,7 +804,7 @@ class MainActivity : ComponentActivity() {
                  * 起始位置一并交给播放器：服务端虽然按 startTimeTicks 从该位置出流，
                  * 播放器自己仍会从流的第 0 秒开始放 —— 换轨重播「从头开始」就是这个。
                  */
-                p.setMediaItem(MediaItem.fromUri(url), effectiveStart / 10_000L)
+                p.setMediaItem(MediaItem.fromUri(url), startMs.coerceAtLeast(0L))
                 p.setVideoSurface(surface)
                 p.prepare()
                 p.playWhenReady = true
