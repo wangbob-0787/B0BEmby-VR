@@ -120,7 +120,7 @@ val OSD_RIGHT_GROUP = listOf(
 private const val GROUP_GAP_DP = 96
 
 /** 控制条面板像素宽（必须与原生 kOsdPxW 一致：光柱坐标是按面板像素给的） */
-const val OSD_PANEL_W = 3600f
+const val OSD_PANEL_W = 3100f
 
 /**
  * 控制条状态：主线程（Activity）写，面板界面读。

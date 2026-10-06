@@ -1510,7 +1510,7 @@ class MainActivity : ComponentActivity() {
              * 「正在播放 XXXX + 当前时间」。三行内容取 430px 才排得开。
              * 与原生 kOsdPxW / kOsdPxH 必须一致，否则点击坐标会错位。
              */
-            panelW = 3600,
+            panelW = 3100,
             panelH = 430,
             name = "b0bemby-osd",
             activatesVrPanel = false,

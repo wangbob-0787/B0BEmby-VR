@@ -1584,7 +1584,7 @@ constexpr float kPanelPxH = 1080.f;
  * 进度条 + 留白），所以取 2.00m（96°）作为「够放、又没那么满」的值。
  * 像素保持 1800px/米，字不会糊。
  */
-constexpr float kOsdPxW = 3600.f;
+constexpr float kOsdPxW = 3100.f;
 /*
  * 厚度：240 → 340 → 430。
  *
@@ -1593,7 +1593,7 @@ constexpr float kOsdPxW = 3600.f;
  * Java 侧 PanelLayer 的 panelH 必须同值，否则点击坐标会错位。
  */
 constexpr float kOsdPxH = 430.f;
-constexpr float kOsdWidth = 2.00f;  // 米（1.60 再 +25%）
+constexpr float kOsdWidth = 1.72f;  // 米（内容变紧凑后整体收窄，父亲 2026-10-06 晚）
 constexpr float kOsdHeight = kOsdWidth * kOsdPxH / kOsdPxW;
 constexpr float kOsdDistance = 0.85f;                     // 正前方距离（米，父亲：再近些）
 constexpr float kOsdCenterY = -0.62f;                     // 视线下方（米，父亲：再靠下）
