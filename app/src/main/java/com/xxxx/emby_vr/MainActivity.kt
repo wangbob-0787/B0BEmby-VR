@@ -674,43 +674,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /**
-     * 画面调整（父亲 2026-10-06：「亮度、对比度、饱和度、锐度等等」都加上）。
-     *
-     * 流程：他在控制条上手动调好 → 我读日志里最后那组数值 → 抄成代码默认值 →
-     * 再把这几颗按钮撤掉。
-     * 每按一次走一格：亮度/对比度/饱和度 0.05，锐度 0.1，色温 0.1。
-     */
-    private fun adjustImage(delta: Float) {
-        when (osdState.imageField) {
-            0 -> osdState.brightness = (osdState.brightness + delta * 0.05f).coerceIn(0.3f, 1.8f)
-            1 -> osdState.contrast = (osdState.contrast + delta * 0.05f).coerceIn(0.3f, 1.8f)
-            2 -> osdState.saturation = (osdState.saturation + delta * 0.05f).coerceIn(0f, 1.8f)
-            3 -> osdState.sharpen = (osdState.sharpen + delta * 0.1f).coerceIn(0f, 2f)
-            else -> osdState.temperature =
-                (osdState.temperature + delta * 0.1f).coerceIn(-1f, 1f)
-        }
-        com.xxxx.emby_vr.vr.VrNative.setImageAdjust(
-            osdState.brightness,
-            osdState.contrast,
-            osdState.saturation,
-            osdState.sharpen,
-            osdState.temperature,
-        )
-    }
-
-    /** 切换正在调的那一项（亮度 → 对比度 → 饱和度 → 锐度 → 色温 → 回到亮度）*/
-    private fun cycleImageField() {
-        osdState.imageField = (osdState.imageField + 1) % 5
-        Log.i(
-            TAG,
-            "调图项 → ${com.xxxx.emby_vr.panel.imageFieldName(osdState.imageField)}" +
-                "（亮度 ${"%.2f".format(osdState.brightness)} 对比度 ${"%.2f".format(osdState.contrast)}" +
-                " 饱和度 ${"%.2f".format(osdState.saturation)} 锐度 ${"%.2f".format(osdState.sharpen)}" +
-                " 色温 ${"%+.2f".format(osdState.temperature)}）",
-        )
-    }
-
     /** 控制条上的一颗按钮被点了 */
     private fun onOsdButton(button: com.xxxx.emby_vr.panel.OsdButton) {
         Log.i(TAG, "控制条按钮：${button.label}")
