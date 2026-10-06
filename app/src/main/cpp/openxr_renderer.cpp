@@ -623,6 +623,14 @@ struct VrContext {
      */
     VideoLayerBuf danmakuLayer;
     bool danmakuLayerOk = true;    // 同上：运行时拒绝过就永久关掉
+    /*
+     * 片名 logo 也改走独立合成层（父亲 2026-10-06 晚）。
+     *
+     * 它原来画在视频层的合成图里，位置尺寸都对、每帧也真的画了，但画面上看不到 ——
+     * 而弹幕改成独立层之后能正常显示。既然独立层这条路已经验证，logo 就走同一条路。
+     */
+    VideoLayerBuf logoLayer;
+    bool logoLayerOk = true;
     GLuint videoLayerVao = 0;
     GLuint videoLayerVbo = 0;
 
@@ -2760,7 +2768,7 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
         c.danmakuVisible.load() && c.danmakuTex != 0 && c.danmakuHasFrame.load()) {
         drawOverlayIntoVideoLayer(c, c.danmakuTex, 0.f, 0.f, 1.f, 1.f);
     }
-    if (videoLayerPass && c.logoVisible.load() && c.logoTex != 0 && c.logoHasFrame.load()) {
+    if (false && videoLayerPass && c.logoVisible.load() && c.logoTex != 0 && c.logoHasFrame.load()) {
         /*
          * 银幕左上角：宽 7.3%、距左 2.5%、距顶 2.8%，比例与电视版一致。
          *
@@ -2832,13 +2840,19 @@ void frameLoop(VrContext &c) {
      * 分开。提交顺序上放在视频之后，保证叠在画面之上；就算顺序反了，它离眼睛
      * 更近，深度上也压过去。
      */
+    /* 片名 logo：独立合成层，摆在银幕左上角、比银幕略前 */
+    XrCompositionLayerQuad logoQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+    logoQuad.space = c.localSpace;
+    logoQuad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+    logoQuad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+
     XrCompositionLayerQuad danmakuQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
     danmakuQuad.space = c.localSpace;
     danmakuQuad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
     // 按源透明度混合：不声明的话运行时会把这层当不透明黑板，视频被盖住
     danmakuQuad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
 
-    const XrCompositionLayerBaseHeader *layerPtrs[3] = {nullptr, nullptr, nullptr};
+    const XrCompositionLayerBaseHeader *layerPtrs[4] = {nullptr, nullptr, nullptr, nullptr};
 
     int loggedFrames = 0;
     while (!gRequestStop) {
@@ -2899,6 +2913,15 @@ void frameLoop(VrContext &c) {
          * 弹幕独立层：与视频层同一套机制，尺寸取弹幕面板的像素尺寸。
          * 先渲染它，视频层才知道要不要兜底把弹幕画回自己身上。
          */
+        c.logoLayer.submitted = false;
+        if (c.logoLayerOk && c.logoVisible.load() && c.logoHasFrame.load() && c.logoTex != 0) {
+            constexpr int32_t kLogoPxW = 512;
+            constexpr int32_t kLogoPxH = 220;
+            if (buildQuadLayer(c, c.logoLayer, kLogoPxW, kLogoPxH, "片名 logo 层")) {
+                c.logoLayer.submitted = renderQuadLayer(c, c.logoLayer, c.logoTex, false);
+            }
+        }
+
         c.danmakuLayer.submitted = false;
         if (c.danmakuLayerOk && c.danmakuVisible.load() && c.danmakuHasFrame.load() &&
             c.danmakuTex != 0) {
@@ -3030,6 +3053,30 @@ void frameLoop(VrContext &c) {
                  c.danmakuLayer.submitted ? 1 : 0, c.danmakuLayer.width,
                  c.danmakuLayer.height, c.danmakuLayer.built ? 1 : 0);
         }
+        if (rendered && c.logoLayer.submitted) {
+            // 银幕左上角：宽度占银幕 7.3%，距左 2.5%、距顶 2.8%（与电视版比例一致）
+            const ScreenPlacement sp = frontScreen(c);
+            const float hy = sp.yawDeg * 3.14159265358979f / 360.f;
+            const float hp = sp.pitchDeg * 3.14159265358979f / 360.f;
+            const float sy2 = sinf(hy), cy2 = cosf(hy);
+            const float sp2 = sinf(hp), cp2 = cosf(hp);
+            const float sh = sp.width / fmaxf(0.1f, sp.aspect);
+            const float lw = sp.width * 0.073f * 0.5f;
+            const float lh = lw * (220.f / 512.f);
+            logoQuad.pose.position = {
+                sp.cx + (-1.f + 2.f * 0.025f) * sp.width * 0.5f + lw,
+                sp.cy + (1.f - 2.f * 0.028f) * sh * 0.5f - lh,
+                sp.cz + 0.02f,
+            };
+            logoQuad.pose.orientation = {cy2 * sp2, sy2 * cp2, -sy2 * sp2, cy2 * cp2};
+            logoQuad.size = {lw * 2.f, lh * 2.f};
+            logoQuad.subImage.swapchain = c.logoLayer.handle;
+            logoQuad.subImage.imageRect.offset = {0, 0};
+            logoQuad.subImage.imageRect.extent = {c.logoLayer.width, c.logoLayer.height};
+            logoQuad.subImage.imageArrayIndex = 0;
+            layerPtrs[layerCount++] =
+                    reinterpret_cast<const XrCompositionLayerBaseHeader *>(&logoQuad);
+        }
         if (rendered && c.danmakuLayer.submitted) {
             const ScreenPlacement sp = frontScreen(c);
             const float hy = sp.yawDeg * 3.14159265358979f / 360.f;
@@ -3063,6 +3110,11 @@ void frameLoop(VrContext &c) {
             LOGE("提交独立视频层失败（xrResult=%d），退回老路", (int) endRes);
             c.videoLayerOk = false;
             c.videoLayer.submitted = false;
+        }
+        if (XR_FAILED(endRes) && c.logoLayer.submitted) {
+            LOGE("提交独立 logo 层失败（xrResult=%d），退回老路", (int) endRes);
+            c.logoLayerOk = false;
+            c.logoLayer.submitted = false;
         }
         if (XR_FAILED(endRes) && c.danmakuLayer.submitted) {
             LOGE("提交独立弹幕层失败（xrResult=%d），退回老路（画进视频层）", (int) endRes);
