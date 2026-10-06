@@ -61,17 +61,16 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
-                <!--
-                  PICO 的 VR 应用分类（2026-10-06 晚加）。
 
-                  父亲反馈：B0BEmby VR 在 PICO 里被归到「未知来源」目录、
-                  只显示成普通 Android 图标。官方文档确认侧载应用默认就进
-                  「未知来源」目录并显示包名图标（
-                  developer.picoxr.com/document/unity/installed-app-not-showing/ ），
-                  声明 VR 分类后系统会按 VR 应用归置并给 VR 图标。
-                  不改变功能，失败也无副作用。
+                <!--
+                  【不要加 com.pico.intent.category.VR】2026-10-06 晚实测撤回。
+
+                  背景：2026-10-05 加上 activity 上的 pvr.app.type=vr 之后，
+                  PICO 按 VR 应用认可了本应用（父亲实测）；2026-10-06 晚我又加了
+                  一条 PICO 分类声明，随后 PICO 又把它归回「未知来源」。
+                  清单里唯一的差异就是这一条，因此撤回，恢复 10-05 被认可的形态。
+                  PICO 认 VR 应用靠的是 activity 上的 pvr.app.type，不是 intent category。
                 -->
-                <category android:name="com.pico.intent.category.VR" />
             </intent-filter>
 
             <!--
