@@ -2392,21 +2392,10 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
          * 架在控制条正上方。卡片画在面板哪儿由 Java 侧决定（两面板等宽，坐标直接对齐）。
          */
         /*
-         * 片名 logo（2026-10-06）：钉在银幕左上角，尺寸与内边距照电视版比例
-         * （宽 7.3%、距左 2.5%、距顶 2.8%，图片 640×275 的框）。
+         * 片名 logo 的 GL 场景绘制已删（2026-10-07 00:55）：
+         * 它和视频层里那份叠加，父亲实测「肉眼可见至少两层 logo」。
+         * logo 现在只画在视频层的合成图里（renderQuadLayer 的 videoLayerPass 分支）。
          */
-        if (c.logoVisible.load() && c.logoTex != 0 && c.logoHasFrame.load()) {
-            const ScreenPlacement front = frontScreen(c);
-            const float sh = front.width / fmaxf(0.1f, front.aspect);
-            const float lw = front.width * 0.073f;
-            const float lh = lw * 275.f / 640.f;
-            const float lx = front.cx - front.width * 0.5f + front.width * 0.025f + lw * 0.5f;
-            const float ly = front.cy + sh * 0.5f - sh * 0.028f - lh * 0.5f;
-            glEnable(GL_BLEND);
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-            drawFlatOverlay(c.logoTex, lx, ly, front.cz + 0.30f, lw, lh);
-            glDisable(GL_BLEND);
-        }
 
         if (c.menuVisible.load() && c.menuTex != 0 && c.menuHasFrame.load()) {
             glEnable(GL_BLEND);

@@ -114,6 +114,9 @@ class MainActivity : ComponentActivity() {
     private val logoBitmap = androidx.compose.runtime.mutableStateOf<android.graphics.Bitmap?>(null)
     private var logoLoadJob: kotlinx.coroutines.Job? = null
 
+    /** 已成功下载的 logo 地址（同址复用，不再重复下载） */
+    private var logoLoadedUrl: String? = null
+
     /** 本次起播是不是「重起播」（切字幕 / 音轨 / 质量 / 缓冲 / 换集）：是就别收控制条与菜单 */
     private var replaying = false
 
@@ -492,6 +495,16 @@ class MainActivity : ComponentActivity() {
 
     /** 下载片名 logo 位图（见字段注释：绕开 Coil，成功失败都有日志） */
     private fun loadLogoBitmap(url: String?) {
+        /*
+         * 同一地址已下载成功就不再动（父亲 2026-10-07 00:55 实测「logo 时隐时现」）：
+         * loadItemDetail 在起播和每次开菜单时都会调，原来每次都清空旧图重新下载，
+         * 下载的那几秒画面上就没有 logo —— 看起来就是「一会儿有一会儿没有」。
+         */
+        if (url == logoLoadedUrl && logoBitmap.value != null) {
+            com.xxxx.emby_vr.vr.VrNative.setLogoVisible(true)
+            return
+        }
+        logoLoadedUrl = url
         logoLoadJob?.cancel()
         logoBitmap.value = null
         if (url.isNullOrBlank()) {
@@ -507,8 +520,12 @@ class MainActivity : ComponentActivity() {
                     conn.getInputStream().use { android.graphics.BitmapFactory.decodeStream(it) }
                 }.getOrNull()
             }
-            Log.i(TAG, "片名 logo 下载 → " +
-                (if (bmp == null) "失败（地址打不开或不是图片）" else "${bmp.width}x${bmp.height}"))
+            if (bmp == null) {
+                Log.w(TAG, "片名 logo 下载失败（地址打不开或不是图片）")
+                logoLoadedUrl = null   // 失败了允许下次重试
+            } else {
+                Log.i(TAG, "片名 logo 下载 → ${bmp.width}x${bmp.height}")
+            }
             logoBitmap.value = bmp
             com.xxxx.emby_vr.vr.VrNative.setLogoVisible(bmp != null)
         }
