@@ -40,6 +40,33 @@ class DanmakuView(context: Context) : View(context) {
         strokeJoin = Paint.Join.ROUND
     }
 
+    /*
+     * 视频字幕（父亲 2026-10-06 晚）：画在这块画布最下方居中。
+     * 弹幕在上面滚、字幕在底部不动，两者各画各的，互不干扰。
+     */
+    private var subtitle: String = ""
+
+    private val subtitlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        textAlign = Paint.Align.CENTER
+        typeface = Typeface.DEFAULT_BOLD
+    }
+    private val subtitleOutline = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.BLACK
+        textAlign = Paint.Align.CENTER
+        typeface = Typeface.DEFAULT_BOLD
+        style = Paint.Style.STROKE
+        strokeWidth = 6f
+        strokeJoin = Paint.Join.ROUND
+    }
+
+    /** 播放器报来当前该显示的字幕文字（空串 = 这一帧没有字幕） */
+    fun setSubtitle(text: String) {
+        if (text == subtitle) return
+        subtitle = text
+        invalidate()
+    }
+
     fun setTrack(t: DanmakuTrack?) {
         track = t
         invalidate()
@@ -87,19 +114,40 @@ class DanmakuView(context: Context) : View(context) {
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val t = track
-        if (t == null || t.items.isEmpty()) {
-            if (running) postInvalidateOnAnimation()
-            return
+        if (t != null && t.items.isNotEmpty()) {
+            val nowMs = positionProvider?.invoke() ?: 0L
+            // 弹幕画布(ASS 的 PlayRes) → 控件宽度的缩放
+            val scale = if (t.playResX > 0f) (width / t.playResX) * userScale else userScale
+            for (item in t.items) {
+                if (item.startMs > nowMs) break          // 已按开始时间排序,后面都还没到
+                if (effectiveEndMs(item, scale) < nowMs) continue   // 已完全滚出屏幕
+                drawItem(canvas, item, nowMs, scale)
+            }
         }
-        val nowMs = positionProvider?.invoke() ?: 0L
-        // 弹幕画布(ASS 的 PlayRes) → 控件宽度的缩放
-        val scale = if (t.playResX > 0f) (width / t.playResX) * userScale else userScale
-        for (item in t.items) {
-            if (item.startMs > nowMs) break          // 已按开始时间排序,后面都还没到
-            if (effectiveEndMs(item, scale) < nowMs) continue   // 已完全滚出屏幕
-            drawItem(canvas, item, nowMs, scale)
-        }
+        // 字幕不依赖弹幕轨：这一集没有弹幕轨时，字幕照样要显示
+        drawSubtitle(canvas)
         if (running) postInvalidateOnAnimation()
+    }
+
+    /**
+     * 画视频字幕：最下方居中，多行时往上叠，带黑描边保证任何画面上都看得清。
+     */
+    private fun drawSubtitle(canvas: Canvas) {
+        if (subtitle.isEmpty() || height <= 0) return
+        val size = max(12f, height * 0.05f)
+        subtitlePaint.textSize = size
+        subtitleOutline.textSize = size
+        subtitleOutline.strokeWidth = max(2f, size * 0.09f)
+        val lines = subtitle.split("\n")
+        var y = height - height * 0.07f
+        for (i in lines.indices.reversed()) {
+            val line = lines[i]
+            if (line.isNotEmpty()) {
+                canvas.drawText(line, width / 2f, y, subtitleOutline)
+                canvas.drawText(line, width / 2f, y, subtitlePaint)
+            }
+            y -= size * 1.25f
+        }
     }
 
     private fun drawItem(canvas: Canvas, item: DanmakuItem, nowMs: Long, scale: Float) {

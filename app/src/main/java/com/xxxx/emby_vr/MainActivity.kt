@@ -106,6 +106,9 @@ class MainActivity : ComponentActivity() {
     /** 本次起播是不是「重起播」（切字幕 / 音轨 / 质量 / 缓冲 / 换集）：是就别收控制条与菜单 */
     private var replaying = false
 
+    /** 换轨重播时往回退多少毫秒（父亲 2026-10-06 晚定） */
+    private val kReplayBackMs = 10_000L
+
     // ── 光柱交互状态（2026-10-06 下午）──
     /** 最近一次控制条 / 菜单指针到达的时间：用来判断「光柱指着画面还是指着面板」 */
     private var lastOsdPointerAt = 0L
@@ -665,9 +668,19 @@ class MainActivity : ComponentActivity() {
         startTicks: Long,
         keepPosition: Boolean = false,
     ) {
-        // 切字幕 / 音轨 / 质量时保持当前位置（父亲 2026-10-06：换轨不该从头开始）
+        /*
+         * 切字幕 / 音轨 / 质量 / 缓冲：从当前位置**回退 10 秒**重新起播
+         * （父亲 2026-10-06 晚定：不要从头，也不要正好卡在刚才那一句上）。
+         * 下限 0，避免刚开头就倒退成负数。
+         */
         val effectiveStart =
-            if (keepPosition) (player?.currentPosition ?: 0L) * 10_000L else startTicks
+            if (keepPosition) {
+                val from = ((player?.currentPosition ?: 0L) - kReplayBackMs).coerceAtLeast(0L)
+                Log.i(TAG, "重播起始位置 ${from / 1000} 秒（当前位置回退 ${kReplayBackMs / 1000} 秒）")
+                from * 10_000L
+            } else {
+                startTicks
+            }
         currentMediaId = mediaId
         /*
          * 父亲 2026-10-06：播放中点海报墙的片子起不来、反而把正在播的暂停了。
@@ -745,7 +758,7 @@ class MainActivity : ComponentActivity() {
         }
         val useVrScreen = vrSurface != null
         try {
-            stopPlaybackInternal()
+            stopPlaybackInternal(keepUi = replaying)
             // 缓冲档位（更多 → 缓冲设置）：起播缓冲与上限按菜单选的那一档
             val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
                 .setBufferDurationsMs(
@@ -757,7 +770,11 @@ class MainActivity : ComponentActivity() {
                 )
                 .build()
             player = ExoPlayer.Builder(this).setLoadControl(loadControl).build().also { p ->
-                p.setMediaItem(MediaItem.fromUri(url))
+                /*
+                 * 起始位置一并交给播放器：服务端虽然按 startTimeTicks 从该位置出流，
+                 * 播放器自己仍会从流的第 0 秒开始放 —— 换轨重播「从头开始」就是这个。
+                 */
+                p.setMediaItem(MediaItem.fromUri(url), effectiveStart / 10_000L)
                 p.setVideoSurface(surface)
                 p.prepare()
                 p.playWhenReady = true
@@ -778,6 +795,20 @@ class MainActivity : ComponentActivity() {
                             )
                             Log.i(TAG, "视频尺寸 ${videoSize.width}x${videoSize.height} 比例 $a")
                         }
+                    }
+
+                    override fun onCues(
+                        cueGroup: androidx.media3.common.text.CueGroup,
+                    ) {
+                        /*
+                         * 视频字幕（父亲 2026-10-06 晚）：ExoPlayer 自己不出字幕画面
+                         * （视频画面直接走纹理），得把文字接过来自己画。画在弹幕层
+                         * 最下方居中，弹幕在上面滚，互不干扰。
+                         */
+                        val text = cueGroup.cues.joinToString("\n") { cue ->
+                            cue.text?.toString().orEmpty()
+                        }.trim()
+                        danmakuView?.setSubtitle(text)
                     }
 
                     override fun onPlaybackStateChanged(state: Int) {
@@ -1451,7 +1482,13 @@ class MainActivity : ComponentActivity() {
         reportedItemId = null
     }
 
-    private fun stopPlaybackInternal() {
+    /**
+     * 停掉播放器并清理。
+     *
+     * @param keepUi 换轨重播时传 true：控制条与已展开的菜单**留着**（父亲 2026-10-06 晚定），
+     *               否则它们会在起播过程中被收掉，等标志生效时界面早没了。
+     */
+    private fun stopPlaybackInternal(keepUi: Boolean = false) {
         player?.let {
             runCatching { it.stop() }
             runCatching { it.release() }
@@ -1463,10 +1500,13 @@ class MainActivity : ComponentActivity() {
         picking = false
         osdJob?.cancel()
         osdJob = null
-        setOsdVisible(false)
-        // 弹幕层与片名 logo 一起收（它们贴在银幕上，不随控制条走）
-        com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(false)
-        com.xxxx.emby_vr.vr.VrNative.setLogoVisible(false)
+        if (!keepUi) {
+            setOsdVisible(false)
+            // 弹幕层与片名 logo 一起收（它们贴在银幕上，不随控制条走）
+            com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(false)
+            com.xxxx.emby_vr.vr.VrNative.setLogoVisible(false)
+        }
+        danmakuView?.setSubtitle("")
         danmakuTrack = null
         danmakuView?.setTrack(null)
         logoUrl.value = null
