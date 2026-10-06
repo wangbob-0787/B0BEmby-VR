@@ -256,16 +256,27 @@ fun PlayerOsdBar(state: OsdState) {
         // 进度行与按钮行之间的留白
         Spacer(modifier = Modifier.height(22.dp))
 
-        // ② 按钮行：左组贴左 · 中组居中 · 右组贴右
+        /*
+         * ② 按钮行：左组贴左 · 中组居中 · 右组贴右。
+         *
+         * 必须用 SpaceBetween 把三组撑开 —— 原来只是「左组 + 96dp + 中组 + 96dp + 右组」
+         * 按内容从左排，右边会空出一大块（父亲 2026-10-06 晚：「内容按缩短的尺寸布置，
+         * 控制条本身没缩短，像两根叠一起」），退出按钮也就贴不到右边。
+         */
         Row(
             modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            OSD_LEFT_GROUP.forEach { OsdButtonView(it, state, panelWpx) }
-            Spacer(modifier = Modifier.width(GROUP_GAP_DP.dp))
-            OSD_CENTER_GROUP.forEach { OsdButtonView(it, state, panelWpx) }
-            Spacer(modifier = Modifier.width(GROUP_GAP_DP.dp))
-            OSD_RIGHT_GROUP.forEach { OsdButtonView(it, state, panelWpx) }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OSD_LEFT_GROUP.forEach { OsdButtonView(it, state, panelWpx) }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OSD_CENTER_GROUP.forEach { OsdButtonView(it, state, panelWpx) }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OSD_RIGHT_GROUP.forEach { OsdButtonView(it, state, panelWpx) }
+            }
         }
     }
 }
