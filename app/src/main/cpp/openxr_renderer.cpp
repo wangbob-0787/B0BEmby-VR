@@ -2757,11 +2757,6 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
         drawOverlayIntoVideoLayer(c, c.danmakuTex, 0.f, 0.f, 1.f, 1.f);
     }
     if (videoLayerPass && c.logoVisible.load() && c.logoTex != 0 && c.logoHasFrame.load()) {
-        static int logoDrawLogTick = 0;
-        if ((logoDrawLogTick++ % 90) == 0) {
-            LOGI("logo 画进视频层：中心(%.3f, %.3f) 尺寸(%.3f, %.3f) 目标缓冲 %dx%d",
-                 lcx, lcy, lwFrac, lhFrac, L.width, L.height);
-        }
         // 银幕左上角：宽 7.3%、距左 2.5%、距顶 2.8%，比例与电视版一致
         const float lwFrac = 0.073f;
         const float aspect = L.height > 0
@@ -2770,6 +2765,11 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
         const float lhFrac = lwFrac * aspect * (220.f / 512.f);
         const float lcx = -1.f + 2.f * 0.025f + lwFrac * 0.5f;
         const float lcy = 1.f - 2.f * 0.028f - lhFrac * 0.5f;
+        static int logoDrawLogTick = 0;
+        if ((logoDrawLogTick++ % 90) == 0) {
+            LOGI("logo 画进视频层：中心(%.3f, %.3f) 尺寸(%.3f, %.3f) 目标缓冲 %dx%d",
+                 lcx, lcy, lwFrac, lhFrac, L.width, L.height);
+        }
         drawOverlayIntoVideoLayer(c, c.logoTex, lcx, lcy, lwFrac, lhFrac);
     }
 
