@@ -285,20 +285,11 @@ fun PlayerMenuPanel(menu: MenuState, osd: OsdState) {
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.weight(1f),
                 )
-                Text(
-                    // 信息 / 演职人员不需要这个按钮（父亲 2026-10-06 晚：按 B 就能关）
-                    text = when {
-                        kind == MenuKind.INFO || kind == MenuKind.CAST -> ""
-                        kind.isSubMenu -> "返回上级"
-                        else -> "关闭"
-                    },
-                    color = Color(0xFFFFFFFF),
-                    fontSize = 24.sp,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(10.dp))
-                        .clickable { menu.onBack?.invoke() }
-                        .padding(horizontal = 14.dp, vertical = 6.dp),
-                )
+
+                /*
+                 * 关闭 / 返回上级按钮取消（父亲 2026-10-06 晚定）：所有菜单都用 B 键
+                 * 返回 —— 二级菜单回上一级、一级菜单直接关。界面上不再放这个按钮。
+                 */
             }
             Spacer(modifier = Modifier.height(14.dp))
             when (kind) {
