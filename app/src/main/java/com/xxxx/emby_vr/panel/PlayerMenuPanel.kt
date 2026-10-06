@@ -179,7 +179,7 @@ val BUFFER_PRESETS = listOf(
 )
 
 /** 菜单面板像素尺寸（与控制条等宽 → 归一化横向坐标可以直接复用） */
-const val MENU_PANEL_W = 2428
+const val MENU_PANEL_W = 2478
 const val MENU_PANEL_H = 1155
 
 /** 窄卡片宽度（像素） */

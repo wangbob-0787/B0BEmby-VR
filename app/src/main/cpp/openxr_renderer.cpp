@@ -1584,18 +1584,18 @@ constexpr float kPanelPxH = 1080.f;
  * 进度条 + 留白），所以取 2.00m（96°）作为「够放、又没那么满」的值。
  * 像素保持 1800px/米，字不会糊。
  */
-constexpr float kOsdPxW = 2428.f;
+constexpr float kOsdPxW = 2478.f;
 /*
  * 控制条尺寸（父亲 2026-10-06 晚定稿的图，逐项算出来的）：
  *
- *   宽 2428 = 按钮行左右各 114 + 12 颗按钮框 2055 + 框缝 5×9 + 组间距 50×2
- *   高  405 = 上边距 50 + 标题行 43 + 行距 30 + 进度行 51 + 行距 30 + 按钮行 151 + 下边距 50
+ *   宽 2478 = 按钮行左右各 114 + 12 颗按钮框 2055 + 框缝 5×9 + 组间距 75×2
+ *   高  455 = 上边距 75 + 标题行 43 + 行距 30 + 进度行 51 + 行距 30 + 按钮行 151 + 下边距 75
  *
  * 像素密度保持 1800px/米 → 实宽 1.828 米。Java 侧 panelW / panelH 必须同值，
  * 否则光柱点击坐标会错位。
  */
-constexpr float kOsdPxH = 405.f;
-constexpr float kOsdWidth = 1.349f;  // 米 = 2428px / 1800px每米（父亲 2026-10-06 晚定稿）
+constexpr float kOsdPxH = 455.f;
+constexpr float kOsdWidth = 1.377f;  // 米 = 2478px / 1800px每米（父亲 2026-10-06 晚定稿）
 constexpr float kOsdHeight = kOsdWidth * kOsdPxH / kOsdPxW;
 constexpr float kOsdDistance = 0.85f;                     // 正前方距离（米，父亲：再近些）
 constexpr float kOsdCenterY = -0.62f;                     // 视线下方（米，父亲：再靠下）
@@ -1652,7 +1652,7 @@ bool rayHitsOsd(const VrContext &c, const XrPosef &aim, float *outT, float *outX
  *
  *   3600×1350 @ 2669px/米 → 2428×1155 @ 1800px/米（物理宽度不变，高度由内容重算）
  */
-constexpr float kMenuPxW = 2428.f;
+constexpr float kMenuPxW = 2478.f;
 constexpr float kMenuPxH = 1155.f;
 constexpr float kMenuWidth = kOsdWidth;
 constexpr float kMenuHeight = kMenuWidth * kMenuPxH / kMenuPxW;

@@ -117,14 +117,17 @@ val OSD_RIGHT_GROUP = listOf(
  *
  *  · 按钮**矩形框**之间的缝 5px（框 = 图标 58dp + 左右各 24dp 内边距，
  *    所以图标到图标的距离是 5 + 36 + 36 = 77px）；
- *  · 组与组之间 50px；
+ *  · 组与组之间 75px；
  *  · 按钮行左右各留 114px，即图标距控制条边缘 114 + 36 = 150px（与标题行、进度行对齐）。
  *
- * 面板宽 2428 = 114 + 框总宽 2055 + 组内缝 9×5 + 组间缝 2×50 + 114，内容正好铺满。
+ * 面板宽 2478 = 114 + 框总宽 2055 + 组内缝 9×5 + 组间缝 2×75 + 114，内容正好铺满。
  */
 private const val BUTTON_GAP_PX = 5f
-private const val GROUP_GAP_PX = 50f
+private const val GROUP_GAP_PX = 75f
 private const val BUTTON_ROW_SIDE_PX = 114f
+
+/** 面板上下边距（像素，父亲 2026-10-06 晚定） */
+private const val PANEL_PAD_Y_PX = 75f
 
 /** 控制条面板 240dpi：1dp = 1.5px */
 private const val PX_PER_DP = 1.5f
@@ -133,7 +136,7 @@ private const val PX_PER_DP = 1.5f
 private fun px(v: Float) = (v / PX_PER_DP).dp
 
 /** 控制条面板像素宽（必须与原生 kOsdPxW 一致：光柱坐标是按面板像素给的） */
-const val OSD_PANEL_W = 2428f
+const val OSD_PANEL_W = 2478f
 
 /**
  * 控制条状态：主线程（Activity）写，面板界面读。
@@ -223,7 +226,7 @@ fun PlayerOsdBar(state: OsdState) {
              *     正好落在 150px，而不是按钮框落在 150px、图标却缩进一格
              * 上下各 50px。
              */
-            .padding(vertical = 33.dp),
+            .padding(vertical = px(PANEL_PAD_Y_PX)),
         verticalArrangement = Arrangement.Top,
     ) {
         // ① 标题行：左「正在播放 XXXX」 右「当前时间」（父亲 2026-10-06 晚加的行）

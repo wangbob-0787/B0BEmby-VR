@@ -1515,13 +1515,13 @@ class MainActivity : ComponentActivity() {
             this,
             content = { com.xxxx.emby_vr.panel.PlayerOsdBar(osdState) },
             /*
-             * 父亲 2026-10-06 晚按图定稿：2428 × 405 像素
-             * （宽 = 114×2 + 按钮框 2055 + 框缝 5×9 + 组间 50×2；
-             *   高 = 50 + 43 + 30 + 51 + 30 + 151 + 50）。
+             * 父亲 2026-10-06 晚按图定稿：2478 × 455 像素
+             * （宽 = 114×2 + 按钮框 2055 + 框缝 5×9 + 组间 75×2；
+             *   高 = 75 + 43 + 30 + 51 + 30 + 151 + 75）。
              * 与原生 kOsdPxW / kOsdPxH 必须一致，否则点击坐标会错位。
              */
-            panelW = 2428,
-            panelH = 405,
+            panelW = 2478,
+            panelH = 455,
             name = "b0bemby-osd",
             activatesVrPanel = false,
             // 控制条是纯 Compose 界面，没登记进电视版那张控件坐标表 → 点击要直通派发
