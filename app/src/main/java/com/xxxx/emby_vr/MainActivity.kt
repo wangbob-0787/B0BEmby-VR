@@ -1359,10 +1359,15 @@ class MainActivity : ComponentActivity() {
     private fun applyDanmakuSetting() {
         menuState.danmakuOn = danmakuOn
         menuState.danmakuScale = danmakuScale
-        // 开关与字号立刻作用到弹幕层：关掉整层不画，开回来立刻显示
+        // 开关与字号立刻作用到弹幕内容：整层常开（它还承载片名 logo），只切轨道
         danmakuView?.userScale = danmakuScale
         danmakuView?.setTrack(if (danmakuOn) danmakuTrack else null)
-        com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(danmakuOn && danmakuTrack != null)
+        /*
+         * 弹幕层常开（父亲 2026-10-07 03:38 定）：这一层同时承载片名 logo，
+         * 不能再跟「这部片有没有弹幕轨」绑定 —— 没弹幕的片整层不提交，
+         * logo 会跟着一起消失。弹幕内容的显隐由上面的 setTrack 负责。
+         */
+        com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(true)
     }
 
     /** 这条字幕流是不是弹幕轨（ASS / SSA，由自绘弹幕层负责，不当普通字幕选） */
@@ -1393,7 +1398,8 @@ class MainActivity : ComponentActivity() {
     private fun loadDanmaku() {
         danmakuTrack = null
         danmakuView?.setTrack(null)
-        com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(false)
+        // 只清弹幕内容，不收整层：这一层同时画片名 logo（父亲 2026-10-07 03:38）
+        com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(true)
 
         val mediaId = currentMediaId
         if (mediaId.isBlank()) return
@@ -1441,7 +1447,8 @@ class MainActivity : ComponentActivity() {
             danmakuTrack = track
             danmakuView?.userScale = danmakuScale
             danmakuView?.setTrack(if (danmakuOn) track else null)
-            com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(danmakuOn)
+            // 整层常开（承载 logo，见 applyDanmakuSetting）；弹幕开关只作用到 setTrack
+            com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(true)
             Log.i(
                 TAG,
                 "弹幕层加载完成：${track.items.size} 条 / 画布 ${track.playResX}x${track.playResY}" +
