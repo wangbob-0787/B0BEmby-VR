@@ -158,6 +158,34 @@ class MainActivity : ComponentActivity() {
 
     /** 当前该显示的字幕文字（画笔后启动时补上） */
     private var subtitleNow = ""
+
+    /*
+     * 播放位置的「基准 + 时刻」。
+     *
+     * 弹幕画布在**自己的线程**上逐帧绘制，而播放器不允许跨线程访问
+     * （实测报 IllegalStateException: Player is accessed on the wrong thread，
+     * 弹幕因此一帧都画不出来）。所以主线程只负责定期取一次位置，画笔线程
+     * 用「基准 + 已过去的时间」自己推算出当前进度，既线程安全又足够平滑。
+     */
+    @Volatile
+    private var posBaseMs = 0L
+
+    @Volatile
+    private var posBaseAtMs = 0L
+
+    /** 主线程调：刷新播放位置基准（每 250ms 一次） */
+    private fun refreshPosBase() {
+        posBaseMs = player?.currentPosition ?: 0L
+        posBaseAtMs = android.os.SystemClock.elapsedRealtime()
+    }
+
+    /** 任何线程可调：按基准推算当前播放位置 */
+    private fun playbackPosEstimate(): Long {
+        val base = posBaseAtMs
+        if (base == 0L) return 0L
+        val delta = android.os.SystemClock.elapsedRealtime() - base
+        return posBaseMs + delta.coerceAtLeast(0L)
+    }
     private var selectedAudioIndex: Int? = null
     private var selectedSubtitleIndex: Int? = null
     private var qualityIndex = 0
@@ -427,7 +455,7 @@ class MainActivity : ComponentActivity() {
                     surfaceTexture = st,
                     widthPx = 2560,
                     heightPx = 1440,
-                    positionProvider = { player?.currentPosition ?: 0L },
+                    positionProvider = { playbackPosEstimate() },
                     scale = danmakuScale,
                 )
                 danmakuView = painter.view
@@ -552,6 +580,8 @@ class MainActivity : ComponentActivity() {
                 // 控制条第一行：正在播放什么 + 当前时间（父亲 2026-10-06 晚）
                 osdState.title = osdTitleText()
                 osdState.nowClock = osdClockFormat.format(java.util.Date())
+                // 弹幕画布要的播放位置：主线程取，画笔线程只读缓存
+                refreshPosBase()
                 kotlinx.coroutines.delay(1000)
             }
             osdState.playing = false
