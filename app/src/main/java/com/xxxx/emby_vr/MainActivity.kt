@@ -1563,7 +1563,13 @@ class MainActivity : ComponentActivity() {
             activatesVrPanel = false,
         )
         // 纹理回调要是比这里先到，现在补挂上（否则这块画面永远不绘制）
-        pendingDanmakuSt?.let { danmaku.attach(it) }
+        val dSt = pendingDanmakuSt
+        if (dSt != null) {
+            Log.i(TAG, "弹幕面板建好，补挂纹理")
+            danmaku.attach(dSt)
+        } else {
+            Log.w(TAG, "弹幕面板建好，但纹理还没到（原生回调未触发？）")
+        }
 
         /*
          * 片名 logo（2026-10-06）：银幕左上角的小透明面板。
@@ -1588,7 +1594,13 @@ class MainActivity : ComponentActivity() {
             name = "b0bemby-logo",
             activatesVrPanel = false,
         )
-        pendingLogoSt?.let { logo.attach(it) }
+        val lSt = pendingLogoSt
+        if (lSt != null) {
+            Log.i(TAG, "logo 面板建好，补挂纹理")
+            logo.attach(lSt)
+        } else {
+            Log.w(TAG, "logo 面板建好，但纹理还没到（原生回调未触发？）")
+        }
 
         /*
          * 画面的接收口（2026-10-05 晚修）：纹理由原生渲染线程在自己的 GL
@@ -1614,11 +1626,13 @@ class MainActivity : ComponentActivity() {
                 }
 
                 override fun onDanmakuTexture(st: android.graphics.SurfaceTexture) {
+                    Log.i(TAG, "收到弹幕层纹理（面板已建=${::danmaku.isInitialized}）")
                     pendingDanmakuSt = st
                     if (::danmaku.isInitialized) danmaku.attach(st)
                 }
 
                 override fun onLogoTexture(st: android.graphics.SurfaceTexture) {
+                    Log.i(TAG, "收到片名 logo 纹理（面板已建=${::logo.isInitialized}）")
                     pendingLogoSt = st
                     if (::logo.isInitialized) logo.attach(st)
                 }
