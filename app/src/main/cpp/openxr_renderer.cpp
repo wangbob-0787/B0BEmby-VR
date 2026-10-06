@@ -1584,16 +1584,18 @@ constexpr float kPanelPxH = 1080.f;
  * 进度条 + 留白），所以取 2.00m（96°）作为「够放、又没那么满」的值。
  * 像素保持 1800px/米，字不会糊。
  */
-constexpr float kOsdPxW = 3100.f;
+constexpr float kOsdPxW = 3291.f;
 /*
- * 厚度：240 → 340 → 430。
+ * 控制条尺寸（父亲 2026-10-06 晚定稿的图，逐项算出来的）：
  *
- * 340 是按按钮放大 1/3 算的。父亲 2026-10-06 晚又要在进度条上方加一行
- * 「正在播放 XXXX + 当前时间」，多一行（约 30dp = 45px）再加行间距，取 430px 排得开。
- * Java 侧 PanelLayer 的 panelH 必须同值，否则点击坐标会错位。
+ *   宽 3291 = 左右边距 150×2 + 12 颗按钮实际宽 2055 + 组内 9 个缝 72×9 + 组间距 144×2
+ *   高  405 = 上边距 50 + 标题行 43 + 行距 30 + 进度行 51 + 行距 30 + 按钮行 151 + 下边距 50
+ *
+ * 像素密度保持 1800px/米 → 实宽 1.828 米。Java 侧 panelW / panelH 必须同值，
+ * 否则光柱点击坐标会错位。
  */
-constexpr float kOsdPxH = 430.f;
-constexpr float kOsdWidth = 1.72f;  // 米（内容变紧凑后整体收窄，父亲 2026-10-06 晚）
+constexpr float kOsdPxH = 405.f;
+constexpr float kOsdWidth = 1.828f;  // 米 = 3291px / 1800px每米（父亲 2026-10-06 晚定稿）
 constexpr float kOsdHeight = kOsdWidth * kOsdPxH / kOsdPxW;
 constexpr float kOsdDistance = 0.85f;                     // 正前方距离（米，父亲：再近些）
 constexpr float kOsdCenterY = -0.62f;                     // 视线下方（米，父亲：再靠下）

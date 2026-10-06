@@ -1515,12 +1515,13 @@ class MainActivity : ComponentActivity() {
             this,
             content = { com.xxxx.emby_vr.panel.PlayerOsdBar(osdState) },
             /*
-             * 父亲 2026-10-06 晚：宽度加宽、按钮放大，再在进度条上方加一行
-             * 「正在播放 XXXX + 当前时间」。三行内容取 430px 才排得开。
+             * 父亲 2026-10-06 晚按图定稿：3291 × 405 像素
+             * （宽 = 150×2 + 按钮 2055 + 缝 72×9 + 组间 144×2；
+             *   高 = 50 + 43 + 30 + 51 + 30 + 151 + 50）。
              * 与原生 kOsdPxW / kOsdPxH 必须一致，否则点击坐标会错位。
              */
-            panelW = 3100,
-            panelH = 430,
+            panelW = 3291,
+            panelH = 405,
             name = "b0bemby-osd",
             activatesVrPanel = false,
             // 控制条是纯 Compose 界面，没登记进电视版那张控件坐标表 → 点击要直通派发

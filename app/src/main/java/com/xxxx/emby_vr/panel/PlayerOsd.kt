@@ -120,7 +120,7 @@ val OSD_RIGHT_GROUP = listOf(
 private const val GROUP_GAP_DP = 96
 
 /** 控制条面板像素宽（必须与原生 kOsdPxW 一致：光柱坐标是按面板像素给的） */
-const val OSD_PANEL_W = 3100f
+const val OSD_PANEL_W = 3291f
 
 /**
  * 控制条状态：主线程（Activity）写，面板界面读。
@@ -203,12 +203,21 @@ fun PlayerOsdBar(state: OsdState) {
                 ),
                 shape = RoundedCornerShape(56.dp),
             )
-            .padding(horizontal = 88.dp, vertical = 16.dp),
+            /*
+             * 水平内边距不放在这里：三行的水平边距不一样（父亲 2026-10-06 晚定稿的图）——
+             *   · 标题行、进度行：左右各 150px
+             *   · 按钮行：左右各 114px（= 150 − 36 的按钮内边距），这样**图标**视觉上
+             *     正好落在 150px，而不是按钮框落在 150px、图标却缩进一格
+             * 上下各 50px。
+             */
+            .padding(vertical = 33.dp),
         verticalArrangement = Arrangement.Top,
     ) {
         // ① 标题行：左「正在播放 XXXX」 右「当前时间」（父亲 2026-10-06 晚加的行）
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 100.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
@@ -226,35 +235,46 @@ fun PlayerOsdBar(state: OsdState) {
             )
         }
 
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(modifier = Modifier.height(20.dp))
 
         // ② 进度行：左「已播时长」 右「剩余时长 / 总时长」（父亲 2026-10-06 晚定）
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 100.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            /*
+             * 两侧时间**不加固定宽**（父亲 2026-10-06 晚）：原来装在固定框里，
+             * 字少的时候框内空一大截，看着离进度条很远。现在文字自然宽，
+             * 与进度条各留 10px。数字用等宽（tnum），宽度不随内容跳，进度条也不抖。
+             */
             Text(
                 text = osdTimeText(state.positionMs),
                 color = Color(0xFFEAF6EE),
                 fontSize = 26.sp,
                 fontWeight = FontWeight.Medium,
-                modifier = Modifier.width(130.dp),
+                style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"),
+                maxLines = 1,
             )
             OsdProgress(
                 state = state,
                 modifier = Modifier
                     .weight(1f)
-                    .padding(horizontal = 32.dp),
+                    .padding(horizontal = 7.dp),
             )
             Text(
                 text = "-" + osdTimeText((state.durationMs - state.positionMs).coerceAtLeast(0L)) +
                     " / " + osdTimeText(state.durationMs),
                 color = Color(0xFFC9D6CE),
                 fontSize = 26.sp,
-                textAlign = TextAlign.End,
-                modifier = Modifier.width(330.dp),
+                style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"),
+                maxLines = 1,
             )
         }
 
         // 进度行与按钮行之间的留白
-        Spacer(modifier = Modifier.height(22.dp))
+        Spacer(modifier = Modifier.height(20.dp))
 
         /*
          * ② 按钮行：左组贴左 · 中组居中 · 右组贴右。
@@ -264,7 +284,9 @@ fun PlayerOsdBar(state: OsdState) {
          * 控制条本身没缩短，像两根叠一起」），退出按钮也就贴不到右边。
          */
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 76.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
