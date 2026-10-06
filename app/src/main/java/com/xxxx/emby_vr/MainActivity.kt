@@ -482,6 +482,7 @@ class MainActivity : ComponentActivity() {
                     scale = danmakuScale,
                 )
                 danmakuView = painter.view
+                painter.logoBitmapProvider = { logoBitmap.value }
                 painter.view.setTrack(if (danmakuOn) danmakuTrack else null)
                 painter.view.setSubtitle(subtitleNow)
                 painter.start()

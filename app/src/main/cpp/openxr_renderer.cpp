@@ -2786,7 +2786,12 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
         c.danmakuVisible.load() && c.danmakuTex != 0 && c.danmakuHasFrame.load()) {
         drawOverlayIntoVideoLayer(c, c.danmakuTex, 0.f, 0.f, 1.f, 1.f);
     }
-    if (videoLayerPass && c.logoVisible.load() && c.logoTex != 0 && c.logoHasFrame.load()) {
+    /*
+     * 视频层里的 logo 叠加已停用（父亲 2026-10-07 01:49 定稿）：
+     * logo 改画到弹幕层画布的左上角（DanmakuSurfacePainter 的 logoBitmapProvider），
+     * 且最后画、压在弹幕上面 —— 视频/弹幕/字幕/logo 各归各位，不重叠。
+     */
+    if (false && videoLayerPass && c.logoVisible.load() && c.logoTex != 0 && c.logoHasFrame.load()) {
         /*
          * 银幕左上角：宽 7.3%、距左 2.5%、距顶 2.8%，比例与电视版一致。
          *

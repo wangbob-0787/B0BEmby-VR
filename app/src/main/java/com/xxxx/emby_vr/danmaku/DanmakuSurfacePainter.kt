@@ -31,6 +31,15 @@ class DanmakuSurfacePainter(
 ) {
     /** 位置提供者（诊断用：把它算出的进度打进日志） */
     private val posProvider = positionProvider
+
+    /**
+     * 片名 logo 位图的提供者（父亲 2026-10-07 01:47：把 logo 从视频层分离出来试试）。
+     *
+     * 每帧在画布左上角画这张图：宽占画布 7.3%、距左 2.5%、距顶 2.8%（与电视版比例一致），
+     * 高度按图片自身比例自适应。弹幕层是实测能正常显示的独立层，logo 借它的画布，
+     * 不新增合成层数。
+     */
+    var logoBitmapProvider: (() -> android.graphics.Bitmap?)? = null
     /** 自绘层本体。它不在视图树里，只被本类逐帧调用。 */
     val view = DanmakuView(context).apply {
         setPositionProvider(positionProvider)
@@ -77,9 +86,23 @@ class DanmakuSurfacePainter(
                     continue
                 }
                 try {
-                    // 先擦成全透明，再画弹幕：透明区必须真的是透明的
+                    // 先擦成全透明，再画 logo 与弹幕：透明区必须真的是透明的
                     canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
                     view.draw(canvas)
+                    /*
+                     * logo 最后画（父亲 2026-10-07 01:48：logo 不要被弹幕挡住）：
+                     * 压在弹幕上面 —— 弹幕从它的透明底穿过，文字部分压住弹幕。
+                     */
+                    logoBitmapProvider?.invoke()?.let { logo ->
+                        val lw = (widthPx * 0.073f).toInt()
+                        val lh = (lw.toFloat() * logo.height / logo.width).toInt()
+                        val lx = (widthPx * 0.025f).toInt()
+                        val ly = (heightPx * 0.028f).toInt()
+                        canvas.drawBitmap(
+                            logo, null,
+                            android.graphics.Rect(lx, ly, lx + lw, ly + lh), null,
+                        )
+                    }
                     frames++
                     if (frames % 120L == 1L) {
                         android.util.Log.i(
