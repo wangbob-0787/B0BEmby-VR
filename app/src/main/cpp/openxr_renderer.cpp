@@ -553,6 +553,8 @@ struct VrContext {
     jmethodID sinkBack = nullptr;
     jmethodID sinkOsdPointer = nullptr; // 控制条上的指针
     jmethodID sinkOsdClick = nullptr;   // 控制条上的点击
+    jmethodID sinkMenuPointer = nullptr; // 展开菜单上的指针
+    jmethodID sinkMenuClick = nullptr;   // 展开菜单上的点击
     jmethodID sinkToggleOsd = nullptr;  // 播放中扣扳机 = 开关控制条
     jmethodID sinkPanelFocus = nullptr; // 光柱是否落在海报墙上（决定 B 键给谁）
     bool sinkPointerValid = false;      // 上一次回推的指针位置（只在明显移动时回推）
@@ -562,6 +564,9 @@ struct VrContext {
     bool sinkOsdPointerValid = false;   // 控制条上的指针位置
     float sinkOsdPointerX = 0.f;
     float sinkOsdPointerY = 0.f;
+    bool sinkMenuPointerValid = false;  // 展开菜单上的指针位置
+    float sinkMenuPointerX = 0.f;
+    float sinkMenuPointerY = 0.f;
     bool sinkLastTrigger[2] = {false, false};
     bool sinkPanelFocusOn[2] = {false, false};   // 上一次回推的"光柱在海报墙上"状态
 
@@ -664,6 +669,15 @@ struct VrContext {
     std::atomic<bool> osdHasFrame{false};
 
     /*
+     * 展开菜单（2026-10-06 父亲定）：控制条上点开菜单时**另开一块面板**，架在控制条
+     * 正上方、与控制条等宽（像素 2560×1200）。控制条那块矮条尺寸不变。
+     * 窗口背景透明，只有菜单卡片有底色，其余透出影院画面。
+     */
+    GLuint menuTex = 0;
+    std::atomic<bool> menuVisible{false};
+    std::atomic<bool> menuHasFrame{false};
+
+    /*
      * ---- 纹理的创建者：VR 渲染线程自己（2026-10-05 晚修）----
      *
      * 前面三块屏互相串画面的真正根因：纹理是在 Java 那条 GL 线程的上下文里
@@ -679,10 +693,12 @@ struct VrContext {
     jobject panelSt = nullptr;
     jobject videoSt = nullptr;
     jobject osdSt = nullptr;
+    jobject menuSt = nullptr;
     jobject textureSink = nullptr;
     jmethodID sinkPanelTex = nullptr;
     jmethodID sinkVideoTex = nullptr;
     jmethodID sinkOsdTex = nullptr;
+    jmethodID sinkMenuTex = nullptr;
 
     // ---- 手柄输入 ----
     XrActionSet actionSet = XR_NULL_HANDLE;
@@ -726,6 +742,7 @@ std::thread gThread;
 std::function<void()> gPanelUpdate;
 std::function<void()> gVideoUpdate;   // 播放画面取帧（同面板：必须在 VR 渲染线程调）
 std::function<void()> gOsdUpdate;     // 控制条取帧（同上）
+std::function<void()> gMenuUpdate;    // 展开菜单取帧（同上）
 std::atomic<bool> gRunning{false};
 std::atomic<bool> gRequestStop{false};
 
@@ -1519,7 +1536,7 @@ constexpr float kPanelPxH = 1080.f;
  * 位置/尺寸都在这里调：距离 [kOsdDistance]、高度 [kOsdCenterY]、宽度 [kOsdWidth]、
  * 仰角 [kOsdTiltDeg]。后续「指着它扣扳机拖走」也基于这几个量。
  */
-constexpr float kOsdPxW = 1920.f;
+constexpr float kOsdPxW = 2560.f;   // 2026-10-06：12 颗按钮，面板加宽到 2560
 constexpr float kOsdPxH = 300.f;
 constexpr float kOsdWidth = 1.45f;                        // 米（父亲：再宽一点）
 constexpr float kOsdHeight = kOsdWidth * kOsdPxH / kOsdPxW;
@@ -1560,6 +1577,59 @@ bool rayHitsOsd(const VrContext &c, const XrPosef &aim, float *outT, float *outX
     const float v = relx * vx + rely * vy + relz * vz;      // 面内纵向
     if (fabsf(u) > kOsdWidth * 0.5f) return false;
     if (fabsf(v) > kOsdHeight * 0.5f) return false;
+    *outT = t;
+    *outX = u;
+    *outY = v;
+    return true;
+}
+
+/*
+ * 展开菜单几何（2026-10-06 父亲定）：菜单是**另一块面板**，架在控制条正上方、
+ * 与控制条等宽（像素 2560×1200）。位置：底边贴着控制条顶边留一点缝，
+ * 距离与仰角跟控制条一致，看起来像同一套控件。
+ */
+constexpr float kMenuPxW = 2560.f;
+constexpr float kMenuPxH = 1200.f;
+constexpr float kMenuWidth = kOsdWidth;
+constexpr float kMenuHeight = kMenuWidth * kMenuPxH / kMenuPxW;
+constexpr float kMenuGap = 0.02f;
+constexpr float kMenuDistance = kOsdDistance;
+constexpr float kMenuCenterY =
+        kOsdCenterY + kOsdHeight * 0.5f + kMenuGap + kMenuHeight * 0.5f;
+constexpr float kMenuTiltDeg = kOsdTiltDeg;
+
+/** 菜单面板平面：中心与两条轴（与控制条同一仰角，中心抬到控制条上方） */
+void menuBasis(float *cx, float *cy, float *cz, float *nx, float *ny, float *nz, float *ux,
+               float *uy, float *uz, float *vx, float *vy, float *vz) {
+    const float th = kMenuTiltDeg * 3.14159265358979f / 180.f;
+    const float ct = cosf(th), st = sinf(th);
+    *cx = 0.f; *cy = kMenuCenterY; *cz = -kMenuDistance;
+    *nx = 0.f; *ny = -st; *nz = ct;
+    *ux = 1.f; *uy = 0.f; *uz = 0.f;
+    *vx = 0.f; *vy = ct;  *vz = st;
+}
+
+/** 射线与菜单矩形的交点；命中返回 true */
+bool rayHitsMenu(const VrContext &c, const XrPosef &aim, float *outT, float *outX, float *outY) {
+    (void) c;
+    float dx = 0.f, dy = 0.f, dz = 0.f;
+    aimDirection(aim, &dx, &dy, &dz);
+    *outT = 0.f;
+    float cx, cy, cz, nx, ny, nz, ux, uy, uz, vx, vy, vz;
+    menuBasis(&cx, &cy, &cz, &nx, &ny, &nz, &ux, &uy, &uz, &vx, &vy, &vz);
+    const float denom = dx * nx + dy * ny + dz * nz;
+    if (fabsf(denom) < 1e-6f) return false;
+    const float t = ((cx - aim.position.x) * nx + (cy - aim.position.y) * ny +
+                     (cz - aim.position.z) * nz) / denom;
+    if (t <= 0.f) return false;
+    const float hx = aim.position.x + dx * t;
+    const float hy = aim.position.y + dy * t;
+    const float hz = aim.position.z + dz * t;
+    const float relx = hx - cx, rely = hy - cy, relz = hz - cz;
+    const float u = relx * ux + rely * uy + relz * uz;
+    const float v = relx * vx + rely * vy + relz * vz;
+    if (fabsf(u) > kMenuWidth * 0.5f) return false;
+    if (fabsf(v) > kMenuHeight * 0.5f) return false;
     *outT = t;
     *outX = u;
     *outY = v;
@@ -1635,6 +1705,34 @@ void pushInput(VrContext &c) {
         c.sinkLastBack[h] = c.bDown[h];
 
         if (!c.aimValid[h]) continue;
+
+        /*
+         * ⓪ 展开菜单最优先（2026-10-06）：它架在控制条正上方，指着它时指针与点击都归菜单。
+         */
+        if (c.menuVisible.load() && c.menuTex != 0 && c.menuHasFrame.load()) {
+            float mT = 0.f, mu = 0.f, mv = 0.f;
+            if (rayHitsMenu(c, c.aimPose[h], &mT, &mu, &mv)) {
+                const float mpx = (mu / kMenuWidth + 0.5f) * kMenuPxW;
+                const float mpy = (0.5f - mv / kMenuHeight) * kMenuPxH;
+                if (!c.sinkMenuPointerValid || fabsf(mpx - c.sinkMenuPointerX) > 2.f ||
+                    fabsf(mpy - c.sinkMenuPointerY) > 2.f) {
+                    if (c.sinkMenuPointer != nullptr) {
+                        env->CallVoidMethod(c.inputSink, c.sinkMenuPointer, mpx, mpy);
+                        clearJavaException(env, "输入回调 onMenuPointer");
+                    }
+                    c.sinkMenuPointerX = mpx;
+                    c.sinkMenuPointerY = mpy;
+                    c.sinkMenuPointerValid = true;
+                }
+                if (c.triggerDown[h] && !c.sinkLastTrigger[h] && c.sinkMenuClick != nullptr) {
+                    LOGI("VR 输入：%s 扳机 → 菜单点击 (%d, %d)", handName[h], (int) mpx, (int) mpy);
+                    env->CallVoidMethod(c.inputSink, c.sinkMenuClick, mpx, mpy);
+                    clearJavaException(env, "输入回调 onMenuClick");
+                }
+                c.sinkLastTrigger[h] = c.triggerDown[h];
+                continue;
+            }
+        }
 
         /*
          * ① 控制条优先：指着控制条时，指针与点击都给控制条，不碰主面板。
@@ -2045,6 +2143,40 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
             glDisableVertexAttribArray(1);
             glDisable(GL_BLEND);
         }
+
+        /*
+         * 展开菜单（2026-10-06 父亲定）：与控制条同一套画法，只是一块更大的透明面板，
+         * 架在控制条正上方。卡片画在面板哪儿由 Java 侧决定（两面板等宽，坐标直接对齐）。
+         */
+        if (c.menuVisible.load() && c.menuTex != 0 && c.menuHasFrame.load()) {
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            const float mth = kMenuTiltDeg * 3.14159265358979f / 180.f;
+            XrPosef menuPose{};
+            menuPose.position = {0.f, kMenuCenterY, -kMenuDistance};
+            menuPose.orientation = {sinf(mth * 0.5f), 0.f, 0.f, cosf(mth * 0.5f)};
+            const Mat4 menuModel = poseScaleModel(menuPose, kMenuWidth, kMenuHeight, 1.f);
+            const Mat4 menuMvp = multiply(multiply(proj, view4), menuModel);
+            glUniformMatrix4fv(c.mvpLoc, 1, GL_FALSE, menuMvp.m);
+            if (c.circleLoc >= 0) glUniform1i(c.circleLoc, 0);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_EXTERNAL_OES, c.menuTex);
+            glUniform1i(c.texLoc, 0);
+            glUniform1i(c.useTexLoc, 1);
+            if (c.expandLoc >= 0) glUniform1i(c.expandLoc, 0);
+            if (c.downLoc >= 0) glUniform1i(c.downLoc, 0);
+            glUniform4f(c.colorLoc, 1.f, 1.f, 1.f, 1.f);
+            glBindBuffer(GL_ARRAY_BUFFER, c.vbo);
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void *) 0);
+            glEnableVertexAttribArray(1);
+            glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
+                                  (void *) (3 * sizeof(float)));
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+            glDisableVertexAttribArray(0);
+            glDisableVertexAttribArray(1);
+            glDisable(GL_BLEND);
+        }
     }
 
     /*
@@ -2428,6 +2560,11 @@ void frameLoop(VrContext &c) {
             gOsdUpdate();
         }
 
+        // 展开菜单：架在控制条正上方的透明面板，同样每帧取一次
+        if (c.menuVisible.load() && gMenuUpdate != nullptr) {
+            gMenuUpdate();
+        }
+
         // 手柄状态（诊断阶段：变化即打日志，先看清 PICO 到底发哪些事件）
         c.frameDisplayTime = fs.predictedDisplayTime;
         syncInput(c);
@@ -2706,7 +2843,11 @@ void pushTexturesToJava(VrContext &c, JNIEnv *env) {
         env->CallVoidMethod(c.textureSink, c.sinkOsdTex, c.osdSt);
         clearJavaException(env, "回调 onOsdTexture");
     }
-    LOGI("三张画面已推给界面层（面板 / 播放画面 / 控制条）");
+    if (c.sinkMenuTex != nullptr && c.menuSt != nullptr) {
+        env->CallVoidMethod(c.textureSink, c.sinkMenuTex, c.menuSt);
+        clearJavaException(env, "回调 onMenuTexture");
+    }
+    LOGI("四张画面已推给界面层（面板 / 播放画面 / 控制条 / 展开菜单）");
 }
 
 /**
@@ -2731,15 +2872,19 @@ bool createOesSources(VrContext &c) {
     c.panelTex = genOesTexture();
     c.videoTex = genOesTexture();
     c.osdTex = genOesTexture();
-    if (c.panelTex == 0 || c.videoTex == 0 || c.osdTex == 0) {
-        LOGE("建画面纹理失败：panel=%u video=%u osd=%u", c.panelTex, c.videoTex, c.osdTex);
+    c.menuTex = genOesTexture();
+    if (c.panelTex == 0 || c.videoTex == 0 || c.osdTex == 0 || c.menuTex == 0) {
+        LOGE("建画面纹理失败：panel=%u video=%u osd=%u menu=%u", c.panelTex, c.videoTex,
+             c.osdTex, c.menuTex);
         return false;
     }
 
     c.panelSt = makeOesSurface(env, c.panelTex, gPanelUpdate, c.panelHasFrame, "面板");
     c.videoSt = makeOesSurface(env, c.videoTex, gVideoUpdate, c.videoHasFrame, "播放画面");
     c.osdSt = makeOesSurface(env, c.osdTex, gOsdUpdate, c.osdHasFrame, "控制条");
-    if (c.panelSt == nullptr || c.videoSt == nullptr || c.osdSt == nullptr) {
+    c.menuSt = makeOesSurface(env, c.menuTex, gMenuUpdate, c.menuHasFrame, "展开菜单");
+    if (c.panelSt == nullptr || c.videoSt == nullptr || c.osdSt == nullptr ||
+        c.menuSt == nullptr) {
         LOGE("画面纹理不完整，VR 贴图不可用");
         return false;
     }
@@ -2747,8 +2892,9 @@ bool createOesSources(VrContext &c) {
     c.panelActive = false;
     c.videoActive = false;
     c.osdVisible = false;
-    LOGI("三张画面纹理已在本渲染线程的上下文里创建：panel=%u video=%u osd=%u",
-         c.panelTex, c.videoTex, c.osdTex);
+    c.menuVisible = false;
+    LOGI("四张画面纹理已在本渲染线程的上下文里创建：panel=%u video=%u osd=%u menu=%u",
+         c.panelTex, c.videoTex, c.osdTex, c.menuTex);
 
     pushTexturesToJava(c, env);
     return true;
@@ -2814,6 +2960,14 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetOsdVisible(JNIEnv *env, jobject /* t
                                                       jboolean visible) {
     g.osdVisible = (visible == JNI_TRUE);
     LOGI("控制条状态 → %s", g.osdVisible.load() ? "显示" : "隐藏");
+}
+
+/** 展开菜单显示/隐藏（控制条上的按钮点开菜单时由 Java 侧决定） */
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetMenuVisible(JNIEnv *env, jobject /* this */,
+                                                       jboolean visible) {
+    g.menuVisible = (visible == JNI_TRUE);
+    LOGI("展开菜单状态 → %s", g.menuVisible.load() ? "显示" : "隐藏");
 }
 
 /** 海报墙显示/隐藏（控制条上的「选片」按钮切换，由 Java 侧决定） */
@@ -2886,6 +3040,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachInputSink(JNIEnv *env, jobject /*
     }
     g.sinkPointer = g.sinkClick = g.sinkStick = g.sinkBack = nullptr;
     g.sinkOsdPointer = g.sinkOsdClick = g.sinkToggleOsd = nullptr;
+    g.sinkMenuPointer = g.sinkMenuClick = nullptr;
     if (sink == nullptr) {
         LOGI("VR 输入回调已注销");
         return;
@@ -2898,14 +3053,18 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachInputSink(JNIEnv *env, jobject /*
     g.sinkOsdPointer = env->GetMethodID(cls, "onOsdPointer", "(FF)V");
     g.sinkOsdClick = env->GetMethodID(cls, "onOsdClick", "(FF)V");
     g.sinkToggleOsd = env->GetMethodID(cls, "onToggleOsd", "()V");
+    g.sinkMenuPointer = env->GetMethodID(cls, "onMenuPointer", "(FF)V");
+    g.sinkMenuClick = env->GetMethodID(cls, "onMenuClick", "(FF)V");
     g.sinkBack = env->GetMethodID(cls, "onBack", "()V");
     g.sinkPanelFocus = env->GetMethodID(cls, "onPanelFocus", "(Z)V");
     env->DeleteLocalRef(cls);
-    LOGI("VR 输入回调已注册（指针=%d 点击=%d 摇杆=%d 返回=%d 控制条=%d/%d 开关=%d 面板焦点=%d）",
+    LOGI("VR 输入回调已注册（指针=%d 点击=%d 摇杆=%d 返回=%d 控制条=%d/%d 开关=%d 面板焦点=%d "
+         "菜单=%d/%d）",
          g.sinkPointer != nullptr ? 1 : 0, g.sinkClick != nullptr ? 1 : 0,
          g.sinkStick != nullptr ? 1 : 0, g.sinkBack != nullptr ? 1 : 0,
          g.sinkOsdPointer != nullptr ? 1 : 0, g.sinkOsdClick != nullptr ? 1 : 0,
-         g.sinkToggleOsd != nullptr ? 1 : 0, g.sinkPanelFocus != nullptr ? 1 : 0);
+         g.sinkToggleOsd != nullptr ? 1 : 0, g.sinkPanelFocus != nullptr ? 1 : 0,
+         g.sinkMenuPointer != nullptr ? 1 : 0, g.sinkMenuClick != nullptr ? 1 : 0);
 }
 
 /*
@@ -2921,7 +3080,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachTextureSink(JNIEnv *env, jobject 
         env->DeleteGlobalRef(g.textureSink);
         g.textureSink = nullptr;
     }
-    g.sinkPanelTex = g.sinkVideoTex = g.sinkOsdTex = nullptr;
+    g.sinkPanelTex = g.sinkVideoTex = g.sinkOsdTex = g.sinkMenuTex = nullptr;
     if (sink == nullptr) {
         LOGI("纹理回调已注销");
         return;
@@ -2934,10 +3093,12 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachTextureSink(JNIEnv *env, jobject 
                                       "(Landroid/graphics/SurfaceTexture;)V");
     g.sinkOsdTex = env->GetMethodID(cls, "onOsdTexture",
                                     "(Landroid/graphics/SurfaceTexture;)V");
+    g.sinkMenuTex = env->GetMethodID(cls, "onMenuTexture",
+                                     "(Landroid/graphics/SurfaceTexture;)V");
     env->DeleteLocalRef(cls);
-    LOGI("纹理回调已注册（面板=%d 播放画面=%d 控制条=%d）",
+    LOGI("纹理回调已注册（面板=%d 播放画面=%d 控制条=%d 菜单=%d）",
          g.sinkPanelTex != nullptr ? 1 : 0, g.sinkVideoTex != nullptr ? 1 : 0,
-         g.sinkOsdTex != nullptr ? 1 : 0);
+         g.sinkOsdTex != nullptr ? 1 : 0, g.sinkMenuTex != nullptr ? 1 : 0);
 
     if (g.panelSt != nullptr) pushTexturesToJava(g, env);
 }

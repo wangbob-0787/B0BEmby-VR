@@ -374,6 +374,26 @@ object EmbyApi {
         return httpAsBaseItemDtoList(context, serverUrl, apiKey, deviceId, url)
     }
 
+    /**
+     * 获取某一季的剧集列表（播放页「选集」菜单用，2026-10-06）。
+     *
+     * seasonId 为空时返回该剧全部剧集（跨季）。
+     */
+    suspend fun getEpisodes(
+        context: Context,
+        serverUrl: String,
+        apiKey: String,
+        deviceId: String,
+        userId: String,
+        seriesId: String,
+        seasonId: String?
+    ): List<BaseItemDto> {
+        val url = "/Shows/$seriesId/Episodes?UserId=$userId" +
+                (if (!seasonId.isNullOrBlank()) "&SeasonId=$seasonId" else "") +
+                "&Fields=Overview&Limit=500&X-Emby-Token=$apiKey"
+        return httpAsBaseItemDtoList(context, serverUrl, apiKey, deviceId, url)
+    }
+
     // ==================== 播放相关 ====================
 
     /**

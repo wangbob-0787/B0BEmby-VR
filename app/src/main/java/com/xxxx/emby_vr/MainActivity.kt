@@ -66,6 +66,33 @@ class MainActivity : ComponentActivity() {
     private var osdVisible = false
     private var osdJob: kotlinx.coroutines.Job? = null
 
+    /**
+     * 展开菜单面板（2026-10-06 父亲定）。
+     *
+     * 控制条本身不变（仍是那块矮条）；菜单是**另一块面板**，架在控制条正上方、
+     * 与控制条等宽，窗口背景透明，只有菜单卡片有底色。
+     */
+    private lateinit var menu: PanelLayer
+    private val menuState = com.xxxx.emby_vr.panel.MenuState()
+
+    // ── 播放上下文（切字幕 / 音轨 / 质量 / 选集都要用它重新起播）──
+    private var currentMediaId = ""
+    private var currentSeriesId: String? = null
+    private var currentSeasonId: String? = null
+    private var currentItem: com.xxxx.emby_vr.data.model.BaseItemDto? = null
+    private var currentStreams: List<com.xxxx.emby_vr.data.model.MediaStreamDto> = emptyList()
+    private var audioStreamIndices: List<Int> = emptyList()
+    private var subtitleStreamIndices: List<Int> = emptyList()
+    private var episodeIds: List<String> = emptyList()
+    private var selectedAudioIndex: Int? = null
+    private var selectedSubtitleIndex: Int? = null
+    private var qualityIndex = 0
+    private var bufferPresetIndex = 0
+    private var playModeIndex = 0
+    private var danmakuOn = true
+    private var danmakuScale = 1f
+
+
     /** 正在挑片（控制条上的「选片」打开的海报墙）：此时画面回到面板、控制条留着 */
     private var picking = false
 
@@ -137,6 +164,21 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        override fun onMenuPointer(px: Float, py: Float) {
+            vrInputLive = true
+            runOnUiThread { if (menuReady()) menu.vrPointer(px, py) }
+        }
+
+        override fun onMenuClick(px: Float, py: Float) {
+            vrInputLive = true
+            runOnUiThread {
+                if (menuReady()) {
+                    Log.i(TAG, "菜单点击 (${px.toInt()}, ${py.toInt()})")
+                    menu.vrClick(px, py)
+                }
+            }
+        }
+
         override fun onToggleOsd() {
             vrInputLive = true
             runOnUiThread { setOsdVisible(!osdVisible) }
@@ -150,7 +192,10 @@ class MainActivity : ComponentActivity() {
                  * 原来这里用 panelInputReady() 当门，而它在播放时恒为 false（playing 期间
                  * 面板不接输入）→ B 键被静默丢弃，只能杀应用。
                  */
-                if (renderer.videoActive) {
+                if (menuState.kind != null) {
+                    Log.i(TAG, "光柱 B 键 → 收起菜单")
+                    closeMenu()
+                } else if (renderer.videoActive) {
                     Log.i(TAG, "光柱 B 键 → 停止播放回面板")
                     stopPlayback()
                 } else if (panelInputReady()) {
@@ -164,10 +209,35 @@ class MainActivity : ComponentActivity() {
     /** 控制条能不能接输入 */
     private fun osdReady(): Boolean = ::osd.isInitialized && osd.osdReady && osdVisible
 
+    /** 菜单面板能不能接输入 */
+    private fun menuReady(): Boolean =
+        ::menu.isInitialized && menu.osdReady && menuState.kind != null
+
+    /** 打开某个菜单（对齐到触发它的那颗按钮正上方） */
+    private fun openMenu(kind: com.xxxx.emby_vr.panel.MenuKind, anchor: com.xxxx.emby_vr.panel.OsdButton) {
+        fillMenuData(kind)
+        menuState.anchor = anchor
+        menuState.kind = kind
+        osdState.activeMenuButton = anchor
+        if (::menu.isInitialized) com.xxxx.emby_vr.vr.VrNative.setMenuVisible(true)
+        Log.i(TAG, "菜单打开：${kind.title}（对齐 ${anchor.label}）")
+    }
+
+    /** 关掉菜单（控制条按钮高亮一并清掉） */
+    private fun closeMenu() {
+        if (menuState.kind == null) return
+        menuState.kind = null
+        osdState.activeMenuButton = null
+        com.xxxx.emby_vr.vr.VrNative.setMenuVisible(false)
+        Log.i(TAG, "菜单关闭")
+    }
+
     /** 控制条显隐（VR 侧画不画那块面板） */
     private fun setOsdVisible(visible: Boolean) {
         osdVisible = visible
         com.xxxx.emby_vr.vr.VrNative.setOsdVisible(visible)
+        // 控制条收起来时菜单一起收（父亲 2026-10-06：菜单挂在控制条上）
+        if (!visible) closeMenu()
         Log.i(TAG, if (visible) "控制条显示" else "控制条隐藏")
     }
 
@@ -408,7 +478,15 @@ class MainActivity : ComponentActivity() {
      * 的 `directStreamUrl`（没有就用 `transcodingUrl`）→ `${server}/emby<path}` →
      * ExoPlayer 解码 → Surface → 渲染器 OES 纹理贴到虚拟屏。
      */
-    private fun playMedia(mediaId: String, startTicks: Long) {
+    private fun playMedia(
+        mediaId: String,
+        startTicks: Long,
+        keepPosition: Boolean = false,
+    ) {
+        // 切字幕 / 音轨 / 质量时保持当前位置（父亲 2026-10-06：换轨不该从头开始）
+        val effectiveStart =
+            if (keepPosition) (player?.currentPosition ?: 0L) * 10_000L else startTicks
+        currentMediaId = mediaId
         /*
          * 父亲 2026-10-06：播放中点海报墙的片子起不来、反而把正在播的暂停了。
          * 原因是这里原来有一句"正在播就切播放/暂停"的老逻辑 —— 那是给面板上的
@@ -424,7 +502,10 @@ class MainActivity : ComponentActivity() {
                     deviceId = EmbyContent.DEVICE_ID,
                     userId = BuildConfig.EMBY_USER_ID,
                     mediaId = mediaId,
-                    startTimeTicks = startTicks,
+                    startTimeTicks = effectiveStart,
+                    selectedAudioIndex = selectedAudioIndex,
+                    selectedSubtitleIndex = selectedSubtitleIndex,
+                    maxStreamingBitrate = bitrateForQuality(),
                 )
                 val source = media.mediaSources?.firstOrNull()
                 // 记下这次播放的身份，供服务端上报（播放历史/继续观看靠它）
@@ -432,6 +513,8 @@ class MainActivity : ComponentActivity() {
                 reportedPlaySessionId = media.playSessionId
                 reportedMediaSourceId = source?.id
                 reportedRunTimeTicks = source?.runTimeTicks ?: 0L
+                // 字幕 / 音轨菜单要用它列选项（切轨靠 Emby 重新出流）
+                currentStreams = source?.mediaStreams ?: emptyList()
                 /*
                  * 按服务端给的判定挑地址（2026-10-06 父亲报「长宽比不对 / 没声音 / 灰蒙蒙」）。
                  * 原来无脑优先 directStreamUrl，等于把服务端的转码决定（音频转 AAC、
@@ -456,6 +539,8 @@ class MainActivity : ComponentActivity() {
                 withContext(Dispatchers.Main) {
                     startPlayer(url, mediaId)
                 }
+                // 取这一集的详情（剧集 id / 季 id / 简介 / 演员），给选集与信息菜单用
+                loadItemDetail()
             } catch (e: Exception) {
                 Log.e(TAG, "取播放地址失败", e)
                 hud("取播放地址失败：${friendlyError(e)}")
@@ -479,7 +564,17 @@ class MainActivity : ComponentActivity() {
         val useVrScreen = vrSurface != null
         try {
             stopPlaybackInternal()
-            player = ExoPlayer.Builder(this).build().also { p ->
+            // 缓冲档位（更多 → 缓冲设置）：起播缓冲与上限按菜单选的那一档
+            val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
+                .setBufferDurationsMs(
+                    bufferMinMs(),
+                    bufferMaxMs(),
+                    androidx.media3.exoplayer.DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_MS,
+                    androidx.media3.exoplayer.DefaultLoadControl
+                        .DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS,
+                )
+                .build()
+            player = ExoPlayer.Builder(this).setLoadControl(loadControl).build().also { p ->
                 p.setMediaItem(MediaItem.fromUri(url))
                 p.setVideoSurface(surface)
                 p.prepare()
@@ -525,6 +620,7 @@ class MainActivity : ComponentActivity() {
             osdState.durationMs = reportedRunTimeTicks / 10_000
             osdState.positionMs = 0L
             osdState.speed = playSpeed
+            applyPlayMode(playModeIndex)   // 播放模式在起播时也应用一次
             if (com.xxxx.emby_vr.vr.VrNative.vrRunning) {
                 // 起播不再自动亮控制条（父亲 2026-10-06）：要看控制条，指着银幕扣扳机
                 setOsdVisible(false)
@@ -619,18 +715,305 @@ class MainActivity : ComponentActivity() {
     private fun onOsdButton(button: com.xxxx.emby_vr.panel.OsdButton) {
         Log.i(TAG, "控制条按钮：${button.label}")
         when (button) {
-            com.xxxx.emby_vr.panel.OsdButton.PLAY_PAUSE -> togglePlayPause()
+            com.xxxx.emby_vr.panel.OsdButton.SUBTITLE ->
+                toggleMenu(com.xxxx.emby_vr.panel.MenuKind.SUBTITLE, button)
+            com.xxxx.emby_vr.panel.OsdButton.DANMAKU ->
+                toggleMenu(com.xxxx.emby_vr.panel.MenuKind.DANMAKU, button)
             com.xxxx.emby_vr.panel.OsdButton.SEEK_BACK -> if (player != null) seekBy(-10_000)
+            com.xxxx.emby_vr.panel.OsdButton.PLAY_PAUSE -> togglePlayPause()
             com.xxxx.emby_vr.panel.OsdButton.SEEK_FWD -> if (player != null) seekBy(+10_000)
-            com.xxxx.emby_vr.panel.OsdButton.SPEED -> cycleSpeed()
-            /* 画面调整（父亲 2026-10-06）：两颗加减按钮调当前项，中间那颗切换要调哪一项 */
-            com.xxxx.emby_vr.panel.OsdButton.DIM_DOWN -> adjustImage(-1f)
-            com.xxxx.emby_vr.panel.OsdButton.DIM_UP -> adjustImage(+1f)
-            com.xxxx.emby_vr.panel.OsdButton.IMG_FIELD -> cycleImageField()
+            com.xxxx.emby_vr.panel.OsdButton.SPEED ->
+                toggleMenu(com.xxxx.emby_vr.panel.MenuKind.SPEED, button)
+            com.xxxx.emby_vr.panel.OsdButton.EPISODES ->
+                toggleMenu(com.xxxx.emby_vr.panel.MenuKind.EPISODES, button)
             com.xxxx.emby_vr.panel.OsdButton.PICK -> togglePicking()
-            com.xxxx.emby_vr.panel.OsdButton.EXIT -> {
-                Log.i(TAG, "控制条：退出应用")
-                finish()
+            com.xxxx.emby_vr.panel.OsdButton.INFO ->
+                toggleMenu(com.xxxx.emby_vr.panel.MenuKind.INFO, button)
+            com.xxxx.emby_vr.panel.OsdButton.CAST ->
+                toggleMenu(com.xxxx.emby_vr.panel.MenuKind.CAST, button)
+            com.xxxx.emby_vr.panel.OsdButton.MORE ->
+                toggleMenu(com.xxxx.emby_vr.panel.MenuKind.MORE, button)
+            com.xxxx.emby_vr.panel.OsdButton.EXIT -> exitApp()
+        }
+    }
+
+    /** 再点同一颗按钮 = 收起菜单（父亲 2026-10-06 定） */
+    private fun toggleMenu(
+        kind: com.xxxx.emby_vr.panel.MenuKind,
+        anchor: com.xxxx.emby_vr.panel.OsdButton,
+    ) {
+        if (menuState.kind == kind) closeMenu() else openMenu(kind, anchor)
+    }
+
+    /** 退出 = 结束进程（父亲 2026-10-06 定：点退出就是退出 B0BEmby VR） */
+    private fun exitApp() {
+        Log.i(TAG, "控制条：退出应用（结束进程）")
+        runCatching { stopPlaybackInternal() }
+        runCatching { com.xxxx.emby_vr.vr.VrNative.stopVr() }
+        runCatching { finishAndRemoveTask() }
+        android.os.Process.killProcess(android.os.Process.myPid())
+    }
+
+    /** 菜单里某一项被点了 */
+    private fun onMenuSelect(kind: com.xxxx.emby_vr.panel.MenuKind, index: Int) {
+        Log.i(TAG, "菜单选择：${kind.title} #$index")
+        when (kind) {
+            com.xxxx.emby_vr.panel.MenuKind.MORE -> {
+                val target = when (index) {
+                    0 -> com.xxxx.emby_vr.panel.MenuKind.AUDIO
+                    1 -> com.xxxx.emby_vr.panel.MenuKind.QUALITY
+                    2 -> com.xxxx.emby_vr.panel.MenuKind.MODE
+                    else -> com.xxxx.emby_vr.panel.MenuKind.BUFFER
+                }
+                // 二级菜单仍停在「更多」按钮正上方
+                openMenu(target, com.xxxx.emby_vr.panel.OsdButton.MORE)
+            }
+            com.xxxx.emby_vr.panel.MenuKind.SPEED -> {
+                com.xxxx.emby_vr.panel.SPEED_STEPS.getOrNull(index)?.let { applySpeed(it) }
+                closeMenu()
+            }
+            com.xxxx.emby_vr.panel.MenuKind.QUALITY -> {
+                applyQuality(index)
+                closeMenu()
+            }
+            com.xxxx.emby_vr.panel.MenuKind.MODE -> {
+                applyPlayMode(index)
+                closeMenu()
+            }
+            com.xxxx.emby_vr.panel.MenuKind.BUFFER -> {
+                applyBuffer(index)
+                closeMenu()
+            }
+            com.xxxx.emby_vr.panel.MenuKind.DANMAKU -> {
+                if (index == 0) {
+                    danmakuOn = !danmakuOn
+                } else {
+                    com.xxxx.emby_vr.panel.DANMAKU_SCALES.getOrNull(index - 1)
+                        ?.let { danmakuScale = it.first }
+                }
+                menuState.danmakuOn = danmakuOn
+                menuState.danmakuScale = danmakuScale
+                Log.i(TAG, "弹幕设置 → ${if (danmakuOn) "开" else "关"}，字号 ${danmakuScale}")
+            }
+            com.xxxx.emby_vr.panel.MenuKind.SUBTITLE -> {
+                // 第 0 行是「关闭字幕」，其余按顺序对应文本字幕流
+                selectedSubtitleIndex =
+                    if (index == 0) null else subtitleStreamIndices.getOrNull(index - 1)
+                closeMenu()
+                Log.i(TAG, "字幕 → ${selectedSubtitleIndex ?: "关闭"}")
+                replayKeepingPosition()
+            }
+            com.xxxx.emby_vr.panel.MenuKind.AUDIO -> {
+                selectedAudioIndex = audioStreamIndices.getOrNull(index)
+                closeMenu()
+                Log.i(TAG, "音轨 → 流 ${selectedAudioIndex ?: "默认"}")
+                replayKeepingPosition()
+            }
+            com.xxxx.emby_vr.panel.MenuKind.EPISODES -> {
+                val id = episodeIds.getOrNull(index)
+                closeMenu()
+                if (!id.isNullOrBlank()) playMedia(id, 0L)
+            }
+            // 信息 / 演职人员：点一下就收（父亲：内容就显示在控制条上方）
+            else -> closeMenu()
+        }
+    }
+
+    /** 倍速（菜单里选档） */
+    private fun applySpeed(speed: Float) {
+        playSpeed = speed
+        player?.setPlaybackSpeed(speed)
+        osdState.speed = speed
+        Log.i(TAG, "倍速 → ${speed}x")
+    }
+
+    /** 视频质量：换码率上限重起播（服务端据此决定转码档位） */
+    private fun applyQuality(index: Int) {
+        qualityIndex = index.coerceIn(0, com.xxxx.emby_vr.panel.QUALITY_STEPS.size - 1)
+        Log.i(TAG, "视频质量 → ${com.xxxx.emby_vr.panel.QUALITY_STEPS[qualityIndex].second}")
+        replayKeepingPosition()
+    }
+
+    private fun bitrateForQuality(): Int {
+        val v = com.xxxx.emby_vr.panel.QUALITY_STEPS.getOrNull(qualityIndex)?.first ?: 0
+        return if (v <= 0) 200_000_000 else v
+    }
+
+    /** 播放模式：列表循环 / 单集循环 / 播完停止 */
+    private fun applyPlayMode(index: Int) {
+        playModeIndex = index.coerceIn(0, 2)
+        player?.repeatMode = when (playModeIndex) {
+            0 -> androidx.media3.common.Player.REPEAT_MODE_ALL
+            1 -> androidx.media3.common.Player.REPEAT_MODE_ONE
+            else -> androidx.media3.common.Player.REPEAT_MODE_OFF
+        }
+        Log.i(TAG, "播放模式 → ${com.xxxx.emby_vr.panel.PLAY_MODE_STEPS.getOrNull(playModeIndex)}")
+    }
+
+    /** 缓冲档位：参数在起播时生效，选完重起播一次 */
+    private fun applyBuffer(index: Int) {
+        bufferPresetIndex = index.coerceIn(0, com.xxxx.emby_vr.panel.BUFFER_PRESETS.size - 1)
+        Log.i(TAG, "缓冲档位 → ${com.xxxx.emby_vr.panel.BUFFER_PRESETS[bufferPresetIndex].first}")
+        replayKeepingPosition()
+    }
+
+    private fun bufferMinMs(): Int = com.xxxx.emby_vr.panel.BUFFER_PRESETS[bufferPresetIndex].second
+
+    private fun bufferMaxMs(): Int = com.xxxx.emby_vr.panel.BUFFER_PRESETS[bufferPresetIndex].third
+
+    /** 保持当前位置重新起播（切字幕 / 音轨 / 质量 / 缓冲用） */
+    private fun replayKeepingPosition() {
+        if (currentMediaId.isBlank()) return
+        playMedia(currentMediaId, 0L, keepPosition = true)
+    }
+
+    /** 往菜单里填数据（打开菜单时调） */
+    private fun fillMenuData(kind: com.xxxx.emby_vr.panel.MenuKind) {
+        menuState.serverUrl = BuildConfig.EMBY_SERVER
+        when (kind) {
+            com.xxxx.emby_vr.panel.MenuKind.SPEED -> menuState.speed = playSpeed
+            com.xxxx.emby_vr.panel.MenuKind.QUALITY -> menuState.quality = qualityIndex
+            com.xxxx.emby_vr.panel.MenuKind.MODE -> menuState.playMode = playModeIndex
+            com.xxxx.emby_vr.panel.MenuKind.BUFFER -> menuState.buffer =
+                com.xxxx.emby_vr.panel.BufferView(
+                    presetIndex = bufferPresetIndex,
+                    minBufferMs = bufferMinMs(),
+                    maxBufferMs = bufferMaxMs(),
+                    playbackBufferMs = 0,
+                    rebufferMs = 0,
+                )
+            com.xxxx.emby_vr.panel.MenuKind.DANMAKU -> {
+                menuState.danmakuOn = danmakuOn
+                menuState.danmakuScale = danmakuScale
+            }
+            com.xxxx.emby_vr.panel.MenuKind.AUDIO -> menuState.audioTracks = buildAudioRows()
+            com.xxxx.emby_vr.panel.MenuKind.SUBTITLE -> menuState.subtitleTracks = buildSubtitleRows()
+            com.xxxx.emby_vr.panel.MenuKind.EPISODES -> loadEpisodes()
+            com.xxxx.emby_vr.panel.MenuKind.INFO, com.xxxx.emby_vr.panel.MenuKind.CAST ->
+                loadItemDetail()
+            com.xxxx.emby_vr.panel.MenuKind.MORE -> Unit
+        }
+    }
+
+    /** 音轨列表（来自 Emby 的媒体流；选中后由服务端重新出流） */
+    private fun buildAudioRows(): List<com.xxxx.emby_vr.panel.MenuRowItem> {
+        val audios = currentStreams.filter { it.type == "Audio" }
+        audioStreamIndices = audios.mapNotNull { it.index }
+        return audios.mapIndexed { i, s ->
+            val label = s.displayTitle?.takeIf { it.isNotBlank() }
+                ?: s.language?.takeIf { it.isNotBlank() }
+                ?: s.codec?.uppercase()
+                ?: "音轨 ${i + 1}"
+            val extra = listOfNotNull(
+                s.codec?.uppercase(),
+                s.channels?.let { "$it 声道" },
+            ).joinToString(" · ")
+            val selected = if (selectedAudioIndex != null) {
+                s.index == selectedAudioIndex
+            } else {
+                s.isDefault == true
+            }
+            com.xxxx.emby_vr.panel.MenuRowItem(
+                label = if (extra.isBlank()) label else "$label（$extra）",
+                selected = selected,
+            )
+        }
+    }
+
+    /** 字幕列表：第 0 项固定是「关闭字幕」 */
+    private fun buildSubtitleRows(): List<com.xxxx.emby_vr.panel.MenuRowItem> {
+        val subs = currentStreams.filter { it.type == "Subtitle" }
+        subtitleStreamIndices = subs.mapNotNull { it.index }
+        val rows = mutableListOf(
+            com.xxxx.emby_vr.panel.MenuRowItem("关闭字幕", selectedSubtitleIndex == null),
+        )
+        subs.forEachIndexed { i, s ->
+            val label = s.displayTitle?.takeIf { it.isNotBlank() }
+                ?: s.language?.takeIf { it.isNotBlank() }
+                ?: s.codec?.uppercase()
+                ?: "字幕 ${i + 1}"
+            rows += com.xxxx.emby_vr.panel.MenuRowItem(label, s.index == selectedSubtitleIndex)
+        }
+        return rows
+    }
+
+    /** 取这一集的详情：剧集 id / 季 id / 简介 / 演员（信息与演职人员菜单用） */
+    private fun loadItemDetail() {
+        val id = currentMediaId
+        if (id.isBlank()) return
+        scope.launch {
+            try {
+                val item = EmbyApi.getMediaInfo(
+                    context = this@MainActivity,
+                    serverUrl = BuildConfig.EMBY_SERVER,
+                    apiKey = BuildConfig.EMBY_API_KEY,
+                    deviceId = EmbyContent.DEVICE_ID,
+                    userId = BuildConfig.EMBY_USER_ID,
+                    mediaId = id,
+                )
+                if (id != currentMediaId) return@launch   // 中途换片了，丢弃
+                currentItem = item
+                currentSeriesId = item.seriesId
+                currentSeasonId = item.seasonId
+                menuState.info = com.xxxx.emby_vr.panel.MediaInfoView(
+                    title = item.name ?: osdState.title,
+                    year = item.productionYear?.toString() ?: "",
+                    runtime = item.runTimeTicks?.let {
+                        com.xxxx.emby_vr.panel.osdTimeText(it / 10_000)
+                    } ?: "",
+                    rating = item.communityRating?.let { "★ %.1f".format(it) } ?: "",
+                    genres = item.genres?.take(3)?.joinToString(" / ") ?: "",
+                    overview = item.overview ?: "",
+                )
+                menuState.people = (item.people ?: emptyList()).take(40).map {
+                    com.xxxx.emby_vr.panel.PersonItem(
+                        name = it.name ?: "",
+                        role = it.role ?: "",
+                        avatarUrl = null,
+                    )
+                }
+                Log.i(TAG, "详情已取到：${item.name}（演员 ${menuState.people.size} 人）")
+            } catch (t: Throwable) {
+                Log.e(TAG, "取详情失败", t)
+            }
+        }
+    }
+
+    /** 选集列表（同一季的剧集；当前集打勾） */
+    private fun loadEpisodes() {
+        val seriesId = currentSeriesId
+        if (seriesId.isNullOrBlank()) {
+            menuState.episodes = emptyList()
+            Log.w(TAG, "选集：还不知道剧集 id（详情还没取回来）")
+            return
+        }
+        val seasonId = currentSeasonId
+        scope.launch {
+            try {
+                val eps = EmbyApi.getEpisodes(
+                    context = this@MainActivity,
+                    serverUrl = BuildConfig.EMBY_SERVER,
+                    apiKey = BuildConfig.EMBY_API_KEY,
+                    deviceId = EmbyContent.DEVICE_ID,
+                    userId = BuildConfig.EMBY_USER_ID,
+                    seriesId = seriesId,
+                    seasonId = seasonId,
+                )
+                episodeIds = eps.map { it.id ?: "" }
+                menuState.episodes = eps.mapIndexed { i, e ->
+                    val season = e.parentIndexNumber
+                    val num = e.indexNumber ?: (i + 1)
+                    val name = e.name ?: ""
+                    com.xxxx.emby_vr.panel.MenuRowItem(
+                        label = if (season != null) "第 $season 季 第 $num 集  $name"
+                        else "第 $num 集  $name",
+                        selected = e.id == currentMediaId,
+                    )
+                }
+                Log.i(TAG, "选集列表 ${eps.size} 集")
+            } catch (t: Throwable) {
+                Log.e(TAG, "取选集失败", t)
+                hud("取选集失败")
             }
         }
     }
@@ -853,11 +1236,25 @@ class MainActivity : ComponentActivity() {
         osd = PanelLayer(
             this,
             content = { com.xxxx.emby_vr.panel.PlayerOsdBar(osdState) },
-            panelW = 1920,
+            // 父亲 2026-10-06：12 颗按钮，面板从 1920 加宽到 2560（观感宽度不变、像素更密）
+            panelW = 2560,
             panelH = 300,
             name = "b0bemby-osd",
             activatesVrPanel = false,
             // 控制条是纯 Compose 界面，没登记进电视版那张控件坐标表 → 点击要直通派发
+            directClick = true,
+        )
+        /*
+         * 展开菜单（2026-10-06 父亲定）：架在控制条**正上方**的另一块面板，
+         * 与控制条等宽（2560），窗口背景透明 —— 只有菜单卡片有底色。
+         */
+        menu = PanelLayer(
+            this,
+            content = { com.xxxx.emby_vr.panel.PlayerMenuPanel(menuState, osdState) },
+            panelW = com.xxxx.emby_vr.panel.MENU_PANEL_W,
+            panelH = com.xxxx.emby_vr.panel.MENU_PANEL_H,
+            name = "b0bemby-menu",
+            activatesVrPanel = false,
             directClick = true,
         )
         /*
@@ -878,9 +1275,15 @@ class MainActivity : ComponentActivity() {
                 override fun onOsdTexture(st: android.graphics.SurfaceTexture) {
                     osd.attach(st)
                 }
+
+                override fun onMenuTexture(st: android.graphics.SurfaceTexture) {
+                    menu.attach(st)
+                }
             },
         )
         osdState.onButton = { button -> onOsdButton(button) }
+        menuState.onSelect = { kind, index -> onMenuSelect(kind, index) }
+        menuState.onClose = { closeMenu() }
 
         glView = GLSurfaceView(this).apply {
             setEGLContextClientVersion(3)

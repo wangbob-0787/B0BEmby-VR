@@ -49,6 +49,9 @@ object VrNative {
 
         /** 控制条画面 */
         fun onOsdTexture(st: android.graphics.SurfaceTexture)
+
+        /** 展开菜单画面（架在控制条正上方的透明面板） */
+        fun onMenuTexture(st: android.graphics.SurfaceTexture)
     }
 
     private external fun nativeAttachTextureSink(sink: TextureSink)
@@ -228,6 +231,12 @@ object VrNative {
         /** 控制条上的一次点击（扣扳机） */
         fun onOsdClick(px: Float, py: Float)
 
+        /** 展开菜单上的指针（坐标是菜单面板像素：2560×1200） */
+        fun onMenuPointer(px: Float, py: Float)
+
+        /** 展开菜单上的一次点击（扣扳机） */
+        fun onMenuClick(px: Float, py: Float)
+
         /** 播放中扣扳机 = 开关控制条（由 Activity 决定显隐） */
         fun onToggleOsd()
     }
@@ -237,6 +246,21 @@ object VrNative {
     private external fun nativeSetVideoActive(active: Boolean)
 
     private external fun nativeSetOsdVisible(visible: Boolean)
+
+    private external fun nativeSetMenuVisible(visible: Boolean)
+
+    /**
+     * 展开菜单显示/隐藏（2026-10-06）。
+     *
+     * 菜单是**另一块面板**，架在控制条正上方；控制条那块矮条尺寸不变。
+     */
+    fun setMenuVisible(visible: Boolean) {
+        try {
+            if (loaded) nativeSetMenuVisible(visible)
+        } catch (t: Throwable) {
+            Log.e(TAG, "设置展开菜单状态失败：${t.message}")
+        }
+    }
 
     /** 控制条显示/隐藏 */
     fun setOsdVisible(visible: Boolean) {
