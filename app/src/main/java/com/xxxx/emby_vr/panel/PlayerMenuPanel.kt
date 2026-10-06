@@ -179,11 +179,11 @@ val BUFFER_PRESETS = listOf(
 )
 
 /** 菜单面板像素尺寸（与控制条等宽 → 归一化横向坐标可以直接复用） */
-const val MENU_PANEL_W = 3600
-const val MENU_PANEL_H = 1350
+const val MENU_PANEL_W = 2428
+const val MENU_PANEL_H = 1155
 
 /** 窄卡片宽度（像素） */
-private const val CARD_W = 620f
+private const val CARD_W = 920f
 private const val CARD_WIDE_PAD = 40f
 
 @Composable
@@ -256,7 +256,7 @@ fun PlayerMenuPanel(menu: MenuState, osd: OsdState) {
                 Text(
                     text = if (kind.isSubMenu) "返回上级" else "关闭",
                     color = Color(0xFF9E9E9E),
-                    fontSize = 20.sp,
+                    fontSize = 22.sp,
                     modifier = Modifier
                         .clip(RoundedCornerShape(10.dp))
                         .clickable { menu.onBack?.invoke() }
@@ -395,7 +395,7 @@ private fun DanmakuMenu(menu: MenuState) {
 @Composable
 private fun TrackMenu(menu: MenuState, rows: List<MenuRowItem>, kind: MenuKind) {
     if (rows.isEmpty()) {
-        Text("没有可选项", color = Color(0xFF9E9E9E), fontSize = 20.sp)
+        Text("没有可选项", color = Color(0xFF9E9E9E), fontSize = 22.sp)
         return
     }
     LazyColumn(modifier = Modifier.heightIn(max = 620.dp)) {
@@ -413,7 +413,7 @@ private fun TrackMenu(menu: MenuState, rows: List<MenuRowItem>, kind: MenuKind) 
 @Composable
 private fun EpisodeMenu(menu: MenuState) {
     if (menu.episodes.isEmpty()) {
-        Text("没有可选的集数", color = Color(0xFF9E9E9E), fontSize = 20.sp)
+        Text("没有可选的集数", color = Color(0xFF9E9E9E), fontSize = 22.sp)
         return
     }
     LazyColumn(modifier = Modifier.heightIn(max = 620.dp)) {
@@ -436,7 +436,7 @@ private fun EpisodeMenu(menu: MenuState) {
 @Composable
 private fun InfoMenu(menu: MenuState) {
     val info = menu.info ?: run {
-        Text("暂无信息", color = Color(0xFF9E9E9E), fontSize = 20.sp)
+        Text("暂无信息", color = Color(0xFF9E9E9E), fontSize = 22.sp)
         return
     }
     Row(modifier = Modifier.fillMaxSize()) {
@@ -481,7 +481,7 @@ private fun InfoMenu(menu: MenuState) {
                         Text(
                             text = badge,
                             color = Color(0xFFBDBDBD),
-                            fontSize = 20.sp,
+                            fontSize = 22.sp,
                             modifier = Modifier
                                 .padding(end = 10.dp)
                                 .clip(RoundedCornerShape(8.dp))
@@ -505,7 +505,7 @@ private fun InfoMenu(menu: MenuState) {
 @Composable
 private fun CastMenu(menu: MenuState) {
     if (menu.people.isEmpty()) {
-        Text("暂无演职人员信息", color = Color(0xFF9E9E9E), fontSize = 20.sp)
+        Text("暂无演职人员信息", color = Color(0xFF9E9E9E), fontSize = 22.sp)
         return
     }
     LazyRow(contentPadding = PaddingValues(vertical = 6.dp)) {
@@ -543,7 +543,7 @@ private fun CastMenu(menu: MenuState) {
                 Text(
                     text = person.name,
                     color = Color.White,
-                    fontSize = 20.sp,
+                    fontSize = 22.sp,
                     maxLines = 1,
                 )
                 if (person.role.isNotBlank()) {

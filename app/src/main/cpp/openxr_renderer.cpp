@@ -1645,8 +1645,15 @@ bool rayHitsOsd(const VrContext &c, const XrPosef &aim, float *outT, float *outX
  * 与控制条等宽（像素 2560×1200）。位置：底边贴着控制条顶边留一点缝，
  * 距离与仰角跟控制条一致，看起来像同一套控件。
  */
-constexpr float kMenuPxW = 3600.f;   // 与控制条同一像素密度，字一样清楚
-constexpr float kMenuPxH = 1350.f;
+/*
+ * 菜单像素尺寸（父亲 2026-10-06 晚定）：与控制条**同一像素密度** 1800px/米，
+ * 所以字和控制条一样大。宽度与控制条等宽（kMenuWidth = kOsdWidth），卡片对位与
+ * 光柱点击沿用原逻辑，不需要换算系数。
+ *
+ *   3600×1350 @ 2669px/米 → 2428×1155 @ 1800px/米（物理宽度不变，高度由内容重算）
+ */
+constexpr float kMenuPxW = 2428.f;
+constexpr float kMenuPxH = 1155.f;
 constexpr float kMenuWidth = kOsdWidth;
 constexpr float kMenuHeight = kMenuWidth * kMenuPxH / kMenuPxW;
 constexpr float kMenuGap = 0.02f;
