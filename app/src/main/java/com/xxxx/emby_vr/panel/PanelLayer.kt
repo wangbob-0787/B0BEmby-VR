@@ -789,10 +789,31 @@ class PanelLayer(
         scrollAnchorY = py
     }
 
-    /** 扣扳机 = 在光柱位置点一下（焦点先落到光点所在控件，再看有没有动作） */
+    /**
+     * 扣扳机 = 在光柱位置点一下（焦点先落到光点所在控件，再看有没有动作）。
+     *
+     * 点之前先**把正在滚的停住**（父亲 2026-10-06 晚实测：扣扳机去点某张海报的那一瞬间，
+     * 海报还在上下左右滚，想点的那张会跑掉）。扣扳机时手会用力，摇杆常被带偏一点，
+     * 那份摇杆量正推着海报滚 —— 所以这里先刹车，再点。
+     */
     fun vrClick(px: Float, py: Float) {
+        stopVrScroll()
         vrPointer(px, py)
         tap(px, py)
+    }
+
+    /**
+     * 立刻停掉光柱滚动：摇杆推着的那份速度、惯性滑行、按压态全清零。
+     *
+     * 与原生侧的「按住扳机时不再推摇杆」配套：原生停发新的摇杆量，这里停掉
+     * 已经攒下的那份滚动，两头都掐断，扣扳机那一瞬间海报一定不动。
+     */
+    fun stopVrScroll() {
+        vrStickRate = 0f
+        inertiaRate = 0f
+        pointerSpeed = 0f
+        isDown = false
+        isDragging = false
     }
 
     /*
