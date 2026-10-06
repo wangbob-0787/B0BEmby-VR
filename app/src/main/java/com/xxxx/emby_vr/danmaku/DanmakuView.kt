@@ -63,6 +63,12 @@ class DanmakuView(context: Context) : View(context) {
         strokeJoin = Paint.Join.ROUND
     }
 
+    /** 当前轨道的弹幕条数（诊断用） */
+    fun trackItemCount(): Int = track?.items?.size ?: 0
+
+    /** 当前没有字幕文字（诊断用） */
+    fun subtitleEmpty(): Boolean = subtitle.isEmpty()
+
     /** 播放器报来当前该显示的字幕文字（空串 = 这一帧没有字幕） */
     fun setSubtitle(text: String) {
         if (text == subtitle) return

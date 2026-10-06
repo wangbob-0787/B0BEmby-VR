@@ -94,7 +94,8 @@ class MainActivity : ComponentActivity() {
     private var pendingDanmakuSt: android.graphics.SurfaceTexture? = null
     private var pendingLogoSt: android.graphics.SurfaceTexture? = null
 
-    private lateinit var danmaku: PanelLayer
+    /** 弹幕画笔（直接往纹理上画，不走虚拟显示器） */
+    private var danmakuPainter: com.xxxx.emby_vr.danmaku.DanmakuSurfacePainter? = null
     private var danmakuView: com.xxxx.emby_vr.danmaku.DanmakuView? = null
 
     /** 当前这一集解析好的弹幕（菜单里把弹幕关掉时先留着，开回来直接用） */
@@ -154,6 +155,9 @@ class MainActivity : ComponentActivity() {
 
     /** 字幕菜单第一行是不是「弹幕」开关（有弹幕轨才有，决定点击下标要不要左移一位） */
     private var subtitleDanmakuRow = false
+
+    /** 当前该显示的字幕文字（画笔后启动时补上） */
+    private var subtitleNow = ""
     private var selectedAudioIndex: Int? = null
     private var selectedSubtitleIndex: Int? = null
     private var qualityIndex = 0
@@ -407,6 +411,35 @@ class MainActivity : ComponentActivity() {
             size,
             a?.displayTitle?.takeIf { it.isNotBlank() },
         ).joinToString(" · ")
+    }
+
+    /**
+     * 启动弹幕画笔：把原生给的那张纹理包成画布，逐帧画弹幕。
+     *
+     * 尺寸用 2560×1440（16:9，够弹幕文字清晰），与原生弹幕层的缓冲尺寸一致。
+     */
+    private fun attachDanmakuSurface(st: android.graphics.SurfaceTexture) {
+        runOnUiThread {
+            runCatching {
+                danmakuPainter?.stop()
+                val painter = com.xxxx.emby_vr.danmaku.DanmakuSurfacePainter(
+                    context = this,
+                    surfaceTexture = st,
+                    widthPx = 2560,
+                    heightPx = 1440,
+                    positionProvider = { player?.currentPosition ?: 0L },
+                    scale = danmakuScale,
+                )
+                danmakuView = painter.view
+                painter.view.setTrack(if (danmakuOn) danmakuTrack else null)
+                painter.view.setSubtitle(subtitleNow)
+                painter.start()
+                danmakuPainter = painter
+                Log.i(TAG, "弹幕画笔已启动（2560x1440，开关=${if (danmakuOn) "开" else "关"}）")
+            }.onFailure { t ->
+                Log.e(TAG, "弹幕画笔启动失败: ${t.javaClass.simpleName}: ${t.message}")
+            }
+        }
     }
 
     /** 下载片名 logo 位图（见字段注释：绕开 Coil，成功失败都有日志） */
@@ -897,6 +930,7 @@ class MainActivity : ComponentActivity() {
                         val text = cueGroup.cues.joinToString("\n") { cue ->
                             cue.text?.toString().orEmpty()
                         }.trim()
+                        subtitleNow = text
                         danmakuView?.setSubtitle(text)
                     }
 
@@ -1753,42 +1787,18 @@ class MainActivity : ComponentActivity() {
             directClick = true,
         )
         /*
-         * 弹幕层（2026-10-06）：贴银幕前的一块透明面板，尺寸照 16:9 给足像素，
-         * 弹幕文字才不会糊。整层由原生按开关决定画不画。
+         * 弹幕层（2026-10-06 晚改画法）。
+         *
+         * 原来走「虚拟显示器 + 界面容器」，实测那块画布一次都没画过 —— 容器按内容
+         * 量尺寸，而自绘层的内容尺寸是 0，量出来就是 0×0。现在不走窗口系统了：
+         * 纹理一到就自己开画布、逐帧调自绘层（见 DanmakuSurfacePainter）。
          */
-        danmaku = PanelLayer(
-            this,
-            content = {
-                /*
-                 * fillMaxSize 是关键（父亲 2026-10-06 晚，弹幕一帧都没画的根因）：
-                 * AndroidView 默认按内容量尺寸，而 DanmakuView 是自绘 View、内容尺寸为 0 ——
-                 * 结果这块画布被量成 0×0，onDraw 从来不执行，弹幕数据再多也画不出来。
-                 */
-                androidx.compose.ui.viewinterop.AndroidView(
-                    modifier = Modifier.fillMaxSize(),
-                    factory = { ctx ->
-                    com.xxxx.emby_vr.danmaku.DanmakuView(ctx).apply {
-                        // 每帧按播放器当前进度重算坐标：掉帧只会跳一下，不会越走越偏
-                        setPositionProvider { player?.currentPosition ?: 0L }
-                        userScale = danmakuScale
-                        start()
-                        danmakuView = this
-                    }
-                    },
-                )
-            },
-            panelW = 2560,
-            panelH = 1440,
-            name = "b0bemby-danmaku",
-            activatesVrPanel = false,
-        )
-        // 纹理回调要是比这里先到，现在补挂上（否则这块画面永远不绘制）
         val dSt = pendingDanmakuSt
         if (dSt != null) {
-            Log.i(TAG, "弹幕面板建好，补挂纹理")
-            danmaku.attach(dSt)
+            Log.i(TAG, "弹幕纹理已到，启动画笔")
+            attachDanmakuSurface(dSt)
         } else {
-            Log.w(TAG, "弹幕面板建好，但纹理还没到（原生回调未触发？）")
+            Log.w(TAG, "弹幕纹理还没到，等回调")
         }
 
         /*
@@ -1841,9 +1851,9 @@ class MainActivity : ComponentActivity() {
                         com.xxxx.emby_vr.vr.VrNative.TEXTURE_OSD -> osd.attach(st)
                         com.xxxx.emby_vr.vr.VrNative.TEXTURE_MENU -> menu.attach(st)
                         com.xxxx.emby_vr.vr.VrNative.TEXTURE_DANMAKU -> {
-                            Log.i(TAG, "收到弹幕层纹理（面板已建=${::danmaku.isInitialized}）")
+                            Log.i(TAG, "收到弹幕层纹理，启动画笔")
                             pendingDanmakuSt = st
-                            if (::danmaku.isInitialized) danmaku.attach(st)
+                            attachDanmakuSurface(st)
                         }
                         com.xxxx.emby_vr.vr.VrNative.TEXTURE_LOGO -> {
                             Log.i(TAG, "收到片名 logo 纹理（面板已建=${::logo.isInitialized}）")
