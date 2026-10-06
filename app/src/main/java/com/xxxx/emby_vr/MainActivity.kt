@@ -253,18 +253,18 @@ class MainActivity : ComponentActivity() {
                  * 选集和演职人员滚不动）。取主方向 —— 竖直列表用上下推，
                  * 演职人员那一排是横向的，左右推也认。
                  */
-                if (menuState.kind != null) {
-                    Log.i(TAG, "摇杆滚菜单：kind=${menuState.kind} sx=$sx sy=$sy " +
-                        "已滚=${menuState.scrollDelta.toInt()} tick=${menuState.scrollTick}")
+                if (menuState.kind != null && ::menu.isInitialized) {
                     /*
-                     * 菜单开着：摇杆优先滚列表（父亲 2026-10-06 晚：滚不动）。
-                     * 不再要求光柱落在菜单上 —— 摇杆本来就是给菜单用的，
-                     * 竖直列表认上下推，演职人员那一排认左右推。
+                     * 菜单开着：摇杆滚菜单。
+                     *
+                     * 2026-10-06 晚通读代码后改对了通道：菜单和海报墙一样是 PanelLayer，
+                     * 它的滚动通道是 vrStick() → 往窗口里派发滚轮事件。菜单内容是
+                     * Compose 的 LazyColumn，只有真的收到滚轮事件才会动 ——
+                     * 之前在界面层自己攒偏移量那套（requestScroll）根本没接到列表上，
+                     * 所以日志里"滚了"和"没滚"都看不出来。这次直接走面板的通道。
                      */
-                    val main = if (kotlin.math.abs(sy) >= kotlin.math.abs(sx)) -sy else -sx
-                    if (kotlin.math.abs(main) > 0.25f) {
-                        menuState.requestScroll(main * 70f)
-                    }
+                    Log.i(TAG, "摇杆滚菜单：kind=${menuState.kind} sx=$sx sy=$sy → menu.vrStick")
+                    menu.vrStick(px, py, sx, sy)
                     return@runOnUiThread
                 }
                 if (renderer.videoActive && !onPanelUi) {
