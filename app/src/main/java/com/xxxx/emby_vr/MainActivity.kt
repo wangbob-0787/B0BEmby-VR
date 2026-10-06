@@ -104,6 +104,16 @@ class MainActivity : ComponentActivity() {
     /** 摇杆快进快退要回中一次才能再触发（免得住一个方向连续快进） */
     private var stickSeekArmed = true
 
+    /** 光柱在海报墙上的最近位置（滚动时要带上去） */
+    private var lastPanelPx = 0f
+    private var lastPanelPy = 0f
+
+    /** 面板最近一次吃下点击 / 滚动的时间：这一下扳机归面板，不能再当播放暂停 */
+    private var lastPanelClickAt = 0L
+
+    /** 海报墙摆放的本地存档（下次打开 APP 还原） */
+    private val placePrefs by lazy { getSharedPreferences("b0bemby_vr", MODE_PRIVATE) }
+
     // ── 播放上下文（切字幕 / 音轨 / 质量 / 选集都要用它重新起播）──
     private var currentMediaId = ""
     private var currentSeriesId: String? = null
@@ -147,7 +157,25 @@ class MainActivity : ComponentActivity() {
                 vrInputLive = true
                 Log.i(TAG, "VR 光柱输入已接管（老的触摸通道关闭）")
             }
+            lastPanelPx = px
+            lastPanelPy = py
             runOnUiThread { if (panelInputReady()) panel.vrPointer(px, py) }
+        }
+
+        /**
+         * 海报墙上按住扳机拖动 → 滚动（父亲 2026-10-06 晚）。
+         *
+         * 原生把「按住 + 移动手柄」的位移按面板像素送过来，直接喂给面板的滚动通道；
+         * 顺手记一下时间，好让这一下扳机不再被当成播放 / 暂停。
+         */
+        override fun onPanelScroll(dx: Float, dy: Float) {
+            vrInputLive = true
+            runOnUiThread {
+                lastPanelClickAt = android.os.SystemClock.uptimeMillis()
+                if (panelInputReady()) {
+                    panel.vrScroll(lastPanelPx, lastPanelPy, dx, dy)
+                }
+            }
         }
 
         override fun onPanelFocus(onPanel: Boolean) {
@@ -157,6 +185,7 @@ class MainActivity : ComponentActivity() {
 
         override fun onClick(px: Float, py: Float) {
             vrInputLive = true
+            lastPanelClickAt = android.os.SystemClock.uptimeMillis()
             runOnUiThread {
                 if (panelInputReady()) {
                     Log.i(TAG, "光柱点击 (${px.toInt()}, ${py.toInt()}) → 交给面板")
@@ -190,7 +219,31 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        /** 摇杆左右快进快退：推过 0.7 触发一次，回中（< 0.35）后才能再触发 */
+        /** 最近 300ms 面板刚吃过指针 / 点击 / 滚动：这一下扳机归面板 */
+    private fun panelTouchedRecently(): Boolean =
+        android.os.SystemClock.uptimeMillis() - lastPanelClickAt < 300L
+
+    /**
+     * 上次退出前海报墙摆在哪儿：读回来（父亲 2026-10-06 晚）。
+     *
+     * 位置 / 朝向 / 宽度一起存、一起还 —— 他调好一次，下次打开就还在那儿。
+     */
+    private fun restorePanelPlace() {
+        val raw = placePrefs.getString("panel_place", null) ?: return
+        val v = raw.split(",").mapNotNull { it.trim().toFloatOrNull() }.toFloatArray()
+        if (v.size != 6) return
+        com.xxxx.emby_vr.vr.VrNative.setPanelPlace(v)
+        Log.i(TAG, "海报墙摆放已还原到上次退出前的样子")
+    }
+
+    /** 把海报墙当前摆放存下来（下次打开还原） */
+    private fun savePanelPlace() {
+        val v = com.xxxx.emby_vr.vr.VrNative.getPanelPlace() ?: return
+        placePrefs.edit().putString("panel_place", v.joinToString(",")).apply()
+        Log.i(TAG, "海报墙摆放已记住")
+    }
+
+    /** 摇杆左右快进快退：推过 0.7 触发一次，回中（< 0.35）后才能再触发 */
         private fun stickSeek(sx: Float) {
             if (player == null) return
             val mag = kotlin.math.abs(sx)
@@ -403,7 +456,14 @@ class MainActivity : ComponentActivity() {
                  * 2026-10-06 补：播放中光柱指在海报墙上时，这一下是"点海报墙"，
                  * 不能再当成播放/暂停（否则点海报把片子按停了）。
                  */
-                if (renderer.videoActive && !panelPointerOnPanel) togglePlayPause()
+                /*
+                 * 2026-10-06 晚再收紧（父亲实测：详情页、媒体库页扣扳机会把片子按停）：
+                 * 只要这一下刚刚被海报墙吃下（点了 / 滚了），就绝不再触发播放暂停 ——
+                 * 不靠"光柱在不在墙上"这个可能滞后的判断兜底。
+                 */
+                if (renderer.videoActive && !panelPointerOnPanel && !panelTouchedRecently()) {
+                    togglePlayPause()
+                }
             }
             InputRouter.Action.BACK -> {
                 /*
@@ -417,7 +477,8 @@ class MainActivity : ComponentActivity() {
                 if (::panel.isInitialized && panel.ready &&
                     com.xxxx.emby_vr.vr.VrNative.panelActive) panel.back()
             }
-            InputRouter.Action.PLAY_PAUSE -> if (renderer.videoActive) togglePlayPause()
+            InputRouter.Action.PLAY_PAUSE ->
+                if (renderer.videoActive && !panelTouchedRecently()) togglePlayPause()
             InputRouter.Action.SEEK_BACK -> if (renderer.videoActive) seekBy(-10_000)
             InputRouter.Action.SEEK_FORWARD -> if (renderer.videoActive) seekBy(+10_000)
             else -> { /* 余下动作后续接 */ }
@@ -1373,6 +1434,8 @@ class MainActivity : ComponentActivity() {
         danmakuView?.setTrack(null)
         logoUrl.value = null
         // 回海报墙的时候确保它摆着（播放中可以把它收起来，别让收起来的状态带回去）
+        // 海报墙回到上次退出前的位置 / 大小 / 远近（父亲 2026-10-06 晚）
+        restorePanelPlace()
         com.xxxx.emby_vr.vr.VrNative.updatePanelShown(true)
     }
 
@@ -1636,6 +1699,8 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onPause() {
+        // 海报墙的摆放先记下来，下次打开还原
+        savePanelPlace()
         vrSession.pause()
         glView.onPause()
         super.onPause()

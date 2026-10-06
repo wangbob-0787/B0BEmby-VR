@@ -119,6 +119,40 @@ object VrNative {
 
     private external fun nativeSetPanelShown(shown: Boolean)
 
+    private external fun nativeGetPanelPlace(): FloatArray
+
+    private external fun nativeSetPanelPlace(
+        x: Float,
+        y: Float,
+        z: Float,
+        yaw: Float,
+        pitch: Float,
+        width: Float,
+    )
+
+    /** 读海报墙当前摆放（位置 / 朝向 / 宽度）；拿不到返回 null */
+    fun getPanelPlace(): FloatArray? = try {
+        if (loaded) nativeGetPanelPlace() else null
+    } catch (t: Throwable) {
+        Log.e(TAG, "读海报墙摆放失败：${t.message}")
+        null
+    }
+
+    /**
+     * 还原海报墙摆放（父亲 2026-10-06 晚：位置、大小、远近都要记住，
+     * 下次打开 APP 回到上次退出前那个样子）。
+     */
+    fun setPanelPlace(place: FloatArray) {
+        if (place.size < 6) return
+        try {
+            if (loaded) {
+                nativeSetPanelPlace(place[0], place[1], place[2], place[3], place[4], place[5])
+            }
+        } catch (t: Throwable) {
+            Log.e(TAG, "还原海报墙摆放失败：${t.message}")
+        }
+    }
+
     /**
      * 海报墙显示 / 收起（控制条上的「选片」按钮切换，父亲 2026-10-05 定）。
      *
@@ -212,6 +246,13 @@ object VrNative {
     interface InputSink {
         fun onPointer(px: Float, py: Float)
         fun onClick(px: Float, py: Float)
+
+        /**
+         * 海报墙上按住扳机拖动 → 滚动量（2026-10-06 晚加）。
+         *
+         * 单位是海报墙面板像素：手柄往右拖，dx 为负（内容跟手往左走）。
+         */
+        fun onPanelScroll(dx: Float, dy: Float)
 
         /**
          * 光柱是否落在海报墙上（2026-10-06 加）。

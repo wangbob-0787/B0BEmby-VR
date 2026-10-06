@@ -549,6 +549,7 @@ struct VrContext {
     jobject inputSink = nullptr;        // VrNative.InputSink 的全局引用
     jmethodID sinkPointer = nullptr;
     jmethodID sinkClick = nullptr;
+    jmethodID sinkPanelScroll = nullptr;  // 海报墙上按住扳机拖动的滚动量
     jmethodID sinkStick = nullptr;
     jmethodID sinkBack = nullptr;
     jmethodID sinkOsdPointer = nullptr; // 控制条上的指针
@@ -574,6 +575,10 @@ struct VrContext {
     float sinkMenuPointerY = 0.f;
     bool sinkLastTrigger[2] = {false, false};
     bool sinkPanelFocusOn[2] = {false, false};   // 上一次回推的"光柱在海报墙上"状态
+    // 按住扳机的起点与"拖动过没有"：抬起时据此区分「选中」与「滚动」
+    float panelPressX[2] = {0.f, 0.f};
+    float panelPressY[2] = {0.f, 0.f};
+    bool panelPressMoved[2] = {false, false};
 
     /**
      * 海报墙当前位置与朝向（父亲 2026-10-06：按住扳机拖它，在以手柄为球心的球面上挪）。
@@ -1989,13 +1994,40 @@ void pushInput(VrContext &c) {
                 c.sinkPointerValid = true;
             }
 
-            // ① 扳机（按下那一刻）→ 在光柱位置点一下。拖动改由握把键承担，
-            //    所以这里不用再等松手判断（父亲 2026-10-06：原来两者会打架）
-            if (!c.squeezeDown[h] && c.triggerDown[h] && !c.sinkLastTrigger[h] &&
-                c.sinkClick != nullptr) {
-                LOGI("VR 输入：%s 扳机 → 面板点击 (%d, %d)", handName[h], (int) px, (int) py);
-                env->CallVoidMethod(c.inputSink, c.sinkClick, px, py);
-                clearJavaException(env, "输入回调 onClick");
+            /*
+             * ① 扳机（父亲 2026-10-06 晚改）：按住 + 移动手柄 = 滚动海报墙，
+             *    按住不动松手 = 选中。
+             *
+             * 原来按下那一刻就点击：想上下左右翻海报，一动就先把片子点开了。
+             * 现在按下只记起点，位移超过阈值算滚动，没动过才在抬起时当点击。
+             * 这一下只作用于海报墙，不会再去碰播放/暂停。
+             */
+            if (c.triggerDown[h]) {
+                if (!c.sinkLastTrigger[h]) {
+                    c.panelPressX[h] = px;
+                    c.panelPressY[h] = py;
+                    c.panelPressMoved[h] = false;
+                } else {
+                    const float mdx = px - c.panelPressX[h];
+                    const float mdy = py - c.panelPressY[h];
+                    if (!c.panelPressMoved[h] && (fabsf(mdx) > 20.f || fabsf(mdy) > 20.f)) {
+                        c.panelPressMoved[h] = true;
+                    }
+                    if (c.panelPressMoved[h] && c.sinkPanelScroll != nullptr) {
+                        // 手柄往右 → 内容往左走（跟手），所以取反
+                        env->CallVoidMethod(c.inputSink, c.sinkPanelScroll, -mdx, -mdy);
+                        clearJavaException(env, "输入回调 onPanelScroll");
+                        c.panelPressX[h] = px;
+                        c.panelPressY[h] = py;
+                    }
+                }
+            } else if (c.sinkLastTrigger[h]) {
+                if (!c.panelPressMoved[h] && !c.squeezeDown[h] && c.sinkClick != nullptr) {
+                    LOGI("VR 输入：%s 扳机 → 面板点击 (%d, %d)", handName[h], (int) px, (int) py);
+                    env->CallVoidMethod(c.inputSink, c.sinkClick, px, py);
+                    clearJavaException(env, "输入回调 onClick");
+                }
+                c.panelPressMoved[h] = false;
             }
             c.sinkLastTrigger[h] = c.triggerDown[h];
 
@@ -3233,6 +3265,39 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetPanelShown(JNIEnv *env, jobject /* t
     LOGI("海报墙状态 → %s", g.panelShown.load() ? "摆出来" : "收起");
 }
 
+/*
+ * 海报墙的摆放（位置 / 朝向 / 宽度）读写。
+ *
+ * 父亲 2026-10-06 晚：调好的海报墙位置要记住，下次打开 APP 还原到原处。
+ * Java 侧退出时读一次存本地，启动时读回来。
+ */
+extern "C" JNIEXPORT jfloatArray JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeGetPanelPlace(JNIEnv *env, jobject /* this */) {
+    jfloatArray out = env->NewFloatArray(6);
+    if (out == nullptr) return nullptr;
+    const jfloat v[6] = {
+        g.panelPosX.load(), g.panelPosY.load(), g.panelPosZ.load(),
+        g.panelYawDeg.load(), g.panelPitchDeg.load(), g.panelWidth.load(),
+    };
+    env->SetFloatArrayRegion(out, 0, 6, v);
+    return out;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetPanelPlace(JNIEnv *env, jobject /* this */,
+                                                       jfloat x, jfloat y, jfloat z,
+                                                       jfloat yaw, jfloat pitch,
+                                                       jfloat width) {
+    g.panelPosX = x;
+    g.panelPosY = y;
+    g.panelPosZ = z;
+    g.panelYawDeg = yaw;
+    g.panelPitchDeg = pitch;
+    g.panelWidth = fminf(kPanelMaxWidth, fmaxf(kPanelMinWidth, width));
+    LOGI("海报墙：还原到 (%.2f, %.2f, %.2f) 朝向 %.0f°/%.0f° 宽 %.2f 米",
+         (double) x, (double) y, (double) z, (double) yaw, (double) pitch, (double) width);
+}
+
 /**
  * 片子的宽高比变了 → 银幕高度跟着变。
  *
@@ -3297,6 +3362,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachInputSink(JNIEnv *env, jobject /*
     g.sinkOsdPointer = g.sinkOsdClick = g.sinkToggleOsd = nullptr;
     g.sinkMenuPointer = g.sinkMenuClick = nullptr;
     g.sinkDanmakuTex = g.sinkLogoTex = nullptr;
+    g.sinkPanelScroll = nullptr;
     if (sink == nullptr) {
         LOGI("VR 输入回调已注销");
         return;
@@ -3351,6 +3417,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachTextureSink(JNIEnv *env, jobject 
                                     "(Landroid/graphics/SurfaceTexture;)V");
     g.sinkMenuTex = env->GetMethodID(cls, "onMenuTexture",
                                      "(Landroid/graphics/SurfaceTexture;)V");
+    g.sinkPanelScroll = env->GetMethodID(cls, "onPanelScroll", "(FF)V");
     g.sinkDanmakuTex = env->GetMethodID(cls, "onDanmakuTexture",
                                         "(Landroid/graphics/SurfaceTexture;)V");
     g.sinkLogoTex = env->GetMethodID(cls, "onLogoTexture",
