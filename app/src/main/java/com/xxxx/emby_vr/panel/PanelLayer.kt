@@ -795,6 +795,55 @@ class PanelLayer(
         tap(px, py)
     }
 
+    /*
+     * ---- 直通按压流（控制条上扣扳机拖进度条，2026-10-06 下午）----
+     *
+     * 扳机按住 → 按下；按住期间光点移动 → 拖动；松扳机 → 抬起。走鼠标式事件，
+     * 但**不走** dispatch() 里那套「按压反推摇杆/焦点」的启发式：控制条是纯 Compose
+     * 界面，进度条要吃到完整的按下 → 移动 → 抬起序列。
+     *
+     * 按钮照样点得动：Compose 的 clickable 在「按下 → 原地抬起」时触发；
+     * 按住拖走了就不触发，顺带挡掉误触。
+     */
+    private var pressActive = false
+    private var pressAtMs = 0L
+
+    /** 原生推上来的控制条指针（带扳机态） */
+    fun vrPointerPressed(px: Float, py: Float, pressed: Boolean) {
+        lastPanelX = px
+        lastPanelY = py
+        scrollAnchorX = px
+        scrollAnchorY = py
+        if (pressed) {
+            if (pressActive) {
+                sendPress(MotionEvent.ACTION_MOVE, px, py)
+            } else {
+                downTime = SystemClock.uptimeMillis()
+                pressActive = true
+                sendPress(MotionEvent.ACTION_DOWN, px, py)
+            }
+        } else if (pressActive) {
+            pressActive = false
+            sendPress(MotionEvent.ACTION_UP, px, py)
+        }
+    }
+
+    private fun sendPress(action: Int, px: Float, py: Float) {
+        val v = decor ?: return
+        pressAtMs = SystemClock.uptimeMillis()
+        val ev = mouseEvent(
+            downTime, SystemClock.uptimeMillis(), action, px, py,
+            if (action == MotionEvent.ACTION_UP) 0 else MotionEvent.BUTTON_PRIMARY,
+        )
+        try {
+            v.dispatchTouchEvent(ev)
+        } catch (t: Throwable) {
+            Log.e(TAG, "控制条按压派发失败: ${t.message}")
+        } finally {
+            ev.recycle()
+        }
+    }
+
     /** 拨摇杆 = 滚光柱底下那一排；dx/dy 为面板像素位移（向下/向右为正） */
     fun vrScroll(px: Float, py: Float, dx: Float, dy: Float) {
         vrPointer(px, py)

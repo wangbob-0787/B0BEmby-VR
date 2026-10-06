@@ -226,7 +226,13 @@ object VrNative {
         fun onBack()
 
         /** 控制条上的指针（坐标是控制条面板像素：1920×270） */
-        fun onOsdPointer(px: Float, py: Float)
+        /**
+         * 控制条上的指针位置。
+         *
+         * @param pressed 扳机是否按住 —— 按住期间界面按「按下 / 拖动 / 抬起」处理，
+         *                进度条才拖得动（父亲 2026-10-06：激光瞄准 + 扣扳机直接拖）。
+         */
+        fun onOsdPointer(px: Float, py: Float, pressed: Boolean)
 
         /** 控制条上的一次点击（扣扳机） */
         fun onOsdClick(px: Float, py: Float)

@@ -2,6 +2,9 @@ package com.xxxx.emby_vr.panel
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -11,7 +14,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Chat
@@ -39,6 +41,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalWindowInfo
@@ -49,7 +52,7 @@ import androidx.compose.ui.unit.sp
 /**
  * 播放控制条（VR 原生播放屏的 OSD）。
  *
- * 形态：一块架在观影者身前近场的矮条（2560×300 像素的虚拟显示器，与主面板同一套
+ * 形态：一块架在观影者身前近场的矮条（2880×253 像素的虚拟显示器，与主面板同一套
  * VirtualDisplay + SurfaceTexture 机制）。窗口背景透明，圆角外透出影院背景。
  *
  * 2026-10-06 父亲定稿的 12 颗按钮，从左到右分三组：
@@ -59,6 +62,9 @@ import androidx.compose.ui.unit.sp
  *
  * 图标全部取自同一个图标库（Material Icons），风格统一。
  * 原来的画面调整三键（亮度/对比度/饱和度…）按父亲要求删除。
+ *
+ * 2026-10-06 下午父亲又定：整条加宽、高度缩短 1/4、内容左右留白加大，
+ * 左侧显示「已播 / 总时长」，进度条可以激光瞄准 + 扣扳机直接拖。
  */
 enum class OsdButton(val label: String, val icon: ImageVector) {
     // ── 左组 ──
@@ -125,6 +131,16 @@ class OsdState {
 
     /** 每颗按钮点了之后干什么（Agent 侧接 ExoPlayer） */
     var onButton: ((OsdButton) -> Unit)? = null
+
+    // ── 进度条拖动（父亲 2026-10-06：激光瞄准 + 扣扳机直接拖）──
+    /** 拖到哪儿了（0…1，松手时用它跳转） */
+    var seekFrac by mutableStateOf(0f)
+
+    /** 拖动中：只更新显示，不真跳（跟手） */
+    var onSeekPreview: ((Float) -> Unit)? = null
+
+    /** 松手 / 直接点进度条：真跳转 */
+    var onSeekCommit: ((Float) -> Unit)? = null
 }
 
 /** 毫秒 → mm:ss（超过一小时给 h:mm:ss） */
@@ -147,49 +163,32 @@ fun PlayerOsdBar(state: OsdState) {
             // 父亲 2026-10-06 定：整条倒圆角、底色近黑（要暗到纯黑只留一点灰）
             .clip(RoundedCornerShape(56.dp))
             .background(Color(0xFF141518))
-            .padding(horizontal = 40.dp, vertical = 16.dp),
+            /*
+             * 左右留白再加大（父亲 2026-10-06 下午），上下留白相等：
+             * 进度行贴上边、按钮行贴下边，两边的留白一样宽。
+             */
+            .padding(horizontal = 72.dp, vertical = 20.dp),
+        verticalArrangement = Arrangement.SpaceBetween,
     ) {
-        // ① 进度行：当前时间 + 进度条 + 总时长
+        // ① 进度行：左侧「已播 / 总时长」+ 进度条（可拖）
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                text = osdTimeText(state.positionMs),
+                text = "${osdTimeText(state.positionMs)} / ${osdTimeText(state.durationMs)}",
                 color = Color.White,
                 fontSize = 24.sp,
                 fontWeight = FontWeight.Medium,
             )
-            Box(
+            OsdProgress(
+                state = state,
                 modifier = Modifier
                     .weight(1f)
-                    .padding(horizontal = 40.dp)
-                    .height(8.dp)
-                    .background(Color(0x40FFFFFF), RoundedCornerShape(4.dp)),
-            ) {
-                val frac = if (state.durationMs > 0L) {
-                    (state.positionMs.toFloat() / state.durationMs.toFloat()).coerceIn(0f, 1f)
-                } else {
-                    0f
-                }
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth(frac)
-                        .height(8.dp)
-                        .background(Color(0xFF4CAF50), RoundedCornerShape(4.dp)),
-                )
-            }
-            Text(
-                text = osdTimeText(state.durationMs),
-                color = Color(0xFFBDBDBD),
-                fontSize = 24.sp,
+                    .padding(start = 36.dp),
             )
         }
 
-        Spacer(modifier = Modifier.height(10.dp))
-
         // ② 按钮行：左组贴左 · 中组在剩余空间居中 · 右组贴右
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f),
+            modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             OSD_LEFT_GROUP.forEach { OsdButtonView(it, state, panelWpx) }
@@ -197,6 +196,72 @@ fun PlayerOsdBar(state: OsdState) {
             OSD_CENTER_GROUP.forEach { OsdButtonView(it, state, panelWpx) }
             Spacer(modifier = Modifier.weight(1f))
             OSD_RIGHT_GROUP.forEach { OsdButtonView(it, state, panelWpx) }
+        }
+    }
+}
+
+/**
+ * 进度条：可以点，也可以按住拖（父亲 2026-10-06 下午）。
+ *
+ * 热区比轨道高得多（34dp），激光好瞄；拖动过程中只更新左侧时间与已播长度，
+ * 松手（或直接点一下）才真的跳。
+ */
+@Composable
+private fun OsdProgress(state: OsdState, modifier: Modifier = Modifier) {
+    val frac = if (state.durationMs > 0L) {
+        (state.positionMs.toFloat() / state.durationMs.toFloat()).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
+    Box(
+        modifier = modifier
+            .height(34.dp)
+            .pointerInput(state.durationMs) {
+                detectTapGestures { offset ->
+                    val f = (offset.x / size.width.toFloat()).coerceIn(0f, 1f)
+                    state.seekFrac = f
+                    state.onSeekCommit?.invoke(f)
+                }
+            }
+            .pointerInput(Unit) {
+                detectHorizontalDragGestures(
+                    onDragEnd = { state.onSeekCommit?.invoke(state.seekFrac) },
+                    onDragCancel = { state.onSeekCommit?.invoke(state.seekFrac) },
+                ) { change, _ ->
+                    change.consume()
+                    val f = (change.position.x / size.width.toFloat()).coerceIn(0f, 1f)
+                    state.seekFrac = f
+                    state.onSeekPreview?.invoke(f)
+                }
+            },
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        // 轨道
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(10.dp)
+                .background(Color(0x40FFFFFF), RoundedCornerShape(5.dp)),
+        )
+        // 已播
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(frac)
+                .height(10.dp)
+                .background(Color(0xFF4CAF50), RoundedCornerShape(5.dp)),
+        )
+        // 拖动手柄：跟着已播的右端走，方便看清拖到哪儿了
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(frac)
+                .height(34.dp),
+            contentAlignment = Alignment.CenterEnd,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(18.dp)
+                    .background(Color.White, RoundedCornerShape(9.dp)),
+            )
         }
     }
 }
@@ -221,15 +286,15 @@ private fun OsdButtonView(button: OsdButton, state: OsdState, panelWpx: Int) {
             .clip(RoundedCornerShape(22.dp))
             .background(if (selected) Color(0x2EFFFFFF) else Color.Transparent)
             .clickable { state.onButton?.invoke(button) }
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+            .padding(horizontal = 14.dp, vertical = 4.dp),
     ) {
         Icon(
             imageVector = if (button == OsdButton.PLAY_PAUSE) state.playIcon else button.icon,
             contentDescription = button.label,
             tint = if (selected) Color.White else Color(0xFFEDEDED),
-            modifier = Modifier.size(46.dp),
+            modifier = Modifier.size(44.dp),
         )
-        Spacer(modifier = Modifier.height(4.dp))
+        Spacer(modifier = Modifier.height(2.dp))
         Text(
             text = when (button) {
                 OsdButton.SPEED -> "速度 ${"%.1f".format(state.speed)}x"

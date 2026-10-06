@@ -36,15 +36,17 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil3.compose.AsyncImage
 
 /**
  * 播放控制条的展开菜单（2026-10-06 父亲定稿）。
  *
  * ## 形态
  *
- * 控制条本身不变（2560×300 的矮条）。菜单是**另一块面板**，架在控制条正上方：
+ * 控制条本身不变（2880×240 的矮条）。菜单是**另一块面板**，架在控制条正上方：
  *  - 窄菜单（字幕 / 弹幕 / 速度 / 选集 / 更多 / 音频 / 质量 / 模式 / 缓冲）：
  *    一张卡片，横向对齐到**触发它的那颗按钮**正上方。
  *  - 宽菜单（信息 / 演职人员）：卡片宽度从控制条最左铺到最右。
@@ -123,6 +125,9 @@ class MenuState {
     /** 服务器地址（演职人员头像用） */
     var serverUrl by mutableStateOf("")
 
+    /** 信息菜单里的海报地址（父亲 2026-10-06：信息要带海报） */
+    var posterUrl by mutableStateOf<String?>(null)
+
     /** 菜单里有东西被选中：(菜单类型，行号) */
     var onSelect: ((MenuKind, Int) -> Unit)? = null
 
@@ -158,8 +163,8 @@ val BUFFER_PRESETS = listOf(
 )
 
 /** 菜单面板像素尺寸（与控制条等宽 → 归一化横向坐标可以直接复用） */
-const val MENU_PANEL_W = 2560
-const val MENU_PANEL_H = 1200
+const val MENU_PANEL_W = 2880
+const val MENU_PANEL_H = 1350
 
 /** 窄卡片宽度（像素） */
 private const val CARD_W = 620f
@@ -377,44 +382,69 @@ private fun EpisodeMenu(menu: MenuState) {
     }
 }
 
+/**
+ * 信息（父亲 2026-10-06 下午定的形态，与电视版播放页「信息」一致）：
+ * 左边海报，右边片名 + 年份/时长/评分/类型 + 简介；不写「信息」两个字当标题。
+ * 整块从控制条最左铺到最右。
+ */
 @Composable
 private fun InfoMenu(menu: MenuState) {
     val info = menu.info ?: run {
         Text("暂无信息", color = Color(0xFF9E9E9E), fontSize = 20.sp)
         return
     }
-    Column {
-        Text(
-            text = info.title,
-            color = Color.White,
-            fontSize = 30.sp,
-            fontWeight = FontWeight.SemiBold,
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        Row {
-            listOf(info.year, info.runtime, info.rating, info.genres)
-                .filter { it.isNotBlank() }
-                .forEach { badge ->
-                    Text(
-                        text = badge,
-                        color = Color(0xFFBDBDBD),
-                        fontSize = 20.sp,
-                        modifier = Modifier
-                            .padding(end = 10.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(Color(0x22FFFFFF))
-                            .padding(horizontal = 12.dp, vertical = 4.dp),
-                    )
-                }
+    Row(modifier = Modifier.fillMaxSize()) {
+        // 海报（2:3）
+        Box(
+            modifier = Modifier
+                .width(216.dp)
+                .height(324.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(Color(0x22FFFFFF)),
+        ) {
+            if (!menu.posterUrl.isNullOrBlank()) {
+                AsyncImage(
+                    model = menu.posterUrl,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
         }
-        Spacer(modifier = Modifier.height(14.dp))
-        Text(
-            text = info.overview.ifBlank { "暂无简介" },
-            color = Color(0xFFDDDDDD),
-            fontSize = 21.sp,
-            lineHeight = 32.sp,
-            modifier = Modifier.heightIn(max = 520.dp),
-        )
+        Spacer(modifier = Modifier.width(30.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = info.title,
+                color = Color.White,
+                fontSize = 32.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+            Row {
+                listOf(info.year, info.runtime, info.rating, info.genres)
+                    .filter { it.isNotBlank() }
+                    .forEach { badge ->
+                        Text(
+                            text = badge,
+                            color = Color(0xFFBDBDBD),
+                            fontSize = 20.sp,
+                            modifier = Modifier
+                                .padding(end = 10.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color(0x22FFFFFF))
+                                .padding(horizontal = 12.dp, vertical = 4.dp),
+                        )
+                    }
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                text = info.overview.ifBlank { "暂无简介" },
+                color = Color(0xFFDDDDDD),
+                fontSize = 21.sp,
+                lineHeight = 32.sp,
+                modifier = Modifier.heightIn(max = 560.dp),
+            )
+        }
     }
 }
 
@@ -434,16 +464,26 @@ private fun CastMenu(menu: MenuState) {
             ) {
                 Box(
                     modifier = Modifier
-                        .size(110.dp)
-                        .clip(CircleShape)
+                        .width(140.dp)
+                        .height(212.dp)
+                        .clip(RoundedCornerShape(10.dp))
                         .background(Color(0x33FFFFFF)),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text(
-                        text = person.name.take(1),
-                        color = Color(0xFFBDBDBD),
-                        fontSize = 34.sp,
-                    )
+                    if (!person.avatarUrl.isNullOrBlank()) {
+                        AsyncImage(
+                            model = person.avatarUrl,
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    } else {
+                        Text(
+                            text = person.name.take(1),
+                            color = Color(0xFFBDBDBD),
+                            fontSize = 40.sp,
+                        )
+                    }
                 }
                 Spacer(modifier = Modifier.height(10.dp))
                 Text(

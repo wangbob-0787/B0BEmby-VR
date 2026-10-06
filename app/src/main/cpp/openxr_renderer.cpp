@@ -564,6 +564,7 @@ struct VrContext {
     bool sinkOsdPointerValid = false;   // 控制条上的指针位置
     float sinkOsdPointerX = 0.f;
     float sinkOsdPointerY = 0.f;
+    bool sinkOsdPressed = false;         // 上一次推给控制条的扳机态（变化就要推）
     bool sinkMenuPointerValid = false;  // 展开菜单上的指针位置
     float sinkMenuPointerX = 0.f;
     float sinkMenuPointerY = 0.f;
@@ -1536,9 +1537,9 @@ constexpr float kPanelPxH = 1080.f;
  * 位置/尺寸都在这里调：距离 [kOsdDistance]、高度 [kOsdCenterY]、宽度 [kOsdWidth]、
  * 仰角 [kOsdTiltDeg]。后续「指着它扣扳机拖走」也基于这几个量。
  */
-constexpr float kOsdPxW = 2560.f;   // 2026-10-06：12 颗按钮，面板加宽到 2560
-constexpr float kOsdPxH = 300.f;
-constexpr float kOsdWidth = 1.45f;                        // 米（父亲：再宽一点）
+constexpr float kOsdPxW = 2880.f;   // 2026-10-06 下午：加宽（像素密度不变，仍然 1800px/米）
+constexpr float kOsdPxH = 240.f;    // 高度缩短（300 → 240），整条更扁
+constexpr float kOsdWidth = 1.60f;  // 米（父亲 2026-10-06：控制条增加宽度）
 constexpr float kOsdHeight = kOsdWidth * kOsdPxH / kOsdPxW;
 constexpr float kOsdDistance = 0.85f;                     // 正前方距离（米，父亲：再近些）
 constexpr float kOsdCenterY = -0.62f;                     // 视线下方（米，父亲：再靠下）
@@ -1588,22 +1589,32 @@ bool rayHitsOsd(const VrContext &c, const XrPosef &aim, float *outT, float *outX
  * 与控制条等宽（像素 2560×1200）。位置：底边贴着控制条顶边留一点缝，
  * 距离与仰角跟控制条一致，看起来像同一套控件。
  */
-constexpr float kMenuPxW = 2560.f;
-constexpr float kMenuPxH = 1200.f;
+constexpr float kMenuPxW = 2880.f;   // 与控制条同一像素密度，字一样清楚
+constexpr float kMenuPxH = 1350.f;
 constexpr float kMenuWidth = kOsdWidth;
 constexpr float kMenuHeight = kMenuWidth * kMenuPxH / kMenuPxW;
 constexpr float kMenuGap = 0.02f;
-constexpr float kMenuDistance = kOsdDistance;
-constexpr float kMenuCenterY =
-        kOsdCenterY + kOsdHeight * 0.5f + kMenuGap + kMenuHeight * 0.5f;
 constexpr float kMenuTiltDeg = kOsdTiltDeg;
+/*
+ * 菜单中心由「与控制条共面」推出来（父亲 2026-10-06 实测：菜单比控制条离人更近，
+ * 要一样的距离）。两块面同仰角、同斜面：菜单**底边**贴控制条顶边、沿法线留 kMenuGap。
+ *
+ *   控制条顶边 = 中心 + v*(kOsdHeight/2)，v = (0, cos t, sin t)
+ *   菜单中心   = 控制条顶边 + n*kMenuGap + v*(kMenuHeight/2)，法线 n = (0, -sin t, cos t)
+ *
+ * 结果：控制条与菜单在同一张斜面上连着，距离从控制条中心的 0.85m 连续到菜单中心的
+ * 约 1.0m，不再出现「菜单悬在人脸前」。
+ */
 
 /** 菜单面板平面：中心与两条轴（与控制条同一仰角，中心抬到控制条上方） */
 void menuBasis(float *cx, float *cy, float *cz, float *nx, float *ny, float *nz, float *ux,
                float *uy, float *uz, float *vx, float *vy, float *vz) {
     const float th = kMenuTiltDeg * 3.14159265358979f / 180.f;
     const float ct = cosf(th), st = sinf(th);
-    *cx = 0.f; *cy = kMenuCenterY; *cz = -kMenuDistance;
+    const float half = kOsdHeight * 0.5f + kMenuHeight * 0.5f;   // 两块面沿 v 轴的半高之和
+    const float menuY = kOsdCenterY + ct * half - st * kMenuGap;
+    const float menuDist = kOsdDistance - st * half - ct * kMenuGap;
+    *cx = 0.f; *cy = menuY; *cz = -menuDist;
     *nx = 0.f; *ny = -st; *nz = ct;
     *ux = 1.f; *uy = 0.f; *uz = 0.f;
     *vx = 0.f; *vy = ct;  *vz = st;
@@ -1743,15 +1754,23 @@ void pushInput(VrContext &c) {
             if (rayHitsOsd(c, c.aimPose[h], &osdT, &ou, &ov)) {
                 const float opx = (ou / kOsdWidth + 0.5f) * kOsdPxW;
                 const float opy = (0.5f - ov / kOsdHeight) * kOsdPxH;
+                /*
+                 * 位置变了**或扳机态变了**都要推（父亲 2026-10-06：指着进度条扣扳机
+                 * 能直接拖着走）。扳机按住 = 一次"按压"，界面侧据此发 DOWN/MOVE/UP，
+                 * 进度条才吃得到拖动；松开那一下即使光点没动也必须推上去，否则松手
+                 * 会卡在按下态。
+                 */
+                const bool osdPressed = c.triggerDown[h];
                 if (!c.sinkOsdPointerValid || fabsf(opx - c.sinkOsdPointerX) > 2.f ||
-                    fabsf(opy - c.sinkOsdPointerY) > 2.f) {
+                    fabsf(opy - c.sinkOsdPointerY) > 2.f || osdPressed != c.sinkOsdPressed) {
                     if (c.sinkOsdPointer != nullptr) {
-                        env->CallVoidMethod(c.inputSink, c.sinkOsdPointer, opx, opy);
+                        env->CallVoidMethod(c.inputSink, c.sinkOsdPointer, opx, opy, osdPressed);
                         clearJavaException(env, "输入回调 onOsdPointer");
                     }
                     c.sinkOsdPointerX = opx;
                     c.sinkOsdPointerY = opy;
                     c.sinkOsdPointerValid = true;
+                    c.sinkOsdPressed = osdPressed;
                 }
                 if (c.triggerDown[h] && !c.sinkLastTrigger[h] && c.sinkOsdClick != nullptr) {
                     LOGI("VR 输入：%s 扳机 → 控制条点击 (%d, %d)", handName[h], (int) opx, (int) opy);
@@ -1760,6 +1779,20 @@ void pushInput(VrContext &c) {
                 }
                 c.sinkLastTrigger[h] = c.triggerDown[h];
                 continue;
+            }
+        }
+
+        /*
+         * 光柱扫出控制条（或控制条收起）时补一次「松手」：
+         * 按住扳机拖进度条，手一动光点就出界，原生不再推指针 —— 不补这一下，
+         * 界面那边会一直卡在按下态（父亲 2026-10-06：拖进度条要跟手）。
+         */
+        if (c.sinkOsdPressed) {
+            c.sinkOsdPressed = false;
+            if (c.sinkOsdPointer != nullptr) {
+                env->CallVoidMethod(c.inputSink, c.sinkOsdPointer,
+                                    c.sinkOsdPointerX, c.sinkOsdPointerY, false);
+                clearJavaException(env, "输入回调 onOsdPointer(补松手)");
             }
         }
 
@@ -2152,8 +2185,10 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
             glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             const float mth = kMenuTiltDeg * 3.14159265358979f / 180.f;
+            float mcx, mcy, mcz, mnx, mny, mnz, mux, muy, muz, mvx, mvy, mvz;
+            menuBasis(&mcx, &mcy, &mcz, &mnx, &mny, &mnz, &mux, &muy, &muz, &mvx, &mvy, &mvz);
             XrPosef menuPose{};
-            menuPose.position = {0.f, kMenuCenterY, -kMenuDistance};
+            menuPose.position = {mcx, mcy, mcz};
             menuPose.orientation = {sinf(mth * 0.5f), 0.f, 0.f, cosf(mth * 0.5f)};
             const Mat4 menuModel = poseScaleModel(menuPose, kMenuWidth, kMenuHeight, 1.f);
             const Mat4 menuMvp = multiply(multiply(proj, view4), menuModel);
@@ -2193,36 +2228,56 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
     if (c.program != 0 && c.mvpLoc >= 0 && c.rayVbo != 0) {
         const float kRayNear = 0.001f;    // 近端半径 1mm（官方 handScale 的 x/y 分量）
         const float kNoHitDistance = 100.f;
-        const float kDotSize = 0.022f;    // 光点直径 2.2cm ≈ 面板上 12px
+        const float kDotSize = 0.011f;    // 光点直径 1.1cm（父亲 2026-10-06：再小一半）
 
         for (int h = 0; h < 2; h++) {
             if (!c.aimValid[h]) continue;
 
-            const ScreenPlacement place = panelPlacement(c);
-            float planeT = 0.f, hu = 0.f, hv = 0.f;
-            float hitX = 0.f, hitY = 0.f, hitZ = 0.f;
-            const bool hit = c.panelShown.load() &&
-                             rayHitsPlacement(c.aimPose[h], place, &planeT, &hu, &hv,
-                                              &hitX, &hitY, &hitZ);
-
             /*
-             * 控制条挡在面板前面，射线也得在它上面收住（父亲：光线穿过控制条了）。
-             * 取两者里更近的那个命中点：控制条命中 → 光线与控制条齐平，光点落在控制条上。
+             * 射线打到哪就在哪收住，并在那块面上画光点。
+             *
+             * 父亲 2026-10-06：**银幕**上要有光点，**控制条上的二级/三级菜单**也要有。
+             * 四块面依次比距离，取最近的那块：
+             *   ① 海报墙（左前方）  ② 银幕（正前方）  ③ 控制条  ④ 菜单面板（架在控制条上方）
              */
-            float osdT = 0.f, osdU = 0.f, osdV = 0.f;
-            const bool osdHit = c.osdVisible.load() && c.osdTex != 0 && c.osdHasFrame.load() &&
-                                rayHitsOsd(c, c.aimPose[h], &osdT, &osdU, &osdV);
+            float rayLength = kNoHitDistance;   // 没打中就射 100m（官方默认）
+            float dotT = -1.f;
+            int dotKind = 0;                    // 1=平面屏（海报墙/银幕）2=控制条 3=菜单
+            ScreenPlacement dotPlace = panelPlacement(c);
 
-            float rayLength = kNoHitDistance;
-            bool dotOnPanel = false, dotOnOsd = false;
-            if (hit && planeT > 0.f) {
-                rayLength = planeT;
-                dotOnPanel = true;
+            // ① 海报墙（收起时不参与）
+            {
+                const ScreenPlacement place = panelPlacement(c);
+                float t = 0.f, u = 0.f, v = 0.f, hx = 0.f, hy = 0.f, hz = 0.f;
+                if (c.panelShown.load() &&
+                    rayHitsPlacement(c.aimPose[h], place, &t, &u, &v, &hx, &hy, &hz) && t > 0.f) {
+                    rayLength = t; dotT = t; dotKind = 1; dotPlace = place;
+                }
             }
-            if (osdHit && osdT > 0.f && osdT < rayLength) {
-                rayLength = osdT;
-                dotOnPanel = false;
-                dotOnOsd = true;
+            // ② 银幕（播放画面那块屏，收起时它也在，但没画面就别抢光点）
+            {
+                const ScreenPlacement front = frontScreen(c);
+                float t = 0.f, u = 0.f, v = 0.f, hx = 0.f, hy = 0.f, hz = 0.f;
+                if (rayHitsPlacement(c.aimPose[h], front, &t, &u, &v, &hx, &hy, &hz) &&
+                    t > 0.f && t < rayLength) {
+                    rayLength = t; dotT = t; dotKind = 1; dotPlace = front;
+                }
+            }
+            // ③ 控制条
+            {
+                float t = 0.f, u = 0.f, v = 0.f;
+                if (c.osdVisible.load() && c.osdTex != 0 && c.osdHasFrame.load() &&
+                    rayHitsOsd(c, c.aimPose[h], &t, &u, &v) && t > 0.f && t < rayLength) {
+                    rayLength = t; dotT = t; dotKind = 2;
+                }
+            }
+            // ④ 菜单面板（离人最近的一块，通常最后赢）
+            {
+                float t = 0.f, u = 0.f, v = 0.f;
+                if (c.menuVisible.load() && c.menuTex != 0 && c.menuHasFrame.load() &&
+                    rayHitsMenu(c, c.aimPose[h], &t, &u, &v) && t > 0.f && t < rayLength) {
+                    rayLength = t; dotT = t; dotKind = 3;
+                }
             }
 
             // 光线：从手柄沿指向射出
@@ -2231,33 +2286,47 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
                      multiply(multiply(proj, view4), rayModel),
                      0.30f, 0.82f, 0.22f, false);   // 与 TV 版强调色一致的绿
 
-            // 光点：贴在命中点上（朝眼睛方向抬几毫米，避免和面抢像素）
-            if (dotOnPanel) {
-                // 屏可能斜着（播放时的海报墙在左边、朝右前方）：光点跟着屏的朝向转
-                const float pth = place.yawDeg * 3.14159265358979f / 180.f;
-                XrPosef dotPose{};
-                dotPose.position = {hitX + sinf(pth) * 0.005f, hitY, hitZ + cosf(pth) * 0.005f};
-                dotPose.orientation = {0.f, sinf(pth * 0.5f), 0.f, cosf(pth * 0.5f)};
-                const Mat4 dotModel = poseScaleModel(dotPose, kDotSize, kDotSize, 1.f);
-                drawMesh(c, c.vbo, 6, multiply(multiply(proj, view4), dotModel),
-                         0.55f, 0.98f, 0.45f, true);
-            } else if (dotOnOsd) {
-                // 控制条是斜的：光点跟着斜，落在命中点上
+            /*
+             * 光点：贴在命中点上，朝眼睛方向抬几毫米（避免和面抢像素）。
+             * 姿态跟着那块面的朝向走：斜的屏/控制条/菜单，光点也斜着贴上去。
+             */
+            if (dotKind != 0 && dotT > 0.f) {
                 float dx = 0.f, dy = 0.f, dz = 0.f;
                 aimDirection(c.aimPose[h], &dx, &dy, &dz);
-                float cx, cy, cz, nx, ny, nz, ux, uy, uz, vx, vy, vz;
-                osdBasis(&cx, &cy, &cz, &nx, &ny, &nz, &ux, &uy, &uz, &vx, &vy, &vz);
-                const float hxw = c.aimPose[h].position.x + dx * osdT + nx * 0.006f;
-                const float hyw = c.aimPose[h].position.y + dy * osdT + ny * 0.006f;
-                const float hzw = c.aimPose[h].position.z + dz * osdT + nz * 0.006f;
-                const float thd = kOsdTiltDeg * 3.14159265358979f / 180.f;
+                float nx = 0.f, ny = 0.f, nz = 1.f;
+                XrQuaternionf rot{0.f, 0.f, 0.f, 1.f};
+                if (dotKind == 1) {
+                    // 平面屏可能斜着（海报墙在左边、朝右前方）：光点跟着屏的朝向转
+                    const float pth = dotPlace.yawDeg * 3.14159265358979f / 180.f;
+                    nx = sinf(pth); ny = 0.f; nz = cosf(pth);
+                    rot = {0.f, sinf(pth * 0.5f), 0.f, cosf(pth * 0.5f)};
+                } else {
+                    float bx = 0.f, by = 0.f, bz = 0.f, bnx = 0.f, bny = 0.f, bnz = 0.f;
+                    float bux = 0.f, buy = 0.f, buz = 0.f, bvx = 0.f, bvy = 0.f, bvz = 0.f;
+                    if (dotKind == 2) {
+                        osdBasis(&bx, &by, &bz, &bnx, &bny, &bnz,
+                                 &bux, &buy, &buz, &bvx, &bvy, &bvz);
+                    } else {
+                        menuBasis(&bx, &by, &bz, &bnx, &bny, &bnz,
+                                  &bux, &buy, &buz, &bvx, &bvy, &bvz);
+                    }
+                    nx = bnx; ny = bny; nz = bnz;
+                    const float tth = (dotKind == 2 ? kOsdTiltDeg : kMenuTiltDeg) *
+                                      3.14159265358979f / 180.f;
+                    rot = {sinf(tth * 0.5f), 0.f, 0.f, cosf(tth * 0.5f)};
+                }
                 XrPosef dotPose{};
-                dotPose.position = {hxw, hyw, hzw};
-                dotPose.orientation = {sinf(thd * 0.5f), 0.f, 0.f, cosf(thd * 0.5f)};
+                dotPose.position = {
+                        c.aimPose[h].position.x + dx * dotT + nx * 0.006f,
+                        c.aimPose[h].position.y + dy * dotT + ny * 0.006f,
+                        c.aimPose[h].position.z + dz * dotT + nz * 0.006f,
+                };
+                dotPose.orientation = rot;
                 const Mat4 dotModel = poseScaleModel(dotPose, kDotSize, kDotSize, 1.f);
                 drawMesh(c, c.vbo, 6, multiply(multiply(proj, view4), dotModel),
                          0.55f, 0.98f, 0.45f, true);
             }
+
         }
     }
 
@@ -3050,7 +3119,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachInputSink(JNIEnv *env, jobject /*
     g.sinkPointer = env->GetMethodID(cls, "onPointer", "(FF)V");
     g.sinkClick = env->GetMethodID(cls, "onClick", "(FF)V");
     g.sinkStick = env->GetMethodID(cls, "onStick", "(FFFF)V");
-    g.sinkOsdPointer = env->GetMethodID(cls, "onOsdPointer", "(FF)V");
+    g.sinkOsdPointer = env->GetMethodID(cls, "onOsdPointer", "(FFZ)V");
     g.sinkOsdClick = env->GetMethodID(cls, "onOsdClick", "(FF)V");
     g.sinkToggleOsd = env->GetMethodID(cls, "onToggleOsd", "()V");
     g.sinkMenuPointer = env->GetMethodID(cls, "onMenuPointer", "(FF)V");

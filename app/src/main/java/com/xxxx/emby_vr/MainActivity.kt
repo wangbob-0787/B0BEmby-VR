@@ -75,6 +75,13 @@ class MainActivity : ComponentActivity() {
     private lateinit var menu: PanelLayer
     private val menuState = com.xxxx.emby_vr.panel.MenuState()
 
+    // ── 光柱交互状态（2026-10-06 下午）──
+    /** 最近一次控制条 / 菜单指针到达的时间：用来判断「光柱指着画面还是指着面板」 */
+    private var lastOsdPointerAt = 0L
+    private var lastMenuPointerAt = 0L
+    /** 摇杆快进快退要回中一次才能再触发（免得住一个方向连续快进） */
+    private var stickSeekArmed = true
+
     // ── 播放上下文（切字幕 / 音轨 / 质量 / 选集都要用它重新起播）──
     private var currentMediaId = ""
     private var currentSeriesId: String? = null
@@ -141,6 +148,18 @@ class MainActivity : ComponentActivity() {
         override fun onStick(px: Float, py: Float, sx: Float, sy: Float) {
             vrInputLive = true
             runOnUiThread {
+                /*
+                 * 光柱指着**画面**时，摇杆左右 = 快退 / 快进（父亲 2026-10-06）。
+                 *
+                 * 「指着画面」的判断：原生只在光柱真的落在控制条 / 菜单上时才推指针，
+                 * 所以 400ms 内没有面板指针 = 光柱在画面这一侧。
+                 */
+                val nowMs = android.os.SystemClock.uptimeMillis()
+                val onPanelUi = nowMs - maxOf(lastOsdPointerAt, lastMenuPointerAt) < 400L
+                if (renderer.videoActive && !onPanelUi) {
+                    stickSeek(sx)
+                    return@runOnUiThread
+                }
                 if (panelInputReady()) {
                     panel.vrStick(px, py, sx, sy)
                 } else if (!renderer.videoActive && (kotlin.math.abs(sx) > 0.2f || kotlin.math.abs(sy) > 0.2f)) {
@@ -149,23 +168,39 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        override fun onOsdPointer(px: Float, py: Float) {
+        /** 摇杆左右快进快退：推过 0.7 触发一次，回中（< 0.35）后才能再触发 */
+        private fun stickSeek(sx: Float) {
+            if (player == null) return
+            val mag = kotlin.math.abs(sx)
+            if (mag < 0.35f) {
+                stickSeekArmed = true
+                return
+            }
+            if (!stickSeekArmed || mag < 0.7f) return
+            stickSeekArmed = false
+            seekBy(if (sx > 0f) 10_000 else -10_000)
+            Log.i(TAG, "光柱指着画面 + 摇杆 → ${if (sx > 0f) "快进" else "快退"} 10 秒")
+        }
+
+        override fun onOsdPointer(px: Float, py: Float, pressed: Boolean) {
             vrInputLive = true
-            runOnUiThread { if (osdReady()) osd.vrPointer(px, py) }
+            lastOsdPointerAt = android.os.SystemClock.uptimeMillis()
+            runOnUiThread { if (osdReady()) osd.vrPointerPressed(px, py, pressed) }
         }
 
         override fun onOsdClick(px: Float, py: Float) {
+            /*
+             * 扣扳机不再走这里：控制条改成「按下 / 拖动 / 抬起」三态（见 onOsdPointer），
+             * 这里再点一次会变成点两下。只留日志。
+             */
             vrInputLive = true
-            runOnUiThread {
-                if (osdReady()) {
-                    Log.i(TAG, "控制条点击 (${px.toInt()}, ${py.toInt()})")
-                    osd.vrClick(px, py)
-                }
-            }
+            lastOsdPointerAt = android.os.SystemClock.uptimeMillis()
+            Log.i(TAG, "控制条扳机按下 (${px.toInt()}, ${py.toInt()})")
         }
 
         override fun onMenuPointer(px: Float, py: Float) {
             vrInputLive = true
+            lastMenuPointerAt = android.os.SystemClock.uptimeMillis()
             runOnUiThread { if (menuReady()) menu.vrPointer(px, py) }
         }
 
@@ -928,11 +963,27 @@ class MainActivity : ComponentActivity() {
                     genres = item.genres?.take(3)?.joinToString(" / ") ?: "",
                     overview = item.overview ?: "",
                 )
-                menuState.people = (item.people ?: emptyList()).take(40).map {
+                // 海报（父亲 2026-10-06：信息面板要带海报）
+                val posterTag = item.imageTags?.get("Primary")
+                menuState.posterUrl = if (posterTag.isNullOrBlank()) {
+                    null
+                } else {
+                    "${BuildConfig.EMBY_SERVER}/emby/Items/$id/Images/Primary" +
+                        "?maxWidth=520&tag=$posterTag&quality=90"
+                }
+                // 演职人员头像
+                menuState.people = (item.people ?: emptyList()).take(40).map { p ->
+                    val pid = p.id
+                    val ptag = p.primaryImageTag
                     com.xxxx.emby_vr.panel.PersonItem(
-                        name = it.name ?: "",
-                        role = it.role ?: "",
-                        avatarUrl = null,
+                        name = p.name ?: "",
+                        role = p.role ?: "",
+                        avatarUrl = if (!pid.isNullOrBlank() && !ptag.isNullOrBlank()) {
+                            "${BuildConfig.EMBY_SERVER}/emby/Items/$pid/Images/Primary" +
+                                "?maxHeight=420&tag=$ptag&quality=90"
+                        } else {
+                            null
+                        },
                     )
                 }
                 Log.i(TAG, "详情已取到：${item.name}（演员 ${menuState.people.size} 人）")
@@ -1199,9 +1250,9 @@ class MainActivity : ComponentActivity() {
         osd = PanelLayer(
             this,
             content = { com.xxxx.emby_vr.panel.PlayerOsdBar(osdState) },
-            // 父亲 2026-10-06：12 颗按钮，面板从 1920 加宽到 2560（观感宽度不变、像素更密）
-            panelW = 2560,
-            panelH = 300,
+            // 父亲 2026-10-06 下午：整条加宽、高度缩短 1/4（像素密度不变，字仍然清楚）
+            panelW = 2880,
+            panelH = 240,
             name = "b0bemby-osd",
             activatesVrPanel = false,
             // 控制条是纯 Compose 界面，没登记进电视版那张控件坐标表 → 点击要直通派发
@@ -1245,6 +1296,21 @@ class MainActivity : ComponentActivity() {
             },
         )
         osdState.onButton = { button -> onOsdButton(button) }
+        // 拖进度条：拖动中只动显示（跟手），松手才真跳
+        osdState.onSeekPreview = { frac ->
+            val dur = osdState.durationMs
+            if (dur > 0L) osdState.positionMs = (dur * frac).toLong()
+        }
+        osdState.onSeekCommit = { frac ->
+            val dur = osdState.durationMs
+            val p = player
+            if (dur > 0L && p != null) {
+                val target = (dur * frac).toLong()
+                osdState.positionMs = target
+                p.seekTo(target)
+                Log.i(TAG, "控制条拖进度 → ${target / 1000} 秒 / ${dur / 1000} 秒")
+            }
+        }
         menuState.onSelect = { kind, index -> onMenuSelect(kind, index) }
         menuState.onClose = { closeMenu() }
 
