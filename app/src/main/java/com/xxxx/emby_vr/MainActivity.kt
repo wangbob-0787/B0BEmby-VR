@@ -21,6 +21,7 @@ import com.xxxx.emby_vr.vr.InputRouter
 import com.xxxx.emby_vr.vr.VrRenderer
 import com.xxxx.emby_vr.vr.VrSession
 import androidx.compose.foundation.layout.fillMaxSize
+import com.xxxx.emby_vr.panel.isSubMenu
 import androidx.compose.ui.Modifier
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -85,6 +86,9 @@ class MainActivity : ComponentActivity() {
      */
     private lateinit var danmaku: PanelLayer
     private var danmakuView: com.xxxx.emby_vr.danmaku.DanmakuView? = null
+
+    /** 当前这一集解析好的弹幕（菜单里把弹幕关掉时先留着，开回来直接用） */
+    private var danmakuTrack: com.xxxx.emby_vr.danmaku.DanmakuTrack? = null
 
     /** 片名 logo 层（银幕左上角那块小透明面板） */
     private lateinit var logo: PanelLayer
@@ -851,6 +855,10 @@ class MainActivity : ComponentActivity() {
                 }
                 menuState.danmakuOn = danmakuOn
                 menuState.danmakuScale = danmakuScale
+                // 开关与字号立刻作用到弹幕层：关掉整层不画，开回来立刻显示
+                danmakuView?.userScale = danmakuScale
+                danmakuView?.setTrack(if (danmakuOn) danmakuTrack else null)
+                com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(danmakuOn && danmakuTrack != null)
                 Log.i(TAG, "弹幕设置 → ${if (danmakuOn) "开" else "关"}，字号 ${danmakuScale}")
             }
             com.xxxx.emby_vr.panel.MenuKind.SUBTITLE -> {

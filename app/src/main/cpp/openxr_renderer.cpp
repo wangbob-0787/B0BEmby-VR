@@ -553,6 +553,8 @@ struct VrContext {
     jmethodID sinkBack = nullptr;
     jmethodID sinkOsdPointer = nullptr; // 控制条上的指针
     jmethodID sinkOsdClick = nullptr;   // 控制条上的点击
+    jmethodID sinkDanmakuTex = nullptr; // 弹幕层纹理就绪
+    jmethodID sinkLogoTex = nullptr;    // 片名 logo 纹理就绪
     jmethodID sinkMenuPointer = nullptr; // 展开菜单上的指针
     jmethodID sinkMenuClick = nullptr;   // 展开菜单上的点击
     jmethodID sinkToggleOsd = nullptr;  // 播放中扣扳机 = 开关控制条
@@ -3294,6 +3296,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachInputSink(JNIEnv *env, jobject /*
     g.sinkPointer = g.sinkClick = g.sinkStick = g.sinkBack = nullptr;
     g.sinkOsdPointer = g.sinkOsdClick = g.sinkToggleOsd = nullptr;
     g.sinkMenuPointer = g.sinkMenuClick = nullptr;
+    g.sinkDanmakuTex = g.sinkLogoTex = nullptr;
     if (sink == nullptr) {
         LOGI("VR 输入回调已注销");
         return;
