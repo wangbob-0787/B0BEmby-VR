@@ -575,10 +575,12 @@ struct VrContext {
     float sinkMenuPointerY = 0.f;
     bool sinkLastTrigger[2] = {false, false};
     bool sinkPanelFocusOn[2] = {false, false};   // 上一次回推的"光柱在海报墙上"状态
-    // 按住扳机的起点与"拖动过没有"：抬起时据此区分「选中」与「滚动」
-    float panelPressX[2] = {0.f, 0.f};
-    float panelPressY[2] = {0.f, 0.f};
-    bool panelPressMoved[2] = {false, false};
+    /*
+     * 海报墙上的"按住拖动 → 滚动"通道（onPanelScroll）。
+     *
+     * 父亲 2026-10-06 晚定：扣扳机时**不要**滚（手一抖就对不准海报），所以这条通道
+     * 当前不推送；接口与 Java 侧实现留着，将来若要"扣扳机当把手"可以直接启用。
+     */
 
     /**
      * 海报墙当前位置与朝向（父亲 2026-10-06：按住扳机拖它，在以手柄为球心的球面上挪）。
@@ -1995,45 +1997,28 @@ void pushInput(VrContext &c) {
             }
 
             /*
-             * ① 扳机（父亲 2026-10-06 晚改）：按住 + 移动手柄 = 滚动海报墙，
-             *    按住不动松手 = 选中。
+             * ① 扳机（按下那一刻）→ 在光柱位置点一下。拖动整块墙改由握把键承担。
              *
-             * 原来按下那一刻就点击：想上下左右翻海报，一动就先把片子点开了。
-             * 现在按下只记起点，位移超过阈值算滚动，没动过才在抬起时当点击。
-             * 这一下只作用于海报墙，不会再去碰播放/暂停。
+             * 父亲 2026-10-06 晚明确：**对准海报扣扳机时，海报不许上下左右滚动** ——
+             * 手一抖海报就跟着滚，很难对准要点的那张。所以按住扳机期间，
+             * 摇杆滚动通道在下面 ④ 被掐掉（见那里的条件）。
              */
-            if (c.triggerDown[h]) {
-                if (!c.sinkLastTrigger[h]) {
-                    c.panelPressX[h] = px;
-                    c.panelPressY[h] = py;
-                    c.panelPressMoved[h] = false;
-                } else {
-                    const float mdx = px - c.panelPressX[h];
-                    const float mdy = py - c.panelPressY[h];
-                    if (!c.panelPressMoved[h] && (fabsf(mdx) > 20.f || fabsf(mdy) > 20.f)) {
-                        c.panelPressMoved[h] = true;
-                    }
-                    if (c.panelPressMoved[h] && c.sinkPanelScroll != nullptr) {
-                        // 手柄往右 → 内容往左走（跟手），所以取反
-                        env->CallVoidMethod(c.inputSink, c.sinkPanelScroll, -mdx, -mdy);
-                        clearJavaException(env, "输入回调 onPanelScroll");
-                        c.panelPressX[h] = px;
-                        c.panelPressY[h] = py;
-                    }
-                }
-            } else if (c.sinkLastTrigger[h]) {
-                if (!c.panelPressMoved[h] && !c.squeezeDown[h] && c.sinkClick != nullptr) {
-                    LOGI("VR 输入：%s 扳机 → 面板点击 (%d, %d)", handName[h], (int) px, (int) py);
-                    env->CallVoidMethod(c.inputSink, c.sinkClick, px, py);
-                    clearJavaException(env, "输入回调 onClick");
-                }
-                c.panelPressMoved[h] = false;
+            if (!c.squeezeDown[h] && c.triggerDown[h] && !c.sinkLastTrigger[h] &&
+                c.sinkClick != nullptr) {
+                LOGI("VR 输入：%s 扳机 → 面板点击 (%d, %d)", handName[h], (int) px, (int) py);
+                env->CallVoidMethod(c.inputSink, c.sinkClick, px, py);
+                clearJavaException(env, "输入回调 onClick");
             }
             c.sinkLastTrigger[h] = c.triggerDown[h];
 
-            // ④ 摇杆滚动：连状态上报（30Hz）；回中补一帧零值，Java 侧据此进入惯性滑行。
-            //    按着握把键时不滚 —— 那时候的摇杆在调远近与大小（见 ③）
-            if (!c.squeezeDown[h]) {
+            /*
+             * ④ 摇杆滚动：连状态上报（30Hz）；回中补一帧零值，Java 侧据此进入惯性滑行。
+             *
+             * 两种时候不滚：
+             *   · 按着握把键 —— 那时候的摇杆在调远近与大小（见 ③）；
+             *   · 按着扳机 —— 父亲 2026-10-06 晚：扣着扳机对准海报时不许海报跟着手滚。
+             */
+            if (!c.squeezeDown[h] && !c.triggerDown[h]) {
                 const float sx = c.thumbstick[h].x;
                 const float sy = c.thumbstick[h].y;
                 if (fabsf(sx) > kStickDeadzone || fabsf(sy) > kStickDeadzone) {
