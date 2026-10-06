@@ -3167,7 +3167,9 @@ void pushTexturesToJava(VrContext &c, JNIEnv *env) {
         env->CallVoidMethod(c.textureSink, c.sinkLogoTex, c.logoSt);
         clearJavaException(env, "回调 onLogoTexture");
     }
-    LOGI("六张画面已推给界面层（面板 / 播放画面 / 控制条 / 展开菜单 / 弹幕 / 片名 logo）");
+    LOGI("六张画面已推给界面层（弹幕纹理=%d logo 纹理=%d 回调=%d/%d）",
+         c.danmakuSt != nullptr ? 1 : 0, c.logoSt != nullptr ? 1 : 0,
+         c.sinkDanmakuTex != nullptr ? 1 : 0, c.sinkLogoTex != nullptr ? 1 : 0);
 }
 
 /**
@@ -3475,6 +3477,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachTextureSink(JNIEnv *env, jobject 
         g.textureSink = nullptr;
     }
     g.sinkPanelTex = g.sinkVideoTex = g.sinkOsdTex = g.sinkMenuTex = nullptr;
+    g.sinkDanmakuTex = g.sinkLogoTex = nullptr;
     if (sink == nullptr) {
         LOGI("纹理回调已注销");
         return;
@@ -3495,9 +3498,10 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachTextureSink(JNIEnv *env, jobject 
     g.sinkLogoTex = env->GetMethodID(cls, "onLogoTexture",
                                      "(Landroid/graphics/SurfaceTexture;)V");
     env->DeleteLocalRef(cls);
-    LOGI("纹理回调已注册（面板=%d 播放画面=%d 控制条=%d 菜单=%d）",
+    LOGI("纹理回调已注册（面板=%d 播放画面=%d 控制条=%d 菜单=%d 弹幕=%d logo=%d）",
          g.sinkPanelTex != nullptr ? 1 : 0, g.sinkVideoTex != nullptr ? 1 : 0,
-         g.sinkOsdTex != nullptr ? 1 : 0, g.sinkMenuTex != nullptr ? 1 : 0);
+         g.sinkOsdTex != nullptr ? 1 : 0, g.sinkMenuTex != nullptr ? 1 : 0,
+         g.sinkDanmakuTex != nullptr ? 1 : 0, g.sinkLogoTex != nullptr ? 1 : 0);
 
     if (g.panelSt != nullptr) pushTexturesToJava(g, env);
 }
