@@ -462,6 +462,10 @@ struct EyeSwapchain {
  * 换成独立图层：我们只把视频原样搬进一块和视频同尺寸的缓冲，缩放到面板分辨率那一步
  * 交给系统合成器做，不再经过我们自己的画面缓冲。这是专业 VR 播放器的做法。
  */
+/** 弹幕层比银幕靠前多少米、宽度是银幕的多少倍（父亲 2026-10-06 晚定） */
+constexpr float kDanmakuNearer = 0.35f;
+constexpr float kDanmakuScale = 0.92f;
+
 struct VideoLayerBuf {
     bool built = false;              // 交换链建好了（尺寸匹配当前视频）
     bool submitted = false;          // 本帧有内容、可以提交
@@ -554,8 +558,6 @@ struct VrContext {
     jmethodID sinkBack = nullptr;
     jmethodID sinkOsdPointer = nullptr; // 控制条上的指针
     jmethodID sinkOsdClick = nullptr;   // 控制条上的点击
-    jmethodID sinkDanmakuTex = nullptr; // 弹幕层纹理就绪
-    jmethodID sinkLogoTex = nullptr;    // 片名 logo 纹理就绪
     jmethodID sinkMenuPointer = nullptr; // 展开菜单上的指针
     jmethodID sinkMenuClick = nullptr;   // 展开菜单上的点击
     jmethodID sinkToggleOsd = nullptr;  // 播放中扣扳机 = 开关控制条
@@ -614,6 +616,13 @@ struct VrContext {
     /** 视频独立合成层（父亲 2026-10-06）：建不起来就退回老路，画进我们自己的画面 */
     VideoLayerBuf videoLayer;
     bool videoLayerOk = true;      // 运行时拒绝过就永久关掉，免得每帧报错
+    /*
+     * 弹幕独立合成层（父亲 2026-10-06 晚定）：弹幕与字幕离开视频画面，做成
+     * 单独一层摆在银幕前面一点点。原来画在视频层里 / GL 场景里，前者会跟着
+     * 视频缩放、后者被视频层整个盖住。这块缓冲与视频层同一套机制。
+     */
+    VideoLayerBuf danmakuLayer;
+    bool danmakuLayerOk = true;    // 同上：运行时拒绝过就永久关掉
     GLuint videoLayerVao = 0;
     GLuint videoLayerVbo = 0;
 
@@ -733,10 +742,13 @@ struct VrContext {
     jobject danmakuSt = nullptr;
     jobject logoSt = nullptr;
     jobject textureSink = nullptr;
-    jmethodID sinkPanelTex = nullptr;
-    jmethodID sinkVideoTex = nullptr;
-    jmethodID sinkOsdTex = nullptr;
-    jmethodID sinkMenuTex = nullptr;
+    /*
+     * 画面纹理回调（2026-10-06 晚改）：原来六块画面各有一个方法，实测弹幕与
+     * 片名 logo 这两个方法在推送时查不到（GetMethodID 拿到空），这两块画面
+     * 因此从启动起就没被绘制过。现在统一成一个 onTexture(kind, st)，
+     * 以后再加层只需扩编号。
+     */
+    jmethodID sinkTexture = nullptr;    // onTexture(int kind, SurfaceTexture st)
 
     // ---- 手柄输入 ----
     XrActionSet actionSet = XR_NULL_HANDLE;
@@ -2335,21 +2347,6 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
          * 架在控制条正上方。卡片画在面板哪儿由 Java 侧决定（两面板等宽，坐标直接对齐）。
          */
         /*
-         * 弹幕层（2026-10-06）：贴在银幕前面一点点、比银幕小一圈。
-         * 单独一层，跟字幕各画各的，整层能开能关（父亲：弹幕要接进来）。
-         */
-        if (c.danmakuVisible.load() && c.danmakuTex != 0 && c.danmakuHasFrame.load()) {
-            const ScreenPlacement front = frontScreen(c);
-            const float sh = front.width / fmaxf(0.1f, front.aspect);
-            const float dw = front.width * 0.92f;
-            const float dh = dw * (sh / front.width);
-            glEnable(GL_BLEND);
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-            drawFlatOverlay(c.danmakuTex, front.cx, front.cy, front.cz + 0.35f, dw, dh);
-            glDisable(GL_BLEND);
-        }
-
-        /*
          * 片名 logo（2026-10-06）：钉在银幕左上角，尺寸与内边距照电视版比例
          * （宽 7.3%、距左 2.5%、距顶 2.8%，图片 640×275 的框）。
          */
@@ -2571,15 +2568,16 @@ void ensureVideoLayerQuad(VrContext &c) {
  * 尺寸就用视频的真实分辨率（上限 4K）—— 这是这条路的全部意义：视频以原始尺寸
  * 交给系统合成器，缩到面板那一步由它做，我们不再先缩一次。
  */
-bool buildVideoLayer(VrContext &c, int32_t w, int32_t h) {
-    if (c.videoLayer.built && c.videoLayer.width == w && c.videoLayer.height == h) return true;
+bool buildQuadLayer(VrContext &c, VideoLayerBuf &L, int32_t w, int32_t h,
+                    const char *what) {
+    if (L.built && L.width == w && L.height == h) return true;
 
-    if (c.videoLayer.handle != XR_NULL_HANDLE) {
-        api.DestroySwapchain(c.videoLayer.handle);
-        c.videoLayer.handle = XR_NULL_HANDLE;
-        c.videoLayer.built = false;
-        c.videoLayer.fbos.clear();
-        c.videoLayer.images.clear();
+    if (L.handle != XR_NULL_HANDLE) {
+        api.DestroySwapchain(L.handle);
+        L.handle = XR_NULL_HANDLE;
+        L.built = false;
+        L.fbos.clear();
+        L.images.clear();
     }
 
     /*
@@ -2598,52 +2596,52 @@ bool buildVideoLayer(VrContext &c, int32_t w, int32_t h) {
         sci.height = h;
         sci.sampleCount = 1;
         sci.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
-        if (XR_SUCCEEDED(api.CreateSwapchain(c.session, &sci, &c.videoLayer.handle))) {
+        if (XR_SUCCEEDED(api.CreateSwapchain(c.session, &sci, &L.handle))) {
             created = true;
             break;
         }
-        c.videoLayer.handle = XR_NULL_HANDLE;
+        L.handle = XR_NULL_HANDLE;
     }
     if (!created) {
-        LOGE("视频层交换链创建失败（%dx%d），这一版仍走老路", w, h);
+        LOGE("%s交换链创建失败（%dx%d），这一版仍走老路", what, w, h);
         return false;
     }
 
     uint32_t imgCount = 0;
-    api.EnumerateSwapchainImages(c.videoLayer.handle, 0, &imgCount, nullptr);
+    api.EnumerateSwapchainImages(L.handle, 0, &imgCount, nullptr);
     if (imgCount == 0) {
-        LOGE("视频层交换链没有可用图像");
-        api.DestroySwapchain(c.videoLayer.handle);
-        c.videoLayer.handle = XR_NULL_HANDLE;
+        LOGE("%s交换链没有可用图像", what);
+        api.DestroySwapchain(L.handle);
+        L.handle = XR_NULL_HANDLE;
         return false;
     }
-    c.videoLayer.images.assign(imgCount, {XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR});
+    L.images.assign(imgCount, {XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR});
     if (XR_FAILED(api.EnumerateSwapchainImages(
-                c.videoLayer.handle, imgCount, &imgCount,
-                reinterpret_cast<XrSwapchainImageBaseHeader *>(c.videoLayer.images.data())))) {
+                L.handle, imgCount, &imgCount,
+                reinterpret_cast<XrSwapchainImageBaseHeader *>(L.images.data())))) {
         LOGE("视频层图像枚举失败");
-        api.DestroySwapchain(c.videoLayer.handle);
-        c.videoLayer.handle = XR_NULL_HANDLE;
+        api.DestroySwapchain(L.handle);
+        L.handle = XR_NULL_HANDLE;
         return false;
     }
-    c.videoLayer.fbos.assign(imgCount, 0);
+    L.fbos.assign(imgCount, 0);
     for (uint32_t k = 0; k < imgCount; k++) {
-        glGenFramebuffers(1, &c.videoLayer.fbos[k]);
-        glBindFramebuffer(GL_FRAMEBUFFER, c.videoLayer.fbos[k]);
+        glGenFramebuffers(1, &L.fbos[k]);
+        glBindFramebuffer(GL_FRAMEBUFFER, L.fbos[k]);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
-                               static_cast<GLuint>(c.videoLayer.images[k].image), 0);
+                               static_cast<GLuint>(L.images[k].image), 0);
         if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
             LOGE("视频层 FBO 不完整（图 %u）", k);
             glBindFramebuffer(GL_FRAMEBUFFER, 0);
-            api.DestroySwapchain(c.videoLayer.handle);
-            c.videoLayer.handle = XR_NULL_HANDLE;
+            api.DestroySwapchain(L.handle);
+            L.handle = XR_NULL_HANDLE;
             return false;
         }
     }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    c.videoLayer.width = w;
-    c.videoLayer.height = h;
-    c.videoLayer.built = true;
+    L.width = w;
+    L.height = h;
+    L.built = true;
     LOGI("视频独立层已就绪：%dx%d，%u 张图（缩放交给系统合成器）", w, h, imgCount);
     return true;
 }
@@ -2691,25 +2689,26 @@ void drawOverlayIntoVideoLayer(VrContext &c, GLuint tex,
     glDisable(GL_BLEND);
 }
 
-bool renderVideoLayer(VrContext &c) {
-    if (!c.videoLayer.built || c.videoTex == 0 || c.program == 0) return false;
+bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
+                     bool videoLayerPass) {
+    if (!L.built || tex == 0 || c.program == 0) return false;
 
     XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
     uint32_t idx = 0;
-    if (XR_FAILED(api.AcquireSwapchainImage(c.videoLayer.handle, &ai, &idx))) return false;
-    if (idx >= c.videoLayer.fbos.size()) return false;
+    if (XR_FAILED(api.AcquireSwapchainImage(L.handle, &ai, &idx))) return false;
+    if (idx >= L.fbos.size()) return false;
     XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
     wi.timeout = XR_INFINITE_DURATION;
-    if (XR_FAILED(api.WaitSwapchainImage(c.videoLayer.handle, &wi))) {
+    if (XR_FAILED(api.WaitSwapchainImage(L.handle, &wi))) {
         XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
-        api.ReleaseSwapchainImage(c.videoLayer.handle, &ri);
+        api.ReleaseSwapchainImage(L.handle, &ri);
         return false;
     }
 
     ensureVideoLayerQuad(c);
 
-    glBindFramebuffer(GL_FRAMEBUFFER, c.videoLayer.fbos[idx]);
-    glViewport(0, 0, c.videoLayer.width, c.videoLayer.height);
+    glBindFramebuffer(GL_FRAMEBUFFER, L.fbos[idx]);
+    glViewport(0, 0, L.width, L.height);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_BLEND);
     glClearColor(0.f, 0.f, 0.f, 1.f);
@@ -2719,7 +2718,7 @@ bool renderVideoLayer(VrContext &c) {
     const Mat4 id = identityMat();
     glUniformMatrix4fv(c.mvpLoc, 1, GL_FALSE, id.m);
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_EXTERNAL_OES, c.videoTex);
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, tex);
     glUniform1i(c.texLoc, 0);
     glUniform1i(c.useTexLoc, 1);
     if (c.circleLoc >= 0) glUniform1i(c.circleLoc, 0);
@@ -2743,19 +2742,19 @@ bool renderVideoLayer(VrContext &c) {
     glBindVertexArray(0);
 
     /*
-     * 弹幕层与片名 logo 叠在视频之上（同一张合成图里）。
-     *
-     * 它们原来画在主画面（GL 场景）里，而视频是独立合成层、压在 GL 画面上面，
-     * 于是看不见 —— 父亲 2026-10-06 晚报的「弹幕与 logo 未实现」就是这个。
+     * 片名 logo 叠在视频之上（同一张合成图里）—— 父亲定的：logo 与视频一层。
+     * 弹幕则改走独立合成层（见渲染循环），这里只在弹幕层建不起来时兜底，
+     * 免得弹幕整个消失。
      */
-    if (c.danmakuVisible.load() && c.danmakuTex != 0 && c.danmakuHasFrame.load()) {
+    if (videoLayerPass && !c.danmakuLayer.submitted &&
+        c.danmakuVisible.load() && c.danmakuTex != 0 && c.danmakuHasFrame.load()) {
         drawOverlayIntoVideoLayer(c, c.danmakuTex, 0.f, 0.f, 1.f, 1.f);
     }
-    if (c.logoVisible.load() && c.logoTex != 0 && c.logoHasFrame.load()) {
+    if (videoLayerPass && c.logoVisible.load() && c.logoTex != 0 && c.logoHasFrame.load()) {
         // 银幕左上角：宽 7.3%、距左 2.5%、距顶 2.8%，比例与电视版一致
         const float lwFrac = 0.073f;
-        const float aspect = c.videoLayer.height > 0
-                ? (float) c.videoLayer.width / (float) c.videoLayer.height
+        const float aspect = L.height > 0
+                ? (float) L.width / (float) L.height
                 : 1.7778f;
         const float lhFrac = lwFrac * aspect * (220.f / 512.f);
         const float lcx = -1.f + 2.f * 0.025f + lwFrac * 0.5f;
@@ -2766,8 +2765,8 @@ bool renderVideoLayer(VrContext &c) {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
-    if (XR_FAILED(api.ReleaseSwapchainImage(c.videoLayer.handle, &ri))) return false;
-    c.videoLayer.index = idx;
+    if (XR_FAILED(api.ReleaseSwapchainImage(L.handle, &ri))) return false;
+    L.index = idx;
     return true;
 }
 
@@ -2811,7 +2810,17 @@ void frameLoop(VrContext &c) {
     videoQuad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
     videoQuad.layerFlags = 0;
 
-    const XrCompositionLayerBaseHeader *layerPtrs[2] = {nullptr, nullptr};
+    /*
+     * 弹幕独立合成层（父亲 2026-10-06 晚定）：摆在银幕前方一点点，与视频层
+     * 分开。提交顺序上放在视频之后，保证叠在画面之上；就算顺序反了，它离眼睛
+     * 更近，深度上也压过去。
+     */
+    XrCompositionLayerQuad danmakuQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+    danmakuQuad.space = c.localSpace;
+    danmakuQuad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+    danmakuQuad.layerFlags = 0;
+
+    const XrCompositionLayerBaseHeader *layerPtrs[3] = {nullptr, nullptr, nullptr};
 
     int loggedFrames = 0;
     while (!gRequestStop) {
@@ -2863,8 +2872,23 @@ void frameLoop(VrContext &c) {
                 vw = (int32_t) ((float) vw * k);
                 vh = (int32_t) ((float) vh * k);
             }
-            if (vw >= 64 && vh >= 64 && buildVideoLayer(c, vw, vh)) {
-                c.videoLayer.submitted = renderVideoLayer(c);
+            if (vw >= 64 && vh >= 64 && buildQuadLayer(c, c.videoLayer, vw, vh, "视频层")) {
+                c.videoLayer.submitted = renderQuadLayer(c, c.videoLayer, c.videoTex, true);
+            }
+        }
+
+        /*
+         * 弹幕独立层：与视频层同一套机制，尺寸取弹幕面板的像素尺寸。
+         * 先渲染它，视频层才知道要不要兜底把弹幕画回自己身上。
+         */
+        c.danmakuLayer.submitted = false;
+        if (c.danmakuLayerOk && c.danmakuVisible.load() && c.danmakuHasFrame.load() &&
+            c.danmakuTex != 0) {
+            constexpr int32_t kDanmakuPxW = 2560;
+            constexpr int32_t kDanmakuPxH = 1440;
+            if (buildQuadLayer(c, c.danmakuLayer, kDanmakuPxW, kDanmakuPxH, "弹幕层")) {
+                c.danmakuLayer.submitted =
+                        renderQuadLayer(c, c.danmakuLayer, c.danmakuTex, false);
             }
         }
 
@@ -2967,6 +2991,24 @@ void frameLoop(VrContext &c) {
             layerPtrs[layerCount++] =
                     reinterpret_cast<const XrCompositionLayerBaseHeader *>(&videoQuad);
         }
+        if (rendered && c.danmakuLayer.submitted) {
+            const ScreenPlacement sp = frontScreen(c);
+            const float hy = sp.yawDeg * 3.14159265358979f / 360.f;
+            const float hp = sp.pitchDeg * 3.14159265358979f / 360.f;
+            const float sy2 = sinf(hy), cy2 = cosf(hy);
+            const float sp2 = sinf(hp), cp2 = cosf(hp);
+            danmakuQuad.pose.position = {sp.cx, sp.cy, sp.cz + kDanmakuNearer};
+            danmakuQuad.pose.orientation = {cy2 * sp2, sy2 * cp2, -sy2 * sp2, cy2 * cp2};
+            const float dw = sp.width * kDanmakuScale;
+            danmakuQuad.size = {dw, dw / fmaxf(0.1f, sp.aspect)};
+            danmakuQuad.subImage.swapchain = c.danmakuLayer.handle;
+            danmakuQuad.subImage.imageRect.offset = {0, 0};
+            danmakuQuad.subImage.imageRect.extent = {c.danmakuLayer.width,
+                                                     c.danmakuLayer.height};
+            danmakuQuad.subImage.imageArrayIndex = 0;
+            layerPtrs[layerCount++] =
+                    reinterpret_cast<const XrCompositionLayerBaseHeader *>(&danmakuQuad);
+        }
         if (rendered) {
             layerPtrs[layerCount++] =
                     reinterpret_cast<const XrCompositionLayerBaseHeader *>(&layer);
@@ -2982,6 +3024,11 @@ void frameLoop(VrContext &c) {
             LOGE("提交独立视频层失败（xrResult=%d），退回老路", (int) endRes);
             c.videoLayerOk = false;
             c.videoLayer.submitted = false;
+        }
+        if (XR_FAILED(endRes) && c.danmakuLayer.submitted) {
+            LOGE("提交独立弹幕层失败（xrResult=%d），退回老路（画进视频层）", (int) endRes);
+            c.danmakuLayerOk = false;
+            c.danmakuLayer.submitted = false;
         }
     }
     LOGI("渲染循环结束");
@@ -3149,34 +3196,29 @@ jobject makeOesSurface(JNIEnv *env, GLuint tex, std::function<void()> &out,
 
 /** 把已经建好的三张画面推给 Java 侧（注册回调时补推也走这里） */
 void pushTexturesToJava(VrContext &c, JNIEnv *env) {
-    if (env == nullptr || c.textureSink == nullptr || c.sinkPanelTex == nullptr) return;
-    if (c.panelSt != nullptr) {
-        env->CallVoidMethod(c.textureSink, c.sinkPanelTex, c.panelSt);
-        clearJavaException(env, "回调 onPanelTexture");
+    if (env == nullptr || c.textureSink == nullptr || c.sinkTexture == nullptr) return;
+    // 编号必须与 Java 侧 VrNative.TEXTURE_* 常量一致
+    struct Item {
+        jobject st;
+        jint kind;
+        const char *what;
+    };
+    const Item items[] = {
+        {c.panelSt, 0, "面板"},
+        {c.videoSt, 1, "播放画面"},
+        {c.osdSt, 2, "控制条"},
+        {c.menuSt, 3, "展开菜单"},
+        {c.danmakuSt, 4, "弹幕层"},
+        {c.logoSt, 5, "片名 logo"},
+    };
+    int pushed = 0;
+    for (const Item &it : items) {
+        if (it.st == nullptr) continue;
+        env->CallVoidMethod(c.textureSink, c.sinkTexture, it.kind, it.st);
+        clearJavaException(env, it.what);
+        pushed++;
     }
-    if (c.sinkVideoTex != nullptr && c.videoSt != nullptr) {
-        env->CallVoidMethod(c.textureSink, c.sinkVideoTex, c.videoSt);
-        clearJavaException(env, "回调 onVideoTexture");
-    }
-    if (c.sinkOsdTex != nullptr && c.osdSt != nullptr) {
-        env->CallVoidMethod(c.textureSink, c.sinkOsdTex, c.osdSt);
-        clearJavaException(env, "回调 onOsdTexture");
-    }
-    if (c.sinkMenuTex != nullptr && c.menuSt != nullptr) {
-        env->CallVoidMethod(c.textureSink, c.sinkMenuTex, c.menuSt);
-        clearJavaException(env, "回调 onMenuTexture");
-    }
-    if (c.sinkDanmakuTex != nullptr && c.danmakuSt != nullptr) {
-        env->CallVoidMethod(c.textureSink, c.sinkDanmakuTex, c.danmakuSt);
-        clearJavaException(env, "回调 onDanmakuTexture");
-    }
-    if (c.sinkLogoTex != nullptr && c.logoSt != nullptr) {
-        env->CallVoidMethod(c.textureSink, c.sinkLogoTex, c.logoSt);
-        clearJavaException(env, "回调 onLogoTexture");
-    }
-    LOGI("六张画面已推给界面层（弹幕纹理=%d logo 纹理=%d 回调=%d/%d）",
-         c.danmakuSt != nullptr ? 1 : 0, c.logoSt != nullptr ? 1 : 0,
-         c.sinkDanmakuTex != nullptr ? 1 : 0, c.sinkLogoTex != nullptr ? 1 : 0);
+    LOGI("画面纹理已推给界面层：%d 块（面板/播放画面/控制条/菜单/弹幕/片名 logo）", pushed);
 }
 
 /**
@@ -3442,7 +3484,6 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachInputSink(JNIEnv *env, jobject /*
     g.sinkPointer = g.sinkClick = g.sinkStick = g.sinkBack = nullptr;
     g.sinkOsdPointer = g.sinkOsdClick = g.sinkToggleOsd = nullptr;
     g.sinkMenuPointer = g.sinkMenuClick = nullptr;
-    g.sinkDanmakuTex = g.sinkLogoTex = nullptr;
     g.sinkPanelScroll = nullptr;
     if (sink == nullptr) {
         LOGI("VR 输入回调已注销");
@@ -3483,32 +3524,18 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachTextureSink(JNIEnv *env, jobject 
         env->DeleteGlobalRef(g.textureSink);
         g.textureSink = nullptr;
     }
-    g.sinkPanelTex = g.sinkVideoTex = g.sinkOsdTex = g.sinkMenuTex = nullptr;
-    g.sinkDanmakuTex = g.sinkLogoTex = nullptr;
+    g.sinkTexture = nullptr;
     if (sink == nullptr) {
         LOGI("纹理回调已注销");
         return;
     }
     g.textureSink = env->NewGlobalRef(sink);
     jclass cls = env->GetObjectClass(sink);
-    g.sinkPanelTex = env->GetMethodID(cls, "onPanelTexture",
-                                      "(Landroid/graphics/SurfaceTexture;)V");
-    g.sinkVideoTex = env->GetMethodID(cls, "onVideoTexture",
-                                      "(Landroid/graphics/SurfaceTexture;)V");
-    g.sinkOsdTex = env->GetMethodID(cls, "onOsdTexture",
-                                    "(Landroid/graphics/SurfaceTexture;)V");
-    g.sinkMenuTex = env->GetMethodID(cls, "onMenuTexture",
-                                     "(Landroid/graphics/SurfaceTexture;)V");
+    g.sinkTexture = env->GetMethodID(cls, "onTexture",
+                                     "(ILandroid/graphics/SurfaceTexture;)V");
     g.sinkPanelScroll = env->GetMethodID(cls, "onPanelScroll", "(FF)V");
-    g.sinkDanmakuTex = env->GetMethodID(cls, "onDanmakuTexture",
-                                        "(Landroid/graphics/SurfaceTexture;)V");
-    g.sinkLogoTex = env->GetMethodID(cls, "onLogoTexture",
-                                     "(Landroid/graphics/SurfaceTexture;)V");
     env->DeleteLocalRef(cls);
-    LOGI("纹理回调已注册（面板=%d 播放画面=%d 控制条=%d 菜单=%d 弹幕=%d logo=%d）",
-         g.sinkPanelTex != nullptr ? 1 : 0, g.sinkVideoTex != nullptr ? 1 : 0,
-         g.sinkOsdTex != nullptr ? 1 : 0, g.sinkMenuTex != nullptr ? 1 : 0,
-         g.sinkDanmakuTex != nullptr ? 1 : 0, g.sinkLogoTex != nullptr ? 1 : 0);
+    LOGI("纹理回调已注册（统一通道 onTexture=%d）", g.sinkTexture != nullptr ? 1 : 0);
 
     if (g.panelSt != nullptr) pushTexturesToJava(g, env);
 }

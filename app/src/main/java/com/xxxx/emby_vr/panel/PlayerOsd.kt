@@ -241,7 +241,7 @@ fun PlayerOsdBar(state: OsdState) {
             .padding(vertical = px(PANEL_PAD_Y_PX)),
         verticalArrangement = Arrangement.Top,
     ) {
-        // ① 标题行：左「正在播放 XXXX」 右「当前时间」（父亲 2026-10-06 晚加的行）
+        // ① 标题行：左「正在播放：片名 第X集 集名」 右「当前时间」（父亲 2026-10-06 晚定）
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -249,8 +249,8 @@ fun PlayerOsdBar(state: OsdState) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = "正在播放 ${state.title}",
-                color = Color(0xFFEAF6EE),
+                text = state.title,
+                color = Color(0xFFFFFFFF),
                 fontSize = 24.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -258,7 +258,7 @@ fun PlayerOsdBar(state: OsdState) {
             )
             Text(
                 text = state.nowClock,
-                color = Color(0xFFA9B8AE),
+                color = Color(0xFF9E9E9E),
                 fontSize = 24.sp,
             )
         }
@@ -279,7 +279,7 @@ fun PlayerOsdBar(state: OsdState) {
              */
             Text(
                 text = osdTimeText(state.positionMs),
-                color = Color(0xFFEAF6EE),
+                color = Color(0xFFFFFFFF),
                 fontSize = 26.sp,
                 fontWeight = FontWeight.Medium,
                 style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"),
@@ -294,7 +294,7 @@ fun PlayerOsdBar(state: OsdState) {
             Text(
                 text = "-" + osdTimeText((state.durationMs - state.positionMs).coerceAtLeast(0L)) +
                     " / " + osdTimeText(state.durationMs),
-                color = Color(0xFFC9D6CE),
+                color = Color(0xFFFFFFFF),
                 fontSize = 26.sp,
                 style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"),
                 maxLines = 1,
@@ -445,9 +445,9 @@ private fun OsdButtonView(button: OsdButton, state: OsdState, panelWpx: Int) {
         else -> Color.Transparent
     }
     val tint = when {
-        selected -> Color(0xFF8EF7C0)
+        selected -> Color(0xFFFFFFFF)
         hovered -> Color.White
-        else -> Color(0xFFE3E3E3)
+        else -> Color(0xFFFFFFFF)
     }
 
     Box(

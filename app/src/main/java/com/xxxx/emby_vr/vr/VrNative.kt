@@ -40,24 +40,28 @@ object VrNative {
      * 互相串画面（控制条贴视频 / 播放屏贴控制条）。
      * 建好后原生主动回调这里，界面层拿 SurfaceTexture 去建虚拟显示器或交给播放器。
      */
+    /**
+     * 画面纹理编号 —— 必须与原生 `openxr_renderer.cpp` 的 pushTexturesToJava 一致。
+     *
+     * 2026-10-06 晚改成单一入口：原来六块画面各有一个方法，实测弹幕与片名 logo
+     * 这两个方法在原生侧查不到（GetMethodID 拿到空），两块画面从启动起就没被
+     * 绘制过。统一成一个入口后，加层只需在这里多一个编号。
+     */
+    const val TEXTURE_PANEL = 0
+    const val TEXTURE_VIDEO = 1
+    const val TEXTURE_OSD = 2
+    const val TEXTURE_MENU = 3
+    const val TEXTURE_DANMAKU = 4
+    const val TEXTURE_LOGO = 5
+
     interface TextureSink {
-        /** 主面板（电视版界面）画面 */
-        fun onPanelTexture(st: android.graphics.SurfaceTexture)
-
-        /** 播放画面（交给 ExoPlayer 输出视频） */
-        fun onVideoTexture(st: android.graphics.SurfaceTexture)
-
-        /** 控制条画面 */
-        fun onOsdTexture(st: android.graphics.SurfaceTexture)
-
-        /** 展开菜单画面（架在控制条正上方的透明面板） */
-        fun onMenuTexture(st: android.graphics.SurfaceTexture)
-
-        /** 弹幕层画面（贴在银幕前、比银幕小一圈的透明层，2026-10-06） */
-        fun onDanmakuTexture(st: android.graphics.SurfaceTexture)
-
-        /** 片名 logo 画面（银幕左上角的小透明层，2026-10-06） */
-        fun onLogoTexture(st: android.graphics.SurfaceTexture)
+        /**
+         * 原生建好一块画面纹理就回调一次。
+         *
+         * @param kind 见 [TEXTURE_PANEL] 等编号
+         * @param st   画面纹理，拿去建虚拟显示器或交给播放器
+         */
+        fun onTexture(kind: Int, st: android.graphics.SurfaceTexture)
     }
 
     private external fun nativeAttachTextureSink(sink: TextureSink)

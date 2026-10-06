@@ -255,7 +255,7 @@ fun PlayerMenuPanel(menu: MenuState, osd: OsdState) {
                 )
                 Text(
                     text = if (kind.isSubMenu) "返回上级" else "关闭",
-                    color = Color(0xFF9E9E9E),
+                    color = Color(0xFFFFFFFF),
                     fontSize = 24.sp,
                     modifier = Modifier
                         .clip(RoundedCornerShape(10.dp))
@@ -395,7 +395,7 @@ private fun DanmakuMenu(menu: MenuState) {
 @Composable
 private fun TrackMenu(menu: MenuState, rows: List<MenuRowItem>, kind: MenuKind) {
     if (rows.isEmpty()) {
-        Text("没有可选项", color = Color(0xFF9E9E9E), fontSize = 24.sp)
+        Text("没有可选项", color = Color(0xFFFFFFFF), fontSize = 24.sp)
         return
     }
     LazyColumn(modifier = Modifier.heightIn(max = 620.dp)) {
@@ -413,7 +413,7 @@ private fun TrackMenu(menu: MenuState, rows: List<MenuRowItem>, kind: MenuKind) 
 @Composable
 private fun EpisodeMenu(menu: MenuState) {
     if (menu.episodes.isEmpty()) {
-        Text("没有可选的集数", color = Color(0xFF9E9E9E), fontSize = 24.sp)
+        Text("没有可选的集数", color = Color(0xFFFFFFFF), fontSize = 24.sp)
         return
     }
     LazyColumn(modifier = Modifier.heightIn(max = 620.dp)) {
@@ -436,7 +436,7 @@ private fun EpisodeMenu(menu: MenuState) {
 @Composable
 private fun InfoMenu(menu: MenuState) {
     val info = menu.info ?: run {
-        Text("暂无信息", color = Color(0xFF9E9E9E), fontSize = 24.sp)
+        Text("暂无信息", color = Color(0xFFFFFFFF), fontSize = 24.sp)
         return
     }
     Row(modifier = Modifier.fillMaxSize()) {
@@ -480,7 +480,7 @@ private fun InfoMenu(menu: MenuState) {
                     .forEach { badge ->
                         Text(
                             text = badge,
-                            color = Color(0xFFBDBDBD),
+                            color = Color(0xFFFFFFFF),
                             fontSize = 24.sp,
                             modifier = Modifier
                                 .padding(end = 10.dp)
@@ -493,7 +493,7 @@ private fun InfoMenu(menu: MenuState) {
             Spacer(modifier = Modifier.height(16.dp))
             Text(
                 text = info.overview.ifBlank { "暂无简介" },
-                color = Color(0xFFDDDDDD),
+                color = Color(0xFFFFFFFF),
                 fontSize = 21.sp,
                 lineHeight = 32.sp,
                 modifier = Modifier.heightIn(max = 560.dp),
@@ -505,7 +505,7 @@ private fun InfoMenu(menu: MenuState) {
 @Composable
 private fun CastMenu(menu: MenuState) {
     if (menu.people.isEmpty()) {
-        Text("暂无演职人员信息", color = Color(0xFF9E9E9E), fontSize = 24.sp)
+        Text("暂无演职人员信息", color = Color(0xFFFFFFFF), fontSize = 24.sp)
         return
     }
     LazyRow(contentPadding = PaddingValues(vertical = 6.dp)) {
@@ -534,7 +534,7 @@ private fun CastMenu(menu: MenuState) {
                     } else {
                         Text(
                             text = person.name.take(1),
-                            color = Color(0xFFBDBDBD),
+                            color = Color(0xFFFFFFFF),
                             fontSize = 40.sp,
                         )
                     }
@@ -549,7 +549,7 @@ private fun CastMenu(menu: MenuState) {
                 if (person.role.isNotBlank()) {
                     Text(
                         text = person.role,
-                        color = Color(0xFF9E9E9E),
+                        color = Color(0xFFFFFFFF),
                         fontSize = 17.sp,
                         maxLines = 1,
                     )
@@ -587,7 +587,7 @@ private fun MenuRow(
         if (value.isNotBlank()) {
             Text(
                 text = value,
-                color = Color(0xFF9E9E9E),
+                color = Color(0xFFFFFFFF),
                 fontSize = 19.sp,
                 maxLines = 1,
             )
@@ -597,12 +597,12 @@ private fun MenuRow(
             Icon(
                 imageVector = Icons.Filled.Check,
                 contentDescription = null,
-                tint = Color(0xFF4CAF50),
+                tint = Color(0xFFFFFFFF),
                 modifier = Modifier.size(24.dp),
             )
         } else if (hasSub) {
             Spacer(modifier = Modifier.width(10.dp))
-            Text(text = "›", color = Color(0xFF9E9E9E), fontSize = 26.sp)
+            Text(text = "›", color = Color(0xFFFFFFFF), fontSize = 26.sp)
         }
     }
 }

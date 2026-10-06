@@ -1615,32 +1615,28 @@ class MainActivity : ComponentActivity() {
          */
         com.xxxx.emby_vr.vr.VrNative.attachTextureSink(
             object : com.xxxx.emby_vr.vr.VrNative.TextureSink {
-                override fun onPanelTexture(st: android.graphics.SurfaceTexture) {
-                    panel.attach(st)
-                }
-
-                override fun onVideoTexture(st: android.graphics.SurfaceTexture) {
-                    renderer.setVrVideoSurface(st)
-                }
-
-                override fun onOsdTexture(st: android.graphics.SurfaceTexture) {
-                    osd.attach(st)
-                }
-
-                override fun onMenuTexture(st: android.graphics.SurfaceTexture) {
-                    menu.attach(st)
-                }
-
-                override fun onDanmakuTexture(st: android.graphics.SurfaceTexture) {
-                    Log.i(TAG, "收到弹幕层纹理（面板已建=${::danmaku.isInitialized}）")
-                    pendingDanmakuSt = st
-                    if (::danmaku.isInitialized) danmaku.attach(st)
-                }
-
-                override fun onLogoTexture(st: android.graphics.SurfaceTexture) {
-                    Log.i(TAG, "收到片名 logo 纹理（面板已建=${::logo.isInitialized}）")
-                    pendingLogoSt = st
-                    if (::logo.isInitialized) logo.attach(st)
+                /*
+                 * 2026-10-06 晚改成单一入口：原来六块画面各有一个方法，实测弹幕与
+                 * 片名 logo 这两个方法在原生侧 GetMethodID 拿到空，两块画面从未
+                 * 绘制过。现在按编号分发，编号与原生 pushTexturesToJava 一一对应。
+                 */
+                override fun onTexture(kind: Int, st: android.graphics.SurfaceTexture) {
+                    when (kind) {
+                        com.xxxx.emby_vr.vr.VrNative.TEXTURE_PANEL -> panel.attach(st)
+                        com.xxxx.emby_vr.vr.VrNative.TEXTURE_VIDEO -> renderer.setVrVideoSurface(st)
+                        com.xxxx.emby_vr.vr.VrNative.TEXTURE_OSD -> osd.attach(st)
+                        com.xxxx.emby_vr.vr.VrNative.TEXTURE_MENU -> menu.attach(st)
+                        com.xxxx.emby_vr.vr.VrNative.TEXTURE_DANMAKU -> {
+                            Log.i(TAG, "收到弹幕层纹理（面板已建=${::danmaku.isInitialized}）")
+                            pendingDanmakuSt = st
+                            if (::danmaku.isInitialized) danmaku.attach(st)
+                        }
+                        com.xxxx.emby_vr.vr.VrNative.TEXTURE_LOGO -> {
+                            Log.i(TAG, "收到片名 logo 纹理（面板已建=${::logo.isInitialized}）")
+                            pendingLogoSt = st
+                            if (::logo.isInitialized) logo.attach(st)
+                        }
+                    }
                 }
             },
         )
