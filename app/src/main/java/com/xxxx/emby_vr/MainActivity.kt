@@ -1022,7 +1022,7 @@ class MainActivity : ComponentActivity() {
                 var i = index
                 if (subtitleDanmakuRow) {
                     if (i == 0) {
-                        // 第 0 行是弹幕开关：只动弹幕，字幕选择原样保留
+                        // 第一行是弹幕开关：只动弹幕，字幕选择原样保留
                         danmakuOn = !danmakuOn
                         applyDanmakuSetting()
                         refreshMenuRows(com.xxxx.emby_vr.panel.MenuKind.SUBTITLE)
@@ -1031,9 +1031,13 @@ class MainActivity : ComponentActivity() {
                     }
                     i -= 1
                 }
-                // 之后第 0 行是「关闭字幕」，其余按顺序对应文本字幕流
+                /*
+                 * 点已勾上的那一条 = 取消勾选（父亲 2026-10-06 晚：不再单列「关闭字幕」，
+                 * 取消勾选就起到关闭字幕的作用）。
+                 */
+                val picked = subtitleStreamIndices.getOrNull(i)
                 selectedSubtitleIndex =
-                    if (i == 0) null else subtitleStreamIndices.getOrNull(i - 1)
+                    if (picked != null && picked == selectedSubtitleIndex) null else picked
                 Log.i(TAG, "字幕 → ${selectedSubtitleIndex ?: "关闭"}（菜单保持打开）")
                 replayKeepingPosition()
             }
@@ -1163,9 +1167,11 @@ class MainActivity : ComponentActivity() {
          * 字幕菜单里弹幕与字幕**可以同时勾**（父亲 2026-10-06 晚）。
          *
          * 弹幕与字幕是两套并行通道：弹幕那条 ASS 轨由我们自己下载、自绘在弹幕层；
-         * 普通字幕由播放器回调交给弹幕层底部。所以这一列里：
-         *   · 第 0 行是「弹幕」—— 独立开关，勾选态 = 弹幕开关，点它不影响字幕选择；
-         *   · 之后是「关闭字幕」+ 各条文本字幕 —— 单选。
+         * 普通字幕由播放器回调交给弹幕层底部。菜单形态（父亲 2026-10-06 晚定稿）：
+         *   · 有弹幕轨时第一行是「弹幕」，勾选态 = 弹幕开关，点一下切换；
+         *   · 之后是各条文本字幕，只能选一条；
+         *   · 没有「关闭字幕」这一项 —— 点已勾上的那一条就是取消勾选（关字幕），
+         *     弹幕同理，点一下勾上、再点一下取消。
          * 两者互不覆盖，一屏里可以同时看到两个勾。
          */
         val hasDanmakuTrack = currentStreams.any {
@@ -1178,7 +1184,6 @@ class MainActivity : ComponentActivity() {
         if (hasDanmakuTrack) {
             rows += com.xxxx.emby_vr.panel.MenuRowItem("弹幕", danmakuOn)
         }
-        rows += com.xxxx.emby_vr.panel.MenuRowItem("关闭字幕", selectedSubtitleIndex == null)
         subs.forEachIndexed { i, s ->
             val label = s.displayTitle?.takeIf { it.isNotBlank() }
                 ?: s.language?.takeIf { it.isNotBlank() }
