@@ -45,6 +45,14 @@ fun HomeScreen(
     mainViewModel: MainViewModel,
     navController: NavController,
     onSwitchAccount: () -> Unit = {},
+    /*
+     * VR 版专用：直接起播，不跳页面（父亲 2026-10-06 晚定）。
+     *
+     * 电视版点「大海报 / 继续观看 / 直播」是 navigate 到播放页；VR 版的播放由原生
+     * 播放器负责，面板只需要把「播哪一部」报上去。跳那个转发页会让海报墙先黑一下
+     * —— 面板原地不动，一帧都不闪。
+     */
+    onPlayNow: ((mediaId: String, positionTicks: Long) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     var showMenu by remember { mutableStateOf(false) }
@@ -139,7 +147,13 @@ fun HomeScreen(
         // 记住"从哪一条走的"，返回时把焦点送回这张卡（父亲 2026-10-02）
         FocusMemory.lastItemId = id
         DiagLog.w(context, "focusSave", "去播放 id=$id")
-        navController.navigate("player/$id?position=$position")
+        val playNow = onPlayNow
+        if (playNow != null) {
+            // VR 版：面板原地不动，直接把片子交给原生播放器
+            playNow(id, position)
+        } else {
+            navController.navigate("player/$id?position=$position")
+        }
     }
 
     /** 首页条目 → 进详情页(剧集进剧集详情,其余进通用详情);"继续观看"仍保留一键续播 */
