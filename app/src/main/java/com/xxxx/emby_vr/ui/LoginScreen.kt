@@ -21,6 +21,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.*
 import com.xxxx.emby_vr.LocalServer
+import com.xxxx.emby_vr.panel.vrClickTarget
 import com.xxxx.emby_vr.QrCodeUtils
 import com.xxxx.emby_vr.R
 import kotlinx.coroutines.Dispatchers
@@ -311,8 +312,17 @@ fun LoginScreen(
                     modifier = Modifier
                         .fillMaxWidth(0.8f)
                         .height(56.dp)
-                        //兼容移动端点击  TODO：移除
-                        //  .clickable(true, onClick = { onLoginClick() })
+                        /*
+                         * 登记进控件坐标表（父亲 2026-10-07 01:29 实测：登录按钮点不动）。
+                         * 日志铁证「落点未命中任何控件 位置=(1435,729) 表内 1 项」——
+                         * 点击坐标准确送达面板，但登录页从未登记任何控件，落空。
+                         * 这是组件登记的老坑同款（顶栏图标/大海报/直播卡都漏过）。
+                         */
+                        .vrClickTarget(
+                            key = "login:submit",
+                            focusRequester = loginButtonFocusRequester,
+                            onActivate = { if (!loginViewModel.isLoading) onLoginClick() },
+                        )
                         .focusRequester(loginButtonFocusRequester)
                         .onKeyEvent { keyEvent ->
                             if (keyEvent.type == KeyEventType.KeyDown) {
