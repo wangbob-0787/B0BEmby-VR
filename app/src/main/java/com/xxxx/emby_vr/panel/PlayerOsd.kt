@@ -113,14 +113,27 @@ val OSD_RIGHT_GROUP = listOf(
 )
 
 /**
- * 三组之间的固定间距（dp）= 按钮间距的两倍。
+ * 间距（父亲 2026-10-06 晚按图定稿，全部用像素算）：
  *
- * 按钮横向内边距 24dp，相邻两颗之间视觉缝 48dp；组间取 96dp（父亲 2026-10-06 晚）。
+ *  · 按钮**矩形框**之间的缝 5px（框 = 图标 58dp + 左右各 24dp 内边距，
+ *    所以图标到图标的距离是 5 + 36 + 36 = 77px）；
+ *  · 组与组之间 50px；
+ *  · 按钮行左右各留 114px，即图标距控制条边缘 114 + 36 = 150px（与标题行、进度行对齐）。
+ *
+ * 面板宽 2428 = 114 + 框总宽 2055 + 组内缝 9×5 + 组间缝 2×50 + 114，内容正好铺满。
  */
-private const val GROUP_GAP_DP = 96
+private const val BUTTON_GAP_PX = 5f
+private const val GROUP_GAP_PX = 50f
+private const val BUTTON_ROW_SIDE_PX = 114f
+
+/** 控制条面板 240dpi：1dp = 1.5px */
+private const val PX_PER_DP = 1.5f
+
+/** px 转 dp（Compose 只收 dp） */
+private fun px(v: Float) = (v / PX_PER_DP).dp
 
 /** 控制条面板像素宽（必须与原生 kOsdPxW 一致：光柱坐标是按面板像素给的） */
-const val OSD_PANEL_W = 3291f
+const val OSD_PANEL_W = 2428f
 
 /**
  * 控制条状态：主线程（Activity）写，面板界面读。
@@ -286,17 +299,32 @@ fun PlayerOsdBar(state: OsdState) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 76.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
+                .padding(horizontal = px(BUTTON_ROW_SIDE_PX)),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            /*
+             * 组内按钮框之间留 5px、组与组之间留 50px，都是固定值，不用 SpaceBetween：
+             * 面板宽就是按「114 + 框总宽 + 组内缝 + 组间缝 + 114」算准的，内容正好铺满，
+             * 右组自然贴右。（2026-10-06 晚父亲校准：所谓「按钮间距」是矩形框的缝。）
+             */
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(px(BUTTON_GAP_PX)),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 OSD_LEFT_GROUP.forEach { OsdButtonView(it, state, panelWpx) }
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Spacer(modifier = Modifier.width(px(GROUP_GAP_PX)))
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(px(BUTTON_GAP_PX)),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 OSD_CENTER_GROUP.forEach { OsdButtonView(it, state, panelWpx) }
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Spacer(modifier = Modifier.width(px(GROUP_GAP_PX)))
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(px(BUTTON_GAP_PX)),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 OSD_RIGHT_GROUP.forEach { OsdButtonView(it, state, panelWpx) }
             }
         }

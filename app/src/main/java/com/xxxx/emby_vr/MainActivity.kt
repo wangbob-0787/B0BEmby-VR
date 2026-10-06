@@ -1515,12 +1515,12 @@ class MainActivity : ComponentActivity() {
             this,
             content = { com.xxxx.emby_vr.panel.PlayerOsdBar(osdState) },
             /*
-             * 父亲 2026-10-06 晚按图定稿：3291 × 405 像素
-             * （宽 = 150×2 + 按钮 2055 + 缝 72×9 + 组间 144×2；
+             * 父亲 2026-10-06 晚按图定稿：2428 × 405 像素
+             * （宽 = 114×2 + 按钮框 2055 + 框缝 5×9 + 组间 50×2；
              *   高 = 50 + 43 + 30 + 51 + 30 + 151 + 50）。
              * 与原生 kOsdPxW / kOsdPxH 必须一致，否则点击坐标会错位。
              */
-            panelW = 3291,
+            panelW = 2428,
             panelH = 405,
             name = "b0bemby-osd",
             activatesVrPanel = false,
