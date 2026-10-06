@@ -123,6 +123,9 @@ class MainActivity : ComponentActivity() {
     /** 最近一次控制条 / 菜单指针到达的时间：用来判断「光柱指着画面还是指着面板」 */
     private var lastOsdPointerAt = 0L
     private var lastMenuPointerAt = 0L
+
+    /** 摇杆入口日志的限流时间戳（诊断用） */
+    private var stickEntryLogAt = 0L
     /** 摇杆快进快退要回中一次才能再触发（免得住一个方向连续快进） */
     private var stickSeekArmed = true
 
@@ -226,6 +229,16 @@ class MainActivity : ComponentActivity() {
 
         override fun onStick(px: Float, py: Float, sx: Float, sy: Float) {
             vrInputLive = true
+            /*
+             * 诊断（父亲 2026-10-06 晚）：选集菜单开着时推摇杆，日志里一条都没有，
+             * 而字幕菜单开着时有 —— 需要区分是"摇杆根本没送到"还是"送到了但判断没进"。
+             * 限流打印，避免刷屏。
+             */
+            val stickNow = android.os.SystemClock.uptimeMillis()
+            if (stickNow - stickEntryLogAt > 500L) {
+                stickEntryLogAt = stickNow
+                Log.i(TAG, "收到摇杆 px=$px py=$py sx=$sx sy=$sy 菜单=${menuState.kind}")
+            }
             runOnUiThread {
                 /*
                  * 光柱指着**画面**时，摇杆左右 = 快退 / 快进（父亲 2026-10-06）。
@@ -241,7 +254,8 @@ class MainActivity : ComponentActivity() {
                  * 演职人员那一排是横向的，左右推也认。
                  */
                 if (menuState.kind != null) {
-                    Log.i(TAG, "摇杆滚菜单：kind=${menuState.kind} sx=$sx sy=$sy")
+                    Log.i(TAG, "摇杆滚菜单：kind=${menuState.kind} sx=$sx sy=$sy " +
+                        "已滚=${menuState.scrollDelta.toInt()} tick=${menuState.scrollTick}")
                     /*
                      * 菜单开着：摇杆优先滚列表（父亲 2026-10-06 晚：滚不动）。
                      * 不再要求光柱落在菜单上 —— 摇杆本来就是给菜单用的，
