@@ -2645,6 +2645,43 @@ bool buildVideoLayer(VrContext &c, int32_t w, int32_t h) {
  * 1:1 原样拷贝，只带我们自己的画面调整（亮度/对比度/饱和度/锐度/色温），
  * 不做降采样 —— 缩放由系统合成器在面板分辨率上完成，这是清晰度的关键。
  */
+/**
+ * 把一张 OES 纹理叠进「视频合成层」里（父亲 2026-10-06 晚）。
+ *
+ * 为什么必须画在这一层：视频走的是**独立合成层**，它在我们的 GL 画面之上 ——
+ * 之前弹幕与片名 logo 画在主画面里，等于画在视频背后，整块被盖住，所以看不见。
+ * 这里趁视频刚画完、还没 release，把两块内容叠到同一张图上。
+ *
+ * @param cx,cy 归一化中心（-1…1，0 是正中央）
+ * @param sx,sy 占整层的宽高比例（1 = 铺满）
+ */
+void drawOverlayIntoVideoLayer(VrContext &c, GLuint tex,
+                               float cx, float cy, float sx, float sy) {
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    const Mat4 m = translateScale(cx, cy, 0.f, sx, sy);
+    glUniformMatrix4fv(c.mvpLoc, 1, GL_FALSE, m.m);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, tex);
+    glUniform1i(c.texLoc, 0);
+    glUniform1i(c.useTexLoc, 1);
+    if (c.expandLoc >= 0) glUniform1i(c.expandLoc, 0);
+    if (c.downLoc >= 0) glUniform1i(c.downLoc, 0);
+    glUniform4f(c.colorLoc, 1.f, 1.f, 1.f, 1.f);
+    // 叠加层不做画面调整：亮度/对比度/饱和度/锐度只作用于视频本身
+    if (c.brightLoc >= 0) glUniform1f(c.brightLoc, 0.f);
+    if (c.contrastLoc >= 0) glUniform1f(c.contrastLoc, 1.f);
+    if (c.satLoc >= 0) glUniform1f(c.satLoc, 1.f);
+    if (c.sharpenLoc >= 0) glUniform1f(c.sharpenLoc, 0.f);
+    if (c.tempLoc >= 0) glUniform1f(c.tempLoc, 0.f);
+    if (c.texelLoc >= 0) glUniform2f(c.texelLoc, c.texelX.load(), c.texelY.load());
+    if (c.jitterLoc >= 0) glUniform1f(c.jitterLoc, 0.f);
+    glBindVertexArray(c.videoLayerVao);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindVertexArray(0);
+    glDisable(GL_BLEND);
+}
+
 bool renderVideoLayer(VrContext &c) {
     if (!c.videoLayer.built || c.videoTex == 0 || c.program == 0) return false;
 
@@ -2695,6 +2732,28 @@ bool renderVideoLayer(VrContext &c) {
     glBindVertexArray(c.videoLayerVao);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(0);
+
+    /*
+     * 弹幕层与片名 logo 叠在视频之上（同一张合成图里）。
+     *
+     * 它们原来画在主画面（GL 场景）里，而视频是独立合成层、压在 GL 画面上面，
+     * 于是看不见 —— 父亲 2026-10-06 晚报的「弹幕与 logo 未实现」就是这个。
+     */
+    if (c.danmakuVisible.load() && c.danmakuTex != 0 && c.danmakuHasFrame.load()) {
+        drawOverlayIntoVideoLayer(c, c.danmakuTex, 0.f, 0.f, 1.f, 1.f);
+    }
+    if (c.logoVisible.load() && c.logoTex != 0 && c.logoHasFrame.load()) {
+        // 银幕左上角：宽 7.3%、距左 2.5%、距顶 2.8%，比例与电视版一致
+        const float lwFrac = 0.073f;
+        const float aspect = c.videoLayer.height > 0
+                ? (float) c.videoLayer.width / (float) c.videoLayer.height
+                : 1.7778f;
+        const float lhFrac = lwFrac * aspect * (220.f / 512.f);
+        const float lcx = -1.f + 2.f * 0.025f + lwFrac * 0.5f;
+        const float lcy = 1.f - 2.f * 0.028f - lhFrac * 0.5f;
+        drawOverlayIntoVideoLayer(c, c.logoTex, lcx, lcy, lwFrac, lhFrac);
+    }
+
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
