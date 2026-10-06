@@ -84,6 +84,15 @@ class MainActivity : ComponentActivity() {
      * 贴在银幕前面、比银幕小一圈的一块透明面板，内容是自写的 DanmakuView
      * （解析 ASS 的 \move 逐帧画，Media3 自带的字幕渲染做不了滚动弹幕）。
      */
+    /*
+     * 原生把弹幕层 / 片名 logo 的纹理回调推上来时，这两块面板可能还没建好
+     * （它们的创建排在控制条、菜单之后，而原生是在渲染线程一启动就推的）。
+     * 回调先到的纹理存在这里，面板建好后立刻补挂 —— 否则这两块画面永远不绘制，
+     * 表现就是「弹幕和 logo 一直看不见」（父亲 2026-10-06 晚，图层体检里帧数恒为 0）。
+     */
+    private var pendingDanmakuSt: android.graphics.SurfaceTexture? = null
+    private var pendingLogoSt: android.graphics.SurfaceTexture? = null
+
     private lateinit var danmaku: PanelLayer
     private var danmakuView: com.xxxx.emby_vr.danmaku.DanmakuView? = null
 
@@ -1552,6 +1561,8 @@ class MainActivity : ComponentActivity() {
             name = "b0bemby-danmaku",
             activatesVrPanel = false,
         )
+        // 纹理回调要是比这里先到，现在补挂上（否则这块画面永远不绘制）
+        pendingDanmakuSt?.let { danmaku.attach(it) }
 
         /*
          * 片名 logo（2026-10-06）：银幕左上角的小透明面板。
@@ -1576,6 +1587,7 @@ class MainActivity : ComponentActivity() {
             name = "b0bemby-logo",
             activatesVrPanel = false,
         )
+        pendingLogoSt?.let { logo.attach(it) }
 
         /*
          * 画面的接收口（2026-10-05 晚修）：纹理由原生渲染线程在自己的 GL
@@ -1601,11 +1613,13 @@ class MainActivity : ComponentActivity() {
                 }
 
                 override fun onDanmakuTexture(st: android.graphics.SurfaceTexture) {
-                    danmaku.attach(st)
+                    pendingDanmakuSt = st
+                    if (::danmaku.isInitialized) danmaku.attach(st)
                 }
 
                 override fun onLogoTexture(st: android.graphics.SurfaceTexture) {
-                    logo.attach(st)
+                    pendingLogoSt = st
+                    if (::logo.isInitialized) logo.attach(st)
                 }
             },
         )
