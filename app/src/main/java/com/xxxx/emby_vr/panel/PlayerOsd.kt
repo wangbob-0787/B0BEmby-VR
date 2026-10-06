@@ -7,12 +7,14 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -128,6 +130,9 @@ class OsdState {
     var playing by mutableStateOf(false)
     var positionMs by mutableStateOf(0L)
     var durationMs by mutableStateOf(0L)
+
+    /** 已缓冲到的位置（进度条上那段浅色，照电视版） */
+    var bufferedMs by mutableStateOf(0L)
     var speed by mutableStateOf(1f)
 
     /** 播放/暂停按钮显示的图标：跟真实播放态走 */
@@ -238,15 +243,26 @@ fun PlayerOsdBar(state: OsdState) {
  */
 @Composable
 private fun OsdProgress(state: OsdState, modifier: Modifier = Modifier) {
-    val frac = if (state.durationMs > 0L) {
-        (state.positionMs.toFloat() / state.durationMs.toFloat()).coerceIn(0f, 1f)
+    val duration = state.durationMs
+    val frac = if (duration > 0L) {
+        (state.positionMs.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
     } else {
         0f
     }
-    Box(
+    val bufFrac = if (duration > 0L) {
+        (state.bufferedMs.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
+    /*
+     * 复刻电视版播放页的进度条（父亲 2026-10-06 晚）：细轨道 + 一段浅色缓冲 +
+     * 已播实色 + **一根绿色竖线游标**（电视版实测就是一根细竖条，不是圆点）。
+     * 尺寸按 VR 面板放大一档，1 米外才看得清。
+     */
+    BoxWithConstraints(
         modifier = modifier
             .height(34.dp)
-            .pointerInput(state.durationMs) {
+            .pointerInput(duration) {
                 detectTapGestures { offset ->
                     val f = (offset.x / size.width.toFloat()).coerceIn(0f, 1f)
                     state.seekFrac = f
@@ -264,41 +280,41 @@ private fun OsdProgress(state: OsdState, modifier: Modifier = Modifier) {
                     state.onSeekPreview?.invoke(f)
                 }
             },
-        contentAlignment = Alignment.CenterStart,
     ) {
-        // 轨道
+        val barWidth = maxWidth
+        // 轨道（很细，电视版是 2dp）
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(12.dp)
-                .background(Color(0x2EFFFFFF), RoundedCornerShape(6.dp)),
+                .height(5.dp)
+                .align(Alignment.CenterStart)
+                .background(Color(0x33FFFFFF), RoundedCornerShape(3.dp)),
         )
-        // 已播：青绿渐变
-        Box(
-            modifier = Modifier
-                .fillMaxWidth(frac)
-                .height(12.dp)
-                .background(
-                    Brush.horizontalGradient(listOf(Color(0xFF2FD57C), Color(0xFF8EF7C0))),
-                    RoundedCornerShape(6.dp),
-                ),
-        )
-        // 手柄：一圈光晕 + 白心，拖到哪儿一眼能看出来
-        Box(
-            modifier = Modifier
-                .fillMaxWidth(frac)
-                .height(34.dp),
-            contentAlignment = Alignment.CenterEnd,
-        ) {
+        if (duration > 0L) {
+            // 缓冲段：浅一档的白（电视版白 22%）
             Box(
                 modifier = Modifier
-                    .size(30.dp)
-                    .background(Color(0x3D2FD57C), CircleShape),
+                    .fillMaxWidth(bufFrac)
+                    .height(5.dp)
+                    .align(Alignment.CenterStart)
+                    .background(Color(0x3DFFFFFF), RoundedCornerShape(3.dp)),
             )
+            // 已播段：实色
             Box(
                 modifier = Modifier
-                    .size(15.dp)
-                    .background(Color.White, CircleShape),
+                    .fillMaxWidth(frac)
+                    .height(5.dp)
+                    .align(Alignment.CenterStart)
+                    .background(Color(0xFF2FD57C), RoundedCornerShape(3.dp)),
+            )
+            // 游标：绿色竖线（电视版同款）
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .offset(x = barWidth * frac - 3.dp)
+                    .width(6.dp)
+                    .height(28.dp)
+                    .background(Color(0xFF2FD57C), RoundedCornerShape(3.dp)),
             )
         }
     }

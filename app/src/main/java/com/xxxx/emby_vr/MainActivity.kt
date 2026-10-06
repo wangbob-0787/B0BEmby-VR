@@ -328,6 +328,8 @@ class MainActivity : ComponentActivity() {
                 if (p != null) {
                     osdState.playing = p.playWhenReady
                     osdState.positionMs = p.currentPosition
+                    // 缓冲进度：进度条上那一段浅色（电视版进度条有这个）
+                    osdState.bufferedMs = p.bufferedPosition
                     val d = p.duration
                     if (d > 0L) osdState.durationMs = d
                 }
