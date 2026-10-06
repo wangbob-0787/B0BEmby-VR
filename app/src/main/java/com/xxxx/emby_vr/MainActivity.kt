@@ -125,6 +125,9 @@ class MainActivity : ComponentActivity() {
     private var lastOsdPointerAt = 0L
     private var lastMenuPointerAt = 0L
 
+    /** 主线程定时器（位置刷新等） */
+    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+
     /** 摇杆入口日志的限流时间戳（诊断用） */
     private var stickEntryLogAt = 0L
     /** 摇杆快进快退要回中一次才能再触发（免得住一个方向连续快进） */
@@ -172,6 +175,23 @@ class MainActivity : ComponentActivity() {
 
     @Volatile
     private var posBaseAtMs = 0L
+
+    /** 位置刷新定时器（独立于控制条：控制条收起时也要继续跑） */
+    private val posTicker = object : Runnable {
+        override fun run() {
+            refreshPosBase()
+            handler.postDelayed(this, 250L)
+        }
+    }
+
+    private fun startPosTicker() {
+        handler.removeCallbacks(posTicker)
+        handler.post(posTicker)
+    }
+
+    private fun stopPosTicker() {
+        handler.removeCallbacks(posTicker)
+    }
 
     /** 主线程调：刷新播放位置基准（每 250ms 一次） */
     private fun refreshPosBase() {
@@ -999,6 +1019,7 @@ class MainActivity : ComponentActivity() {
                     setOsdVisible(false)
                 }
                 startOsdTicker()
+                startPosTicker()
                 // 弹幕与片名 logo：起播后就去拉，任何一步失败都不影响播放
                 loadDanmaku()
                 loadItemDetail()
@@ -1730,6 +1751,7 @@ class MainActivity : ComponentActivity() {
         picking = false
         osdJob?.cancel()
         osdJob = null
+        stopPosTicker()
         if (!keepUi) {
             setOsdVisible(false)
             // 弹幕层与片名 logo 一起收（它们贴在银幕上，不随控制条走）

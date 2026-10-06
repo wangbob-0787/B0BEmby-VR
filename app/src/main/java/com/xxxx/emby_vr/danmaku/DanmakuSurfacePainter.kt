@@ -29,6 +29,8 @@ class DanmakuSurfacePainter(
     positionProvider: () -> Long,
     scale: Float,
 ) {
+    /** 位置提供者（诊断用：把它算出的进度打进日志） */
+    private val posProvider = positionProvider
     /** 自绘层本体。它不在视图树里，只被本类逐帧调用。 */
     val view = DanmakuView(context).apply {
         setPositionProvider(positionProvider)
@@ -74,7 +76,8 @@ class DanmakuSurfacePainter(
                         android.util.Log.i(
                             TAG,
                             "弹幕画笔：已画 $frames 帧 ${widthPx}x$heightPx" +
-                                " 轨道=${view.trackItemCount()} 字幕=${if (view.subtitleEmpty()) "无" else "有"}",
+                                " 轨道=${view.trackItemCount()} 进度=${posProvider() / 1000}秒" +
+                                " 字幕=${if (view.subtitleEmpty()) "无" else "有"}",
                         )
                     }
                 } catch (t: Throwable) {
