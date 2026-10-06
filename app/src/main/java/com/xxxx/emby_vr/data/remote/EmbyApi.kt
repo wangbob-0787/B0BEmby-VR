@@ -390,7 +390,7 @@ object EmbyApi {
     ): List<BaseItemDto> {
         val url = "/Shows/$seriesId/Episodes?UserId=$userId" +
                 (if (!seasonId.isNullOrBlank()) "&SeasonId=$seasonId" else "") +
-                "&Fields=Overview&Limit=500&X-Emby-Token=$apiKey"
+                "&Fields=Overview,UserData&Limit=500&X-Emby-Token=$apiKey"
         return httpAsBaseItemDtoList(context, serverUrl, apiKey, deviceId, url)
     }
 

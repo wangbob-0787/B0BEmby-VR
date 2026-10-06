@@ -135,6 +135,9 @@ class MainActivity : ComponentActivity() {
     private var audioStreamIndices: List<Int> = emptyList()
     private var subtitleStreamIndices: List<Int> = emptyList()
     private var episodeIds: List<String> = emptyList()
+
+    /** 每集上次看到的位置（tick）：选集换片也从那儿接着播（父亲 2026-10-06 晚定） */
+    private var episodePositions: List<Long> = emptyList()
     private var selectedAudioIndex: Int? = null
     private var selectedSubtitleIndex: Int? = null
     private var qualityIndex = 0
@@ -1004,9 +1007,10 @@ class MainActivity : ComponentActivity() {
             }
             com.xxxx.emby_vr.panel.MenuKind.EPISODES -> {
                 val id = episodeIds.getOrNull(index)
+                val resume = episodePositions.getOrNull(index) ?: 0L
                 if (!id.isNullOrBlank()) {
-                    Log.i(TAG, "选集 → $id（菜单保持打开）")
-                    playMedia(id, 0L)
+                    Log.i(TAG, "选集 → $id（续播 ${resume / 10_000_000} 秒，菜单保持打开）")
+                    playMedia(id, resume)
                 }
             }
             // 信息 / 演职人员：没有可选项，点空白不该把菜单收掉
@@ -1307,6 +1311,7 @@ class MainActivity : ComponentActivity() {
                     seasonId = seasonId,
                 )
                 episodeIds = eps.map { it.id ?: "" }
+                episodePositions = eps.map { it.userData?.playbackPositionTicks ?: 0L }
                 menuState.episodes = eps.mapIndexed { i, e ->
                     val season = e.parentIndexNumber
                     val num = e.indexNumber ?: (i + 1)
