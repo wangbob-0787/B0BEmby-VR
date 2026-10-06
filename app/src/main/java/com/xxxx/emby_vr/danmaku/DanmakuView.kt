@@ -114,6 +114,19 @@ class DanmakuView(context: Context) : View(context) {
         super.onDetachedFromWindow()
     }
 
+    /**
+     * 面板给多大就用多大。
+     *
+     * 自绘 View 的内容尺寸是 0，交给 Compose 的 AndroidView 量的话会被量成 0×0，
+     * onDraw 永远不执行 —— 弹幕数据再多也一帧画不出来（父亲 2026-10-06 晚实测）。
+     */
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        setMeasuredDimension(
+            MeasureSpec.getSize(widthMeasureSpec).coerceAtLeast(1),
+            MeasureSpec.getSize(heightMeasureSpec).coerceAtLeast(1),
+        )
+    }
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val t = track

@@ -1743,7 +1743,14 @@ class MainActivity : ComponentActivity() {
         danmaku = PanelLayer(
             this,
             content = {
-                androidx.compose.ui.viewinterop.AndroidView(factory = { ctx ->
+                /*
+                 * fillMaxSize 是关键（父亲 2026-10-06 晚，弹幕一帧都没画的根因）：
+                 * AndroidView 默认按内容量尺寸，而 DanmakuView 是自绘 View、内容尺寸为 0 ——
+                 * 结果这块画布被量成 0×0，onDraw 从来不执行，弹幕数据再多也画不出来。
+                 */
+                androidx.compose.ui.viewinterop.AndroidView(
+                    modifier = Modifier.fillMaxSize(),
+                    factory = { ctx ->
                     com.xxxx.emby_vr.danmaku.DanmakuView(ctx).apply {
                         // 每帧按播放器当前进度重算坐标：掉帧只会跳一下，不会越走越偏
                         setPositionProvider { player?.currentPosition ?: 0L }
@@ -1751,7 +1758,8 @@ class MainActivity : ComponentActivity() {
                         start()
                         danmakuView = this
                     }
-                })
+                    },
+                )
             },
             panelW = 2560,
             panelH = 1440,
