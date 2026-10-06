@@ -231,6 +231,7 @@ class MainActivity : ComponentActivity() {
                  * 演职人员那一排是横向的，左右推也认。
                  */
                 if (menuState.kind != null) {
+                    Log.i(TAG, "摇杆滚菜单：kind=${menuState.kind} sx=$sx sy=$sy")
                     /*
                      * 菜单开着：摇杆优先滚列表（父亲 2026-10-06 晚：滚不动）。
                      * 不再要求光柱落在菜单上 —— 摇杆本来就是给菜单用的，
@@ -1241,6 +1242,10 @@ class MainActivity : ComponentActivity() {
 
         val mediaId = currentMediaId
         if (mediaId.isBlank()) return
+        // 诊断（父亲 2026-10-06 晚：勾了弹幕不显示）：看清这一集到底有没有弹幕轨
+        val allSubs = currentStreams.filter { it.type.equals("Subtitle", ignoreCase = true) }
+        Log.i(TAG, "弹幕诊断：字幕流 ${allSubs.size} 条 → " +
+            allSubs.joinToString(" | ") { "${it.index}:${it.codec}/${it.displayTitle ?: "-"}" })
         val sub = currentStreams.firstOrNull { stream ->
             stream.type.equals("Subtitle", ignoreCase = true) && isDanmakuStream(stream)
         } ?: run {
@@ -1249,6 +1254,7 @@ class MainActivity : ComponentActivity() {
         }
         val index = sub.index
         val sourceId = reportedMediaSourceId
+        Log.i(TAG, "弹幕诊断：挑中弹幕轨 index=$index source=$sourceId")
         if (index == null || sourceId.isNullOrBlank()) {
             Log.w(TAG, "弹幕轨信息不全，跳过（index=$index source=$sourceId）")
             return
@@ -1381,6 +1387,7 @@ class MainActivity : ComponentActivity() {
                     else -> null
                 }
                 logoUrl.value = logoAddr
+                Log.i(TAG, "片名 logo 地址 → ${logoAddr ?: "（这一集没有 logo）"}")
                 com.xxxx.emby_vr.vr.VrNative.setLogoVisible(!logoAddr.isNullOrBlank())
                 Log.i(
                     TAG,
@@ -1740,6 +1747,9 @@ class MainActivity : ComponentActivity() {
                         contentDescription = null,
                         contentScale = androidx.compose.ui.layout.ContentScale.Fit,
                         modifier = Modifier.fillMaxSize(),
+                        onState = { st ->
+                            Log.i(TAG, "片名 logo 加载 → $st")
+                        },
                     )
                 }
             },
