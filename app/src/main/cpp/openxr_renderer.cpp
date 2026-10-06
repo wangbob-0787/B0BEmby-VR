@@ -2058,9 +2058,13 @@ void pushInput(VrContext &c) {
                             // 坐标 + 摇杆量（x 右正、y 上正，与 OpenXR 一致；方向语义在 Java 侧翻）
                             static int stickLogTick = 0;
                             if ((stickLogTick++ % 60) == 0) {
-                                LOGI("摇杆推给界面层：x=%.2f y=%.2f", sx, sy);
+                                LOGI("摇杆推给界面层：x=%.2f y=%.2f 接收对象=%p", sx, sy,
+                                     (void *) c.inputSink);
                             }
                             env->CallVoidMethod(c.inputSink, c.sinkStick, px, py, sx, sy);
+                            if (env->ExceptionCheck()) {
+                                LOGW("摇杆回调抛异常（界面侧 onStick 没跑完）");
+                            }
                             clearJavaException(env, "输入回调 onStick");
                         }
                     }
@@ -2757,12 +2761,14 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
         drawOverlayIntoVideoLayer(c, c.danmakuTex, 0.f, 0.f, 1.f, 1.f);
     }
     if (videoLayerPass && c.logoVisible.load() && c.logoTex != 0 && c.logoHasFrame.load()) {
-        // 银幕左上角：宽 7.3%、距左 2.5%、距顶 2.8%，比例与电视版一致
+        /*
+         * 银幕左上角：宽 7.3%、距左 2.5%、距顶 2.8%，比例与电视版一致。
+         *
+         * 宽高比只按 logo 面板自身算（512×220）—— 原来多乘了一次画面比例，
+         * 高度被拉大 2.4 倍、图纵向拉长（父亲 2026-10-06 晚日志实测发现）。
+         */
         const float lwFrac = 0.073f;
-        const float aspect = L.height > 0
-                ? (float) L.width / (float) L.height
-                : 1.7778f;
-        const float lhFrac = lwFrac * aspect * (220.f / 512.f);
+        const float lhFrac = lwFrac * (220.f / 512.f);
         const float lcx = -1.f + 2.f * 0.025f + lwFrac * 0.5f;
         const float lcy = 1.f - 2.f * 0.028f - lhFrac * 0.5f;
         static int logoDrawLogTick = 0;

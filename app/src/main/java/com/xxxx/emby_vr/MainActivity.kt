@@ -235,7 +235,9 @@ class MainActivity : ComponentActivity() {
              * 限流打印，避免刷屏。
              */
             val stickNow = android.os.SystemClock.uptimeMillis()
-            if (stickNow - stickEntryLogAt > 500L) {
+            // 菜单开着时全部打印（这是要查的场景），其余限流 150ms 免得刷屏
+            val menuOpen = menuState.kind != null
+            if (menuOpen || stickNow - stickEntryLogAt > 150L) {
                 stickEntryLogAt = stickNow
                 Log.i(TAG, "收到摇杆 px=$px py=$py sx=$sx sy=$sy 菜单=${menuState.kind}")
             }
