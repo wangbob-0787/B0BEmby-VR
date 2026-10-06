@@ -3,8 +3,8 @@ package com.xxxx.emby_vr.danmaku
 import android.content.Context
 import android.graphics.Color
 import android.graphics.PorterDuff
+import android.graphics.SurfaceTexture
 import android.view.Surface
-import android.view.SurfaceTexture
 import android.view.View
 
 /**
