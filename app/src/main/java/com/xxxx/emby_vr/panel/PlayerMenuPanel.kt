@@ -17,7 +17,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -93,6 +95,10 @@ data class PersonItem(val name: String, val role: String, val avatarUrl: String?
 
 /** 信息菜单要显示的内容 */
 data class MediaInfoView(
+    /** 分级（如 TV-14 / PG-13） */
+    val officialRating: String = "",
+    /** 技术行：视频轨 / 分辨率 / 音轨，照电视版信息面板（父亲 2026-10-06 晚） */
+    val techLine: String = "",
     val title: String,
     val year: String,
     val runtime: String,
@@ -120,6 +126,21 @@ class MenuState {
 
     /** 对齐到哪颗按钮正上方（按按钮在控制条里的归一化横向位置对齐） */
     var anchor by mutableStateOf<OsdButton?>(null)
+
+    /*
+     * 列表滚动（父亲 2026-10-06 晚：选集和演职人员滚不动）。
+     * 界面层把摇杆的上下推量累加进 scrollDelta，并让 scrollTick 自增；
+     * 列表消费后清零 —— 用「tick 变化」触发，避免每帧都滚。
+     */
+    var scrollDelta: Float = 0f
+    var scrollTick: Int by mutableStateOf(0)
+
+    /** 列表要滚多少（正数 = 内容往上走，看到后面的项） */
+    fun requestScroll(dy: Float) {
+        if (dy == 0f) return
+        scrollDelta += dy
+        scrollTick++
+    }
 
     // ── 各菜单的数据（由 Activity 填） ──
     var speed by mutableStateOf(1f)
@@ -184,7 +205,13 @@ const val MENU_PANEL_H = 1200
 
 /** 窄卡片宽度（像素） */
 private const val CARD_W = 920f
-private const val CARD_WIDE_PAD = 40f
+/**
+ * 信息 / 演职人员这种宽面板的左右留白（像素）。
+ *
+ * 父亲 2026-10-06 晚定：信息面板左侧与「正在播放」左侧对齐，演职人员面板右侧与
+ * 右上角时间右侧对齐 —— 而控制条标题行与时间行的左右留白都是 100dp = 150px。
+ */
+private const val CARD_WIDE_PAD = 150f
 
 @Composable
 fun PlayerMenuPanel(menu: MenuState, osd: OsdState) {
@@ -247,7 +274,8 @@ fun PlayerMenuPanel(menu: MenuState, osd: OsdState) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = kind.title,
+                    // 信息面板不显示「信息」二字（父亲 2026-10-06 晚定），其余菜单照旧
+                    text = if (kind == MenuKind.INFO) "" else kind.title,
                     color = Color.White,
                     fontSize = 24.sp,
                     fontWeight = FontWeight.SemiBold,
@@ -398,7 +426,15 @@ private fun TrackMenu(menu: MenuState, rows: List<MenuRowItem>, kind: MenuKind) 
         Text("没有可选项", color = Color(0xFFFFFFFF), fontSize = 24.sp)
         return
     }
-    LazyColumn(modifier = Modifier.heightIn(max = 620.dp)) {
+    val listState = rememberLazyListState()
+    LaunchedEffect(menu.scrollTick) {
+        val dy = menu.scrollDelta
+        if (dy != 0f) {
+            menu.scrollDelta = 0f
+            listState.scrollBy(dy)
+        }
+    }
+    LazyColumn(state = listState, modifier = Modifier.heightIn(max = 620.dp)) {
         itemsIndexed(rows) { i, row ->
             MenuRow(
                 label = row.label,
@@ -416,7 +452,15 @@ private fun EpisodeMenu(menu: MenuState) {
         Text("没有可选的集数", color = Color(0xFFFFFFFF), fontSize = 24.sp)
         return
     }
-    LazyColumn(modifier = Modifier.heightIn(max = 620.dp)) {
+    val listState = rememberLazyListState()
+    LaunchedEffect(menu.scrollTick) {
+        val dy = menu.scrollDelta
+        if (dy != 0f) {
+            menu.scrollDelta = 0f
+            listState.scrollBy(dy)
+        }
+    }
+    LazyColumn(state = listState, modifier = Modifier.heightIn(max = 620.dp)) {
         itemsIndexed(menu.episodes) { i, row ->
             MenuRow(
                 label = row.label,
@@ -475,7 +519,7 @@ private fun InfoMenu(menu: MenuState) {
             )
             Spacer(modifier = Modifier.height(10.dp))
             Row {
-                listOf(info.year, info.runtime, info.rating, info.genres)
+                listOf(info.officialRating, info.year, info.runtime, info.rating, info.genres)
                     .filter { it.isNotBlank() }
                     .forEach { badge ->
                         Text(
@@ -498,6 +542,16 @@ private fun InfoMenu(menu: MenuState) {
                 lineHeight = 32.sp,
                 modifier = Modifier.heightIn(max = 560.dp),
             )
+            if (info.techLine.isNotBlank()) {
+                Spacer(modifier = Modifier.height(14.dp))
+                Text(
+                    text = info.techLine,
+                    color = Color(0xFFFFFFFF),
+                    fontSize = 21.sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
     }
 }
@@ -508,7 +562,16 @@ private fun CastMenu(menu: MenuState) {
         Text("暂无演职人员信息", color = Color(0xFFFFFFFF), fontSize = 24.sp)
         return
     }
-    LazyRow(contentPadding = PaddingValues(vertical = 6.dp)) {
+    // 演职人员是横向一排，摇杆左右（或上下）推着滚（父亲 2026-10-06 晚：滚不动）
+    val rowState = rememberLazyListState()
+    LaunchedEffect(menu.scrollTick) {
+        val dy = menu.scrollDelta
+        if (dy != 0f) {
+            menu.scrollDelta = 0f
+            rowState.scrollBy(dy)
+        }
+    }
+    LazyRow(state = rowState, contentPadding = PaddingValues(vertical = 6.dp)) {
         items(menu.people) { person ->
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,

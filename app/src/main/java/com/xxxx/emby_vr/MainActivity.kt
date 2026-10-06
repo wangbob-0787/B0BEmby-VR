@@ -222,6 +222,18 @@ class MainActivity : ComponentActivity() {
                  */
                 val nowMs = android.os.SystemClock.uptimeMillis()
                 val onPanelUi = nowMs - maxOf(lastOsdPointerAt, lastMenuPointerAt) < 400L
+                /*
+                 * 菜单开着、光柱在菜单上：摇杆滚列表（父亲 2026-10-06 晚：
+                 * 选集和演职人员滚不动）。取主方向 —— 竖直列表用上下推，
+                 * 演职人员那一排是横向的，左右推也认。
+                 */
+                if (nowMs - lastMenuPointerAt < 400L && menuState.kind != null) {
+                    val main = if (kotlin.math.abs(sy) >= kotlin.math.abs(sx)) -sy else -sx
+                    if (kotlin.math.abs(main) > 0.25f) {
+                        menuState.requestScroll(main * 60f)
+                    }
+                    return@runOnUiThread
+                }
                 if (renderer.videoActive && !onPanelUi) {
                     stickSeek(sx)
                     return@runOnUiThread
@@ -345,6 +357,21 @@ class MainActivity : ComponentActivity() {
             Log.i(TAG, "菜单返回：${kind.title} → 关闭")
             closeMenu()
         }
+    }
+
+    /**
+     * 信息面板的技术行（父亲 2026-10-06 晚：元数据不够，照电视版补）。
+     * 例：`1080p HEVC · 1920×1080 · AAC 立体声`。
+     */
+    private fun techLineOf(): String {
+        val v = currentStreams.firstOrNull { it.type.equals("Video", ignoreCase = true) }
+        val a = currentStreams.firstOrNull { it.type.equals("Audio", ignoreCase = true) }
+        val size = if (v?.width != null && v.height != null) "${v.width}×${v.height}" else null
+        return listOfNotNull(
+            v?.displayTitle?.takeIf { it.isNotBlank() },
+            size,
+            a?.displayTitle?.takeIf { it.isNotBlank() },
+        ).joinToString(" · ")
     }
 
     /** 控制条第一行右侧的时间格式 */
@@ -1239,14 +1266,26 @@ class MainActivity : ComponentActivity() {
                     rating = item.communityRating?.let { "★ %.1f".format(it) } ?: "",
                     genres = item.genres?.take(3)?.joinToString(" / ") ?: "",
                     overview = item.overview ?: "",
+                    officialRating = item.officialRating ?: "",
+                    techLine = techLineOf(),
                 )
-                // 海报（父亲 2026-10-06：信息面板要带海报）
-                val posterTag = item.imageTags?.get("Primary")
-                menuState.posterUrl = if (posterTag.isNullOrBlank()) {
-                    null
-                } else {
-                    "${BuildConfig.EMBY_SERVER}/emby/Items/$id/Images/Primary" +
-                        "?maxWidth=520&tag=$posterTag&quality=90"
+                /*
+                 * 海报（父亲 2026-10-06 晚定）：剧集用**剧的海报**，不要当前这一集的
+                 * 剧照；电影没有剧集 id 才用自己那张。照电视版信息面板的做法。
+                 */
+                val seriesId = item.seriesId
+                val seriesTag = item.seriesPrimaryImageTag
+                menuState.posterUrl = when {
+                    !seriesId.isNullOrBlank() && !seriesTag.isNullOrBlank() ->
+                        "${BuildConfig.EMBY_SERVER}/emby/Items/$seriesId/Images/Primary" +
+                            "?maxWidth=520&tag=$seriesTag&quality=90"
+                    !seriesId.isNullOrBlank() ->
+                        "${BuildConfig.EMBY_SERVER}/emby/Items/$seriesId/Images/Primary" +
+                            "?maxWidth=520&quality=90"
+                    else -> item.imageTags?.get("Primary")?.let { tag ->
+                        "${BuildConfig.EMBY_SERVER}/emby/Items/$id/Images/Primary" +
+                            "?maxWidth=520&tag=$tag&quality=90"
+                    }
                 }
                 // 演职人员头像
                 menuState.people = (item.people ?: emptyList()).take(40).map { p ->
