@@ -1191,7 +1191,9 @@ class MainActivity : ComponentActivity() {
                 val id = episodeIds.getOrNull(index)
                 val resume = episodePositions.getOrNull(index) ?: 0L
                 if (!id.isNullOrBlank()) {
-                    Log.i(TAG, "选集 → $id（续播 ${resume / 10_000_000} 秒，菜单保持打开）")
+                    Log.i(TAG, "选集 → $id（续播 ${resume / 10_000_000} 秒，控制条与菜单保持打开）")
+                    // 换集同样保持界面（父亲 2026-10-07 00:39）：控制条与已展开的菜单不收
+                    replaying = true
                     playMedia(id, resume)
                 }
             }
