@@ -20,6 +20,8 @@ import com.xxxx.emby_vr.panel.PanelLayer
 import com.xxxx.emby_vr.vr.InputRouter
 import com.xxxx.emby_vr.vr.VrRenderer
 import com.xxxx.emby_vr.vr.VrSession
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.Modifier
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -74,6 +76,22 @@ class MainActivity : ComponentActivity() {
      */
     private lateinit var menu: PanelLayer
     private val menuState = com.xxxx.emby_vr.panel.MenuState()
+
+    /**
+     * 弹幕层（2026-10-06 父亲：弹幕要接进来）。
+     *
+     * 贴在银幕前面、比银幕小一圈的一块透明面板，内容是自写的 DanmakuView
+     * （解析 ASS 的 \move 逐帧画，Media3 自带的字幕渲染做不了滚动弹幕）。
+     */
+    private lateinit var danmaku: PanelLayer
+    private var danmakuView: com.xxxx.emby_vr.danmaku.DanmakuView? = null
+
+    /** 片名 logo 层（银幕左上角那块小透明面板） */
+    private lateinit var logo: PanelLayer
+    private val logoUrl = androidx.compose.runtime.mutableStateOf<String?>(null)
+
+    /** 本次起播是不是「重起播」（切字幕 / 音轨 / 质量 / 缓冲 / 换集）：是就别收控制条与菜单 */
+    private var replaying = false
 
     // ── 光柱交互状态（2026-10-06 下午）──
     /** 最近一次控制条 / 菜单指针到达的时间：用来判断「光柱指着画面还是指着面板」 */
@@ -185,6 +203,12 @@ class MainActivity : ComponentActivity() {
         override fun onOsdPointer(px: Float, py: Float, pressed: Boolean) {
             vrInputLive = true
             lastOsdPointerAt = android.os.SystemClock.uptimeMillis()
+            // 归一化横向位置：界面拿它判断光柱停在哪儿（按钮悬停高亮）
+            osdState.pointerNx = if (px < 0f) {
+                -1f                                             // 光柱不在控制条上：清掉悬停高亮
+            } else {
+                (px / com.xxxx.emby_vr.panel.OSD_PANEL_W).coerceIn(0f, 1f)
+            }
             runOnUiThread { if (osdReady()) osd.vrPointerPressed(px, py, pressed) }
         }
 
@@ -228,8 +252,8 @@ class MainActivity : ComponentActivity() {
                  * 面板不接输入）→ B 键被静默丢弃，只能杀应用。
                  */
                 if (menuState.kind != null) {
-                    Log.i(TAG, "光柱 B 键 → 收起菜单")
-                    closeMenu()
+                    Log.i(TAG, "光柱 B 键 → 菜单返回上一级")
+                    menuBack()
                 } else if (renderer.videoActive) {
                     Log.i(TAG, "光柱 B 键 → 停止播放回面板")
                     stopPlayback()
@@ -258,11 +282,30 @@ class MainActivity : ComponentActivity() {
         Log.i(TAG, "菜单打开：${kind.title}（对齐 ${anchor.label}）")
     }
 
+    /**
+     * 菜单返回上一级（父亲 2026-10-06 晚定的操作逻辑）。
+     *
+     * 二级（从「更多」点进去的音频 / 质量 / 模式 / 缓冲）→ 退回「更多」那一级；
+     * 一级（从控制条按钮直接展开的）→ 关掉菜单。B 键与卡片上的「返回」都走这里。
+     */
+    private fun menuBack() {
+        val kind = menuState.kind ?: return
+        if (kind.isSubMenu) {
+            Log.i(TAG, "菜单返回上级：${kind.title} → 更多")
+            openMenu(com.xxxx.emby_vr.panel.MenuKind.MORE, com.xxxx.emby_vr.panel.OsdButton.MORE)
+        } else {
+            Log.i(TAG, "菜单返回：${kind.title} → 关闭")
+            closeMenu()
+        }
+    }
+
     /** 关掉菜单（控制条按钮高亮一并清掉） */
     private fun closeMenu() {
         if (menuState.kind == null) return
         menuState.kind = null
         osdState.activeMenuButton = null
+        // 卡片矩形清零：菜单都不在了，射线不该再被它拦住
+        com.xxxx.emby_vr.vr.VrNative.setMenuHitRect(0f, 0f, 0f, 0f)
         com.xxxx.emby_vr.vr.VrNative.setMenuVisible(false)
         Log.i(TAG, "菜单关闭")
     }
@@ -657,9 +700,20 @@ class MainActivity : ComponentActivity() {
             osdState.speed = playSpeed
             applyPlayMode(playModeIndex)   // 播放模式在起播时也应用一次
             if (com.xxxx.emby_vr.vr.VrNative.vrRunning) {
-                // 起播不再自动亮控制条（父亲 2026-10-06）：要看控制条，指着银幕扣扳机
-                setOsdVisible(false)
+                /*
+                 * 起播不自动亮控制条（父亲 2026-10-06）：要看控制条，指着银幕扣扳机。
+                 * 但**重起播**（切字幕 / 音轨 / 质量 / 缓冲、选集换片）时控制条和已经
+                 * 展开的菜单都要留着 —— 父亲 2026-10-06 晚明确：不要收起、不要关闭。
+                 */
+                if (replaying) {
+                    replaying = false
+                } else {
+                    setOsdVisible(false)
+                }
                 startOsdTicker()
+                // 弹幕与片名 logo：起播后就去拉，任何一步失败都不影响播放
+                loadDanmaku()
+                loadItemDetail()
             }
             if (useVrScreen) {
                 // 播放时贴视频画面、收起面板（VR 原生播放屏）
@@ -766,21 +820,25 @@ class MainActivity : ComponentActivity() {
                 // 二级菜单仍停在「更多」按钮正上方
                 openMenu(target, com.xxxx.emby_vr.panel.OsdButton.MORE)
             }
+            /*
+             * 以下四项选中后**菜单不关**（父亲 2026-10-06 晚）：
+             * 选完就地更新勾选态，要退回上一层按 B 键。
+             */
             com.xxxx.emby_vr.panel.MenuKind.SPEED -> {
                 com.xxxx.emby_vr.panel.SPEED_STEPS.getOrNull(index)?.let { applySpeed(it) }
-                closeMenu()
+                refreshMenuRows(kind)
             }
             com.xxxx.emby_vr.panel.MenuKind.QUALITY -> {
                 applyQuality(index)
-                closeMenu()
+                refreshMenuRows(kind)
             }
             com.xxxx.emby_vr.panel.MenuKind.MODE -> {
                 applyPlayMode(index)
-                closeMenu()
+                refreshMenuRows(kind)
             }
             com.xxxx.emby_vr.panel.MenuKind.BUFFER -> {
                 applyBuffer(index)
-                closeMenu()
+                refreshMenuRows(kind)
             }
             com.xxxx.emby_vr.panel.MenuKind.DANMAKU -> {
                 if (index == 0) {
@@ -797,23 +855,23 @@ class MainActivity : ComponentActivity() {
                 // 第 0 行是「关闭字幕」，其余按顺序对应文本字幕流
                 selectedSubtitleIndex =
                     if (index == 0) null else subtitleStreamIndices.getOrNull(index - 1)
-                closeMenu()
-                Log.i(TAG, "字幕 → ${selectedSubtitleIndex ?: "关闭"}")
+                Log.i(TAG, "字幕 → ${selectedSubtitleIndex ?: "关闭"}（菜单保持打开）")
                 replayKeepingPosition()
             }
             com.xxxx.emby_vr.panel.MenuKind.AUDIO -> {
                 selectedAudioIndex = audioStreamIndices.getOrNull(index)
-                closeMenu()
-                Log.i(TAG, "音轨 → 流 ${selectedAudioIndex ?: "默认"}")
+                Log.i(TAG, "音轨 → 流 ${selectedAudioIndex ?: "默认"}（菜单保持打开）")
                 replayKeepingPosition()
             }
             com.xxxx.emby_vr.panel.MenuKind.EPISODES -> {
                 val id = episodeIds.getOrNull(index)
-                closeMenu()
-                if (!id.isNullOrBlank()) playMedia(id, 0L)
+                if (!id.isNullOrBlank()) {
+                    Log.i(TAG, "选集 → $id（菜单保持打开）")
+                    playMedia(id, 0L)
+                }
             }
-            // 信息 / 演职人员：点一下就收（父亲：内容就显示在控制条上方）
-            else -> closeMenu()
+            // 信息 / 演职人员：没有可选项，点空白不该把菜单收掉
+            else -> Unit
         }
     }
 
@@ -862,6 +920,7 @@ class MainActivity : ComponentActivity() {
     /** 保持当前位置重新起播（切字幕 / 音轨 / 质量 / 缓冲用） */
     private fun replayKeepingPosition() {
         if (currentMediaId.isBlank()) return
+        replaying = true
         playMedia(currentMediaId, 0L, keepPosition = true)
     }
 
@@ -935,6 +994,81 @@ class MainActivity : ComponentActivity() {
         return rows
     }
 
+    /** 菜单里选完一项后刷新列表的勾选态（菜单保持打开，勾要跟着动） */
+    private fun refreshMenuRows(kind: com.xxxx.emby_vr.panel.MenuKind) {
+        when (kind) {
+            com.xxxx.emby_vr.panel.MenuKind.SUBTITLE ->
+                menuState.subtitleTracks = buildSubtitleRows()
+            com.xxxx.emby_vr.panel.MenuKind.AUDIO -> menuState.audioTracks = buildAudioRows()
+            else -> fillMenuData(kind)
+        }
+    }
+
+    /**
+     * 拉这一集的弹幕（2026-10-06 父亲：弹幕没有接进来）。
+     *
+     * 弹幕在 Emby 里就是一条 ASS / SSA 字幕轨（服务器弹幕系统生成的），
+     * 直接把字幕文件拉下来自己解析，用 Media3 的字幕通道不行 —— 它不认 \move，
+     * 滚动弹幕会被当成普通字幕堆在画面底部。
+     *
+     * 任何一步失败都退化成「这一集没有弹幕」，绝不影响播放。
+     */
+    private fun loadDanmaku() {
+        danmakuTrack = null
+        danmakuView?.setTrack(null)
+        com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(false)
+
+        val mediaId = currentMediaId
+        if (mediaId.isBlank()) return
+        val sub = currentStreams.firstOrNull { stream ->
+            val codec = (stream.codec ?: "").lowercase()
+            stream.type.equals("Subtitle", ignoreCase = true) && (codec == "ass" || codec == "ssa")
+        } ?: run {
+            Log.i(TAG, "这一集没有弹幕轨（没有 ass / ssa 字幕流）")
+            return
+        }
+        val index = sub.index
+        val sourceId = reportedMediaSourceId
+        if (index == null || sourceId.isNullOrBlank()) {
+            Log.w(TAG, "弹幕轨信息不全，跳过（index=$index source=$sourceId）")
+            return
+        }
+        val url = "${BuildConfig.EMBY_SERVER}/emby/Videos/$mediaId/$sourceId/Subtitles/$index" +
+            "/Stream.ass?api_key=${BuildConfig.EMBY_API_KEY}"
+        scope.launch {
+            val raw = withContext(Dispatchers.IO) {
+                runCatching {
+                    java.net.URL(url).openConnection().let { conn ->
+                        conn.connectTimeout = 8000
+                        conn.readTimeout = 15000
+                        conn.getInputStream().bufferedReader().use { it.readText() }
+                    }
+                }.getOrNull()
+            }
+            if (mediaId != currentMediaId) return@launch          // 中途换集了，丢弃
+            if (raw.isNullOrBlank()) {
+                Log.w(TAG, "弹幕文件没拉到：$mediaId")
+                return@launch
+            }
+            val track = runCatching {
+                com.xxxx.emby_vr.danmaku.AssDanmakuParser.parse(raw)
+            }.getOrNull()
+            if (track == null || track.items.isEmpty()) {
+                Log.w(TAG, "弹幕解析失败或没有内容：$mediaId")
+                return@launch
+            }
+            danmakuTrack = track
+            danmakuView?.userScale = danmakuScale
+            danmakuView?.setTrack(if (danmakuOn) track else null)
+            com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(danmakuOn)
+            Log.i(
+                TAG,
+                "弹幕层加载完成：${track.items.size} 条 / 画布 ${track.playResX}x${track.playResY}" +
+                    "（${if (danmakuOn) "开" else "关"}）",
+            )
+        }
+    }
+
     /** 取这一集的详情：剧集 id / 季 id / 简介 / 演员（信息与演职人员菜单用） */
     private fun loadItemDetail() {
         val id = currentMediaId
@@ -986,7 +1120,27 @@ class MainActivity : ComponentActivity() {
                         },
                     )
                 }
-                Log.i(TAG, "详情已取到：${item.name}（演员 ${menuState.people.size} 人）")
+                /*
+                 * 片名 logo（父亲 2026-10-06）：剧集 / 单集用所属剧集的 Logo，
+                 * 电影用条目自己的 Logo（与电视版同一套规则，tag 缺了会 404 就不显示）。
+                 */
+                val sid = item.seriesId
+                val ownLogoTag = item.imageTags?.get("Logo")
+                val logoAddr = when {
+                    !sid.isNullOrBlank() ->
+                        "${BuildConfig.EMBY_SERVER}/emby/Items/$sid/Images/Logo?maxHeight=200"
+                    !ownLogoTag.isNullOrBlank() ->
+                        "${BuildConfig.EMBY_SERVER}/emby/Items/$id/Images/Logo" +
+                            "?maxHeight=200&tag=$ownLogoTag"
+                    else -> null
+                }
+                logoUrl.value = logoAddr
+                com.xxxx.emby_vr.vr.VrNative.setLogoVisible(!logoAddr.isNullOrBlank())
+                Log.i(
+                    TAG,
+                    "详情已取到：${item.name}（演员 ${menuState.people.size} 人" +
+                        "，logo ${if (logoAddr.isNullOrBlank()) "无" else "有"}）",
+                )
             } catch (t: Throwable) {
                 Log.e(TAG, "取详情失败", t)
             }
@@ -1202,6 +1356,12 @@ class MainActivity : ComponentActivity() {
         osdJob?.cancel()
         osdJob = null
         setOsdVisible(false)
+        // 弹幕层与片名 logo 一起收（它们贴在银幕上，不随控制条走）
+        com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(false)
+        com.xxxx.emby_vr.vr.VrNative.setLogoVisible(false)
+        danmakuTrack = null
+        danmakuView?.setTrack(null)
+        logoUrl.value = null
         // 回海报墙的时候确保它摆着（播放中可以把它收起来，别让收起来的状态带回去）
         com.xxxx.emby_vr.vr.VrNative.updatePanelShown(true)
     }
@@ -1250,9 +1410,13 @@ class MainActivity : ComponentActivity() {
         osd = PanelLayer(
             this,
             content = { com.xxxx.emby_vr.panel.PlayerOsdBar(osdState) },
-            // 父亲 2026-10-06 下午：整条加宽、高度缩短 1/4（像素密度不变，字仍然清楚）
-            panelW = 2880,
-            panelH = 240,
+            /*
+             * 父亲 2026-10-06 晚：宽度 +1/3（2880 → 3840）、厚度 +1/4。
+             * 厚度按 +1/4 是 300，但按钮放大 1/3 后内容要 303px 才放得下（卡满没余量），
+             * 取 340px 留余量。与原生 kOsdPxW / kOsdPxH 必须一致，否则点击坐标会错位。
+             */
+            panelW = 3600,
+            panelH = 340,
             name = "b0bemby-osd",
             activatesVrPanel = false,
             // 控制条是纯 Compose 界面，没登记进电视版那张控件坐标表 → 点击要直通派发
@@ -1272,7 +1436,54 @@ class MainActivity : ComponentActivity() {
             directClick = true,
         )
         /*
-         * 三张画面的接收口（2026-10-05 晚修）：纹理由原生渲染线程在自己的 GL
+         * 弹幕层（2026-10-06）：贴银幕前的一块透明面板，尺寸照 16:9 给足像素，
+         * 弹幕文字才不会糊。整层由原生按开关决定画不画。
+         */
+        danmaku = PanelLayer(
+            this,
+            content = {
+                androidx.compose.ui.viewinterop.AndroidView(factory = { ctx ->
+                    com.xxxx.emby_vr.danmaku.DanmakuView(ctx).apply {
+                        // 每帧按播放器当前进度重算坐标：掉帧只会跳一下，不会越走越偏
+                        setPositionProvider { player?.currentPosition ?: 0L }
+                        userScale = danmakuScale
+                        start()
+                        danmakuView = this
+                    }
+                })
+            },
+            panelW = 2560,
+            panelH = 1440,
+            name = "b0bemby-danmaku",
+            activatesVrPanel = false,
+        )
+
+        /*
+         * 片名 logo（2026-10-06）：银幕左上角的小透明面板。
+         * 位置与尺寸由原生按电视版比例钉在银幕左上角，这里只管画那张图。
+         */
+        logo = PanelLayer(
+            this,
+            content = {
+                val url = logoUrl.value
+                if (!url.isNullOrBlank()) {
+                    // 框内等比缩放：图不会变形（电视版同款 ContentScale.Fit）
+                    coil3.compose.AsyncImage(
+                        model = url,
+                        contentDescription = null,
+                        contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
+            },
+            panelW = 512,
+            panelH = 220,
+            name = "b0bemby-logo",
+            activatesVrPanel = false,
+        )
+
+        /*
+         * 画面的接收口（2026-10-05 晚修）：纹理由原生渲染线程在自己的 GL
          * 上下文里建好，建好立刻回调这里（如果已经建好，注册时补推一次）。
          * 之前是反过来（Java 建好纹理再给原生用），跨上下文导致三块屏互相串画面。
          */
@@ -1292,6 +1503,14 @@ class MainActivity : ComponentActivity() {
 
                 override fun onMenuTexture(st: android.graphics.SurfaceTexture) {
                     menu.attach(st)
+                }
+
+                override fun onDanmakuTexture(st: android.graphics.SurfaceTexture) {
+                    danmaku.attach(st)
+                }
+
+                override fun onLogoTexture(st: android.graphics.SurfaceTexture) {
+                    logo.attach(st)
                 }
             },
         )
@@ -1313,6 +1532,7 @@ class MainActivity : ComponentActivity() {
         }
         menuState.onSelect = { kind, index -> onMenuSelect(kind, index) }
         menuState.onClose = { closeMenu() }
+        menuState.onBack = { menuBack() }
 
         glView = GLSurfaceView(this).apply {
             setEGLContextClientVersion(3)

@@ -1,6 +1,7 @@
 package com.xxxx.emby_vr.panel
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -14,6 +15,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Chat
@@ -39,6 +42,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
@@ -52,19 +56,20 @@ import androidx.compose.ui.unit.sp
 /**
  * 播放控制条（VR 原生播放屏的 OSD）。
  *
- * 形态：一块架在观影者身前近场的矮条（2880×253 像素的虚拟显示器，与主面板同一套
- * VirtualDisplay + SurfaceTexture 机制）。窗口背景透明，圆角外透出影院背景。
+ * 形态：一块架在观影者身前近场的矮条（3600×340 像素的虚拟显示器，与主面板同一套
+ * VirtualDisplay + SurfaceTexture 机制）。窗口背景透明，圆角外透出影院画面。
  *
  * 2026-10-06 父亲定稿的 12 颗按钮，从左到右分三组：
  *  - 左组（贴左）：字幕 · 弹幕
- *  - 中组（在左右两组之间的剩余空间里居中）：快退 10 · 播放/暂停 · 快进 10
+ *  - 中组：快退 10 · 播放/暂停 · 快进 10
  *  - 右组（贴右）：播放速度 · 选集 · 选片 · 信息 · 演职人员 · 更多 · 退出
  *
- * 图标全部取自同一个图标库（Material Icons），风格统一。
- * 原来的画面调整三键（亮度/对比度/饱和度…）按父亲要求删除。
- *
- * 2026-10-06 下午父亲又定：整条加宽、高度缩短 1/4、内容左右留白加大，
- * 左侧显示「已播 / 总时长」，进度条可以激光瞄准 + 扣扳机直接拖。
+ * 观感（父亲 2026-10-06 晚：要做得酷一点）：
+ *  - 条身是玻璃质感：上亮下暗的渐变 + 一圈细高光描边；
+ *  - 播放/暂停是**主按钮**：白色实心圆 + 深色图标，一眼能找到；
+ *  - 光柱扫过按钮会亮起来，菜单开着的那颗常亮青色；
+ *  - 进度条青绿渐变，拖动手柄带光晕；
+ *  - 三组之间留的缝是组内按钮缝的两倍。
  */
 enum class OsdButton(val label: String, val icon: ImageVector) {
     // ── 左组 ──
@@ -89,7 +94,7 @@ enum class OsdButton(val label: String, val icon: ImageVector) {
 /** 左组：贴左 */
 val OSD_LEFT_GROUP = listOf(OsdButton.SUBTITLE, OsdButton.DANMAKU)
 
-/** 中组：夹在左右两组之间的剩余空间里居中 */
+/** 中组：夹在左右两组之间 */
 val OSD_CENTER_GROUP = listOf(OsdButton.SEEK_BACK, OsdButton.PLAY_PAUSE, OsdButton.SEEK_FWD)
 
 /** 右组：贴右 */
@@ -102,6 +107,16 @@ val OSD_RIGHT_GROUP = listOf(
     OsdButton.MORE,
     OsdButton.EXIT,
 )
+
+/**
+ * 三组之间的固定间距（dp）= 按钮间距的两倍。
+ *
+ * 按钮横向内边距 24dp，相邻两颗之间视觉缝 48dp；组间取 96dp（父亲 2026-10-06 晚）。
+ */
+private const val GROUP_GAP_DP = 96
+
+/** 控制条面板像素宽（必须与原生 kOsdPxW 一致：光柱坐标是按面板像素给的） */
+const val OSD_PANEL_W = 3600f
 
 /**
  * 控制条状态：主线程（Activity）写，面板界面读。
@@ -126,7 +141,13 @@ class OsdState {
      */
     val buttonX = mutableStateMapOf<OsdButton, Float>()
 
-    /** 当前打开的菜单对应哪颗按钮（那颗按钮高亮）；没开菜单时是 null */
+    /** 每颗按钮的横向范围（归一化左、右），光柱悬停判定用 */
+    val buttonRange = mutableStateMapOf<OsdButton, Pair<Float, Float>>()
+
+    /** 光柱在控制条里的横向位置（归一化 0…1；负值 = 光柱不在这块面板上） */
+    var pointerNx by mutableStateOf(-1f)
+
+    /** 当前打开的菜单对应哪颗按钮（那颗按钮常亮）；没开菜单时是 null */
     var activeMenuButton by mutableStateOf<OsdButton?>(null)
 
     /** 每颗按钮点了之后干什么（Agent 侧接 ExoPlayer） */
@@ -160,48 +181,57 @@ fun PlayerOsdBar(state: OsdState) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            // 父亲 2026-10-06 定：整条倒圆角、底色近黑（要暗到纯黑只留一点灰）
             .clip(RoundedCornerShape(56.dp))
-            .background(Color(0xFF141518))
-            /*
-             * 左右留白再加大（父亲 2026-10-06 下午），上下留白相等：
-             * 进度行贴上边、按钮行贴下边，两边的留白一样宽。
-             */
-            .padding(horizontal = 72.dp, vertical = 20.dp),
-        verticalArrangement = Arrangement.SpaceBetween,
+            // 玻璃质感：上亮下暗
+            .background(
+                Brush.verticalGradient(listOf(Color(0xF0252830), Color(0xE6131518))),
+            )
+            .border(
+                width = 1.dp,
+                brush = Brush.verticalGradient(
+                    listOf(Color(0x3DFFFFFF), Color(0x08FFFFFF)),
+                ),
+                shape = RoundedCornerShape(56.dp),
+            )
+            .padding(horizontal = 88.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.Top,
     ) {
-        // ① 进度行：左侧「已播 / 总时长」+ 进度条（可拖）
+        // ① 进度行：左侧「已播 / 总时长」（固定宽度，进度走动时右边不会抖）
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 text = "${osdTimeText(state.positionMs)} / ${osdTimeText(state.durationMs)}",
-                color = Color.White,
-                fontSize = 24.sp,
+                color = Color(0xFFEAF6EE),
+                fontSize = 26.sp,
                 fontWeight = FontWeight.Medium,
+                modifier = Modifier.width(216.dp),
             )
             OsdProgress(
                 state = state,
                 modifier = Modifier
                     .weight(1f)
-                    .padding(start = 36.dp),
+                    .padding(start = 32.dp),
             )
         }
 
-        // ② 按钮行：左组贴左 · 中组在剩余空间居中 · 右组贴右
+        // 进度行与按钮行之间的留白（父亲 2026-10-06：间距 +1/3）
+        Spacer(modifier = Modifier.height(32.dp))
+
+        // ② 按钮行：左组贴左 · 中组居中 · 右组贴右
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             OSD_LEFT_GROUP.forEach { OsdButtonView(it, state, panelWpx) }
-            Spacer(modifier = Modifier.weight(1f))
+            Spacer(modifier = Modifier.width(GROUP_GAP_DP.dp))
             OSD_CENTER_GROUP.forEach { OsdButtonView(it, state, panelWpx) }
-            Spacer(modifier = Modifier.weight(1f))
+            Spacer(modifier = Modifier.width(GROUP_GAP_DP.dp))
             OSD_RIGHT_GROUP.forEach { OsdButtonView(it, state, panelWpx) }
         }
     }
 }
 
 /**
- * 进度条：可以点，也可以按住拖（父亲 2026-10-06 下午）。
+ * 进度条：可以点，也可以按住拖（父亲 2026-10-06）。
  *
  * 热区比轨道高得多（34dp），激光好瞄；拖动过程中只更新左侧时间与已播长度，
  * 松手（或直接点一下）才真的跳。
@@ -240,17 +270,20 @@ private fun OsdProgress(state: OsdState, modifier: Modifier = Modifier) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(10.dp)
-                .background(Color(0x40FFFFFF), RoundedCornerShape(5.dp)),
+                .height(12.dp)
+                .background(Color(0x2EFFFFFF), RoundedCornerShape(6.dp)),
         )
-        // 已播
+        // 已播：青绿渐变
         Box(
             modifier = Modifier
                 .fillMaxWidth(frac)
-                .height(10.dp)
-                .background(Color(0xFF4CAF50), RoundedCornerShape(5.dp)),
+                .height(12.dp)
+                .background(
+                    Brush.horizontalGradient(listOf(Color(0xFF2FD57C), Color(0xFF8EF7C0))),
+                    RoundedCornerShape(6.dp),
+                ),
         )
-        // 拖动手柄：跟着已播的右端走，方便看清拖到哪儿了
+        // 手柄：一圈光晕 + 白心，拖到哪儿一眼能看出来
         Box(
             modifier = Modifier
                 .fillMaxWidth(frac)
@@ -259,8 +292,13 @@ private fun OsdProgress(state: OsdState, modifier: Modifier = Modifier) {
         ) {
             Box(
                 modifier = Modifier
-                    .size(18.dp)
-                    .background(Color.White, RoundedCornerShape(9.dp)),
+                    .size(30.dp)
+                    .background(Color(0x3D2FD57C), CircleShape),
+            )
+            Box(
+                modifier = Modifier
+                    .size(15.dp)
+                    .background(Color.White, CircleShape),
             )
         }
     }
@@ -269,6 +307,22 @@ private fun OsdProgress(state: OsdState, modifier: Modifier = Modifier) {
 @Composable
 private fun OsdButtonView(button: OsdButton, state: OsdState, panelWpx: Int) {
     val selected = state.activeMenuButton == button
+    val range = state.buttonRange[button]
+    val hovered = !selected && range != null && state.pointerNx >= 0f &&
+        state.pointerNx >= range.first && state.pointerNx <= range.second
+    val isPlayPause = button == OsdButton.PLAY_PAUSE
+
+    val background = when {
+        selected -> Color(0x3D2FD57C)
+        hovered -> Color(0x24FFFFFF)
+        else -> Color.Transparent
+    }
+    val tint = when {
+        selected -> Color(0xFF8EF7C0)
+        hovered -> Color.White
+        else -> Color(0xFFE3E3E3)
+    }
+
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
@@ -279,30 +333,48 @@ private fun OsdButtonView(button: OsdButton, state: OsdState, panelWpx: Int) {
                     coords.parentLayoutCoordinates?.size?.width ?: 0
                 }
                 if (w > 0) {
-                    val cx = coords.positionInRoot().x + coords.size.width / 2f
-                    state.buttonX[button] = (cx / w.toFloat()).coerceIn(0f, 1f)
+                    val left = coords.positionInRoot().x
+                    val width = coords.size.width.toFloat()
+                    state.buttonX[button] = ((left + width / 2f) / w).coerceIn(0f, 1f)
+                    state.buttonRange[button] = (left / w).coerceIn(0f, 1f) to
+                        ((left + width) / w).coerceIn(0f, 1f)
                 }
             }
             .clip(RoundedCornerShape(22.dp))
-            .background(if (selected) Color(0x2EFFFFFF) else Color.Transparent)
+            .background(background)
             .clickable { state.onButton?.invoke(button) }
-            .padding(horizontal = 14.dp, vertical = 4.dp),
+            .padding(horizontal = 24.dp, vertical = 6.dp),
     ) {
         Icon(
-            imageVector = if (button == OsdButton.PLAY_PAUSE) state.playIcon else button.icon,
+            imageVector = if (isPlayPause) state.playIcon else button.icon,
             contentDescription = button.label,
-            tint = if (selected) Color.White else Color(0xFFEDEDED),
-            modifier = Modifier.size(44.dp),
+            // 播放/暂停是主按钮：白色实心圆 + 深色图标
+            tint = if (isPlayPause) Color(0xFF101214) else tint,
+            modifier = Modifier
+                .size(58.dp)
+                .then(
+                    if (isPlayPause) {
+                        Modifier
+                            .background(Color(0xFFF1F5F7), CircleShape)
+                            .padding(9.dp)
+                    } else {
+                        Modifier
+                    },
+                ),
         )
-        Spacer(modifier = Modifier.height(2.dp))
+        Spacer(modifier = Modifier.height(4.dp))
         Text(
             text = when (button) {
                 OsdButton.SPEED -> "速度 ${"%.1f".format(state.speed)}x"
                 OsdButton.PLAY_PAUSE -> if (state.playing) "暂停" else "播放"
                 else -> button.label
             },
-            color = if (selected) Color.White else Color(0xFFDDDDDD),
-            fontSize = 17.sp,
+            color = when {
+                selected -> Color(0xFF8EF7C0)
+                hovered -> Color.White
+                else -> Color(0xFFD8D8D8)
+            },
+            fontSize = 22.sp,
         )
     }
 }

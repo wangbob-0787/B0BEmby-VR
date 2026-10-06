@@ -52,6 +52,12 @@ object VrNative {
 
         /** 展开菜单画面（架在控制条正上方的透明面板） */
         fun onMenuTexture(st: android.graphics.SurfaceTexture)
+
+        /** 弹幕层画面（贴在银幕前、比银幕小一圈的透明层，2026-10-06） */
+        fun onDanmakuTexture(st: android.graphics.SurfaceTexture)
+
+        /** 片名 logo 画面（银幕左上角的小透明层，2026-10-06） */
+        fun onLogoTexture(st: android.graphics.SurfaceTexture)
     }
 
     private external fun nativeAttachTextureSink(sink: TextureSink)
@@ -255,6 +261,12 @@ object VrNative {
 
     private external fun nativeSetMenuVisible(visible: Boolean)
 
+    private external fun nativeSetDanmakuVisible(visible: Boolean)
+
+    private external fun nativeSetLogoVisible(visible: Boolean)
+
+    private external fun nativeSetMenuHitRect(l: Float, t: Float, r: Float, b: Float)
+
     /**
      * 展开菜单显示/隐藏（2026-10-06）。
      *
@@ -265,6 +277,38 @@ object VrNative {
             if (loaded) nativeSetMenuVisible(visible)
         } catch (t: Throwable) {
             Log.e(TAG, "设置展开菜单状态失败：${t.message}")
+        }
+    }
+
+    /** 弹幕层显示/隐藏（父亲 2026-10-06：弹幕要接进来） */
+    fun setDanmakuVisible(visible: Boolean) {
+        try {
+            if (loaded) nativeSetDanmakuVisible(visible)
+        } catch (t: Throwable) {
+            Log.e(TAG, "设置弹幕层状态失败：${t.message}")
+        }
+    }
+
+    /** 片名 logo 显示/隐藏（播放中出现，停止后收起） */
+    fun setLogoVisible(visible: Boolean) {
+        try {
+            if (loaded) nativeSetLogoVisible(visible)
+        } catch (t: Throwable) {
+            Log.e(TAG, "设置片名 logo 状态失败：${t.message}")
+        }
+    }
+
+    /**
+     * 上报菜单卡片实际占的那块矩形（归一化 0…1，相对整块菜单面板）。
+     *
+     * 光柱落在卡片外（透明区）时，射线要穿过去打到后面的控制条 / 银幕上
+     * （父亲 2026-10-06）。菜单收起时上报全 0，等于不拦。
+     */
+    fun setMenuHitRect(l: Float, t: Float, r: Float, b: Float) {
+        try {
+            if (loaded) nativeSetMenuHitRect(l, t, r, b)
+        } catch (e: Throwable) {
+            Log.e(TAG, "上报菜单卡片位置失败：${e.message}")
         }
     }
 

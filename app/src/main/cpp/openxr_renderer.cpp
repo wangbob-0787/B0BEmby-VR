@@ -564,7 +564,9 @@ struct VrContext {
     bool sinkOsdPointerValid = false;   // 控制条上的指针位置
     float sinkOsdPointerX = 0.f;
     float sinkOsdPointerY = 0.f;
-    bool sinkOsdPressed = false;         // 上一次推给控制条的扳机态（变化就要推）
+    bool sinkOsdPressed = false;
+    // 上一次采样时，光柱是不是指着控制条（离开时补一个面板外坐标，清掉悬停高亮）
+    bool sinkOsdOnPanel = false;
     bool sinkMenuPointerValid = false;  // 展开菜单上的指针位置
     float sinkMenuPointerX = 0.f;
     float sinkMenuPointerY = 0.f;
@@ -679,6 +681,28 @@ struct VrContext {
     std::atomic<bool> menuHasFrame{false};
 
     /*
+     * 菜单**卡片实际占的那块矩形**（归一化，相对整块菜单面板；左/上/右/下）。
+     *
+     * 父亲 2026-10-06：光点从卡片上移开以后，射线要继续射到后面的面上去 ——
+     * 原来整块面板都算命中，透明区也在半路把射线拦住，看着像"射不出去"。
+     * 卡片矩形由界面层量好上报（setMenuHitRect）。
+     */
+    std::atomic<float> menuHitL{0.f};
+    std::atomic<float> menuHitT{0.f};
+    std::atomic<float> menuHitR{1.f};
+    std::atomic<float> menuHitB{1.f};
+
+    // 弹幕层（2026-10-06）：贴银幕、比银幕小一圈，独立一层纹理
+    GLuint danmakuTex = 0;
+    std::atomic<bool> danmakuVisible{false};
+    std::atomic<bool> danmakuHasFrame{false};
+
+    // 片名 logo（2026-10-06）：银幕左上角那块小透明层
+    GLuint logoTex = 0;
+    std::atomic<bool> logoVisible{false};
+    std::atomic<bool> logoHasFrame{false};
+
+    /*
      * ---- 纹理的创建者：VR 渲染线程自己（2026-10-05 晚修）----
      *
      * 前面三块屏互相串画面的真正根因：纹理是在 Java 那条 GL 线程的上下文里
@@ -695,6 +719,8 @@ struct VrContext {
     jobject videoSt = nullptr;
     jobject osdSt = nullptr;
     jobject menuSt = nullptr;
+    jobject danmakuSt = nullptr;
+    jobject logoSt = nullptr;
     jobject textureSink = nullptr;
     jmethodID sinkPanelTex = nullptr;
     jmethodID sinkVideoTex = nullptr;
@@ -744,6 +770,8 @@ std::function<void()> gPanelUpdate;
 std::function<void()> gVideoUpdate;   // 播放画面取帧（同面板：必须在 VR 渲染线程调）
 std::function<void()> gOsdUpdate;     // 控制条取帧（同上）
 std::function<void()> gMenuUpdate;    // 展开菜单取帧（同上）
+std::function<void()> gDanmakuUpdate; // 弹幕层取帧
+std::function<void()> gLogoUpdate;    // 片名 logo 取帧
 std::atomic<bool> gRunning{false};
 std::atomic<bool> gRequestStop{false};
 
@@ -1537,9 +1565,25 @@ constexpr float kPanelPxH = 1080.f;
  * 位置/尺寸都在这里调：距离 [kOsdDistance]、高度 [kOsdCenterY]、宽度 [kOsdWidth]、
  * 仰角 [kOsdTiltDeg]。后续「指着它扣扳机拖走」也基于这几个量。
  */
-constexpr float kOsdPxW = 2880.f;   // 2026-10-06 下午：加宽（像素密度不变，仍然 1800px/米）
-constexpr float kOsdPxH = 240.f;    // 高度缩短（300 → 240），整条更扁
-constexpr float kOsdWidth = 1.60f;  // 米（父亲 2026-10-06：控制条增加宽度）
+/*
+ * 宽度：1.60 → 2.00 米（父亲 2026-10-06 晚：+1/3，太长还可以缩短）。
+ *
+ * 严格 +1/3 是 2.13m，但在 0.85m 的近场距离上水平视角已 102°，条的两头会跑出
+ * 视野边缘；按钮放大 1/3 后内容最少要 1.9m 以上（12 颗按钮约 1.14m + 时长 +
+ * 进度条 + 留白），所以取 2.00m（96°）作为「够放、又没那么满」的值。
+ * 像素保持 1800px/米，字不会糊。
+ */
+constexpr float kOsdPxW = 3600.f;
+/*
+ * 厚度：240 → 340（父亲 2026-10-06 晚定「+1/4」）。
+ *
+ * 按 +1/4 算出来是 300，但按钮放大 1/3 之后内容实测量需要：
+ *   进度行 34dp + 行间距 32dp + 按钮行（图标 58 + 文字行 30 + 内边距 12）= 170dp，
+ * 加上下留白 32dp = 202dp = 303px —— 300 卡得刚好没有余量，中文字体行高一浮动就会被裁。
+ * 取 340px（226dp）留出约 24dp 余量。
+ */
+constexpr float kOsdPxH = 340.f;
+constexpr float kOsdWidth = 2.00f;  // 米（1.60 再 +25%）
 constexpr float kOsdHeight = kOsdWidth * kOsdPxH / kOsdPxW;
 constexpr float kOsdDistance = 0.85f;                     // 正前方距离（米，父亲：再近些）
 constexpr float kOsdCenterY = -0.62f;                     // 视线下方（米，父亲：再靠下）
@@ -1589,7 +1633,7 @@ bool rayHitsOsd(const VrContext &c, const XrPosef &aim, float *outT, float *outX
  * 与控制条等宽（像素 2560×1200）。位置：底边贴着控制条顶边留一点缝，
  * 距离与仰角跟控制条一致，看起来像同一套控件。
  */
-constexpr float kMenuPxW = 2880.f;   // 与控制条同一像素密度，字一样清楚
+constexpr float kMenuPxW = 3600.f;   // 与控制条同一像素密度，字一样清楚
 constexpr float kMenuPxH = 1350.f;
 constexpr float kMenuWidth = kOsdWidth;
 constexpr float kMenuHeight = kMenuWidth * kMenuPxH / kMenuPxW;
@@ -1622,7 +1666,6 @@ void menuBasis(float *cx, float *cy, float *cz, float *nx, float *ny, float *nz,
 
 /** 射线与菜单矩形的交点；命中返回 true */
 bool rayHitsMenu(const VrContext &c, const XrPosef &aim, float *outT, float *outX, float *outY) {
-    (void) c;
     float dx = 0.f, dy = 0.f, dz = 0.f;
     aimDirection(aim, &dx, &dy, &dz);
     *outT = 0.f;
@@ -1641,6 +1684,18 @@ bool rayHitsMenu(const VrContext &c, const XrPosef &aim, float *outT, float *out
     const float v = relx * vx + rely * vy + relz * vz;
     if (fabsf(u) > kMenuWidth * 0.5f) return false;
     if (fabsf(v) > kMenuHeight * 0.5f) return false;
+
+    /*
+     * 只有落在**卡片**上才算命中（父亲 2026-10-06）：
+     * 卡片以外是透明区，射线要从那儿穿过去，打到后面的控制条 / 银幕 / 海报墙。
+     */
+    const float nu = u / kMenuWidth + 0.5f;     // 0…1，左 → 右
+    const float nv = 0.5f - v / kMenuHeight;    // 0…1，上 → 下
+    if (nu < c.menuHitL.load() || nu > c.menuHitR.load() ||
+        nv < c.menuHitT.load() || nv > c.menuHitB.load()) {
+        return false;
+    }
+
     *outT = t;
     *outX = u;
     *outY = v;
@@ -1749,9 +1804,11 @@ void pushInput(VrContext &c) {
          * ① 控制条优先：指着控制条时，指针与点击都给控制条，不碰主面板。
          *    （控制条是近场小面板，尺寸 1920×270，坐标单独换算。）
          */
+        bool osdHitThisHand = false;
         if (c.osdVisible.load() && c.osdTex != 0 && c.osdHasFrame.load()) {
             float osdT = 0.f, ou = 0.f, ov = 0.f;
             if (rayHitsOsd(c, c.aimPose[h], &osdT, &ou, &ov)) {
+                osdHitThisHand = true;
                 const float opx = (ou / kOsdWidth + 0.5f) * kOsdPxW;
                 const float opy = (0.5f - ov / kOsdHeight) * kOsdPxH;
                 /*
@@ -1793,6 +1850,17 @@ void pushInput(VrContext &c) {
                 env->CallVoidMethod(c.inputSink, c.sinkOsdPointer,
                                     c.sinkOsdPointerX, c.sinkOsdPointerY, false);
                 clearJavaException(env, "输入回调 onOsdPointer(补松手)");
+            }
+        }
+        // 光柱本来指着控制条、这回没指着了：推一个面板外的坐标，界面清掉悬停高亮
+        if (osdHitThisHand) {
+            c.sinkOsdOnPanel = true;
+        }
+        if (c.sinkOsdOnPanel && !osdHitThisHand) {
+            c.sinkOsdOnPanel = false;
+            if (c.sinkOsdPointer != nullptr) {
+                env->CallVoidMethod(c.inputSink, c.sinkOsdPointer, -1.f, -1.f, false);
+                clearJavaException(env, "输入回调 onOsdPointer(离开)");
             }
         }
 
@@ -2115,6 +2183,37 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
             glDisableVertexAttribArray(1);
         };
 
+        /*
+         * 一块**正对观影者**的透明覆盖层（弹幕层 / 片名 logo 用）。
+         * 这两块都是平面正对着人，不需要偏航/仰角，单位四元数就够。
+         */
+        auto drawFlatOverlay = [&](GLuint tex, float cx, float cy, float cz,
+                                   float w, float h) {
+            XrPosef pose{};
+            pose.position = {cx, cy, cz};
+            pose.orientation = {0.f, 0.f, 0.f, 1.f};
+            const Mat4 model = poseScaleModel(pose, w, h, 1.f);
+            const Mat4 mvp = multiply(multiply(proj, view4), model);
+            glUniformMatrix4fv(c.mvpLoc, 1, GL_FALSE, mvp.m);
+            if (c.circleLoc >= 0) glUniform1i(c.circleLoc, 0);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_EXTERNAL_OES, tex);
+            glUniform1i(c.texLoc, 0);
+            glUniform1i(c.useTexLoc, 1);
+            if (c.expandLoc >= 0) glUniform1i(c.expandLoc, 0);
+            if (c.downLoc >= 0) glUniform1i(c.downLoc, 0);
+            glUniform4f(c.colorLoc, 1.f, 1.f, 1.f, 1.f);
+            glBindBuffer(GL_ARRAY_BUFFER, c.vbo);
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void *) 0);
+            glEnableVertexAttribArray(1);
+            glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
+                                  (void *) (3 * sizeof(float)));
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+            glDisableVertexAttribArray(0);
+            glDisableVertexAttribArray(1);
+        };
+
         // 前方银幕：播放时贴视频；没播时是一块空屏（暗色），空间里有"银幕"在
         const bool videoReady = c.videoActive.load() && c.videoTex != 0 && c.videoHasFrame.load();
         /*
@@ -2181,6 +2280,38 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
          * 展开菜单（2026-10-06 父亲定）：与控制条同一套画法，只是一块更大的透明面板，
          * 架在控制条正上方。卡片画在面板哪儿由 Java 侧决定（两面板等宽，坐标直接对齐）。
          */
+        /*
+         * 弹幕层（2026-10-06）：贴在银幕前面一点点、比银幕小一圈。
+         * 单独一层，跟字幕各画各的，整层能开能关（父亲：弹幕要接进来）。
+         */
+        if (c.danmakuVisible.load() && c.danmakuTex != 0 && c.danmakuHasFrame.load()) {
+            const ScreenPlacement front = frontScreen(c);
+            const float sh = front.width / fmaxf(0.1f, front.aspect);
+            const float dw = front.width * 0.92f;
+            const float dh = dw * (sh / front.width);
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            drawFlatOverlay(c.danmakuTex, front.cx, front.cy, front.cz + 0.35f, dw, dh);
+            glDisable(GL_BLEND);
+        }
+
+        /*
+         * 片名 logo（2026-10-06）：钉在银幕左上角，尺寸与内边距照电视版比例
+         * （宽 7.3%、距左 2.5%、距顶 2.8%，图片 640×275 的框）。
+         */
+        if (c.logoVisible.load() && c.logoTex != 0 && c.logoHasFrame.load()) {
+            const ScreenPlacement front = frontScreen(c);
+            const float sh = front.width / fmaxf(0.1f, front.aspect);
+            const float lw = front.width * 0.073f;
+            const float lh = lw * 275.f / 640.f;
+            const float lx = front.cx - front.width * 0.5f + front.width * 0.025f + lw * 0.5f;
+            const float ly = front.cy + sh * 0.5f - sh * 0.028f - lh * 0.5f;
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            drawFlatOverlay(c.logoTex, lx, ly, front.cz + 0.30f, lw, lh);
+            glDisable(GL_BLEND);
+        }
+
         if (c.menuVisible.load() && c.menuTex != 0 && c.menuHasFrame.load()) {
             glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -2633,6 +2764,12 @@ void frameLoop(VrContext &c) {
         if (c.menuVisible.load() && gMenuUpdate != nullptr) {
             gMenuUpdate();
         }
+        if (c.danmakuVisible.load() && gDanmakuUpdate != nullptr) {
+            gDanmakuUpdate();
+        }
+        if (c.logoVisible.load() && gLogoUpdate != nullptr) {
+            gLogoUpdate();
+        }
 
         // 手柄状态（诊断阶段：变化即打日志，先看清 PICO 到底发哪些事件）
         c.frameDisplayTime = fs.predictedDisplayTime;
@@ -2916,7 +3053,15 @@ void pushTexturesToJava(VrContext &c, JNIEnv *env) {
         env->CallVoidMethod(c.textureSink, c.sinkMenuTex, c.menuSt);
         clearJavaException(env, "回调 onMenuTexture");
     }
-    LOGI("四张画面已推给界面层（面板 / 播放画面 / 控制条 / 展开菜单）");
+    if (c.sinkDanmakuTex != nullptr && c.danmakuSt != nullptr) {
+        env->CallVoidMethod(c.textureSink, c.sinkDanmakuTex, c.danmakuSt);
+        clearJavaException(env, "回调 onDanmakuTexture");
+    }
+    if (c.sinkLogoTex != nullptr && c.logoSt != nullptr) {
+        env->CallVoidMethod(c.textureSink, c.sinkLogoTex, c.logoSt);
+        clearJavaException(env, "回调 onLogoTexture");
+    }
+    LOGI("六张画面已推给界面层（面板 / 播放画面 / 控制条 / 展开菜单 / 弹幕 / 片名 logo）");
 }
 
 /**
@@ -2942,9 +3087,12 @@ bool createOesSources(VrContext &c) {
     c.videoTex = genOesTexture();
     c.osdTex = genOesTexture();
     c.menuTex = genOesTexture();
-    if (c.panelTex == 0 || c.videoTex == 0 || c.osdTex == 0 || c.menuTex == 0) {
-        LOGE("建画面纹理失败：panel=%u video=%u osd=%u menu=%u", c.panelTex, c.videoTex,
-             c.osdTex, c.menuTex);
+    c.danmakuTex = genOesTexture();
+    c.logoTex = genOesTexture();
+    if (c.panelTex == 0 || c.videoTex == 0 || c.osdTex == 0 || c.menuTex == 0 ||
+        c.danmakuTex == 0 || c.logoTex == 0) {
+        LOGE("建画面纹理失败：panel=%u video=%u osd=%u menu=%u danmaku=%u logo=%u",
+             c.panelTex, c.videoTex, c.osdTex, c.menuTex, c.danmakuTex, c.logoTex);
         return false;
     }
 
@@ -2952,8 +3100,10 @@ bool createOesSources(VrContext &c) {
     c.videoSt = makeOesSurface(env, c.videoTex, gVideoUpdate, c.videoHasFrame, "播放画面");
     c.osdSt = makeOesSurface(env, c.osdTex, gOsdUpdate, c.osdHasFrame, "控制条");
     c.menuSt = makeOesSurface(env, c.menuTex, gMenuUpdate, c.menuHasFrame, "展开菜单");
+    c.danmakuSt = makeOesSurface(env, c.danmakuTex, gDanmakuUpdate, c.danmakuHasFrame, "弹幕");
+    c.logoSt = makeOesSurface(env, c.logoTex, gLogoUpdate, c.logoHasFrame, "片名 logo");
     if (c.panelSt == nullptr || c.videoSt == nullptr || c.osdSt == nullptr ||
-        c.menuSt == nullptr) {
+        c.menuSt == nullptr || c.danmakuSt == nullptr || c.logoSt == nullptr) {
         LOGE("画面纹理不完整，VR 贴图不可用");
         return false;
     }
@@ -2962,8 +3112,11 @@ bool createOesSources(VrContext &c) {
     c.videoActive = false;
     c.osdVisible = false;
     c.menuVisible = false;
-    LOGI("四张画面纹理已在本渲染线程的上下文里创建：panel=%u video=%u osd=%u menu=%u",
-         c.panelTex, c.videoTex, c.osdTex, c.menuTex);
+    c.danmakuVisible = false;
+    c.logoVisible = false;
+    LOGI("六张画面纹理已在本渲染线程的上下文里创建：panel=%u video=%u osd=%u menu=%u "
+         "danmaku=%u logo=%u",
+         c.panelTex, c.videoTex, c.osdTex, c.menuTex, c.danmakuTex, c.logoTex);
 
     pushTexturesToJava(c, env);
     return true;
@@ -3037,6 +3190,37 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetMenuVisible(JNIEnv *env, jobject /* 
                                                        jboolean visible) {
     g.menuVisible = (visible == JNI_TRUE);
     LOGI("展开菜单状态 → %s", g.menuVisible.load() ? "显示" : "隐藏");
+}
+
+/**
+ * 菜单卡片实际占的那块矩形（归一化 0…1，左 / 上 / 右 / 下，相对整块菜单面板）。
+ *
+ * 界面层量好卡片位置后上报；光柱落在矩形外（透明区）时射线直接穿过去，
+ * 继续打到后面的控制条 / 银幕上（父亲 2026-10-06）。
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetMenuHitRect(JNIEnv * /* env */, jobject /* this */,
+                                                       jfloat l, jfloat t, jfloat r, jfloat b) {
+    g.menuHitL = l;
+    g.menuHitT = t;
+    g.menuHitR = r;
+    g.menuHitB = b;
+}
+
+/** 弹幕层显隐（父亲 2026-10-06：弹幕要接进来） */
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetDanmakuVisible(JNIEnv * /* env */, jobject /* this */,
+                                                          jboolean visible) {
+    g.danmakuVisible = (visible == JNI_TRUE);
+    LOGI("弹幕层状态 → %s", g.danmakuVisible.load() ? "显示" : "隐藏");
+}
+
+/** 片名 logo 显隐（播放中出现，停止后收起） */
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetLogoVisible(JNIEnv * /* env */, jobject /* this */,
+                                                       jboolean visible) {
+    g.logoVisible = (visible == JNI_TRUE);
+    LOGI("片名 logo 状态 → %s", g.logoVisible.load() ? "显示" : "隐藏");
 }
 
 /** 海报墙显示/隐藏（控制条上的「选片」按钮切换，由 Java 侧决定） */
@@ -3163,6 +3347,10 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachTextureSink(JNIEnv *env, jobject 
     g.sinkOsdTex = env->GetMethodID(cls, "onOsdTexture",
                                     "(Landroid/graphics/SurfaceTexture;)V");
     g.sinkMenuTex = env->GetMethodID(cls, "onMenuTexture",
+                                     "(Landroid/graphics/SurfaceTexture;)V");
+    g.sinkDanmakuTex = env->GetMethodID(cls, "onDanmakuTexture",
+                                        "(Landroid/graphics/SurfaceTexture;)V");
+    g.sinkLogoTex = env->GetMethodID(cls, "onLogoTexture",
                                      "(Landroid/graphics/SurfaceTexture;)V");
     env->DeleteLocalRef(cls);
     LOGI("纹理回调已注册（面板=%d 播放画面=%d 控制条=%d 菜单=%d）",

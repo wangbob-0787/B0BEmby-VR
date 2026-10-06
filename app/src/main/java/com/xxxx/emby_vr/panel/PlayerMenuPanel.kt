@@ -37,6 +37,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
@@ -46,7 +50,7 @@ import coil3.compose.AsyncImage
  *
  * ## 形态
  *
- * 控制条本身不变（2880×240 的矮条）。菜单是**另一块面板**，架在控制条正上方：
+ * 控制条本身不变（3600×340 的矮条）。菜单是**另一块面板**，架在控制条正上方：
  *  - 窄菜单（字幕 / 弹幕 / 速度 / 选集 / 更多 / 音频 / 质量 / 模式 / 缓冲）：
  *    一张卡片，横向对齐到**触发它的那颗按钮**正上方。
  *  - 宽菜单（信息 / 演职人员）：卡片宽度从控制条最左铺到最右。
@@ -71,6 +75,15 @@ enum class MenuKind(val title: String) {
     INFO("信息"),
     CAST("演职人员"),
 }
+
+/**
+ * 二级菜单（从控制条「更多」里点进去的那四项，父亲 2026-10-06）。
+ *
+ * 选中后**不关菜单**：B 键（返回）从二级退回「更多」那一级，再按一次才关掉。
+ */
+val MenuKind.isSubMenu: Boolean
+    get() = this == MenuKind.AUDIO || this == MenuKind.QUALITY ||
+        this == MenuKind.MODE || this == MenuKind.BUFFER
 
 /** 菜单里的一行（轨道 / 集数这类：显示名 + 是否当前选中） */
 data class MenuRowItem(val label: String, val selected: Boolean, val payload: Int = -1)
@@ -134,6 +147,9 @@ class MenuState {
     /** 请求关闭菜单 */
     var onClose: (() -> Unit)? = null
 
+    /** 请求返回上一级（B 键 / 卡片右上角「返回」）：二级 → 回「更多」，一级 → 关掉菜单 */
+    var onBack: (() -> Unit)? = null
+
     /** 播放进度之类不在这里，控制条自己刷 */
     fun visible(): Boolean = kind != null
 }
@@ -163,7 +179,7 @@ val BUFFER_PRESETS = listOf(
 )
 
 /** 菜单面板像素尺寸（与控制条等宽 → 归一化横向坐标可以直接复用） */
-const val MENU_PANEL_W = 2880
+const val MENU_PANEL_W = 3600
 const val MENU_PANEL_H = 1350
 
 /** 窄卡片宽度（像素） */
@@ -175,22 +191,52 @@ fun PlayerMenuPanel(menu: MenuState, osd: OsdState) {
     val kind = menu.kind ?: return
     val wide = kind == MenuKind.INFO || kind == MenuKind.CAST
 
-    // 卡片横向位置：窄卡片对齐触发按钮，宽卡片铺满（与控制条同宽）
+    // 信息面板（父亲 2026-10-06）：宽高各减半、左边与控制条左边对齐
+    val isInfo = kind == MenuKind.INFO
     val panelW = MENU_PANEL_W.toFloat()
-    val leftPx = if (wide) {
-        CARD_WIDE_PAD
-    } else {
-        val bx = menu.anchor?.let { osd.buttonX[it] } ?: 0.5f
-        (bx * panelW - CARD_W / 2f).coerceIn(CARD_WIDE_PAD, panelW - CARD_W - CARD_WIDE_PAD)
+    val panelH = MENU_PANEL_H.toFloat()
+    val leftPx = when {
+        isInfo -> 0f                                  // 与控制条左边对齐
+        wide -> CARD_WIDE_PAD
+        else -> {
+            val bx = menu.anchor?.let { osd.buttonX[it] } ?: 0.5f
+            (bx * panelW - CARD_W / 2f).coerceIn(CARD_WIDE_PAD, panelW - CARD_W - CARD_WIDE_PAD)
+        }
     }
     val leftDp = pxToDp(leftPx)
-    val widthDp = if (wide) pxToDp(panelW - CARD_WIDE_PAD * 2f) else pxToDp(CARD_W)
+    val widthDp = when {
+        isInfo -> pxToDp(panelW / 2f)                  // 宽度减半
+        wide -> pxToDp(panelW - CARD_WIDE_PAD * 2f)
+        else -> pxToDp(CARD_W)
+    }
+    val heightDp: Dp = if (isInfo) pxToDp(panelH / 2f) else Dp.Unspecified  // 高度减半
+
+    /*
+     * 卡片实际占的那块矩形要报给原生（父亲 2026-10-06）：
+     * 光柱落在卡片外的透明区时要穿过去打到后面的面，不能在半路被拦住。
+     */
+    val windowW = LocalWindowInfo.current.containerSize.width
+    val windowH = LocalWindowInfo.current.containerSize.height
 
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.BottomStart) {
         Column(
             modifier = Modifier
                 .padding(start = leftDp, bottom = 8.dp)
                 .width(widthDp)
+                .then(if (isInfo) Modifier.height(heightDp) else Modifier)
+                .onGloballyPositioned { coords ->
+                    if (windowW <= 0 || windowH <= 0) return@onGloballyPositioned
+                    val x = coords.positionInRoot().x
+                    val y = coords.positionInRoot().y
+                    val w = coords.size.width.toFloat()
+                    val h = coords.size.height.toFloat()
+                    com.xxxx.emby_vr.vr.VrNative.setMenuHitRect(
+                        (x / windowW).coerceIn(0f, 1f),
+                        (y / windowH).coerceIn(0f, 1f),
+                        ((x + w) / windowW).coerceIn(0f, 1f),
+                        ((y + h) / windowH).coerceIn(0f, 1f),
+                    )
+                }
                 .clip(RoundedCornerShape(28.dp))
                 .background(Color(0xF0141518))
                 .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(28.dp))
@@ -208,12 +254,12 @@ fun PlayerMenuPanel(menu: MenuState, osd: OsdState) {
                     modifier = Modifier.weight(1f),
                 )
                 Text(
-                    text = "关闭",
+                    text = if (kind.isSubMenu) "返回上级" else "关闭",
                     color = Color(0xFF9E9E9E),
                     fontSize = 20.sp,
                     modifier = Modifier
                         .clip(RoundedCornerShape(10.dp))
-                        .clickable { menu.onClose?.invoke() }
+                        .clickable { menu.onBack?.invoke() }
                         .padding(horizontal = 14.dp, vertical = 6.dp),
                 )
             }
