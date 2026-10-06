@@ -115,12 +115,12 @@ val OSD_RIGHT_GROUP = listOf(
 /**
  * 间距（父亲 2026-10-06 晚按图定稿，全部用像素算）：
  *
- *  · 按钮**矩形框**之间的缝 5px（框 = 图标 58dp + 左右各 24dp 内边距，
- *    所以图标到图标的距离是 5 + 36 + 36 = 77px）；
+ *  · 按钮框之间的缝 5px（框是 159 的正方形，图标 87 居中，所以图标到图标的
+ *    距离是 5 + 36 + 36 = 77px）；
  *  · 组与组之间 75px；
  *  · 按钮行左右各留 114px，即图标距控制条边缘 114 + 36 = 150px（与标题行、进度行对齐）。
  *
- * 面板宽 2478 = 114 + 框总宽 2055 + 组内缝 9×5 + 组间缝 2×75 + 114，内容正好铺满。
+ * 面板宽 2331 = 114 + 12 框 × 159 + 组内缝 9×5 + 组间缝 2×75 + 114，内容正好铺满。
  */
 private const val BUTTON_GAP_PX = 5f
 private const val GROUP_GAP_PX = 75f
@@ -129,14 +129,26 @@ private const val BUTTON_ROW_SIDE_PX = 114f
 /** 面板上下边距（像素，父亲 2026-10-06 晚定） */
 private const val PANEL_PAD_Y_PX = 75f
 
+/**
+ * 按钮框边长（像素）：正方形，与原来按钮框的宽度一致。
+ *
+ * 父亲 2026-10-06 晚定稿 —— 按钮下方的说明文字去掉后，12 颗按钮可以做成一样大的
+ * 正方形：图标 87（58dp）居中，四周各留 36（24dp）。顺带把「说明文字被面板底边裁掉」
+ * 那个问题一起消掉（行高不再由文字行高决定）。
+ */
+private const val BUTTON_BOX_PX = 159f
+
 /** 控制条面板 240dpi：1dp = 1.5px */
 private const val PX_PER_DP = 1.5f
+
+/** 按钮里的图标边长（像素）：58dp */
+private const val ICON_PX = 87f
 
 /** px 转 dp（Compose 只收 dp） */
 private fun px(v: Float) = (v / PX_PER_DP).dp
 
 /** 控制条面板像素宽（必须与原生 kOsdPxW 一致：光柱坐标是按面板像素给的） */
-const val OSD_PANEL_W = 2478f
+const val OSD_PANEL_W = 2331f
 
 /**
  * 控制条状态：主线程（Activity）写，面板界面读。
@@ -438,8 +450,8 @@ private fun OsdButtonView(button: OsdButton, state: OsdState, panelWpx: Int) {
         else -> Color(0xFFE3E3E3)
     }
 
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
+    Box(
+        contentAlignment = Alignment.Center,
         modifier = Modifier
             .onGloballyPositioned { coords ->
                 val w = if (panelWpx > 0) {
@@ -455,10 +467,10 @@ private fun OsdButtonView(button: OsdButton, state: OsdState, panelWpx: Int) {
                         ((left + width) / w).coerceIn(0f, 1f)
                 }
             }
+            .size(px(BUTTON_BOX_PX))
             .clip(RoundedCornerShape(22.dp))
             .background(background)
-            .clickable { state.onButton?.invoke(button) }
-            .padding(horizontal = 24.dp, vertical = 6.dp),
+            .clickable { state.onButton?.invoke(button) },
     ) {
         Icon(
             imageVector = if (isPlayPause) state.playIcon else button.icon,
@@ -466,7 +478,7 @@ private fun OsdButtonView(button: OsdButton, state: OsdState, panelWpx: Int) {
             // 播放/暂停是主按钮：白色实心圆 + 深色图标
             tint = if (isPlayPause) Color(0xFF101214) else tint,
             modifier = Modifier
-                .size(58.dp)
+                .size(px(ICON_PX))
                 .then(
                     if (isPlayPause) {
                         Modifier
@@ -476,20 +488,6 @@ private fun OsdButtonView(button: OsdButton, state: OsdState, panelWpx: Int) {
                         Modifier
                     },
                 ),
-        )
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            text = when (button) {
-                OsdButton.SPEED -> "速度 ${"%.1f".format(state.speed)}x"
-                OsdButton.PLAY_PAUSE -> if (state.playing) "暂停" else "播放"
-                else -> button.label
-            },
-            color = when {
-                selected -> Color(0xFF8EF7C0)
-                hovered -> Color.White
-                else -> Color(0xFFD8D8D8)
-            },
-            fontSize = 22.sp,
         )
     }
 }

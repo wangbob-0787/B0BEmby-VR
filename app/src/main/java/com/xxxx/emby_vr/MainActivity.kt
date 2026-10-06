@@ -343,21 +343,27 @@ class MainActivity : ComponentActivity() {
 
     /** 控制条第一行右侧的时间格式 */
     private val osdClockFormat =
-        java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
+        java.text.SimpleDateFormat("yyyy年MM月dd HH:mm:ss", java.util.Locale.getDefault())
 
     /**
-     * 控制条第一行的片名（父亲 2026-10-06 晚）：
-     * 电影就是片名；剧集是「剧名 第N集」。
+     * 控制条第一行的片名（父亲 2026-10-06 晚定稿）：
+     *  · 电影：`正在播放：片名`
+     *  · 剧集：`正在播放：剧名 第X集 集名`
+     *  · 有剧名没集号：`正在播放：剧名`
      */
     private fun osdTitleText(): String {
         val item = currentItem
         val series = item?.seriesName
         val ep = item?.indexNumber
-        return when {
-            !series.isNullOrBlank() && ep != null -> "$series 第${ep}集"
+        val name = item?.name
+        val base = when {
+            !series.isNullOrBlank() && ep != null ->
+                if (!name.isNullOrBlank() && name != series) "$series 第${ep}集 $name"
+                else "$series 第${ep}集"
             !series.isNullOrBlank() -> series
-            else -> item?.name ?: osdState.title
+            else -> name ?: osdState.title
         }
+        return "正在播放：$base"
     }
 
     /** 最近 300ms 面板刚吃过指针 / 点击 / 滚动：这一下扳机归面板 */
@@ -1515,13 +1521,13 @@ class MainActivity : ComponentActivity() {
             this,
             content = { com.xxxx.emby_vr.panel.PlayerOsdBar(osdState) },
             /*
-             * 父亲 2026-10-06 晚按图定稿：2478 × 455 像素
-             * （宽 = 114×2 + 按钮框 2055 + 框缝 5×9 + 组间 75×2；
-             *   高 = 75 + 43 + 30 + 51 + 30 + 151 + 75）。
+             * 父亲 2026-10-06 晚按图定稿：2331 × 474 像素
+             * （宽 = 114×2 + 12 个正方形按钮框 159×12 + 框缝 5×9 + 组间 75×2；
+             *   高 = 75 + 标题 50 + 30 + 进度 55 + 30 + 按钮 159 + 75）。
              * 与原生 kOsdPxW / kOsdPxH 必须一致，否则点击坐标会错位。
              */
-            panelW = 2478,
-            panelH = 455,
+            panelW = 2331,
+            panelH = 474,
             name = "b0bemby-osd",
             activatesVrPanel = false,
             // 控制条是纯 Compose 界面，没登记进电视版那张控件坐标表 → 点击要直通派发
