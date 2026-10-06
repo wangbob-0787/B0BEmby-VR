@@ -1149,7 +1149,15 @@ class MainActivity : ComponentActivity() {
 
     /** 字幕列表：第 0 项固定是「关闭字幕」 */
     private fun buildSubtitleRows(): List<com.xxxx.emby_vr.panel.MenuRowItem> {
-        val subs = currentStreams.filter { it.type == "Subtitle" }
+        /*
+         * 弹幕轨不进字幕列表（父亲 2026-10-06 晚）。
+         *
+         * 弹幕与字幕本来就是两套：弹幕那条 ASS 轨由我们自己下载、自己画在弹幕层，
+         * 普通字幕由播放器回调交给弹幕层底部。字幕列表若把弹幕轨也列进去，
+         * 选中它会让播放器把它当普通字幕渲染 —— ASS 的滚动指令它不认，
+         * 结果是弹幕在底部堆成一坨、与自绘弹幕层重复。所以这里排除。
+         */
+        val subs = currentStreams.filter { it.type == "Subtitle" && !isDanmakuStream(it) }
         subtitleStreamIndices = subs.mapNotNull { it.index }
         val rows = mutableListOf(
             com.xxxx.emby_vr.panel.MenuRowItem("关闭字幕", selectedSubtitleIndex == null),
@@ -1162,6 +1170,12 @@ class MainActivity : ComponentActivity() {
             rows += com.xxxx.emby_vr.panel.MenuRowItem(label, s.index == selectedSubtitleIndex)
         }
         return rows
+    }
+
+    /** 这条字幕流是不是弹幕轨（ASS / SSA，由自绘弹幕层负责，不当普通字幕选） */
+    private fun isDanmakuStream(s: com.xxxx.emby_vr.data.model.MediaStreamDto): Boolean {
+        val codec = (s.codec ?: "").lowercase()
+        return codec == "ass" || codec == "ssa"
     }
 
     /** 菜单里选完一项后刷新列表的勾选态（菜单保持打开，勾要跟着动） */
@@ -1191,8 +1205,7 @@ class MainActivity : ComponentActivity() {
         val mediaId = currentMediaId
         if (mediaId.isBlank()) return
         val sub = currentStreams.firstOrNull { stream ->
-            val codec = (stream.codec ?: "").lowercase()
-            stream.type.equals("Subtitle", ignoreCase = true) && (codec == "ass" || codec == "ssa")
+            stream.type.equals("Subtitle", ignoreCase = true) && isDanmakuStream(stream)
         } ?: run {
             Log.i(TAG, "这一集没有弹幕轨（没有 ass / ssa 字幕流）")
             return
