@@ -240,7 +240,13 @@ fun PanelApp(onPlayRequested: (mediaId: String, positionTicks: Long) -> Unit) {
                             if (mediaId.isNotBlank()) onPlayRequested(mediaId, position)
                             navController.popBackStack()
                         }
-                        Loading()
+                        /*
+                         * 这一格**什么也不画**（父亲 2026-10-06 晚：点「继续播放」的海报，
+                         * 海报墙先黑一下再回来）。原因是这里原来渲染 Loading()——一整块
+                         * 深色加载页，navigate 过来的那一帧就把它顶上去了，下一帧才
+                         * popBackStack 回首页。空着就只闪一帧透明，看不到黑。
+                         */
+                        Box(modifier = Modifier.fillMaxSize())
                     }
 
                     composable(
