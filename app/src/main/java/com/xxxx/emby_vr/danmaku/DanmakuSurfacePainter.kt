@@ -35,9 +35,14 @@ class DanmakuSurfacePainter(
     /**
      * 片名 logo 位图的提供者（父亲 2026-10-07 01:47：把 logo 从视频层分离出来试试）。
      *
-     * 每帧在画布左上角画这张图：宽占画布 7.3%、距左 2.5%、距顶 2.8%（与电视版比例一致），
-     * 高度按图片自身比例自适应。弹幕层是实测能正常显示的独立层，logo 借它的画布，
-     * 不新增合成层数。
+     * 每帧在画布**右下角**画这张图（父亲 2026-10-07 02:11 定：挪到右下角、屏边距 8%、
+     * 尺寸翻倍），高度按图片自身比例自适应，底边以图片下缘对齐。
+     *
+     * 画布坐标 → 屏幕坐标的换算：这层画布贴在「屏幕的 [DANMAKU_LAYER_SCALE] 倍、
+     * 居中、略靠前」的合成层上（native 侧 kDanmakuScale = 0.92），所以画布边缘落在
+     * 屏幕 4% 的位置，换算公式 `屏幕比例 = 0.04 + 画布比例 × 0.92`。
+     * 反推自「屏右边距 / 底边距 = 8%」：画布右/下缘 ≈ 0.9565，宽 ≈ 画布宽 14.6%
+     * （屏幕占比 13.43%，即 4K 屏下 516px 宽，正好是原来 258px 的两倍）。
      */
     var logoBitmapProvider: (() -> android.graphics.Bitmap?)? = null
     /** 自绘层本体。它不在视图树里，只被本类逐帧调用。 */
@@ -94,13 +99,25 @@ class DanmakuSurfacePainter(
                      * 压在弹幕上面 —— 弹幕从它的透明底穿过，文字部分压住弹幕。
                      */
                     logoBitmapProvider?.invoke()?.let { logo ->
-                        val lw = (widthPx * 0.073f).toInt()
-                        val lh = (lw.toFloat() * logo.height / logo.width).toInt()
-                        val lx = (widthPx * 0.025f).toInt()
-                        val ly = (heightPx * 0.028f).toInt()
+                        /*
+                         * 宽高各有一道上限，图按自身比例缩进这个框（Fit，同 TV 版做法）——
+                         * 只卡宽度的话，「又高又窄」的 ClearLogo 会竖着占掉半个屏。
+                         */
+                        val ratio = logo.width.toFloat() / logo.height
+                        var lw = widthPx * LOGO_CANVAS_MAX_WIDTH
+                        var lh = lw / ratio
+                        val maxH = heightPx * LOGO_CANVAS_MAX_HEIGHT
+                        if (lh > maxH) {
+                            lh = maxH
+                            lw = lh * ratio
+                        }
+                        val lwInt = lw.toInt()
+                        val lhInt = lh.toInt()
+                        val lx = (widthPx * LOGO_CANVAS_RIGHT).toInt() - lwInt
+                        val ly = (heightPx * LOGO_CANVAS_BOTTOM).toInt() - lhInt
                         canvas.drawBitmap(
                             logo, null,
-                            android.graphics.Rect(lx, ly, lx + lw, ly + lh), null,
+                            android.graphics.Rect(lx, ly, lx + lwInt, ly + lhInt), null,
                         )
                     }
                     frames++
@@ -135,5 +152,18 @@ class DanmakuSurfacePainter(
 
     private companion object {
         const val TAG = "B0BEmbyVR"
+
+        /** logo 宽上限 = 画布宽的这个比例（屏幕占比 13.43%，是原来 7.3% 的两倍） */
+        const val LOGO_CANVAS_MAX_WIDTH = 0.146f
+
+        /**
+         * logo 高上限 = 画布高的这个比例（屏幕占比 5.6%，对齐 TV 版 60dp/1080 的框高，
+         * 除以弹幕层 0.92 的缩放得 0.0609）。宽幅 logo 够不到它，只有又高又窄的图才会顶上来。
+         */
+        const val LOGO_CANVAS_MAX_HEIGHT = 0.0609f
+
+        /** logo 右缘 / 下缘在画布上的位置：对应屏幕右边距 / 底边距 8% */
+        const val LOGO_CANVAS_RIGHT = 0.9565f
+        const val LOGO_CANVAS_BOTTOM = 0.9565f
     }
 }
