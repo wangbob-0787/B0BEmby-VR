@@ -333,28 +333,28 @@ class MainActivity : ComponentActivity() {
     }
 
     /** 最近 300ms 面板刚吃过指针 / 点击 / 滚动：这一下扳机归面板 */
-private fun panelTouchedRecently(): Boolean =
-    android.os.SystemClock.uptimeMillis() - lastPanelClickAt < 300L
+    private fun panelTouchedRecently(): Boolean =
+        android.os.SystemClock.uptimeMillis() - lastPanelClickAt < 300L
 
-/**
- * 上次退出前海报墙摆在哪儿：读回来（父亲 2026-10-06 晚）。
- *
- * 位置 / 朝向 / 宽度一起存、一起还 —— 他调好一次，下次打开就还在那儿。
- */
-private fun restorePanelPlace() {
-    val raw = placePrefs.getString("panel_place", null) ?: return
-    val v = raw.split(",").mapNotNull { it.trim().toFloatOrNull() }.toFloatArray()
-    if (v.size != 6) return
-    com.xxxx.emby_vr.vr.VrNative.setPanelPlace(v)
-    Log.i(TAG, "海报墙摆放已还原到上次退出前的样子")
-}
+    /**
+     * 上次退出前海报墙摆在哪儿：读回来（父亲 2026-10-06 晚）。
+     *
+     * 位置 / 朝向 / 宽度一起存、一起还 —— 他调好一次，下次打开就还在那儿。
+     */
+    private fun restorePanelPlace() {
+        val raw = placePrefs.getString("panel_place", null) ?: return
+        val v = raw.split(",").mapNotNull { it.trim().toFloatOrNull() }.toFloatArray()
+        if (v.size != 6) return
+        com.xxxx.emby_vr.vr.VrNative.setPanelPlace(v)
+        Log.i(TAG, "海报墙摆放已还原到上次退出前的样子")
+    }
 
-/** 把海报墙当前摆放存下来（下次打开还原） */
-private fun savePanelPlace() {
-    val v = com.xxxx.emby_vr.vr.VrNative.getPanelPlace() ?: return
-    placePrefs.edit().putString("panel_place", v.joinToString(",")).apply()
-    Log.i(TAG, "海报墙摆放已记住")
-}
+    /** 把海报墙当前摆放存下来（下次打开还原） */
+    private fun savePanelPlace() {
+        val v = com.xxxx.emby_vr.vr.VrNative.getPanelPlace() ?: return
+        placePrefs.edit().putString("panel_place", v.joinToString(",")).apply()
+        Log.i(TAG, "海报墙摆放已记住")
+    }
 
     /** 关掉菜单（控制条按钮高亮一并清掉） */
     private fun closeMenu() {
