@@ -2050,6 +2050,18 @@ void pushInput(VrContext &c) {
             if (!c.squeezeDown[h] && !triggerJustPressed) {
                 const float sx = c.thumbstick[h].x;
                 const float sy = c.thumbstick[h].y;
+                /*
+                 * 诊断（父亲 2026-10-06 深夜）：菜单开着推摇杆，界面层一条都收不到，
+                 * 连「推给界面层」的原生日志都没有 —— 推送是无条件的，那只剩一种
+                 * 可能：这里读到的摇杆值本身在死区内（比如被系统收走）。
+                 * 打印原始值，一次看清。
+                 */
+                static int stickRawLogTick = 0;
+                if ((stickRawLogTick++ % 60) == 0) {
+                    LOGI("摇杆原始值：x=%.3f y=%.3f 握把=%d 扳机=%d 菜单=%d",
+                         sx, sy, c.squeezeDown[h] ? 1 : 0, c.triggerDown[h] ? 1 : 0,
+                         c.menuVisible.load() ? 1 : 0);
+                }
                 if (fabsf(sx) > kStickDeadzone || fabsf(sy) > kStickDeadzone) {
                     if (t - c.sinkStickAt[h] >= kStickStateMs) {
                         c.sinkStickAt[h] = t;
