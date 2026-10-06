@@ -52,6 +52,8 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -127,6 +129,9 @@ const val OSD_PANEL_W = 3600f
  */
 class OsdState {
     var title by mutableStateOf("")
+
+    /** 控制条第一行右侧的当前时间（YYYY-MM-DD HH:MM:SS） */
+    var nowClock by mutableStateOf("")
     var playing by mutableStateOf(false)
     var positionMs by mutableStateOf(0L)
     var durationMs by mutableStateOf(0L)
@@ -201,25 +206,55 @@ fun PlayerOsdBar(state: OsdState) {
             .padding(horizontal = 88.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.Top,
     ) {
-        // ① 进度行：左侧「已播 / 总时长」（固定宽度，进度走动时右边不会抖）
+        // ① 标题行：左「正在播放 XXXX」 右「当前时间」（父亲 2026-10-06 晚加的行）
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "正在播放 ${state.title}",
+                color = Color(0xFFEAF6EE),
+                fontSize = 24.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = state.nowClock,
+                color = Color(0xFFA9B8AE),
+                fontSize = 24.sp,
+            )
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        // ② 进度行：左「已播时长」 右「剩余时长 / 总时长」（父亲 2026-10-06 晚定）
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                text = "${osdTimeText(state.positionMs)} / ${osdTimeText(state.durationMs)}",
+                text = osdTimeText(state.positionMs),
                 color = Color(0xFFEAF6EE),
                 fontSize = 26.sp,
                 fontWeight = FontWeight.Medium,
-                modifier = Modifier.width(216.dp),
+                modifier = Modifier.width(130.dp),
             )
             OsdProgress(
                 state = state,
                 modifier = Modifier
                     .weight(1f)
-                    .padding(start = 32.dp),
+                    .padding(horizontal = 32.dp),
+            )
+            Text(
+                text = "-" + osdTimeText((state.durationMs - state.positionMs).coerceAtLeast(0L)) +
+                    " / " + osdTimeText(state.durationMs),
+                color = Color(0xFFC9D6CE),
+                fontSize = 26.sp,
+                textAlign = TextAlign.End,
+                modifier = Modifier.width(330.dp),
             )
         }
 
-        // 进度行与按钮行之间的留白（父亲 2026-10-06：间距 +1/3）
-        Spacer(modifier = Modifier.height(32.dp))
+        // 进度行与按钮行之间的留白
+        Spacer(modifier = Modifier.height(22.dp))
 
         // ② 按钮行：左组贴左 · 中组居中 · 右组贴右
         Row(

@@ -332,6 +332,25 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** 控制条第一行右侧的时间格式 */
+    private val osdClockFormat =
+        java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
+
+    /**
+     * 控制条第一行的片名（父亲 2026-10-06 晚）：
+     * 电影就是片名；剧集是「剧名 第N集」。
+     */
+    private fun osdTitleText(): String {
+        val item = currentItem
+        val series = item?.seriesName
+        val ep = item?.indexNumber
+        return when {
+            !series.isNullOrBlank() && ep != null -> "$series 第${ep}集"
+            !series.isNullOrBlank() -> series
+            else -> item?.name ?: osdState.title
+        }
+    }
+
     /** 最近 300ms 面板刚吃过指针 / 点击 / 滚动：这一下扳机归面板 */
     private fun panelTouchedRecently(): Boolean =
         android.os.SystemClock.uptimeMillis() - lastPanelClickAt < 300L
@@ -390,6 +409,9 @@ class MainActivity : ComponentActivity() {
                     val d = p.duration
                     if (d > 0L) osdState.durationMs = d
                 }
+                // 控制条第一行：正在播放什么 + 当前时间（父亲 2026-10-06 晚）
+                osdState.title = osdTitleText()
+                osdState.nowClock = osdClockFormat.format(java.util.Date())
                 kotlinx.coroutines.delay(1000)
             }
             osdState.playing = false
@@ -1484,12 +1506,12 @@ class MainActivity : ComponentActivity() {
             this,
             content = { com.xxxx.emby_vr.panel.PlayerOsdBar(osdState) },
             /*
-             * 父亲 2026-10-06 晚：宽度 +1/3（2880 → 3840）、厚度 +1/4。
-             * 厚度按 +1/4 是 300，但按钮放大 1/3 后内容要 303px 才放得下（卡满没余量），
-             * 取 340px 留余量。与原生 kOsdPxW / kOsdPxH 必须一致，否则点击坐标会错位。
+             * 父亲 2026-10-06 晚：宽度加宽、按钮放大，再在进度条上方加一行
+             * 「正在播放 XXXX + 当前时间」。三行内容取 430px 才排得开。
+             * 与原生 kOsdPxW / kOsdPxH 必须一致，否则点击坐标会错位。
              */
             panelW = 3600,
-            panelH = 340,
+            panelH = 430,
             name = "b0bemby-osd",
             activatesVrPanel = false,
             // 控制条是纯 Compose 界面，没登记进电视版那张控件坐标表 → 点击要直通派发

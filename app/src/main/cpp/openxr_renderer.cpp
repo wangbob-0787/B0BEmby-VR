@@ -629,6 +629,8 @@ struct VrContext {
     float panelDragStartZ[2] = {0.f, 0.f};
     bool sinkStickPushed[2] = {false, false};   // 摇杆是否处在"推着"的状态（回中要补一帧零值）
     bool sinkLastBack[2] = {false, false};
+    // 扳机按下的时刻：扣下去那一下手会带偏摇杆，250ms 内不把它当滚动
+    double triggerDownAtMs[2] = {0.0, 0.0};
     double sinkStickAt[2] = {0.0, 0.0}; // 摇杆滚动节拍（毫秒）
 
     /*
@@ -1584,14 +1586,13 @@ constexpr float kPanelPxH = 1080.f;
  */
 constexpr float kOsdPxW = 3600.f;
 /*
- * 厚度：240 → 340（父亲 2026-10-06 晚定「+1/4」）。
+ * 厚度：240 → 340 → 430。
  *
- * 按 +1/4 算出来是 300，但按钮放大 1/3 之后内容实测量需要：
- *   进度行 34dp + 行间距 32dp + 按钮行（图标 58 + 文字行 30 + 内边距 12）= 170dp，
- * 加上下留白 32dp = 202dp = 303px —— 300 卡得刚好没有余量，中文字体行高一浮动就会被裁。
- * 取 340px（226dp）留出约 24dp 余量。
+ * 340 是按按钮放大 1/3 算的。父亲 2026-10-06 晚又要在进度条上方加一行
+ * 「正在播放 XXXX + 当前时间」，多一行（约 30dp = 45px）再加行间距，取 430px 排得开。
+ * Java 侧 PanelLayer 的 panelH 必须同值，否则点击坐标会错位。
  */
-constexpr float kOsdPxH = 340.f;
+constexpr float kOsdPxH = 430.f;
 constexpr float kOsdWidth = 2.00f;  // 米（1.60 再 +25%）
 constexpr float kOsdHeight = kOsdWidth * kOsdPxH / kOsdPxW;
 constexpr float kOsdDistance = 0.85f;                     // 正前方距离（米，父亲：再近些）
@@ -2003,6 +2004,9 @@ void pushInput(VrContext &c) {
              * 手一抖海报就跟着滚，很难对准要点的那张。所以按住扳机期间，
              * 摇杆滚动通道在下面 ④ 被掐掉（见那里的条件）。
              */
+            if (c.triggerDown[h] && !c.sinkLastTrigger[h]) {
+                c.triggerDownAtMs[h] = t;
+            }
             if (!c.squeezeDown[h] && c.triggerDown[h] && !c.sinkLastTrigger[h] &&
                 c.sinkClick != nullptr) {
                 LOGI("VR 输入：%s 扳机 → 面板点击 (%d, %d)", handName[h], (int) px, (int) py);
@@ -2016,9 +2020,13 @@ void pushInput(VrContext &c) {
              *
              * 两种时候不滚：
              *   · 按着握把键 —— 那时候的摇杆在调远近与大小（见 ③）；
-             *   · 按着扳机 —— 父亲 2026-10-06 晚：扣着扳机对准海报时不许海报跟着手滚。
+             *   · 刚扣下扳机的 250ms 内 —— 扣扳机去点海报时手会带偏摇杆，海报会跟着跑。
+             *     只掐这一小段，过了照常滚，**绝不锁死滚动**（父亲：不要点过一次海报，
+             *     海报就永远不滚了）。
              */
-            if (!c.squeezeDown[h] && !c.triggerDown[h]) {
+            const bool triggerJustPressed =
+                    c.triggerDown[h] && (t - c.triggerDownAtMs[h] < 250.0);
+            if (!c.squeezeDown[h] && !triggerJustPressed) {
                 const float sx = c.thumbstick[h].x;
                 const float sy = c.thumbstick[h].y;
                 if (fabsf(sx) > kStickDeadzone || fabsf(sy) > kStickDeadzone) {
@@ -2243,6 +2251,24 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
             // 留空：视频在上面那层，位置一致
         } else {
             drawScreen(frontScreen(c), videoReady ? c.videoTex : 0, true);
+        }
+
+        /*
+         * 图层体检（2026-10-06 晚加）：父亲报「弹幕和片名 logo 看不见」。
+         * 每 3 秒打一行，一眼看出是"没出帧"还是"状态没开"。
+         */
+        {
+            static double lastLayerLog = 0.0;
+            if (nowMs() - lastLayerLog > 3000.0) {
+                lastLayerLog = nowMs();
+                LOGI("图层体检：面板帧%d 视频帧%d 控制条帧%d/开%d 菜单帧%d/开%d 弹幕帧%d/开关%d logo帧%d/开关%d",
+                     c.panelHasFrame.load() ? 1 : 0,
+                     c.videoHasFrame.load() ? 1 : 0,
+                     c.osdHasFrame.load() ? 1 : 0, c.osdVisible.load() ? 1 : 0,
+                     c.menuHasFrame.load() ? 1 : 0, c.menuVisible.load() ? 1 : 0,
+                     c.danmakuHasFrame.load() ? 1 : 0, c.danmakuVisible.load() ? 1 : 0,
+                     c.logoHasFrame.load() ? 1 : 0, c.logoVisible.load() ? 1 : 0);
+            }
         }
 
         // 海报墙：常驻左前方斜放；收起时不画，没出帧也先不画（不闪也不串）

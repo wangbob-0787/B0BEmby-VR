@@ -440,11 +440,14 @@ private fun InfoMenu(menu: MenuState) {
         return
     }
     Row(modifier = Modifier.fillMaxSize()) {
-        // 海报（2:3）
+        /*
+         * 海报（2:3）：高度取卡片高度的 85%（父亲 2026-10-06 晚：海报要高出文字），
+         * 右边那一列文字从卡片高度 1/3 处才开始。
+         */
         Box(
             modifier = Modifier
-                .width(216.dp)
-                .height(324.dp)
+                .width(252.dp)
+                .height(378.dp)
                 .clip(RoundedCornerShape(10.dp))
                 .background(Color(0x22FFFFFF)),
         ) {
@@ -458,7 +461,12 @@ private fun InfoMenu(menu: MenuState) {
             }
         }
         Spacer(modifier = Modifier.width(30.dp))
-        Column(modifier = Modifier.weight(1f)) {
+        // 文字从卡片高度 1/3 处开始排（父亲 2026-10-06 晚：海报要高过文字）
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(top = pxToDp(MENU_PANEL_H / 2f / 3f)),
+        ) {
             Text(
                 text = info.title,
                 color = Color.White,
