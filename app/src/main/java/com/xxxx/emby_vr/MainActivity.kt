@@ -138,6 +138,9 @@ class MainActivity : ComponentActivity() {
 
     /** 每集上次看到的位置（tick）：选集换片也从那儿接着播（父亲 2026-10-06 晚定） */
     private var episodePositions: List<Long> = emptyList()
+
+    /** 字幕菜单第一行是不是「弹幕」开关（有弹幕轨才有，决定点击下标要不要左移一位） */
+    private var subtitleDanmakuRow = false
     private var selectedAudioIndex: Int? = null
     private var selectedSubtitleIndex: Int? = null
     private var qualityIndex = 0
@@ -1012,18 +1015,25 @@ class MainActivity : ComponentActivity() {
                     com.xxxx.emby_vr.panel.DANMAKU_SCALES.getOrNull(index - 1)
                         ?.let { danmakuScale = it.first }
                 }
-                menuState.danmakuOn = danmakuOn
-                menuState.danmakuScale = danmakuScale
-                // 开关与字号立刻作用到弹幕层：关掉整层不画，开回来立刻显示
-                danmakuView?.userScale = danmakuScale
-                danmakuView?.setTrack(if (danmakuOn) danmakuTrack else null)
-                com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(danmakuOn && danmakuTrack != null)
+                applyDanmakuSetting()
                 Log.i(TAG, "弹幕设置 → ${if (danmakuOn) "开" else "关"}，字号 ${danmakuScale}")
             }
             com.xxxx.emby_vr.panel.MenuKind.SUBTITLE -> {
-                // 第 0 行是「关闭字幕」，其余按顺序对应文本字幕流
+                var i = index
+                if (subtitleDanmakuRow) {
+                    if (i == 0) {
+                        // 第 0 行是弹幕开关：只动弹幕，字幕选择原样保留
+                        danmakuOn = !danmakuOn
+                        applyDanmakuSetting()
+                        refreshMenuRows(com.xxxx.emby_vr.panel.MenuKind.SUBTITLE)
+                        Log.i(TAG, "字幕菜单里切弹幕 → ${if (danmakuOn) "开" else "关"}（字幕不动）")
+                        return
+                    }
+                    i -= 1
+                }
+                // 之后第 0 行是「关闭字幕」，其余按顺序对应文本字幕流
                 selectedSubtitleIndex =
-                    if (index == 0) null else subtitleStreamIndices.getOrNull(index - 1)
+                    if (i == 0) null else subtitleStreamIndices.getOrNull(i - 1)
                 Log.i(TAG, "字幕 → ${selectedSubtitleIndex ?: "关闭"}（菜单保持打开）")
                 replayKeepingPosition()
             }
@@ -1150,18 +1160,25 @@ class MainActivity : ComponentActivity() {
     /** 字幕列表：第 0 项固定是「关闭字幕」 */
     private fun buildSubtitleRows(): List<com.xxxx.emby_vr.panel.MenuRowItem> {
         /*
-         * 弹幕轨不进字幕列表（父亲 2026-10-06 晚）。
+         * 字幕菜单里弹幕与字幕**可以同时勾**（父亲 2026-10-06 晚）。
          *
-         * 弹幕与字幕本来就是两套：弹幕那条 ASS 轨由我们自己下载、自己画在弹幕层，
-         * 普通字幕由播放器回调交给弹幕层底部。字幕列表若把弹幕轨也列进去，
-         * 选中它会让播放器把它当普通字幕渲染 —— ASS 的滚动指令它不认，
-         * 结果是弹幕在底部堆成一坨、与自绘弹幕层重复。所以这里排除。
+         * 弹幕与字幕是两套并行通道：弹幕那条 ASS 轨由我们自己下载、自绘在弹幕层；
+         * 普通字幕由播放器回调交给弹幕层底部。所以这一列里：
+         *   · 第 0 行是「弹幕」—— 独立开关，勾选态 = 弹幕开关，点它不影响字幕选择；
+         *   · 之后是「关闭字幕」+ 各条文本字幕 —— 单选。
+         * 两者互不覆盖，一屏里可以同时看到两个勾。
          */
+        val hasDanmakuTrack = currentStreams.any {
+            it.type.equals("Subtitle", ignoreCase = true) && isDanmakuStream(it)
+        }
+        subtitleDanmakuRow = hasDanmakuTrack
         val subs = currentStreams.filter { it.type == "Subtitle" && !isDanmakuStream(it) }
         subtitleStreamIndices = subs.mapNotNull { it.index }
-        val rows = mutableListOf(
-            com.xxxx.emby_vr.panel.MenuRowItem("关闭字幕", selectedSubtitleIndex == null),
-        )
+        val rows = mutableListOf<com.xxxx.emby_vr.panel.MenuRowItem>()
+        if (hasDanmakuTrack) {
+            rows += com.xxxx.emby_vr.panel.MenuRowItem("弹幕", danmakuOn)
+        }
+        rows += com.xxxx.emby_vr.panel.MenuRowItem("关闭字幕", selectedSubtitleIndex == null)
         subs.forEachIndexed { i, s ->
             val label = s.displayTitle?.takeIf { it.isNotBlank() }
                 ?: s.language?.takeIf { it.isNotBlank() }
@@ -1170,6 +1187,16 @@ class MainActivity : ComponentActivity() {
             rows += com.xxxx.emby_vr.panel.MenuRowItem(label, s.index == selectedSubtitleIndex)
         }
         return rows
+    }
+
+    /** 把弹幕开关与字号立刻作用到弹幕层（弹幕菜单与字幕菜单里的弹幕行共用） */
+    private fun applyDanmakuSetting() {
+        menuState.danmakuOn = danmakuOn
+        menuState.danmakuScale = danmakuScale
+        // 开关与字号立刻作用到弹幕层：关掉整层不画，开回来立刻显示
+        danmakuView?.userScale = danmakuScale
+        danmakuView?.setTrack(if (danmakuOn) danmakuTrack else null)
+        com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(danmakuOn && danmakuTrack != null)
     }
 
     /** 这条字幕流是不是弹幕轨（ASS / SSA，由自绘弹幕层负责，不当普通字幕选） */
