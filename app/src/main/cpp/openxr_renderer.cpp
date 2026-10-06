@@ -2902,6 +2902,12 @@ void frameLoop(VrContext &c) {
         c.danmakuLayer.submitted = false;
         if (c.danmakuLayerOk && c.danmakuVisible.load() && c.danmakuHasFrame.load() &&
             c.danmakuTex != 0) {
+            static int danmakuLogTick = 0;
+            if ((danmakuLogTick++ % 180) == 0) {
+                LOGI("弹幕层：有帧=%d 开关=%d 已建=%d",
+                     c.danmakuHasFrame.load() ? 1 : 0, c.danmakuVisible.load() ? 1 : 0,
+                     c.danmakuLayer.built ? 1 : 0);
+            }
             constexpr int32_t kDanmakuPxW = 2560;
             constexpr int32_t kDanmakuPxH = 1440;
             if (buildQuadLayer(c, c.danmakuLayer, kDanmakuPxW, kDanmakuPxH, "弹幕层")) {
@@ -3017,6 +3023,12 @@ void frameLoop(VrContext &c) {
             videoQuad.subImage.imageArrayIndex = 0;
             layerPtrs[layerCount++] =
                     reinterpret_cast<const XrCompositionLayerBaseHeader *>(&videoQuad);
+        }
+        static int danmakuSubmitLogTick = 0;
+        if ((danmakuSubmitLogTick++ % 180) == 0) {
+            LOGI("弹幕层提交：已提交=%d 缓冲=%dx%d 已建=%d",
+                 c.danmakuLayer.submitted ? 1 : 0, c.danmakuLayer.width,
+                 c.danmakuLayer.height, c.danmakuLayer.built ? 1 : 0);
         }
         if (rendered && c.danmakuLayer.submitted) {
             const ScreenPlacement sp = frontScreen(c);

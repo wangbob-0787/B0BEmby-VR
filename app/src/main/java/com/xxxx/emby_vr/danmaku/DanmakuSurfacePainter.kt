@@ -43,6 +43,15 @@ class DanmakuSurfacePainter(
         start()
     }
 
+    init {
+        /*
+         * 必须显式定下缓冲尺寸：SurfaceTexture 的默认缓冲尺寸不可靠，
+         * 如果不设，lockCanvas 拿到的画布可能根本不是你想要的尺寸，
+         * 弹幕会被画在一块极小的画布上（肉眼等于没有）。
+         */
+        surfaceTexture.setDefaultBufferSize(widthPx, heightPx)
+    }
+
     private val surface = Surface(surfaceTexture)
     @Volatile
     private var running = false
@@ -76,7 +85,8 @@ class DanmakuSurfacePainter(
                         android.util.Log.i(
                             TAG,
                             "弹幕画笔：已画 $frames 帧 ${widthPx}x$heightPx" +
-                                " 轨道=${view.trackItemCount()} 进度=${posProvider() / 1000}秒" +
+                                " 轨道=${view.trackItemCount()} 本帧画了=${view.drawnThisFrame} 条" +
+                                " 进度=${posProvider() / 1000}秒" +
                                 " 字幕=${if (view.subtitleEmpty()) "无" else "有"}",
                         )
                     }

@@ -63,6 +63,10 @@ class DanmakuView(context: Context) : View(context) {
         strokeJoin = Paint.Join.ROUND
     }
 
+    /** 最近一帧实际画出的弹幕条数（诊断用） */
+    var drawnThisFrame: Int = 0
+        private set
+
     /** 当前轨道的弹幕条数（诊断用） */
     fun trackItemCount(): Int = track?.items?.size ?: 0
 
@@ -137,6 +141,7 @@ class DanmakuView(context: Context) : View(context) {
         super.onDraw(canvas)
         val t = track
         // 诊断（父亲 2026-10-06 晚：勾了弹幕不显示）：确认这块画布到底有没有在画
+        drawnThisFrame = 0
         if ((drawLogTick++ % 120) == 0) {
             android.util.Log.i(
                 "B0BEmbyVR",
@@ -152,6 +157,7 @@ class DanmakuView(context: Context) : View(context) {
                 if (item.startMs > nowMs) break          // 已按开始时间排序,后面都还没到
                 if (effectiveEndMs(item, scale) < nowMs) continue   // 已完全滚出屏幕
                 drawItem(canvas, item, nowMs, scale)
+                drawnThisFrame++
             }
         }
         // 字幕不依赖弹幕轨：这一集没有弹幕轨时，字幕照样要显示
