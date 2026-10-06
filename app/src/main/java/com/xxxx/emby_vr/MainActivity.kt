@@ -21,6 +21,7 @@ import com.xxxx.emby_vr.vr.InputRouter
 import com.xxxx.emby_vr.vr.VrRenderer
 import com.xxxx.emby_vr.vr.VrSession
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.graphics.asImageBitmap
 import com.xxxx.emby_vr.panel.isSubMenu
 import androidx.compose.ui.Modifier
 import kotlinx.coroutines.CoroutineScope
@@ -1777,7 +1778,7 @@ class MainActivity : ComponentActivity() {
                 val bmp = logoBitmap.value
                 if (bmp != null) {
                     androidx.compose.foundation.Image(
-                        bitmap = androidx.compose.ui.graphics.asImageBitmap(bmp),
+                        bitmap = bmp.asImageBitmap(),
                         contentDescription = null,
                         contentScale = androidx.compose.ui.layout.ContentScale.Fit,
                         modifier = Modifier.fillMaxSize(),

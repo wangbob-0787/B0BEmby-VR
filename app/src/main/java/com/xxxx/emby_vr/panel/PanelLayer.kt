@@ -1214,6 +1214,13 @@ private class PanelPresentation(
             window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
             window?.setDimAmount(0f)
             window?.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
+            /*
+             * 关键（2026-10-06 晚，弹幕层挡住视频的根因）：
+             * 只把背景画成透明还不够 —— 窗口默认像素格式是不透明的，Surface 出来的
+             * 纹理根本没有 alpha 通道，透明区域会被当成黑色。必须显式设成半透明格式，
+             * 下游（弹幕层独立合成层）的按源透明度混合才有东西可混。
+             */
+            window?.setFormat(android.graphics.PixelFormat.TRANSLUCENT)
         }
         /*
          * 面板不是「弹窗」，绝不能按返回就被关掉（2026-10-04 父亲实测「按 B 黑屏」）：
