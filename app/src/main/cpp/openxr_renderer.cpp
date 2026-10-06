@@ -1827,6 +1827,31 @@ void pushInput(VrContext &c) {
                     clearJavaException(env, "输入回调 onMenuClick");
                 }
                 c.sinkLastTrigger[h] = c.triggerDown[h];
+
+                /*
+                 * 菜单分支也要把摇杆推给界面层（2026-10-06 深夜根因）：
+                 * 这里原来直接 continue，摇杆从未离开原生 —— 菜单开着时怎么推都
+                 * 滚不动，日志里一条「收到摇杆」都没有。菜单滚动（menu.vrStick）靠它。
+                 * 坐标用菜单像素坐标（mpx/mpy），滚动定位与菜单面板一致。
+                 */
+                const float msx = c.thumbstick[h].x;
+                const float msy = c.thumbstick[h].y;
+                if (fabsf(msx) > kStickDeadzone || fabsf(msy) > kStickDeadzone) {
+                    if (t - c.sinkStickAt[h] >= kStickStateMs) {
+                        c.sinkStickAt[h] = t;
+                        c.sinkStickPushed[h] = true;
+                        if (c.sinkStick != nullptr) {
+                            env->CallVoidMethod(c.inputSink, c.sinkStick, mpx, mpy, msx, msy);
+                            clearJavaException(env, "输入回调 onStick（菜单分支）");
+                        }
+                    }
+                } else if (c.sinkStickPushed[h] && c.sinkStick != nullptr) {
+                    c.sinkStickPushed[h] = false;
+                    c.sinkStickAt[h] = 0.0;
+                    env->CallVoidMethod(c.inputSink, c.sinkStick, mpx, mpy, 0.f, 0.f);
+                    clearJavaException(env, "输入回调 onStick（菜单分支回中）");
+                }
+
                 continue;
             }
         }
