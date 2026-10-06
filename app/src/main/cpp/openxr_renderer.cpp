@@ -2056,6 +2056,10 @@ void pushInput(VrContext &c) {
                         c.sinkStickPushed[h] = true;
                         if (c.sinkStick != nullptr) {
                             // 坐标 + 摇杆量（x 右正、y 上正，与 OpenXR 一致；方向语义在 Java 侧翻）
+                            static int stickLogTick = 0;
+                            if ((stickLogTick++ % 60) == 0) {
+                                LOGI("摇杆推给界面层：x=%.2f y=%.2f", sx, sy);
+                            }
                             env->CallVoidMethod(c.inputSink, c.sinkStick, px, py, sx, sy);
                             clearJavaException(env, "输入回调 onStick");
                         }

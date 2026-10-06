@@ -103,6 +103,15 @@ class MainActivity : ComponentActivity() {
     private lateinit var logo: PanelLayer
     private val logoUrl = androidx.compose.runtime.mutableStateOf<String?>(null)
 
+    /*
+     * 片名 logo 的位图（父亲 2026-10-06 晚：logo 一直没画出来）。
+     *
+     * 原来走 Coil 加载，日志里只停在 Loading、永远不结束，也拿不到失败原因。
+     * 改成自己下载：8 秒连接、15 秒读超时，成功/失败都打日志，图拿到就交给面板画。
+     */
+    private val logoBitmap = androidx.compose.runtime.mutableStateOf<android.graphics.Bitmap?>(null)
+    private var logoLoadJob: kotlinx.coroutines.Job? = null
+
     /** 本次起播是不是「重起播」（切字幕 / 音轨 / 质量 / 缓冲 / 换集）：是就别收控制条与菜单 */
     private var replaying = false
 
@@ -381,6 +390,30 @@ class MainActivity : ComponentActivity() {
             size,
             a?.displayTitle?.takeIf { it.isNotBlank() },
         ).joinToString(" · ")
+    }
+
+    /** 下载片名 logo 位图（见字段注释：绕开 Coil，成功失败都有日志） */
+    private fun loadLogoBitmap(url: String?) {
+        logoLoadJob?.cancel()
+        logoBitmap.value = null
+        if (url.isNullOrBlank()) {
+            com.xxxx.emby_vr.vr.VrNative.setLogoVisible(false)
+            return
+        }
+        logoLoadJob = scope.launch {
+            val bmp = withContext(Dispatchers.IO) {
+                runCatching {
+                    val conn = java.net.URL(url).openConnection()
+                    conn.connectTimeout = 8000
+                    conn.readTimeout = 15000
+                    conn.getInputStream().use { android.graphics.BitmapFactory.decodeStream(it) }
+                }.getOrNull()
+            }
+            Log.i(TAG, "片名 logo 下载 → " +
+                (if (bmp == null) "失败（地址打不开或不是图片）" else "${bmp.width}x${bmp.height}"))
+            logoBitmap.value = bmp
+            com.xxxx.emby_vr.vr.VrNative.setLogoVisible(bmp != null)
+        }
     }
 
     /** 控制条第一行右侧的时间格式 */
@@ -1348,13 +1381,13 @@ class MainActivity : ComponentActivity() {
                 menuState.posterUrl = when {
                     !seriesId.isNullOrBlank() && !seriesTag.isNullOrBlank() ->
                         "${BuildConfig.EMBY_SERVER}/emby/Items/$seriesId/Images/Primary" +
-                            "?maxWidth=520&tag=$seriesTag&quality=90"
+                            "?maxWidth=520&tag=$seriesTag&quality=90&api_key=${BuildConfig.EMBY_API_KEY}"
                     !seriesId.isNullOrBlank() ->
                         "${BuildConfig.EMBY_SERVER}/emby/Items/$seriesId/Images/Primary" +
-                            "?maxWidth=520&quality=90"
+                            "?maxWidth=520&quality=90&api_key=${BuildConfig.EMBY_API_KEY}"
                     else -> item.imageTags?.get("Primary")?.let { tag ->
                         "${BuildConfig.EMBY_SERVER}/emby/Items/$id/Images/Primary" +
-                            "?maxWidth=520&tag=$tag&quality=90"
+                            "?maxWidth=520&tag=$tag&quality=90&api_key=${BuildConfig.EMBY_API_KEY}"
                     }
                 }
                 // 演职人员头像
@@ -1366,7 +1399,7 @@ class MainActivity : ComponentActivity() {
                         role = p.role ?: "",
                         avatarUrl = if (!pid.isNullOrBlank() && !ptag.isNullOrBlank()) {
                             "${BuildConfig.EMBY_SERVER}/emby/Items/$pid/Images/Primary" +
-                                "?maxHeight=420&tag=$ptag&quality=90"
+                                "?maxHeight=420&tag=$ptag&quality=90&api_key=${BuildConfig.EMBY_API_KEY}"
                         } else {
                             null
                         },
@@ -1380,15 +1413,16 @@ class MainActivity : ComponentActivity() {
                 val ownLogoTag = item.imageTags?.get("Logo")
                 val logoAddr = when {
                     !sid.isNullOrBlank() ->
-                        "${BuildConfig.EMBY_SERVER}/emby/Items/$sid/Images/Logo?maxHeight=200"
+                        "${BuildConfig.EMBY_SERVER}/emby/Items/$sid/Images/Logo" +
+                            "?maxHeight=200&api_key=${BuildConfig.EMBY_API_KEY}"
                     !ownLogoTag.isNullOrBlank() ->
                         "${BuildConfig.EMBY_SERVER}/emby/Items/$id/Images/Logo" +
-                            "?maxHeight=200&tag=$ownLogoTag"
+                            "?maxHeight=200&tag=$ownLogoTag&api_key=${BuildConfig.EMBY_API_KEY}"
                     else -> null
                 }
                 logoUrl.value = logoAddr
                 Log.i(TAG, "片名 logo 地址 → ${logoAddr ?: "（这一集没有 logo）"}")
-                com.xxxx.emby_vr.vr.VrNative.setLogoVisible(!logoAddr.isNullOrBlank())
+                loadLogoBitmap(logoAddr)
                 Log.i(
                     TAG,
                     "详情已取到：${item.name}（演员 ${menuState.people.size} 人" +
@@ -1739,17 +1773,14 @@ class MainActivity : ComponentActivity() {
         logo = PanelLayer(
             this,
             content = {
-                val url = logoUrl.value
-                if (!url.isNullOrBlank()) {
-                    // 框内等比缩放：图不会变形（电视版同款 ContentScale.Fit）
-                    coil3.compose.AsyncImage(
-                        model = url,
+                // 框内等比缩放：图不会变形（电视版同款 ContentScale.Fit）
+                val bmp = logoBitmap.value
+                if (bmp != null) {
+                    androidx.compose.foundation.Image(
+                        bitmap = androidx.compose.ui.graphics.asImageBitmap(bmp),
                         contentDescription = null,
                         contentScale = androidx.compose.ui.layout.ContentScale.Fit,
                         modifier = Modifier.fillMaxSize(),
-                        onState = { st ->
-                            Log.i(TAG, "片名 logo 加载 → $st")
-                        },
                     )
                 }
             },

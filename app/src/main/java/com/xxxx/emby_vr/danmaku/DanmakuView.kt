@@ -46,6 +46,9 @@ class DanmakuView(context: Context) : View(context) {
      */
     private var subtitle: String = ""
 
+    /** 绘制日志节流计数（诊断用） */
+    private var drawLogTick = 0
+
     private val subtitlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         textAlign = Paint.Align.CENTER
@@ -114,6 +117,14 @@ class DanmakuView(context: Context) : View(context) {
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val t = track
+        // 诊断（父亲 2026-10-06 晚：勾了弹幕不显示）：确认这块画布到底有没有在画
+        if ((drawLogTick++ % 120) == 0) {
+            android.util.Log.i(
+                "B0BEmbyVR",
+                "弹幕层绘制：轨道 ${t?.items?.size ?: 0} 条 画布 ${width}x${height}" +
+                    " 运行中=$running 字幕=${if (subtitle.isEmpty()) "无" else "有"}",
+            )
+        }
         if (t != null && t.items.isNotEmpty()) {
             val nowMs = positionProvider?.invoke() ?: 0L
             // 弹幕画布(ASS 的 PlayRes) → 控件宽度的缩放
