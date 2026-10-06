@@ -97,6 +97,8 @@ data class PersonItem(val name: String, val role: String, val avatarUrl: String?
 
 /** 信息菜单要显示的内容 */
 data class MediaInfoView(
+    /** 季集行：第 X 季 第 Y 集 · 集名（剧集才有，父亲 2026-10-06 晚） */
+    val episodeLine: String = "",
     /** 分级（如 TV-14 / PG-13） */
     val officialRating: String = "",
     /** 技术行：视频轨 / 分辨率 / 音轨，照电视版信息面板（父亲 2026-10-06 晚） */
@@ -284,7 +286,12 @@ fun PlayerMenuPanel(menu: MenuState, osd: OsdState) {
                     modifier = Modifier.weight(1f),
                 )
                 Text(
-                    text = if (kind.isSubMenu) "返回上级" else "关闭",
+                    // 信息 / 演职人员不需要这个按钮（父亲 2026-10-06 晚：按 B 就能关）
+                    text = when {
+                        kind == MenuKind.INFO || kind == MenuKind.CAST -> ""
+                        kind.isSubMenu -> "返回上级"
+                        else -> "关闭"
+                    },
                     color = Color(0xFFFFFFFF),
                     fontSize = 24.sp,
                     modifier = Modifier
@@ -519,6 +526,16 @@ private fun InfoMenu(menu: MenuState) {
                 fontSize = 32.sp,
                 fontWeight = FontWeight.SemiBold,
             )
+            if (info.episodeLine.isNotBlank()) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = info.episodeLine,
+                    color = Color(0xFFFFFFFF),
+                    fontSize = 24.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
             Spacer(modifier = Modifier.height(10.dp))
             Row {
                 listOf(info.officialRating, info.year, info.runtime, info.rating, info.genres)

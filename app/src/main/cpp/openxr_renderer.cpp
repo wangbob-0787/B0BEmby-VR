@@ -2691,6 +2691,8 @@ void drawOverlayIntoVideoLayer(VrContext &c, GLuint tex,
 
 bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
                      bool videoLayerPass) {
+    // 视频层铺满整块、不透明；弹幕层是一层透明浮层，清屏必须透明，
+    // 否则它会变成一块黑板把视频整个盖住（父亲 2026-10-06 晚实测现象）。
     if (!L.built || tex == 0 || c.program == 0) return false;
 
     XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
@@ -2711,7 +2713,7 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
     glViewport(0, 0, L.width, L.height);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_BLEND);
-    glClearColor(0.f, 0.f, 0.f, 1.f);
+    glClearColor(0.f, 0.f, 0.f, videoLayerPass ? 1.f : 0.f);
     glClear(GL_COLOR_BUFFER_BIT);
 
     glUseProgram(c.program);
@@ -2818,7 +2820,8 @@ void frameLoop(VrContext &c) {
     XrCompositionLayerQuad danmakuQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
     danmakuQuad.space = c.localSpace;
     danmakuQuad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-    danmakuQuad.layerFlags = 0;
+    // 按源透明度混合：不声明的话运行时会把这层当不透明黑板，视频被盖住
+    danmakuQuad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
 
     const XrCompositionLayerBaseHeader *layerPtrs[3] = {nullptr, nullptr, nullptr};
 
@@ -2890,6 +2893,15 @@ void frameLoop(VrContext &c) {
                 c.danmakuLayer.submitted =
                         renderQuadLayer(c, c.danmakuLayer, c.danmakuTex, false);
             }
+        }
+
+        // 片名 logo：每秒报一次状态，定位"没画在视频上"（父亲 2026-10-06 晚）
+        static int logoLogTick = 0;
+        if ((logoLogTick++ % 90) == 0) {
+            LOGI("片名 logo 状态 → 层可用=%d 开关=%d 有帧=%d 纹理=%u 视频层=%d 视频帧=%d",
+                 c.logoTex != 0 ? 1 : 0, c.logoVisible.load() ? 1 : 0,
+                 c.logoHasFrame.load() ? 1 : 0, (unsigned) c.logoTex,
+                 c.videoLayer.submitted ? 1 : 0, c.videoHasFrame.load() ? 1 : 0);
         }
 
         // 控制条：近场小面板，每帧取一次（与面板/视频同一套 SurfaceTexture 机制）

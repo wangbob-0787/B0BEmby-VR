@@ -230,10 +230,15 @@ class MainActivity : ComponentActivity() {
                  * 选集和演职人员滚不动）。取主方向 —— 竖直列表用上下推，
                  * 演职人员那一排是横向的，左右推也认。
                  */
-                if (nowMs - lastMenuPointerAt < 400L && menuState.kind != null) {
+                if (menuState.kind != null) {
+                    /*
+                     * 菜单开着：摇杆优先滚列表（父亲 2026-10-06 晚：滚不动）。
+                     * 不再要求光柱落在菜单上 —— 摇杆本来就是给菜单用的，
+                     * 竖直列表认上下推，演职人员那一排认左右推。
+                     */
                     val main = if (kotlin.math.abs(sy) >= kotlin.math.abs(sx)) -sy else -sx
                     if (kotlin.math.abs(main) > 0.25f) {
-                        menuState.requestScroll(main * 60f)
+                        menuState.requestScroll(main * 70f)
                     }
                     return@runOnUiThread
                 }
@@ -1312,6 +1317,20 @@ class MainActivity : ComponentActivity() {
                     genres = item.genres?.take(3)?.joinToString(" / ") ?: "",
                     overview = item.overview ?: "",
                     officialRating = item.officialRating ?: "",
+                    episodeLine = buildString {
+                        val sn = item.parentIndexNumber
+                        val ep = item.indexNumber
+                        if (sn != null && ep != null) append("第 $sn 季 第 $ep 集")
+                        val nm = item.name
+                        if (!nm.isNullOrBlank() && nm != item.seriesName) {
+                            if (isNotEmpty()) append(" · ")
+                            append(nm)
+                        }
+                        val ov = item.seriesName
+                        if (!ov.isNullOrBlank() && isNotEmpty() && ov != item.name) {
+                            append(" · ").append(ov)
+                        }
+                    },
                     techLine = techLineOf(),
                 )
                 /*
