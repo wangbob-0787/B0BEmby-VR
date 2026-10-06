@@ -805,8 +805,7 @@ class PanelLayer(
      * 按钮照样点得动：Compose 的 clickable 在「按下 → 原地抬起」时触发；
      * 按住拖走了就不触发，顺带挡掉误触。
      */
-    private var pressActive = false
-    private var pressAtMs = 0L
+    private var vrPressActive = false
 
     /** 原生推上来的控制条指针（带扳机态） */
     fun vrPointerPressed(px: Float, py: Float, pressed: Boolean) {
@@ -815,22 +814,21 @@ class PanelLayer(
         scrollAnchorX = px
         scrollAnchorY = py
         if (pressed) {
-            if (pressActive) {
+            if (vrPressActive) {
                 sendPress(MotionEvent.ACTION_MOVE, px, py)
             } else {
                 downTime = SystemClock.uptimeMillis()
-                pressActive = true
+                vrPressActive = true
                 sendPress(MotionEvent.ACTION_DOWN, px, py)
             }
-        } else if (pressActive) {
-            pressActive = false
+        } else if (vrPressActive) {
+            vrPressActive = false
             sendPress(MotionEvent.ACTION_UP, px, py)
         }
     }
 
     private fun sendPress(action: Int, px: Float, py: Float) {
         val v = decor ?: return
-        pressAtMs = SystemClock.uptimeMillis()
         val ev = mouseEvent(
             downTime, SystemClock.uptimeMillis(), action, px, py,
             if (action == MotionEvent.ACTION_UP) 0 else MotionEvent.BUTTON_PRIMARY,
