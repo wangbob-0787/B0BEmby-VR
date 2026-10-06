@@ -174,14 +174,19 @@ fun MediaDetailScreen(
                 "$serverUrl/emby/Items/$parentBackdropItemId/Images/Backdrop?maxWidth=1920&tag=${parentBackdropTags[0]}&quality=80"
         }
 
+        /*
+         * 背景图还没下载完时，先用海报顶一下（海报在列表页已经下过，几乎立刻就有），
+         * 底色也换成深灰渐变而不是纯黑 —— 父亲 2026-10-06 晚：点海报时整块海报墙
+         * 先黑一下再亮，像重绘了一次。黑的就是这里。
+         */
+        val posterFallbackUrl = mediaInfo.imageTags?.get("Primary")?.let {
+            "$serverUrl/emby/Items/${mediaInfo.id}/Images/Primary?maxWidth=600&tag=$it&quality=80"
+        }
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                // 有剧照时不再垫一层纯黑：背景本来就是深色，垫黑纯属多一次全屏不透明填充
-                //（2026-10-02 电视端 GPU 实测：详情页单帧 GPU 15.9ms，压掉这层后重测）。
-                .then(
-                    if (finalBackdropUrl.isEmpty()) Modifier.background(Color.Black)
-                    else Modifier
+                .background(
+                    Brush.verticalGradient(listOf(Color(0xFF23272E), Color(0xFF0E1013)))
                 )
         ) {
             // 1. Backdrop Layer（用 AsyncImage 而非 SubcomposeAsyncImage：这里没有自定义
@@ -193,6 +198,14 @@ fun MediaDetailScreen(
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
                     alpha = 0.6f
+                )
+            } else if (posterFallbackUrl != null) {
+                AsyncImage(
+                    model = posterFallbackUrl,
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                    alpha = 0.35f,
                 )
             }
 
