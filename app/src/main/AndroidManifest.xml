@@ -3,6 +3,13 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!--
+      面板层（VirtualDisplay + Presentation）在 PICO 上要求 WAKE_LOCK：
+      缺少时 createVirtualDisplay 抛
+      SecurityException: Neither user ... has android.permission.WAKE_LOCK
+      → 某些面板层建不起来（菜单会打不开），见 2026-10-07 实测日志。
+    -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!--
       VR 头显能力声明。

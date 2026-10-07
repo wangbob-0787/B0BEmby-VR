@@ -3620,14 +3620,17 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachInputSink(JNIEnv *env, jobject /*
     g.sinkMenuClick = env->GetMethodID(cls, "onMenuClick", "(FF)V");
     g.sinkBack = env->GetMethodID(cls, "onBack", "()V");
     g.sinkPanelFocus = env->GetMethodID(cls, "onPanelFocus", "(Z)V");
+    // 海报墙上「按住扳机拖动 → 滚动」（InputSink 的方法，必须在这里找）
+    g.sinkPanelScroll = env->GetMethodID(cls, "onPanelScroll", "(FF)V");
     env->DeleteLocalRef(cls);
     LOGI("VR 输入回调已注册（指针=%d 点击=%d 摇杆=%d 返回=%d 控制条=%d/%d 开关=%d 面板焦点=%d "
-         "菜单=%d/%d）",
+         "菜单=%d/%d 面板滚动=%d）",
          g.sinkPointer != nullptr ? 1 : 0, g.sinkClick != nullptr ? 1 : 0,
          g.sinkStick != nullptr ? 1 : 0, g.sinkBack != nullptr ? 1 : 0,
          g.sinkOsdPointer != nullptr ? 1 : 0, g.sinkOsdClick != nullptr ? 1 : 0,
          g.sinkToggleOsd != nullptr ? 1 : 0, g.sinkPanelFocus != nullptr ? 1 : 0,
-         g.sinkMenuPointer != nullptr ? 1 : 0, g.sinkMenuClick != nullptr ? 1 : 0);
+         g.sinkMenuPointer != nullptr ? 1 : 0, g.sinkMenuClick != nullptr ? 1 : 0,
+         g.sinkPanelScroll != nullptr ? 1 : 0);
 }
 
 /*
@@ -3652,7 +3655,12 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachTextureSink(JNIEnv *env, jobject 
     jclass cls = env->GetObjectClass(sink);
     g.sinkTexture = env->GetMethodID(cls, "onTexture",
                                      "(ILandroid/graphics/SurfaceTexture;)V");
-    g.sinkPanelScroll = env->GetMethodID(cls, "onPanelScroll", "(FF)V");
+    /*
+     * onPanelScroll 是 InputSink 的方法，**不能**在这个（TextureSink 的）类上找 ——
+     * 2026-10-07 实测日志里那句
+     * `注册纹理回调失败：no non-static method ...onPanelScroll(FF)V` 就是它。
+     * 它现在注册在 nativeAttachInputSink 里。
+     */
     env->DeleteLocalRef(cls);
     LOGI("纹理回调已注册（统一通道 onTexture=%d）", g.sinkTexture != nullptr ? 1 : 0);
 

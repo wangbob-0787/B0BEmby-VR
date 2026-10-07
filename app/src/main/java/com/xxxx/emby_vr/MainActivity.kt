@@ -883,6 +883,21 @@ class MainActivity : ComponentActivity() {
             } else {
                 startTicks
             }
+        /*
+         * 换片先把旧的一切清掉（父亲 2026-10-07）：
+         *   停止正在播的旧片 → 银幕空一拍（转圈随后出现）→ 弹幕 / 字幕 / 片名 logo 全清
+         *   → 再加载新片。旧播放器的释放仍交给 startPlayer 里的 stopPlaybackInternal。
+         */
+        if (mediaId != currentMediaId) {
+            danmakuTrack = null
+            danmakuView?.setTrack(null)
+            danmakuView?.setSubtitle("")
+            logoBitmap.value = null
+            com.xxxx.emby_vr.vr.VrNative.setLogoVisible(false)
+            // videoActive=false 会顺手把「出过帧」标记清掉 → 银幕空一拍、转圈顶上
+            com.xxxx.emby_vr.vr.VrNative.setVideoActive(false)
+            Log.i(TAG, "换片：清空银幕 / 弹幕 / 字幕 / logo，等新片起播")
+        }
         currentMediaId = mediaId
         /*
          * 父亲 2026-10-06：播放中点海报墙的片子起不来、反而把正在播的暂停了。
