@@ -3134,15 +3134,6 @@ void frameLoop(VrContext &c) {
          */
         c.videoLayer.submitted = false;
         /*
-         * 弹幕"已并进画面层"的标记每帧无条件清一次（父亲 2026-10-07）。
-         *
-         * 必须放在下面那个 if 之外：换片/切片瞬间 videoHasFrame=false，整个视频层
-         * 提交块都被跳过；标记若留在块内就清不掉，残留的 true 会让弹幕层不再单独
-         * 提交 —— 表现就是加载期转圈不转、提示看不见、画面全黑。
-         * 视频层 pass 成功时会在里面重新置位。
-         */
-        c.danmakuLayer.submitted = false;
-        /*
          * 注意（2026-10-07 回退）：这里**不能**在"没有帧"时改走别的绘制路径。
          * 之前试过"照旧提交、把内容刷黑"来清屏，结果视频层提交直接失效
          * （日志里 `视频层=0`），于是投影层盖在弹幕层之上 —— 弹幕和片名 logo
@@ -3160,6 +3151,8 @@ void frameLoop(VrContext &c) {
                 vw = (int32_t) ((float) vw * k);
                 vh = (int32_t) ((float) vh * k);
             }
+            // 弹幕"已并进画面层"的标记每帧清一次，紧接着的视频层 pass 会按需重新置位
+            c.danmakuLayer.submitted = false;
             if (vw >= 64 && vh >= 64 && buildQuadLayer(c, c.videoLayer, vw, vh, "视频层")) {
                 c.videoLayer.submitted = renderQuadLayer(c, c.videoLayer, c.videoTex, true);
             }
