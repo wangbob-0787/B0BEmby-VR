@@ -1961,7 +1961,12 @@ class MainActivity : ComponentActivity() {
         val hadPlayback = player != null || currentMediaId.isNotBlank()
         if (hadPlayback) {
             Log.i(TAG, "换片：停掉旧片、清空银幕 / 弹幕 / 字幕 / logo，等新片起播")
-            runCatching { stopPlaybackInternal() }
+            /*
+             * keepUi = true：切片时**控制条不收**（父亲 2026-10-07）。
+             * 控制条留在原位、按钮置灰、进度显示 --，等新片第一帧再恢复内容 ——
+             * 这样"正在切片"这件事在界面上是连续可见的，不会闪一下就没。
+             */
+            runCatching { stopPlaybackInternal(keepUi = true) }
         } else {
             Log.i(TAG, "起播：先清空银幕 / 弹幕 / 字幕 / logo，等第一帧")
         }
