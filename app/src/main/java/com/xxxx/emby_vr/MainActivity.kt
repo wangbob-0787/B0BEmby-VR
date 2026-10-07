@@ -309,19 +309,12 @@ class MainActivity : ComponentActivity() {
          * 新片画面**真的到了纹理层**（原生侧的判据）。
          */
         override fun onVideoFrameReady() {
-            runOnUiThread {
-                /*
-                 * 播放器还没报这一部的第一帧时，到达的"取到帧"一律算旧片残留 / 占位帧，丢弃
-                 * （父亲 2026-10-07：切片频繁时它会污染与门，把当前黑幕提前收掉）。
-                 * 顺序天然成立 —— 原生取帧必然发生在播放器渲染出帧之后。
-                 */
-                if (!playerFrameSeen) {
-                    Log.i(TAG, "忽略一次原生帧信号：播放器还没报这一部的第一帧（按旧片残留处理）")
-                    return@runOnUiThread
-                }
-                nativeFrameSeen = true
-                tryRevealWaitingFrame()
-            }
+            /*
+             * 只留一条日志：收黑幕的时机已改由"播放器首帧 + 150ms"决定（见 onRenderedFirstFrame）。
+             * 原生这个回调只会在**首次**取到帧时发一次，不能作为每次换片的判据
+             * （父亲 2026-10-07：声音都出来了黑幕还挂着）。
+             */
+            if (playerFrameSeen) Log.i(TAG, "原生已取到这一部的帧（黑幕按播放器首帧收）")
         }
 
         override fun onClick(px: Float, py: Float) {
@@ -1134,9 +1127,15 @@ class MainActivity : ComponentActivity() {
                     override fun onRenderedFirstFrame() {
                         runOnUiThread {
                             playerFrameSeen = true
-                            // 从这一刻起才认原生的"取到帧"（之前到达的按旧片残留丢弃）
-                            nativeFrameSeen = false
-                            tryRevealWaitingFrame()
+                            /*
+                             * 画面确实渲染出来了 → 再等约 10 帧让原生把它取进纹理，然后收黑幕。
+                             *
+                             * 父亲 2026-10-07 实测：原来要求"原生也报一次取到帧"，
+                             * 而那个回调只在**首次**取到帧时发一次 —— 被我丢弃之后就不再来了，
+                             * 与门永远凑不齐，于是声音都出来了黑幕还挂着（最后靠 8 秒兜底收）。
+                             * 一帧 11~16ms，150ms 足够盖上纹理延迟，也不会再露出旧画面。
+                             */
+                            handler.postDelayed({ tryRevealWaitingFrame() }, 150L)
                         }
                     }
 
@@ -1965,8 +1964,9 @@ class MainActivity : ComponentActivity() {
 
     private fun tryRevealWaitingFrame() {
         if (!waitingFirstFrame) return
-        if (!playerFrameSeen || !nativeFrameSeen) return
-        Log.i(TAG, "收黑幕：播放器首帧=${playerFrameSeen} 原生取到帧=${nativeFrameSeen}（两个条件都成立）")
+        // 只认"播放器已渲染出第一帧"这一个条件（+150ms 纹理余量，见 onRenderedFirstFrame）
+        if (!playerFrameSeen) return
+        Log.i(TAG, "收黑幕：播放器已渲染第一帧（再留 150ms 给纹理）")
         revealDanmakuSubtitleLogo()
     }
 

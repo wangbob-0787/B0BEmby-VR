@@ -257,6 +257,7 @@ class PanelLayer(
         dy: Float,
         why: String,
         notch: Float = SCROLL_NOTCH,
+        fromInertia: Boolean = false,
     ) {
         // 取移动量更轴的那一向：斜推时只滚主方向，免得两轴一起乱滚
         val horizontal = kotlin.math.abs(dx) > kotlin.math.abs(dy)
@@ -277,9 +278,16 @@ class PanelLayer(
         if (horizontal && dx != 0f) {
             val zone = ClickTargets.zoneAt(ax, ay)
             if (zone != null) {
+                /*
+                 * 惯性滑行不翻页（父亲 2026-10-07：一扳一松只该跳一张）。
+                 *
+                 * 松手瞬间会进入惯性阶段，惯性帧带着同方向 —— 原来它也算一次，
+                 * 于是"扳一下一张、松手又一张"。轮播是一次一格的操作，不需要惯性。
+                 */
+                if (fromInertia) return
                 val dir = if (dx > 0) 1f else -1f
                 /*
-                 * 边沿触发（父亲 2026-10-07）：同方向推着不放只翻一张；
+                 * 边沿触发：同方向推着不放只翻一张；
                  * 回中（见 vrStick 的回中分支）或反向推，才重新生效。
                  */
                 if (zoneStepArmed || dir != zoneStepDir) {
@@ -466,7 +474,7 @@ class PanelLayer(
                 }
                 scrollAt(
                     lastScrollX, lastScrollY, inertiaDx, inertiaDy, "惯性滑行",
-                    rate * dtMs / 1000f,
+                    rate * dtMs / 1000f, fromInertia = true,
                 )
                 scheduleFrame()
                 return
