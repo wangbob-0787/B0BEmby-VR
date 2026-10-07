@@ -1007,17 +1007,17 @@ object EmbyApi {
 
                     add(JsonObject().apply {
                         /*
-                         * HLS 用 fMP4 封装（父亲 2026-10-07：《律界战争》播一个开头就停）。
+                         * ① 封装回滚成 TS（父亲 2026-10-07 19:00）。
+                         *    上一版为了救《律界战争》把 HLS 换成 fMP4 封装，结果把原本
+                         *    流畅的《无可替代》拖成卡顿 + 音画不同步 —— 那部片的网盘源
+                         *    在服务端侧直接报 DirectPlayError，只能走「边转边发」这条路，
+                         *    而 fMP4 这条路的服务端吞吐明显不如 TS。回滚。
                          *
-                         * 这部片：容器 mkv、视频 HEVC Main10 10bit HDR10、音频 EAC3。
-                         * 头显不给第三方应用解 EAC3（media_codecs 白名单里没有 AC3/DTS/
-                         * TrueHD），音频必须转成 AAC —— 这条绕不过去，官方播放器能播是因为
-                         * 它自带解码路子，我们走的是系统播放框架。
-                         * 但视频**能原样 copy**：原来用 TS 封装时，Media3 的 H265Reader 会在
-                         * SampleQueue.commitSample 抛 IllegalArgumentException，整条流报
-                         * Source error；换 fMP4 后视频不重编码，HDR 与画质都保住。
+                         * ② 《律界战争》真正的毛病在别处（TS 里的 HEVC 让 Media3 的
+                         *    H265Reader 在 SampleQueue.commitSample 抛 IllegalArgumentException），
+                         *    改用客户端侧「崩了就用 H264 重来一次」的兜底，不再动全局封装。
                          */
-                        addProperty("Container", "mp4")
+                        addProperty("Container", "ts")
                         addProperty("Type", "Video")
                         // 转码输出能力（父亲 2026-10-06 报「无声」的根因就在这里）：
                         // 原来写死 aac,ac3,eac3,mp3 —— 源片是 EAC3 时服务端认为「输出 eac3

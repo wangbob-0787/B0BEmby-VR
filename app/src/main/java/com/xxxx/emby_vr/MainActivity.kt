@@ -265,6 +265,15 @@ class MainActivity : ComponentActivity() {
     }
 
     private var selectedAudioIndex: Int? = null
+    /**
+     * 起播崩过一次就改用 H.264 重来（父亲 2026-10-07）。
+     *
+     * 《律界战争》这类片：服务端视频原样 copy 成 HEVC 装进 TS，Media3 的 H265Reader
+     * 会在 SampleQueue.commitSample 抛 IllegalArgumentException，整条流报 Source error。
+     * 与其为它把全局封装换掉（会把别的片的流畅度拖下水），不如只在崩过之后对
+     * **这一部片**降级要 H.264。换片时自动复位。
+     */
+    private var forceH264 = false
     private var selectedSubtitleIndex: Int? = null
     private var qualityIndex = 0
     private var bufferPresetIndex = 0
@@ -988,7 +997,10 @@ class MainActivity : ComponentActivity() {
                 startTicks
             }
         // 换片（不是切字幕 / 音轨那种重播）：先把旧片整个收掉（父亲 2026-10-07）
-        if (mediaId != currentMediaId) clearForNewMedia()
+        if (mediaId != currentMediaId) {
+            forceH264 = false
+            clearForNewMedia()
+        }
         currentMediaId = mediaId
         /*
          * 父亲 2026-10-06：播放中点海报墙的片子起不来、反而把正在播的暂停了。
@@ -1009,6 +1021,7 @@ class MainActivity : ComponentActivity() {
                     selectedAudioIndex = selectedAudioIndex,
                     selectedSubtitleIndex = selectedSubtitleIndex,
                     maxStreamingBitrate = bitrateForQuality(),
+                    disableHevc = forceH264,
                 )
                 var source = media.mediaSources?.firstOrNull()
                 /*
@@ -1036,6 +1049,7 @@ class MainActivity : ComponentActivity() {
                             selectedAudioIndex = alt,
                             selectedSubtitleIndex = selectedSubtitleIndex,
                             maxStreamingBitrate = bitrateForQuality(),
+                            disableHevc = forceH264,
                         )
                         source = media.mediaSources?.firstOrNull()
                     }
@@ -1204,6 +1218,22 @@ class MainActivity : ComponentActivity() {
                         // 先停 videoActive（ticker 下一圈自行退出），再写错误提示，
                         // 否则每秒刷新的绿字会把错误盖掉
                         renderer.videoActive = false
+                        /*
+                         * 崩一次就换 H.264 重来（父亲 2026-10-07：《律界战争》卡在开头）。
+                         * 只重试一次，且只影响这一部片 —— 换片时 forceH264 复位。
+                         * 位置按崩住的地方接着播，不从头。
+                         */
+                        if (!forceH264 && currentMediaId.isNotBlank()) {
+                            forceH264 = true
+                            val at = player?.currentPosition ?: 0L
+                            Log.i(TAG, "播放出错 → 改用 H.264 重新起播（位置 ${at / 1000} 秒）")
+                            hud("这条流解不了，改用兼容画质重来")
+                            scope.launch {
+                                kotlinx.coroutines.delay(500)
+                                playMedia(currentMediaId, at * 10_000L)
+                            }
+                            return
+                        }
                         hud("播放出错：${friendlyError(error)}")
                     }
                 })
