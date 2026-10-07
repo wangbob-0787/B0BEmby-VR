@@ -456,7 +456,33 @@ object EmbyApi {
                     (selectedSubtitleIndex?.let { "&SubtitleStreamIndex=$it" } ?: "")
 
             val result = httpAsJsonObject(context, serverUrl, apiKey, deviceId, url, "POST", body)
-            val dto = gson.fromJson(result, MediaDto::class.java)
+            var dto = gson.fromJson(result, MediaDto::class.java)
+
+            /*
+             * 杜比视界片源改走完全转码（父亲 2026-10-07）。
+             *
+             * 实况：《挑情丑闻》S01E01 源为 hevc Main 10 + VideoRange=DolbyVision。
+             * 上面虽然关掉了「直连原始文件」（EnableDirectPlay=false），服务端仍可以走
+             * DirectStream —— 那只换封装、视频原样送，头显解不了杜比视界流，于是
+             * 「只有声音没有画面」。所以检测到杜比视界时再请求一次，并把 DirectStream
+             * 也关掉，逼服务端真正转码。
+             */
+            val isDolbyVision = dto.mediaSources?.any { ms ->
+                ms.mediaStreams?.any { st ->
+                    val vr = ((st.videoRange ?: "") + " " + (st.videoRangeType ?: ""))
+                    st.type.equals("Video", true) &&
+                        (vr.contains("DolbyVision", true) || vr.contains("DOVI", true))
+                } == true
+            } == true
+            if (isDolbyVision) {
+                Log.i(TAG, "片源是杜比视界：改走完全转码（头显解不了 DV 视频流）")
+                val url2 = url + "&EnableDirectStream=false"
+                val result2 = httpAsJsonObject(context, serverUrl, apiKey, deviceId, url2, "POST", body)
+                dto = gson.fromJson(result2, MediaDto::class.java)
+                com.xxxx.emby_vr.util.DiagLog.w(context, "playbackInfo杜比视界",
+                    "id=$targetId 已改走转码 hasTranscodingUrl=" +
+                    (dto.mediaSources?.firstOrNull()?.transcodingUrl != null))
+            }
             com.xxxx.emby_vr.util.DiagLog.w(context, "playbackInfo",
                 "id=$targetId sources=${dto.mediaSources?.size ?: 0} " +
                 "first=${dto.mediaSources?.firstOrNull()?.let { it.directStreamUrl ?: it.transcodingUrl }}")
