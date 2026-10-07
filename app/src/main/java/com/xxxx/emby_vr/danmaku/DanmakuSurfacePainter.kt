@@ -140,12 +140,15 @@ class DanmakuSurfacePainter(
                     val loading = loadingProvider?.invoke()
                     if (loading != null) {
                         /*
-                         * 等待期（换片 / 首播，父亲 2026-10-07）：
-                         * 整块涂黑当"黑幕"—— 视频层里残留的上一部画面被它盖住，
-                         * 而这一层本来就压在视频层之上，所以层序不用动。
-                         * 黑幕之上只画转圈与「即将播放：片名」。
+                         * 等待期（换片 / 首播，父亲 2026-10-07）。
+                         *
+                         * 这里原来是整块涂黑当"黑幕"，用来盖住独立弹幕层下面残留的
+                         * 上一部画面。弹幕并进画面层之后（父亲 2026-10-07 重影处置），
+                         * 这块黑幕是直接涂在画面上的 —— 结果画面被自己盖死：有声音、
+                         * 没图像，还卡在「即将播放」（首帧判断拿不到画面）。
+                         * 改成透明底，只画转圈与提示；残留画面交给画面层自己换新。
                          */
-                        canvas.drawColor(Color.BLACK)
+                        canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
                         drawLoadingSpinner(canvas)
                         drawHintText(canvas, loading)
                     } else {
