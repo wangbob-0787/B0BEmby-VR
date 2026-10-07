@@ -1567,10 +1567,13 @@ void drawSpinner(VrContext &c, const Mat4 &proj, const Mat4 &view4) {
          */
         const float ang = base - (float) i * step;
         /*
-         * 尾巴暗、缺口那头**最亮**（父亲 2026-10-07：箭头就落在最亮的缺口端部）。
-         * i = 0 是起笔的尾巴，i = kSegs-kGapSegs-1 紧挨缺口 —— 越靠近缺口越亮。
+         * 尾巴 → 缺口端：**又从暗到亮、又从细到粗**（父亲 2026-10-07：
+         * 线条从暗到亮、从细到粗，箭头就落在最亮最粗的缺口端）。
+         * p = 0 是起笔的尾巴，p = 1 紧挨缺口。
          */
-        const float fade = 0.45f + 0.55f * ((float) i / (float) (kSegs - kGapSegs));
+        const float p = (float) i / (float) (kSegs - kGapSegs - 1);
+        const float fade = 0.45f + 0.55f * p;
+        const float thick = kThick * (0.45f + 0.9f * p);
         XrPosef seg{};
         seg.position = {kFrontScreen.cx + cosf(ang) * kRadius,
                         kFrontScreen.cy + sinf(ang) * kRadius,
@@ -1582,7 +1585,7 @@ void drawSpinner(VrContext &c, const Mat4 &proj, const Mat4 &view4) {
          */
         const float half = (ang + 1.5707963268f) * 0.5f;
         seg.orientation = {0.f, 0.f, sinf(half), cosf(half)};   // 绕 Z 轴摆到这一段
-        const Mat4 m = poseScaleModel(seg, segLen, kThick, 1.f);
+        const Mat4 m = poseScaleModel(seg, segLen, thick, 1.f);
         drawMesh(c, c.vbo, 6, multiply(multiply(proj, view4), m),
                  0.13f * fade, 0.86f * fade, 0.94f * fade, false);
     }
