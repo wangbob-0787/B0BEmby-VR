@@ -225,6 +225,28 @@ class MainActivity : ComponentActivity() {
         val delta = android.os.SystemClock.elapsedRealtime() - base
         return posBaseMs + delta.coerceAtLeast(0L)
     }
+
+    /**
+     * 快进 / 快退期间把**弹幕位置**冻住（父亲 2026-10-07 实测：
+     * 快进时弹幕一跳一跳 —— 弹幕位置是按播放进度算的，进度一跳它就跳）。
+     * 冻的只是"喂给弹幕层的进度"，画面与真实进度不受影响；
+     * 1.5 秒后自动解冻，缓冲结束（STATE_READY）会提前解冻。
+     */
+    private var danmakuFreezePosMs = 0L
+    private var danmakuFreezeUntilMs = 0L
+
+    /** 弹幕层取位置：seek 期间返回冻结值，弹幕就停在原地 */
+    private fun danmakuPosForPainter(): Long {
+        val now = android.os.SystemClock.elapsedRealtime()
+        return if (now < danmakuFreezeUntilMs) danmakuFreezePosMs else playbackPosEstimate()
+    }
+
+    /** seek 开始：冻住弹幕位置 */
+    private fun freezeDanmakuForSeek() {
+        danmakuFreezePosMs = playbackPosEstimate()
+        danmakuFreezeUntilMs = android.os.SystemClock.elapsedRealtime() + 1500L
+    }
+
     private var selectedAudioIndex: Int? = null
     private var selectedSubtitleIndex: Int? = null
     private var qualityIndex = 0
@@ -495,7 +517,7 @@ class MainActivity : ComponentActivity() {
                     surfaceTexture = st,
                     widthPx = 2560,
                     heightPx = 1440,
-                    positionProvider = { playbackPosEstimate() },
+                    positionProvider = { danmakuPosForPainter() },
                     scale = danmakuScale,
                 )
                 danmakuView = painter.view
@@ -1034,6 +1056,8 @@ class MainActivity : ComponentActivity() {
                     }
 
                     override fun onPlaybackStateChanged(state: Int) {
+                        // 缓冲/跳转结束 → 提前解冻弹幕位置（父亲 2026-10-07）
+                        if (state == Player.STATE_READY) danmakuFreezeUntilMs = 0L
                         // 自然播完 → 上报停止（服务端据此记"已看"与进度）
                         if (state == Player.STATE_ENDED) {
                             Log.i(TAG, "播放结束 → 上报停止")
@@ -1704,6 +1728,8 @@ class MainActivity : ComponentActivity() {
         val target = (base + deltaMs).coerceAtLeast(0L)
         seekTargetMs = target
         seekTargetAt = System.currentTimeMillis()
+        // 快进 / 快退期间弹幕停在原地（父亲 2026-10-07：不然会一跳一跳）
+        freezeDanmakuForSeek()
         p.seekTo(target)
         val sec = target / 1000
         Log.i(TAG, "seek ${deltaMs / 1000}s → ${sec / 60}:${"%02d".format(sec % 60)} (基准 ${if (withinChain) "连跳" else "实时"})")
@@ -2074,6 +2100,8 @@ class MainActivity : ComponentActivity() {
             if (dur > 0L && p != null) {
                 val target = (dur * frac).toLong()
                 osdState.positionMs = target
+                // 拖进度条也是 seek：弹幕同样冻住（父亲 2026-10-07）
+                freezeDanmakuForSeek()
                 p.seekTo(target)
                 Log.i(TAG, "控制条拖进度 → ${target / 1000} 秒 / ${dur / 1000} 秒")
             }
