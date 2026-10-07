@@ -251,22 +251,6 @@ class MainActivity : ComponentActivity() {
             runOnUiThread { if (panelInputReady()) panel.vrPointer(px, py) }
         }
 
-        /**
-         * 海报墙上按住扳机拖动 → 滚动（父亲 2026-10-06 晚）。
-         *
-         * 原生把「按住 + 移动手柄」的位移按面板像素送过来，直接喂给面板的滚动通道；
-         * 顺手记一下时间，好让这一下扳机不再被当成播放 / 暂停。
-         */
-        override fun onPanelScroll(dx: Float, dy: Float) {
-            vrInputLive = true
-            runOnUiThread {
-                lastPanelClickAt = android.os.SystemClock.uptimeMillis()
-                if (panelInputReady()) {
-                    panel.vrScroll(lastPanelPx, lastPanelPy, dx, dy)
-                }
-            }
-        }
-
         override fun onPanelFocus(onPanel: Boolean) {
             // 原生只在变化时推：光柱是否落在海报墙上
             runOnUiThread { panelPointerOnPanel = onPanel }
