@@ -41,16 +41,18 @@ class MpvBackend(private val context: Context) {
                 try {
                     MPVLib.create(context.applicationContext)
                     /*
-                     * 画面输出：gpu 走自己的渲染器，把结果画进我们给的 Surface。
+                     * 画面输出（2026-10-08 实测调整）。
                      *
-                     * 这里不用 mediacodec_embed —— 那是"硬解直接吐到 Surface"的通道，
-                     * 而硬解正是解不了杜比视界的那条路。gpu + 软解才是 4XVR 那样
-                     * "自己解"的形态。
+                     * 第一版用 `vo=gpu` + `gpu-context=android`：内核起来了、片源也认对了，
+                     * 但银幕上什么都没有 —— gpu 渲染器要自己建 EGL 上下文画进 Surface，
+                     * 在 OpenXR 这种合成环境里这条路没走通。
+                     *
+                     * 改成 mediacodec_embed：解码结果直接交给系统的硬解输出通道，
+                     * 由它把画面吐到我们给的 Surface。PICO 上 4XVR 能正常播杜比视界，
+                     * 说明这套硬件解码器本来就能解 —— 走这条通道正好用上它。
                      */
-                    MPVLib.setOptionString("vo", "gpu")
-                    MPVLib.setOptionString("gpu-context", "android")
-                    // 硬解仅作加速尝试，失败自动回落到软件解码
-                    MPVLib.setOptionString("hwdec", "mediacodec-copy")
+                    MPVLib.setOptionString("vo", "mediacodec_embed")
+                    MPVLib.setOptionString("hwdec", "mediacodec")
                     // 杜比视界 / HDR 片源按色域提示交给显示端（否则偏色更明显）
                     MPVLib.setOptionString("target-colorspace-hint", "yes")
                     MPVLib.setOptionString("tone-mapping", "auto")
@@ -59,6 +61,10 @@ class MpvBackend(private val context: Context) {
                     MPVLib.setOptionString("sid", "no")
                     // 静音状态由我们控制，先不静音
                     MPVLib.setOptionString("mute", "no")
+                    // 把内核自己的日志接到 logcat：出问题时能直接看它内部报什么
+                    MPVLib.addLogObserver { prefix, level, text ->
+                        Log.i(TAG, "mpv[$level] ${prefix ?: ""}$text")
+                    }
                     MPVLib.init()
                     Log.i(TAG, "mpv 内核已就绪（gpu 渲染器 + 软解兜底）")
                 } catch (t: Throwable) {
