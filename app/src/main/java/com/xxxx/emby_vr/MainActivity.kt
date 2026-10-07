@@ -1866,6 +1866,15 @@ class MainActivity : ComponentActivity() {
          */
         waitingFirstFrame = true
         /*
+         * 银幕比例先复位成 16:9（父亲 2026-10-07 实测：换片时转圈和提示被压扁、圈成椭圆）。
+         *
+         * 原因：弹幕层的 quad 尺寸跟着**视频真实比例**走（native 侧的 sp.aspect），
+         * 换片瞬间它还停在上一部片的比例上（比如 2.39:1 或 4:3），而画布固定 2560×1440，
+         * 于是被非等比拉伸 —— 圆成了椭圆、字被压扁。首播时比例还是默认 16:9，所以正常。
+         * 新片第一帧到位后 onVideoSizeChanged 会把它改回真实比例。
+         */
+        com.xxxx.emby_vr.vr.VrNative.setVideoAspect(16f / 9f)
+        /*
          * 等待期这一层要露出来 —— 它上面要显示「即将播放：片名」那行提示
          * （弹幕内容与 logo 仍然等第一帧，见 logoBitmapProvider 的门控）。
          */
