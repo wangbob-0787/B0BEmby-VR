@@ -1013,7 +1013,15 @@ object EmbyApi {
                         // 客户端也认」，于是音频原样 copy 过来，头显解不了就是静音。
                         // 只留 AAC/MP3，服务端就会把 EAC3/DTS 转成 AAC。
                         addProperty("AudioCodec", "aac,mp3")
-                        addProperty("VideoCodec", if (actualDisableHevc) "h264" else supportedVideo)
+                        /*
+                         * HLS 转码输出**固定 H.264**（父亲 2026-10-07：《律界战争》播一个
+                         * 开头就停）。服务端把这部片转成 HLS，输出编码跟着 supportedVideo
+                         * 走了 H.265 —— Media3 的 TS/H265 解析在 SampleQueue.commitSample
+                         * 抛 IllegalArgumentException，整条流直接报 Source error。
+                         * HEVC 原文件直连不受影响（走 mkv/Static 那条线），只有"必须转码"
+                         * 的片子才落到这里，HDR 会丢，但至少能播。
+                         */
+                        addProperty("VideoCodec", "h264")
                         addProperty("Context", "Streaming")
                         addProperty("Protocol", "hls")
                         addProperty("MaxAudioChannels", "8")

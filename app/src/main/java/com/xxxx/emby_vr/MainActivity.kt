@@ -2399,6 +2399,11 @@ class MainActivity : ComponentActivity() {
     private fun onPanelPlayRequested(mediaId: String, positionTicks: Long) {
         if (mediaId.isBlank()) return
         Log.i(TAG, "面板请求播放: mediaId=$mediaId positionTicks=$positionTicks")
+        /*
+         * 从海报墙点片 = 切片：起播路径里有两处 stop 都看 replaying 这个标记，
+         * 少了它 startPlayer 会按 keepUi=false 把控制条收掉（父亲 2026-10-07 实测）。
+         */
+        replaying = true
         com.xxxx.emby_vr.panel.PanelSignals.bump()
         /*
          * 从海报墙点片 = 换片：**先停旧片、清屏**（父亲 2026-10-07）。
