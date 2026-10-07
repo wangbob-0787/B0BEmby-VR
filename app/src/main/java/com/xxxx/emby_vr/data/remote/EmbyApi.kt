@@ -467,13 +467,29 @@ object EmbyApi {
              * 「只有声音没有画面」。所以检测到杜比视界时再请求一次，并把 DirectStream
              * 也关掉，逼服务端真正转码。
              */
-            val isDolbyVision = dto.mediaSources?.any { ms ->
+            /*
+             * 判断片源是不是杜比视界 —— 两条证据并用（父亲 2026-10-08）。
+             *
+             * 教训：只看 PlaybackInfo 返回的 MediaStreams 不够。我们请求时带了设备能力，
+             * 服务端可能不回原始色彩范围，实测就是这样 —— 标记没立起来，mpv 内核一次
+             * 都没轮到，界面还是「只有声音没有画面」。
+             *
+             * 所以补一条按文件名的判断：这批片源的文件名里就写着 DV（实测
+             * `The.Scandal.S01E01.…DDP.5.1.Atmos.DV.H.265-BlackTV.mkv`），
+             * 而文件名是直连/转码都不会改掉的东西。
+             */
+            val sourcePath = dto.mediaSources?.firstOrNull()?.path.orEmpty()
+            val dvByName = listOf(".DV.", ".DoVi.", "DolbyVision", ".dvh1.", ".dvhe.", " DV ")
+                .any { sourcePath.contains(it, ignoreCase = true) }
+            val dvByStream = dto.mediaSources?.any { ms ->
                 ms.mediaStreams?.any { st ->
                     val vr = ((st.videoRange ?: "") + " " + (st.videoRangeType ?: ""))
                     st.type.equals("Video", true) &&
                         (vr.contains("DolbyVision", true) || vr.contains("DOVI", true))
                 } == true
             } == true
+            val isDolbyVision = dvByName || dvByStream
+            Log.i(TAG, "片源判定：杜比视界=$isDolbyVision（按名=$dvByName 按流=$dvByStream）path=${sourcePath.takeLast(70)}")
             /*
              * 杜比视界片源：起播时改走 mpv 解码内核（父亲 2026-10-08）。
              *
