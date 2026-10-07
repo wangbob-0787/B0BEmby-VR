@@ -561,6 +561,14 @@ struct VrContext {
     GLint downLoc = -1;            // uDownsample：是否对视频做盒式降采样
     GLint jitterLoc = -1;          // uJitter：抖动种子
     GLuint vbo = 0;                // 单位方块（面板 / 光点）
+    /*
+     * 手柄放着不动就把激光收起来（父亲 2026-10-07）。
+     * aimLastMoveMs 记"上次判定手柄在动"的时刻，aimLastPose 是上次比较用的姿态。
+     */
+    double aimLastMoveMs[2] = {0.0, 0.0};
+    XrPosef aimLastPose[2] = {};
+    bool aimPoseInit[2] = {false, false};
+
     GLuint rayVbo = 0;             // 手柄射线网格（圆锥）
     int rayVertexCount = 0;
     GLuint triVbo = 0;             // 实心三角（加载转圈的箭头）
@@ -2580,6 +2588,39 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
      *   · 光点：只在**射线打到面板**时出现，画成圆点（父亲 2026-10-05 定的规范：
      *     指到空处只有光线、没有光点）
      */
+    /*
+     * 手柄动没动（父亲 2026-10-07）：角度变 1° 以上、或位置挪 1cm 以上就算在动。
+     * 5 秒没有这种变化 → 这条激光收起来，省得举着手不动时一道光杵在画面里；
+     * 一动立刻恢复。
+     */
+    for (int h = 0; h < 2; h++) {
+        if (!c.aimValid[h]) continue;
+        const double nowAim = nowMs();
+        if (!c.aimPoseInit[h]) {
+            c.aimPoseInit[h] = true;
+            c.aimLastPose[h] = c.aimPose[h];
+            c.aimLastMoveMs[h] = nowAim;
+            continue;
+        }
+        const XrPosef &cur = c.aimPose[h];
+        const XrPosef &ref = c.aimLastPose[h];
+        const float ddx = cur.position.x - ref.position.x;
+        const float ddy = cur.position.y - ref.position.y;
+        const float ddz = cur.position.z - ref.position.z;
+        const float moved = std::sqrt(ddx * ddx + ddy * ddy + ddz * ddz);
+        float dot = cur.orientation.x * ref.orientation.x +
+                    cur.orientation.y * ref.orientation.y +
+                    cur.orientation.z * ref.orientation.z +
+                    cur.orientation.w * ref.orientation.w;
+        dot = std::fabs(dot);
+        if (dot > 1.0f) dot = 1.0f;
+        const float turned = 2.0f * std::acos(dot) * 57.29578f;   // 度
+        if (moved > 0.01f || turned > 1.0f) {
+            c.aimLastMoveMs[h] = nowAim;
+            c.aimLastPose[h] = cur;
+        }
+    }
+
     if (c.program != 0 && c.mvpLoc >= 0 && c.rayVbo != 0) {
         const float kRayNear = 0.001f;    // 近端半径 1mm（官方 handScale 的 x/y 分量）
         const float kNoHitDistance = 100.f;
@@ -2587,6 +2628,8 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
 
         for (int h = 0; h < 2; h++) {
             if (!c.aimValid[h]) continue;
+            // 放着不动超过 5 秒 → 这条激光（连同光点）先收起来（父亲 2026-10-07）
+            if (nowMs() - c.aimLastMoveMs[h] > 5000.0) continue;
 
             /*
              * 射线打到哪就在哪收住，并在那块面上画光点。
