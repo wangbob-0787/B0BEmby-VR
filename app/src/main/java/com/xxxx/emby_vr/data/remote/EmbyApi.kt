@@ -1079,6 +1079,9 @@ object EmbyApi {
                 add("ContainerProfiles", JsonArray())
 
                 add("CodecProfiles", JsonArray().apply {
+                    // 0. 不接杜比视界（Dolby Vision）：否则服务端会直通，头显解不了（见函数注释）
+                    add(createCodecProfileNoDolbyVision())
+
                     // 1. 声明高级音频支持，并解除声道限制（针对 7.1 声道原盘）
                     add(createCodecProfileAudio("truehd", maxChannels = 8))
                     add(createCodecProfileAudio("mlp", maxChannels = 8))
@@ -1181,6 +1184,37 @@ object EmbyApi {
                     addProperty("ManifestSubtitles", "vtt")
                 }
             }
+        }
+    }
+
+    /**
+     * 声明「不支持杜比视界（Dolby Vision）」（父亲 2026-10-07）。
+     *
+     * 实测：《挑情丑闻》S01E01 的源是
+     * `The.Scandal.S01E01.Episode.1.2160p.NF.WEB-DL.DDP.5.1.Atmos.DV.H.265-BlackTV.mkv`
+     * （hevc Main 10、10bit、VideoRange=DolbyVision）。客户端只声明了 HEVC 能解，
+     * 服务端于是给 DirectStream —— 只换封装、视频原样送过来，头显那条解码器吃不下
+     * 杜比视界的 H.265 流，结果「只有声音没有画面」。
+     *
+     * 排除 DOVI 系列之后，服务端会把这类片源转码成普通 HDR 再送。代价是 DV 片源
+     * 要走转码（4K 转码有开销），换来的是能看。
+     */
+    private fun createCodecProfileNoDolbyVision(): JsonObject {
+        return JsonObject().apply {
+            addProperty("Type", "Video")
+            addProperty("Codec", "hevc")
+            add("Conditions", JsonArray().apply {
+                // Emby 的 VideoRangeType：DOVI / DOVIWithHDR10 / DOVIWithSDR /
+                // DOVIWithHLG / DOVIWithEL 都要排除
+                listOf("DOVI", "DOVIWithHDR10", "DOVIWithSDR", "DOVIWithHLG", "DOVIWithEL")
+                    .forEach { v ->
+                        add(JsonObject().apply {
+                            addProperty("Condition", "NotEquals")
+                            addProperty("Property", "VideoRangeType")
+                            addProperty("Value", v)
+                        })
+                    }
+            })
         }
     }
 
