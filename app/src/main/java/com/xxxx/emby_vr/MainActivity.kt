@@ -408,16 +408,17 @@ class MainActivity : ComponentActivity() {
             vrInputLive = true
             runOnUiThread {
                 /*
-                 * 播放中 B 键 = 停止播放回面板（2026-10-05 父亲实测：点了播放就回不来）。
-                 * 原来这里用 panelInputReady() 当门，而它在播放时恒为 false（playing 期间
-                 * 面板不接输入）→ B 键被静默丢弃，只能杀应用。
+                 * 父亲 2026-10-07 重定 B 键语义：
+                 *  · 菜单开着 → 关菜单（回上一级）；
+                 *  · 光点在播放画面上 → **不响应**。播放页的退出、快进快退、选集
+                 *    都在控制条上，B 键不必再插一脚"停止播放"；
+                 *  · 光点在海报墙上 → 面板返回上一级。
                  */
                 if (menuState.kind != null) {
                     Log.i(TAG, "光柱 B 键 → 菜单返回上一级")
                     menuBack()
-                } else if (renderer.videoActive) {
-                    Log.i(TAG, "光柱 B 键 → 停止播放回面板")
-                    stopPlayback()
+                } else if (renderer.videoActive && !panelPointerOnPanel) {
+                    Log.i(TAG, "光柱 B 键忽略：光点在播放画面上（播放页操作走控制条）")
                 } else if (panelInputReady()) {
                     Log.i(TAG, "光柱 B 键 → 面板返回")
                     panel.back()
@@ -1800,9 +1801,9 @@ class MainActivity : ComponentActivity() {
         danmakuTrack = null
         danmakuView?.setTrack(null)
         logoUrl.value = null
-        // 回海报墙的时候确保它摆着（播放中可以把它收起来，别让收起来的状态带回去）
-        // 海报墙回到上次退出前的位置 / 大小 / 远近（父亲 2026-10-06 晚）
-        restorePanelPlace()
+        // 回海报墙的时候确保它摆着（播放中可以把它收起来，别让收起来的状态带回去）。
+        // 父亲 2026-10-07：这里**不再**还原摆位 —— 用户人就在应用里，墙随时能自己调，
+        // 自动还原只发生在 APP 启动那一刻（见 onResume）。
         com.xxxx.emby_vr.vr.VrNative.updatePanelShown(true)
     }
 
@@ -2093,16 +2094,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         /*
-         * 播放中按 B（返回）：先停播放，回界面。
+         * 父亲 2026-10-07：光点在播放画面上时 B 键不响应 —— 播放页的操作全在控制条上。
+         * 必须消费掉（return true），否则系统会拿这一下 BACK 当"关闭 Activity"，
+         * 应用直接被退出。
          *
-         * 2026-10-05 父亲实测「进了播放页按 B 返回不了，只能关 app」：
-         * 以前 BACK 一律先给面板导航栈，而播放时面板仍然活着（panelActive=true），
-         * 于是 B 被面板吃掉（在背后做了一次界面返回），播放一点没停 —— 看起来就是没反应。
-         * 现在按「谁在前面谁先接」：播放在前 → 停播放。
+         * 光点在海报墙上时，往下走面板导航栈（下面那段），与是否正在播放无关。
          */
-        if (keyCode == KeyEvent.KEYCODE_BACK && renderer.videoActive) {
-            Log.i(TAG, "BACK：播放中 → 停止播放回界面")
-            stopPlayback()
+        if (keyCode == KeyEvent.KEYCODE_BACK && renderer.videoActive && !panelPointerOnPanel) {
+            Log.i(TAG, "BACK 忽略：光点在播放画面上（播放页操作走控制条）")
             return true
         }
         // 返回键再给面板：复用界面的导航栈（NavHost）在面板窗口里，
