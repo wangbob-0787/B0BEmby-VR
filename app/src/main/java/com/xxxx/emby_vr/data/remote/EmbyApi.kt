@@ -1006,22 +1006,25 @@ object EmbyApi {
                     })
 
                     add(JsonObject().apply {
-                        addProperty("Container", "ts")
+                        /*
+                         * HLS 用 fMP4 封装（父亲 2026-10-07：《律界战争》播一个开头就停）。
+                         *
+                         * 这部片：容器 mkv、视频 HEVC Main10 10bit HDR10、音频 EAC3。
+                         * 头显不给第三方应用解 EAC3（media_codecs 白名单里没有 AC3/DTS/
+                         * TrueHD），音频必须转成 AAC —— 这条绕不过去，官方播放器能播是因为
+                         * 它自带解码路子，我们走的是系统播放框架。
+                         * 但视频**能原样 copy**：原来用 TS 封装时，Media3 的 H265Reader 会在
+                         * SampleQueue.commitSample 抛 IllegalArgumentException，整条流报
+                         * Source error；换 fMP4 后视频不重编码，HDR 与画质都保住。
+                         */
+                        addProperty("Container", "mp4")
                         addProperty("Type", "Video")
                         // 转码输出能力（父亲 2026-10-06 报「无声」的根因就在这里）：
                         // 原来写死 aac,ac3,eac3,mp3 —— 源片是 EAC3 时服务端认为「输出 eac3
                         // 客户端也认」，于是音频原样 copy 过来，头显解不了就是静音。
                         // 只留 AAC/MP3，服务端就会把 EAC3/DTS 转成 AAC。
                         addProperty("AudioCodec", "aac,mp3")
-                        /*
-                         * HLS 转码输出**固定 H.264**（父亲 2026-10-07：《律界战争》播一个
-                         * 开头就停）。服务端把这部片转成 HLS，输出编码跟着 supportedVideo
-                         * 走了 H.265 —— Media3 的 TS/H265 解析在 SampleQueue.commitSample
-                         * 抛 IllegalArgumentException，整条流直接报 Source error。
-                         * HEVC 原文件直连不受影响（走 mkv/Static 那条线），只有"必须转码"
-                         * 的片子才落到这里，HDR 会丢，但至少能播。
-                         */
-                        addProperty("VideoCodec", "h264")
+                        addProperty("VideoCodec", if (actualDisableHevc) "h264" else supportedVideo)
                         addProperty("Context", "Streaming")
                         addProperty("Protocol", "hls")
                         addProperty("MaxAudioChannels", "8")
