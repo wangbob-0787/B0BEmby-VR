@@ -1556,7 +1556,12 @@ void drawSpinner(VrContext &c, const Mat4 &proj, const Mat4 &view4) {
     const float step = 2.f * 3.14159265358979f / (float) kSegs;
     const float base = (float) (-now * 2.6);   // 角度递减 = 顺时针
     for (int i = 0; i < kSegs - kGapSegs; i++) {
-        const float ang = base + (float) i * step;
+        /*
+         * 环沿**顺时针**方向排（父亲 2026-10-07：整个图案以 Y 轴镜像）：
+         * i = 0 是起笔的尾巴（最暗），i 越大越靠近缺口端（越亮），
+         * 而缺口落在箭头「前方」—— 顺时针转动时，箭头正好朝着运动方向。
+         */
+        const float ang = base - (float) i * step;
         /*
          * 尾巴暗、缺口那头**最亮**（父亲 2026-10-07：箭头就落在最亮的缺口端部）。
          * i = 0 是起笔的尾巴，i = kSegs-kGapSegs-1 紧挨缺口 —— 越靠近缺口越亮。
@@ -1577,17 +1582,17 @@ void drawSpinner(VrContext &c, const Mat4 &proj, const Mat4 &view4) {
      * 原来是两撇组成的 V 形，太细，远看不像箭头。
      */
     if (c.triVbo != 0) {
-        const float ang = base + (float) (kSegs - kGapSegs) * step;
+        const float ang = base - (float) (kSegs - kGapSegs) * step;
         XrPosef tip{};
         tip.position = {kFrontScreen.cx + cosf(ang) * kRadius,
                         kFrontScreen.cy + sinf(ang) * kRadius,
                         kFrontScreen.cz + 0.013f};
         /*
-         * 三角的尖在 +Y，要让它朝**缺口那一侧**（父亲 2026-10-07：箭尖朝着缺口方向）：
-         * 缺口的空间范围是 ang → ang + 45°，切向角 = ang + 90°；
-         * 绕 Z 转 θ 时 +Y 指向 θ + 90°，所以 θ = ang。
+         * 三角的尖在 +Y，要让它朝**缺口那一侧**（父亲 2026-10-07：箭尖朝着缺口方向）。
+         * 镜像之后缺口在箭头顺时针前方，切向角 = ang - 90°；
+         * 绕 Z 转 θ 时 +Y 指向 θ + 90°，所以 θ = ang - 180°。
          */
-        const float theta = ang;
+        const float theta = ang - 3.14159265358979f;
         tip.orientation = {0.f, 0.f, sinf(theta * 0.5f), cosf(theta * 0.5f)};
         const Mat4 m = poseScaleModel(tip, kThick * 2.8f, kThick * 3.4f, 1.f);
         drawMesh(c, c.triVbo, 3, multiply(multiply(proj, view4), m),
