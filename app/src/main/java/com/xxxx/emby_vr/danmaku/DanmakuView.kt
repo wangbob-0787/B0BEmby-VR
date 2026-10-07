@@ -162,7 +162,7 @@ class DanmakuView(context: Context) : View(context) {
      */
     private fun effectiveEndMs(item: DanmakuItem, scale: Float): Long {
         if (!item.isMove) return item.endMs
-        val spanMs = ((item.endMs - item.startMs) / kSpeedFactor).coerceAtLeast(1L)
+        val spanMs = ((item.endMs - item.startMs) / kSpeedFactor).toLong().coerceAtLeast(1L)
         val dx = item.x1 - item.x2
         if (dx <= 0f) return item.endMs
         fillPaint.textSize = max(10f, item.style.fontSize * scale)
@@ -313,7 +313,7 @@ class DanmakuView(context: Context) : View(context) {
     }
 
     private fun drawItem(canvas: Canvas, item: DanmakuItem, nowMs: Long, scale: Float) {
-        val span = ((item.endMs - item.startMs) / kSpeedFactor).coerceAtLeast(1L)
+        val span = ((item.endMs - item.startMs) / kSpeedFactor).toLong().coerceAtLeast(1L)
         val progress = ((nowMs - item.startMs).toFloat() / span).coerceIn(0f, 1f)
 
         val x: Float
