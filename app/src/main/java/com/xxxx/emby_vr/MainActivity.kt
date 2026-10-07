@@ -538,6 +538,25 @@ class MainActivity : ComponentActivity() {
         Log.i(TAG, "弹幕画布随影片比例 → ${w}x$h（比例 $aspect）")
     }
 
+    /**
+     * 从源里挑一条头显能解的音轨（父亲 2026-10-07：音画不同步）。
+     *
+     * 头显只给第三方应用开放 AAC/MP3 这类音轨，EAC3/DTS/AC3 都不在名单里。
+     * 片子默认音轨是 DTS、同时又带一条 AAC 时，让服务端直接发原文件里那条 AAC ——
+     * 比「画面直通 + 音频转码再拼回」音画同步得多，也不用实时从网盘拉源。
+     * 返回 null：默认那条就能放，或源里没有能放的音轨（交给服务端转码）。
+     */
+    private fun pickPlayableAudio(
+        streams: List<com.xxxx.emby_vr.data.model.MediaStreamDto>?,
+    ): Int? {
+        val audios = streams.orEmpty().filter { it.type.equals("Audio", ignoreCase = true) }
+        if (audios.isEmpty()) return null
+        fun playable(codec: String?) = codec?.lowercase() in setOf("aac", "mp3")
+        val default = audios.firstOrNull { it.isDefault == true } ?: audios.first()
+        if (playable(default.codec)) return null
+        return audios.firstOrNull { playable(it.codec) }?.index
+    }
+
     private fun attachDanmakuSurface(st: android.graphics.SurfaceTexture) {
         runOnUiThread {
             runCatching {
@@ -979,7 +998,7 @@ class MainActivity : ComponentActivity() {
          */
         scope.launch {
             try {
-                val media = EmbyApi.getPlaybackInfo(
+                var media = EmbyApi.getPlaybackInfo(
                     context = this@MainActivity,
                     serverUrl = userServer(),
                     apiKey = userToken(),
@@ -991,7 +1010,36 @@ class MainActivity : ComponentActivity() {
                     selectedSubtitleIndex = selectedSubtitleIndex,
                     maxStreamingBitrate = bitrateForQuality(),
                 )
-                val source = media.mediaSources?.firstOrNull()
+                var source = media.mediaSources?.firstOrNull()
+                /*
+                 * 自动挑一条头显能放的原声音轨（父亲 2026-10-07：音画不同步）。
+                 *
+                 * 《无可替代》这类片子带两条音轨：DTS 6ch（默认）+ AAC 2ch。头显解不了
+                 * DTS，服务端就把音频转成 AAC 再和直通的画面拼起来 —— 拼接会让声音和
+                 * 画面对不齐，还要实时从网盘拉源，慢起来就超时。
+                 * 发现默认那条解不了、源里又带能解的那条时，带索引重新要一次地址：
+                 * 服务端直接把原文件发过来，不转码、不卡、音画本来就是对好的。
+                 * 用户自己选过音轨就不插手（selectedAudioIndex != null）。
+                 */
+                if (selectedAudioIndex == null) {
+                    pickPlayableAudio(source?.mediaStreams)?.let { alt ->
+                        Log.i(TAG, "默认音轨头显解不了 → 改用流 $alt（不转码，音画同步）")
+                        selectedAudioIndex = alt
+                        media = EmbyApi.getPlaybackInfo(
+                            context = this@MainActivity,
+                            serverUrl = userServer(),
+                            apiKey = userToken(),
+                            deviceId = EmbyContent.DEVICE_ID,
+                            userId = BuildConfig.EMBY_USER_ID,
+                            mediaId = mediaId,
+                            startTimeTicks = effectiveStart,
+                            selectedAudioIndex = alt,
+                            selectedSubtitleIndex = selectedSubtitleIndex,
+                            maxStreamingBitrate = bitrateForQuality(),
+                        )
+                        source = media.mediaSources?.firstOrNull()
+                    }
+                }
                 // 记下这次播放的身份，供服务端上报（播放历史/继续观看靠它）
                 pendingItemId = mediaId
                 pendingPlaySessionId = media.playSessionId
