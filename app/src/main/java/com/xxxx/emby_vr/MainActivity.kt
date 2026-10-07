@@ -1812,8 +1812,12 @@ class MainActivity : ComponentActivity() {
         seekTargetMs = null
         // 播放结束：VR 画面切回面板（非 VR 模式下这条调用没有副作用）
         com.xxxx.emby_vr.vr.VrNative.setVideoActive(false)
-        // 转圈也收起来 —— 它只在换片 / 首播的等待期开着
-        com.xxxx.emby_vr.vr.VrNative.setSpinnerWanted(false)
+        /*
+         * 注意：这里**不要**关转圈（2026-10-07 实测的坑）。
+         * 起播流程里 startPlayer 也会走这个函数，一转圈刚开就被它关掉 ——
+         * 日志里就是「银幕转圈 → 等第一帧」96 毫秒后紧跟一条「→ 收起」。
+         * 转圈只由 clearForNewMedia 开、由第一帧（reveal）关。
+         */
         picking = false
         osdJob?.cancel()
         osdJob = null

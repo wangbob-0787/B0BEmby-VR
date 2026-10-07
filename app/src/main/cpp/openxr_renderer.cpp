@@ -2998,27 +2998,26 @@ void frameLoop(VrContext &c) {
          * 建不起来（运行时不支持）就退回老路，功能不受影响。
          */
         c.videoLayer.submitted = false;
-        if (c.videoLayerOk && c.videoLayer.built && c.videoTex != 0) {
-            if (c.videoActive.load() && c.videoHasFrame.load()) {
-                int32_t vw = (int32_t) lroundf(1.f / fmaxf(1e-6f, c.texelX.load()));
-                int32_t vh = (int32_t) lroundf(1.f / fmaxf(1e-6f, c.texelY.load()));
-                constexpr int32_t kMaxVideoW = 3840;
-                constexpr int32_t kMaxVideoH = 2160;
-                if (vw > kMaxVideoW || vh > kMaxVideoH) {
-                    const float k = fminf((float) kMaxVideoW / (float) vw,
-                                          (float) kMaxVideoH / (float) vh);
-                    vw = (int32_t) ((float) vw * k);
-                    vh = (int32_t) ((float) vh * k);
-                }
-                if (vw >= 64 && vh >= 64 && buildQuadLayer(c, c.videoLayer, vw, vh, "视频层")) {
-                    c.videoLayer.submitted = renderQuadLayer(c, c.videoLayer, c.videoTex, true);
-                }
-            } else {
-                /*
-                 * 换片 / 等第一帧：这一层照旧提交，内容刷黑（父亲 2026-10-07）。
-                 * 只"停提交"的话，PICO 合成器会把上一部的画面留在银幕上。
-                 */
-                c.videoLayer.submitted = fillVideoLayerBlack(c, c.videoLayer);
+        /*
+         * 注意（2026-10-07 回退）：这里**不能**在"没有帧"时改走别的绘制路径。
+         * 之前试过"照旧提交、把内容刷黑"来清屏，结果视频层提交直接失效
+         * （日志里 `视频层=0`），于是投影层盖在弹幕层之上 —— 弹幕和片名 logo
+         * 全被压到画面背后。清屏另想办法，这一段的路径保持原样。
+         */
+        if (c.videoLayerOk && c.videoActive.load() && c.videoHasFrame.load() &&
+            c.videoTex != 0) {
+            int32_t vw = (int32_t) lroundf(1.f / fmaxf(1e-6f, c.texelX.load()));
+            int32_t vh = (int32_t) lroundf(1.f / fmaxf(1e-6f, c.texelY.load()));
+            constexpr int32_t kMaxVideoW = 3840;
+            constexpr int32_t kMaxVideoH = 2160;
+            if (vw > kMaxVideoW || vh > kMaxVideoH) {
+                const float k = fminf((float) kMaxVideoW / (float) vw,
+                                      (float) kMaxVideoH / (float) vh);
+                vw = (int32_t) ((float) vw * k);
+                vh = (int32_t) ((float) vh * k);
+            }
+            if (vw >= 64 && vh >= 64 && buildQuadLayer(c, c.videoLayer, vw, vh, "视频层")) {
+                c.videoLayer.submitted = renderQuadLayer(c, c.videoLayer, c.videoTex, true);
             }
         }
 
