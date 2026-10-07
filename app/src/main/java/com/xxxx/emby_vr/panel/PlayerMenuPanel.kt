@@ -181,8 +181,13 @@ class MenuState {
     fun visible(): Boolean = kind != null
 }
 
-/** 倍速档位（与电视版一致） */
-val SPEED_STEPS = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f, 3.0f, 4.0f)
+/**
+ * 倍速档位。
+ *
+ * 父亲 2026-10-07：只留 2 / 1.5 / 1 / 0.5 四档 —— 原来 9 档（含 0.75 / 1.25 / 1.75 /
+ * 3 / 4）太多，菜单一屏放不下还得滚动，砍到四档正好一屏。
+ */
+val SPEED_STEPS = listOf(0.5f, 1.0f, 1.5f, 2.0f)
 
 /** 视频质量档位：值 = 码率上限（0 表示原画不转码） */
 val QUALITY_STEPS = listOf(
@@ -555,12 +560,17 @@ private fun InfoMenu(menu: MenuState) {
                     }
             }
             Spacer(modifier = Modifier.height(16.dp))
+            /*
+             * 剧情（简介）最多三行，多出来的用省略号收掉
+             * （父亲 2026-10-07：只有剧情可能显示不完，最后用 ... 就行）。
+             */
             Text(
                 text = info.overview.ifBlank { "暂无简介" },
                 color = Color(0xFFFFFFFF),
                 fontSize = 21.sp,
                 lineHeight = 32.sp,
-                modifier = Modifier.heightIn(max = 560.dp),
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
             )
             if (info.techLine.isNotBlank()) {
                 Spacer(modifier = Modifier.height(14.dp))
