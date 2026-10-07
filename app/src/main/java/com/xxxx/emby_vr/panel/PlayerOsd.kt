@@ -250,6 +250,13 @@ fun osdTimeText(ms: Long): String {
 fun PlayerOsdBar(state: OsdState) {
     // 按钮位置按**整块面板**归一化（父 Row 有内边距，拿它当基准会有偏差）
     val panelWpx = LocalWindowInfo.current.containerSize.width
+    /*
+     * 面板高度也要在 **Composable 作用域**里先读出来：LocalWindowInfo.current 是
+     * @Composable 属性，直接写进 onGloballyPositioned 的 lambda 会编译报错
+     * （"@Composable invocations can only happen from the context of a @Composable function"）。
+     * 按钮行的纵向范围要用它归一化。
+     */
+    val panelHpx = LocalWindowInfo.current.containerSize.height
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -364,12 +371,11 @@ fun PlayerOsdBar(state: OsdState) {
                      * 悬停判定要排除上面的标题行与进度行，否则光点在它们上面横向移动时，
                      * 这排按钮会挨个亮起来。
                      */
-                    val ph = LocalWindowInfo.current.containerSize.height
-                    if (ph > 0) {
+                    if (panelHpx > 0) {
                         state.buttonRowTop =
-                            (coords.positionInRoot().y / ph).coerceIn(0f, 1f)
+                            (coords.positionInRoot().y / panelHpx).coerceIn(0f, 1f)
                         state.buttonRowBottom =
-                            ((coords.positionInRoot().y + coords.size.height) / ph)
+                            ((coords.positionInRoot().y + coords.size.height) / panelHpx)
                                 .coerceIn(0f, 1f)
                     }
                 }
