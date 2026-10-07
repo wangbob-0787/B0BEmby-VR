@@ -6,6 +6,10 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
 import android.view.View
+import com.xxxx.emby_vr.panel.osdTimeText
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.math.max
 
 /**
@@ -66,6 +70,47 @@ class DanmakuView(context: Context) : View(context) {
     /** 最近一帧实际画出的弹幕条数（诊断用） */
     var drawnThisFrame: Int = 0
         private set
+
+    // ── 快进快退进度条（2026-10-07 父亲：照电视版 SeekHud 复刻，画在这一层上）──
+    //
+    // 电视版的这条进度条是**悬在画面底部的浮层**，与控制条互斥。弹幕层正好就是压在
+    // 银幕上的一层浮层（层序、位置都对得上），而且这一层是**常开**的：没有弹幕的片子、
+    // 弹幕开关关掉时它照样逐帧绘制（片名 logo、字幕、转圈、等待提示都画在这儿）。
+    // 所以 HUD 的绘制**与弹幕轨无关** —— 见 onDraw 里它是独立一步，不在 track 分支里。
+    @Volatile private var hudVisible = false
+    @Volatile private var hudPosMs = 0L
+    @Volatile private var hudDurMs = 0L
+    @Volatile private var hudBufMs = 0L
+
+    /** 快进快退进度条的显隐与数据（位置 / 总长 / 缓冲），由播放侧驱动 */
+    fun setSeekHud(visible: Boolean, posMs: Long, durMs: Long, bufMs: Long) {
+        if (visible == hudVisible && posMs == hudPosMs &&
+            durMs == hudDurMs && bufMs == hudBufMs
+        ) {
+            return
+        }
+        hudVisible = visible
+        hudPosMs = posMs
+        hudDurMs = durMs
+        hudBufMs = bufMs
+        invalidate()
+    }
+
+    private val hudTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        typeface = Typeface.DEFAULT_BOLD
+    }
+    private val hudDimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.rgb(0xD0, 0xD0, 0xD0)
+        typeface = Typeface.DEFAULT_BOLD
+    }
+
+    /** 轨道色、缓冲段、已播段（电视版实测：深灰轨道 + 白 22% 缓冲 + 绿已播 + 绿竖线游标） */
+    private val hudTrackPaint = Paint().apply { color = Color.rgb(0x26, 0x26, 0x26) }
+    private val hudBufPaint = Paint().apply { color = Color.argb(0x38, 0xFF, 0xFF, 0xFF) }
+    private val hudFillPaint = Paint().apply { color = Color.rgb(0x2F, 0xD5, 0x7C) }
+    private val hudCursorPaint = Paint().apply { color = Color.rgb(0x2F, 0xD5, 0x7C) }
+    private val hudClock = SimpleDateFormat("HH:mm", Locale.getDefault())
 
     /** 当前轨道的弹幕条数（诊断用） */
     fun trackItemCount(): Int = track?.items?.size ?: 0
@@ -162,7 +207,72 @@ class DanmakuView(context: Context) : View(context) {
         }
         // 字幕不依赖弹幕轨：这一集没有弹幕轨时，字幕照样要显示
         drawSubtitle(canvas)
+        /*
+         * 快进快退进度条（HUD）：**独立一步**，不看 track ——
+         * 没有弹幕的片子、弹幕开关关掉时，这一层照样在画（logo / 字幕都在这儿），
+         * 所以 HUD 一定出得来（父亲 2026-10-07 提的边界情况）。
+         */
+        drawSeekHud(canvas)
         if (running) postInvalidateOnAnimation()
+    }
+
+    /**
+     * 画快进快退进度条：一行 = 左「已播时间」 + 中间细进度条（轨道 / 缓冲 / 已播 / 绿竖线游标）
+     * + 右「-剩余时间 / 结束时刻」。
+     *
+     * 文案与排布照电视版 `SeekHud`（PlayerControls.kt），尺寸按这块画布换算；
+     * 电视版是「悬在画面底部」，这里同样放在画面底部（底边留 14% 高）。
+     */
+    private fun drawSeekHud(canvas: Canvas) {
+        if (!hudVisible || width <= 0 || height <= 0) return
+        val textSize = max(14f, height * 0.022f)
+        hudTextPaint.textSize = textSize
+        hudDimPaint.textSize = textSize
+
+        val padX = width * 0.028f          // 电视版左右各 54dp / 1920 ≈ 2.8%
+        val rowCy = height * 0.86f         // 进度条中心线：画面底部往上 14%
+        val barH = max(3f, height * 0.0042f)
+        val cursorW = max(3f, height * 0.0042f)
+        val cursorH = height * 0.028f
+
+        val remain = (hudDurMs - hudPosMs).coerceAtLeast(0L)
+        val leftText = osdTimeText(hudPosMs)
+        val rightText = "-" + osdTimeText(remain) + " / " +
+            hudClock.format(Date(System.currentTimeMillis() + remain))
+
+        val baseline = rowCy + textSize * 0.35f
+        canvas.drawText(leftText, padX, baseline, hudTextPaint)
+        val rightW = hudDimPaint.measureText(rightText)
+        canvas.drawText(rightText, width - padX - rightW, baseline, hudDimPaint)
+
+        val gap = width * 0.006f
+        val barLeft = padX + hudTextPaint.measureText(leftText) + gap
+        val barRight = width - padX - rightW - gap
+        if (barRight <= barLeft) return
+        val barW = barRight - barLeft
+
+        canvas.drawRect(barLeft, rowCy - barH / 2f, barRight, rowCy + barH / 2f, hudTrackPaint)
+        if (hudDurMs > 0L) {
+            val frac = (hudPosMs.toFloat() / hudDurMs.toFloat()).coerceIn(0f, 1f)
+            val bufFrac = (hudBufMs.toFloat() / hudDurMs.toFloat()).coerceIn(0f, 1f)
+            if (bufFrac > 0f) {
+                canvas.drawRect(
+                    barLeft, rowCy - barH / 2f,
+                    barLeft + barW * bufFrac, rowCy + barH / 2f, hudBufPaint,
+                )
+            }
+            if (frac > 0f) {
+                canvas.drawRect(
+                    barLeft, rowCy - barH / 2f,
+                    barLeft + barW * frac, rowCy + barH / 2f, hudFillPaint,
+                )
+            }
+            val cx = barLeft + barW * frac
+            canvas.drawRect(
+                cx - cursorW / 2f, rowCy - cursorH / 2f,
+                cx + cursorW / 2f, rowCy + cursorH / 2f, hudCursorPaint,
+            )
+        }
     }
 
     /**
@@ -175,7 +285,11 @@ class DanmakuView(context: Context) : View(context) {
         subtitleOutline.textSize = size
         subtitleOutline.strokeWidth = max(2f, size * 0.09f)
         val lines = subtitle.split("\n")
-        var y = height - height * 0.07f
+        /*
+         * 快进快退进度条也在画面底部，两条会撞在一起（多行字幕时尤其明显）：
+         * HUD 显示期间把字幕整体上抬一档，让出底部那条。
+         */
+        var y = height - height * 0.07f - (if (hudVisible) height * 0.085f else 0f)
         for (i in lines.indices.reversed()) {
             val line = lines[i]
             if (line.isNotEmpty()) {

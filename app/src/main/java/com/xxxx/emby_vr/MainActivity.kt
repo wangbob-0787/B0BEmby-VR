@@ -139,9 +139,6 @@ class MainActivity : ComponentActivity() {
 
     /** 摇杆入口日志的限流时间戳（诊断用） */
     private var stickEntryLogAt = 0L
-    /** 摇杆快进快退要回中一次才能再触发（免得住一个方向连续快进） */
-    private var stickSeekArmed = true
-
     /** 光柱在海报墙上的最近位置（滚动时要带上去） */
     private var lastPanelPx = 0f
     private var lastPanelPy = 0f
@@ -392,19 +389,107 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-    /** 摇杆左右快进快退：推过 0.7 触发一次，回中（< 0.35）后才能再触发 */
-        private fun stickSeek(sx: Float) {
-            if (player == null) return
-            val mag = kotlin.math.abs(sx)
-            if (mag < 0.35f) {
-                stickSeekArmed = true
-                return
+    /*
+     * 摇杆左右快进快退（2026-10-07 父亲：光柱指着屏幕时，逻辑复刻电视版）。
+     *
+     * 电视版（`PlayerScreen.kt` 行 1670–1711 / 754–782）：
+     *   · 按下后 500ms 内抬起 → ±10 秒（播放器的 seekBack/Forward 增量就是 10 秒）
+     *   · 按住 ≥500ms        → 每 200ms 跳 30 秒；跳的时候若已暂停，自动续播
+     *   · 每次按下（含长按连发）都唤出画面底部的进度条，最后一次操作后 5 秒收起
+     *   · 控制条展开时左右键不快进快退（交给焦点移动）
+     *
+     * PICO 上没有"按下 / 抬起"，只有摇杆量（原生每 33ms 推一帧、回中推一帧零值），
+     * 所以等价换算：推过 0.7 当作按下；回到 0.35 以下当作抬起；
+     * 中间保持的时长对上电视版那个 500ms 判定。
+     */
+    private var stickSeekDir = 0              // 0 = 没推 / +1 快进 / -1 快退
+    private var stickSeekAccel = false        // 是否已进入"按住加速"那一档
+    private var stickSeekHoldJob: kotlinx.coroutines.Job? = null
+
+    /** 画面上那条快进快退进度条：正在显示 / 刷新任务 / 隐退任务 */
+    private var seekHudShown = false
+    private var seekHudTickJob: kotlinx.coroutines.Job? = null
+    private var seekHudHideJob: kotlinx.coroutines.Job? = null
+
+    private fun stickSeek(sx: Float) {
+        if (player == null) return
+        val mag = kotlin.math.abs(sx)
+        if (mag < 0.35f) {                                   // 回中 = 抬起
+            if (stickSeekDir == 0) return
+            stickSeekHoldJob?.cancel()
+            stickSeekHoldJob = null
+            // 电视版：按下到抬起不到 500ms → 只跳一次 10 秒
+            //（超过 500ms 的那档已经在加速循环里按 30 秒连跳过了）
+            if (!stickSeekAccel) {
+                val dir = stickSeekDir
+                seekBy(if (dir > 0) 10_000L else -10_000L)
+                Log.i(TAG, "摇杆短推 → ${if (dir > 0) "快进" else "快退"} 10 秒")
             }
-            if (!stickSeekArmed || mag < 0.7f) return
-            stickSeekArmed = false
-            seekBy(if (sx > 0f) 10_000 else -10_000)
-            Log.i(TAG, "光柱指着画面 + 摇杆 → ${if (sx > 0f) "快进" else "快退"} 10 秒")
+            stickSeekDir = 0
+            stickSeekAccel = false
+            armSeekHudDismiss()
+            return
         }
+        if (stickSeekDir != 0 || mag < 0.7f) return           // 这一次推杆已经在处理
+        val dir = if (sx > 0f) 1 else -1
+        stickSeekDir = dir
+        stickSeekAccel = false
+        showSeekHud()
+        stickSeekHoldJob = scope.launch {
+            kotlinx.coroutines.delay(500L)                    // 电视版：500ms 内抬手就只跳一次
+            stickSeekAccel = true
+            while (isActive && stickSeekDir == dir) {
+                seekBy(dir * 30_000L)                         // 电视版长按：每 200ms 跳 30 秒
+                val p = player ?: break
+                if (!p.playWhenReady) p.playWhenReady = true  // 电视版：长按时暂停会自动续播
+                armSeekHudDismiss()
+                kotlinx.coroutines.delay(200L)
+            }
+        }
+    }
+
+    /** 亮出快进快退进度条（控制条展开时不亮，与电视版一致），并重置 5 秒隐退计时 */
+    private fun showSeekHud() {
+        if (osdVisible) return
+        val v = danmakuView ?: return
+        val p = player
+        seekHudShown = true
+        v.setSeekHud(true, p?.currentPosition ?: 0L, p?.duration ?: 0L, p?.bufferedPosition ?: 0L)
+        if (seekHudTickJob?.isActive != true) {
+            seekHudTickJob = scope.launch {
+                while (true) {
+                    val pl = player
+                    danmakuView?.setSeekHud(
+                        true,
+                        pl?.currentPosition ?: 0L,
+                        pl?.duration ?: 0L,
+                        pl?.bufferedPosition ?: 0L,
+                    )
+                    kotlinx.coroutines.delay(200L)
+                }
+            }
+        }
+        armSeekHudDismiss()
+    }
+
+    /** 每次操作（含长按连发）都重置隐退计时：最后一次操作后 5 秒收起（电视版同款） */
+    private fun armSeekHudDismiss() {
+        seekHudHideJob?.cancel()
+        seekHudHideJob = scope.launch {
+            kotlinx.coroutines.delay(5000L)
+            hideSeekHud()
+        }
+    }
+
+    private fun hideSeekHud() {
+        seekHudHideJob?.cancel()
+        seekHudHideJob = null
+        seekHudTickJob?.cancel()
+        seekHudTickJob = null
+        if (!seekHudShown) return
+        seekHudShown = false
+        danmakuView?.setSeekHud(false, 0L, 0L, 0L)
+    }
 
         override fun onOsdPointer(px: Float, py: Float, pressed: Boolean) {
             vrInputLive = true
@@ -675,6 +760,8 @@ class MainActivity : ComponentActivity() {
     private fun setOsdVisible(visible: Boolean) {
         osdVisible = visible
         com.xxxx.emby_vr.vr.VrNative.setOsdVisible(visible)
+        // 控制条展开时不显示快进快退进度条（电视版同款：showPanel 时 seekHud 不画）
+        if (visible) hideSeekHud()
         // 控制条收起来时菜单一起收（父亲 2026-10-06：菜单挂在控制条上）
         if (!visible) closeMenu()
         Log.i(TAG, if (visible) "控制条显示" else "控制条隐藏")
@@ -824,123 +911,11 @@ class MainActivity : ComponentActivity() {
      * （dispatchTouchEvent 的面板分支直接用事件坐标），不再喂给渲染器。
      */
 
-    // ---- 摇杆手势识别（父亲 2026-10-04 规格）----
-    //
-    // 规格：左拨一次（500ms 内拨出→回中）= 快退 10 秒；拨住不回中 = 持续快退。
-    //       右拨同理快进。
-    //
-    // 难点：PICO 只给光标流，摇杆与手部晃动同源。区分依据 ——
-    //   摇杆拨动：**平滑单向**移动，且停在新位置（不回中）或迅速弹回（回中）
-    //   手部晃动：**快速往复**，方向频繁反转，始终围绕原点
-    // 因此：方向反转即清零累计（晃动永远累计不到阈值）。
-    private var stickRunStart = 0f      // 本轮单向移动起点
-    private var stickRunDir = 0         // 本轮方向 ±1
-    private var stickLastX = 0f
-    private var stickLastAt = 0L
-    private var stickHoldFiredAt = 0L   // 持续模式上次续跳时间
-
-    private fun onStickMotion(x: Float) {
-        if (!renderer.videoActive) return
-        val now = System.currentTimeMillis()
-        val dt = now - stickLastAt
-        stickLastAt = now
-
-        // 停顿 >400ms 视为新手势起点
-        if (dt > STICK_GAP_MS) {
-            stickRunStart = x
-            stickRunDir = 0
-            stickLastX = x
-            stickHoldFiredAt = 0L
-            return
-        }
-        val dx = x - stickLastX
-        stickLastX = x
-
-        // 指针跳变过滤（父亲 2026-10-04 实测：晃手时光标会瞬间窜一大段，
-        // 例如 0.656 → 1.778，超过屏幕范围，被误当成一次拨动）。
-        // 真摇杆拨动是平滑的，单帧位移远小于此；跳变一律当噪音丢弃并重起手势。
-        if (kotlin.math.abs(dx) > STICK_MAX_JUMP) {
-            stickRunStart = x
-            stickRunDir = 0
-            stickHoldFiredAt = 0L
-            Log.i(TAG, "指针跳变 ${"%.3f".format(dx)}，丢弃")
-            return
-        }
-
-        val dir = when {
-            dx > STICK_EPS -> 1
-            dx < -STICK_EPS -> -1
-            else -> 0
-        }
-        if (dir != 0 && dir != stickRunDir) {
-            // 方向反转（晃手特征）→ 重新起算
-            stickRunDir = dir
-            stickRunStart = x - dx
-        }
-        if (stickRunDir == 0) return
-
-        val run = x - stickRunStart
-
-        // 回中检测：指针回到起点附近（拨一下松手）→ 结束持续模式。
-        // 这是父亲规格里「500ms 内回中 = 只跳一次」的判定点。
-        if (stickHoldFiredAt > 0 && kotlin.math.abs(run) < STICK_RUN / 2f) {
-            stickHoldFiredAt = 0
-            return
-        }
-
-        // 持续模式：拨住不回中（指针停在偏位）→ 每 500ms 续跳一次
-        if (stickHoldFiredAt > 0 && now - stickHoldFiredAt >= STICK_HOLD_MS) {
-            stickHoldFiredAt = now
-            Log.i(TAG, "摇杆持续拨住: run=${"%.3f".format(run)} → 续跳 10 秒")
-            seekBy(if (run > 0) -10_000 else +10_000)
-            return
-        }
-        // 首次触发：累计单向位移过阈值
-        if (kotlin.math.abs(run) < STICK_RUN) return
-        if (now - lastSeekAt < SEEK_COOLDOWN_MS) return
-        lastSeekAt = now
-        stickHoldFiredAt = now
-        Log.i(TAG, "摇杆拨动: run=${"%.3f".format(run)} → ${if (run > 0) "快退" else "快进"} 10 秒")
-        // 位移为正（指针 x 增大）实机上对应视觉左侧 → 快退
-        seekBy(if (run > 0) -10_000 else +10_000)
-    }
-
-    /** 按住扳机拖拽已触发的档位数与上次触发时间 */
-    private var dragFiredSteps = 0
-    private var lastSeekAt = 0L
-
-    /**
-     * 拨摇杆 → 快进/快退（2026-10-04 对 B 站抓包后定案）。
-     *
-     * 实测机制：拨摇杆时系统合成一次「拖动手势」——
-     *   BTN_TOUCH DOWN → ABS_X 横向移动 800+ 像素 → BTN_TOUCH UP
-     * 而晃动手柄只有坐标抖动、**没有 DOWN/UP**，所以不会走到这里。
-     * 这就是"晃手无反应、拨摇杆有效"的根本原因，也是 B 站的做法。
-     *
-     * 档位按「离按下点的距离」数，只在档位**增加**时触发：
-     * 手回到按下点的过程只让档位回落，不会反向误触发。
-     *
-     * @param dx 相对按下点的横向位移（归一化坐标，半高 = 1）
+    /*
+     * 旧的两条摇杆通道（拨动累计位移 onStickMotion、按住扳机拖动 onTriggerDrag）
+     * 已在 2026-10-07 删除：播放页快进快退统一走 stickSeek（照电视版复刻）。
      */
-    @Suppress("unused")
-    private fun onTriggerDrag(dx: Float) {
-        if (!renderer.videoActive) return
-        val steps = (kotlin.math.abs(dx) / DRAG_SEEK_STEP).toInt()
-        if (steps <= dragFiredSteps) return
-        val now = System.currentTimeMillis()
-        if (now - lastSeekAt < SEEK_COOLDOWN_MS) return
-        lastSeekAt = now
-        dragFiredSteps = steps
-        Log.i(TAG, "摇杆拖动: dx=${"%.3f".format(dx)} → ${if (dx > 0) "快退" else "快进"} 10 秒")
-        // 位移为正（指针 x 增大）在实机上对应视觉左侧 → 快退
-        seekBy(if (dx > 0) -10_000 else +10_000)
-    }
 
-    /** 按键通道的射线同步（方向键分支走这里），复用同一套 seek 逻辑 */
-    /** 每次「按下」开始新的拖动窗口，档位归零 */
-    private fun onPointerDown() {
-        dragFiredSteps = 0
-    }
 
     /**
      * 起播指定媒体（面板层点播放时调用）。
@@ -1187,12 +1162,11 @@ class MainActivity : ComponentActivity() {
                 com.xxxx.emby_vr.vr.VrNative.setVideoActive(true)
                 Log.i(TAG, "播放画面已切到 VR 原生（面板收起）")
             }
-            dragFiredSteps = 0
-            lastSeekAt = 0L
-            stickRunDir = 0
-            stickRunStart = 0f
-            stickLastAt = 0L
-            stickHoldFiredAt = 0L
+            stickSeekHoldJob?.cancel()
+            stickSeekHoldJob = null
+            stickSeekDir = 0
+            stickSeekAccel = false
+            hideSeekHud()
             startPlaybackReporting()
             /*
              * 播放期绿色状态字取消（父亲 2026-10-05：「播放界面的绿色快进快退字体取消」）。
@@ -1809,6 +1783,8 @@ class MainActivity : ComponentActivity() {
         // 快进 / 快退期间弹幕停在原地（父亲 2026-10-07：不然会一跳一跳）
         freezeDanmakuForSeek()
         p.seekTo(target)
+        // 进度条（HUD）正显示时把目标位置立刻写进去：条与游标跟手，不等下一拍
+        if (seekHudShown) danmakuView?.setSeekHud(true, target, p.duration, p.bufferedPosition)
         val sec = target / 1000
         Log.i(TAG, "seek ${deltaMs / 1000}s → ${sec / 60}:${"%02d".format(sec % 60)} (基准 ${if (withinChain) "连跳" else "实时"})")
         // 状态绿字已取消（父亲 2026-10-05），跳转结果只进日志
@@ -1938,6 +1914,12 @@ class MainActivity : ComponentActivity() {
         }
         player = null
         seekTargetMs = null
+        // 停止播放：快进快退进度条一并收起（别留在画面上）
+        hideSeekHud()
+        stickSeekHoldJob?.cancel()
+        stickSeekHoldJob = null
+        stickSeekDir = 0
+        stickSeekAccel = false
         // 播放结束：VR 画面切回面板（非 VR 模式下这条调用没有副作用）
         com.xxxx.emby_vr.vr.VrNative.setVideoActive(false)
         /*
@@ -2279,7 +2261,7 @@ class MainActivity : ComponentActivity() {
                     // 播放页快进快退由摇杆承担（Action.LEFT/RIGHT → seekBy）。
                     // 「按住扳机拖动 = seek」是旧语义，已停用：新语义里扳机 = 鼠标左键
                     onDrag = { },
-                    onDown = { onPointerDown() },
+                    onDown = { },
                 )
             }
             setOnTouchListener { _, e ->
@@ -2292,7 +2274,7 @@ class MainActivity : ComponentActivity() {
                     // 播放页快进快退由摇杆承担（Action.LEFT/RIGHT → seekBy）。
                     // 「按住扳机拖动 = seek」是旧语义，已停用：新语义里扳机 = 鼠标左键
                     onDrag = { },
-                    onDown = { onPointerDown() },
+                    onDown = { },
                 )
             }
         }
@@ -2533,7 +2515,7 @@ class MainActivity : ComponentActivity() {
                 onPointer = { },
                 onConfirm = { },
                 onDrag = { },
-                onDown = { onPointerDown() },
+                onDown = { },
             )
             if (handled) return true
         }
@@ -2576,39 +2558,5 @@ class MainActivity : ComponentActivity() {
     companion object {
         const val TAG = "B0BEmbyVR"
 
-        /**
-         * 按住扳机拖拽触发一次快进/快退的横向位移（归一化坐标，半高 = 1）。
-         * 0.9 ≈ 半屏宽度的一半：按住扳机左右拖一下就能到。
-         */
-        private const val DRAG_SEEK_STEP = 0.9f
-
-        /**
-         * 拨摇杆判定：单向累计位移过该值算一次「拨动」（归一化坐标，半高=1）。
-         *
-         * 取值 0.9 来自 build-38 实机数据分布（父亲 2026-10-04 实测）：
-         *   真拨摇杆：累计位移 1.5 ~ 2.1
-         *   晃动手柄：累计位移 0.35 ~ 0.51
-         *   0.6 ~ 1.4 之间无样本 —— 天然分界带，取 0.9 居中。
-         */
-        private const val STICK_RUN = 0.9f
-
-        /** 判定指针移动方向的最小步长，滤掉落点抖动 */
-        private const val STICK_EPS = 0.003f
-
-        /**
-         * 单帧位移上限：超过即视为指针跳变噪音（非摇杆拨动）。
-         * 真摇杆拨动是平滑的，实测单帧位移在 0.1 以内；
-         * 晃手时的光标跳变可达 1.0+（build-37 实机日志 0.656→1.778）。
-         */
-        private const val STICK_MAX_JUMP = 0.25f
-
-        /** 停顿超过该时长视为新手势（摇杆回到中位） */
-        private const val STICK_GAP_MS = 400L
-
-        /** 拨住不放时的续跳间隔（父亲规格：500ms 内不回中 → 持续快进快退） */
-        private const val STICK_HOLD_MS = 500L
-
-        /** 两次快进/快退的最小间隔（防连发） */
-        private const val SEEK_COOLDOWN_MS = 800L
     }
 }
