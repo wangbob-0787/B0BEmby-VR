@@ -1548,11 +1548,15 @@ void drawSpinner(VrContext &c, const Mat4 &proj, const Mat4 &view4) {
     if (c.vbo == 0 || c.program == 0) return;
     const double now = std::chrono::duration<double>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
-    constexpr int kSegs = 48;         // 整圈分 48 段（段短 = 看起来是实线，父亲 2026-10-06）
-    constexpr int kGapSegs = 6;       // 缺口占 6 段（约 45°，照父亲 2026-10-07 的图），缺口那头放箭头
+    constexpr int kSegs = 72;         // 整圈 72 段（每段 5°；父亲 2026-10-07：48 段太糙）
+    constexpr int kGapSegs = 9;       // 缺口仍占 45°（9/72），缺口那头放箭头
     constexpr float kRadius = 0.10f;  // 环半径（米，父亲：原来太大）
     constexpr float kThick = 0.012f;  // 环的粗细（米，细一点更像实线）
-    const float segLen = 2.f * 3.14159265358979f * kRadius / (float) kSegs * 1.15f;  // 稍长一点，段间不留缝
+    /*
+     * 段长 = 弧长 × 1.25：段与段首尾重叠才看不出接缝。
+     * （原来按半径方向摆段、段间只剩细缝，远看就是毛糙的虚线。）
+     */
+    const float segLen = 2.f * 3.14159265358979f * kRadius / (float) kSegs * 1.25f;
     const float step = 2.f * 3.14159265358979f / (float) kSegs;
     const float base = (float) (-now * 2.6);   // 角度递减 = 顺时针
     for (int i = 0; i < kSegs - kGapSegs; i++) {
@@ -1571,7 +1575,12 @@ void drawSpinner(VrContext &c, const Mat4 &proj, const Mat4 &view4) {
         seg.position = {kFrontScreen.cx + cosf(ang) * kRadius,
                         kFrontScreen.cy + sinf(ang) * kRadius,
                         kFrontScreen.cz + 0.012f};   // 稍微抬出来，别和银幕抢像素
-        const float half = ang * 0.5f;
+        /*
+         * 段的**长边沿切线**摆（父亲 2026-10-07：线要连续、不能毛糙）：
+         * 绕 Z 转 θ 时方块的 +X 指向 θ —— 取 θ = ang + 90° 就是切线方向，
+         * 相邻段于是首尾相接、互相搭接，看着是一条实线。
+         */
+        const float half = (ang + 1.5707963268f) * 0.5f;
         seg.orientation = {0.f, 0.f, sinf(half), cosf(half)};   // 绕 Z 轴摆到这一段
         const Mat4 m = poseScaleModel(seg, segLen, kThick, 1.f);
         drawMesh(c, c.vbo, 6, multiply(multiply(proj, view4), m),
