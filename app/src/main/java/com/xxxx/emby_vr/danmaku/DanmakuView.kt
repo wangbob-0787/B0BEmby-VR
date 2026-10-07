@@ -133,6 +133,16 @@ class DanmakuView(context: Context) : View(context) {
         positionProvider = provider
     }
 
+    /*
+     * 弹幕整体速度倍率（父亲 2026-10-07）。
+     *
+     * 弹幕层贴到银幕上之后观感速度慢了，一条弹幕占轨道的时间变长，后面的排不进
+     * 来就被丢掉 —— 表现成"弹幕变少"。这里把每条弹幕的"在屏时长"按倍率压缩
+     * （出现时刻不变），速度就提上去了。
+     * 1.4 是父亲这轮定的试值。
+     */
+    private val kSpeedFactor = 1.4f
+
     fun start() {
         if (!running) {
             running = true
@@ -152,7 +162,7 @@ class DanmakuView(context: Context) : View(context) {
      */
     private fun effectiveEndMs(item: DanmakuItem, scale: Float): Long {
         if (!item.isMove) return item.endMs
-        val spanMs = (item.endMs - item.startMs).coerceAtLeast(1L)
+        val spanMs = ((item.endMs - item.startMs) / kSpeedFactor).coerceAtLeast(1L)
         val dx = item.x1 - item.x2
         if (dx <= 0f) return item.endMs
         fillPaint.textSize = max(10f, item.style.fontSize * scale)
@@ -303,7 +313,7 @@ class DanmakuView(context: Context) : View(context) {
     }
 
     private fun drawItem(canvas: Canvas, item: DanmakuItem, nowMs: Long, scale: Float) {
-        val span = (item.endMs - item.startMs).coerceAtLeast(1L)
+        val span = ((item.endMs - item.startMs) / kSpeedFactor).coerceAtLeast(1L)
         val progress = ((nowMs - item.startMs).toFloat() / span).coerceIn(0f, 1f)
 
         val x: Float
