@@ -296,15 +296,27 @@ fun PlayerMenuPanel(menu: MenuState, osd: OsdState) {
                 .clip(RoundedCornerShape(28.dp))
                 .background(Color(0xF0141518))
                 .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(28.dp))
-                .padding(horizontal = 28.dp, vertical = 22.dp),
+                .padding(
+                    start = 28.dp,
+                    end = 28.dp,
+                    // 信息面板：海报上下各留 30dp（父亲 2026-10-07）；其余菜单仍 22dp
+                    top = if (isInfo) 30.dp else 22.dp,
+                    bottom = if (isInfo) 30.dp else 22.dp,
+                ),
         ) {
+            /*
+             * 信息面板整行跳过标题（父亲 2026-10-07 定位）：它本来就不显示「信息」二字
+             * （2026-10-06 晚定），但那行仍占着高度 —— 约 28dp 行高 + 14dp 间距 = 42dp，
+             * 全落在海报上方，显得上边距远大于下边距；而且海报 328dp 装不进剩下的
+             * 286dp，底部还被裁掉一截。
+             */
+            if (!isInfo) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    // 信息面板不显示「信息」二字（父亲 2026-10-06 晚定），其余菜单照旧
-                    text = if (kind == MenuKind.INFO) "" else kind.title,
+                    text = kind.title,
                     color = Color.White,
                     fontSize = 24.sp,
                     fontWeight = FontWeight.SemiBold,
@@ -317,6 +329,7 @@ fun PlayerMenuPanel(menu: MenuState, osd: OsdState) {
                  */
             }
             Spacer(modifier = Modifier.height(14.dp))
+            }
             when (kind) {
                 MenuKind.MORE -> MoreMenu(menu)
                 MenuKind.SPEED -> SpeedMenu(menu)
@@ -510,15 +523,13 @@ private fun InfoMenu(menu: MenuState) {
     }
     Row(modifier = Modifier.fillMaxSize()) {
         /*
-         * 海报（2:3）：Y = 卡片 Y − 上下边距（父亲 2026-10-07）
-         *   卡片 372dp − 上下边距 44dp = 328dp 高，宽按 2:3 缩成 219dp。
-         *   注：海报视觉上的"上边距大"来自卡片上方在菜单画布里空的那 127dp，
-         *   不是这里的 22dp —— 要对齐上下边距得改卡片高度，待父亲拍板。
+         * 海报（2:3）：卡片 372dp − 上下各 30dp = 312dp 高，宽按 2:3 缩成 208dp。
+         * 上下边距相等（父亲 2026-10-07 定），海报比原来实际可见的那 286dp 更大。
          */
         Box(
             modifier = Modifier
-                .width(219.dp)
-                .height(328.dp)
+                .width(208.dp)
+                .height(312.dp)
                 .clip(RoundedCornerShape(10.dp))
                 .background(Color(0x22FFFFFF)),
         ) {
@@ -539,7 +550,11 @@ private fun InfoMenu(menu: MenuState) {
          *  · 行序：剧名（28sp）→ 季集（22sp）→ 徽章（20sp）→ 技术（19sp）→ 剧情（19sp）。
          */
         Column(modifier = Modifier.weight(1f)) {
-            Spacer(modifier = Modifier.height(30.dp))
+            /*
+             * 剧名位置保持原样（父亲 2026-10-07）：标题行去掉后，把它的高度补回来
+             * （原 22 内边距 + 28 行高 + 14 间距 + 30 = 距卡片顶 94dp，现 30 + 64 = 94dp）。
+             */
+            Spacer(modifier = Modifier.height(64.dp))
             Text(
                 text = info.title,
                 color = Color.White,
