@@ -1023,7 +1023,8 @@ object EmbyApi {
                         // 原来写死 aac,ac3,eac3,mp3 —— 源片是 EAC3 时服务端认为「输出 eac3
                         // 客户端也认」，于是音频原样 copy 过来，头显解不了就是静音。
                         // 只留 AAC/MP3，服务端就会把 EAC3/DTS 转成 AAC。
-                        addProperty("AudioCodec", "aac,mp3")
+                        // 父亲 2026-10-07 实验：同上去掉「音频必须转码」这个前提
+                        addProperty("AudioCodec", "aac,mp3,ac3,eac3")
                         addProperty("VideoCodec", if (actualDisableHevc) "h264" else supportedVideo)
                         addProperty("Context", "Streaming")
                         addProperty("Protocol", "hls")
@@ -1046,7 +1047,14 @@ object EmbyApi {
                     add(JsonObject().apply {
                         addProperty("Container", "mp4")
                         addProperty("Type", "Video")
-                        addProperty("AudioCodec", supportedAudio)
+                        /*
+                         * 父亲 2026-10-07 实验：连 AC3/EAC3 一起声明为支持。
+                         * 目的是让服务端别为了"声音"去转码 —— 转码就会把画面一起
+                         * 拖进「边转边发」的路，卡顿和音画不同步都从那儿来。
+                         * 风险：头显系统的音轨名单里没有这两种解码器（media_codecs
+                         * 实测），声明支持后很可能变成「画面流畅但没声音」。
+                         */
+                        addProperty("AudioCodec", supportedAudio + ",ac3,eac3")
                         addProperty("VideoCodec", "h264")
                         addProperty("Context", "Static")
                         addProperty("Protocol", "http")
