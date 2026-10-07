@@ -970,10 +970,10 @@ class MainActivity : ComponentActivity() {
                 )
                 val source = media.mediaSources?.firstOrNull()
                 // 记下这次播放的身份，供服务端上报（播放历史/继续观看靠它）
-                reportedItemId = mediaId
-                reportedPlaySessionId = media.playSessionId
-                reportedMediaSourceId = source?.id
-                reportedRunTimeTicks = source?.runTimeTicks ?: 0L
+                pendingItemId = mediaId
+                pendingPlaySessionId = media.playSessionId
+                pendingMediaSourceId = source?.id
+                pendingRunTimeTicks = source?.runTimeTicks ?: 0L
                 // 字幕 / 音轨菜单要用它列选项（切轨靠 Emby 重新出流）
                 currentStreams = source?.mediaStreams ?: emptyList()
                 /*
@@ -1139,7 +1139,12 @@ class MainActivity : ComponentActivity() {
             renderer.videoActive = true
             picking = false
             osdState.title = title
-            osdState.durationMs = reportedRunTimeTicks / 10_000
+            // 旧片已经停过（停止上报用的是旧身份），新片身份从现在起正式生效 —— 后面的字幕、弹幕、上报都要用它
+            reportedItemId = pendingItemId
+            reportedPlaySessionId = pendingPlaySessionId
+            reportedMediaSourceId = pendingMediaSourceId
+            reportedRunTimeTicks = pendingRunTimeTicks
+            osdState.durationMs = pendingRunTimeTicks / 10_000
             osdState.positionMs = 0L
             osdState.speed = playSpeed
             applyPlayMode(playModeIndex)   // 播放模式在起播时也应用一次
@@ -1812,6 +1817,21 @@ class MainActivity : ComponentActivity() {
     // 「继续观看」和详情页永远停在别的客户端最后一次上报的位置（=第 17 集）。
     //
     // 现在按 Emby 的标准三件套上报：开始 / 每 10 秒进度 / 停止。
+    /*
+     * 两个身份，别混：
+     *   pending*  —— 这次**要播的**那部（取播放地址时就定好了）
+     *   reported* —— 此刻**正在播的**那部（服务端上报用）
+     *
+     * 2026-10-07 父亲实测《无可替代》不上报的根因就在这：
+     * 原来两者共用一个字段 —— 取新片地址时先把它改成新片，紧接着换片流程
+     * 「停掉旧片」把同一个字段清成 null，等真的起播要报「开始播放」时已经没身份了，
+     * 三次上报全被 `?: return` 挡掉；服务端只收到一条「停止 0 秒」的脏数据。
+     */
+    private var pendingItemId: String? = null
+    private var pendingPlaySessionId: String? = null
+    private var pendingMediaSourceId: String? = null
+    private var pendingRunTimeTicks: Long = 0L
+
     private var reportedItemId: String? = null
     private var reportedPlaySessionId: String? = null
     private var reportedMediaSourceId: String? = null
