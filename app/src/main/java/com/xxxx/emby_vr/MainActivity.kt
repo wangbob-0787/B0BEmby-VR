@@ -867,21 +867,8 @@ class MainActivity : ComponentActivity() {
             } else {
                 startTicks
             }
-        /*
-         * 换片先把旧的一切清掉（父亲 2026-10-07）：
-         *   停止正在播的旧片 → 银幕空一拍（转圈随后出现）→ 弹幕 / 字幕 / 片名 logo 全清
-         *   → 再加载新片。旧播放器的释放仍交给 startPlayer 里的 stopPlaybackInternal。
-         */
-        if (mediaId != currentMediaId) {
-            danmakuTrack = null
-            danmakuView?.setTrack(null)
-            danmakuView?.setSubtitle("")
-            logoBitmap.value = null
-            com.xxxx.emby_vr.vr.VrNative.setLogoVisible(false)
-            // videoActive=false 会顺手把「出过帧」标记清掉 → 银幕空一拍、转圈顶上
-            com.xxxx.emby_vr.vr.VrNative.setVideoActive(false)
-            Log.i(TAG, "换片：清空银幕 / 弹幕 / 字幕 / logo，等新片起播")
-        }
+        // 换片（不是切字幕 / 音轨那种重播）：先把旧片整个收掉（父亲 2026-10-07）
+        if (mediaId != currentMediaId) clearForNewMedia()
         currentMediaId = mediaId
         /*
          * 父亲 2026-10-06：播放中点海报墙的片子起不来、反而把正在播的暂停了。
@@ -1815,6 +1802,19 @@ class MainActivity : ComponentActivity() {
         com.xxxx.emby_vr.vr.VrNative.updatePanelShown(true)
     }
 
+    /**
+     * 换片：先把旧片整个收掉，再让新片起播（父亲 2026-10-07）。
+     *
+     * 「停旧片 → 银幕空一拍（转圈顶上）→ 弹幕 / 字幕 / 片名 logo 全清」本来就是
+     * stopPlaybackInternal 的行为，这里只给它一个语义入口 + 一行日志。
+     * 真正的起播由 playMedia → startPlayer 接手。
+     */
+    private fun clearForNewMedia() {
+        if (player == null && currentMediaId.isBlank()) return
+        Log.i(TAG, "换片：停掉旧片、清空银幕 / 弹幕 / 字幕 / logo，等新片起播")
+        runCatching { stopPlaybackInternal() }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Log.i(TAG, "onCreate: B0BEmby VR 启动")
@@ -2060,6 +2060,12 @@ class MainActivity : ComponentActivity() {
         if (mediaId.isBlank()) return
         Log.i(TAG, "面板请求播放: mediaId=$mediaId positionTicks=$positionTicks")
         com.xxxx.emby_vr.panel.PanelSignals.bump()
+        /*
+         * 从海报墙点片 = 换片：**先停旧片、清屏**（父亲 2026-10-07）。
+         * 这里不比较 mediaId —— 点片就是"换一个看"的明确意图，
+         * 哪怕点到同一部片也该重新加载（清屏 → 转圈 → 起播）。
+         */
+        clearForNewMedia()
         playMedia(mediaId, positionTicks)
     }
 
