@@ -562,6 +562,7 @@ struct VrContext {
     jmethodID sinkMenuClick = nullptr;   // 展开菜单上的点击
     jmethodID sinkToggleOsd = nullptr;  // 播放中扣扳机 = 开关控制条
     jmethodID sinkPanelFocus = nullptr; // 光柱是否落在海报墙上（决定 B 键给谁）
+    jmethodID sinkVideoFrame = nullptr; // 视频画面首次到纹理层（换片黑幕收起用）
     bool sinkPointerValid = false;      // 上一次回推的指针位置（只在明显移动时回推）
     float sinkPointerX = 0.f;
     float sinkPointerY = 0.f;
@@ -3329,7 +3330,8 @@ GLuint genOesTexture() {
  * 返回全局引用（调用方保存/释放）；失败返回 nullptr。
  */
 jobject makeOesSurface(JNIEnv *env, GLuint tex, std::function<void()> &out,
-                       std::atomic<bool> &hasFrame, const char *what) {
+                       std::atomic<bool> &hasFrame, const char *what,
+                       bool notifyFirstFrame = false) {
     jclass stClass = env->FindClass("android/graphics/SurfaceTexture");
     if (stClass == nullptr) {
         LOGE("%s：找不到 SurfaceTexture 类", what);
@@ -3351,7 +3353,7 @@ jobject makeOesSurface(JNIEnv *env, GLuint tex, std::function<void()> &out,
     hasFrame = false;
     auto *globalRef = env->NewGlobalRef(local);
     env->DeleteLocalRef(local);   // 原生线程的局部引用不会自动回收，自己删掉
-    out = [globalRef, updateTexImage, getTimestamp, &hasFrame, what]() {
+    out = [globalRef, updateTexImage, getTimestamp, &hasFrame, what, notifyFirstFrame]() {
         JNIEnv *e = nullptr;
         if (g.jvm == nullptr) return;
         if (g.jvm->GetEnv(reinterpret_cast<void **>(&e), JNI_VERSION_1_6) != JNI_OK ||
@@ -3366,6 +3368,19 @@ jobject makeOesSurface(JNIEnv *env, GLuint tex, std::function<void()> &out,
             if (ts > 0) {
                 hasFrame = true;
                 LOGI("%s首帧到位（timestamp=%lld）—— 可以画了", what, (long long) ts);
+                /*
+                 * 视频画面**第一次真正到纹理层**：通知 Java 侧可以收黑幕了。
+                 *
+                 * 换片等待期的黑幕 / 转圈必须等这个信号 —— ExoPlayer 自己报的
+                 * onRenderedFirstFrame 会早那么一点点（帧还没被我们取进纹理），
+                 * 黑幕一收就露出下一层里残留的上一部画面（父亲 2026-10-07：
+                 * 「后面的旧图像和弹幕没被收走，只是被前面的盖住了」）。
+                 */
+                if (notifyFirstFrame && g.inputSink != nullptr &&
+                    g.sinkVideoFrame != nullptr) {
+                    e->CallVoidMethod(g.inputSink, g.sinkVideoFrame);
+                    clearJavaException(e, "视频首帧回调");
+                }
             }
         }
     };
@@ -3432,7 +3447,7 @@ bool createOesSources(VrContext &c) {
     }
 
     c.panelSt = makeOesSurface(env, c.panelTex, gPanelUpdate, c.panelHasFrame, "面板");
-    c.videoSt = makeOesSurface(env, c.videoTex, gVideoUpdate, c.videoHasFrame, "播放画面");
+    c.videoSt = makeOesSurface(env, c.videoTex, gVideoUpdate, c.videoHasFrame, "播放画面", true);
     c.osdSt = makeOesSurface(env, c.osdTex, gOsdUpdate, c.osdHasFrame, "控制条");
     c.menuSt = makeOesSurface(env, c.menuTex, gMenuUpdate, c.menuHasFrame, "展开菜单");
     c.danmakuSt = makeOesSurface(env, c.danmakuTex, gDanmakuUpdate, c.danmakuHasFrame, "弹幕");
@@ -3680,6 +3695,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachInputSink(JNIEnv *env, jobject /*
     g.sinkPointer = g.sinkClick = g.sinkStick = g.sinkBack = nullptr;
     g.sinkOsdPointer = g.sinkOsdClick = g.sinkToggleOsd = nullptr;
     g.sinkMenuPointer = g.sinkMenuClick = nullptr;
+    g.sinkVideoFrame = nullptr;
     if (sink == nullptr) {
         LOGI("VR 输入回调已注销");
         return;
@@ -3696,6 +3712,8 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachInputSink(JNIEnv *env, jobject /*
     g.sinkMenuClick = env->GetMethodID(cls, "onMenuClick", "(FF)V");
     g.sinkBack = env->GetMethodID(cls, "onBack", "()V");
     g.sinkPanelFocus = env->GetMethodID(cls, "onPanelFocus", "(Z)V");
+    // 视频画面首次到纹理层（换片等待期的黑幕 / 转圈等这个信号才收）
+    g.sinkVideoFrame = env->GetMethodID(cls, "onVideoFrameReady", "()V");
     env->DeleteLocalRef(cls);
     LOGI("VR 输入回调已注册（指针=%d 点击=%d 摇杆=%d 返回=%d 控制条=%d/%d 开关=%d 面板焦点=%d "
          "菜单=%d/%d）",

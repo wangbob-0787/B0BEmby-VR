@@ -269,6 +269,14 @@ class MainActivity : ComponentActivity() {
             runOnUiThread { panelPointerOnPanel = onPanel }
         }
 
+        /**
+         * 新片画面**真的到了纹理层** → 这一刻才收黑幕 / 转圈，并把弹幕 / 字幕 / 片名 logo
+         * 与画面一起亮起（父亲 2026-10-07）。
+         */
+        override fun onVideoFrameReady() {
+            runOnUiThread { revealDanmakuSubtitleLogo() }
+        }
+
         override fun onClick(px: Float, py: Float) {
             vrInputLive = true
             lastPanelClickAt = android.os.SystemClock.uptimeMillis()
@@ -1034,12 +1042,11 @@ class MainActivity : ComponentActivity() {
                     }
 
                     /*
-                     * 新片第一帧渲染出来了 → 到这一刻才让弹幕 / 字幕 / 片名 logo 亮起，
-                     * 与画面**同时**出现（父亲 2026-10-07）。
+                     * 注意：这里**不用** onRenderedFirstFrame 收黑幕（父亲 2026-10-07 实测）。
+                     * 它只表示「ExoPlayer 把帧交给了 Surface」，此刻原生还没把帧取进纹理，
+                     * 黑幕一收就会露出下一层里残留的上一部画面（旧画面与旧弹幕只是被盖住）。
+                     * 收黑幕的时机改由原生的 onVideoFrameReady 回调（见 InputSink 实现）。
                      */
-                    override fun onRenderedFirstFrame() {
-                        runOnUiThread { revealDanmakuSubtitleLogo() }
-                    }
 
                     override fun onPlayerError(error: PlaybackException) {
                         // 先停 videoActive（ticker 下一圈自行退出），再写错误提示，
