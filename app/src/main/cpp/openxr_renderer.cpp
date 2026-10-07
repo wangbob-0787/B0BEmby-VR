@@ -472,7 +472,14 @@ struct EyeSwapchain {
  * 宽度倍率 0.92 保留（弹幕层比银幕小一圈，四边各内缩 4%）。
  */
 constexpr float kDanmakuNearer = 0.02f;
-constexpr float kDanmakuScale = 0.92f;
+/*
+ * 弹幕层相对银幕的宽度系数。
+ *
+ * 2026-10-07 父亲：弹幕层贴到银幕上（kDanmakuNearer=0.02）之后，原来靠
+ * "离眼睛近 0.35m"补出来的透视放大没有了，0.92 就露出银幕四周一圈，
+ * 看着像没盖住银幕。改成 1.0 —— 与银幕等宽，正好铺满。
+ */
+constexpr float kDanmakuScale = 1.0f;
 
 struct VideoLayerBuf {
     bool built = false;              // 交换链建好了（尺寸匹配当前视频）

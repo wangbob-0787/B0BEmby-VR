@@ -716,7 +716,11 @@ class MainActivity : ComponentActivity() {
 
     /** 亮出快进快退进度条（控制条展开时不亮，与电视版一致），并重置 5 秒隐退计时 */
     private fun showSeekHud() {
-        if (osdVisible) return
+        /*
+         * 控制条开着时也要显示（父亲 2026-10-07）。
+         * 电视版是控制条展开就收起来，但 VR 里光柱不在控制条上时摇杆照样快进快退，
+         * 这时没有进度条就没有反馈 —— 所以不跟电视版这一条，照常显示。
+         */
         val v = danmakuView ?: return
         val p = player
         seekHudShown = true
@@ -761,8 +765,6 @@ class MainActivity : ComponentActivity() {
     private fun setOsdVisible(visible: Boolean) {
         osdVisible = visible
         com.xxxx.emby_vr.vr.VrNative.setOsdVisible(visible)
-        // 控制条展开时不显示快进快退进度条（电视版同款：showPanel 时 seekHud 不画）
-        if (visible) hideSeekHud()
         // 控制条收起来时菜单一起收（父亲 2026-10-06：菜单挂在控制条上）
         if (!visible) closeMenu()
         Log.i(TAG, if (visible) "控制条显示" else "控制条隐藏")
