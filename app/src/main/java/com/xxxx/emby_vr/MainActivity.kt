@@ -956,8 +956,8 @@ class MainActivity : ComponentActivity() {
             try {
                 val media = EmbyApi.getPlaybackInfo(
                     context = this@MainActivity,
-                    serverUrl = BuildConfig.EMBY_SERVER,
-                    apiKey = BuildConfig.EMBY_API_KEY,
+                    serverUrl = userServer(),
+                    apiKey = userToken(),
                     deviceId = EmbyContent.DEVICE_ID,
                     userId = BuildConfig.EMBY_USER_ID,
                     mediaId = mediaId,
@@ -992,9 +992,9 @@ class MainActivity : ComponentActivity() {
                 var path = path0
                 // 直链缺 api_key 时补上（Emby 视频直链默认不带 token）
                 if (!path.contains("api_key=")) {
-                    path += (if (path.contains("?")) "&" else "?") + "api_key=${BuildConfig.EMBY_API_KEY}"
+                    path += (if (path.contains("?")) "&" else "?") + "api_key=${userToken()}"
                 }
-                val url = "${BuildConfig.EMBY_SERVER}/emby$path"
+                val url = "${userServer()}/emby$path"
                 withContext(Dispatchers.Main) {
                     startPlayer(url, mediaId, effectiveStart / 10_000L)
                 }
@@ -1388,7 +1388,7 @@ class MainActivity : ComponentActivity() {
 
     /** 往菜单里填数据（打开菜单时调） */
     private fun fillMenuData(kind: com.xxxx.emby_vr.panel.MenuKind) {
-        menuState.serverUrl = BuildConfig.EMBY_SERVER
+        menuState.serverUrl = userServer()
         when (kind) {
             com.xxxx.emby_vr.panel.MenuKind.SPEED -> menuState.speed = playSpeed
             com.xxxx.emby_vr.panel.MenuKind.QUALITY -> menuState.quality = qualityIndex
@@ -1535,8 +1535,8 @@ class MainActivity : ComponentActivity() {
             Log.w(TAG, "弹幕轨信息不全，跳过（index=$index source=$sourceId）")
             return
         }
-        val url = "${BuildConfig.EMBY_SERVER}/emby/Videos/$mediaId/$sourceId/Subtitles/$index" +
-            "/Stream.ass?api_key=${BuildConfig.EMBY_API_KEY}"
+        val url = "${userServer()}/emby/Videos/$mediaId/$sourceId/Subtitles/$index" +
+            "/Stream.ass?api_key=${userToken()}"
         scope.launch {
             val raw = withContext(Dispatchers.IO) {
                 runCatching {
@@ -1580,8 +1580,8 @@ class MainActivity : ComponentActivity() {
             try {
                 val item = EmbyApi.getMediaInfo(
                     context = this@MainActivity,
-                    serverUrl = BuildConfig.EMBY_SERVER,
-                    apiKey = BuildConfig.EMBY_API_KEY,
+                    serverUrl = userServer(),
+                    apiKey = userToken(),
                     deviceId = EmbyContent.DEVICE_ID,
                     userId = BuildConfig.EMBY_USER_ID,
                     mediaId = id,
@@ -1626,14 +1626,14 @@ class MainActivity : ComponentActivity() {
                 val seriesTag = item.seriesPrimaryImageTag
                 menuState.posterUrl = when {
                     !seriesId.isNullOrBlank() && !seriesTag.isNullOrBlank() ->
-                        "${BuildConfig.EMBY_SERVER}/emby/Items/$seriesId/Images/Primary" +
-                            "?maxWidth=520&tag=$seriesTag&quality=90&api_key=${BuildConfig.EMBY_API_KEY}"
+                        "${userServer()}/emby/Items/$seriesId/Images/Primary" +
+                            "?maxWidth=520&tag=$seriesTag&quality=90&api_key=${userToken()}"
                     !seriesId.isNullOrBlank() ->
-                        "${BuildConfig.EMBY_SERVER}/emby/Items/$seriesId/Images/Primary" +
-                            "?maxWidth=520&quality=90&api_key=${BuildConfig.EMBY_API_KEY}"
+                        "${userServer()}/emby/Items/$seriesId/Images/Primary" +
+                            "?maxWidth=520&quality=90&api_key=${userToken()}"
                     else -> item.imageTags?.get("Primary")?.let { tag ->
-                        "${BuildConfig.EMBY_SERVER}/emby/Items/$id/Images/Primary" +
-                            "?maxWidth=520&tag=$tag&quality=90&api_key=${BuildConfig.EMBY_API_KEY}"
+                        "${userServer()}/emby/Items/$id/Images/Primary" +
+                            "?maxWidth=520&tag=$tag&quality=90&api_key=${userToken()}"
                     }
                 }
                 // 演职人员头像
@@ -1644,8 +1644,8 @@ class MainActivity : ComponentActivity() {
                         name = p.name ?: "",
                         role = p.role ?: "",
                         avatarUrl = if (!pid.isNullOrBlank() && !ptag.isNullOrBlank()) {
-                            "${BuildConfig.EMBY_SERVER}/emby/Items/$pid/Images/Primary" +
-                                "?maxHeight=420&tag=$ptag&quality=90&api_key=${BuildConfig.EMBY_API_KEY}"
+                            "${userServer()}/emby/Items/$pid/Images/Primary" +
+                                "?maxHeight=420&tag=$ptag&quality=90&api_key=${userToken()}"
                         } else {
                             null
                         },
@@ -1659,11 +1659,11 @@ class MainActivity : ComponentActivity() {
                 val ownLogoTag = item.imageTags?.get("Logo")
                 val logoAddr = when {
                     !sid.isNullOrBlank() ->
-                        "${BuildConfig.EMBY_SERVER}/emby/Items/$sid/Images/Logo" +
-                            "?maxHeight=200&api_key=${BuildConfig.EMBY_API_KEY}"
+                        "${userServer()}/emby/Items/$sid/Images/Logo" +
+                            "?maxHeight=200&api_key=${userToken()}"
                     !ownLogoTag.isNullOrBlank() ->
-                        "${BuildConfig.EMBY_SERVER}/emby/Items/$id/Images/Logo" +
-                            "?maxHeight=200&tag=$ownLogoTag&api_key=${BuildConfig.EMBY_API_KEY}"
+                        "${userServer()}/emby/Items/$id/Images/Logo" +
+                            "?maxHeight=200&tag=$ownLogoTag&api_key=${userToken()}"
                     else -> null
                 }
                 logoUrl.value = logoAddr
@@ -1703,8 +1703,8 @@ class MainActivity : ComponentActivity() {
             try {
                 val eps = EmbyApi.getEpisodes(
                     context = this@MainActivity,
-                    serverUrl = BuildConfig.EMBY_SERVER,
-                    apiKey = BuildConfig.EMBY_API_KEY,
+                    serverUrl = userServer(),
+                    apiKey = userToken(),
                     deviceId = EmbyContent.DEVICE_ID,
                     userId = BuildConfig.EMBY_USER_ID,
                     seriesId = seriesId,
@@ -1816,6 +1816,21 @@ class MainActivity : ComponentActivity() {
     private var reportedRunTimeTicks: Long = 0L
     private var progressJob: kotlinx.coroutines.Job? = null
 
+    /**
+     * 播放链路（取播放地址 + 进度上报）用的身份。
+     *
+     * 原来这一层用的是服务端 API Key（`BuildConfig.EMBY_API_KEY`，控制台里那把「DSH」），
+     * 它**没有用户身份**：Emby 给 VR 建的会话挂不上任何用户，播放进度因此写不进用户数据
+     * （父亲 2026-10-07 实测：《无可替代》在 VR 里播多少集，服务端进度都不动；
+     * 服务端 /Sessions 里 VR 的会话 UserId 为空，而界面层那条会话挂着 wangbob）。
+     * 现在统一用登录后拿到的用户令牌 + userId —— 面板层一直用的是这一套，所以读一直是对的。
+     */
+    private val embySession get() = com.xxxx.emby_vr.data.session.SessionManager.getInstance(this)
+
+    private fun userToken(): String = embySession.apiKey ?: BuildConfig.EMBY_API_KEY
+
+    private fun userServer(): String = embySession.serverUrl ?: BuildConfig.EMBY_SERVER
+
     private fun playbackReportBody(
         itemId: String,
         positionTicks: Long,
@@ -1826,6 +1841,8 @@ class MainActivity : ComponentActivity() {
         put("MediaSourceId", reportedMediaSourceId ?: "")
         put("PlaySessionId", reportedPlaySessionId ?: "")
         put("PositionTicks", positionTicks)
+        // 进度记在谁名下：登录令牌已经决定了用户，这里再显式带上，双保险
+        embySession.userId?.let { put("UserId", it) }
         put("IsPaused", isPaused)
         put("IsMuted", false)
         put("VolumeLevel", 100)
@@ -1842,15 +1859,15 @@ class MainActivity : ComponentActivity() {
             runCatching {
                 when (path) {
                     "playing" -> EmbyApi.playing(
-                        this@MainActivity, BuildConfig.EMBY_SERVER, BuildConfig.EMBY_API_KEY,
+                        this@MainActivity, userServer(), userToken(),
                         EmbyContent.DEVICE_ID, body,
                     )
                     "progress" -> EmbyApi.reportPlaybackProgress(
-                        this@MainActivity, BuildConfig.EMBY_SERVER, BuildConfig.EMBY_API_KEY,
+                        this@MainActivity, userServer(), userToken(),
                         EmbyContent.DEVICE_ID, body,
                     )
                     else -> EmbyApi.stopped(
-                        this@MainActivity, BuildConfig.EMBY_SERVER, BuildConfig.EMBY_API_KEY,
+                        this@MainActivity, userServer(), userToken(),
                         EmbyContent.DEVICE_ID, body,
                     )
                 }
@@ -1862,10 +1879,24 @@ class MainActivity : ComponentActivity() {
     private fun startPlaybackReporting() {
         val itemId = reportedItemId ?: return
         val startTicks = (player?.currentPosition ?: 0L).times(10_000)
-        reportToServer("playing", playbackReportBody(itemId, startTicks, isPaused = false), "开始播放")
-        Log.i(TAG, "进度上报: 开始 item=$itemId playSession=${reportedPlaySessionId ?: "-"}")
+        Log.i(TAG, "进度上报: 开始 item=$itemId user=${embySession.userId?.take(8) ?: "-"} playSession=${reportedPlaySessionId ?: "-"}")
         progressJob?.cancel()
         progressJob = scope.launch {
+            /*
+             * 先报一次客户端能力：Emby 靠这一步把「这台设备 + 这个用户」的会话建起来，
+             * 之后的 /Sessions/Playing 三件套才匹配得上、进度才会落到用户数据里。
+             */
+            runCatching {
+                EmbyApi.reportCapabilities(
+                    this@MainActivity, userServer(), userToken(), EmbyContent.DEVICE_ID,
+                )
+            }
+            runCatching {
+                EmbyApi.playing(
+                    this@MainActivity, userServer(), userToken(), EmbyContent.DEVICE_ID,
+                    playbackReportBody(itemId, startTicks, isPaused = false),
+                )
+            }
             while (renderer.videoActive) {
                 kotlinx.coroutines.delay(10_000)
                 val p = player ?: continue

@@ -530,6 +530,40 @@ object EmbyApi {
     }
 
     /**
+     * 报「客户端能力」（Emby 建立/更新设备会话的标准动作）。
+     *
+     * 为什么必须有这一步：`/Sessions/Playing` 三件套是按**会话**匹配的，
+     * 会话由「设备 + 客户端 + 用户」三者决定。不先报一次能力，服务端可能没有
+     * 对应会话可用 —— 轻则进度落不到用户数据里，重则直接 503。
+     * 电视版走官方 SDK，SDK 内部会做这一步；VR 版是手写 HTTP，得自己补。
+     */
+    suspend fun reportCapabilities(
+        context: Context,
+        serverUrl: String,
+        apiKey: String,
+        deviceId: String
+    ) {
+        val body = mapOf(
+            "PlayableMediaTypes" to listOf("Video", "Audio"),
+            "SupportedCommands" to listOf(
+                "Play", "Pause", "Stop", "Seek",
+                "VolumeUp", "VolumeDown", "Mute", "Unmute"
+            ),
+            "SupportsMediaControl" to true,
+            "SupportsPersistentIdentifier" to true,
+            "SupportsContentUploading" to false
+        )
+        try {
+            httpAsJsonObject(
+                context, serverUrl, apiKey, deviceId,
+                "/Sessions/Capabilities/Full?X-Emby-Token=$apiKey", "POST", body
+            )
+        } catch (e: Exception) {
+            ErrorHandler.logError("EmbyApi", "报客户端能力失败", e)
+        }
+    }
+
+    /**
      * 停止活动编码
      */
     suspend fun stopActiveEncodings(
