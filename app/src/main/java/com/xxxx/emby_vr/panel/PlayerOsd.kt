@@ -303,7 +303,8 @@ fun PlayerOsdBar(state: OsdState) {
              * 与进度条各留 10px。数字用等宽（tnum），宽度不随内容跳，进度条也不抖。
              */
             Text(
-                text = osdTimeText(state.positionMs),
+                // 未播放时显示 --（父亲 2026-10-07：比 00:00 更好懂）
+                text = if (state.hasPlayback) osdTimeText(state.positionMs) else "--",
                 color = Color(0xFFFFFFFF),
                 fontSize = 26.sp,
                 fontWeight = FontWeight.Medium,
@@ -317,8 +318,12 @@ fun PlayerOsdBar(state: OsdState) {
                     .padding(horizontal = 7.dp),
             )
             Text(
-                text = "-" + osdTimeText((state.durationMs - state.positionMs).coerceAtLeast(0L)) +
-                    " / " + osdTimeText(state.durationMs),
+                text = if (state.hasPlayback) {
+                    "-" + osdTimeText((state.durationMs - state.positionMs).coerceAtLeast(0L)) +
+                        " / " + osdTimeText(state.durationMs)
+                } else {
+                    "-- / --"
+                },
                 color = Color(0xFFFFFFFF),
                 fontSize = 26.sp,
                 style = androidx.compose.ui.text.TextStyle(fontFeatureSettings = "tnum"),
