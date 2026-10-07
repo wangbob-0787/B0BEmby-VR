@@ -218,7 +218,7 @@ class MainActivity : ComponentActivity() {
 
     /** 主线程调：刷新播放位置基准（每 250ms 一次） */
     private fun refreshPosBase() {
-        posBaseMs = player?.currentPosition ?: 0L
+        posBaseMs = currentPositionMs()
         posBaseAtMs = android.os.SystemClock.elapsedRealtime()
     }
 
@@ -647,7 +647,7 @@ class MainActivity : ComponentActivity() {
      */
     private fun updateDrawnSubtitle() {
         if (subtitleCues.isEmpty()) return
-        val pos = player?.currentPosition ?: return
+        val pos = currentPositionMs()
         val text = subtitleCues.firstOrNull { pos >= it.startMs && pos <= it.endMs }?.text.orEmpty()
         subtitleNow = text
         if (!waitingFirstFrame) danmakuView?.setSubtitle(text)
@@ -939,6 +939,20 @@ class MainActivity : ComponentActivity() {
                     osdState.bufferedMs = p.bufferedPosition
                     val d = p.duration
                     if (d > 0L) osdState.durationMs = d
+                } else {
+                    /*
+                     * mpv 内核模式（父亲 2026-10-08）：控制条上的「正在播放」与进度条
+                     * 原来只在播放器对象非空时才有数据，走内核时这里一直是空的。
+                     * 内核自己能报位置与时长，从这里取。
+                     */
+                    mpvBackend?.let { m ->
+                        osdState.playing = !m.isPaused()
+                        osdState.positionMs = (m.positionSec() * 1000.0).toLong()
+                        val d = (m.durationSec() * 1000.0).toLong()
+                        if (d > 0L) osdState.durationMs = d
+                        // 内核不做自己的缓冲进度，用当前位置兜底，进度条不至于空着
+                        osdState.bufferedMs = osdState.positionMs
+                    }
                 }
                 // 控制条第一行左侧：正在播放什么（右侧的时间由独立时钟负责）
                 osdState.title = osdTitleText()
@@ -1256,6 +1270,8 @@ class MainActivity : ComponentActivity() {
                 // mpv 没有 ExoPlayer 那套首帧回调，加载态直接放行，别把画面压住
                 waitingFirstFrame = false
                 osdState.hasPlayback = true
+                // 控制条第一行左侧的「正在播放：片名」
+                osdState.title = title
                 com.xxxx.emby_vr.vr.VrNative.setSpinnerWanted(false)
                 danmakuHint.value = null
                 applyDanmakuSetting()
