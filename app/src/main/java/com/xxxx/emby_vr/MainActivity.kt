@@ -1178,11 +1178,13 @@ class MainActivity : ComponentActivity() {
                  * 但**重起播**（切字幕 / 音轨 / 质量 / 缓冲、选集换片）时控制条和已经
                  * 展开的菜单都要留着 —— 父亲 2026-10-06 晚明确：不要收起、不要关闭。
                  */
-                if (replaying) {
-                    replaying = false
-                } else {
-                    setOsdVisible(false)
-                }
+                /*
+                 * 起播**不动**控制条（父亲 2026-10-07 18:16）：
+                 *   · 关着的保持关 —— 2026-10-06 定的「起播不自动亮控制条」仍然成立；
+                 *   · 开着的保持开 —— 从海报墙点一部片起播时，控制条不再被收起。
+                 * 收起控制条只由「退出播放」（stopPlaybackInternal）负责。
+                 */
+                replaying = false
                 startOsdTicker()
                 startPosTicker()
                 // 弹幕与片名 logo：起播后就去拉，任何一步失败都不影响播放

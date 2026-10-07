@@ -296,17 +296,7 @@ fun PlayerMenuPanel(menu: MenuState, osd: OsdState) {
                 .clip(RoundedCornerShape(28.dp))
                 .background(Color(0xF0141518))
                 .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(28.dp))
-                .padding(
-                    start = 28.dp,
-                    end = 28.dp,
-                    /*
-                     * 信息面板（父亲 2026-10-07）：上边距 = 3 × 下边距。
-                     * 下边距当基准取小值（8dp），上边距跟着定 24dp —— 留白总量比原来的
-                     * 22+22 少 12dp，这 12dp 全给海报，海报因此更高更大。
-                     */
-                    top = if (isInfo) 24.dp else 22.dp,
-                    bottom = if (isInfo) 8.dp else 22.dp,
-                ),
+                .padding(horizontal = 28.dp, vertical = 22.dp),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -520,14 +510,15 @@ private fun InfoMenu(menu: MenuState) {
     }
     Row(modifier = Modifier.fillMaxSize()) {
         /*
-         * 海报（2:3）：Y = 卡片 Y − 上边距 − 下边距（父亲 2026-10-07）
-         *   卡片 372dp − 上 24dp − 下 8dp = 340dp 高，宽按 2:3 缩成 227dp。
-         *   上边距 = 3 × 下边距，海报比原来（328dp）高 12dp、宽 8dp。
+         * 海报（2:3）：Y = 卡片 Y − 上下边距（父亲 2026-10-07）
+         *   卡片 372dp − 上下边距 44dp = 328dp 高，宽按 2:3 缩成 219dp。
+         *   注：海报视觉上的"上边距大"来自卡片上方在菜单画布里空的那 127dp，
+         *   不是这里的 22dp —— 要对齐上下边距得改卡片高度，待父亲拍板。
          */
         Box(
             modifier = Modifier
-                .width(227.dp)
-                .height(340.dp)
+                .width(219.dp)
+                .height(328.dp)
                 .clip(RoundedCornerShape(10.dp))
                 .background(Color(0x22FFFFFF)),
         ) {
@@ -548,8 +539,7 @@ private fun InfoMenu(menu: MenuState) {
          *  · 行序：剧名（28sp）→ 季集（22sp）→ 徽章（20sp）→ 技术（19sp）→ 剧情（19sp）。
          */
         Column(modifier = Modifier.weight(1f)) {
-            // 剧名离面板上边距再远一点（父亲 2026-10-07）：24(内边距) + 44 = 距顶 68dp
-            Spacer(modifier = Modifier.height(44.dp))
+            Spacer(modifier = Modifier.height(30.dp))
             Text(
                 text = info.title,
                 color = Color.White,
