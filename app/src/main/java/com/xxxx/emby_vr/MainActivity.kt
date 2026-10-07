@@ -613,7 +613,7 @@ class MainActivity : ComponentActivity() {
         if (raw.isNullOrBlank()) return emptyList()
         val out = ArrayList<SubtitleCue>()
         val timeRe = Regex(
-            "(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})\\s*-->\\s*(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})",
+            """(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})\s*-->\s*(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})""",
         )
         val lines = raw.replace("\r\n", "\n").replace("\r", "\n").split("\n")
         var i = 0
