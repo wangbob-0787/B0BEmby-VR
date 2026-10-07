@@ -1557,8 +1557,11 @@ void drawSpinner(VrContext &c, const Mat4 &proj, const Mat4 &view4) {
     const float base = (float) (-now * 2.6);   // 角度递减 = 顺时针
     for (int i = 0; i < kSegs - kGapSegs; i++) {
         const float ang = base + (float) i * step;
-        // 尾巴暗、缺口那头亮：看起来像个箭头在转
-        const float fade = 0.45f + 0.55f * (1.f - (float) i / (float) (kSegs - kGapSegs));
+        /*
+         * 尾巴暗、缺口那头**最亮**（父亲 2026-10-07：箭头就落在最亮的缺口端部）。
+         * i = 0 是起笔的尾巴，i = kSegs-kGapSegs-1 紧挨缺口 —— 越靠近缺口越亮。
+         */
+        const float fade = 0.45f + 0.55f * ((float) i / (float) (kSegs - kGapSegs));
         XrPosef seg{};
         seg.position = {kFrontScreen.cx + cosf(ang) * kRadius,
                         kFrontScreen.cy + sinf(ang) * kRadius,
