@@ -1270,8 +1270,31 @@ class MainActivity : ComponentActivity() {
                 // mpv 没有 ExoPlayer 那套首帧回调，加载态直接放行，别把画面压住
                 waitingFirstFrame = false
                 osdState.hasPlayback = true
-                // 控制条第一行左侧的「正在播放：片名」
-                osdState.title = title
+
+                /*
+                 * 起播收尾（父亲 2026-10-08）。
+                 *
+                 * 这一段原来在 ExoPlayer 路径的后半段，mpv 分支提前 return 就整段跳过了，
+                 * 于是：控制条上的片名/进度/时长全空（定时刷新没启动），
+                 * 弹幕与片名 logo 也没去拉。
+                 * 注意**不要**在这里写 osdState.title —— 那是编号不是片名，
+                 * 片名由定时刷新里的 osdTitleText() 取。
+                 */
+                renderer.videoActive = true
+                picking = false
+                reportedItemId = pendingItemId
+                reportedPlaySessionId = pendingPlaySessionId
+                reportedMediaSourceId = pendingMediaSourceId
+                reportedRunTimeTicks = pendingRunTimeTicks
+                osdState.durationMs = pendingRunTimeTicks / 10_000
+                osdState.positionMs = 0L
+                osdState.speed = playSpeed
+                applyPlayMode(playModeIndex)
+                startOsdTicker()
+                startPosTicker()
+                // 弹幕与片名 logo：起播后就去拉，任何一步失败都不影响播放
+                loadDanmaku()
+                loadItemDetail()
                 com.xxxx.emby_vr.vr.VrNative.setSpinnerWanted(false)
                 danmakuHint.value = null
                 applyDanmakuSetting()
