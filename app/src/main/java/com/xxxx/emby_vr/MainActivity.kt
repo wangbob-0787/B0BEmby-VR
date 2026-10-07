@@ -202,6 +202,7 @@ class MainActivity : ComponentActivity() {
     private val posTicker = object : Runnable {
         override fun run() {
             refreshPosBase()
+            updateDrawnSubtitle()
             handler.postDelayed(this, 250L)
         }
     }
@@ -265,6 +266,15 @@ class MainActivity : ComponentActivity() {
     }
 
     private var selectedAudioIndex: Int? = null
+    /**
+     * 客户端自绘字幕（父亲 2026-10-07）。
+     *
+     * 直连播放时服务端不参与字幕，选哪条也不会发过来 —— 所以用户选了某条字幕之后，
+     * 我们按那条的编号把整条字幕取回来，自己解析、自己按时间画在弹幕层的字幕位。
+     * 没选任何一条时这里是空的，交给播放器按语言偏好自己挑（onCues 那条路）。
+     */
+    private var subtitleCues: List<SubtitleCue> = emptyList()
+    private var subtitleCueStream: Int? = null
     /**
      * 起播崩过一次就改用 H.264 重来（父亲 2026-10-07）。
      *
@@ -564,6 +574,83 @@ class MainActivity : ComponentActivity() {
         val default = audios.firstOrNull { it.isDefault == true } ?: audios.first()
         if (playable(default.codec)) return null
         return audios.firstOrNull { playable(it.codec) }?.index
+    }
+
+    /**
+     * 把用户选的那条字幕整条取回来（父亲 2026-10-07）。
+     *
+     * 服务端能把内封/外挂字幕转成 srt 文本，所以不管片源里是 srt 还是 ass 都拿得到。
+     * 拿到后自己解析、按播放位置显示 —— 不依赖服务端出流，也不受直连/转码影响。
+     */
+    private fun loadSubtitleTrack(index: Int) {
+        val mediaId = currentMediaId
+        val sourceId = reportedMediaSourceId ?: pendingMediaSourceId
+        if (mediaId.isBlank() || sourceId.isNullOrBlank()) return
+        subtitleCueStream = index
+        val url = "${userServer()}/emby/Videos/$mediaId/$sourceId/Subtitles/$index" +
+            "/Stream.srt?api_key=${userToken()}"
+        scope.launch {
+            val raw = withContext(Dispatchers.IO) {
+                runCatching {
+                    java.net.URL(url).openConnection().let { conn ->
+                        conn.connectTimeout = 8000
+                        conn.readTimeout = 20000
+                        conn.getInputStream().bufferedReader().use { it.readText() }
+                    }
+                }.getOrNull()
+            }
+            // 中途换片 / 换字幕轨 → 结果丢掉
+            if (mediaId != currentMediaId || subtitleCueStream != index) return@launch
+            val cues = parseSrt(raw)
+            subtitleCues = cues
+            Log.i(TAG, "自绘字幕：流 $index 取到 ${cues.size} 条")
+            if (cues.isEmpty()) Log.w(TAG, "自绘字幕：流 $index 没取到内容（${raw?.length ?: 0} 字节）")
+        }
+    }
+
+    /** SRT 解析：只要时间和文本，够弹幕层的字幕位用 */
+    private fun parseSrt(raw: String?): List<SubtitleCue> {
+        if (raw.isNullOrBlank()) return emptyList()
+        val out = ArrayList<SubtitleCue>()
+        val timeRe = Regex(
+            "(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})\\s*-->\\s*(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})",
+        )
+        val lines = raw.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        var i = 0
+        fun toMs(g: Int, m: MatchResult): Long =
+            (m.groupValues[g].toLong() * 3600 + m.groupValues[g + 1].toLong() * 60 +
+                m.groupValues[g + 2].toLong()) * 1000 +
+                m.groupValues[g + 3].padEnd(3, '0').toLong()
+
+        while (i < lines.size) {
+            val m = timeRe.find(lines[i])
+            if (m == null) {
+                i++
+                continue
+            }
+            val start = toMs(1, m)
+            val end = toMs(5, m)
+            i++
+            val sb = StringBuilder()
+            while (i < lines.size && lines[i].isNotBlank()) {
+                if (sb.isNotEmpty()) sb.append("\n")
+                sb.append(lines[i].trim())
+                i++
+            }
+            out.add(SubtitleCue(start, end, sb.toString()))
+        }
+        return out
+    }
+
+    /**
+     * 自绘字幕跟片走（父亲 2026-10-07）：按当前播放位置找命中的那一条。
+     */
+    private fun updateDrawnSubtitle() {
+        if (subtitleCues.isEmpty()) return
+        val pos = player?.currentPosition ?: return
+        val text = subtitleCues.firstOrNull { pos >= it.startMs && pos <= it.endMs }?.text.orEmpty()
+        subtitleNow = text
+        if (!waitingFirstFrame) danmakuView?.setSubtitle(text)
     }
 
     private fun attachDanmakuSurface(st: android.graphics.SurfaceTexture) {
@@ -1184,6 +1271,8 @@ class MainActivity : ComponentActivity() {
                         val text = cueGroup.cues.joinToString("\n") { cue ->
                             cue.text?.toString().orEmpty()
                         }.trim()
+                        // 用户自己选了字幕时以自绘的那条为准，别被播放器挑的轨盖掉
+                        if (subtitleCues.isNotEmpty()) return
                         subtitleNow = text
                         // 等第一帧期间只记内容、不显示（父亲 2026-10-07）
                         if (!waitingFirstFrame) danmakuView?.setSubtitle(text)
@@ -1266,6 +1355,15 @@ class MainActivity : ComponentActivity() {
             picking = false
             osdState.title = title
             // 旧片已经停过（停止上报用的是旧身份），新片身份从现在起正式生效 —— 后面的字幕、弹幕、上报都要用它
+            /*
+             * 用户选过字幕 → 把那一条整条取回来自己画（父亲 2026-10-07）。
+             * 没选 → 清掉自绘，交给播放器按语言偏好自动挑。
+             */
+            selectedSubtitleIndex?.let { loadSubtitleTrack(it) }
+                ?: run {
+                    subtitleCues = emptyList()
+                    subtitleCueStream = null
+                }
             reportedItemId = pendingItemId
             reportedPlaySessionId = pendingPlaySessionId
             reportedMediaSourceId = pendingMediaSourceId
@@ -2753,3 +2851,6 @@ class MainActivity : ComponentActivity() {
 
     }
 }
+
+/** 一条字幕：起止时间（毫秒）+ 文本。客户端自绘字幕用（父亲 2026-10-07） */
+data class SubtitleCue(val startMs: Long, val endMs: Long, val text: String)
