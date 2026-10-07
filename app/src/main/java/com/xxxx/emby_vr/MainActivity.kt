@@ -648,6 +648,12 @@ class MainActivity : ComponentActivity() {
         com.xxxx.emby_vr.vr.VrNative.setOsdVisible(visible)
         // 控制条收起来时菜单一起收（父亲 2026-10-06：菜单挂在控制条上）
         if (!visible) closeMenu()
+        /*
+         * 控制条一露出来就把刷新带上（父亲 2026-10-07）：
+         * 未播放时也要让「年月日时分秒」走起来 —— 这个 ticker 原来只在起播流程里启动，
+         * 没播放就唤出控制条时，时间会停在上一部片停播那一刻（或一直是空的）。
+         */
+        if (visible) startOsdTicker()
         Log.i(TAG, if (visible) "控制条显示" else "控制条隐藏")
     }
 
@@ -655,7 +661,11 @@ class MainActivity : ComponentActivity() {
     private fun startOsdTicker() {
         osdJob?.cancel()
         osdJob = scope.launch {
-            while (renderer.videoActive || picking) {
+            /*
+             * 只要控制条还露着就继续刷新（父亲 2026-10-07：年月日时分秒永远在控制条上），
+             * 播放中当然也走；两者都停了才退出。
+             */
+            while (osdVisible || renderer.videoActive || picking) {
                 val p = player
                 if (p != null) {
                     osdState.playing = p.playWhenReady
@@ -1869,6 +1879,16 @@ class MainActivity : ComponentActivity() {
         }
         danmakuView?.setSubtitle("")
         danmakuTrack = null
+        /*
+         * 控制条里的播放数据一并清掉（父亲 2026-10-07）。
+         *
+         * title / 时长 / 进度只在起播时写入，不清的话"播完/停止后再唤出控制条"
+         * 会显示上一部片的片名与时长 —— 未播放状态下控制条不该有这些残留。
+         */
+        osdState.title = ""
+        osdState.durationMs = 0L
+        osdState.positionMs = 0L
+        osdState.hasPlayback = false
         danmakuView?.setTrack(null)
         logoUrl.value = null
         // 回海报墙的时候确保它摆着（播放中可以把它收起来，别让收起来的状态带回去）。
@@ -1897,6 +1917,12 @@ class MainActivity : ComponentActivity() {
          * 弹幕 / 字幕 / 片名 logo 都等新片画面出来再一起亮。
          * 兜底：万一第一帧迟迟不来（起播失败），8 秒后照样放出来，别让它们永远不显示。
          */
+        /*
+         * 控制条上的「正在播放」**先消失**（父亲 2026-10-07）：
+         * 旧片信息立刻清掉、播放按钮置灰，等新片第一帧到了再一起恢复。
+         */
+        osdState.hasPlayback = false
+        osdState.title = ""
         waitingFirstFrame = true
         /*
          * 银幕比例先复位成 16:9（父亲 2026-10-07 实测：换片时转圈和提示被压扁、圈成椭圆）。
@@ -1932,6 +1958,8 @@ class MainActivity : ComponentActivity() {
     private fun revealDanmakuSubtitleLogo() {
         if (!waitingFirstFrame) return
         waitingFirstFrame = false
+        // 新片画面到了：控制条的「正在播放」与按钮一起恢复（父亲 2026-10-07）
+        osdState.hasPlayback = true
         danmakuHint.value = null                                  // 提示收起
         com.xxxx.emby_vr.vr.VrNative.setSpinnerWanted(false)   // 画面来了，转圈收起
         applyDanmakuSetting()                    // 弹幕层可见 + 按开关挂轨道

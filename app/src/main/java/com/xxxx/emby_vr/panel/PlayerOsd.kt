@@ -98,6 +98,14 @@ enum class OsdButton(val label: String, val icon: ImageVector) {
 /** 左组：贴左 */
 val OSD_LEFT_GROUP = listOf(OsdButton.SUBTITLE, OsdButton.DANMAKU)
 
+/**
+ * 未播放时仍然可用的按钮（父亲 2026-10-07）。
+ *
+ * 只留与"当前这部片"无关的入口 —— 选片（换一部看）与退出。
+ * 其余按钮在没有片子可操作时置灰且点不动。
+ */
+val OSD_ALWAYS_ENABLED = setOf(OsdButton.PICK, OsdButton.EXIT)
+
 /** 中组：夹在左右两组之间 */
 val OSD_CENTER_GROUP = listOf(OsdButton.SEEK_BACK, OsdButton.PLAY_PAUSE, OsdButton.SEEK_FWD)
 
@@ -161,6 +169,18 @@ class OsdState {
     /** 控制条第一行右侧的当前时间（YYYY-MM-DD HH:MM:SS） */
     var nowClock by mutableStateOf("")
     var playing by mutableStateOf(false)
+
+    /**
+     * 当前有没有正在播放的片子（父亲 2026-10-07 定的生命周期）。
+     *
+     * · 刚开 app / 停止播放 / 播完 → false：「正在播放：…」整行留空，播放相关按钮置灰
+     * · 起播（从头播或续播）到**第一帧** → true：显示片名，按钮恢复可用
+     * · 播放中暂停 → **不变**（只要没切片，「正在播放」就不消失）
+     * · 切片 → 先变 false（旧片信息立刻消失），新片第一帧再变 true
+     *
+     * 注意：标题行右侧的年月日时分秒**不受它影响**，永远显示当前时间。
+     */
+    var hasPlayback by mutableStateOf(false)
     var positionMs by mutableStateOf(0L)
     var durationMs by mutableStateOf(0L)
 
@@ -249,7 +269,12 @@ fun PlayerOsdBar(state: OsdState) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = state.title,
+                /*
+                 * 只有真的有片子在播时才显示这行（父亲 2026-10-07）：
+                 * 未播放时留空 —— 停止播放 / 切片起步阶段都是这个状态。
+                 * 右侧时间不受影响，照常显示。
+                 */
+                text = if (state.hasPlayback) state.title else "",
                 color = Color(0xFFFFFFFF),
                 fontSize = 24.sp,
                 maxLines = 1,
@@ -438,13 +463,21 @@ private fun OsdButtonView(button: OsdButton, state: OsdState, panelWpx: Int) {
     val hovered = !selected && range != null && state.pointerNx >= 0f &&
         state.pointerNx >= range.first && state.pointerNx <= range.second
     val isPlayPause = button == OsdButton.PLAY_PAUSE
+    /*
+     * 未播放时，播放相关的按钮置灰且点不动（父亲 2026-10-07）。
+     * 只留「选片」「退出」这类与当前片子无关的入口 —— 置灰的按钮点了没反应，
+     * 比点了什么都不发生更清楚。
+     */
+    val enabled = state.hasPlayback || button in OSD_ALWAYS_ENABLED
 
     val background = when {
+        !enabled -> Color.Transparent
         selected -> Color(0x3D2FD57C)
         hovered -> Color(0x24FFFFFF)
         else -> Color.Transparent
     }
     val tint = when {
+        !enabled -> Color(0x59FFFFFF)          // 35% 白：看得见，但明显弱于可用态
         selected -> Color(0xFFFFFFFF)
         hovered -> Color.White
         else -> Color(0xFFFFFFFF)
@@ -470,19 +503,27 @@ private fun OsdButtonView(button: OsdButton, state: OsdState, panelWpx: Int) {
             .size(px(BUTTON_BOX_PX))
             .clip(RoundedCornerShape(22.dp))
             .background(background)
-            .clickable { state.onButton?.invoke(button) },
+            // 置灰的按钮点不动（父亲 2026-10-07）
+            .clickable(enabled = enabled) { state.onButton?.invoke(button) },
     ) {
         Icon(
             imageVector = if (isPlayPause) state.playIcon else button.icon,
             contentDescription = button.label,
-            // 播放/暂停是主按钮：白色实心圆 + 深色图标
-            tint = if (isPlayPause) Color(0xFF101214) else tint,
+            // 播放/暂停是主按钮：白色实心圆 + 深色图标；未播放时整体压暗
+            tint = if (isPlayPause) {
+                if (enabled) Color(0xFF101214) else Color(0x8A101214)
+            } else {
+                tint
+            },
             modifier = Modifier
                 .size(px(ICON_PX))
                 .then(
                     if (isPlayPause) {
                         Modifier
-                            .background(Color(0xFFF1F5F7), CircleShape)
+                            .background(
+                                if (enabled) Color(0xFFF1F5F7) else Color(0x59F1F5F7),
+                                CircleShape,
+                            )
                             .padding(9.dp)
                     } else {
                         Modifier
