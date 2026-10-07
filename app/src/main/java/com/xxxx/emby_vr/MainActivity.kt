@@ -1090,7 +1090,19 @@ class MainActivity : ComponentActivity() {
 
                     override fun onPlaybackStateChanged(state: Int) {
                         // 缓冲/跳转结束 → 提前解冻弹幕位置（父亲 2026-10-07）
-                        if (state == Player.STATE_READY) danmakuSeekFreezeUntilMs = 0L
+                        if (state == Player.STATE_READY) {
+                            danmakuSeekFreezeUntilMs = 0L
+                            /*
+                             * 起播成功 → 控制条的「正在播放」与按钮恢复（父亲 2026-10-07）。
+                             * 这条与"收黑幕"分开：收黑幕要等画面真的到（与门），
+                             * 而按钮可用只要片子确实开始播了就恢复，不必等第一帧 ——
+                             * 否则换轨那类路径会在灰态里停留很久。
+                             */
+                            if (waitingFirstFrame) {
+                                osdState.hasPlayback = true
+                                osdState.title = osdTitleText()
+                            }
+                        }
                         // 自然播完 → 上报停止（服务端据此记"已看"与进度）
                         if (state == Player.STATE_ENDED) {
                             Log.i(TAG, "播放结束 → 上报停止")
@@ -1914,22 +1926,16 @@ class MainActivity : ComponentActivity() {
         }
         danmakuView?.setSubtitle("")
         danmakuTrack = null
-        /*
-         * 控制条里的播放数据一并清掉（父亲 2026-10-07）。
-         *
-         * title / 时长 / 进度只在起播时写入，不清的话"播完/停止后再唤出控制条"
-         * 会显示上一部片的片名与时长 —— 未播放状态下控制条不该有这些残留。
-         */
-        osdState.title = ""
-        osdState.durationMs = 0L
-        osdState.positionMs = 0L
-        osdState.hasPlayback = false
         danmakuView?.setTrack(null)
         logoUrl.value = null
-        // 回海报墙的时候确保它摆着（播放中可以把它收起来，别让收起来的状态带回去）。
-        // 父亲 2026-10-07：这里**不再**还原摆位 —— 用户人就在应用里，墙随时能自己调，
-        // 自动还原只发生在 APP 启动那一刻（见 onResume）。
-        com.xxxx.emby_vr.vr.VrNative.updatePanelShown(true)
+        /*
+         * 这里**不再**做两件事（父亲 2026-10-07）：
+         *  ① 不打开海报墙 —— 用户主动关掉的就该保持关掉；切片（keepUi=true）
+         *     与起播流程内部都会走这个函数，自动打开等于让"我关了它"失效。
+         *  ② 不清控制条的播放数据 —— 起播流程内部也会走这个函数，
+         *     在这里清会让换轨（选集 / 音频）之后按钮变灰且没人恢复。
+         * 需要清的地方只有切片一处：clearForNewMedia 负责。
+         */
     }
 
     /**
@@ -1981,6 +1987,8 @@ class MainActivity : ComponentActivity() {
          */
         osdState.hasPlayback = false
         osdState.title = ""
+        osdState.durationMs = 0L
+        osdState.positionMs = 0L
         // 收黑幕的与门也要复位，等这一部自己的两个信号（父亲 2026-10-07）
         playerFrameSeen = false
         nativeFrameSeen = false
