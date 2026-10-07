@@ -2964,9 +2964,18 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
      * 弹幕则改走独立合成层（见渲染循环），这里只在弹幕层建不起来时兜底，
      * 免得弹幕整个消失。
      */
-    if (videoLayerPass && !c.danmakuLayer.submitted &&
-        c.danmakuVisible.load() && c.danmakuTex != 0 && c.danmakuHasFrame.load()) {
+    /*
+     * 弹幕并进画面这一层（父亲 2026-10-07 重影排查）。
+     *
+     * 原来弹幕走独立合成层：画面和弹幕是两层，系统各自做一次重投影，头一动两层
+     * 就差一帧，弹幕相对画面错位一点，看着像影子（静止截图里干净，说明不是内容
+     * 画错）。并成一层之后与画面严格同步。
+     * 独立层仍保留作兜底：画面层这条路走不通时（videoLayerPass=false）照旧单独提交。
+     */
+    if (videoLayerPass && c.danmakuVisible.load() && c.danmakuTex != 0 &&
+        c.danmakuHasFrame.load()) {
         drawOverlayIntoVideoLayer(c, c.danmakuTex, 0.f, 0.f, 1.f, 1.f);
+        c.danmakuLayer.submitted = true;
     }
     /*
      * 视频层里的 logo 叠加已停用（父亲 2026-10-07 01:49 定稿）：
@@ -3142,6 +3151,8 @@ void frameLoop(VrContext &c) {
                 vw = (int32_t) ((float) vw * k);
                 vh = (int32_t) ((float) vh * k);
             }
+            // 弹幕"已并进画面层"的标记每帧清一次，紧接着的视频层 pass 会按需重新置位
+            c.danmakuLayer.submitted = false;
             if (vw >= 64 && vh >= 64 && buildQuadLayer(c, c.videoLayer, vw, vh, "视频层")) {
                 c.videoLayer.submitted = renderQuadLayer(c, c.videoLayer, c.videoTex, true);
             }
@@ -3151,8 +3162,8 @@ void frameLoop(VrContext &c) {
          * 弹幕独立层：与视频层同一套机制，尺寸取弹幕面板的像素尺寸。
          * 先渲染它，视频层才知道要不要兜底把弹幕画回自己身上。
          */
-        c.danmakuLayer.submitted = false;
-        if (c.danmakuLayerOk && c.danmakuVisible.load() && c.danmakuHasFrame.load() &&
+        if (!c.danmakuLayer.submitted &&
+            c.danmakuLayerOk && c.danmakuVisible.load() && c.danmakuHasFrame.load() &&
             c.danmakuTex != 0) {
             static int danmakuLogTick = 0;
             if ((danmakuLogTick++ % 180) == 0) {

@@ -109,8 +109,17 @@ class DanmakuSurfacePainter(
     private var thread: Thread? = null
     private var frames = 0L
 
-    /** 每帧间隔（毫秒）：60fps */
-    private val frameGapMs = 16L
+    /*
+     * 每帧间隔（毫秒）（父亲 2026-10-07 重影排查）。
+     *
+     * 原来 16ms = 每秒 60 张，而头显每秒合成 72~90 次 —— 合成器会拿到重复的
+     * 画布，横移的弹幕就变成"停一帧再跳一帧"，叠上屏幕余晖看着像重影。
+     * 提到 11ms（约 90 张/秒，不慢于头显刷新）后每帧都有新位置。
+     *
+     * 位置是按播放时间算的（与帧率无关），所以这里只是让采样更密；
+     * 现有速度档 360px/s 在 90fps 下正好每帧 4px，仍是整数对齐。
+     */
+    private val frameGapMs = 11L
 
     fun start() {
         if (running) return
