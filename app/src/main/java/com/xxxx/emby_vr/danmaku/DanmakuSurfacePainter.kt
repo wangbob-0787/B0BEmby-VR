@@ -45,6 +45,14 @@ class DanmakuSurfacePainter(
      * （屏幕占比 13.43%，即 4K 屏下 516px 宽，正好是原来 258px 的两倍）。
      */
     var logoBitmapProvider: (() -> android.graphics.Bitmap?)? = null
+
+    /**
+     * 换片 / 首播等待期的提示文字（父亲 2026-10-07：「即将播放：片名」）。
+     *
+     * 非空时画在银幕中部偏下。这段时间弹幕内容与片名 logo 都还没放出来
+     * （它们等第一帧才亮），银幕上就只有转圈 + 这行字。
+     */
+    var hintProvider: (() -> String?)? = null
     /** 自绘层本体。它不在视图树里，只被本类逐帧调用。 */
     val view = DanmakuView(context).apply {
         setPositionProvider(positionProvider)
@@ -94,6 +102,28 @@ class DanmakuSurfacePainter(
                     // 先擦成全透明，再画 logo 与弹幕：透明区必须真的是透明的
                     canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
                     view.draw(canvas)
+                    /*
+                     * 等待期提示（父亲 2026-10-07：「即将播放：片名」）：
+                     * 画在银幕中部偏下，字号按银幕高度取 4.5%（1440 画布 ≈ 65px），
+                     * 带一层淡阴影，压在任何底色上都看得清。
+                     */
+                    hintProvider?.invoke()?.takeIf { it.isNotBlank() }?.let { hint ->
+                        val paint = android.graphics.Paint(
+                            android.graphics.Paint.ANTI_ALIAS_FLAG,
+                        ).apply {
+                            color = 0xFFE8F8FF.toInt()
+                            textSize = heightPx * 0.045f
+                            textAlign = android.graphics.Paint.Align.CENTER
+                            isFakeBoldText = true
+                        }
+                        val shadow = android.graphics.Paint(paint).apply {
+                            color = 0xCC000000.toInt()
+                        }
+                        val cx = widthPx / 2f
+                        val cy = heightPx * 0.62f
+                        canvas.drawText(hint, cx + 3f, cy + 3f, shadow)
+                        canvas.drawText(hint, cx, cy, paint)
+                    }
                     /*
                      * logo 最后画（父亲 2026-10-07 01:48：logo 不要被弹幕挡住）：
                      * 压在弹幕上面 —— 弹幕从它的透明底穿过，文字部分压住弹幕。

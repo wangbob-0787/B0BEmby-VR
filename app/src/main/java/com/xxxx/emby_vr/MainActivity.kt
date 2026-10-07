@@ -112,6 +112,12 @@ class MainActivity : ComponentActivity() {
      * 改成自己下载：8 秒连接、15 秒读超时，成功/失败都打日志，图拿到就交给面板画。
      */
     private val logoBitmap = androidx.compose.runtime.mutableStateOf<android.graphics.Bitmap?>(null)
+
+    /**
+     * 换片 / 首播等待期的提示文字（父亲 2026-10-07：「即将播放：片名」）。
+     * 画在弹幕层画布的中部偏下；第一帧到了就清空。
+     */
+    private val danmakuHint = androidx.compose.runtime.mutableStateOf<String?>(null)
     private var logoLoadJob: kotlinx.coroutines.Job? = null
 
     /** 已成功下载的 logo 地址（同址复用，不再重复下载） */
@@ -485,7 +491,10 @@ class MainActivity : ComponentActivity() {
                     scale = danmakuScale,
                 )
                 danmakuView = painter.view
-                painter.logoBitmapProvider = { logoBitmap.value }
+                // 等第一帧期间不画片名 logo（父亲 2026-10-07：logo 要跟画面一起出现）
+                painter.logoBitmapProvider = { if (waitingFirstFrame) null else logoBitmap.value }
+                // 等待期的「即将播放：片名」提示画在同一张画布上
+                painter.hintProvider = { danmakuHint.value }
                 painter.view.setTrack(if (danmakuOn) danmakuTrack else null)
                 painter.view.setSubtitle(subtitleNow)
                 painter.start()
@@ -1381,14 +1390,9 @@ class MainActivity : ComponentActivity() {
         danmakuView?.userScale = danmakuScale
         danmakuView?.setTrack(if (danmakuOn) danmakuTrack else null)
         /*
-         * 弹幕层常开（父亲 2026-10-07 03:38 定）：这一层同时承载片名 logo，
-         * 不能再跟「这部片有没有弹幕轨」绑定 —— 没弹幕的片整层不提交，
-         * logo 会跟着一起消失。弹幕内容的显隐由上面的 setTrack 负责。
-         *
-         * 等第一帧期间先藏着，第一帧到了由 revealDanmakuSubtitleLogo 一起放出来
-         * （父亲 2026-10-07：弹幕/字幕/logo 要跟画面同时出现）。
+         * 这一层常开（等待期要显示「即将播放：片名」，弹幕内容与 logo 仍等第一帧）。
          */
-        com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(!waitingFirstFrame)
+        com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(true)
     }
 
     /** 这条字幕流是不是弹幕轨（ASS / SSA，由自绘弹幕层负责，不当普通字幕选） */
@@ -1419,8 +1423,8 @@ class MainActivity : ComponentActivity() {
     private fun loadDanmaku() {
         danmakuTrack = null
         danmakuView?.setTrack(null)
-        // 只清弹幕内容，不收整层：这一层同时画片名 logo（父亲 2026-10-07 03:38）
-        com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(!waitingFirstFrame)
+        // 只清弹幕内容，不收整层：这一层还承载提示文字 / 片名 logo（父亲 2026-10-07）
+        com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(true)
 
         val mediaId = currentMediaId
         if (mediaId.isBlank()) return
@@ -1468,9 +1472,8 @@ class MainActivity : ComponentActivity() {
             danmakuTrack = track
             danmakuView?.userScale = danmakuScale
             danmakuView?.setTrack(if (danmakuOn) track else null)
-            // 整层常开（承载 logo，见 applyDanmakuSetting）；弹幕开关只作用到 setTrack
-            // 仍受「等第一帧」门控：第一帧没到就先把整层藏着
-            com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(!waitingFirstFrame)
+            // 整层常开（承载提示文字与 logo）；弹幕开关只作用到 setTrack
+            com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(true)
             Log.i(
                 TAG,
                 "弹幕层加载完成：${track.items.size} 条 / 画布 ${track.playResX}x${track.playResY}" +
@@ -1581,6 +1584,11 @@ class MainActivity : ComponentActivity() {
                     "详情已取到：${item.name}（演员 ${menuState.people.size} 人" +
                         "，logo ${if (logoAddr.isNullOrBlank()) "无" else "有"}）",
                 )
+                // 等待期把片名补进提示（父亲 2026-10-07：「即将播放：片名」）
+                if (waitingFirstFrame) {
+                    val nm = item.seriesName?.takeIf { it.isNotBlank() } ?: item.name
+                    if (!nm.isNullOrBlank()) danmakuHint.value = "即将播放：$nm"
+                }
             } catch (t: Throwable) {
                 Log.e(TAG, "取详情失败", t)
             }
@@ -1847,6 +1855,12 @@ class MainActivity : ComponentActivity() {
          * 兜底：万一第一帧迟迟不来（起播失败），8 秒后照样放出来，别让它们永远不显示。
          */
         waitingFirstFrame = true
+        /*
+         * 等待期这一层要露出来 —— 它上面要显示「即将播放：片名」那行提示
+         * （弹幕内容与 logo 仍然等第一帧，见 logoBitmapProvider 的门控）。
+         */
+        danmakuHint.value = "即将播放…"
+        com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(true)
         // 银幕清空之后立刻进入"转圈"状态（父亲 2026-10-07：清空了但没有转圈）
         com.xxxx.emby_vr.vr.VrNative.setSpinnerWanted(true)
         handler.postDelayed({
@@ -1866,6 +1880,7 @@ class MainActivity : ComponentActivity() {
     private fun revealDanmakuSubtitleLogo() {
         if (!waitingFirstFrame) return
         waitingFirstFrame = false
+        danmakuHint.value = null                                  // 提示收起
         com.xxxx.emby_vr.vr.VrNative.setSpinnerWanted(false)   // 画面来了，转圈收起
         applyDanmakuSetting()                    // 弹幕层可见 + 按开关挂轨道
         danmakuView?.setSubtitle(subtitleNow)    // 字幕跟上

@@ -2874,6 +2874,39 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
     return true;
 }
 
+/**
+ * 把视频层刷成纯黑并提交（换片清屏，父亲 2026-10-07 实测）。
+ *
+ * 为什么不能只"停提交"：PICO 的合成器在某个 quad layer 这一帧缺席时，会把
+ * 上一次提交的内容留在屏幕上（防闪烁）—— 实测现象就是"换了片，银幕上还是上一部
+ * 的画面，一直留到新片出画面"。所以等待期间这一层照旧提交，只是内容刷成黑的。
+ */
+bool fillVideoLayerBlack(VrContext &c, VideoLayerBuf &L) {
+    if (!L.built || c.program == 0) return false;
+    XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+    uint32_t idx = 0;
+    if (XR_FAILED(api.AcquireSwapchainImage(L.handle, &ai, &idx))) return false;
+    if (idx >= L.fbos.size()) return false;
+    XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+    wi.timeout = XR_INFINITE_DURATION;
+    if (XR_FAILED(api.WaitSwapchainImage(L.handle, &wi))) {
+        XrSwapchainImageReleaseInfo ri0{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+        api.ReleaseSwapchainImage(L.handle, &ri0);
+        return false;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, L.fbos[idx]);
+    glViewport(0, 0, L.width, L.height);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glClearColor(0.f, 0.f, 0.f, 1.f);   // 不透明黑
+    glClear(GL_COLOR_BUFFER_BIT);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+    if (XR_FAILED(api.ReleaseSwapchainImage(L.handle, &ri))) return false;
+    L.index = idx;
+    return true;
+}
+
 void frameLoop(VrContext &c) {
     /*
      * 图层结构（run 95 实机崩溃后按官方示例重写）：
@@ -2965,20 +2998,27 @@ void frameLoop(VrContext &c) {
          * 建不起来（运行时不支持）就退回老路，功能不受影响。
          */
         c.videoLayer.submitted = false;
-        if (c.videoLayerOk && c.videoActive.load() && c.videoHasFrame.load() &&
-            c.videoTex != 0) {
-            int32_t vw = (int32_t) lroundf(1.f / fmaxf(1e-6f, c.texelX.load()));
-            int32_t vh = (int32_t) lroundf(1.f / fmaxf(1e-6f, c.texelY.load()));
-            constexpr int32_t kMaxVideoW = 3840;
-            constexpr int32_t kMaxVideoH = 2160;
-            if (vw > kMaxVideoW || vh > kMaxVideoH) {
-                const float k = fminf((float) kMaxVideoW / (float) vw,
-                                      (float) kMaxVideoH / (float) vh);
-                vw = (int32_t) ((float) vw * k);
-                vh = (int32_t) ((float) vh * k);
-            }
-            if (vw >= 64 && vh >= 64 && buildQuadLayer(c, c.videoLayer, vw, vh, "视频层")) {
-                c.videoLayer.submitted = renderQuadLayer(c, c.videoLayer, c.videoTex, true);
+        if (c.videoLayerOk && c.videoLayer.built && c.videoTex != 0) {
+            if (c.videoActive.load() && c.videoHasFrame.load()) {
+                int32_t vw = (int32_t) lroundf(1.f / fmaxf(1e-6f, c.texelX.load()));
+                int32_t vh = (int32_t) lroundf(1.f / fmaxf(1e-6f, c.texelY.load()));
+                constexpr int32_t kMaxVideoW = 3840;
+                constexpr int32_t kMaxVideoH = 2160;
+                if (vw > kMaxVideoW || vh > kMaxVideoH) {
+                    const float k = fminf((float) kMaxVideoW / (float) vw,
+                                          (float) kMaxVideoH / (float) vh);
+                    vw = (int32_t) ((float) vw * k);
+                    vh = (int32_t) ((float) vh * k);
+                }
+                if (vw >= 64 && vh >= 64 && buildQuadLayer(c, c.videoLayer, vw, vh, "视频层")) {
+                    c.videoLayer.submitted = renderQuadLayer(c, c.videoLayer, c.videoTex, true);
+                }
+            } else {
+                /*
+                 * 换片 / 等第一帧：这一层照旧提交，内容刷黑（父亲 2026-10-07）。
+                 * 只"停提交"的话，PICO 合成器会把上一部的画面留在银幕上。
+                 */
+                c.videoLayer.submitted = fillVideoLayerBlack(c, c.videoLayer);
             }
         }
 
