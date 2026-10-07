@@ -212,7 +212,7 @@ val BUFFER_PRESETS = listOf(
  * 原生侧 openxr_renderer.cpp 的 kMenuPxH 必须同步改，否则物理尺寸与光柱命中判定对不上。
  */
 const val MENU_PANEL_W = 2331
-const val MENU_PANEL_H = 632
+const val MENU_PANEL_H = 760
 
 /** 窄卡片宽度（像素） */
 private const val CARD_W = 920f
@@ -441,7 +441,7 @@ private fun TrackMenu(menu: MenuState, rows: List<MenuRowItem>, kind: MenuKind) 
             listState.scrollBy(dy)
         }
     }
-    LazyColumn(state = listState, modifier = Modifier.heightIn(max = 330.dp)) {
+    LazyColumn(state = listState, modifier = Modifier.heightIn(max = 420.dp)) {
         itemsIndexed(rows) { i, row ->
             MenuRow(
                 label = row.label,
@@ -467,7 +467,7 @@ private fun EpisodeMenu(menu: MenuState) {
             listState.scrollBy(dy)
         }
     }
-    LazyColumn(state = listState, modifier = Modifier.heightIn(max = 330.dp)) {
+    LazyColumn(state = listState, modifier = Modifier.heightIn(max = 420.dp)) {
         itemsIndexed(menu.episodes) { i, row ->
             MenuRow(
                 label = row.label,

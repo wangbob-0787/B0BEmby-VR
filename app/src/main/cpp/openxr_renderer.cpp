@@ -1683,7 +1683,7 @@ constexpr float kMenuPxW = 2331.f;
  * 菜单面板像素高度 = 控制条面板高度（父亲 2026-10-07：菜单面板的厚度改成和控制条一样）。
  * Java 侧 PlayerMenuPanel.kt 的 MENU_PANEL_H 必须同步改，否则物理尺寸与命中判定对不上。
  */
-constexpr float kMenuPxH = 632.f;
+constexpr float kMenuPxH = 760.f;
 constexpr float kMenuWidth = kOsdWidth;
 constexpr float kMenuHeight = kMenuWidth * kMenuPxH / kMenuPxW;
 constexpr float kMenuGap = 0.02f;
