@@ -277,7 +277,14 @@ class PanelLayer(
         if (horizontal && dx != 0f) {
             val zone = ClickTargets.zoneAt(ax, ay)
             if (zone != null) {
-                if (now - lastZoneStepAt >= ZONE_STEP_MS) {
+                val dir = if (dx > 0) 1f else -1f
+                /*
+                 * 边沿触发（父亲 2026-10-07）：同方向推着不放只翻一张；
+                 * 回中（见 vrStick 的回中分支）或反向推，才重新生效。
+                 */
+                if (zoneStepArmed || dir != zoneStepDir) {
+                    zoneStepArmed = false
+                    zoneStepDir = dir
                     lastZoneStepAt = now
                     Log.i(
                         TAG,
@@ -396,6 +403,16 @@ class PanelLayer(
 
     /** 轮播区上次步进的时刻（限速用） */
     private var lastZoneStepAt = 0L
+
+    /**
+     * 轮播区（首页大海报）的步进改成**边沿触发**（父亲 2026-10-07）。
+     *
+     * 原来按 200ms 节流：只要摇杆推着，就每 0.2 秒翻一张 —— 推到顶时看着就是连续跳。
+     * 现在只认"推没推、往哪边推"：同方向必须**回中或反向**之后才能再翻一张，
+     * 于是一次推 = 一张，与播放页快进快退的"武装"机制同款。
+     */
+    private var zoneStepArmed = true
+    private var zoneStepDir = 0f
 
     /**
      * 滚轮事件的**派发锚点** = 这次摇杆推动的起点（父亲 2026-10-05 实测）。
@@ -891,6 +908,8 @@ class PanelLayer(
         val now = SystemClock.uptimeMillis()
 
         if (mag < VR_STICK_DEAD) {
+            // 回中：轮播区的步进重新"武装"（父亲 2026-10-07：回中后才能再翻下一张）
+            zoneStepArmed = true
             // 回中：进入惯性滑行（速度取最后一次推着的速度）
             if (isDown || isDragging) {
                 isDown = false

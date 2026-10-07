@@ -310,6 +310,15 @@ class MainActivity : ComponentActivity() {
          */
         override fun onVideoFrameReady() {
             runOnUiThread {
+                /*
+                 * 播放器还没报这一部的第一帧时，到达的"取到帧"一律算旧片残留 / 占位帧，丢弃
+                 * （父亲 2026-10-07：切片频繁时它会污染与门，把当前黑幕提前收掉）。
+                 * 顺序天然成立 —— 原生取帧必然发生在播放器渲染出帧之后。
+                 */
+                if (!playerFrameSeen) {
+                    Log.i(TAG, "忽略一次原生帧信号：播放器还没报这一部的第一帧（按旧片残留处理）")
+                    return@runOnUiThread
+                }
                 nativeFrameSeen = true
                 tryRevealWaitingFrame()
             }
@@ -1125,6 +1134,8 @@ class MainActivity : ComponentActivity() {
                     override fun onRenderedFirstFrame() {
                         runOnUiThread {
                             playerFrameSeen = true
+                            // 从这一刻起才认原生的"取到帧"（之前到达的按旧片残留丢弃）
+                            nativeFrameSeen = false
                             tryRevealWaitingFrame()
                         }
                     }
@@ -1949,6 +1960,9 @@ class MainActivity : ComponentActivity() {
     private var playerFrameSeen = false
     private var nativeFrameSeen = false
 
+    /** 等待第一帧的兜底定时器：切片时要先撤掉上一只（父亲 2026-10-07） */
+    private var firstFrameFallback: Runnable? = null
+
     private fun tryRevealWaitingFrame() {
         if (!waitingFirstFrame) return
         if (!playerFrameSeen || !nativeFrameSeen) return
@@ -2010,12 +2024,22 @@ class MainActivity : ComponentActivity() {
         com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(true)
         // 银幕清空之后立刻进入"转圈"状态（父亲 2026-10-07：清空了但没有转圈）
         com.xxxx.emby_vr.vr.VrNative.setSpinnerWanted(true)
-        handler.postDelayed({
+        /*
+         * 兜底定时器要能撤销（父亲 2026-10-07：切片频繁时黑幕被上一次的定时器收掉）。
+         *
+         * 日志实证：16:00:10.987 换片 → 16:00:13.499 就报「等第一帧超时（8 秒）」，
+         * 只隔 2.5 秒 —— 那是**上一次切片**排的定时器到点了。
+         * 所以每次切片先把上一只撤掉，再排这一只。
+         */
+        firstFrameFallback?.let { handler.removeCallbacks(it) }
+        val fallback = Runnable {
             if (waitingFirstFrame) {
                 Log.w(TAG, "等第一帧超时（8 秒），兜底把弹幕 / 字幕 / logo 放出来")
                 revealDanmakuSubtitleLogo()
             }
-        }, 8000L)
+        }
+        firstFrameFallback = fallback
+        handler.postDelayed(fallback, 8000L)
     }
 
     /**

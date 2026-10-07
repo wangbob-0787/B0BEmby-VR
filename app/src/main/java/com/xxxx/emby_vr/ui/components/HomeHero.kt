@@ -142,6 +142,15 @@ fun HomeHeroCarousel(
             .vrScrollZone(key = "hero") { delta ->
                 index = ((index + delta) % list.size + list.size) % list.size
             }
+            /*
+             * 整块都可点（父亲 2026-10-07：只有左侧能播，感觉怪）。
+             * 下面那块焦点层仍然只占左侧 55%（保住 ↓ 键落到第一张卡的行为），
+             * 这里再登记一个**不带焦点**的点击区 —— 光柱指着大海报任意位置扣扳机都播。
+             * 左侧 55% 内两块重叠时，命中表取面积更小的那块（即焦点层），行为不变。
+             */
+            .vrClickTarget(key = "hero-anywhere") {
+                onOpenItem(list[index.coerceIn(0, list.lastIndex)])
+            }
     ) {
         // 焦点层只覆盖左侧 55%（与信息块同宽）。
         // 原因：整块全宽可聚焦时，大片头的焦点中心落在屏幕正中，按 ↓ 时系统按"水平最近"
