@@ -141,7 +141,7 @@ class DanmakuView(context: Context) : View(context) {
      * （出现时刻不变），速度就提上去了。
      * 1.4 是父亲这轮定的试值。
      */
-    private val kSpeedFactor = 1.4f
+    private val kSpeedFactor = 1.0f
 
     fun start() {
         if (!running) {
