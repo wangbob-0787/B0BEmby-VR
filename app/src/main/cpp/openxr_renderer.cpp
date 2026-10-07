@@ -612,6 +612,17 @@ struct VrContext {
      * 银幕按它调高度 —— 否则 2.35:1 的片子会被拉成 16:9（父亲 2026-10-06）。
      */
     std::atomic<float> videoAspect{16.f / 9.f};
+
+    /**
+     * 弹幕画布的像素尺寸：宽固定 2560，高 = 2560 ÷ 影片比例（Java 侧算好推来）。
+     *
+     * 父亲 2026-10-07：弹幕层原来固定 16:9，贴到银幕上后遇到 4:3 或宽银幕片，
+     * 画布被拉伸 → 弹幕字、片名 logo、字幕、快进快退进度条全都变形；
+     * 反过来锁死 16:9 又会让弹幕跑出画面。现在画布比例 = 影片比例，
+     * 层尺寸仍跟银幕（等宽），两边一致 → 不变形也不出画面。
+     */
+    std::atomic<int32_t> danmakuPxW{2560};
+    std::atomic<int32_t> danmakuPxH{1440};
     /**
      * 画面亮度/对比度/饱和度（父亲 2026-10-06：「调图像的功能都加上」）。
      */
@@ -3106,9 +3117,11 @@ void frameLoop(VrContext &c) {
                      c.danmakuHasFrame.load() ? 1 : 0, c.danmakuVisible.load() ? 1 : 0,
                      c.danmakuLayer.built ? 1 : 0);
             }
-            constexpr int32_t kDanmakuPxW = 2560;
-            constexpr int32_t kDanmakuPxH = 1440;
-            if (buildQuadLayer(c, c.danmakuLayer, kDanmakuPxW, kDanmakuPxH, "弹幕层")) {
+            // 画布尺寸随影片比例（Java 推来，见 nativeSetDanmakuCanvas）；
+            // buildQuadLayer 自带「尺寸变了就重建」，所以这里只读数值。
+            const int32_t dmPxW = c.danmakuPxW.load();
+            const int32_t dmPxH = c.danmakuPxH.load();
+            if (buildQuadLayer(c, c.danmakuLayer, dmPxW, dmPxH, "弹幕层")) {
                 c.danmakuLayer.submitted =
                         renderQuadLayer(c, c.danmakuLayer, c.danmakuTex, false);
             }
@@ -3714,6 +3727,22 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetVideoAspect(JNIEnv *env, jobject /* 
     if (aspect > 0.2f && aspect < 6.f) {
         g.videoAspect = aspect;
         LOGI("视频比例 → %.3f", (double) aspect);
+    }
+}
+
+/**
+ * 弹幕画布尺寸（Java 侧按影片比例算好推过来，父亲 2026-10-07）。
+ *
+ * 只改数值不碰 GL：buildQuadLayer 下一帧发现尺寸不同会自己销毁旧交换链重建，
+ * 而 OES 纹理与 SurfaceTexture 都留着 —— Java 那边只管改缓冲尺寸继续画。
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetDanmakuCanvas(JNIEnv * /* env */, jobject /* this */,
+                                                         jint w, jint h) {
+    if (w >= 256 && w <= 8192 && h >= 256 && h <= 8192) {
+        g.danmakuPxW = (int32_t) w;
+        g.danmakuPxH = (int32_t) h;
+        LOGI("弹幕画布 → %dx%d", (int) w, (int) h);
     }
 }
 

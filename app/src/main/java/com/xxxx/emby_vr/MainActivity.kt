@@ -96,6 +96,12 @@ class MainActivity : ComponentActivity() {
 
     /** 弹幕画笔（直接往纹理上画，不走虚拟显示器） */
     private var danmakuPainter: com.xxxx.emby_vr.danmaku.DanmakuSurfacePainter? = null
+
+    /**
+     * 弹幕画布高度（父亲 2026-10-07）：宽度固定 2560，高度随影片比例。
+     * 起播拿到真实比例后由 [applyDanmakuCanvas] 改写。
+     */
+    private var danmakuCanvasH = 1440
     private var danmakuView: com.xxxx.emby_vr.danmaku.DanmakuView? = null
 
     /** 当前这一集解析好的弹幕（菜单里把弹幕关掉时先留着，开回来直接用） */
@@ -515,6 +521,23 @@ class MainActivity : ComponentActivity() {
      *
      * 尺寸用 2560×1440（16:9，够弹幕文字清晰），与原生弹幕层的缓冲尺寸一致。
      */
+    /**
+     * 弹幕画布比例跟影片走（父亲 2026-10-07 定的第二条方案）。
+     *
+     * 宽度钉死 2560，高度 = 2560 ÷ 画面比例：画布比例与银幕完全一致，
+     * 弹幕、片名 logo、字幕、快进快退进度条都不再被拉伸，也不会跑到画面外。
+     */
+    private fun applyDanmakuCanvas(aspect: Float) {
+        if (aspect <= 0.2f || aspect > 6f) return
+        val w = 2560
+        val h = Math.round(w / aspect).coerceIn(600, 3200)
+        if (h == danmakuCanvasH) return
+        danmakuCanvasH = h
+        com.xxxx.emby_vr.vr.VrNative.setDanmakuCanvas(w, h)
+        danmakuPainter?.resizeTo(w, h)
+        Log.i(TAG, "弹幕画布随影片比例 → ${w}x$h（比例 $aspect）")
+    }
+
     private fun attachDanmakuSurface(st: android.graphics.SurfaceTexture) {
         runOnUiThread {
             runCatching {
@@ -523,7 +546,7 @@ class MainActivity : ComponentActivity() {
                     context = this,
                     surfaceTexture = st,
                     widthPx = 2560,
-                    heightPx = 1440,
+                    heightPx = danmakuCanvasH,
                     positionProvider = { danmakuPosForPainter() },
                     scale = danmakuScale,
                 )
@@ -542,7 +565,7 @@ class MainActivity : ComponentActivity() {
                 painter.view.setSubtitle(subtitleNow)
                 painter.start()
                 danmakuPainter = painter
-                Log.i(TAG, "弹幕画笔已启动（2560x1440，开关=${if (danmakuOn) "开" else "关"}）")
+                Log.i(TAG, "弹幕画笔已启动（2560x$danmakuCanvasH，开关=${if (danmakuOn) "开" else "关"}）")
             }.onFailure { t ->
                 Log.e(TAG, "弹幕画笔启动失败: ${t.javaClass.simpleName}: ${t.message}")
             }
@@ -1054,6 +1077,7 @@ class MainActivity : ComponentActivity() {
                             val a = videoSize.width * videoSize.pixelWidthHeightRatio /
                                 videoSize.height
                             com.xxxx.emby_vr.vr.VrNative.setVideoAspect(a)
+                            applyDanmakuCanvas(a)
                             // 纹理尺寸也要给（锐化的邻域步长按真实像素算）
                             com.xxxx.emby_vr.vr.VrNative.setVideoSize(
                                 videoSize.width,

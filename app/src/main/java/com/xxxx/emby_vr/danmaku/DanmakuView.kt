@@ -225,15 +225,16 @@ class DanmakuView(context: Context) : View(context) {
      */
     private fun drawSeekHud(canvas: Canvas) {
         if (!hudVisible || width <= 0 || height <= 0) return
-        val textSize = max(14f, height * 0.022f)
+        // 画布高度随影片比例变，字号一律按宽度算（16:9 时与原来等价）
+        val textSize = max(14f, width * 0.022f * 9f / 16f)
         hudTextPaint.textSize = textSize
         hudDimPaint.textSize = textSize
 
         val padX = width * 0.028f          // 电视版左右各 54dp / 1920 ≈ 2.8%
-        val rowCy = height * 0.86f         // 进度条中心线：画面底部往上 14%
-        val barH = max(3f, height * 0.0042f)
-        val cursorW = max(3f, height * 0.0042f)
-        val cursorH = height * 0.028f
+        val rowCy = height - width * 0.14f * 9f / 16f   // 画面底部往上 14%（按宽度算）
+        val barH = max(3f, width * 0.0042f * 9f / 16f)
+        val cursorW = max(3f, width * 0.0042f * 9f / 16f)
+        val cursorH = width * 0.028f * 9f / 16f
 
         val remain = (hudDurMs - hudPosMs).coerceAtLeast(0L)
         val leftText = osdTimeText(hudPosMs)
@@ -280,7 +281,7 @@ class DanmakuView(context: Context) : View(context) {
      */
     private fun drawSubtitle(canvas: Canvas) {
         if (subtitle.isEmpty() || height <= 0) return
-        val size = max(12f, height * 0.05f)
+        val size = max(12f, width * 0.05f * 9f / 16f)
         subtitlePaint.textSize = size
         subtitleOutline.textSize = size
         subtitleOutline.strokeWidth = max(2f, size * 0.09f)
@@ -289,7 +290,8 @@ class DanmakuView(context: Context) : View(context) {
          * 快进快退进度条也在画面底部，两条会撞在一起（多行字幕时尤其明显）：
          * HUD 显示期间把字幕整体上抬一档，让出底部那条。
          */
-        var y = height - height * 0.07f - (if (hudVisible) height * 0.085f else 0f)
+        var y = height - width * 0.07f * 9f / 16f -
+            (if (hudVisible) width * 0.085f * 9f / 16f else 0f)
         for (i in lines.indices.reversed()) {
             val line = lines[i]
             if (line.isNotEmpty()) {

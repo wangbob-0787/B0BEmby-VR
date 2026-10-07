@@ -207,6 +207,15 @@ object VrNative {
     )
 
     private external fun nativeSetVideoSize(width: Int, height: Int)
+    private external fun nativeSetDanmakuCanvas(width: Int, height: Int)
+
+    /**
+     * 弹幕画布尺寸（父亲 2026-10-07）：宽固定 2560，高按影片比例。
+     * 原生侧下一帧自动重建这块画布，Java 侧同步改缓冲尺寸继续画。
+     */
+    fun setDanmakuCanvas(width: Int, height: Int) {
+        runCatching { if (loaded) nativeSetDanmakuCanvas(width, height) }
+    }
 
     /**
      * 画面调整五件套：亮度、对比度、饱和度、锐度、色温。

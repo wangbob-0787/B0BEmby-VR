@@ -23,9 +23,9 @@ import android.view.View
  */
 class DanmakuSurfacePainter(
     context: Context,
-    surfaceTexture: SurfaceTexture,
-    private val widthPx: Int,
-    private val heightPx: Int,
+    private val surfaceTexture: SurfaceTexture,
+    private var widthPx: Int,
+    private var heightPx: Int,
     positionProvider: () -> Long,
     scale: Float,
 ) {
@@ -83,6 +83,26 @@ class DanmakuSurfacePainter(
         surfaceTexture.setDefaultBufferSize(widthPx, heightPx)
     }
 
+    /**
+     * 换片时按影片比例改画布尺寸（父亲 2026-10-07 定的第二条方案）。
+     *
+     * 宽度固定 2560，高度 = 2560 ÷ 画面比例 —— 画布比例与银幕一致，
+     * 弹幕、片名 logo、字幕、快进快退进度条都不会被拉伸变形。
+     * 缓冲尺寸跟着改，原生侧下一帧自己把这块画布重建到同样大小。
+     */
+    fun resizeTo(w: Int, h: Int) {
+        if (w == widthPx && h == heightPx) return
+        widthPx = w
+        heightPx = h
+        view.measure(
+            View.MeasureSpec.makeMeasureSpec(widthPx, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(heightPx, View.MeasureSpec.EXACTLY),
+        )
+        view.layout(0, 0, widthPx, heightPx)
+        surfaceTexture.setDefaultBufferSize(widthPx, heightPx)
+        android.util.Log.i("B0BEmbyVR", "弹幕画布改为 ${widthPx}x$heightPx")
+    }
+
     private val surface = Surface(surfaceTexture)
     @Volatile
     private var running = false
@@ -138,7 +158,8 @@ class DanmakuSurfacePainter(
                             val ratio = logo.width.toFloat() / logo.height
                             var lw = widthPx * LOGO_CANVAS_MAX_WIDTH
                             var lh = lw / ratio
-                            val maxH = heightPx * LOGO_CANVAS_MAX_HEIGHT
+                            // 上限按宽度算（画布高度会随影片比例变，按高度算 logo 会忽大忽小）
+                            val maxH = widthPx * LOGO_CANVAS_MAX_HEIGHT * CANVAS_H_OVER_W
                             if (lh > maxH) {
                                 lh = maxH
                                 lw = lh * ratio
@@ -146,7 +167,9 @@ class DanmakuSurfacePainter(
                             val lwInt = lw.toInt()
                             val lhInt = lh.toInt()
                             val lx = (widthPx * LOGO_CANVAS_RIGHT).toInt() - lwInt
-                            val ly = (heightPx * LOGO_CANVAS_BOTTOM).toInt() - lhInt
+                            // 底边距也按宽度算：距底 width×(1-0.9565)×9/16
+                            val ly = (heightPx - widthPx * (1f - LOGO_CANVAS_BOTTOM) *
+                                CANVAS_H_OVER_W).toInt() - lhInt
                             canvas.drawBitmap(
                                 logo, null,
                                 android.graphics.Rect(lx, ly, lx + lwInt, ly + lhInt), null,
@@ -187,13 +210,14 @@ class DanmakuSurfacePainter(
     private fun drawHintText(canvas: android.graphics.Canvas, hint: String) {
         val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
             color = 0xFFE8F8FF.toInt()
-            textSize = heightPx * 0.045f          // 1440 画布 ≈ 65px
+            textSize = widthPx * 0.045f * CANVAS_H_OVER_W   // 2560 宽画布 ≈ 65px
             textAlign = android.graphics.Paint.Align.CENTER
             isFakeBoldText = true
         }
         val shadow = android.graphics.Paint(paint).apply { color = 0xCC000000.toInt() }
         val cx = widthPx / 2f
-        val cy = heightPx * 0.62f
+        // 挂在转圈（画面正中）下方固定距离，按宽度算 —— 画布比例变时两者不会错位
+        val cy = heightPx / 2f + widthPx * 0.0675f
         canvas.drawText(hint, cx + 3f, cy + 3f, shadow)
         canvas.drawText(hint, cx, cy, paint)
     }
@@ -262,6 +286,14 @@ class DanmakuSurfacePainter(
         const val TAG = "B0BEmbyVR"
 
         /** logo 宽上限 = 画布宽的这个比例（屏幕占比 13.43%，是原来 7.3% 的两倍） */
+        /**
+         * 16:9 画布下的「高度 ÷ 宽度」。
+         *
+         * 画布宽度固定 2560、高度随影片比例变，所以凡是"文字大小、边距"
+         * 这类必须视觉恒定的量，一律按宽度算（原本按高度算的常量乘上它）。
+         */
+        const val CANVAS_H_OVER_W = 9f / 16f
+
         const val LOGO_CANVAS_MAX_WIDTH = 0.146f
 
         /**
