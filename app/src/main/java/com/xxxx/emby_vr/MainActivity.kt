@@ -389,107 +389,6 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-    /*
-     * 摇杆左右快进快退（2026-10-07 父亲：光柱指着屏幕时，逻辑复刻电视版）。
-     *
-     * 电视版（`PlayerScreen.kt` 行 1670–1711 / 754–782）：
-     *   · 按下后 500ms 内抬起 → ±10 秒（播放器的 seekBack/Forward 增量就是 10 秒）
-     *   · 按住 ≥500ms        → 每 200ms 跳 30 秒；跳的时候若已暂停，自动续播
-     *   · 每次按下（含长按连发）都唤出画面底部的进度条，最后一次操作后 5 秒收起
-     *   · 控制条展开时左右键不快进快退（交给焦点移动）
-     *
-     * PICO 上没有"按下 / 抬起"，只有摇杆量（原生每 33ms 推一帧、回中推一帧零值），
-     * 所以等价换算：推过 0.7 当作按下；回到 0.35 以下当作抬起；
-     * 中间保持的时长对上电视版那个 500ms 判定。
-     */
-    private var stickSeekDir = 0              // 0 = 没推 / +1 快进 / -1 快退
-    private var stickSeekAccel = false        // 是否已进入"按住加速"那一档
-    private var stickSeekHoldJob: kotlinx.coroutines.Job? = null
-
-    /** 画面上那条快进快退进度条：正在显示 / 刷新任务 / 隐退任务 */
-    private var seekHudShown = false
-    private var seekHudTickJob: kotlinx.coroutines.Job? = null
-    private var seekHudHideJob: kotlinx.coroutines.Job? = null
-
-    private fun stickSeek(sx: Float) {
-        if (player == null) return
-        val mag = kotlin.math.abs(sx)
-        if (mag < 0.35f) {                                   // 回中 = 抬起
-            if (stickSeekDir == 0) return
-            stickSeekHoldJob?.cancel()
-            stickSeekHoldJob = null
-            // 电视版：按下到抬起不到 500ms → 只跳一次 10 秒
-            //（超过 500ms 的那档已经在加速循环里按 30 秒连跳过了）
-            if (!stickSeekAccel) {
-                val dir = stickSeekDir
-                seekBy(if (dir > 0) 10_000L else -10_000L)
-                Log.i(TAG, "摇杆短推 → ${if (dir > 0) "快进" else "快退"} 10 秒")
-            }
-            stickSeekDir = 0
-            stickSeekAccel = false
-            armSeekHudDismiss()
-            return
-        }
-        if (stickSeekDir != 0 || mag < 0.7f) return           // 这一次推杆已经在处理
-        val dir = if (sx > 0f) 1 else -1
-        stickSeekDir = dir
-        stickSeekAccel = false
-        showSeekHud()
-        stickSeekHoldJob = scope.launch {
-            kotlinx.coroutines.delay(500L)                    // 电视版：500ms 内抬手就只跳一次
-            stickSeekAccel = true
-            while (isActive && stickSeekDir == dir) {
-                seekBy(dir * 30_000L)                         // 电视版长按：每 200ms 跳 30 秒
-                val p = player ?: break
-                if (!p.playWhenReady) p.playWhenReady = true  // 电视版：长按时暂停会自动续播
-                armSeekHudDismiss()
-                kotlinx.coroutines.delay(200L)
-            }
-        }
-    }
-
-    /** 亮出快进快退进度条（控制条展开时不亮，与电视版一致），并重置 5 秒隐退计时 */
-    private fun showSeekHud() {
-        if (osdVisible) return
-        val v = danmakuView ?: return
-        val p = player
-        seekHudShown = true
-        v.setSeekHud(true, p?.currentPosition ?: 0L, p?.duration ?: 0L, p?.bufferedPosition ?: 0L)
-        if (seekHudTickJob?.isActive != true) {
-            seekHudTickJob = scope.launch {
-                while (true) {
-                    val pl = player
-                    danmakuView?.setSeekHud(
-                        true,
-                        pl?.currentPosition ?: 0L,
-                        pl?.duration ?: 0L,
-                        pl?.bufferedPosition ?: 0L,
-                    )
-                    kotlinx.coroutines.delay(200L)
-                }
-            }
-        }
-        armSeekHudDismiss()
-    }
-
-    /** 每次操作（含长按连发）都重置隐退计时：最后一次操作后 5 秒收起（电视版同款） */
-    private fun armSeekHudDismiss() {
-        seekHudHideJob?.cancel()
-        seekHudHideJob = scope.launch {
-            kotlinx.coroutines.delay(5000L)
-            hideSeekHud()
-        }
-    }
-
-    private fun hideSeekHud() {
-        seekHudHideJob?.cancel()
-        seekHudHideJob = null
-        seekHudTickJob?.cancel()
-        seekHudTickJob = null
-        if (!seekHudShown) return
-        seekHudShown = false
-        danmakuView?.setSeekHud(false, 0L, 0L, 0L)
-    }
 
         override fun onOsdPointer(px: Float, py: Float, pressed: Boolean) {
             vrInputLive = true
@@ -754,6 +653,108 @@ class MainActivity : ComponentActivity() {
         com.xxxx.emby_vr.vr.VrNative.setMenuHitRect(0f, 0f, 0f, 0f)
         com.xxxx.emby_vr.vr.VrNative.setMenuVisible(false)
         Log.i(TAG, "菜单关闭")
+    }
+
+    /*
+     * 摇杆左右快进快退（2026-10-07 父亲：光柱指着屏幕时，逻辑复刻电视版）。
+     *
+     * 电视版（`PlayerScreen.kt` 行 1670–1711 / 754–782）：
+     *   · 按下后 500ms 内抬起 → ±10 秒（播放器的 seekBack/Forward 增量就是 10 秒）
+     *   · 按住 ≥500ms        → 每 200ms 跳 30 秒；跳的时候若已暂停，自动续播
+     *   · 每次按下（含长按连发）都唤出画面底部的进度条，最后一次操作后 5 秒收起
+     *   · 控制条展开时左右键不快进快退（交给焦点移动）
+     *
+     * PICO 上没有"按下 / 抬起"，只有摇杆量（原生每 33ms 推一帧、回中推一帧零值），
+     * 所以等价换算：推过 0.7 当作按下；回到 0.35 以下当作抬起；
+     * 中间保持的时长对上电视版那个 500ms 判定。
+     */
+    private var stickSeekDir = 0              // 0 = 没推 / +1 快进 / -1 快退
+    private var stickSeekAccel = false        // 是否已进入"按住加速"那一档
+    private var stickSeekHoldJob: kotlinx.coroutines.Job? = null
+
+    /** 画面上那条快进快退进度条：正在显示 / 刷新任务 / 隐退任务 */
+    private var seekHudShown = false
+    private var seekHudTickJob: kotlinx.coroutines.Job? = null
+    private var seekHudHideJob: kotlinx.coroutines.Job? = null
+
+    private fun stickSeek(sx: Float) {
+        if (player == null) return
+        val mag = kotlin.math.abs(sx)
+        if (mag < 0.35f) {                                   // 回中 = 抬起
+            if (stickSeekDir == 0) return
+            stickSeekHoldJob?.cancel()
+            stickSeekHoldJob = null
+            // 电视版：按下到抬起不到 500ms → 只跳一次 10 秒
+            //（超过 500ms 的那档已经在加速循环里按 30 秒连跳过了）
+            if (!stickSeekAccel) {
+                val dir = stickSeekDir
+                seekBy(if (dir > 0) 10_000L else -10_000L)
+                Log.i(TAG, "摇杆短推 → ${if (dir > 0) "快进" else "快退"} 10 秒")
+            }
+            stickSeekDir = 0
+            stickSeekAccel = false
+            armSeekHudDismiss()
+            return
+        }
+        if (stickSeekDir != 0 || mag < 0.7f) return           // 这一次推杆已经在处理
+        val dir = if (sx > 0f) 1 else -1
+        stickSeekDir = dir
+        stickSeekAccel = false
+        showSeekHud()
+        stickSeekHoldJob = scope.launch {
+            kotlinx.coroutines.delay(500L)                    // 电视版：500ms 内抬手就只跳一次
+            stickSeekAccel = true
+            while (stickSeekDir == dir) {   // job 被 cancel 时 delay 会抛出并结束循环
+                seekBy(dir * 30_000L)                         // 电视版长按：每 200ms 跳 30 秒
+                val p = player ?: break
+                if (!p.playWhenReady) p.playWhenReady = true  // 电视版：长按时暂停会自动续播
+                armSeekHudDismiss()
+                kotlinx.coroutines.delay(200L)
+            }
+        }
+    }
+
+    /** 亮出快进快退进度条（控制条展开时不亮，与电视版一致），并重置 5 秒隐退计时 */
+    private fun showSeekHud() {
+        if (osdVisible) return
+        val v = danmakuView ?: return
+        val p = player
+        seekHudShown = true
+        v.setSeekHud(true, p?.currentPosition ?: 0L, p?.duration ?: 0L, p?.bufferedPosition ?: 0L)
+        if (seekHudTickJob?.isActive != true) {
+            seekHudTickJob = scope.launch {
+                while (true) {
+                    val pl = player
+                    danmakuView?.setSeekHud(
+                        true,
+                        pl?.currentPosition ?: 0L,
+                        pl?.duration ?: 0L,
+                        pl?.bufferedPosition ?: 0L,
+                    )
+                    kotlinx.coroutines.delay(200L)
+                }
+            }
+        }
+        armSeekHudDismiss()
+    }
+
+    /** 每次操作（含长按连发）都重置隐退计时：最后一次操作后 5 秒收起（电视版同款） */
+    private fun armSeekHudDismiss() {
+        seekHudHideJob?.cancel()
+        seekHudHideJob = scope.launch {
+            kotlinx.coroutines.delay(5000L)
+            hideSeekHud()
+        }
+    }
+
+    private fun hideSeekHud() {
+        seekHudHideJob?.cancel()
+        seekHudHideJob = null
+        seekHudTickJob?.cancel()
+        seekHudTickJob = null
+        if (!seekHudShown) return
+        seekHudShown = false
+        danmakuView?.setSeekHud(false, 0L, 0L, 0L)
     }
 
     /** 控制条显隐（VR 侧画不画那块面板） */
