@@ -1804,6 +1804,8 @@ class MainActivity : ComponentActivity() {
         seekTargetMs = null
         // 播放结束：VR 画面切回面板（非 VR 模式下这条调用没有副作用）
         com.xxxx.emby_vr.vr.VrNative.setVideoActive(false)
+        // 转圈也收起来 —— 它只在换片 / 首播的等待期开着
+        com.xxxx.emby_vr.vr.VrNative.setSpinnerWanted(false)
         picking = false
         osdJob?.cancel()
         osdJob = null
@@ -1845,6 +1847,8 @@ class MainActivity : ComponentActivity() {
          * 兜底：万一第一帧迟迟不来（起播失败），8 秒后照样放出来，别让它们永远不显示。
          */
         waitingFirstFrame = true
+        // 银幕清空之后立刻进入"转圈"状态（父亲 2026-10-07：清空了但没有转圈）
+        com.xxxx.emby_vr.vr.VrNative.setSpinnerWanted(true)
         handler.postDelayed({
             if (waitingFirstFrame) {
                 Log.w(TAG, "等第一帧超时（8 秒），兜底把弹幕 / 字幕 / logo 放出来")
@@ -1862,6 +1866,7 @@ class MainActivity : ComponentActivity() {
     private fun revealDanmakuSubtitleLogo() {
         if (!waitingFirstFrame) return
         waitingFirstFrame = false
+        com.xxxx.emby_vr.vr.VrNative.setSpinnerWanted(false)   // 画面来了，转圈收起
         applyDanmakuSetting()                    // 弹幕层可见 + 按开关挂轨道
         danmakuView?.setSubtitle(subtitleNow)    // 字幕跟上
         com.xxxx.emby_vr.vr.VrNative.setLogoVisible(logoBitmap.value != null)

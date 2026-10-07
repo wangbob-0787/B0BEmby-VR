@@ -121,6 +121,20 @@ object VrNative {
         }
     }
 
+    /**
+     * 换片 / 首播等待期：银幕转圈（父亲 2026-10-07）。
+     *
+     * 换片时 setVideoActive(false) 只负责清空银幕，转圈要另外开这个开关 ——
+     * 原生的转圈条件只看 videoActive，清空后就再也不转了。
+     */
+    fun setSpinnerWanted(wanted: Boolean) {
+        try {
+            if (loaded) nativeSetSpinnerWanted(wanted)
+        } catch (t: Throwable) {
+            Log.e(TAG, "设置银幕转圈状态失败：${t.message}")
+        }
+    }
+
     private external fun nativeSetPanelShown(shown: Boolean)
 
     private external fun nativeGetPanelPlace(): FloatArray
@@ -294,6 +308,7 @@ object VrNative {
     private external fun nativeAttachInputSink(sink: InputSink)
 
     private external fun nativeSetVideoActive(active: Boolean)
+    private external fun nativeSetSpinnerWanted(wanted: Boolean)
 
     private external fun nativeSetOsdVisible(visible: Boolean)
 

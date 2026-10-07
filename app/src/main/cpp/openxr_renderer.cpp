@@ -662,6 +662,13 @@ struct VrContext {
     GLuint videoTex = 0;
     std::atomic<bool> videoActive{false};
     std::atomic<bool> videoHasFrame{false};   // 见 panelHasFrame 的注释
+    /*
+     * 换片 / 首播的等待期：Java 明确要求银幕转圈（父亲 2026-10-07）。
+     *
+     * 这段时间 videoActive 是 false（银幕已经清空），所以转圈不能再以 videoActive
+     * 为前提 —— 否则就是"屏幕黑了但一直不转圈"。
+     */
+    std::atomic<bool> spinnerWanted{false};
 
     /*
      * 控制条（OSD，2026-10-05）：架在视频屏下方的矮条，与面板/视频同一套
@@ -2383,7 +2390,16 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
 
         // 起播 / 换片到第一帧之间：银幕上转圈，别留上一部的画面（父亲 2026-10-05 要求）
         // 换片时先让银幕空一拍，再出转圈 —— 父亲 2026-10-06："先清屏，再显示加载箭头"
-        if (c.videoActive.load() && !videoReady && nowMs() - c.videoActiveAtMs > 250.0) {
+        /*
+         * 两种等待都画转圈：
+         *  · videoActive 已开、第一帧还没到（起播中）；
+         *  · 换片 / 首播的等待期 —— 这时 videoActive 是 false（银幕已清空），
+         *    靠 Java 侧的 spinnerWanted 顶上（父亲 2026-10-07 实测：清空了但不转圈，
+         *    就是因为这里只认 videoActive）。
+         */
+        const bool waitingForFirstFrame =
+                (c.videoActive.load() || c.spinnerWanted.load()) && !videoReady;
+        if (waitingForFirstFrame && nowMs() - c.videoActiveAtMs > 250.0) {
             drawSpinner(c, proj, view4);
         }
 
@@ -3442,6 +3458,24 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetVideoActive(JNIEnv *env, jobject /* 
         LOGI("刷新率 → %.0fHz（结果 %d）", (double) hz, (int) rr);
     }
     LOGI("播放画面状态 → %s", g.videoActive.load() ? "true" : "false");
+}
+
+/**
+ * 换片 / 首播等待期：让银幕转圈（父亲 2026-10-07）。
+ *
+ * 与 nativeSetVideoActive 是两条独立通道：换片时银幕已经清空（videoActive=false），
+ * 这时候仍然要显示转圈，所以由 Java 侧显式开关这个标志。
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetSpinnerWanted(JNIEnv *env, jobject /* this */,
+                                                          jboolean wanted) {
+    const bool w = (wanted == JNI_TRUE);
+    if (w && !g.spinnerWanted.load()) {
+        // 空一拍再出转圈：看起来是"先清屏、再显示加载箭头"（父亲 2026-10-06 定）
+        g.videoActiveAtMs = nowMs();
+    }
+    g.spinnerWanted = w;
+    LOGI("银幕转圈 → %s", w ? "等第一帧（转圈）" : "收起");
 }
 
 
