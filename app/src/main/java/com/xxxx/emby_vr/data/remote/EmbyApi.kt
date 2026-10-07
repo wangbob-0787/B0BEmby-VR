@@ -956,6 +956,12 @@ object EmbyApi {
 
             val supportedVideo = videoCodecs.joinToString(",")
             val supportedAudio = audioCodecs.joinToString(",")
+            /*
+             * 父亲 2026-10-07：把设备**实际探测到**的音轨能力打进日志。
+             * 之前判断"某个音轨能不能解"是拿系统 xml 名单推的，那只是静态声明；
+             * 以后以这条运行时探测结果为准（MediaCodecList 查到什么就是什么）。
+             */
+            Log.i("EmbyApi", "设备音轨能力探测 → $supportedAudio")
 
             val deviceProfile = JsonObject().apply {
                 addProperty("MaxStaticBitrate", maxStreamingBitrate)
