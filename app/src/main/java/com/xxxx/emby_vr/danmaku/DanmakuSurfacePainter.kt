@@ -53,6 +53,15 @@ class DanmakuSurfacePainter(
      * （它们等第一帧才亮），银幕上就只有转圈 + 这行字。
      */
     var hintProvider: (() -> String?)? = null
+
+    /**
+     * 等待期模式（父亲 2026-10-07）：返回非空 = 换片 / 首播等待中，字符串就是提示语。
+     *
+     * 这期间整块画布涂成**不透明黑**当"黑幕"（盖住视频层里残留的上一部画面），
+     * 黑幕上只画转圈与提示文字；弹幕 / 字幕 / 片名 logo 一律不画。
+     * 黑幕、转圈、提示全部落在这一层里，层序不用动 —— 它本来就压在视频层之上。
+     */
+    var loadingProvider: (() -> String?)? = null
     /** 自绘层本体。它不在视图树里，只被本类逐帧调用。 */
     val view = DanmakuView(context).apply {
         setPositionProvider(positionProvider)
@@ -99,56 +108,50 @@ class DanmakuSurfacePainter(
                     continue
                 }
                 try {
-                    // 先擦成全透明，再画 logo 与弹幕：透明区必须真的是透明的
-                    canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
-                    view.draw(canvas)
-                    /*
-                     * 等待期提示（父亲 2026-10-07：「即将播放：片名」）：
-                     * 画在银幕中部偏下，字号按银幕高度取 4.5%（1440 画布 ≈ 65px），
-                     * 带一层淡阴影，压在任何底色上都看得清。
-                     */
-                    hintProvider?.invoke()?.takeIf { it.isNotBlank() }?.let { hint ->
-                        val paint = android.graphics.Paint(
-                            android.graphics.Paint.ANTI_ALIAS_FLAG,
-                        ).apply {
-                            color = 0xFFE8F8FF.toInt()
-                            textSize = heightPx * 0.045f
-                            textAlign = android.graphics.Paint.Align.CENTER
-                            isFakeBoldText = true
-                        }
-                        val shadow = android.graphics.Paint(paint).apply {
-                            color = 0xCC000000.toInt()
-                        }
-                        val cx = widthPx / 2f
-                        val cy = heightPx * 0.62f
-                        canvas.drawText(hint, cx + 3f, cy + 3f, shadow)
-                        canvas.drawText(hint, cx, cy, paint)
-                    }
-                    /*
-                     * logo 最后画（父亲 2026-10-07 01:48：logo 不要被弹幕挡住）：
-                     * 压在弹幕上面 —— 弹幕从它的透明底穿过，文字部分压住弹幕。
-                     */
-                    logoBitmapProvider?.invoke()?.let { logo ->
+                    val loading = loadingProvider?.invoke()
+                    if (loading != null) {
                         /*
-                         * 宽高各有一道上限，图按自身比例缩进这个框（Fit，同 TV 版做法）——
-                         * 只卡宽度的话，「又高又窄」的 ClearLogo 会竖着占掉半个屏。
+                         * 等待期（换片 / 首播，父亲 2026-10-07）：
+                         * 整块涂黑当"黑幕"—— 视频层里残留的上一部画面被它盖住，
+                         * 而这一层本来就压在视频层之上，所以层序不用动。
+                         * 黑幕之上只画转圈与「即将播放：片名」。
                          */
-                        val ratio = logo.width.toFloat() / logo.height
-                        var lw = widthPx * LOGO_CANVAS_MAX_WIDTH
-                        var lh = lw / ratio
-                        val maxH = heightPx * LOGO_CANVAS_MAX_HEIGHT
-                        if (lh > maxH) {
-                            lh = maxH
-                            lw = lh * ratio
+                        canvas.drawColor(Color.BLACK)
+                        drawLoadingSpinner(canvas)
+                        drawHintText(canvas, loading)
+                    } else {
+                        // 正常播放：透明底 + 弹幕 + 字幕 + 片名 logo
+                        canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
+                        view.draw(canvas)
+                        hintProvider?.invoke()?.takeIf { it.isNotBlank() }?.let { hint ->
+                            drawHintText(canvas, hint)
                         }
-                        val lwInt = lw.toInt()
-                        val lhInt = lh.toInt()
-                        val lx = (widthPx * LOGO_CANVAS_RIGHT).toInt() - lwInt
-                        val ly = (heightPx * LOGO_CANVAS_BOTTOM).toInt() - lhInt
-                        canvas.drawBitmap(
-                            logo, null,
-                            android.graphics.Rect(lx, ly, lx + lwInt, ly + lhInt), null,
-                        )
+                        /*
+                         * logo 最后画（父亲 2026-10-07 01:48：logo 不要被弹幕挡住）：
+                         * 压在弹幕上面 —— 弹幕从它的透明底穿过，文字部分压住弹幕。
+                         */
+                        logoBitmapProvider?.invoke()?.let { logo ->
+                            /*
+                             * 宽高各有一道上限，图按自身比例缩进这个框（Fit，同 TV 版做法）——
+                             * 只卡宽度的话，「又高又窄」的 ClearLogo 会竖着占掉半个屏。
+                             */
+                            val ratio = logo.width.toFloat() / logo.height
+                            var lw = widthPx * LOGO_CANVAS_MAX_WIDTH
+                            var lh = lw / ratio
+                            val maxH = heightPx * LOGO_CANVAS_MAX_HEIGHT
+                            if (lh > maxH) {
+                                lh = maxH
+                                lw = lh * ratio
+                            }
+                            val lwInt = lw.toInt()
+                            val lhInt = lh.toInt()
+                            val lx = (widthPx * LOGO_CANVAS_RIGHT).toInt() - lwInt
+                            val ly = (heightPx * LOGO_CANVAS_BOTTOM).toInt() - lhInt
+                            canvas.drawBitmap(
+                                logo, null,
+                                android.graphics.Rect(lx, ly, lx + lwInt, ly + lhInt), null,
+                            )
+                        }
                     }
                     frames++
                     if (frames % 120L == 1L) {
@@ -178,6 +181,81 @@ class DanmakuSurfacePainter(
         runCatching { thread?.join(400) }
         thread = null
         runCatching { surface.release() }
+    }
+
+    /** 等待期 / 普通提示用的那行字：居中偏下，带一层淡阴影，压在任何底色上都看得清。 */
+    private fun drawHintText(canvas: android.graphics.Canvas, hint: String) {
+        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFFE8F8FF.toInt()
+            textSize = heightPx * 0.045f          // 1440 画布 ≈ 65px
+            textAlign = android.graphics.Paint.Align.CENTER
+            isFakeBoldText = true
+        }
+        val shadow = android.graphics.Paint(paint).apply { color = 0xCC000000.toInt() }
+        val cx = widthPx / 2f
+        val cy = heightPx * 0.62f
+        canvas.drawText(hint, cx + 3f, cy + 3f, shadow)
+        canvas.drawText(hint, cx, cy, paint)
+    }
+
+    /**
+     * 等待期的转圈（父亲 2026-10-07）。
+     *
+     * 与原生 GL 版同一套观感，但那版实测"开关开着却看不见"，所以搬到这一层来画
+     * —— 这一层已经验证可见（「即将播放：片名」就画在同一张画布上）：
+     *   · 72 段小弧拼环，缺口 45°，顺时针转
+     *   · 从尾巴到缺口端：由暗到亮（α 0.45 → 1.0）、由细到粗（0.45× → 1.35×）
+     *   · 实心三角箭头落在缺口"前方"端，尖朝顺时针方向
+     *
+     * 尺寸按银幕换算：银幕宽 3.5 m 对应画布整宽，于是
+     * 半径 0.10 m ≈ 画布宽的 1/35、环粗 0.012 m ≈ 1/292。
+     */
+    private fun drawLoadingSpinner(canvas: android.graphics.Canvas) {
+        val pxPerMeter = widthPx / 3.5f
+        val radius = 0.10f * pxPerMeter
+        val baseThick = 0.012f * pxPerMeter
+        val cx = widthPx / 2f
+        val cy = heightPx / 2f
+        val segs = 72
+        val gapSegs = 9                       // 缺口 45°
+        val sweep = 360f / segs               // 每段 5°
+        val drawn = segs - gapSegs
+        // Canvas 的正角方向就是顺时针；速度与 GL 版一致：2.6 rad/s ≈ 149°/s
+        val baseDeg = ((System.currentTimeMillis() / 1000.0) * 149.0 % 360.0).toFloat()
+        val rect = android.graphics.RectF(cx - radius, cy - radius, cx + radius, cy + radius)
+        val stroke = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            style = android.graphics.Paint.Style.STROKE
+            strokeCap = android.graphics.Paint.Cap.ROUND
+        }
+        for (i in 0 until drawn) {
+            val q = i / (drawn - 1f)
+            val alpha = 0.45f + 0.55f * q
+            stroke.strokeWidth = baseThick * (0.45f + 0.9f * q)
+            stroke.color = android.graphics.Color.argb((255 * alpha).toInt(), 33, 219, 240)
+            // 每段多画 25%，段与段搭接，看起来是一条连续实线
+            canvas.drawArc(rect, baseDeg + i * sweep, sweep * 1.25f, false, stroke)
+        }
+        // 箭头：中心落在环的缺口端，尖朝顺时针切向（也就是朝缺口）
+        val headRad = Math.toRadians((baseDeg + drawn * sweep).toDouble())
+        val hx = cx + radius * Math.cos(headRad).toFloat()
+        val hy = cy + radius * Math.sin(headRad).toFloat()
+        val tx = -Math.sin(headRad).toFloat()   // 顺时针切向
+        val ty = Math.cos(headRad).toFloat()
+        val nx = Math.cos(headRad).toFloat()    // 法向（底边方向）
+        val ny = Math.sin(headRad).toFloat()
+        val tipLen = 0.0367f * pxPerMeter
+        val backLen = 0.0204f * pxPerMeter
+        val halfW = 0.0168f * pxPerMeter
+        val path = android.graphics.Path()
+        path.moveTo(hx + tx * tipLen, hy + ty * tipLen)
+        path.lineTo(hx - tx * backLen + nx * halfW, hy - ty * backLen + ny * halfW)
+        path.lineTo(hx - tx * backLen - nx * halfW, hy - ty * backLen - ny * halfW)
+        path.close()
+        val fill = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            style = android.graphics.Paint.Style.FILL
+            color = android.graphics.Color.argb(255, 33, 219, 240)
+        }
+        canvas.drawPath(path, fill)
     }
 
     private companion object {

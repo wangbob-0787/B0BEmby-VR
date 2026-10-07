@@ -493,8 +493,14 @@ class MainActivity : ComponentActivity() {
                 danmakuView = painter.view
                 // 等第一帧期间不画片名 logo（父亲 2026-10-07：logo 要跟画面一起出现）
                 painter.logoBitmapProvider = { if (waitingFirstFrame) null else logoBitmap.value }
-                // 等待期的「即将播放：片名」提示画在同一张画布上
-                painter.hintProvider = { danmakuHint.value }
+                /*
+                 * 等待期（换片 / 首播）：黑幕 + 转圈 + 「即将播放：片名」全部画在这一层。
+                 * 平时返回 null，这一层恢复"透明底 + 弹幕 + 字幕 + logo"。
+                 */
+                painter.loadingProvider = {
+                    if (waitingFirstFrame) (danmakuHint.value ?: "即将播放…") else null
+                }
+                painter.hintProvider = { if (waitingFirstFrame) null else danmakuHint.value }
                 painter.view.setTrack(if (danmakuOn) danmakuTrack else null)
                 painter.view.setSubtitle(subtitleNow)
                 painter.start()

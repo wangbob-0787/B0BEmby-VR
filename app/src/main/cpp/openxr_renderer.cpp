@@ -2360,8 +2360,13 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
          * 视频屏：交给独立图层时这里留空（背景是透明的），交给系统合成器去缩；
          * 独立层建不起来才退回老路 —— 画进我们自己的画面，带 4×4 降采样。
          */
-        if (c.videoLayer.submitted) {
-            // 留空：视频在上面那层，位置一致
+        /*
+         * 换片 / 首播的等待期（spinnerWanted）：这里也要留空。
+         * 此刻弹幕层是「黑幕 + 转圈 + 片名提示」，而它压在这一层（投影层）下面 ——
+         * 这里再画一块不透明的视频或黑，就把黑幕和提示全盖掉了（父亲 2026-10-07）。
+         */
+        if (c.videoLayer.submitted || c.spinnerWanted.load()) {
+            // 留空：视频在黑幕下面那层，位置一致
         } else {
             drawScreen(frontScreen(c), videoReady ? c.videoTex : 0, true);
         }
@@ -2397,9 +2402,15 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
          *    靠 Java 侧的 spinnerWanted 顶上（父亲 2026-10-07 实测：清空了但不转圈，
          *    就是因为这里只认 videoActive）。
          */
-        const bool waitingForFirstFrame =
-                (c.videoActive.load() || c.spinnerWanted.load()) && !videoReady;
-        if (waitingForFirstFrame && nowMs() - c.videoActiveAtMs > 250.0) {
+        /*
+         * GL 版转圈**停用**（父亲 2026-10-07）：实测"开关一直开着、圈就是不出现"
+         * （日志里 `银幕转圈 → 等第一帧` 持续数秒，银幕上却没有圈）。
+         * 等待期的转圈改由弹幕层画布提供（Java 侧 drawLoadingSpinner）——
+         * 那一层反复验证可见，而且黑幕、提示都在同一张画布上，层序自洽。
+         * 代码保留，要回退时恢复这个 if 即可。
+         */
+        if (false && (c.videoActive.load() || c.spinnerWanted.load()) && !videoReady &&
+            nowMs() - c.videoActiveAtMs > 250.0) {
             drawSpinner(c, proj, view4);
         }
 
