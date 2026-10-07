@@ -955,7 +955,16 @@ object EmbyApi {
             val finalLevel = if (actualDisableHevc) 51 else if (rawLevel > 62) 62 else rawLevel
 
             val supportedVideo = videoCodecs.joinToString(",")
-            val supportedAudio = audioCodecs.joinToString(",")
+            /*
+             * 如实声明能解的音轨（父亲 2026-10-07）。
+             *
+             * 系统层面头显只有 flac,alac,pcm_mulaw,pcm_alaw,mp3,aac,opus,vorbis
+             * （运行时探测结果）；AC3/EAC3/DTS 这三种由打包进来的 FFmpeg 软解扩展兜住。
+             * 声明全了以后服务端就不必转码 —— 直连原文件，有声、不卡、音画本来就同步。
+             */
+            val softAudio = listOf("ac3", "eac3", "dts")
+            val supportedAudio =
+                (audioCodecs + softAudio).distinct().joinToString(",")
             /*
              * 父亲 2026-10-07：把设备**实际探测到**的音轨能力打进日志。
              * 之前判断"某个音轨能不能解"是拿系统 xml 名单推的，那只是静态声明；

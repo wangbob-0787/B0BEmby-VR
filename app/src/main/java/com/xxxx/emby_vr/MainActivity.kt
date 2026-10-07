@@ -1120,7 +1120,18 @@ class MainActivity : ComponentActivity() {
                         .DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS,
                 )
                 .build()
-            player = ExoPlayer.Builder(this).setLoadControl(loadControl).build().also { p ->
+            /*
+             * 音频软解器（父亲 2026-10-07）：头显系统不给第三方应用 AC3/EAC3/DTS 的
+             * 解码器，这些音轨以前只能求服务端转码，一转码就卡、音画还会错位。
+             * 现在由打包进来的 FFmpeg 扩展自己解。
+             * MODE_ON = 系统解码器优先、扩展兜底：AAC 这类仍走系统（省电），
+             * 只有系统解不了的才落到软解。
+             */
+            val renderersFactory = androidx.media3.exoplayer.DefaultRenderersFactory(this)
+                .setExtensionRendererMode(
+                    androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON,
+                )
+            player = ExoPlayer.Builder(this, renderersFactory).setLoadControl(loadControl).build().also { p ->
                 /*
                  * 起始位置一并交给播放器：服务端虽然按 startTimeTicks 从该位置出流，
                  * 播放器自己仍会从流的第 0 秒开始放 —— 换轨重播「从头开始」就是这个。

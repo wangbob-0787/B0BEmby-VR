@@ -3,7 +3,8 @@ agp = "8.13.2"
 kotlin = "2.0.21"
 coreKtx = "1.17.0"
 material3 = "1.4.0"
-media3 = "1.4.1"
+# 1.4.1 → 1.5.0：为了对齐 Jellyfin 的 FFmpeg 音频软解扩展（它只有 1.5.0+1 这档）
+media3 = "1.5.0"
 coil = "3.0.4"
 coroutines = "1.9.0"
 serialization = "1.7.3"
@@ -48,6 +49,8 @@ media3-exoplayer-hls = { group = "androidx.media3", name = "media3-exoplayer-hls
 media3-ui = { group = "androidx.media3", name = "media3-ui", version.ref = "media3" }
 media3-session = { group = "androidx.media3", name = "media3-session", version.ref = "media3" }
 media3-datasource-okhttp = { group = "androidx.media3", name = "media3-datasource-okhttp", version.ref = "media3" }
+# FFmpeg 音频软解扩展不走远程仓库：用 app/libs/media3-ffmpeg-decoder-1.5.0.aar
+# （父亲 2026-10-07 定：本地一份，不要每次编译都去拉）
 
 # 图片：海报加载
 coil-compose = { group = "io.coil-kt.coil3", name = "coil-compose", version.ref = "coil" }

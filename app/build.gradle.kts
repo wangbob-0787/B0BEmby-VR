@@ -175,6 +175,13 @@ dependencies {
     implementation(libs.media3.ui)
     implementation(libs.media3.session)
     implementation(libs.media3.datasource.okhttp)
+    /*
+     * FFmpeg 音频软解扩展（父亲 2026-10-07 定）：
+     * 头显系统不给第三方应用 AC3/EAC3/DTS 的解码器，只能靠它自己软解。
+     * 有了它就能如实声明"这些音轨我能放"，服务端不必转码 —— 直连原文件，
+     * 有声、不卡、音画本来就同步。包是 Jellyfin 编好发到 Maven Central 的。
+     */
+    implementation(files("libs/media3-ffmpeg-decoder-1.5.0.aar"))
 
     implementation(libs.coil.compose)
     implementation(libs.coil.network.okhttp)
