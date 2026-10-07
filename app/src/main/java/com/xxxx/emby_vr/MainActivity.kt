@@ -610,20 +610,26 @@ class MainActivity : ComponentActivity() {
      *  · 剧集：`正在播放：剧名 第X集 集名`
      *  · 有剧名没集号：`正在播放：剧名`
      */
-    private fun osdTitleText(): String {
-        val item = currentItem
+    /**
+     * 控制条的片名文案（父亲 2026-10-07：「正在播放」与「即将播放」用同一套）。
+     *
+     * 剧集 = 剧名 + 第X集 + 集名；电影 = 片名。前缀由调用方给。
+     */
+    private fun itemTitleOf(item: com.xxxx.emby_vr.data.model.BaseItemDto?): String {
         val series = item?.seriesName
         val ep = item?.indexNumber
         val name = item?.name
-        val base = when {
+        return when {
             !series.isNullOrBlank() && ep != null ->
                 if (!name.isNullOrBlank() && name != series) "$series 第${ep}集 $name"
                 else "$series 第${ep}集"
             !series.isNullOrBlank() -> series
-            else -> name ?: osdState.title
+            else -> name ?: ""
         }
-        return "正在播放：$base"
     }
+
+    private fun osdTitleText(prefix: String = "正在播放："): String =
+        prefix + itemTitleOf(currentItem)
 
     /** 最近 300ms 面板刚吃过指针 / 点击 / 滚动：这一下扳机归面板 */
     private fun panelTouchedRecently(): Boolean =
@@ -1688,10 +1694,10 @@ class MainActivity : ComponentActivity() {
                     "详情已取到：${item.name}（演员 ${menuState.people.size} 人" +
                         "，logo ${if (logoAddr.isNullOrBlank()) "无" else "有"}）",
                 )
-                // 等待期把片名补进提示（父亲 2026-10-07：「即将播放：片名」）
+                // 等待期把片名补进提示（父亲 2026-10-07：剧集要显示「剧名 + 第X集 + 集名」）
                 if (waitingFirstFrame) {
-                    val nm = item.seriesName?.takeIf { it.isNotBlank() } ?: item.name
-                    if (!nm.isNullOrBlank()) danmakuHint.value = "即将播放：$nm"
+                    val t = itemTitleOf(item)
+                    if (t.isNotBlank()) danmakuHint.value = "即将播放：$t"
                 }
             } catch (t: Throwable) {
                 Log.e(TAG, "取详情失败", t)
@@ -1910,6 +1916,17 @@ class MainActivity : ComponentActivity() {
      *               否则它们会在起播过程中被收掉，等标志生效时界面早没了。
      */
     private fun stopPlaybackInternal(keepUi: Boolean = false) {
+        /*
+         * 先上报「停止播放」，再释放播放器（父亲 2026-10-07：播放历史没上传到 Emby）。
+         *
+         * 原来只有"自然播完（STATE_ENDED）"才发 Stopped —— 切片、退出播放、换集都不发，
+         * 于是服务端只收到 Progress、进度不落盘（《无可替代》一直停在 S1E17）。
+         * 位置必须在 release 之前取，否则拿到的永远是 0。
+         */
+        reportedItemId?.let {
+            val posTicks = (player?.currentPosition ?: 0L).times(10_000L)
+            reportPlaybackStopped(posTicks)
+        }
         player?.let {
             runCatching { it.stop() }
             runCatching { it.release() }
