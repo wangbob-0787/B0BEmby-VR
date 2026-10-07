@@ -51,23 +51,20 @@ class MpvBackend(private val context: Context) {
                      * 由它把画面吐到我们给的 Surface。PICO 上 4XVR 能正常播杜比视界，
                      * 说明这套硬件解码器本来就能解 —— 走这条通道正好用上它。
                      */
-                    MPVLib.setOptionString("vo", "gpu")
-                    MPVLib.setOptionString("gpu-context", "android")
+                    MPVLib.setOptionString("vo", "mediacodec_embed")
                     /*
-                     * 软解（父亲 2026-10-08：颜色要正）。
+                     * 画面输出：mediacodec_embed（解码结果直接交给系统硬解输出通道吐到 Surface）。
                      *
-                     * 硬解那条路画面出来了但偏色 —— 日志里解码器报的是
-                     * `bt.2020-ncl/bt.2020/bt.1886`，杜比视界自己的色彩描述（IPTPQc2）
-                     * 没被认出来，等于按普通 HDR 送出去，颜色自然不对。
-                     * 内核自带的 FFmpeg 能正确解杜比视界，所以这里不走硬解。
-                     *
-                     * 用 gpu 渲染器而不是 mediacodec_embed：后者要求硬解直接吐画面，
-                     * 与软解互斥。上一轮 gpu 没画面，是因为当时还漏了「把画面切到
-                     * VR 银幕」那一步，与渲染器本身无关。
+                     * 2026-10-08 实测记录（给下一次攻颜色的人）：
+                     * · `vo=gpu` + `gpu-context=android` + 软解 → 银幕上全是粉/蓝纯色不断闪，
+                     *   渲染器出来了但内容不对，这条路当天没走通，已回退。
+                     * · `vo=mediacodec_embed` + 硬解 → 画面正常、4K 流畅，但杜比视界偏色
+                     *   （解码器报 bt.2020-ncl/bt.2020/bt.1886，DV 自己的 IPTPQc2 没被认出来，
+                     *   等于按普通 HDR 送出去，没有 HDR→SDR 映射）。
+                     * 下次攻颜色优先试：软解 + `vo=gpu` 但换 `gpu-api`/`gpu-context` 组合，
+                     * 或给 mediacodec_embed 补 `--target-colorspace-hint` 之外的映射手段。
                      */
-                    MPVLib.setOptionString("hwdec", "no")
-                    // HDR → SDR 的色调映射：spline 在保持高光细节上比默认稳
-                    MPVLib.setOptionString("tone-mapping", "spline")
+                    MPVLib.setOptionString("hwdec", "mediacodec")
                     // 杜比视界 / HDR 片源按色域提示交给显示端（否则偏色更明显）
                     MPVLib.setOptionString("target-colorspace-hint", "yes")
                     // 字幕我们自己画（弹幕层带字幕位），别让 mpv 再画一遍
