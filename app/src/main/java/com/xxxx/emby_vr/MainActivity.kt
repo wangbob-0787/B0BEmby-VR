@@ -1208,9 +1208,34 @@ class MainActivity : ComponentActivity() {
             if (com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource) {
                 Log.i(TAG, "起播走 mpv 内核（片源 ${com.xxxx.emby_vr.player.PlaybackFlags.videoDescriptor}）")
                 mpvBackend?.stop()
+                /*
+                 * 地址要换成原文件直连（父亲 2026-10-08 实测）。
+                 *
+                 * 第一次跑 mpv 时用的是传进来的那个地址，日志里看到它拉的是
+                 * `…/videos/3930933/hls1/main/*.ts` —— 服务端转码出来的切片，而
+                 * 那路转码本身是坏的（服务端硬解解不了杜比视界，切出来就是空的），
+                 * 内核解了个寂寞，声音有、画面没有。
+                 *
+                 * 内核自带 FFmpeg，杜比视界它自己就能解，所以直接给它原文件
+                 * （Static=true 就是原样直出，不转码不换封装）。
+                 */
+                val srcId = pendingMediaSourceId
+                val directUrl = buildString {
+                    append(userServer())
+                    append("/emby/videos/")
+                    append(pendingItemId ?: "")
+                    append("/stream?Static=true")
+                    if (!srcId.isNullOrEmpty()) {
+                        append("&MediaSourceId=")
+                        append(srcId)
+                    }
+                    append("&api_key=")
+                    append(userToken())
+                }
+                Log.i(TAG, "mpv 直连原文件：…/videos/${pendingItemId}/stream?Static=true")
                 mpvBackend = com.xxxx.emby_vr.player.MpvBackend(this).also { m ->
                     m.attachSurface(surface)
-                    m.play(url, startMs / 1000.0)
+                    m.play(directUrl, startMs / 1000.0)
                 }
                 // mpv 没有 ExoPlayer 那套首帧回调，加载态直接放行，别把画面压住
                 waitingFirstFrame = false
