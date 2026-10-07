@@ -1651,14 +1651,31 @@ class MainActivity : ComponentActivity() {
                 selectedSubtitleIndex =
                     if (picked != null && picked == selectedSubtitleIndex) null else picked
                 Log.i(TAG, "字幕 → ${selectedSubtitleIndex ?: "关闭"}（菜单保持打开）")
-                replayKeepingPosition()
+                if (mpvBackend != null) {
+                    /*
+                     * 内核模式下先不重起播（父亲 2026-10-08：选字幕闪退）。
+                     *
+                     * 崩溃栈是 `JNI ERROR (app bug): attempt to use stale Global` +
+                     * `art::JNI::NewGlobalRef`，落在我们自己的 native 渲染层 —— 重起播时
+                     * 旧的画面资源被释放，原生层还拿着旧引用，直接 SIGABRT。
+                     * 换字幕不该牵动播放本身，正确做法是让内核自己挂字幕，下一版做。
+                     */
+                    Log.w(TAG, "内核模式暂不支持切字幕轨（重起播会崩），本次忽略")
+                } else {
+                    replayKeepingPosition()
+                }
             }
             com.xxxx.emby_vr.panel.MenuKind.AUDIO -> {
                 selectedAudioIndex = audioStreamIndices.getOrNull(index)
                 Log.i(TAG, "音轨 → 流 ${selectedAudioIndex ?: "默认"}（菜单保持打开）")
                 // 勾选立刻移到新音轨（父亲 2026-10-07：菜单要原地更新到新选项）
                 refreshMenuRows(com.xxxx.emby_vr.panel.MenuKind.AUDIO)
-                replayKeepingPosition()
+                if (mpvBackend != null) {
+                    // 同上：内核模式下换音轨也走重起播，会踩同一个崩溃
+                    Log.w(TAG, "内核模式暂不支持切音轨（重起播会崩），本次忽略")
+                } else {
+                    replayKeepingPosition()
+                }
             }
             com.xxxx.emby_vr.panel.MenuKind.EPISODES -> {
                 val id = episodeIds.getOrNull(index)
@@ -1679,6 +1696,8 @@ class MainActivity : ComponentActivity() {
     private fun applySpeed(speed: Float) {
         playSpeed = speed
         player?.setPlaybackSpeed(speed)
+        // 内核模式下倍速交给内核自己（两条内核共用一个倍速入口）
+        mpvBackend?.setSpeed(speed)
         osdState.speed = speed
         Log.i(TAG, "倍速 → ${speed}x")
     }
