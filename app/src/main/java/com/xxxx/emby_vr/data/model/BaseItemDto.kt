@@ -117,7 +117,7 @@ data class BaseItemDto(
      * 媒体源（含媒体流）。只在请求时明确点名 Fields=MediaSources 才会有 ——
      * 用来判定片源真实的色彩范围（父亲 2026-10-08，杜比视界判定用）。
      */
-    @SerializedName("MediaSources") val mediaSources: List<MediaSourceInfoDto>? = null,
+    @SerializedName("MediaSources") val mediaSources: List<MediaSourceInfoDto>? = null
 }
 
 /**
