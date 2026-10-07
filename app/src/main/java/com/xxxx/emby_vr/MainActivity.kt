@@ -232,19 +232,33 @@ class MainActivity : ComponentActivity() {
      * 冻的只是"喂给弹幕层的进度"，画面与真实进度不受影响；
      * 1.5 秒后自动解冻，缓冲结束（STATE_READY）会提前解冻。
      */
+    /**
+     * 弹幕位置的两个冻结条件（父亲 2026-10-07）：
+     *  · **暂停**：一直冻到恢复播放（暂停时弹幕必须停在原地，不能自己往前跑）；
+     *  · **seek**：快进快退/拖进度时冻 1.5 秒（缓冲结束会提前解冻）。
+     * 两者互不干扰；都成立时同样返回冻结值。
+     */
     private var danmakuFreezePosMs = 0L
-    private var danmakuFreezeUntilMs = 0L
+    private var danmakuSeekFreezeUntilMs = 0L
+    private var danmakuPaused = false
 
-    /** 弹幕层取位置：seek 期间返回冻结值，弹幕就停在原地 */
+    /** 弹幕层取位置：冻结中返回冻结值，否则按播放进度估计 */
     private fun danmakuPosForPainter(): Long {
         val now = android.os.SystemClock.elapsedRealtime()
-        return if (now < danmakuFreezeUntilMs) danmakuFreezePosMs else playbackPosEstimate()
+        val frozen = danmakuPaused || now < danmakuSeekFreezeUntilMs
+        return if (frozen) danmakuFreezePosMs else playbackPosEstimate()
     }
 
     /** seek 开始：冻住弹幕位置 */
     private fun freezeDanmakuForSeek() {
         danmakuFreezePosMs = playbackPosEstimate()
-        danmakuFreezeUntilMs = android.os.SystemClock.elapsedRealtime() + 1500L
+        danmakuSeekFreezeUntilMs = android.os.SystemClock.elapsedRealtime() + 1500L
+    }
+
+    /** 播放/暂停：暂停时把弹幕冻在原地，恢复播放即解冻 */
+    private fun setDanmakuPaused(paused: Boolean) {
+        if (paused) danmakuFreezePosMs = playbackPosEstimate()
+        danmakuPaused = paused
     }
 
     private var selectedAudioIndex: Int? = null
@@ -292,11 +306,13 @@ class MainActivity : ComponentActivity() {
         }
 
         /**
-         * 新片画面**真的到了纹理层** → 这一刻才收黑幕 / 转圈，并把弹幕 / 字幕 / 片名 logo
-         * 与画面一起亮起（父亲 2026-10-07）。
+         * 新片画面**真的到了纹理层**（原生侧的判据）。
          */
         override fun onVideoFrameReady() {
-            runOnUiThread { revealDanmakuSubtitleLogo() }
+            runOnUiThread {
+                nativeFrameSeen = true
+                tryRevealWaitingFrame()
+            }
         }
 
         override fun onClick(px: Float, py: Float) {
@@ -1074,7 +1090,7 @@ class MainActivity : ComponentActivity() {
 
                     override fun onPlaybackStateChanged(state: Int) {
                         // 缓冲/跳转结束 → 提前解冻弹幕位置（父亲 2026-10-07）
-                        if (state == Player.STATE_READY) danmakuFreezeUntilMs = 0L
+                        if (state == Player.STATE_READY) danmakuSeekFreezeUntilMs = 0L
                         // 自然播完 → 上报停止（服务端据此记"已看"与进度）
                         if (state == Player.STATE_ENDED) {
                             Log.i(TAG, "播放结束 → 上报停止")
@@ -1083,11 +1099,23 @@ class MainActivity : ComponentActivity() {
                     }
 
                     /*
-                     * 注意：这里**不用** onRenderedFirstFrame 收黑幕（父亲 2026-10-07 实测）。
-                     * 它只表示「ExoPlayer 把帧交给了 Surface」，此刻原生还没把帧取进纹理，
-                     * 黑幕一收就会露出下一层里残留的上一部画面（旧画面与旧弹幕只是被盖住）。
-                     * 收黑幕的时机改由原生的 onVideoFrameReady 回调（见 InputSink 实现）。
+                     * 暂停 / 恢复：暂停时弹幕停在原地（父亲 2026-10-07）。
+                     * 用 isPlaying 而不是按钮状态 —— 缓冲卡住、外部暂停也一并覆盖。
                      */
+                    override fun onIsPlayingChanged(isPlaying: Boolean) {
+                        setDanmakuPaused(!isPlaying)
+                    }
+
+                    /*
+                     * 新片第一帧（ExoPlayer 侧）。见 tryRevealWaitingFrame：
+                     * 收黑幕要它和原生"取到帧"**两个条件同时成立**。
+                     */
+                    override fun onRenderedFirstFrame() {
+                        runOnUiThread {
+                            playerFrameSeen = true
+                            tryRevealWaitingFrame()
+                        }
+                    }
 
                     override fun onPlayerError(error: PlaybackException) {
                         // 先停 videoActive（ticker 下一圈自行退出），再写错误提示，
@@ -1905,6 +1933,24 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
+     * 换片 / 首播等待期收黑幕的**与门**（父亲 2026-10-07 第二次修复）。
+     *
+     * 只等原生"有帧"不够：实测换片后 80 毫秒就报首帧到位，可那是 ExoPlayer 准备阶段
+     * 提交到 Surface 的帧（残留 / 占位），新片画面根本还没出来 —— 黑幕一收就露旧画面。
+     * 只等 ExoPlayer 的 onRenderedFirstFrame 也不够：那时帧还没进我们的纹理。
+     * 所以两个条件同时成立才算"新片画面真的到了"。
+     */
+    private var playerFrameSeen = false
+    private var nativeFrameSeen = false
+
+    private fun tryRevealWaitingFrame() {
+        if (!waitingFirstFrame) return
+        if (!playerFrameSeen || !nativeFrameSeen) return
+        Log.i(TAG, "收黑幕：播放器首帧=${playerFrameSeen} 原生取到帧=${nativeFrameSeen}（两个条件都成立）")
+        revealDanmakuSubtitleLogo()
+    }
+
+    /**
      * 换片：先把旧片整个收掉，再让新片起播（父亲 2026-10-07）。
      *
      * 「停旧片 → 银幕空一拍（转圈顶上）→ 弹幕 / 字幕 / 片名 logo 全清」本来就是
@@ -1930,6 +1976,9 @@ class MainActivity : ComponentActivity() {
          */
         osdState.hasPlayback = false
         osdState.title = ""
+        // 收黑幕的与门也要复位，等这一部自己的两个信号（父亲 2026-10-07）
+        playerFrameSeen = false
+        nativeFrameSeen = false
         waitingFirstFrame = true
         /*
          * 银幕比例先复位成 16:9（父亲 2026-10-07 实测：换片时转圈和提示被压扁、圈成椭圆）。
