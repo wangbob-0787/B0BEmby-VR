@@ -471,7 +471,35 @@ fun MediaDetailScreen(
                         // 集列表：官方形态 —— 横向滚动的 16:9 集卡
                         // （缩略图 + 第一行剧名 + 第二行 "S1:E1 集名"，由 BuildItem(isShowImg17) 出）
                         // 季的切换仍是我们的胶囊行（父亲 2026-10-02 定：季用自己的方式，集用官方方式）
+                        /*
+                         * 打开详情页时，集卡滚到最近看的那一集（父亲 2026-10-07）。
+                         * 优先"看过但没看完"的那集（有播放进度），都没有就找最后一次
+                         * 播放时间最晚的那集，再没有就停在第一集。
+                         */
+                        val episodeListState = rememberLazyListState()
+                        LaunchedEffect(seasonEpisodes) {
+                            if (seasonEpisodes.isEmpty()) return@LaunchedEffect
+                            val resumed = seasonEpisodes.indexOfLast {
+                                (it.userData?.playbackPositionTicks ?: 0L) > 0L
+                            }
+                            val idx = if (resumed > 0) {
+                                resumed
+                            } else {
+                                var best = 0
+                                var bestTime = ""
+                                seasonEpisodes.forEachIndexed { i, ep ->
+                                    val t = ep.userData?.lastPlayedDate.orEmpty()
+                                    if (t > bestTime) {
+                                        bestTime = t
+                                        best = i
+                                    }
+                                }
+                                best
+                            }
+                            if (idx > 0) episodeListState.scrollToItem(idx)
+                        }
                         LazyRow(
+                            state = episodeListState,
                             contentPadding = PaddingValues(
                                 start = 40.dp, end = 40.dp, top = 16.dp, bottom = 26.dp
                             ),

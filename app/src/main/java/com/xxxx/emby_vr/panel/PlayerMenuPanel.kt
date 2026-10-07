@@ -472,6 +472,15 @@ private fun TrackMenu(menu: MenuState, rows: List<MenuRowItem>, kind: MenuKind) 
             listState.scrollBy(dy)
         }
     }
+    /*
+     * 打开菜单就滚到当前选中的那条（父亲 2026-10-07）。
+     * 用「进入组合」触发（Unit）：菜单关掉时这一段离开组合，重开时会再跑一次 ——
+     * 菜单开着的时候用户自己滚过不会被打断。
+     */
+    LaunchedEffect(Unit) {
+        val idx = rows.indexOfFirst { it.selected }
+        if (idx > 0) listState.scrollToItem(idx)
+    }
     LazyColumn(state = listState, modifier = Modifier.heightIn(max = 270.dp)) {
         itemsIndexed(rows) { i, row ->
             MenuRow(
@@ -497,6 +506,11 @@ private fun EpisodeMenu(menu: MenuState) {
             menu.scrollDelta = 0f
             listState.scrollBy(dy)
         }
+    }
+    // 打开选集菜单就滚到正在播的那一集（父亲 2026-10-07）
+    LaunchedEffect(Unit) {
+        val idx = menu.episodes.indexOfFirst { it.selected }
+        if (idx > 0) listState.scrollToItem(idx)
     }
     LazyColumn(state = listState, modifier = Modifier.heightIn(max = 270.dp)) {
         itemsIndexed(menu.episodes) { i, row ->
