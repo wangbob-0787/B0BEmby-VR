@@ -83,6 +83,20 @@ fun MediaDetailScreen(
     // 每行"用户上次停在哪一项"（父亲 2026-10-02：上下轮动要按用户选的焦点落回；
     // 集行与演员行都要记）
     var lastPillIndex by remember(seasonList.size) { mutableIntStateOf(0) }
+
+    /*
+     * 多季剧集：打开详情页时先跳到"最近在看的那一季"（父亲 2026-10-07）。
+     * resume 是服务端给的续看那一集，用它的季 ID 在季列表里定位（拿不到 ID 就
+     * 退而比季名）；定位好之后，下面的集卡会再滚到那一集。
+     */
+    LaunchedEffect(resume, seasonList.size) {
+        val r = resume ?: return@LaunchedEffect
+        val idx = seasonList.indexOfFirst { s ->
+            (r.seasonId != null && s.id == r.seasonId) ||
+                (r.seasonName != null && s.name == r.seasonName)
+        }
+        if (idx >= 0 && idx != selectedSeasonIndex) selectedSeasonIndex = idx
+    }
     var lastEpisodeIndex by remember { mutableIntStateOf(0) }
     var lastCastIndex by remember { mutableIntStateOf(0) }
     var lastCrewIndex by remember { mutableIntStateOf(0) }
@@ -479,10 +493,13 @@ fun MediaDetailScreen(
                         val episodeListState = rememberLazyListState()
                         LaunchedEffect(seasonEpisodes) {
                             if (seasonEpisodes.isEmpty()) return@LaunchedEffect
+                            val resumeIdx = seasonEpisodes.indexOfFirst { it.id == resume?.id }
                             val resumed = seasonEpisodes.indexOfLast {
                                 (it.userData?.playbackPositionTicks ?: 0L) > 0L
                             }
-                            val idx = if (resumed > 0) {
+                            val idx = if (resumeIdx >= 0) {
+                                resumeIdx
+                            } else if (resumed > 0) {
                                 resumed
                             } else {
                                 var best = 0
