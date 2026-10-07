@@ -212,7 +212,7 @@ val BUFFER_PRESETS = listOf(
  * 原生侧 openxr_renderer.cpp 的 kMenuPxH 必须同步改，否则物理尺寸与光柱命中判定对不上。
  */
 const val MENU_PANEL_W = 2331
-const val MENU_PANEL_H = 474
+const val MENU_PANEL_H = 632
 
 /** 窄卡片宽度（像素） */
 private const val CARD_W = 920f
@@ -234,7 +234,7 @@ fun PlayerMenuPanel(menu: MenuState, osd: OsdState) {
     val panelW = MENU_PANEL_W.toFloat()
     val panelH = MENU_PANEL_H.toFloat()
     val leftPx = when {
-        isInfo -> 0f                                  // 与控制条左边对齐
+        isInfo -> CARD_WIDE_PAD                        // 与演职人员面板左右对齐（父亲 2026-10-07）
         wide -> CARD_WIDE_PAD
         else -> {
             val bx = menu.anchor?.let { osd.buttonX[it] } ?: 0.5f
@@ -327,7 +327,7 @@ private fun MoreMenu(menu: MenuState) {
         MenuKind.MODE to "播放模式",
         MenuKind.BUFFER to "缓冲设置",
     )
-    Column {
+    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
         entries.forEachIndexed { i, (k, label) ->
             MenuRow(
                 label = label,
@@ -351,7 +351,7 @@ private fun MoreMenu(menu: MenuState) {
 
 @Composable
 private fun SpeedMenu(menu: MenuState) {
-    Column {
+    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
         SPEED_STEPS.forEachIndexed { i, s ->
             val label = if (s == 1.0f) "1.0x（正常）" else "${s}x"
             MenuRow(
@@ -366,7 +366,7 @@ private fun SpeedMenu(menu: MenuState) {
 
 @Composable
 private fun QualityMenu(menu: MenuState) {
-    Column {
+    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
         QUALITY_STEPS.forEachIndexed { i, (_, label) ->
             MenuRow(
                 label = label,
@@ -380,7 +380,7 @@ private fun QualityMenu(menu: MenuState) {
 
 @Composable
 private fun ModeMenu(menu: MenuState) {
-    Column {
+    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
         PLAY_MODE_STEPS.forEachIndexed { i, label ->
             MenuRow(
                 label = label,
@@ -395,7 +395,7 @@ private fun ModeMenu(menu: MenuState) {
 @Composable
 private fun BufferMenu(menu: MenuState) {
     val b = menu.buffer
-    Column {
+    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
         BUFFER_PRESETS.forEachIndexed { i, (label, minMs, maxMs) ->
             MenuRow(
                 label = label,
@@ -409,7 +409,7 @@ private fun BufferMenu(menu: MenuState) {
 
 @Composable
 private fun DanmakuMenu(menu: MenuState) {
-    Column {
+    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
         MenuRow(
             label = if (menu.danmakuOn) "显示弹幕：开" else "显示弹幕：关",
             value = "",
@@ -441,7 +441,7 @@ private fun TrackMenu(menu: MenuState, rows: List<MenuRowItem>, kind: MenuKind) 
             listState.scrollBy(dy)
         }
     }
-    LazyColumn(state = listState, modifier = Modifier.heightIn(max = 200.dp)) {
+    LazyColumn(state = listState, modifier = Modifier.heightIn(max = 330.dp)) {
         itemsIndexed(rows) { i, row ->
             MenuRow(
                 label = row.label,
@@ -467,7 +467,7 @@ private fun EpisodeMenu(menu: MenuState) {
             listState.scrollBy(dy)
         }
     }
-    LazyColumn(state = listState, modifier = Modifier.heightIn(max = 200.dp)) {
+    LazyColumn(state = listState, modifier = Modifier.heightIn(max = 330.dp)) {
         itemsIndexed(menu.episodes) { i, row ->
             MenuRow(
                 label = row.label,
