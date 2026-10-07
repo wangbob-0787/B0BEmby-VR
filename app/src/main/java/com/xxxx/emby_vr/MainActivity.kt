@@ -1133,6 +1133,19 @@ class MainActivity : ComponentActivity() {
                 )
             player = ExoPlayer.Builder(this, renderersFactory).setLoadControl(loadControl).build().also { p ->
                 /*
+                 * 字幕语言偏好（父亲 2026-10-07：直连之后字幕不显示了）。
+                 *
+                 * 直连播放时字幕由客户端自己挑 —— 服务端不参与，而片子里的字幕轨
+                 * 一条都没标"默认"（实测《律界战争》内封八条，全 IsDefault=false），
+                 * 不主动挑就一条都不显示。这里按中文优先自动选中。
+                 * 选中后 Media3 解析内封字幕（子午线文本类），onCues 回调把文字交给
+                 * 弹幕层绘制 —— 弹幕层本来就带字幕位。
+                 */
+                p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                    .setPreferredTextLanguage("chi,zh,zho")
+                    .setSelectUndeterminedTextLanguage(true)
+                    .build()
+                /*
                  * 起始位置一并交给播放器：服务端虽然按 startTimeTicks 从该位置出流，
                  * 播放器自己仍会从流的第 0 秒开始放 —— 换轨重播「从头开始」就是这个。
                  */
