@@ -19,8 +19,13 @@ object PlaybackFlags {
     @Volatile
     var videoDescriptor: String? = null
 
+    /** 片源画面比例（宽/高），探片源时顺带算出；探不到就按 16:9。 */
+    @Volatile
+    var videoAspect: Float? = null
+
     fun reset() {
         dolbyVisionSource = false
         videoDescriptor = null
+        videoAspect = null
     }
 }

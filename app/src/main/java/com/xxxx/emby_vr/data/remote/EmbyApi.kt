@@ -502,9 +502,13 @@ object EmbyApi {
                             (vr.contains("DolbyVision", true) || vr.contains("DOVI", true))
                     } == true
                 } == true
-                probeDesc = probe.mediaSources?.firstOrNull()?.mediaStreams
+                val vs = probe.mediaSources?.firstOrNull()?.mediaStreams
                     ?.firstOrNull { it.type.equals("Video", true) }
-                    ?.let { "${it.codec} ${it.videoRange} ${it.width}x${it.height}" }
+                probeDesc = vs?.let { "${it.codec} ${it.videoRange} ${it.width}x${it.height}" }
+                if (vs?.width != null && vs.height != null && vs.height!! > 0) {
+                    com.xxxx.emby_vr.player.PlaybackFlags.videoAspect =
+                        vs.width!!.toFloat() / vs.height!!.toFloat()
+                }
                 if (probeDesc == null) {
                     // 探不到流信息时退回 PlaybackInfo 那份
                     dvByStream = dto.mediaSources?.any { ms ->

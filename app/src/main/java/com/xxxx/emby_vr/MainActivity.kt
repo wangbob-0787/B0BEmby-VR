@@ -1237,6 +1237,22 @@ class MainActivity : ComponentActivity() {
                     m.attachSurface(surface)
                     m.play(directUrl, startMs / 1000.0)
                 }
+                /*
+                 * 把画面切到 VR 银幕（父亲 2026-10-08）。
+                 *
+                 * 这一条原来在 ExoPlayer 路径的后半段，mpv 分支提前 return 就跳过了 ——
+                 * 结果内核明明解出了画面（日志里 `first video frame after restart shown`、
+                 * 硬解器 OMX.qcom.video.decoder.hevc 启动成功、原文件也拿到了），
+                 * 银幕上却什么都没有：视频层根本没被激活。
+                 */
+                if (useVrScreen) {
+                    com.xxxx.emby_vr.vr.VrNative.setVideoActive(true)
+                    Log.i(TAG, "mpv 播放画面已切到 VR 原生（面板收起）")
+                }
+                // 比例先用片源探到的尺寸；探不到就按 16:9
+                com.xxxx.emby_vr.vr.VrNative.setVideoAspect(
+                    com.xxxx.emby_vr.player.PlaybackFlags.videoAspect ?: (16f / 9f),
+                )
                 // mpv 没有 ExoPlayer 那套首帧回调，加载态直接放行，别把画面压住
                 waitingFirstFrame = false
                 osdState.hasPlayback = true
