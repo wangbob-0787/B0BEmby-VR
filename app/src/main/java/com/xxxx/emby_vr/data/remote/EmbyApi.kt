@@ -481,14 +481,42 @@ object EmbyApi {
             val sourcePath = dto.mediaSources?.firstOrNull()?.path.orEmpty()
             val dvByName = listOf(".DV.", ".DoVi.", "DolbyVision", ".dvh1.", ".dvhe.", " DV ")
                 .any { sourcePath.contains(it, ignoreCase = true) }
-            val dvByStream = dto.mediaSources?.any { ms ->
-                ms.mediaStreams?.any { st ->
-                    val vr = ((st.videoRange ?: "") + " " + (st.videoRangeType ?: ""))
-                    st.type.equals("Video", true) &&
-                        (vr.contains("DolbyVision", true) || vr.contains("DOVI", true))
+            /*
+             * 主要证据：单独探一次片源详情，明确点名要 MediaSources。
+             *
+             * 这是服务端对文件本身的探测结果，与客户端上报的设备能力无关 —— 而
+             * PlaybackInfo 那条路上，服务端按设备能力算完就不一定回原始色彩范围
+             * （实测拿不到 VideoRange，标记立不起来，mpv 内核一次都没轮到）。
+             * 也不能只靠文件名：父亲指出文件名里不一定写着 DV，那只能当兜底。
+             */
+            var dvByStream = false
+            var probeDesc: String? = null
+            runCatching {
+                val probeUrl = "/Users/$userId/Items/$targetId" +
+                    "?Fields=MediaSources&X-Emby-Token=$apiKey&reqformat=json"
+                val probe = httpAsBaseItemDto(context, serverUrl, apiKey, deviceId, probeUrl)
+                dvByStream = probe.mediaSources?.any { ms ->
+                    ms.mediaStreams?.any { st ->
+                        val vr = ((st.videoRange ?: "") + " " + (st.videoRangeType ?: ""))
+                        st.type.equals("Video", true) &&
+                            (vr.contains("DolbyVision", true) || vr.contains("DOVI", true))
+                    } == true
                 } == true
-            } == true
-            val isDolbyVision = dvByName || dvByStream
+                probeDesc = probe.mediaSources?.firstOrNull()?.mediaStreams
+                    ?.firstOrNull { it.type.equals("Video", true) }
+                    ?.let { "${it.codec} ${it.videoRange} ${it.width}x${it.height}" }
+                if (probeDesc == null) {
+                    // 探不到流信息时退回 PlaybackInfo 那份
+                    dvByStream = dto.mediaSources?.any { ms ->
+                        ms.mediaStreams?.any { st ->
+                            val vr = ((st.videoRange ?: "") + " " + (st.videoRangeType ?: ""))
+                            st.type.equals("Video", true) &&
+                                (vr.contains("DolbyVision", true) || vr.contains("DOVI", true))
+                        } == true
+                    } == true
+                }
+            }.onFailure { Log.w(TAG, "探片源失败：${it.message}") }
+            val isDolbyVision = dvByStream || dvByName
             Log.i(TAG, "片源判定：杜比视界=$isDolbyVision（按名=$dvByName 按流=$dvByStream）path=${sourcePath.takeLast(70)}")
             /*
              * 杜比视界片源：起播时改走 mpv 解码内核（父亲 2026-10-08）。
