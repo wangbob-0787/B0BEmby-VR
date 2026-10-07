@@ -151,6 +151,13 @@ class MainActivity : ComponentActivity() {
 
     // ── 播放上下文（切字幕 / 音轨 / 质量 / 选集都要用它重新起播）──
     private var currentMediaId = ""
+
+    /**
+     * 换片后等「新片第一帧」（父亲 2026-10-07）：
+     * 这期间弹幕层、字幕、片名 logo 全部藏着，等画面出来那一刻一起亮 ——
+     * 不要在新片开始播放前就先弹出弹幕 / 字幕 / logo。
+     */
+    private var waitingFirstFrame = false
     private var currentSeriesId: String? = null
     private var currentSeasonId: String? = null
     private var currentItem: com.xxxx.emby_vr.data.model.BaseItemDto? = null
@@ -498,7 +505,8 @@ class MainActivity : ComponentActivity() {
          * 下载的那几秒画面上就没有 logo —— 看起来就是「一会儿有一会儿没有」。
          */
         if (url == logoLoadedUrl && logoBitmap.value != null) {
-            com.xxxx.emby_vr.vr.VrNative.setLogoVisible(true)
+            // 位图早就下好了，但要不要显示仍受「等第一帧」门控（父亲 2026-10-07）
+            com.xxxx.emby_vr.vr.VrNative.setLogoVisible(!waitingFirstFrame)
             return
         }
         logoLoadedUrl = url
@@ -524,7 +532,8 @@ class MainActivity : ComponentActivity() {
                 Log.i(TAG, "片名 logo 下载 → ${bmp.width}x${bmp.height}")
             }
             logoBitmap.value = bmp
-            com.xxxx.emby_vr.vr.VrNative.setLogoVisible(bmp != null)
+            // 等第一帧期间先藏着（父亲 2026-10-07），第一帧到了由 reveal 一起放出来
+            com.xxxx.emby_vr.vr.VrNative.setLogoVisible(bmp != null && !waitingFirstFrame)
         }
     }
 
@@ -997,7 +1006,8 @@ class MainActivity : ComponentActivity() {
                             cue.text?.toString().orEmpty()
                         }.trim()
                         subtitleNow = text
-                        danmakuView?.setSubtitle(text)
+                        // 等第一帧期间只记内容、不显示（父亲 2026-10-07）
+                        if (!waitingFirstFrame) danmakuView?.setSubtitle(text)
                     }
 
                     override fun onPlaybackStateChanged(state: Int) {
@@ -1006,6 +1016,14 @@ class MainActivity : ComponentActivity() {
                             Log.i(TAG, "播放结束 → 上报停止")
                             reportPlaybackStopped(player?.duration ?: 0L)
                         }
+                    }
+
+                    /*
+                     * 新片第一帧渲染出来了 → 到这一刻才让弹幕 / 字幕 / 片名 logo 亮起，
+                     * 与画面**同时**出现（父亲 2026-10-07）。
+                     */
+                    override fun onRenderedFirstFrame() {
+                        runOnUiThread { revealDanmakuSubtitleLogo() }
                     }
 
                     override fun onPlayerError(error: PlaybackException) {
@@ -1366,8 +1384,11 @@ class MainActivity : ComponentActivity() {
          * 弹幕层常开（父亲 2026-10-07 03:38 定）：这一层同时承载片名 logo，
          * 不能再跟「这部片有没有弹幕轨」绑定 —— 没弹幕的片整层不提交，
          * logo 会跟着一起消失。弹幕内容的显隐由上面的 setTrack 负责。
+         *
+         * 等第一帧期间先藏着，第一帧到了由 revealDanmakuSubtitleLogo 一起放出来
+         * （父亲 2026-10-07：弹幕/字幕/logo 要跟画面同时出现）。
          */
-        com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(true)
+        com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(!waitingFirstFrame)
     }
 
     /** 这条字幕流是不是弹幕轨（ASS / SSA，由自绘弹幕层负责，不当普通字幕选） */
@@ -1399,7 +1420,7 @@ class MainActivity : ComponentActivity() {
         danmakuTrack = null
         danmakuView?.setTrack(null)
         // 只清弹幕内容，不收整层：这一层同时画片名 logo（父亲 2026-10-07 03:38）
-        com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(true)
+        com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(!waitingFirstFrame)
 
         val mediaId = currentMediaId
         if (mediaId.isBlank()) return
@@ -1448,7 +1469,8 @@ class MainActivity : ComponentActivity() {
             danmakuView?.userScale = danmakuScale
             danmakuView?.setTrack(if (danmakuOn) track else null)
             // 整层常开（承载 logo，见 applyDanmakuSetting）；弹幕开关只作用到 setTrack
-            com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(true)
+            // 仍受「等第一帧」门控：第一帧没到就先把整层藏着
+            com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(!waitingFirstFrame)
             Log.i(
                 TAG,
                 "弹幕层加载完成：${track.items.size} 条 / 画布 ${track.playResX}x${track.playResY}" +
@@ -1810,9 +1832,40 @@ class MainActivity : ComponentActivity() {
      * 真正的起播由 playMedia → startPlayer 接手。
      */
     private fun clearForNewMedia() {
-        if (player == null && currentMediaId.isBlank()) return
-        Log.i(TAG, "换片：停掉旧片、清空银幕 / 弹幕 / 字幕 / logo，等新片起播")
-        runCatching { stopPlaybackInternal() }
+        val hadPlayback = player != null || currentMediaId.isNotBlank()
+        if (hadPlayback) {
+            Log.i(TAG, "换片：停掉旧片、清空银幕 / 弹幕 / 字幕 / logo，等新片起播")
+            runCatching { stopPlaybackInternal() }
+        } else {
+            Log.i(TAG, "起播：先清空银幕 / 弹幕 / 字幕 / logo，等第一帧")
+        }
+        /*
+         * 从这一刻起「藏起来等第一帧」（父亲 2026-10-07）：
+         * 弹幕 / 字幕 / 片名 logo 都等新片画面出来再一起亮。
+         * 兜底：万一第一帧迟迟不来（起播失败），8 秒后照样放出来，别让它们永远不显示。
+         */
+        waitingFirstFrame = true
+        handler.postDelayed({
+            if (waitingFirstFrame) {
+                Log.w(TAG, "等第一帧超时（8 秒），兜底把弹幕 / 字幕 / logo 放出来")
+                revealDanmakuSubtitleLogo()
+            }
+        }, 8000L)
+    }
+
+    /**
+     * 新片第一帧到了：弹幕 / 字幕 / 片名 logo 与画面**同时**出现（父亲 2026-10-07）。
+     *
+     * 数据其实早就加载好了（弹幕文件、详情、logo 位图都是异步拉的），
+     * 这里只是把「显示」这一步推迟到画面出来的这一刻。
+     */
+    private fun revealDanmakuSubtitleLogo() {
+        if (!waitingFirstFrame) return
+        waitingFirstFrame = false
+        applyDanmakuSetting()                    // 弹幕层可见 + 按开关挂轨道
+        danmakuView?.setSubtitle(subtitleNow)    // 字幕跟上
+        com.xxxx.emby_vr.vr.VrNative.setLogoVisible(logoBitmap.value != null)
+        Log.i(TAG, "新片第一帧：弹幕 / 字幕 / 片名 logo 一起亮")
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
