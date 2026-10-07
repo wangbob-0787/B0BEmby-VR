@@ -1583,10 +1583,11 @@ void drawSpinner(VrContext &c, const Mat4 &proj, const Mat4 &view4) {
                         kFrontScreen.cy + sinf(ang) * kRadius,
                         kFrontScreen.cz + 0.013f};
         /*
-         * 三角的尖在 +Y，要让它朝「顺时针切向」（角度减小的方向）：切向角 = ang - 90°，
-         * 而绕 Z 转 θ 时 +Y 指向 θ + 90°，所以 θ = ang - 180°。
+         * 三角的尖在 +Y，要让它朝**缺口那一侧**（父亲 2026-10-07：箭尖朝着缺口方向）：
+         * 缺口的空间范围是 ang → ang + 45°，切向角 = ang + 90°；
+         * 绕 Z 转 θ 时 +Y 指向 θ + 90°，所以 θ = ang。
          */
-        const float theta = ang - 3.14159265358979f;
+        const float theta = ang;
         tip.orientation = {0.f, 0.f, sinf(theta * 0.5f), cosf(theta * 0.5f)};
         const Mat4 m = poseScaleModel(tip, kThick * 2.8f, kThick * 3.4f, 1.f);
         drawMesh(c, c.triVbo, 3, multiply(multiply(proj, view4), m),
