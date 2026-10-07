@@ -648,24 +648,32 @@ class MainActivity : ComponentActivity() {
         com.xxxx.emby_vr.vr.VrNative.setOsdVisible(visible)
         // 控制条收起来时菜单一起收（父亲 2026-10-06：菜单挂在控制条上）
         if (!visible) closeMenu()
-        /*
-         * 控制条一露出来就把刷新带上（父亲 2026-10-07）：
-         * 未播放时也要让「年月日时分秒」走起来 —— 这个 ticker 原来只在起播流程里启动，
-         * 没播放就唤出控制条时，时间会停在上一部片停播那一刻（或一直是空的）。
-         */
-        if (visible) startOsdTicker()
         Log.i(TAG, if (visible) "控制条显示" else "控制条隐藏")
+    }
+
+    /**
+     * 控制条第 1 行右侧的年月日时分秒：**只跟系统时钟有关**（父亲 2026-10-07）。
+     *
+     * 它不该和播放建立关系，也不该和控制条显隐建立关系 —— 应用一起来就走，
+     * 每次对齐到整秒再更新，秒数跳变是准的，不随暂停 / 切片 / 停止而停。
+     */
+    private var clockJob: kotlinx.coroutines.Job? = null
+
+    private fun startClockTicker() {
+        if (clockJob?.isActive == true) return
+        clockJob = scope.launch {
+            while (true) {
+                osdState.nowClock = osdClockFormat.format(java.util.Date())
+                kotlinx.coroutines.delay(1000L - System.currentTimeMillis() % 1000L)
+            }
+        }
     }
 
     /** 播放进度 → 控制条（每秒刷一次，进度条才走得动） */
     private fun startOsdTicker() {
         osdJob?.cancel()
         osdJob = scope.launch {
-            /*
-             * 只要控制条还露着就继续刷新（父亲 2026-10-07：年月日时分秒永远在控制条上），
-             * 播放中当然也走；两者都停了才退出。
-             */
-            while (osdVisible || renderer.videoActive || picking) {
+            while (renderer.videoActive || picking) {
                 val p = player
                 if (p != null) {
                     osdState.playing = p.playWhenReady
@@ -675,9 +683,8 @@ class MainActivity : ComponentActivity() {
                     val d = p.duration
                     if (d > 0L) osdState.durationMs = d
                 }
-                // 控制条第一行：正在播放什么 + 当前时间（父亲 2026-10-06 晚）
+                // 控制条第一行左侧：正在播放什么（右侧的时间由独立时钟负责）
                 osdState.title = osdTitleText()
-                osdState.nowClock = osdClockFormat.format(java.util.Date())
                 // 弹幕画布要的播放位置：主线程取，画笔线程只读缓存
                 refreshPosBase()
                 kotlinx.coroutines.delay(1000)
@@ -2117,6 +2124,8 @@ class MainActivity : ComponentActivity() {
             },
         )
         osdState.onButton = { button -> onOsdButton(button) }
+        // 控制条的时钟独立于播放：应用一起来就走（父亲 2026-10-07）
+        startClockTicker()
         // 拖进度条：拖动中只动显示（跟手），松手才真跳
         osdState.onSeekPreview = { frac ->
             val dur = osdState.durationMs
