@@ -248,11 +248,24 @@ fun PlayerMenuPanel(menu: MenuState, osd: OsdState) {
     }
     val leftDp = pxToDp(leftPx)
     val widthDp = when {
-        isInfo -> pxToDp(panelW / 2f)                  // 宽度减半
+        // 信息与演职人员同宽：2031px = 1354dp（父亲 2026-10-07：两个面板 X 区间完全重合）
         wide -> pxToDp(panelW - CARD_WIDE_PAD * 2f)
         else -> pxToDp(CARD_W)
     }
-    // 所有菜单卡片都固定成控制条的厚度（父亲 2026-10-07），内容超出就滚动
+
+    /**
+     * 卡片 Y 高（父亲 2026-10-07 定）：
+     *  · 信息 / 演职人员 —— 统一 372dp，两个面板 X / Y / Z 完全重合；
+     *  · 字幕 / 选集 / 音频 —— 按内容自适应，封顶 360dp，超出滚动；
+     *  · 弹幕 / 速度 / 更多 / 质量 / 模式 / 缓冲 —— 固定项，按内容自适应。
+     * 面板画布（MENU_PANEL_H = 760px = 507dp）只是上限；卡片矮一点不影响光柱命中 ——
+     * 命中矩形按卡片实际位置上报（见下面的 onGloballyPositioned）。
+     */
+    val cardHeight = when (kind) {
+        MenuKind.INFO, MenuKind.CAST -> Modifier.height(372.dp)
+        MenuKind.SUBTITLE, MenuKind.EPISODES, MenuKind.AUDIO -> Modifier.heightIn(max = 360.dp)
+        else -> Modifier
+    }
 
     /*
      * 卡片实际占的那块矩形要报给原生（父亲 2026-10-06）：
@@ -266,7 +279,7 @@ fun PlayerMenuPanel(menu: MenuState, osd: OsdState) {
             modifier = Modifier
                 .padding(start = leftDp, bottom = 8.dp)
                 .width(widthDp)
-                .height(pxToDp(panelH))
+                .then(cardHeight)
                 .onGloballyPositioned { coords ->
                     if (windowW <= 0 || windowH <= 0) return@onGloballyPositioned
                     val x = coords.positionInRoot().x
@@ -446,7 +459,7 @@ private fun TrackMenu(menu: MenuState, rows: List<MenuRowItem>, kind: MenuKind) 
             listState.scrollBy(dy)
         }
     }
-    LazyColumn(state = listState, modifier = Modifier.heightIn(max = 420.dp)) {
+    LazyColumn(state = listState, modifier = Modifier.heightIn(max = 270.dp)) {
         itemsIndexed(rows) { i, row ->
             MenuRow(
                 label = row.label,
@@ -472,7 +485,7 @@ private fun EpisodeMenu(menu: MenuState) {
             listState.scrollBy(dy)
         }
     }
-    LazyColumn(state = listState, modifier = Modifier.heightIn(max = 420.dp)) {
+    LazyColumn(state = listState, modifier = Modifier.heightIn(max = 270.dp)) {
         itemsIndexed(menu.episodes) { i, row ->
             MenuRow(
                 label = row.label,
@@ -497,13 +510,13 @@ private fun InfoMenu(menu: MenuState) {
     }
     Row(modifier = Modifier.fillMaxSize()) {
         /*
-         * 海报（2:3）：卡片厚度改成控制条高度后（父亲 2026-10-07），
-         * 海报跟着缩到内容区里，保持 2:3。
+         * 海报（2:3）：Y = 卡片 Y − 上下边距（父亲 2026-10-07）
+         *   卡片 372dp − 上下边距 44dp = 328dp 高，宽按 2:3 缩成 219dp。
          */
         Box(
             modifier = Modifier
-                .width(133.dp)
-                .height(200.dp)
+                .width(219.dp)
+                .height(328.dp)
                 .clip(RoundedCornerShape(10.dp))
                 .background(Color(0x22FFFFFF)),
         ) {
@@ -518,26 +531,27 @@ private fun InfoMenu(menu: MenuState) {
         }
         Spacer(modifier = Modifier.width(30.dp))
         /*
-         * 卡片高度 = 控制条厚度（父亲 2026-10-07）之后不再留 1/3 的顶部空档：
-         * 文字直接顶到上边，内容装不下就滚动。
+         * 文字列（父亲 2026-10-07 定稿）：
+         *  · 从内容区顶往下 30dp 起 —— 跟海报顶错开，做出错落感；
+         *  · 用完剩下的 298dp（内容区 328 − 30），不滚动；
+         *  · 行序：剧名（28sp）→ 季集（22sp）→ 徽章（20sp）→ 技术（19sp）→ 剧情（19sp）。
          */
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .verticalScroll(rememberScrollState()),
-        ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Spacer(modifier = Modifier.height(30.dp))
             Text(
                 text = info.title,
                 color = Color.White,
-                fontSize = 32.sp,
+                fontSize = 28.sp,
                 fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
             if (info.episodeLine.isNotBlank()) {
                 Spacer(modifier = Modifier.height(6.dp))
                 Text(
                     text = info.episodeLine,
                     color = Color(0xFFFFFFFF),
-                    fontSize = 24.sp,
+                    fontSize = 22.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -550,7 +564,7 @@ private fun InfoMenu(menu: MenuState) {
                         Text(
                             text = badge,
                             color = Color(0xFFFFFFFF),
-                            fontSize = 24.sp,
+                            fontSize = 20.sp,
                             modifier = Modifier
                                 .padding(end = 10.dp)
                                 .clip(RoundedCornerShape(8.dp))
@@ -559,29 +573,29 @@ private fun InfoMenu(menu: MenuState) {
                         )
                     }
             }
-            Spacer(modifier = Modifier.height(16.dp))
-            /*
-             * 剧情（简介）最多三行，多出来的用省略号收掉
-             * （父亲 2026-10-07：只有剧情可能显示不完，最后用 ... 就行）。
-             */
-            Text(
-                text = info.overview.ifBlank { "暂无简介" },
-                color = Color(0xFFFFFFFF),
-                fontSize = 21.sp,
-                lineHeight = 32.sp,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis,
-            )
             if (info.techLine.isNotBlank()) {
-                Spacer(modifier = Modifier.height(14.dp))
+                Spacer(modifier = Modifier.height(12.dp))
                 Text(
                     text = info.techLine,
                     color = Color(0xFFFFFFFF),
-                    fontSize = 21.sp,
+                    fontSize = 19.sp,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
+            Spacer(modifier = Modifier.height(12.dp))
+            /*
+             * 剧情放最后一行，把剩下的高度用完：19sp / 行高 28dp，
+             * 298 − 前面几行（约 155dp）≈ 143dp → 5 行，末尾省略号。
+             */
+            Text(
+                text = info.overview.ifBlank { "暂无简介" },
+                color = Color(0xFFFFFFFF),
+                fontSize = 19.sp,
+                lineHeight = 28.sp,
+                maxLines = 5,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }

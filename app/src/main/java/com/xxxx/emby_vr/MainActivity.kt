@@ -1490,7 +1490,12 @@ class MainActivity : ComponentActivity() {
                 currentSeriesId = item.seriesId
                 currentSeasonId = item.seasonId
                 menuState.info = com.xxxx.emby_vr.panel.MediaInfoView(
-                    title = item.name ?: osdState.title,
+                    /*
+                     * 第一行显示**剧名**（父亲 2026-10-07）：剧集用所属剧的名字，
+                     * 电影没有剧名才退回自己的名字。集名放在下一行的 episodeLine 里。
+                     */
+                    title = item.seriesName?.takeIf { it.isNotBlank() }
+                        ?: item.name ?: osdState.title,
                     year = item.productionYear?.toString() ?: "",
                     runtime = item.runTimeTicks?.let {
                         com.xxxx.emby_vr.panel.osdTimeText(it / 10_000)
@@ -1508,10 +1513,7 @@ class MainActivity : ComponentActivity() {
                             if (isNotEmpty()) append(" · ")
                             append(nm)
                         }
-                        val ov = item.seriesName
-                        if (!ov.isNullOrBlank() && isNotEmpty() && ov != item.name) {
-                            append(" · ").append(ov)
-                        }
+                        // 剧名不在这里重复 —— 它已经是信息面板的第一行（父亲 2026-10-07）
                     },
                     techLine = techLineOf(),
                 )
