@@ -146,6 +146,9 @@ class MainActivity : ComponentActivity() {
     /** 海报墙摆放的本地存档（下次打开 APP 还原） */
     private val placePrefs by lazy { getSharedPreferences("b0bemby_vr", MODE_PRIVATE) }
 
+    /** 启动后的海报墙摆放是否已还原过（onResume 只做一次） */
+    private var panelPlaceRestored = false
+
     // ── 播放上下文（切字幕 / 音轨 / 质量 / 选集都要用它重新起播）──
     private var currentMediaId = ""
     private var currentSeriesId: String? = null
@@ -304,7 +307,15 @@ class MainActivity : ComponentActivity() {
                  * 所以 400ms 内没有面板指针 = 光柱在画面这一侧。
                  */
                 val nowMs = android.os.SystemClock.uptimeMillis()
-                val onPanelUi = nowMs - maxOf(lastOsdPointerAt, lastMenuPointerAt) < 400L
+                /*
+                 * 「光柱在面板这一侧」的两种来源：
+                 *  · 原生刚推过控制条 / 菜单的指针（400ms 时间窗）；
+                 *  · 原生报「光柱落在海报墙上」。
+                 * 父亲 2026-10-07：播放中光柱明明指着海报墙，摇杆却被当成快进快退，
+                 * 海报墙滚不动 —— 原因是这里只算了控制条和菜单，漏了海报墙。
+                 */
+                val onPanelUi = panelPointerOnPanel ||
+                    nowMs - maxOf(lastOsdPointerAt, lastMenuPointerAt) < 400L
                 /*
                  * 菜单开着、光柱在菜单上：摇杆滚列表（父亲 2026-10-06 晚：
                  * 选集和演职人员滚不动）。取主方向 —— 竖直列表用上下推，
@@ -2052,6 +2063,15 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         glView.onResume()
         vrSession.resume()
+        /*
+         * 启动时还原海报墙摆放（父亲 2026-10-07：位置、大小、远近都要记住，
+         * 下次打开 APP 回到上次那个样子）。以前只在「播放结束回海报墙」时还原，
+         * 直接打开 APP 反而是原生默认摆位，看起来就像没记住。
+         */
+        if (!panelPlaceRestored) {
+            panelPlaceRestored = true
+            restorePanelPlace()
+        }
     }
 
     override fun onPause() {

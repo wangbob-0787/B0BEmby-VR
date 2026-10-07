@@ -1928,6 +1928,14 @@ void pushInput(VrContext &c) {
         const ScreenPlacement place = panelPlacement(c);
         float planeT = 0.f, hu = 0.f, hv = 0.f, wx = 0.f, wy = 0.f, wz = 0.f;
         /*
+         * 光点是否落在海报墙上。**必须在握把键之前算**（父亲 2026-10-07）：
+         * 起手那一下要用它决定"抓不抓"—— 之前不管光点在哪，一按握把键整块墙
+         * 就按「半径 × 手柄指向」跳到光柱方向上，看着就是瞬移。
+         */
+        const bool onPanel = c.panelShown.load() &&
+                             rayHitsPlacement(c.aimPose[h], place, &planeT, &hu, &hv,
+                                              &wx, &wy, &wz);
+        /*
          * 握把键（Grip / squeeze，手柄侧面中指那个）按住 = 抓住海报墙：
          *   球心 = 手柄位置，半径 = 按下那一刻手柄到面板中心的距离；按住期间
          *   面板中心 = 球心 + 半径 × 手柄指向，朝向反解成"正对球心"。
@@ -1939,7 +1947,12 @@ void pushInput(VrContext &c) {
          */
         if (c.squeezeDown[h]) {
             const XrVector3f hand = c.aimPose[h].position;
-            if (!c.panelDragActive[h]) {
+            /*
+             * 抓住的前提：光点正落在海报墙上（父亲 2026-10-07 实测报"光点在哪，
+             * 一按握把键墙就跑到光点位置"）。抓住之后不再要求 —— 手一动光柱就会
+             * 扫出墙面，那也算还抓着，否则拖到一半就掉。
+             */
+            if (!c.panelDragActive[h] && onPanel) {
                 c.panelDragActive[h] = true;
                 c.panelDragMoved[h] = false;
                 const float dx = c.panelPosX.load() - hand.x;
@@ -1952,7 +1965,12 @@ void pushInput(VrContext &c) {
                 c.panelAdjustAt[h] = t;
                 LOGI("海报墙：%s 握把键按住 → 抓住（半径 %.2f 米）", handName[h],
                      (double) c.panelDragRadius[h]);
-            } else {
+            }
+            /*
+             * 抓住之后每帧跑：拖动（球面）+ 握着握把键推摇杆调远近 / 缩放
+             * （父亲 2026-10-06 定：前后推 = 远近，左右推 = 大小）。
+             */
+            if (c.panelDragActive[h]) {
                 float ddx = 0.f, ddy = 0.f, ddz = 0.f;
                 aimDirection(c.aimPose[h], &ddx, &ddy, &ddz);
                 const float r = c.panelDragRadius[h];
@@ -1974,40 +1992,34 @@ void pushInput(VrContext &c) {
                     c.panelPitchDeg = asinf(ddy) * kRad2Deg;
                     c.panelYawDeg = atan2f(-ddx, -ddz) * kRad2Deg;
                 }
-            }
 
-            /*
-             * 握着握把键推摇杆（父亲 2026-10-06 定）：
-             *   前后推 = 调远近（以观影者为原点，沿面板当前方向前后走；前推推远），
-             *   左右推 = 缩放海报墙（左小右大）。
-             */
-            const float sx2 = c.thumbstick[h].x;
-            const float sy2 = c.thumbstick[h].y;
-            const double dt = t - c.panelAdjustAt[h];
-            const float step = (float) ((dt > 0.0 && dt < 0.2) ? dt : 0.016);
-            if (fabsf(sy2) > kStickDeadzone) {
-                /*
-                 * 远近调的是「球面半径」，不是坐标本身 —— 父亲 2026-10-06 实测：
-                 * 缩放好用、远近完全没用。原因是按住握把键期间，上面那段拖动
-                 * 每帧都按「半径 × 手柄指向」重算面板位置，直接改坐标会被下一帧覆盖，
-                 * 所以必须改半径。
-                 */
-                c.panelDragRadius[h] =
-                        fmaxf(0.8f, c.panelDragRadius[h] + sy2 * kPanelDistSpeed * step);
-                float ddx = 0.f, ddy = 0.f, ddz = 0.f;
-                aimDirection(c.aimPose[h], &ddx, &ddy, &ddz);
-                const float rr = c.panelDragRadius[h];
-                c.panelPosX = hand.x + ddx * rr;
-                c.panelPosY = hand.y + ddy * rr;
-                c.panelPosZ = hand.z + ddz * rr;
-                LOGI("海报墙：摇杆远近 → 半径 %.2f 米", (double) rr);
+                const float sx2 = c.thumbstick[h].x;
+                const float sy2 = c.thumbstick[h].y;
+                const double dt = t - c.panelAdjustAt[h];
+                const float step = (float) ((dt > 0.0 && dt < 0.2) ? dt : 0.016);
+                if (fabsf(sy2) > kStickDeadzone) {
+                    /*
+                     * 远近调的是「球面半径」，不是坐标本身 —— 父亲 2026-10-06 实测：
+                     * 缩放好用、远近完全没用。原因是这一段每帧都按「半径 × 手柄指向」
+                     * 重算面板位置，直接改坐标会被下一帧覆盖，所以必须改半径。
+                     */
+                    c.panelDragRadius[h] =
+                            fmaxf(0.8f, c.panelDragRadius[h] + sy2 * kPanelDistSpeed * step);
+                    float ndx = 0.f, ndy = 0.f, ndz = 0.f;
+                    aimDirection(c.aimPose[h], &ndx, &ndy, &ndz);
+                    const float rr = c.panelDragRadius[h];
+                    c.panelPosX = hand.x + ndx * rr;
+                    c.panelPosY = hand.y + ndy * rr;
+                    c.panelPosZ = hand.z + ndz * rr;
+                    LOGI("海报墙：摇杆远近 → 半径 %.2f 米", (double) rr);
+                }
+                if (fabsf(sx2) > kStickDeadzone) {
+                    const float w = c.panelWidth.load() + sx2 * kPanelSizeSpeed * step;
+                    c.panelWidth = fminf(kPanelMaxWidth, fmaxf(kPanelMinWidth, w));
+                    LOGI("海报墙：摇杆缩放 → 宽 %.2f 米", (double) c.panelWidth.load());
+                }
+                c.panelAdjustAt[h] = t;
             }
-            if (fabsf(sx2) > kStickDeadzone) {
-                const float w = c.panelWidth.load() + sx2 * kPanelSizeSpeed * step;
-                c.panelWidth = fminf(kPanelMaxWidth, fmaxf(kPanelMinWidth, w));
-                LOGI("海报墙：摇杆缩放 → 宽 %.2f 米", (double) c.panelWidth.load());
-            }
-            c.panelAdjustAt[h] = t;
         } else if (c.panelDragActive[h]) {
             c.panelDragActive[h] = false;
             c.panelDragMoved[h] = false;
@@ -2015,10 +2027,6 @@ void pushInput(VrContext &c) {
                  c.panelPosX.load(), c.panelPosY.load(), c.panelPosZ.load(),
                  c.panelYawDeg.load(), c.panelPitchDeg.load(), c.panelWidth.load());
         }
-
-        const bool onPanel = c.panelShown.load() &&
-                             rayHitsPlacement(c.aimPose[h], place, &planeT, &hu, &hv,
-                                              &wx, &wy, &wz);
 
         // 告诉界面层：光柱在不在海报墙上（决定 B 键给谁、面板接不接输入）
         if (onPanel != c.sinkPanelFocusOn[h]) {
