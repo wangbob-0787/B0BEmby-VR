@@ -474,8 +474,21 @@ object EmbyApi {
                         (vr.contains("DolbyVision", true) || vr.contains("DOVI", true))
                 } == true
             } == true
+            /*
+             * 杜比视界片源：起播时改走 mpv 解码内核（父亲 2026-10-08）。
+             *
+             * 服务端转码这条路走不通 —— Emby 对杜比视界走 QSV 硬解，日志里
+             * `[hevc_qsv] Error during QSV decoding.: unknown error (-21)` 刷一万条，
+             * 转码直接失败（连声音都没了）。而 PICO 上 4XVR 自带解码内核能正常播，
+             * 说明该由客户端自己解。这里只立标记，实际切换在 startPlayer。
+             */
+            com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource = isDolbyVision
+            com.xxxx.emby_vr.player.PlaybackFlags.videoDescriptor =
+                dto.mediaSources?.firstOrNull()?.mediaStreams
+                    ?.firstOrNull { it.type.equals("Video", true) }
+                    ?.let { "${it.codec} ${it.videoRange} ${it.width}x${it.height}" }
             if (isDolbyVision) {
-                Log.i(TAG, "片源是杜比视界：改走完全转码（头显解不了 DV 视频流）")
+                Log.i(TAG, "片源是杜比视界：起播改走 mpv 内核（系统解码器吃不下）")
                 val url2 = url + "&EnableDirectStream=false"
                 val result2 = httpAsJsonObject(context, serverUrl, apiKey, deviceId, url2, "POST", body)
                 dto = gson.fromJson(result2, MediaDto::class.java)

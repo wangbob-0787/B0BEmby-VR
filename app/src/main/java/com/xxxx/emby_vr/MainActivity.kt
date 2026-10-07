@@ -1197,6 +1197,31 @@ class MainActivity : ComponentActivity() {
         val useVrScreen = vrSurface != null
         try {
             stopPlaybackInternal(keepUi = replaying)
+            /*
+             * 杜比视界片源：改走 mpv 解码内核（父亲 2026-10-08）。
+             *
+             * 系统解码器解不了杜比视界的 H.265 流，表现是「只有声音没有画面」；
+             * 让服务端转码也不行（Emby 那条路走 QSV 硬解，日志里 hevc_qsv 报
+             * unknown error (-21) 一万条后直接失败）。所以自己解 —— 和 PICO 上
+             * 能正常播的 4XVR 一个路子。标记由取播放信息那一步立起来。
+             */
+            if (com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource) {
+                Log.i(TAG, "起播走 mpv 内核（片源 ${com.xxxx.emby_vr.player.PlaybackFlags.videoDescriptor}）")
+                mpvBackend?.stop()
+                mpvBackend = com.xxxx.emby_vr.player.MpvBackend(this).also { m ->
+                    m.attachSurface(surface)
+                    m.play(url, startMs / 1000.0)
+                }
+                // mpv 没有 ExoPlayer 那套首帧回调，加载态直接放行，别把画面压住
+                waitingFirstFrame = false
+                osdState.hasPlayback = true
+                com.xxxx.emby_vr.vr.VrNative.setSpinnerWanted(false)
+                danmakuHint.value = null
+                applyDanmakuSetting()
+                danmakuView?.setSubtitle(subtitleNow)
+                com.xxxx.emby_vr.vr.VrNative.setLogoVisible(logoBitmap.value != null)
+                return
+            }
             // 缓冲档位（更多 → 缓冲设置）：起播缓冲与上限按菜单选的那一档
             val loadControl = androidx.media3.exoplayer.DefaultLoadControl.Builder()
                 .setBufferDurationsMs(
@@ -2176,6 +2201,13 @@ class MainActivity : ComponentActivity() {
      * @param keepUi 换轨重播时传 true：控制条与已展开的菜单**留着**（父亲 2026-10-06 晚定），
      *               否则它们会在起播过程中被收掉，等标志生效时界面早没了。
      */
+    /**
+     * 当前播放位置（毫秒）。ExoPlayer 与 mpv 两条内核都从这里取，
+     * 进度上报、弹幕时间轴、控制条进度共用同一个口径（父亲 2026-10-08）。
+     */
+    private fun currentPositionMs(): Long =
+        player?.currentPosition ?: ((mpvBackend?.positionSec() ?: 0.0) * 1000.0).toLong()
+
     private fun stopPlaybackInternal(keepUi: Boolean = false) {
         /*
          * 先上报「停止播放」，再释放播放器（父亲 2026-10-07：播放历史没上传到 Emby）。
@@ -2185,7 +2217,7 @@ class MainActivity : ComponentActivity() {
          * 位置必须在 release 之前取，否则拿到的永远是 0。
          */
         reportedItemId?.let {
-            val posTicks = (player?.currentPosition ?: 0L).times(10_000L)
+            val posTicks = currentPositionMs().times(10_000L)
             reportPlaybackStopped(posTicks)
         }
         player?.let {
@@ -2193,6 +2225,11 @@ class MainActivity : ComponentActivity() {
             runCatching { it.release() }
         }
         player = null
+        // mpv 内核同样要收干净（父亲 2026-10-08）：否则下一次起播会是两条内核抢同一块画面
+        mpvBackend?.let {
+            runCatching { it.stop() }
+        }
+        mpvBackend = null
         seekTargetMs = null
         // 停止播放：快进快退进度条一并收起（别留在画面上）
         hideSeekHud()
@@ -2616,6 +2653,12 @@ class MainActivity : ComponentActivity() {
 
     /** 播放器：面板点播放起播，返回键释放 */
     private var player: ExoPlayer? = null
+
+    /**
+     * mpv 解码内核（父亲 2026-10-08）：系统解码器吃不下杜比视界这类片源时改用它。
+     * 同一时刻只有一条内核在跑 —— 走 mpv 时 player 为 null，反之亦然。
+     */
+    private var mpvBackend: com.xxxx.emby_vr.player.MpvBackend? = null
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
