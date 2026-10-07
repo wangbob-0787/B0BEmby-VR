@@ -2192,6 +2192,40 @@ void pushInput(VrContext &c) {
             }
             c.sinkLastTrigger[h] = c.triggerDown[h];
         }
+
+        /*
+         * ⑤ 摇杆 → 界面层（父亲 2026-10-07：光柱指着屏幕时拨摇杆没反应）。
+         *
+         * 原来摇杆只在"光柱落在菜单"和"光柱落在海报墙"两路推出去，指着屏幕这一路
+         * 根本没有推送 —— 播放页的左右快进快退（stickSeek）因此永远收不到摇杆。
+         * 这一段的位置天然是"既不在菜单、也不在海报墙"，正好补上这一路。
+         * 坐标传 0：播放页只用摇杆量；面板滚动在 Java 侧另有 panelPointerOnPanel 把关。
+         */
+        if (c.videoActive.load()) {
+            /*
+             * 只在播放中补这一路：未播放时（看海报墙/首页）指着屏幕推摇杆，
+             * 不该跑去滚面板 —— 那时的摇杆仍走"指着海报墙"那条既有通道。
+             */
+            const float sxScreen = c.thumbstick[h].x;
+            const float syScreen = c.thumbstick[h].y;
+            if (fabsf(sxScreen) > kStickDeadzone || fabsf(syScreen) > kStickDeadzone) {
+                if (t - c.sinkStickAt[h] >= kStickStateMs) {
+                    c.sinkStickAt[h] = t;
+                    c.sinkStickPushed[h] = true;
+                    if (c.sinkStick != nullptr) {
+                        env->CallVoidMethod(c.inputSink, c.sinkStick, 0.f, 0.f,
+                                            sxScreen, syScreen);
+                        clearJavaException(env, "输入回调 onStick（画面分支）");
+                    }
+                }
+            } else if (c.sinkStickPushed[h] && c.sinkStick != nullptr) {
+                // 回中补一帧零值：界面侧据此清"已触发"状态（快进快退要回中才能再触发）
+                c.sinkStickPushed[h] = false;
+                c.sinkStickAt[h] = 0.0;
+                env->CallVoidMethod(c.inputSink, c.sinkStick, 0.f, 0.f, 0.f, 0.f);
+                clearJavaException(env, "输入回调 onStick（画面分支 · 回中）");
+            }
+        }
     }
 }
 

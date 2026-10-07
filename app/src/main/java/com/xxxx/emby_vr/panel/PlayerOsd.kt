@@ -158,6 +158,9 @@ private fun px(v: Float) = (v / PX_PER_DP).dp
 /** 控制条面板像素宽（必须与原生 kOsdPxW 一致：光柱坐标是按面板像素给的） */
 const val OSD_PANEL_W = 2331f
 
+/** 控制条面板高度（像素）—— 与原生 kOsdPxH 一致，光点纵向归一化要用它 */
+const val OSD_PANEL_H = 474f
+
 /**
  * 控制条状态：主线程（Activity）写，面板界面读。
  *
@@ -204,6 +207,17 @@ class OsdState {
 
     /** 光柱在控制条里的横向位置（归一化 0…1；负值 = 光柱不在这块面板上） */
     var pointerNx by mutableStateOf(-1f)
+
+    /**
+     * 光柱在控制条里的纵向位置（归一化 0…1；负值 = 不在面板上）。
+     * 悬停必须连纵向一起判（父亲 2026-10-07：光点在标题行 / 进度行横向移动时，
+     * 下面那排按钮会挨个亮起来，看着像扫动）。
+     */
+    var pointerNy by mutableStateOf(-1f)
+
+    /** 按钮行的纵向范围（归一化），由界面自己量；悬停判定用它排除标题行与进度行 */
+    var buttonRowTop by mutableStateOf(0f)
+    var buttonRowBottom by mutableStateOf(0f)
 
     /** 当前打开的菜单对应哪颗按钮（那颗按钮常亮）；没开菜单时是 null */
     var activeMenuButton by mutableStateOf<OsdButton?>(null)
@@ -344,6 +358,21 @@ fun PlayerOsdBar(state: OsdState) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .onGloballyPositioned { coords ->
+                    /*
+                     * 把按钮行的纵向范围报给 OsdState（父亲 2026-10-07）：
+                     * 悬停判定要排除上面的标题行与进度行，否则光点在它们上面横向移动时，
+                     * 这排按钮会挨个亮起来。
+                     */
+                    val ph = LocalWindowInfo.current.containerSize.height
+                    if (ph > 0) {
+                        state.buttonRowTop =
+                            (coords.positionInRoot().y / ph).coerceIn(0f, 1f)
+                        state.buttonRowBottom =
+                            ((coords.positionInRoot().y + coords.size.height) / ph)
+                                .coerceIn(0f, 1f)
+                    }
+                }
                 .padding(horizontal = px(BUTTON_ROW_SIDE_PX)),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -465,7 +494,12 @@ private fun OsdProgress(state: OsdState, modifier: Modifier = Modifier) {
 private fun OsdButtonView(button: OsdButton, state: OsdState, panelWpx: Int) {
     val selected = state.activeMenuButton == button
     val range = state.buttonRange[button]
+    /*
+     * 悬停要**横向 + 纵向**都落在按钮行上（父亲 2026-10-07）。
+     * 只看横向时，光点在标题行 / 进度行横向扫过，这排按钮会挨个亮 —— 就是"扫动"。
+     */
     val hovered = !selected && range != null && state.pointerNx >= 0f &&
+        state.pointerNy >= state.buttonRowTop && state.pointerNy <= state.buttonRowBottom &&
         state.pointerNx >= range.first && state.pointerNx <= range.second
     val isPlayPause = button == OsdButton.PLAY_PAUSE
     /*

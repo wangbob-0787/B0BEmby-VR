@@ -409,11 +409,16 @@ class MainActivity : ComponentActivity() {
         override fun onOsdPointer(px: Float, py: Float, pressed: Boolean) {
             vrInputLive = true
             lastOsdPointerAt = android.os.SystemClock.uptimeMillis()
-            // 归一化横向位置：界面拿它判断光柱停在哪儿（按钮悬停高亮）
+            // 归一化横向 + 纵向位置：界面拿它判断光柱停在哪儿（按钮悬停高亮）
             osdState.pointerNx = if (px < 0f) {
                 -1f                                             // 光柱不在控制条上：清掉悬停高亮
             } else {
                 (px / com.xxxx.emby_vr.panel.OSD_PANEL_W).coerceIn(0f, 1f)
+            }
+            osdState.pointerNy = if (py < 0f) {
+                -1f
+            } else {
+                (py / com.xxxx.emby_vr.panel.OSD_PANEL_H).coerceIn(0f, 1f)
             }
             runOnUiThread { if (osdReady()) osd.vrPointerPressed(px, py, pressed) }
         }
