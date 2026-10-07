@@ -18,6 +18,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.LazyRow
@@ -203,9 +205,14 @@ val BUFFER_PRESETS = listOf(
     Triple("最大", 60_000, 180_000),
 )
 
-/** 菜单面板像素尺寸（与控制条等宽 → 归一化横向坐标可以直接复用） */
+/**
+ * 菜单面板像素尺寸（与控制条等宽 → 归一化横向坐标可以直接复用）。
+ *
+ * 高度 = 控制条的高度（父亲 2026-10-07：菜单面板的厚度改成和控制条一样）。
+ * 原生侧 openxr_renderer.cpp 的 kMenuPxH 必须同步改，否则物理尺寸与光柱命中判定对不上。
+ */
 const val MENU_PANEL_W = 2331
-const val MENU_PANEL_H = 1200
+const val MENU_PANEL_H = 474
 
 /** 窄卡片宽度（像素） */
 private const val CARD_W = 920f
@@ -240,7 +247,7 @@ fun PlayerMenuPanel(menu: MenuState, osd: OsdState) {
         wide -> pxToDp(panelW - CARD_WIDE_PAD * 2f)
         else -> pxToDp(CARD_W)
     }
-    val heightDp: Dp = if (isInfo) pxToDp(panelH / 2f) else Dp.Unspecified  // 高度减半
+    // 所有菜单卡片都固定成控制条的厚度（父亲 2026-10-07），内容超出就滚动
 
     /*
      * 卡片实际占的那块矩形要报给原生（父亲 2026-10-06）：
@@ -254,7 +261,7 @@ fun PlayerMenuPanel(menu: MenuState, osd: OsdState) {
             modifier = Modifier
                 .padding(start = leftDp, bottom = 8.dp)
                 .width(widthDp)
-                .then(if (isInfo) Modifier.height(heightDp) else Modifier)
+                .height(pxToDp(panelH))
                 .onGloballyPositioned { coords ->
                     if (windowW <= 0 || windowH <= 0) return@onGloballyPositioned
                     val x = coords.positionInRoot().x
@@ -434,7 +441,7 @@ private fun TrackMenu(menu: MenuState, rows: List<MenuRowItem>, kind: MenuKind) 
             listState.scrollBy(dy)
         }
     }
-    LazyColumn(state = listState, modifier = Modifier.heightIn(max = 620.dp)) {
+    LazyColumn(state = listState, modifier = Modifier.heightIn(max = 200.dp)) {
         itemsIndexed(rows) { i, row ->
             MenuRow(
                 label = row.label,
@@ -460,7 +467,7 @@ private fun EpisodeMenu(menu: MenuState) {
             listState.scrollBy(dy)
         }
     }
-    LazyColumn(state = listState, modifier = Modifier.heightIn(max = 620.dp)) {
+    LazyColumn(state = listState, modifier = Modifier.heightIn(max = 200.dp)) {
         itemsIndexed(menu.episodes) { i, row ->
             MenuRow(
                 label = row.label,
@@ -485,13 +492,13 @@ private fun InfoMenu(menu: MenuState) {
     }
     Row(modifier = Modifier.fillMaxSize()) {
         /*
-         * 海报（2:3）：高度取卡片高度的 85%（父亲 2026-10-06 晚：海报要高出文字），
-         * 右边那一列文字从卡片高度 1/3 处才开始。
+         * 海报（2:3）：卡片厚度改成控制条高度后（父亲 2026-10-07），
+         * 海报跟着缩到内容区里，保持 2:3。
          */
         Box(
             modifier = Modifier
-                .width(252.dp)
-                .height(378.dp)
+                .width(133.dp)
+                .height(200.dp)
                 .clip(RoundedCornerShape(10.dp))
                 .background(Color(0x22FFFFFF)),
         ) {
@@ -505,11 +512,14 @@ private fun InfoMenu(menu: MenuState) {
             }
         }
         Spacer(modifier = Modifier.width(30.dp))
-        // 文字从卡片高度 1/3 处开始排（父亲 2026-10-06 晚：海报要高过文字）
+        /*
+         * 卡片高度 = 控制条厚度（父亲 2026-10-07）之后不再留 1/3 的顶部空档：
+         * 文字直接顶到上边，内容装不下就滚动。
+         */
         Column(
             modifier = Modifier
                 .weight(1f)
-                .padding(top = pxToDp(MENU_PANEL_H / 2f / 3f)),
+                .verticalScroll(rememberScrollState()),
         ) {
             Text(
                 text = info.title,

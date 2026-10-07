@@ -1215,6 +1215,8 @@ class MainActivity : ComponentActivity() {
             com.xxxx.emby_vr.panel.MenuKind.AUDIO -> {
                 selectedAudioIndex = audioStreamIndices.getOrNull(index)
                 Log.i(TAG, "音轨 → 流 ${selectedAudioIndex ?: "默认"}（菜单保持打开）")
+                // 勾选立刻移到新音轨（父亲 2026-10-07：菜单要原地更新到新选项）
+                refreshMenuRows(com.xxxx.emby_vr.panel.MenuKind.AUDIO)
                 replayKeepingPosition()
             }
             com.xxxx.emby_vr.panel.MenuKind.EPISODES -> {
@@ -1572,6 +1574,11 @@ class MainActivity : ComponentActivity() {
             } catch (t: Throwable) {
                 Log.e(TAG, "取详情失败", t)
             }
+            /*
+             * 菜单开着时数据变了要**就地更新**（父亲 2026-10-07：点了另一集、或者换了
+             * 音轨，菜单里的勾选要跟着移到新选项 —— 不能还停在旧的那条）。
+             */
+            menuState.kind?.let { refreshMenuRows(it) }
         }
     }
 

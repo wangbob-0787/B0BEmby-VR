@@ -548,6 +548,7 @@ struct VrContext {
     GLuint vbo = 0;                // 单位方块（面板 / 光点）
     GLuint rayVbo = 0;             // 手柄射线网格（圆锥）
     int rayVertexCount = 0;
+    GLuint triVbo = 0;             // 实心三角（加载转圈的箭头）
 
     // ---- VR 输入回推给 Java（光柱 → 面板点击/滚动，2026-10-05）----
     jobject inputSink = nullptr;        // VrNative.InputSink 的全局引用
@@ -811,6 +812,21 @@ void makeQuadBuffers(VrContext &c) {
     };
     glGenBuffers(1, &c.vbo);
     glBindBuffer(GL_ARRAY_BUFFER, c.vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
+}
+
+/**
+ * 实心三角 —— 加载转圈的箭头（父亲 2026-10-07 给的样式）。
+ * 顶点朝 +Y（尖端），底边在 -Y，位置 + UV 与方块同格式，drawMesh 直接能用。
+ */
+void makeTriBuffer(VrContext &c) {
+    const float verts[] = {
+            -0.5f, -0.5f, 0.f, 0.f, 1.f,
+            0.5f, -0.5f, 0.f, 1.f, 1.f,
+            0.0f, 0.9f, 0.f, 0.5f, 0.f,
+    };
+    glGenBuffers(1, &c.triVbo);
+    glBindBuffer(GL_ARRAY_BUFFER, c.triVbo);
     glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
 }
 
@@ -1523,9 +1539,9 @@ bool rayHitsPlacement(const XrPosef &aim, const ScreenPlacement &p, float *outT,
  * 要看得见"在加载"，不能是一块死屏。做法：一圈小点绕着银幕中心转，越靠"头"越亮。
  */
 /**
- * 银幕上的加载转圈（父亲 2026-10-06 定：绿色、带缺口的圆环箭头、顺时针旋转）。
+ * 银幕上的加载转圈（父亲 2026-10-07 给的样式：**青色**圆环 + 实心三角箭头，顺时针）。
  *
- * 用一圈小方块拼出细环，缺口处不画 —— 缺口就是"箭头"，转起来方向一眼能看出。
+ * 用一圈小方块拼出环，缺口处不画；缺口那一端放一个实心三角当箭头，尖朝转动方向。
  * 只在「已开播但第一帧还没到」这段时间画（换片清屏后的等待）。
  */
 void drawSpinner(VrContext &c, const Mat4 &proj, const Mat4 &view4) {
@@ -1533,7 +1549,7 @@ void drawSpinner(VrContext &c, const Mat4 &proj, const Mat4 &view4) {
     const double now = std::chrono::duration<double>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
     constexpr int kSegs = 48;         // 整圈分 48 段（段短 = 看起来是实线，父亲 2026-10-06）
-    constexpr int kGapSegs = 14;      // 缺口占 14 段（约 105°），缺口那头就是箭头尖
+    constexpr int kGapSegs = 6;       // 缺口占 6 段（约 45°，照父亲 2026-10-07 的图），缺口那头放箭头
     constexpr float kRadius = 0.10f;  // 环半径（米，父亲：原来太大）
     constexpr float kThick = 0.012f;  // 环的粗细（米，细一点更像实线）
     const float segLen = 2.f * 3.14159265358979f * kRadius / (float) kSegs * 1.15f;  // 稍长一点，段间不留缝
@@ -1551,29 +1567,27 @@ void drawSpinner(VrContext &c, const Mat4 &proj, const Mat4 &view4) {
         seg.orientation = {0.f, 0.f, sinf(half), cosf(half)};   // 绕 Z 轴摆到这一段
         const Mat4 m = poseScaleModel(seg, segLen, kThick, 1.f);
         drawMesh(c, c.vbo, 6, multiply(multiply(proj, view4), m),
-                 0.16f * fade, 0.85f * fade, 0.32f * fade, false);
+                 0.13f * fade, 0.86f * fade, 0.94f * fade, false);
     }
     /*
-     * 箭头尖（父亲 2026-10-06：「没有箭头，是个圆点」）：改成两撇组成的 V 形箭头，
-     * 顶点落在缺口那一端，配上后面渐暗的环，看起来就是一支带箭头的转圈。
+     * 箭头（父亲 2026-10-07 的图）：一个**实心三角**落在环的头部，尖朝转动方向。
+     * 原来是两撇组成的 V 形，太细，远看不像箭头。
      */
-    {
+    if (c.triVbo != 0) {
         const float ang = base + (float) (kSegs - kGapSegs) * step;
-        const float armLen = kThick * 3.2f;
-        const float rr = kRadius * 0.88f;
-        for (int s = 0; s < 2; s++) {
-            const float dir = (s == 0) ? 1.f : -1.f;   // 两撇分别朝缺口两侧
-            const float a = ang + dir * 2.5f;
-            XrPosef arm{};
-            arm.position = {kFrontScreen.cx + cosf(ang + dir * 0.62f) * rr,
-                            kFrontScreen.cy + sinf(ang + dir * 0.62f) * rr,
-                            kFrontScreen.cz + 0.013f};
-            const float half = a * 0.5f;
-            arm.orientation = {0.f, 0.f, sinf(half), cosf(half)};
-            const Mat4 m = poseScaleModel(arm, armLen, kThick * 0.95f, 1.f);
-            drawMesh(c, c.vbo, 6, multiply(multiply(proj, view4), m),
-                     0.20f, 0.95f, 0.36f, false);
-        }
+        XrPosef tip{};
+        tip.position = {kFrontScreen.cx + cosf(ang) * kRadius,
+                        kFrontScreen.cy + sinf(ang) * kRadius,
+                        kFrontScreen.cz + 0.013f};
+        /*
+         * 三角的尖在 +Y，要让它朝「顺时针切向」（角度减小的方向）：切向角 = ang - 90°，
+         * 而绕 Z 转 θ 时 +Y 指向 θ + 90°，所以 θ = ang - 180°。
+         */
+        const float theta = ang - 3.14159265358979f;
+        tip.orientation = {0.f, 0.f, sinf(theta * 0.5f), cosf(theta * 0.5f)};
+        const Mat4 m = poseScaleModel(tip, kThick * 2.8f, kThick * 3.4f, 1.f);
+        drawMesh(c, c.triVbo, 3, multiply(multiply(proj, view4), m),
+                 0.13f, 0.86f, 0.94f, false);
     }
 }
 
@@ -1665,7 +1679,11 @@ bool rayHitsOsd(const VrContext &c, const XrPosef &aim, float *outT, float *outX
  *   菜单项字号 24sp（与「正在播放」同档）：项高 92、卡片高 1175、面板高 1200
  */
 constexpr float kMenuPxW = 2331.f;
-constexpr float kMenuPxH = 1200.f;
+/*
+ * 菜单面板像素高度 = 控制条面板高度（父亲 2026-10-07：菜单面板的厚度改成和控制条一样）。
+ * Java 侧 PlayerMenuPanel.kt 的 MENU_PANEL_H 必须同步改，否则物理尺寸与命中判定对不上。
+ */
+constexpr float kMenuPxH = 474.f;
 constexpr float kMenuWidth = kOsdWidth;
 constexpr float kMenuHeight = kMenuWidth * kMenuPxH / kMenuPxW;
 constexpr float kMenuGap = 0.02f;
@@ -3121,6 +3139,7 @@ void teardown(VrContext &c) {
     c.eyes.clear();
     if (c.vbo) glDeleteBuffers(1, &c.vbo);
     if (c.rayVbo) glDeleteBuffers(1, &c.rayVbo);
+    if (c.triVbo) glDeleteBuffers(1, &c.triVbo);
     if (c.program) glDeleteProgram(c.program);
     if (c.localSpace != XR_NULL_HANDLE) xrDestroySpace(c.localSpace);
     if (c.session != XR_NULL_HANDLE) api.DestroySession(c.session);
@@ -3199,6 +3218,7 @@ void renderThreadMain() {
         c.jitterLoc = glGetUniformLocation(c.program, "uJitter");
         makeQuadBuffers(c);
         makeRayBuffer(c);
+        makeTriBuffer(c);
         LOGI("GL 资源就绪（program=%u）", c.program);
 
         frameLoop(c);
