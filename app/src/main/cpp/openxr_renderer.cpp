@@ -664,6 +664,13 @@ struct VrContext {
     std::atomic<bool> videoActive{false};
     std::atomic<bool> videoHasFrame{false};   // 见 panelHasFrame 的注释
     /*
+     * 上一次见到的视频帧时间戳 —— 换片时用来识别"残留的旧帧"（父亲 2026-10-07）。
+     *
+     * ExoPlayer 释放旧片后，Surface 里还留着上一部的最后一帧，它的 getTimestamp
+     * 与停播前相同；若把它当成新片第一帧，黑幕/转圈就会被秒收。
+     */
+    int64_t lastVideoFrameTs = 0;
+    /*
      * 换片 / 首播的等待期：Java 明确要求银幕转圈（父亲 2026-10-07）。
      *
      * 这段时间 videoActive 是 false（银幕已经清空），所以转圈不能再以 videoActive
@@ -2164,10 +2171,14 @@ void pushInput(VrContext &c) {
         }
 
         /*
-         * ③ 播放中、光柱不在海报墙上：扳机 = 开关控制条，而且**只有指着银幕**才算
-         *    （父亲 2026-10-06：指别处扣扳机，控制条保持现状）。
+         * ③ 光柱指着银幕 + 扣扳机 = 开关控制条。
+         *
+         * 父亲 2026-10-07：**没在播放时也要能唤出** —— 刚打开 app、屏幕上没有影片时，
+         * 指着空屏扣扳机，控制条就该出来（从那里可以进「选片」）。
+         * 所以这里不再要求 videoActive（原来它把整段都跳过了，扣扳机毫无反应）。
+         * 光柱落在海报墙上时前面已经 continue 掉，不会和"点海报"打架。
          */
-        if (c.videoActive.load()) {
+        {
             float vT = 0.f, vu = 0.f, vv = 0.f, vwx = 0.f, vwy = 0.f, vwz = 0.f;
             const bool onScreen = rayHitsPlacement(c.aimPose[h], frontScreen(c), &vT, &vu, &vv,
                                                    &vwx, &vwy, &vwz);
@@ -3365,7 +3376,17 @@ jobject makeOesSurface(JNIEnv *env, GLuint tex, std::function<void()> &out,
         if (!hasFrame.load() && getTimestamp != nullptr) {
             const jlong ts = e->CallLongMethod(globalRef, getTimestamp);
             clearJavaException(e, "getTimestamp");
-            if (ts > 0) {
+            /*
+             * 只有**新的一帧**才算首帧（父亲 2026-10-07 实测）。
+             *
+             * 换片后 105 毫秒就报"首帧到位"，而那个 timestamp 与上一部完全相同 ——
+             * 那是 ExoPlayer 释放后残留在 Surface 里的旧帧。一旦把它当成新片第一帧，
+             * 黑幕 / 转圈 / 片名提示就会刚亮起就被收掉，肉眼等于"没出现"。
+             */
+            const bool staleFrame =
+                    notifyFirstFrame && ts > 0 && ts == g.lastVideoFrameTs;
+            if (ts > 0 && !staleFrame) {
+                if (notifyFirstFrame) g.lastVideoFrameTs = ts;
                 hasFrame = true;
                 LOGI("%s首帧到位（timestamp=%lld）—— 可以画了", what, (long long) ts);
                 /*
