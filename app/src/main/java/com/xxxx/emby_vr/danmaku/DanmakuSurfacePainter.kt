@@ -212,7 +212,7 @@ class DanmakuSurfacePainter(
             color = 0xFFE8F8FF.toInt()
             textSize = widthPx * 0.045f * CANVAS_H_OVER_W   // 2560 宽画布 ≈ 65px
             textAlign = android.graphics.Paint.Align.CENTER
-            isFakeBoldText = true
+            isFakeBoldText = false
         }
         val shadow = android.graphics.Paint(paint).apply { color = 0xCC000000.toInt() }
         val cx = widthPx / 2f

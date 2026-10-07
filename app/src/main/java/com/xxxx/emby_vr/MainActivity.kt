@@ -2099,6 +2099,12 @@ class MainActivity : ComponentActivity() {
          */
         com.xxxx.emby_vr.vr.VrNative.setVideoAspect(16f / 9f)
         /*
+         * 画布比例必须跟着一起回 16:9（父亲 2026-10-07：等待期的转圈与「即将播放」变形）。
+         * 等待期画在弹幕层上，而这一层此刻按 16:9 摆 —— 画布若还留着上一部（比如 2.39:1）
+         * 的比例，圆就被压成椭圆。两者永远是成对改的。
+         */
+        applyDanmakuCanvas(16f / 9f)
+        /*
          * 等待期这一层要露出来 —— 它上面要显示「即将播放：片名」那行提示
          * （弹幕内容与 logo 仍然等第一帧，见 logoBitmapProvider 的门控）。
          */

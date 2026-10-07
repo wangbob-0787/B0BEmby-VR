@@ -35,11 +35,11 @@ class DanmakuView(context: Context) : View(context) {
         }
 
     private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        typeface = Typeface.DEFAULT_BOLD
+        typeface = Typeface.DEFAULT
         style = Paint.Style.FILL
     }
     private val outlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        typeface = Typeface.DEFAULT_BOLD
+        typeface = Typeface.DEFAULT
         style = Paint.Style.STROKE
         strokeJoin = Paint.Join.ROUND
     }
@@ -56,12 +56,12 @@ class DanmakuView(context: Context) : View(context) {
     private val subtitlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         textAlign = Paint.Align.CENTER
-        typeface = Typeface.DEFAULT_BOLD
+        typeface = Typeface.DEFAULT
     }
     private val subtitleOutline = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.BLACK
         textAlign = Paint.Align.CENTER
-        typeface = Typeface.DEFAULT_BOLD
+        typeface = Typeface.DEFAULT
         style = Paint.Style.STROKE
         strokeWidth = 6f
         strokeJoin = Paint.Join.ROUND
@@ -98,11 +98,11 @@ class DanmakuView(context: Context) : View(context) {
 
     private val hudTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
-        typeface = Typeface.DEFAULT_BOLD
+        typeface = Typeface.DEFAULT
     }
     private val hudDimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.rgb(0xD0, 0xD0, 0xD0)
-        typeface = Typeface.DEFAULT_BOLD
+        typeface = Typeface.DEFAULT
     }
 
     /** 轨道色、缓冲段、已播段（电视版实测：深灰轨道 + 白 22% 缓冲 + 绿已播 + 绿竖线游标） */
@@ -110,7 +110,6 @@ class DanmakuView(context: Context) : View(context) {
     private val hudBufPaint = Paint().apply { color = Color.argb(0x38, 0xFF, 0xFF, 0xFF) }
     private val hudFillPaint = Paint().apply { color = Color.rgb(0x2F, 0xD5, 0x7C) }
     private val hudCursorPaint = Paint().apply { color = Color.rgb(0x2F, 0xD5, 0x7C) }
-    private val hudClock = SimpleDateFormat("HH:mm", Locale.getDefault())
 
     /** 当前轨道的弹幕条数（诊断用） */
     fun trackItemCount(): Int = track?.items?.size ?: 0
@@ -226,7 +225,8 @@ class DanmakuView(context: Context) : View(context) {
     private fun drawSeekHud(canvas: Canvas) {
         if (!hudVisible || width <= 0 || height <= 0) return
         // 画布高度随影片比例变，字号一律按宽度算（16:9 时与原来等价）
-        val textSize = max(14f, width * 0.022f * 9f / 16f)
+        // 字号放大一档（父亲 2026-10-07：「字号再大一些」，与控制条同一量级）
+        val textSize = max(16f, width * 0.032f * 9f / 16f)
         hudTextPaint.textSize = textSize
         hudDimPaint.textSize = textSize
 
@@ -238,8 +238,8 @@ class DanmakuView(context: Context) : View(context) {
 
         val remain = (hudDurMs - hudPosMs).coerceAtLeast(0L)
         val leftText = osdTimeText(hudPosMs)
-        val rightText = "-" + osdTimeText(remain) + " / " +
-            hudClock.format(Date(System.currentTimeMillis() + remain))
+        // 文案与控制条完全一致：左「已播」，右「-剩余 / 总时长」（见 panel/PlayerOsd.kt）
+        val rightText = "-" + osdTimeText(remain) + " / " + osdTimeText(hudDurMs)
 
         val baseline = rowCy + textSize * 0.35f
         canvas.drawText(leftText, padX, baseline, hudTextPaint)
