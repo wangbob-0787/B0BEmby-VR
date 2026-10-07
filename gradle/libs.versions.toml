@@ -5,6 +5,7 @@ coreKtx = "1.17.0"
 material3 = "1.4.0"
 # 1.4.1 → 1.5.0：为了对齐 Jellyfin 的 FFmpeg 音频软解扩展（它只有 1.5.0+1 这档）
 media3 = "1.5.0"
+libmpv = "0.4.1"
 coil = "3.0.4"
 coroutines = "1.9.0"
 serialization = "1.7.3"
@@ -20,6 +21,7 @@ nanohttpd = "2.3.1"
 openxrLoader = "1.1.49"
 
 [libraries]
+libmpv = { group = "dev.jdtech.mpv", name = "libmpv", version.ref = "libmpv" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 androidx-material3 = { group = "androidx.compose.material3", name = "material3", version.ref = "material3" }
 androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version = "1.9.3" }

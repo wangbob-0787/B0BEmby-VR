@@ -183,6 +183,8 @@ dependencies {
      */
     implementation(files("libs/media3-ffmpeg-decoder-1.5.0.aar"))
 
+    // 自带解码内核（libmpv，FFmpeg 驱动）—— 用于系统解码器吃不下杜比视界这类片源
+    implementation(libs.libmpv)
     implementation(libs.coil.compose)
     implementation(libs.coil.network.okhttp)
 
