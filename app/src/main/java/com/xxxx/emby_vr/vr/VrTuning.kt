@@ -24,6 +24,7 @@ import java.io.File
  * | `video_w` / `video_h` | 视频链路画布尺寸（内核画布 + 画面缓冲），必须是两张一起写 | 1920x1080 |
  * | `super_sample` | 双眼渲染超采样倍数（0.6~2.0） | 1.25 |
  * | `swap_wait_ms` | 等交换链图像超时（毫秒，0~50） | 4 |
+ * | `sync_mode` | 交回图像前的同步：0=只提交命令 1=等 GPU 画完 | 0 |
  * | `layer_mask` | 层掩码：bit0 视频独立层 / bit1 弹幕层 / bit2 片名 logo | 7 |
  * | `video_layer` `danmaku_layer` `logo_layer` | 单层开关 0/1（写哪个改哪个位，其余保持默认） | — |
  * | `mpv_<属性>` | 透传给内核的同名属性，例如 `mpv_tone-mapping=spline` | — |
@@ -40,6 +41,7 @@ object VrTuning {
     const val KEY_SUPER_SAMPLE = 1
     const val KEY_SWAP_WAIT_MS = 2
     const val KEY_LAYER_MASK = 3
+    const val KEY_SYNC_MODE = 4
 
     /** 上次应用的配置原文，只有变化才动手（避免每秒重复设置） */
     private var lastRaw: Map<String, String> = emptyMap()
@@ -127,6 +129,10 @@ object VrTuning {
         raw["swap_wait_ms"]?.toFloatOrNull()?.let {
             VrNative.setTuning(KEY_SWAP_WAIT_MS, it)
             applied += "等图超时 ${it.toInt()}ms"
+        }
+        raw["sync_mode"]?.toFloatOrNull()?.let {
+            VrNative.setTuning(KEY_SYNC_MODE, it)
+            applied += if (it >= 1f) "同步档 glFinish" else "同步档 glFlush"
         }
         /*
          * 层掩码：写了 `layer_mask` 就整份替换（默认 7）；

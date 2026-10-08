@@ -847,6 +847,13 @@ double gSwapWaitMs = 0.0;
 std::atomic<float> gSuperSample{1.25f};      // 双眼渲染超采样倍数（下次起播生效）
 std::atomic<int> gSwapWaitTimeoutMs{4};      // 等交换链图像超时（毫秒，可运行时调）
 std::atomic<int> gLayerMask{0x7};            // bit0 视频独立层 bit1 弹幕层 bit2 片名 logo
+/*
+ * 交回图像前的同步档（父亲 2026-10-08 手机拍到撕裂后加的对照开关）。
+ *
+ * 0 = glFlush（只把命令推进命令流，正常档）
+ * 1 = glFinish（等 GPU 真正画完，重一档；用来验证「撕裂是否因为图还没画完」）
+ */
+std::atomic<int> gSyncMode{0};
 
 /*
  * 跳过提交的计数（父亲 2026-10-08：「场景里有时候会出现黑纹」）。
@@ -2772,7 +2779,11 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
      * 运行时有几率在命令还没执行完时就把这块图拿去合成 —— 表现就是整幅画面
      * 出现上下漂移的横向撕裂。OpenXR 用 GL 的标准做法就是 release 前 glFlush()。
      */
-    glFlush();
+    if (gSyncMode.load() == 1) {
+        glFinish();
+    } else {
+        glFlush();
+    }
 
     XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
     const XrResult rr = api.ReleaseSwapchainImage(eye.handle, &ri);
@@ -3060,7 +3071,11 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
      * 运行时有几率在命令还没执行完时就把这块图拿去合成 —— 表现就是整幅画面
      * 出现上下漂移的横向撕裂。OpenXR 用 GL 的标准做法就是 release 前 glFlush()。
      */
-    glFlush();
+    if (gSyncMode.load() == 1) {
+        glFinish();
+    } else {
+        glFlush();
+    }
 
     XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
     if (XR_FAILED(api.ReleaseSwapchainImage(L.handle, &ri))) return false;
@@ -3114,7 +3129,11 @@ bool fillVideoLayerBlack(VrContext &c, VideoLayerBuf &L) {
      * 运行时有几率在命令还没执行完时就把这块图拿去合成 —— 表现就是整幅画面
      * 出现上下漂移的横向撕裂。OpenXR 用 GL 的标准做法就是 release 前 glFlush()。
      */
-    glFlush();
+    if (gSyncMode.load() == 1) {
+        glFinish();
+    } else {
+        glFlush();
+    }
 
     XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
     if (XR_FAILED(api.ReleaseSwapchainImage(L.handle, &ri))) return false;
@@ -3459,7 +3478,7 @@ void frameLoop(VrContext &c) {
                 LOGI("帧统计（均/峰 毫秒）：周期 %.1f/%.1f 视频 %.1f/%.1f 界面 %.1f/%.1f "
                      "双眼 %.1f/%.1f 收尾 %.1f/%.1f | 帧 %.1f/%.1f，%.0f 帧里 %d 帧超 11ms，"
                      "等交换链平均 %.2f｜当前参数 超采样 %.2f 超时 %dms 掩码 0x%x"
-                     "｜跳过提交 眼 %d 视频层 %d 其他层 %d",
+                     "｜跳过提交 眼 %d 视频层 %d 其他层 %d｜同步档 %d",
                      statPeriodMs / n, statPeriodMax,
                      statVideoMs / n, statVideoMax,
                      statUiMs / n, statUiMax,
@@ -3469,7 +3488,7 @@ void frameLoop(VrContext &c) {
                      (double) gSuperSample.load(), gSwapWaitTimeoutMs.load(),
                      gLayerMask.load(),
                      gEyeSkipCount.load(), gVideoLayerSkipCount.load(),
-                     gOtherLayerSkipCount.load());
+                     gOtherLayerSkipCount.load(), gSyncMode.load());
                 statAccumMs = 0.0;
                 statMaxMs = 0.0;
                 statVideoMs = statVideoMax = 0.0;
@@ -4015,6 +4034,10 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             gLayerMask.store((int) value);
             LOGI("调参 → 层掩码 0x%x（视频层=%d 弹幕层=%d logo=%d）", (int) value,
                  (int) value & 1, ((int) value >> 1) & 1, ((int) value >> 2) & 1);
+            break;
+        case 4:
+            gSyncMode.store((int) value);
+            LOGI("调参 → 交回图像同步档 %d（0=glFlush 1=glFinish）", (int) value);
             break;
         default:
             LOGI("调参 → 未知参数 key=%d（忽略）", (int) key);
