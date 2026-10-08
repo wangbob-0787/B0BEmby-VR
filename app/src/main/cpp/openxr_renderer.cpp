@@ -3333,7 +3333,7 @@ void frameLoop(VrContext &c) {
             statFrames++;
             if (ms > 11.0) statOver++;
             auto now = std::chrono::steady_clock::now();
-            if (std::chrono::duration<double, std::second>(now - statLast).count() > 3.0 &&
+            if (std::chrono::duration<double, std::milli>(now - statLast).count() > 3000.0 &&
                 statFrames > 0) {
                 LOGI("帧耗时 %.1f-%.1f 毫秒（平均/最大），%.0f 帧里 %d 帧超 11ms",
                      statAccumMs / statFrames, statMaxMs, (double) statFrames, statOver);
