@@ -2765,6 +2765,15 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
     // 画完必须解绑 FBO，否则下一只眼/下一帧会画进同一个附件
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
+    /*
+     * 交回图像前必须把 GL 命令推进命令流（父亲 2026-10-08 报「整个场景横向黑纹」）。
+     *
+     * GL 命令是异步的：画进 FBO 之后如果直接 xrReleaseSwapchainImage，
+     * 运行时有几率在命令还没执行完时就把这块图拿去合成 —— 表现就是整幅画面
+     * 出现上下漂移的横向撕裂。OpenXR 用 GL 的标准做法就是 release 前 glFlush()。
+     */
+    glFlush();
+
     XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
     const XrResult rr = api.ReleaseSwapchainImage(eye.handle, &ri);
     if (XR_FAILED(rr)) {
@@ -3044,6 +3053,15 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
+    /*
+     * 交回图像前必须把 GL 命令推进命令流（父亲 2026-10-08 报「整个场景横向黑纹」）。
+     *
+     * GL 命令是异步的：画进 FBO 之后如果直接 xrReleaseSwapchainImage，
+     * 运行时有几率在命令还没执行完时就把这块图拿去合成 —— 表现就是整幅画面
+     * 出现上下漂移的横向撕裂。OpenXR 用 GL 的标准做法就是 release 前 glFlush()。
+     */
+    glFlush();
+
     XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
     if (XR_FAILED(api.ReleaseSwapchainImage(L.handle, &ri))) return false;
     L.index = idx;
@@ -3089,6 +3107,15 @@ bool fillVideoLayerBlack(VrContext &c, VideoLayerBuf &L) {
     glClearColor(0.f, 0.f, 0.f, 1.f);   // 不透明黑
     glClear(GL_COLOR_BUFFER_BIT);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    /*
+     * 交回图像前必须把 GL 命令推进命令流（父亲 2026-10-08 报「整个场景横向黑纹」）。
+     *
+     * GL 命令是异步的：画进 FBO 之后如果直接 xrReleaseSwapchainImage，
+     * 运行时有几率在命令还没执行完时就把这块图拿去合成 —— 表现就是整幅画面
+     * 出现上下漂移的横向撕裂。OpenXR 用 GL 的标准做法就是 release 前 glFlush()。
+     */
+    glFlush();
+
     XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
     if (XR_FAILED(api.ReleaseSwapchainImage(L.handle, &ri))) return false;
     L.index = idx;
