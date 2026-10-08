@@ -49,6 +49,21 @@ class MpvBackend(private val context: Context) {
         }
 
         /**
+         * 执行一条内核命令（调参文件里写 `cmd=screenshot-to-file <路径> video`）。
+         *
+         * 用途：把内核渲染后的画面原样导出成文件。校色必须用内核渲染结果当标尺，
+         * 头显整屏截图带双眼畸变、裁不出可用样本（父亲 2026-10-09 定）。
+         */
+        fun commandRuntime(args: List<String>) {
+            try {
+                MPVLib.command(args.toTypedArray())
+                Log.i(TAG, "内核命令 → ${args.joinToString(" ")}")
+            } catch (t: Throwable) {
+                Log.w(TAG, "内核命令失败 ${args.joinToString(" ")}：${t.message}")
+            }
+        }
+
+        /**
          * 初始化内核。幂等，重复调用直接返回。
          */
         fun ensureCreated(context: Context) {

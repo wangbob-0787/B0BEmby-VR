@@ -29,6 +29,7 @@ import java.io.File
  * | `layer_mask` | 层掩码：bit0 视频独立层 / bit1 弹幕层 / bit2 片名 logo | 7 |
  * | `video_layer` `danmaku_layer` `logo_layer` | 单层开关 0/1（写哪个改哪个位，其余保持默认） | — |
  * | `mpv_<属性>` | 透传给内核的同名属性，例如 `mpv_tone-mapping=spline` | — |
+ * | `cmd` | 直接执行一条内核命令，例如 `cmd=screenshot-to-file <路径> video`（导出渲染画面，校色用） | — |
  *
  * 生效时机：`super_sample` 在建交换链时读，要重新起播（或重启应用）才生效；
  * 其余参数当场生效。
@@ -63,13 +64,14 @@ object VrTuning {
         scope: CoroutineScope,
         onVideoSize: (Int, Int) -> Unit,
         onMpvOption: (String, String) -> Unit,
+        onMpvCommand: (List<String>) -> Unit = {},
     ) {
         if (started) return
         started = true
         Log.i(TAG, "调参文件：${path(context)}（改完自动生效，无需重编）")
         scope.launch(Dispatchers.IO) {
             while (isActive) {
-                runCatching { poll(context, onVideoSize, onMpvOption) }
+                runCatching { poll(context, onVideoSize, onMpvOption, onMpvCommand) }
                     .onFailure { Log.w(TAG, "调参轮询异常：${it.message}") }
                 delay(1000)
             }
@@ -92,6 +94,7 @@ object VrTuning {
         context: Context,
         onVideoSize: (Int, Int) -> Unit,
         onMpvOption: (String, String) -> Unit,
+        onMpvCommand: (List<String>) -> Unit,
     ) {
         val raw = read(context) ?: return
         if (raw.isEmpty() || raw == lastRaw) return
@@ -112,6 +115,20 @@ object VrTuning {
             val prop = k.removePrefix("mpv_")
             onMpvOption(prop, v)
             applied += "内核 $prop=$v"
+        }
+
+        /*
+         * 调试通道：直接执行一条内核命令。
+         *
+         * 写法 `cmd=screenshot-to-file /sdcard/Android/data/com.xxxx.emby_vr/files/shot1.png video`
+         * 轮询只在"文件原文有变化"时动手，所以同一行只执行一次；想再截一张就改一下文件名。
+         */
+        raw["cmd"]?.trim()?.takeIf { it.isNotEmpty() }?.let { line ->
+            val parts = line.split(Regex("\\s+")).filter { it.isNotEmpty() }
+            if (parts.isNotEmpty()) {
+                onMpvCommand(parts)
+                applied += "内核命令 ${parts.joinToString(" ")}"
+            }
         }
 
         if (applied.isEmpty()) {

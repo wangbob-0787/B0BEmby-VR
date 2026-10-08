@@ -2788,6 +2788,9 @@ class MainActivity : ComponentActivity() {
             onMpvOption = { name, value ->
                 com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime(name, value)
             },
+            onMpvCommand = { args ->
+                com.xxxx.emby_vr.player.MpvBackend.commandRuntime(args)
+            },
         )
 
         val vrOk = com.xxxx.emby_vr.vr.VrNative.startVr(this)
