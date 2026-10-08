@@ -1255,15 +1255,19 @@ class MainActivity : ComponentActivity() {
                 }
                 Log.i(TAG, "mpv 直连原文件：…/videos/${pendingItemId}/stream?Static=true")
                 /*
-                 * 画布尺寸（父亲 2026-10-08：本轮「整屏纯色块」的根因）。
+                 * 画布尺寸（父亲 2026-10-08）。
                  *
-                 * 我们的画面纹理从来没有设置过缓冲尺寸：硬解时解码器会自己按视频尺寸设，
-                 * 所以一直没暴露；换成内核自己渲染之后，内核按默认尺寸画，屏幕上就成了
-                 * 整屏拉伸的色块（父亲实测：一会灰、一会粉红、一会蓝色）。
-                 * 纹理与内核两边都按片源尺寸设一次，才画得对。
+                 * 一是必须设：我们的画面纹理从来没有缓冲尺寸，硬解时解码器会自己设，
+                 * 内核自己渲染时不设就按默认尺寸画，屏幕上是整屏拉伸的色块。
+                 *
+                 * 二是别设成 4K：实测画布给到 3840x2160 时，内核每帧要处理的像素太多，
+                 * 帧率在 12~24 之间跳、整个 VR 场景跟着抖。银幕在头显里根本用不到 4K，
+                 * 宽度上限压到 1920（高度按片源比例算），像素量降到四分之一。
                  */
-                val vw = com.xxxx.emby_vr.player.PlaybackFlags.videoWidth.takeIf { it > 0 } ?: 1920
-                val vh = com.xxxx.emby_vr.player.PlaybackFlags.videoHeight.takeIf { it > 0 } ?: 1080
+                val srcW = com.xxxx.emby_vr.player.PlaybackFlags.videoWidth.takeIf { it > 0 } ?: 1920
+                val srcH = com.xxxx.emby_vr.player.PlaybackFlags.videoHeight.takeIf { it > 0 } ?: 1080
+                val vw = if (srcW > 1920) 1920 else srcW
+                val vh = (srcH.toLong() * vw / srcW).toInt().coerceAtLeast(64)
                 renderer.setVideoBufferSize(vw, vh)
                 mpvBackend = com.xxxx.emby_vr.player.MpvBackend(this).also { m ->
                     m.attachSurface(surface)
