@@ -1097,7 +1097,7 @@ bool createSwapchains(VrContext &c) {
          * 它们的合成开销（ATWGPU 5.8ms）是我们的 5 倍多，说明它们的渲染分辨率远高于
          * 推荐值 —— 我们还有一半 GPU 预算没用。上限 3200 防显存意外。
          */
-        constexpr float kSuperSample = 1.6f;
+        constexpr float kSuperSample = 1.25f;
         eye.width = (int32_t) fminf(3200.f, vc.recommendedImageRectWidth * kSuperSample);
         eye.height = (int32_t) fminf(3200.f, vc.recommendedImageRectHeight * kSuperSample);
         LOGI("渲染分辨率：推荐 %ux%u → 实际 %dx%d（超采样 %.2f 倍）",
