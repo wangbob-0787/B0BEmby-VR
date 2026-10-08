@@ -87,7 +87,27 @@ class MpvBackend(private val context: Context) {
                      * 我们前面只试过两种组合：硬解 + 不做处理（偏色）、软解 + 处理（太慢）。
                      * 「硬解 + 内核做色彩还原」没试过，这一版试它。
                      */
-                    MPVLib.setOptionString("hwdec", "mediacodec")
+                    /*
+                     * 硬解输出路径 —— mediacodec-copy（父亲 2026-10-08 晚实测定档，重要）。
+                     *
+                     * 原来用 `mediacodec`（零拷贝）：解码器解好的 4K 画面直接给渲染采样，
+                     * 两边**共用同一块画面缓冲、没有任何协调**。解码器是自上而下逐行写下一帧的，
+                     * 渲染/合成正好读到只写了一半的那块时，画面上就出现横向的、还没写完的条带
+                     * —— 这就是父亲报了整晚的「整个场景的黑色细横纹」。
+                     *
+                     * 现象全部吻合：位置在场景层不在视频层（共享缓冲被两端同时读写）、
+                     * 横向（按行写）、间歇且与晃动无关（取决于两条活儿的相对速度）、
+                     * 画面内容与帧率都正常（读到的永远是合法像素，只是新旧混着）、
+                     * 内录按帧采样多半错过这个中间状态、4XVR 不走这条共享路径所以没有。
+                     *
+                     * 换成 `mediacodec-copy`：解出来先完整拷贝一份再交给渲染，
+                     * 写与读彻底分开。实测黑纹消失，帧率仍满 72Hz（每 3 秒 216 帧），
+                     * CPU 约七成 —— 多一次拷贝扛得住。
+                     *
+                     * 试过但无效：glFlush（run 303）、glFinish（run 304 同步档）、
+                     * 降画质到 720p、关视频独立层、加大内核缓冲、换刷新率档。
+                     */
+                    MPVLib.setOptionString("hwdec", "mediacodec-copy")
                     /*
                      * 关掉 ffmpeg 的直出渲染（direct rendering）。
                      * 杜比视界的 RPU 元数据挂在帧的附加数据上，直出模式下会被丢掉，
@@ -119,6 +139,18 @@ class MpvBackend(private val context: Context) {
                     MPVLib.setOptionString("scale", "bilinear")
                     MPVLib.setOptionString("cscale", "bilinear")
                     MPVLib.setOptionString("vd-lavc-threads", "0")
+                    /*
+                     * 调参文件里的内核选项放最后应用 —— 覆盖上面的默认值
+                     * （父亲 2026-10-08：戴着调参不用重编）。文件没有或读不到时什么都不做。
+                     */
+                    com.xxxx.emby_vr.vr.VrTuning.mpvOptions(context).forEach { (k, v) ->
+                        try {
+                            MPVLib.setOptionString(k, v)
+                            Log.i(TAG, "调参覆盖内核选项 $k=$v")
+                        } catch (t: Throwable) {
+                            Log.w(TAG, "调参覆盖失败 $k=$v：${t.message}")
+                        }
+                    }
                     // 把内核自己的日志接到 logcat：出问题时能直接看它内部报什么
                     MPVLib.addLogObserver { prefix, level, text ->
                         Log.i(TAG, "mpv[$level] ${prefix ?: ""}$text")

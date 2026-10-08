@@ -167,6 +167,17 @@ object VrTuning {
         return applied
     }
 
+    /**
+     * 取配置里的内核选项（去掉 `mpv_` 前缀）。
+     *
+     * 内核创建那一刻由 MpvBackend 调用一次：app 启动时内核还没建，
+     * 那时下发 `mpv_` 选项会失败，必须在每次建后端时重新应用。
+     */
+    fun mpvOptions(context: Context): Map<String, String> =
+        read(context).orEmpty()
+            .filterKeys { it.startsWith("mpv_") }
+            .mapKeys { it.key.removePrefix("mpv_") }
+
     /** 读配置；文件不存在或读失败返回 null */
     private fun read(context: Context): Map<String, String>? {
         val f = File(context.getExternalFilesDir(null), FILE_NAME)
