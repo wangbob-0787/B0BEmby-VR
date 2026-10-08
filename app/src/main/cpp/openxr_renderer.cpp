@@ -2309,7 +2309,13 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
         return false;
     }
     XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
-    wi.timeout = XR_INFINITE_DURATION;
+    /*
+     * 原来写的是无限等待（父亲 2026-10-08 定案）：
+     * 系统合成器没准备好这块图时，渲染线程就卡在这里等，一卡就 10~30ms，
+     * 帧率从 72 掉到 50，头一转动就抖。
+     * 改成 4ms（一帧预算的三分之一）：超时跳过这一帧的图层提交，场景照常跑。
+     */
+    wi.timeout = 4000000;
     const XrResult wr = api.WaitSwapchainImage(eye.handle, &wi);
     if (XR_FAILED(wr)) {
         LOGE("等图失败（眼 %d）：%d", eyeIndex, (int) wr);
@@ -2916,7 +2922,13 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
     if (XR_FAILED(api.AcquireSwapchainImage(L.handle, &ai, &idx))) return false;
     if (idx >= L.fbos.size()) return false;
     XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
-    wi.timeout = XR_INFINITE_DURATION;
+    /*
+     * 原来写的是无限等待（父亲 2026-10-08 定案）：
+     * 系统合成器没准备好这块图时，渲染线程就卡在这里等，一卡就 10~30ms，
+     * 帧率从 72 掉到 50，头一转动就抖。
+     * 改成 4ms（一帧预算的三分之一）：超时跳过这一帧的图层提交，场景照常跑。
+     */
+    wi.timeout = 4000000;
     if (XR_FAILED(api.WaitSwapchainImage(L.handle, &wi))) {
         XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
         api.ReleaseSwapchainImage(L.handle, &ri);
@@ -3014,7 +3026,13 @@ bool fillVideoLayerBlack(VrContext &c, VideoLayerBuf &L) {
     if (XR_FAILED(api.AcquireSwapchainImage(L.handle, &ai, &idx))) return false;
     if (idx >= L.fbos.size()) return false;
     XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
-    wi.timeout = XR_INFINITE_DURATION;
+    /*
+     * 原来写的是无限等待（父亲 2026-10-08 定案）：
+     * 系统合成器没准备好这块图时，渲染线程就卡在这里等，一卡就 10~30ms，
+     * 帧率从 72 掉到 50，头一转动就抖。
+     * 改成 4ms（一帧预算的三分之一）：超时跳过这一帧的图层提交，场景照常跑。
+     */
+    wi.timeout = 4000000;
     if (XR_FAILED(api.WaitSwapchainImage(L.handle, &wi))) {
         XrSwapchainImageReleaseInfo ri0{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
         api.ReleaseSwapchainImage(L.handle, &ri0);
