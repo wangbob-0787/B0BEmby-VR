@@ -133,17 +133,21 @@ object VrTuning {
          * 只写了单层开关，就在默认值上改那一位。
          */
         val maskText = raw["layer_mask"]
+        var wrote = false
         val mask = if (maskText != null) {
+            wrote = true
             maskText.toIntOrNull() ?: maskText.removePrefix("0x").toIntOrNull(16)
         } else {
             var m = 7
             listOf("video_layer" to 1, "danmaku_layer" to 2, "logo_layer" to 4).forEach { (n, b) ->
                 raw[n]?.toIntOrNull()?.let { v ->
                     m = if (v != 0) m or b else m and b.inv()
+                    wrote = true
                 }
             }
-            if (raw.keys.containsAll(listOf("video_layer", "danmaku_layer", "logo_layer"))) m else null
+            m
         }
+        if (!wrote) return applied
         if (mask != null) {
             VrNative.setTuning(KEY_LAYER_MASK, mask.toFloat())
             applied += "层掩码 0x${mask.toString(16)}"

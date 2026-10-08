@@ -845,7 +845,7 @@ double gSwapWaitMs = 0.0;
  * 界面层每秒读一次，变化就调这里的接口。戴着调参比反复编译划算得多。
  */
 std::atomic<float> gSuperSample{1.25f};      // 双眼渲染超采样倍数（下次起播生效）
-std::atomic<int> gSwapWaitMs{4};             // 等交换链图像超时（毫秒）
+std::atomic<int> gSwapWaitTimeoutMs{4};      // 等交换链图像超时（毫秒，可运行时调）
 std::atomic<int> gLayerMask{0x7};            // bit0 视频独立层 bit1 弹幕层 bit2 片名 logo
 
 /*
@@ -2339,7 +2339,7 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
      * 帧率从 72 掉到 50，头一转动就抖。
      * 改成 4ms（一帧预算的三分之一）：超时跳过这一帧的图层提交，场景照常跑。
      */
-    wi.timeout = (XrDuration) (gSwapWaitMs.load() * 1000000);
+    wi.timeout = (XrDuration) (gSwapWaitTimeoutMs.load() * 1000000);
     const auto eyeWaitT0 = std::chrono::steady_clock::now();
     const XrResult wr = api.WaitSwapchainImage(eye.handle, &wi);
     gSwapWaitMs += std::chrono::duration<double, std::milli>(
@@ -2956,7 +2956,7 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
      * 帧率从 72 掉到 50，头一转动就抖。
      * 改成 4ms（一帧预算的三分之一）：超时跳过这一帧的图层提交，场景照常跑。
      */
-    wi.timeout = (XrDuration) (gSwapWaitMs.load() * 1000000);
+    wi.timeout = (XrDuration) (gSwapWaitTimeoutMs.load() * 1000000);
     const auto swapWaitT0 = std::chrono::steady_clock::now();
     if (XR_FAILED(api.WaitSwapchainImage(L.handle, &wi))) {
         gSwapWaitMs += std::chrono::duration<double, std::milli>(
@@ -3070,7 +3070,7 @@ bool fillVideoLayerBlack(VrContext &c, VideoLayerBuf &L) {
      * 帧率从 72 掉到 50，头一转动就抖。
      * 改成 4ms（一帧预算的三分之一）：超时跳过这一帧的图层提交，场景照常跑。
      */
-    wi.timeout = (XrDuration) (gSwapWaitMs.load() * 1000000);
+    wi.timeout = (XrDuration) (gSwapWaitTimeoutMs.load() * 1000000);
     const auto swapWaitT0 = std::chrono::steady_clock::now();
     if (XR_FAILED(api.WaitSwapchainImage(L.handle, &wi))) {
         gSwapWaitMs += std::chrono::duration<double, std::milli>(
@@ -3439,7 +3439,8 @@ void frameLoop(VrContext &c) {
                      statEyesMs / n, statEyesMax,
                      statEndMs / n, statEndMax,
                      statAccumMs / n, statMaxMs, n, statOver, gSwapWaitMs / n,
-                     (double) gSuperSample.load(), gSwapWaitMs.load(), gLayerMask.load(),
+                     (double) gSuperSample.load(), gSwapWaitTimeoutMs.load(),
+                     gLayerMask.load(),
                      gEyeSkipCount.load(), gVideoLayerSkipCount.load(),
                      gOtherLayerSkipCount.load());
                 statAccumMs = 0.0;
@@ -3979,7 +3980,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             break;
         case 2:
             if (value >= 0.f && value <= 50.f) {
-                gSwapWaitMs.store((int) value);
+                gSwapWaitTimeoutMs.store((int) value);
                 LOGI("调参 → 等交换链超时 %d 毫秒", (int) value);
             }
             break;
