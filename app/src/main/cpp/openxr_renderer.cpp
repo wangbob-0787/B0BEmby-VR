@@ -856,6 +856,15 @@ std::atomic<int> gLayerMask{0x7};            // bit0 视频独立层 bit1 弹幕
 std::atomic<int> gSyncMode{0};
 
 /*
+ * 刷新率档（父亲 2026-10-08：PICO 4 面板在 72Hz 下偶发横向黑线，
+ * 官方论坛与 Reddit 都有同类报告，且多出现在「平面银幕 + 72Hz」场景）。
+ *
+ * 0 = 按原逻辑（播放 72Hz / 界面 90Hz）
+ * 72 / 90 = 固定该刷新率。运行时改立即生效，用来对照黑线。
+ */
+std::atomic<int> gRefreshHz{0};
+
+/*
  * 跳过提交的计数（父亲 2026-10-08：「场景里有时候会出现黑纹」）。
  *
  * 投影层（双眼）是必交层：等图超时 → 这一帧没有投影层 → 运行时就拿上一帧做
@@ -3478,7 +3487,7 @@ void frameLoop(VrContext &c) {
                 LOGI("帧统计（均/峰 毫秒）：周期 %.1f/%.1f 视频 %.1f/%.1f 界面 %.1f/%.1f "
                      "双眼 %.1f/%.1f 收尾 %.1f/%.1f | 帧 %.1f/%.1f，%.0f 帧里 %d 帧超 11ms，"
                      "等交换链平均 %.2f｜当前参数 超采样 %.2f 超时 %dms 掩码 0x%x"
-                     "｜跳过提交 眼 %d 视频层 %d 其他层 %d｜同步档 %d",
+                     "｜跳过提交 眼 %d 视频层 %d 其他层 %d｜同步档 %d 刷新率档 %d",
                      statPeriodMs / n, statPeriodMax,
                      statVideoMs / n, statVideoMax,
                      statUiMs / n, statUiMax,
@@ -3488,7 +3497,7 @@ void frameLoop(VrContext &c) {
                      (double) gSuperSample.load(), gSwapWaitTimeoutMs.load(),
                      gLayerMask.load(),
                      gEyeSkipCount.load(), gVideoLayerSkipCount.load(),
-                     gOtherLayerSkipCount.load(), gSyncMode.load());
+                     gOtherLayerSkipCount.load(), gSyncMode.load(), gRefreshHz.load());
                 statAccumMs = 0.0;
                 statMaxMs = 0.0;
                 statVideoMs = statVideoMax = 0.0;
@@ -3840,9 +3849,10 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetVideoActive(JNIEnv *env, jobject /* 
      * 画面不抖，而且每帧多出的时间可以换成更高的渲染分辨率。停播回 90Hz。
      */
     if (g.requestRefreshRate != nullptr && g.session != XR_NULL_HANDLE) {
-        const float hz = g.videoActive.load() ? 72.f : 90.f;
+        const int fixed = gRefreshHz.load();
+        const float hz = fixed > 0 ? (float) fixed : (g.videoActive.load() ? 72.f : 90.f);
         const XrResult rr = g.requestRefreshRate(g.session, hz);
-        LOGI("刷新率 → %.0fHz（结果 %d）", (double) hz, (int) rr);
+        LOGI("刷新率 → %.0fHz（结果 %d，档位 %d）", (double) hz, (int) rr, fixed);
     }
     LOGI("播放画面状态 → %s", g.videoActive.load() ? "true" : "false");
 }
@@ -4035,6 +4045,20 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             LOGI("调参 → 层掩码 0x%x（视频层=%d 弹幕层=%d logo=%d）", (int) value,
                  (int) value & 1, ((int) value >> 1) & 1, ((int) value >> 2) & 1);
             break;
+        case 5: {
+            const int hz = (int) value;
+            gRefreshHz.store(hz);
+            if (g.requestRefreshRate != nullptr && g.session != XR_NULL_HANDLE) {
+                const float want = hz > 0 ? (float) hz
+                                          : (g.videoActive.load() ? 72.f : 90.f);
+                const XrResult rr = g.requestRefreshRate(g.session, want);
+                LOGI("调参 → 刷新率档 %d，立即请求 %.0fHz（结果 %d）", hz, (double) want,
+                     (int) rr);
+            } else {
+                LOGI("调参 → 刷新率档 %d（运行时未就绪，下次生效）", hz);
+            }
+            break;
+        }
         case 4:
             gSyncMode.store((int) value);
             LOGI("调参 → 交回图像同步档 %d（0=glFlush 1=glFinish）", (int) value);

@@ -25,6 +25,7 @@ import java.io.File
  * | `super_sample` | 双眼渲染超采样倍数（0.6~2.0） | 1.25 |
  * | `swap_wait_ms` | 等交换链图像超时（毫秒，0~50） | 4 |
  * | `sync_mode` | 交回图像前的同步：0=只提交命令 1=等 GPU 画完 | 0 |
+ * | `refresh_hz` | 刷新率档：0=自动（播放 72 / 界面 90）、72、90 | 0 |
  * | `layer_mask` | 层掩码：bit0 视频独立层 / bit1 弹幕层 / bit2 片名 logo | 7 |
  * | `video_layer` `danmaku_layer` `logo_layer` | 单层开关 0/1（写哪个改哪个位，其余保持默认） | — |
  * | `mpv_<属性>` | 透传给内核的同名属性，例如 `mpv_tone-mapping=spline` | — |
@@ -42,6 +43,7 @@ object VrTuning {
     const val KEY_SWAP_WAIT_MS = 2
     const val KEY_LAYER_MASK = 3
     const val KEY_SYNC_MODE = 4
+    const val KEY_REFRESH_HZ = 5
 
     /** 上次应用的配置原文，只有变化才动手（避免每秒重复设置） */
     private var lastRaw: Map<String, String> = emptyMap()
@@ -129,6 +131,10 @@ object VrTuning {
         raw["swap_wait_ms"]?.toFloatOrNull()?.let {
             VrNative.setTuning(KEY_SWAP_WAIT_MS, it)
             applied += "等图超时 ${it.toInt()}ms"
+        }
+        raw["refresh_hz"]?.toFloatOrNull()?.let {
+            VrNative.setTuning(KEY_REFRESH_HZ, it)
+            applied += if (it <= 0f) "刷新率档 自动" else "刷新率档 ${it.toInt()}Hz"
         }
         raw["sync_mode"]?.toFloatOrNull()?.let {
             VrNative.setTuning(KEY_SYNC_MODE, it)
