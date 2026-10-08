@@ -491,6 +491,9 @@ object EmbyApi {
              */
             var dvByStream = false
             var probeDesc: String? = null
+            // 每次取播放信息先把上一部的画面尺寸清掉：探不到时不能沿用旧值
+            com.xxxx.emby_vr.player.PlaybackFlags.videoWidth = 0
+            com.xxxx.emby_vr.player.PlaybackFlags.videoHeight = 0
             // 杜比视界的版本线索（如 DoviProfile81 / DoviProfile50）：决定起播走哪条解码路
             var dvProfile: String? = null
             runCatching {
@@ -518,6 +521,9 @@ object EmbyApi {
                 if (vs?.width != null && vs.height != null && vs.height!! > 0) {
                     com.xxxx.emby_vr.player.PlaybackFlags.videoAspect =
                         vs.width!!.toFloat() / vs.height!!.toFloat()
+                    // 分辨率也记下来：起播前要用它设画面缓冲尺寸（内核不会自己设）
+                    com.xxxx.emby_vr.player.PlaybackFlags.videoWidth = vs.width!!
+                    com.xxxx.emby_vr.player.PlaybackFlags.videoHeight = vs.height!!
                 }
                 if (probeDesc == null) {
                     // 探不到流信息时退回 PlaybackInfo 那份

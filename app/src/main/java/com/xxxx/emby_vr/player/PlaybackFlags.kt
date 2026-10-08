@@ -41,11 +41,25 @@ object PlaybackFlags {
     @Volatile
     var videoAspect: Float? = null
 
+    /**
+     * 片源分辨率（探片源时拿到）。
+     *
+     * 用途：起播前设画面缓冲尺寸。硬解的解码器会自己按视频尺寸设，内核不会 ——
+     * 不设就按默认尺寸画，屏幕上是拉伸的纯色块（父亲 2026-10-08 实测）。
+     */
+    @Volatile
+    var videoWidth: Int = 0
+
+    @Volatile
+    var videoHeight: Int = 0
+
     fun reset() {
         dolbyVisionSource = false
         useKernelDecoder = false
         dolbyVisionProfile = null
         videoDescriptor = null
         videoAspect = null
+        videoWidth = 0
+        videoHeight = 0
     }
 }

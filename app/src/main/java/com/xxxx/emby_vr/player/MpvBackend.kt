@@ -85,6 +85,17 @@ class MpvBackend(private val context: Context) {
                     MPVLib.setOptionString("sid", "no")
                     // 静音状态由我们控制，先不静音
                     MPVLib.setOptionString("mute", "no")
+                    /*
+                     * 性能：软解 4K 实测只有 6 帧（父亲 2026-10-08 报「卡」之前的日志
+                     * 已经写着 display FPS 5.997）。先把对观感帮助小、开销大的几项关掉：
+                     * 抖动、去色带；缩放走双线性（4K 缩到银幕本来就要重采样）。
+                     * 解码线程交给内核按核数自己分配。
+                     */
+                    MPVLib.setOptionString("dither-depth", "no")
+                    MPVLib.setOptionString("deband", "no")
+                    MPVLib.setOptionString("scale", "bilinear")
+                    MPVLib.setOptionString("cscale", "bilinear")
+                    MPVLib.setOptionString("vd-lavc-threads", "0")
                     // 把内核自己的日志接到 logcat：出问题时能直接看它内部报什么
                     MPVLib.addLogObserver { prefix, level, text ->
                         Log.i(TAG, "mpv[$level] ${prefix ?: ""}$text")
@@ -154,6 +165,26 @@ class MpvBackend(private val context: Context) {
 
     fun setSpeed(speed: Float) {
         try { MPVLib.setPropertyDouble("speed", speed.toDouble()) } catch (_: Throwable) {}
+    }
+
+    /**
+     * 告诉内核「画布多大」（父亲 2026-10-08）。
+     *
+     * 这是本轮画面变成纯色块的根因：我们的画面纹理从来没有设置过缓冲尺寸。
+     * 硬解时解码器自己按视频尺寸设，所以一直没暴露；换成内核自己渲染之后，
+     * 内核按默认尺寸画，屏幕上就是整屏拉伸的色块。
+     *
+     * 这里给内核报尺寸，配合 VrRenderer.setVideoBufferSize 给纹理设缓冲尺寸，
+     * 两边一致才画得对。
+     */
+    fun setSurfaceSize(w: Int, h: Int) {
+        if (w < 64 || h < 64) return
+        try {
+            MPVLib.setPropertyString("android-surface-size", "${w}x$h")
+            Log.i(TAG, "内核画布尺寸 → ${w}x$h")
+        } catch (t: Throwable) {
+            Log.w(TAG, "内核画布尺寸设置失败: ${t.message}")
+        }
     }
 
     /**

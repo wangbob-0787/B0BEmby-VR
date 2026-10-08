@@ -84,6 +84,26 @@ class VrRenderer(
         private set
     private var vrVideoSurfaceTexture: android.graphics.SurfaceTexture? = null
 
+    /**
+     * 画面缓冲尺寸（父亲 2026-10-08）。
+     *
+     * 这块纹理的缓冲尺寸**从来没有人设置过**：硬解时解码器会自己按视频尺寸设，
+     * 所以一直没暴露问题；换成内核自己渲染（杜比视界 Profile 5）后，内核按默认
+     * 尺寸画，屏幕上就成了整屏拉伸的纯色块（父亲实测：一会灰、一会粉红、一会蓝色）。
+     * 起播前由播放侧按片源尺寸设一次。
+     */
+    private var pendingVideoW = 0
+    private var pendingVideoH = 0
+
+    /** 起播前设画面缓冲尺寸（宽高来自片源探测结果） */
+    fun setVideoBufferSize(w: Int, h: Int) {
+        if (w < 64 || h < 64) return
+        pendingVideoW = w
+        pendingVideoH = h
+        runCatching { vrVideoSurfaceTexture?.setDefaultBufferSize(w, h) }
+        Log.i(TAG, "画面缓冲尺寸 → ${w}x$h")
+    }
+
     /** 最近一帧的虚拟屏布局（面板像素换算用，见 panelPixelAt） */
     private var lastScreenCenterY = 0f
     private var lastScreenHalfH = 0f
@@ -336,6 +356,13 @@ class VrRenderer(
     fun setVrVideoSurface(st: android.graphics.SurfaceTexture) {
         vrVideoSurfaceTexture?.release()
         vrVideoSurfaceTexture = st
+        /*
+         * 缓冲尺寸要在播放器连上来之前设好（见 pendingVideoW 的注释）：
+         * 硬解的解码器会自己设，内核不会 —— 不设就是默认尺寸，画面变纯色块。
+         */
+        if (pendingVideoW > 0) {
+            runCatching { st.setDefaultBufferSize(pendingVideoW, pendingVideoH) }
+        }
         vrVideoSurface?.release()
         vrVideoSurface = android.view.Surface(st)
         Log.i(TAG, "VR 播放画面就绪（纹理由渲染线程创建）")

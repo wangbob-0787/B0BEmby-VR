@@ -1254,8 +1254,20 @@ class MainActivity : ComponentActivity() {
                     append(userToken())
                 }
                 Log.i(TAG, "mpv 直连原文件：…/videos/${pendingItemId}/stream?Static=true")
+                /*
+                 * 画布尺寸（父亲 2026-10-08：本轮「整屏纯色块」的根因）。
+                 *
+                 * 我们的画面纹理从来没有设置过缓冲尺寸：硬解时解码器会自己按视频尺寸设，
+                 * 所以一直没暴露；换成内核自己渲染之后，内核按默认尺寸画，屏幕上就成了
+                 * 整屏拉伸的色块（父亲实测：一会灰、一会粉红、一会蓝色）。
+                 * 纹理与内核两边都按片源尺寸设一次，才画得对。
+                 */
+                val vw = com.xxxx.emby_vr.player.PlaybackFlags.videoWidth.takeIf { it > 0 } ?: 1920
+                val vh = com.xxxx.emby_vr.player.PlaybackFlags.videoHeight.takeIf { it > 0 } ?: 1080
+                renderer.setVideoBufferSize(vw, vh)
                 mpvBackend = com.xxxx.emby_vr.player.MpvBackend(this).also { m ->
                     m.attachSurface(surface)
+                    m.setSurfaceSize(vw, vh)
                     m.play(directUrl, startMs / 1000.0)
                     /*
                      * 起播后把内核侧轨道清单打进日志（父亲 2026-10-08）。
