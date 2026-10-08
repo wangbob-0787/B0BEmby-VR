@@ -2768,6 +2768,28 @@ class MainActivity : ComponentActivity() {
          * 第一步只画黑底 + 正前方一块平面（先证明 VR 模式能出画面），
          * 面板纹理与手柄输入随后接。失败不影响应用活着（原生线程自己吞错误）。
          */
+        /*
+         * 运行时可调参数（父亲 2026-10-08：不要写死，戴着调参比反复编译划算）。
+         *
+         * 超采样在建交换链时读，所以先同步读一次文件灌进原生层；
+         * 其余参数（画布尺寸 / 等图超时 / 层开关 / 内核属性）交给每秒一次的轮询，
+         * 文件一改就生效，不用重编重装。
+         */
+        com.xxxx.emby_vr.vr.VrTuning.applyStartup(this)
+        com.xxxx.emby_vr.vr.VrTuning.start(
+            this,
+            scope,
+            onVideoSize = { w, h ->
+                runCatching {
+                    if (this::renderer.isInitialized) renderer.setVideoBufferSize(w, h)
+                    mpvBackend?.setSurfaceSize(w, h)
+                }
+            },
+            onMpvOption = { name, value ->
+                com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime(name, value)
+            },
+        )
+
         val vrOk = com.xxxx.emby_vr.vr.VrNative.startVr(this)
         Log.i(TAG, "OpenXR 会话启动: $vrOk")
         // 光柱输入回推（VR 模式下唯一的输入源：指向 / 扳机 / 摇杆 / B 键）

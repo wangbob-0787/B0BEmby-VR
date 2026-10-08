@@ -836,7 +836,28 @@ std::function<void()> gPanelUpdate;
 std::function<void()> gVideoUpdate;
 
 /** 统计周期内所有交换链等待（双眼/视频层/弹幕层）累计毫秒，读后清零 */
-double gSwapWaitMs = 0.0;   // 播放画面取帧（同面板：必须在 VR 渲染线程调）
+double gSwapWaitMs = 0.0;
+
+/*
+ * 运行时可调参数（父亲 2026-10-08：「做一个能随时调参数的版本，别每次都编译」）。
+ *
+ * 参数写在 /sdcard/Android/data/com.xxxx.emby_vr/files/vr-tuning.txt，
+ * 界面层每秒读一次，变化就调这里的接口。戴着调参比反复编译划算得多。
+ */
+std::atomic<float> gSuperSample{1.25f};      // 双眼渲染超采样倍数（下次起播生效）
+std::atomic<int> gSwapWaitMs{4};             // 等交换链图像超时（毫秒）
+std::atomic<int> gLayerMask{0x7};            // bit0 视频独立层 bit1 弹幕层 bit2 片名 logo
+
+/*
+ * 跳过提交的计数（父亲 2026-10-08：「场景里有时候会出现黑纹」）。
+ *
+ * 投影层（双眼）是必交层：等图超时 → 这一帧没有投影层 → 运行时就拿上一帧做
+ * 时间扭曲，转头时边缘会露出黑边/黑纹。所以超时不是"省一点"那么简单，
+ * 必须数出来，才能判断黑纹是不是它造成的。
+ */
+std::atomic<int> gEyeSkipCount{0};
+std::atomic<int> gVideoLayerSkipCount{0};
+std::atomic<int> gOtherLayerSkipCount{0};   // 播放画面取帧（同面板：必须在 VR 渲染线程调）
 std::function<void()> gOsdUpdate;     // 控制条取帧（同上）
 std::function<void()> gMenuUpdate;    // 展开菜单取帧（同上）
 std::function<void()> gDanmakuUpdate; // 弹幕层取帧
@@ -1100,7 +1121,7 @@ bool createSwapchains(VrContext &c) {
          * 它们的合成开销（ATWGPU 5.8ms）是我们的 5 倍多，说明它们的渲染分辨率远高于
          * 推荐值 —— 我们还有一半 GPU 预算没用。上限 3200 防显存意外。
          */
-        constexpr float kSuperSample = 1.25f;
+        const float kSuperSample = gSuperSample.load();
         eye.width = (int32_t) fminf(3200.f, vc.recommendedImageRectWidth * kSuperSample);
         eye.height = (int32_t) fminf(3200.f, vc.recommendedImageRectHeight * kSuperSample);
         LOGI("渲染分辨率：推荐 %ux%u → 实际 %dx%d（超采样 %.2f 倍）",
@@ -2318,12 +2339,13 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
      * 帧率从 72 掉到 50，头一转动就抖。
      * 改成 4ms（一帧预算的三分之一）：超时跳过这一帧的图层提交，场景照常跑。
      */
-    wi.timeout = 4000000;
+    wi.timeout = (XrDuration) (gSwapWaitMs.load() * 1000000);
     const auto eyeWaitT0 = std::chrono::steady_clock::now();
     const XrResult wr = api.WaitSwapchainImage(eye.handle, &wi);
     gSwapWaitMs += std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - eyeWaitT0).count();
     if (XR_FAILED(wr)) {
+        gEyeSkipCount.fetch_add(1);
         LOGE("等图失败（眼 %d）：%d", eyeIndex, (int) wr);
         XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
         api.ReleaseSwapchainImage(eye.handle, &ri);
@@ -2934,11 +2956,16 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
      * 帧率从 72 掉到 50，头一转动就抖。
      * 改成 4ms（一帧预算的三分之一）：超时跳过这一帧的图层提交，场景照常跑。
      */
-    wi.timeout = 4000000;
+    wi.timeout = (XrDuration) (gSwapWaitMs.load() * 1000000);
     const auto swapWaitT0 = std::chrono::steady_clock::now();
     if (XR_FAILED(api.WaitSwapchainImage(L.handle, &wi))) {
         gSwapWaitMs += std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - swapWaitT0).count();
+        if (videoLayerPass) {
+            gVideoLayerSkipCount.fetch_add(1);
+        } else {
+            gOtherLayerSkipCount.fetch_add(1);
+        }
         XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
         api.ReleaseSwapchainImage(L.handle, &ri);
         return false;
@@ -3043,11 +3070,12 @@ bool fillVideoLayerBlack(VrContext &c, VideoLayerBuf &L) {
      * 帧率从 72 掉到 50，头一转动就抖。
      * 改成 4ms（一帧预算的三分之一）：超时跳过这一帧的图层提交，场景照常跑。
      */
-    wi.timeout = 4000000;
+    wi.timeout = (XrDuration) (gSwapWaitMs.load() * 1000000);
     const auto swapWaitT0 = std::chrono::steady_clock::now();
     if (XR_FAILED(api.WaitSwapchainImage(L.handle, &wi))) {
         gSwapWaitMs += std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - swapWaitT0).count();
+        gVideoLayerSkipCount.fetch_add(1);
         XrSwapchainImageReleaseInfo ri0{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
         api.ReleaseSwapchainImage(L.handle, &ri0);
         return false;
@@ -3192,8 +3220,8 @@ void frameLoop(VrContext &c) {
          * （日志里 `视频层=0`），于是投影层盖在弹幕层之上 —— 弹幕和片名 logo
          * 全被压到画面背后。清屏另想办法，这一段的路径保持原样。
          */
-        if (c.videoLayerOk && c.videoActive.load() && c.videoHasFrame.load() &&
-            c.videoTex != 0) {
+        if ((gLayerMask.load() & 1) != 0 && c.videoLayerOk && c.videoActive.load() &&
+            c.videoHasFrame.load() && c.videoTex != 0) {
             int32_t vw = (int32_t) lroundf(1.f / fmaxf(1e-6f, c.texelX.load()));
             int32_t vh = (int32_t) lroundf(1.f / fmaxf(1e-6f, c.texelY.load()));
             constexpr int32_t kMaxVideoW = 3840;
@@ -3216,7 +3244,8 @@ void frameLoop(VrContext &c) {
         c.danmakuLayer.submitted = false;
         tVideo = std::chrono::steady_clock::now();
 
-        if (c.danmakuLayerOk && c.danmakuVisible.load() && c.danmakuHasFrame.load() &&
+        if ((gLayerMask.load() & 2) != 0 && c.danmakuLayerOk && c.danmakuVisible.load() &&
+            c.danmakuHasFrame.load() &&
             c.danmakuTex != 0) {
             static int danmakuLogTick = 0;
             if ((danmakuLogTick++ % 180) == 0) {
@@ -3255,7 +3284,7 @@ void frameLoop(VrContext &c) {
         if (c.danmakuVisible.load() && gDanmakuUpdate != nullptr) {
             gDanmakuUpdate();
         }
-        if (c.logoVisible.load() && gLogoUpdate != nullptr) {
+        if ((gLayerMask.load() & 4) != 0 && c.logoVisible.load() && gLogoUpdate != nullptr) {
             gLogoUpdate();
         }
 
@@ -3402,13 +3431,17 @@ void frameLoop(VrContext &c) {
                 const double n = (double) statFrames;
                 LOGI("帧统计（均/峰 毫秒）：周期 %.1f/%.1f 视频 %.1f/%.1f 界面 %.1f/%.1f "
                      "双眼 %.1f/%.1f 收尾 %.1f/%.1f | 帧 %.1f/%.1f，%.0f 帧里 %d 帧超 11ms，"
-                     "等交换链平均 %.2f",
+                     "等交换链平均 %.2f｜当前参数 超采样 %.2f 超时 %dms 掩码 0x%x"
+                     "｜跳过提交 眼 %d 视频层 %d 其他层 %d",
                      statPeriodMs / n, statPeriodMax,
                      statVideoMs / n, statVideoMax,
                      statUiMs / n, statUiMax,
                      statEyesMs / n, statEyesMax,
                      statEndMs / n, statEndMax,
-                     statAccumMs / n, statMaxMs, n, statOver, gSwapWaitMs / n);
+                     statAccumMs / n, statMaxMs, n, statOver, gSwapWaitMs / n,
+                     (double) gSuperSample.load(), gSwapWaitMs.load(), gLayerMask.load(),
+                     gEyeSkipCount.load(), gVideoLayerSkipCount.load(),
+                     gOtherLayerSkipCount.load());
                 statAccumMs = 0.0;
                 statMaxMs = 0.0;
                 statVideoMs = statVideoMax = 0.0;
@@ -3419,6 +3452,9 @@ void frameLoop(VrContext &c) {
                 statFrames = 0;
                 statOver = 0;
                 gSwapWaitMs = 0.0;
+                gEyeSkipCount.store(0);
+                gVideoLayerSkipCount.store(0);
+                gOtherLayerSkipCount.store(0);
                 statLast = now;
             }
         }
@@ -3922,6 +3958,40 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetImageAdjust(JNIEnv *env, jobject /* 
          (double) g.brightness.load(), (double) g.contrast.load(),
          (double) g.saturation.load(), (double) g.sharpen.load(),
          (double) g.temperature.load());
+}
+
+/**
+ * 运行时可调参数入口（父亲 2026-10-08）。
+ *
+ * key：1=超采样倍数 2=等交换链超时毫秒 3=层掩码（bit0 视频层 / bit1 弹幕层 / bit2 logo）
+ * 参数由界面层从 vr-tuning.txt 读出后调用；见 VrTuning.kt。
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this */,
+                                                   jint key, jfloat value) {
+    (void) env;
+    switch (key) {
+        case 1:
+            if (value >= 0.6f && value <= 2.0f) {
+                gSuperSample.store(value);
+                LOGI("调参 → 渲染超采样 %.2f 倍（下次起播生效）", (double) value);
+            }
+            break;
+        case 2:
+            if (value >= 0.f && value <= 50.f) {
+                gSwapWaitMs.store((int) value);
+                LOGI("调参 → 等交换链超时 %d 毫秒", (int) value);
+            }
+            break;
+        case 3:
+            gLayerMask.store((int) value);
+            LOGI("调参 → 层掩码 0x%x（视频层=%d 弹幕层=%d logo=%d）", (int) value,
+                 (int) value & 1, ((int) value >> 1) & 1, ((int) value >> 2) & 1);
+            break;
+        default:
+            LOGI("调参 → 未知参数 key=%d（忽略）", (int) key);
+            break;
+    }
 }
 
 /** 视频纹理尺寸（锐化的邻域步长要用真实像素）*/

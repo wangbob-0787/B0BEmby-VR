@@ -34,6 +34,21 @@ class MpvBackend(private val context: Context) {
         private val created = AtomicBoolean(false)
 
         /**
+         * 运行时改内核属性（调参用，父亲 2026-10-08）。
+         *
+         * 参数名走 vr-tuning.txt 的 `mpv_<属性>` 行，例如 `mpv_tone-mapping=spline`。
+         * 内核没起来时设置会失败，只记日志不抛。
+         */
+        fun setOptionRuntime(name: String, value: String) {
+            try {
+                MPVLib.setPropertyString(name, value)
+                Log.i(TAG, "内核属性 → $name=$value")
+            } catch (t: Throwable) {
+                Log.w(TAG, "内核属性设置失败 $name=$value：${t.message}")
+            }
+        }
+
+        /**
          * 初始化内核。幂等，重复调用直接返回。
          */
         fun ensureCreated(context: Context) {

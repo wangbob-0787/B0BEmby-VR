@@ -32,6 +32,9 @@ object VrNative {
 
     private external fun nativeSetPanelActive(active: Boolean)
 
+    /** 运行时可调参数（key 见 VrTuning.KEY_*） */
+    private external fun nativeSetTuning(key: Int, value: Float)
+
     /**
      * 三张画面纹理的回调（2026-10-05 晚修）。
      *
@@ -246,6 +249,20 @@ object VrNative {
             if (loaded) nativeSetVideoSize(width, height)
         } catch (t: Throwable) {
             Log.e(TAG, "设置视频尺寸失败：${t.message}")
+        }
+    }
+
+    /**
+     * 运行时可调参数（父亲 2026-10-08）。
+     *
+     * 戴着调参不再走「改代码 → 云端编译 → 拷贝安装」那条路；
+     * 参数写在 vr-tuning.txt，界面层每秒读一次转到这里。key 见 VrTuning.KEY_*。
+     */
+    fun setTuning(key: Int, value: Float) {
+        try {
+            if (loaded) nativeSetTuning(key, value)
+        } catch (t: Throwable) {
+            Log.e(TAG, "设置调参失败 key=$key：${t.message}")
         }
     }
 
