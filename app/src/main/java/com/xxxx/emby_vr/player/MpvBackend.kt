@@ -61,10 +61,18 @@ class MpvBackend(private val context: Context) {
                     MPVLib.setOptionString("gpu-context", "android")
                     MPVLib.setOptionString("gpu-api", "opengl")
                     /*
-                     * 软解（父亲 2026-10-08：性能不用担心，同机 4XVR 播得动）。
-                     * 杜比视界的还原必须拿到解码后的原始帧，硬解给不了。
+                     * 硬解（父亲 2026-10-08 实测对比后定的方向）。
+                     *
+                     * 实测数据：同一部 4K 杜比视界片子，4XVR 只占 0.24 个核、画面流畅；
+                     * 我们软解占 2.6 个核、只有 6 帧，整个 VR 场景都跟着抖。
+                     * 4XVR 装着整套 ffmpeg 却不吃 CPU，说明视频是系统硬解器解的。
+                     * 又查了系统的解码器配置：里面**没有任何杜比视界声明** ——
+                     * 所以它是硬解之后自己把颜色算回来的。
+                     *
+                     * 我们前面只试过两种组合：硬解 + 不做处理（偏色）、软解 + 处理（太慢）。
+                     * 「硬解 + 内核做色彩还原」没试过，这一版试它。
                      */
-                    MPVLib.setOptionString("hwdec", "no")
+                    MPVLib.setOptionString("hwdec", "mediacodec")
                     /*
                      * 关掉 ffmpeg 的直出渲染（direct rendering）。
                      * 杜比视界的 RPU 元数据挂在帧的附加数据上，直出模式下会被丢掉，
@@ -239,6 +247,23 @@ class MpvBackend(private val context: Context) {
     fun dumpTracks() {
         val raw = try { MPVLib.getPropertyString("track-list") } catch (_: Throwable) { null }
         Log.i(TAG, "内核轨道清单：${raw ?: "取不到"}")
+    }
+
+    /**
+     * 起播后把内核认到的画面参数打进日志（父亲 2026-10-08）。
+     *
+     * 颜色对不对，先看内核自己认到了什么：色彩范围、传输曲线、是否认出杜比视界、
+     * 用的是不是硬解。这些一行日志就能定性，省得靠猜。
+     */
+    fun dumpVideoParams() {
+        fun p(k: String): String = try {
+            MPVLib.getPropertyString(k) ?: "-"
+        } catch (_: Throwable) {
+            "-"
+        }
+        Log.i(TAG, "内核画面参数：格式=${p("video-format")} 解码=${p("hwdec-current")} " +
+            "编码=${p("video-codec")} 帧率=${p("container-fps")}")
+        Log.i(TAG, "内核色彩参数：${p("video-params").replace("\n", " ")}")
     }
 
     /** 是否已经吃进流、开始出画 */

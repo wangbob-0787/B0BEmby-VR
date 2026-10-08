@@ -1275,8 +1275,9 @@ class MainActivity : ComponentActivity() {
                      * 万一映射对不上，一眼就能看出来。
                      */
                     scope.launch {
-                        kotlinx.coroutines.delay(3000)
+                        kotlinx.coroutines.delay(4000)
                         m.dumpTracks()
+                        m.dumpVideoParams()
                     }
                 }
                 /*
