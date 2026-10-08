@@ -41,32 +41,45 @@ class MpvBackend(private val context: Context) {
                 try {
                     MPVLib.create(context.applicationContext)
                     /*
-                     * 画面输出（2026-10-08 实测调整）。
+                     * 画面输出与色彩还原（2026-10-08 第二次调整，父亲拍板）。
                      *
-                     * 第一版用 `vo=gpu` + `gpu-context=android`：内核起来了、片源也认对了，
-                     * 但银幕上什么都没有 —— gpu 渲染器要自己建 EGL 上下文画进 Surface，
-                     * 在 OpenXR 这种合成环境里这条路没走通。
+                     * 前一版用 `vo=mediacodec_embed` + 硬解：画面正常、4K 流畅，但杜比视界
+                     * 偏色 —— 硬解把画面转成普通色彩送出来，杜比视界那层私有色彩编码
+                     * （Profile 5 的 IPTPQc2）在解码器出口就已经丢了，后面谁也救不回来。
                      *
-                     * 改成 mediacodec_embed：解码结果直接交给系统的硬解输出通道，
-                     * 由它把画面吐到我们给的 Surface。PICO 上 4XVR 能正常播杜比视界，
-                     * 说明这套硬件解码器本来就能解 —— 走这条通道正好用上它。
+                     * 资料结论（mpv 官方仓库 mpv-android #1081，维护者原话）：
+                     * 「硬解 + 杜比视界色彩还原」这条路不存在；唯一正解是**软解 + gpu-next**，
+                     * 由 gpu-next 背后的 libplacebo 做杜比视界的色彩还原。
+                     * 我们这包 libmpv 里带着 libplacebo 与还原函数（pl_shader_dovi_reshape /
+                     * pl_hdr_metadata_from_dovi_rpu），零件齐，只差把它用起来。
+                     *
+                     * 前一版试过 `vo=gpu` + 软解 → 整屏粉/蓝纯色闪。差别在于：
+                     * 老渲染器 `gpu` 不做杜比视界还原，且渲染上下文没配对。
+                     * 现在按资料给的可用组合来：新渲染器 + OpenGL + android 上下文。
                      */
-                    MPVLib.setOptionString("vo", "mediacodec_embed")
+                    MPVLib.setOptionString("vo", "gpu-next")
+                    MPVLib.setOptionString("gpu-context", "android")
+                    MPVLib.setOptionString("gpu-api", "opengl")
                     /*
-                     * 画面输出：mediacodec_embed（解码结果直接交给系统硬解输出通道吐到 Surface）。
-                     *
-                     * 2026-10-08 实测记录（给下一次攻颜色的人）：
-                     * · `vo=gpu` + `gpu-context=android` + 软解 → 银幕上全是粉/蓝纯色不断闪，
-                     *   渲染器出来了但内容不对，这条路当天没走通，已回退。
-                     * · `vo=mediacodec_embed` + 硬解 → 画面正常、4K 流畅，但杜比视界偏色
-                     *   （解码器报 bt.2020-ncl/bt.2020/bt.1886，DV 自己的 IPTPQc2 没被认出来，
-                     *   等于按普通 HDR 送出去，没有 HDR→SDR 映射）。
-                     * 下次攻颜色优先试：软解 + `vo=gpu` 但换 `gpu-api`/`gpu-context` 组合，
-                     * 或给 mediacodec_embed 补 `--target-colorspace-hint` 之外的映射手段。
+                     * 软解（父亲 2026-10-08：性能不用担心，同机 4XVR 播得动）。
+                     * 杜比视界的还原必须拿到解码后的原始帧，硬解给不了。
                      */
-                    MPVLib.setOptionString("hwdec", "mediacodec")
-                    // 杜比视界 / HDR 片源按色域提示交给显示端（否则偏色更明显）
-                    MPVLib.setOptionString("target-colorspace-hint", "yes")
+                    MPVLib.setOptionString("hwdec", "no")
+                    /*
+                     * 关掉 ffmpeg 的直出渲染（direct rendering）。
+                     * 杜比视界的 RPU 元数据挂在帧的附加数据上，直出模式下会被丢掉，
+                     * 丢了就还原不了色彩。
+                     */
+                    MPVLib.setOptionString("vd-lavc-dr", "no")
+                    /*
+                     * 目标是 SDR：我们最终把画面贴到 VR 银幕上，那条链路是普通 SDR 输出。
+                     * 所以让 libplacebo 把 HDR / 杜比视界老老实实映射到 bt.709 + gamma2.2，
+                     * 别去暗示显示端切 HDR（前一版设过 yes，在 VR 这层没有意义还可能添乱）。
+                     */
+                    MPVLib.setOptionString("target-colorspace-hint", "no")
+                    MPVLib.setOptionString("target-prim", "bt.709")
+                    MPVLib.setOptionString("target-trc", "gamma2.2")
+                    MPVLib.setOptionString("tone-mapping", "bt.2390")
                     // 字幕我们自己画（弹幕层带字幕位），别让 mpv 再画一遍
                     MPVLib.setOptionString("sub-auto", "no")
                     MPVLib.setOptionString("sid", "no")
@@ -77,7 +90,7 @@ class MpvBackend(private val context: Context) {
                         Log.i(TAG, "mpv[$level] ${prefix ?: ""}$text")
                     }
                     MPVLib.init()
-                    Log.i(TAG, "mpv 内核已就绪（gpu 渲染器 + 软解兜底）")
+                    Log.i(TAG, "mpv 内核已就绪（gpu-next + libplacebo，软解，杜比视界 Profile 5）")
                 } catch (t: Throwable) {
                     created.set(false)
                     Log.e(TAG, "mpv 内核初始化失败: ${t.message}")
@@ -141,6 +154,60 @@ class MpvBackend(private val context: Context) {
 
     fun setSpeed(speed: Float) {
         try { MPVLib.setPropertyDouble("speed", speed.toDouble()) } catch (_: Throwable) {}
+    }
+
+    /**
+     * 切音轨（父亲 2026-10-08：内核模式下换音轨这一版要生效）。
+     *
+     * 换音轨不该牵动播放本身 —— 前一版走「重起播」，踩了 native 层的 stale Global 崩溃
+     * （SIGABRT + attempt to use stale Global）。内核模式改用 mpv 自己的音轨选择。
+     *
+     * Emby 给的是「文件内的流序号」，mpv 的 aid 是它自己的 track id，两者不一定相等，
+     * 所以按顺序映射：取内核侧音频轨列表的第 ordinal 个。
+     */
+    fun setAudioTrackByOrdinal(ordinal: Int): Boolean {
+        val ids = audioTrackIds()
+        if (ids.isEmpty()) {
+            Log.w(TAG, "内核没有报出音轨列表，切轨失败")
+            return false
+        }
+        val id = ids.getOrNull(ordinal)
+        if (id == null) {
+            Log.w(TAG, "音轨序号 $ordinal 超出范围（内核侧共 ${ids.size} 条）")
+            return false
+        }
+        return try {
+            MPVLib.setPropertyInt("aid", id)
+            Log.i(TAG, "内核切音轨：第 ${ordinal + 1} 条（aid=$id）")
+            true
+        } catch (t: Throwable) {
+            Log.e(TAG, "内核切音轨失败: ${t.message}")
+            false
+        }
+    }
+
+    /** 内核侧的音轨 id 列表（按文件内顺序）；取不到返回空表 */
+    fun audioTrackIds(): List<Int> {
+        val raw = try { MPVLib.getPropertyString("track-list") } catch (_: Throwable) { null }
+        if (raw.isNullOrBlank()) return emptyList()
+        return try {
+            val arr = org.json.JSONArray(raw)
+            val out = ArrayList<Int>()
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                if (o.optString("type") == "audio") out.add(o.optInt("id"))
+            }
+            out
+        } catch (t: Throwable) {
+            Log.w(TAG, "解析内核音轨列表失败: ${t.message}")
+            emptyList()
+        }
+    }
+
+    /** 起播后把内核侧轨道清单打进日志：切轨排错靠它 */
+    fun dumpTracks() {
+        val raw = try { MPVLib.getPropertyString("track-list") } catch (_: Throwable) { null }
+        Log.i(TAG, "内核轨道清单：${raw ?: "取不到"}")
     }
 
     /** 是否已经吃进流、开始出画 */

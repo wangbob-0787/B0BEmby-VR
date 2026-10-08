@@ -71,6 +71,20 @@ class MainActivity : ComponentActivity() {
     private var osdJob: kotlinx.coroutines.Job? = null
 
     /**
+     * 播放接口统一层（父亲 2026-10-08）。
+     *
+     * 普通片源与杜比视界 Profile 5 的内核共用这一套「读状态 / 下指令」，
+     * 控制条、银幕进度条、快进快退、拖进度条、暂停、倍速都只认它。
+     * 用 lazy：声明位置与 player / mpvBackend 的初始化顺序无关。
+     */
+    private val ctl by lazy {
+        com.xxxx.emby_vr.player.PlaybackControl().apply {
+            exoProvider = { player }
+            mpvProvider = { mpvBackend }
+        }
+    }
+
+    /**
      * 展开菜单面板（2026-10-06 父亲定）。
      *
      * 控制条本身不变（仍是那块矮条）；菜单是**另一块面板**，架在控制条正上方、
@@ -860,18 +874,21 @@ class MainActivity : ComponentActivity() {
          * 这时没有进度条就没有反馈 —— 所以不跟电视版这一条，照常显示。
          */
         val v = danmakuView ?: return
-        val p = player
         seekHudShown = true
-        v.setSeekHud(true, p?.currentPosition ?: 0L, p?.duration ?: 0L, p?.bufferedPosition ?: 0L)
+        /*
+         * 数据走播放接口层（父亲 2026-10-08）。
+         * 原来这里直接读系统播放器对象，内核模式下它是空的 —— 银幕上那条进度条
+         * 就是「屏幕上的进度条也有问题」那条反馈的根子。
+         */
+        v.setSeekHud(true, ctl.positionMs(), ctl.durationMs(), ctl.bufferedMs())
         if (seekHudTickJob?.isActive != true) {
             seekHudTickJob = scope.launch {
                 while (true) {
-                    val pl = player
                     danmakuView?.setSeekHud(
                         true,
-                        pl?.currentPosition ?: 0L,
-                        pl?.duration ?: 0L,
-                        pl?.bufferedPosition ?: 0L,
+                        ctl.positionMs(),
+                        ctl.durationMs(),
+                        ctl.bufferedMs(),
                     )
                     kotlinx.coroutines.delay(200L)
                 }
@@ -931,29 +948,18 @@ class MainActivity : ComponentActivity() {
         osdJob?.cancel()
         osdJob = scope.launch {
             while (renderer.videoActive || picking) {
-                val p = player
-                if (p != null) {
-                    osdState.playing = p.playWhenReady
-                    osdState.positionMs = p.currentPosition
-                    // 缓冲进度：进度条上那一段浅色（电视版进度条有这个）
-                    osdState.bufferedMs = p.bufferedPosition
-                    val d = p.duration
-                    if (d > 0L) osdState.durationMs = d
-                } else {
-                    /*
-                     * mpv 内核模式（父亲 2026-10-08）：控制条上的「正在播放」与进度条
-                     * 原来只在播放器对象非空时才有数据，走内核时这里一直是空的。
-                     * 内核自己能报位置与时长，从这里取。
-                     */
-                    mpvBackend?.let { m ->
-                        osdState.playing = !m.isPaused()
-                        osdState.positionMs = (m.positionSec() * 1000.0).toLong()
-                        val d = (m.durationSec() * 1000.0).toLong()
-                        if (d > 0L) osdState.durationMs = d
-                        // 内核不做自己的缓冲进度，用当前位置兜底，进度条不至于空着
-                        osdState.bufferedMs = osdState.positionMs
-                    }
-                }
+                /*
+                 * 控制条取数统一走播放接口层（父亲 2026-10-08）。
+                 *
+                 * 原来这里是「系统播放器有值就取、否则取内核」两段分支：每加一处取数要写
+                 * 两遍，还漏（银幕进度条就漏了，内核模式下是空的）。现在只有一个来源，
+                 * 谁在解码都一样。
+                 */
+                osdState.playing = ctl.isPlaying()
+                osdState.positionMs = ctl.positionMs()
+                osdState.bufferedMs = ctl.bufferedMs()
+                val d = ctl.durationMs()
+                if (d > 0L) osdState.durationMs = d
                 // 控制条第一行左侧：正在播放什么（右侧的时间由独立时钟负责）
                 osdState.title = osdTitleText()
                 // 弹幕画布要的播放位置：主线程取，画笔线程只读缓存
@@ -1219,8 +1225,9 @@ class MainActivity : ComponentActivity() {
              * unknown error (-21) 一万条后直接失败）。所以自己解 —— 和 PICO 上
              * 能正常播的 4XVR 一个路子。标记由取播放信息那一步立起来。
              */
-            if (com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource) {
-                Log.i(TAG, "起播走 mpv 内核（片源 ${com.xxxx.emby_vr.player.PlaybackFlags.videoDescriptor}）")
+            if (com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder) {
+                Log.i(TAG, "起播走 mpv 内核（杜比视界 Profile 5，片源 ${com.xxxx.emby_vr.player.PlaybackFlags.videoDescriptor}，" +
+                    "版本 ${com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionProfile ?: "未探到"}）")
                 mpvBackend?.stop()
                 /*
                  * 地址要换成原文件直连（父亲 2026-10-08 实测）。
@@ -1250,6 +1257,15 @@ class MainActivity : ComponentActivity() {
                 mpvBackend = com.xxxx.emby_vr.player.MpvBackend(this).also { m ->
                     m.attachSurface(surface)
                     m.play(directUrl, startMs / 1000.0)
+                    /*
+                     * 起播后把内核侧轨道清单打进日志（父亲 2026-10-08）。
+                     * 切音轨是按顺序映射的，清单里能看到内核认出的音轨 id 与语言，
+                     * 万一映射对不上，一眼就能看出来。
+                     */
+                    scope.launch {
+                        kotlinx.coroutines.delay(3000)
+                        m.dumpTracks()
+                    }
                 }
                 /*
                  * 把画面切到 VR 银幕（父亲 2026-10-08）。
@@ -1401,7 +1417,7 @@ class MainActivity : ComponentActivity() {
                         // 自然播完 → 上报停止（服务端据此记"已看"与进度）
                         if (state == Player.STATE_ENDED) {
                             Log.i(TAG, "播放结束 → 上报停止")
-                            reportPlaybackStopped(player?.duration ?: 0L)
+                            reportPlaybackStopped(ctl.durationMs())
                         }
                     }
 
@@ -1651,16 +1667,22 @@ class MainActivity : ComponentActivity() {
                 selectedSubtitleIndex =
                     if (picked != null && picked == selectedSubtitleIndex) null else picked
                 Log.i(TAG, "字幕 → ${selectedSubtitleIndex ?: "关闭"}（菜单保持打开）")
-                if (mpvBackend != null) {
+                if (ctl.kernelActive) {
                     /*
-                     * 内核模式下先不重起播（父亲 2026-10-08：选字幕闪退）。
-                     *
-                     * 崩溃栈是 `JNI ERROR (app bug): attempt to use stale Global` +
-                     * `art::JNI::NewGlobalRef`，落在我们自己的 native 渲染层 —— 重起播时
-                     * 旧的画面资源被释放，原生层还拿着旧引用，直接 SIGABRT。
-                     * 换字幕不该牵动播放本身，正确做法是让内核自己挂字幕，下一版做。
+                     * 内核模式（父亲 2026-10-08）：字幕是我们自己取回来画的
+                     * （loadSubtitleTrack 走 Emby 的字幕接口），跟播放内核没关系 ——
+                     * 换字幕只需要换字幕源，不需要重起播，也就不会再踩那个
+                     * stale Global 的原生崩溃。
                      */
-                    Log.w(TAG, "内核模式暂不支持切字幕轨（重起播会崩），本次忽略")
+                    val idx = selectedSubtitleIndex
+                    if (idx == null) {
+                        subtitleCues = emptyList()
+                        subtitleCueStream = null
+                        Log.i(TAG, "内核模式：字幕关闭（自绘源清空）")
+                    } else {
+                        loadSubtitleTrack(idx)
+                        Log.i(TAG, "内核模式：字幕换到流 $idx（自绘，不动播放）")
+                    }
                 } else {
                     replayKeepingPosition()
                 }
@@ -1670,9 +1692,16 @@ class MainActivity : ComponentActivity() {
                 Log.i(TAG, "音轨 → 流 ${selectedAudioIndex ?: "默认"}（菜单保持打开）")
                 // 勾选立刻移到新音轨（父亲 2026-10-07：菜单要原地更新到新选项）
                 refreshMenuRows(com.xxxx.emby_vr.panel.MenuKind.AUDIO)
-                if (mpvBackend != null) {
-                    // 同上：内核模式下换音轨也走重起播，会踩同一个崩溃
-                    Log.w(TAG, "内核模式暂不支持切音轨（重起播会崩），本次忽略")
+                if (ctl.kernelActive) {
+                    /*
+                     * 内核模式（父亲 2026-10-08）：音轨交给内核自己切，不重起播
+                     * （重起播会踩同一个 stale Global 崩溃）。
+                     * 内核侧的音轨 id 与 Emby 的流序号不是一回事，所以按顺序映射：
+                     * Emby 音频清单里的第几个，就取内核侧第几条。
+                     */
+                    val ordinal = audioStreamIndices.indexOf(selectedAudioIndex).coerceAtLeast(0)
+                    val ok = mpvBackend?.setAudioTrackByOrdinal(ordinal) == true
+                    Log.i(TAG, "内核模式：切音轨 流=${selectedAudioIndex ?: "默认"} 序号=$ordinal 结果=$ok")
                 } else {
                     replayKeepingPosition()
                 }
@@ -1695,9 +1724,8 @@ class MainActivity : ComponentActivity() {
     /** 倍速（菜单里选档） */
     private fun applySpeed(speed: Float) {
         playSpeed = speed
-        player?.setPlaybackSpeed(speed)
-        // 内核模式下倍速交给内核自己（两条内核共用一个倍速入口）
-        mpvBackend?.setSpeed(speed)
+        // 两条内核共用一个入口（父亲 2026-10-08：走播放接口层）
+        ctl.setSpeed(speed)
         osdState.speed = speed
         Log.i(TAG, "倍速 → ${speed}x")
     }
@@ -2092,7 +2120,8 @@ class MainActivity : ComponentActivity() {
         val steps = floatArrayOf(1f, 1.25f, 1.5f, 2f, 0.75f)
         val idx = steps.indexOfFirst { kotlin.math.abs(it - playSpeed) < 0.01f }
         playSpeed = steps[(idx + 1) % steps.size]
-        player?.setPlaybackSpeed(playSpeed)
+        // 走播放接口层（父亲 2026-10-08）：内核模式下倍速同样生效
+        ctl.setSpeed(playSpeed)
         osdState.speed = playSpeed
         Log.i(TAG, "倍速 → ${playSpeed}x")
     }
@@ -2117,9 +2146,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun togglePlayPause() {
-        val p = player ?: return
-        p.playWhenReady = !p.playWhenReady
-        Log.i(TAG, if (p.playWhenReady) "继续播放" else "已暂停")
+        // 走播放接口层：内核模式下也生效（父亲 2026-10-08）
+        if (!ctl.togglePlayPause()) Log.w(TAG, "暂停/继续：当前没有可操作的播放引擎")
     }
 
     /** 最近一次 seek 的目标位置与发起时间（毫秒）；用于连跳时的基准 */
@@ -2127,22 +2155,25 @@ class MainActivity : ComponentActivity() {
     private var seekTargetAt = 0L
 
     private fun seekBy(deltaMs: Long) {
-        val p = player ?: return
+        if (!ctl.hasEngine()) return
         // ExoPlayer 的 seekTo 是异步的：连续快进时上一跳还没落地，
         // currentPosition 仍是旧值，基于它算下一跳会越跳越偏
         // （父亲 2026-10-04 实测：连跳几次落点与预期不符）。
         // 500ms 内的连跳一律以「上一跳的目标」为基准，之后回归真实位置。
+        // 位置从播放接口层取 —— 内核模式下原来取的是空播放器，快进按了没反应。
         val withinChain = seekTargetMs != null &&
             System.currentTimeMillis() - seekTargetAt < 500
-        val base = if (withinChain) seekTargetMs!! else p.currentPosition
+        val base = if (withinChain) seekTargetMs!! else ctl.positionMs()
         val target = (base + deltaMs).coerceAtLeast(0L)
         seekTargetMs = target
         seekTargetAt = System.currentTimeMillis()
         // 快进 / 快退期间弹幕停在原地（父亲 2026-10-07：不然会一跳一跳）
         freezeDanmakuForSeek()
-        p.seekTo(target)
+        ctl.seekTo(target)
         // 进度条（HUD）正显示时把目标位置立刻写进去：条与游标跟手，不等下一拍
-        if (seekHudShown) danmakuView?.setSeekHud(true, target, p.duration, p.bufferedPosition)
+        if (seekHudShown) {
+            danmakuView?.setSeekHud(true, target, ctl.durationMs(), ctl.bufferedMs())
+        }
         val sec = target / 1000
         Log.i(TAG, "seek ${deltaMs / 1000}s → ${sec / 60}:${"%02d".format(sec % 60)} (基准 ${if (withinChain) "连跳" else "实时"})")
         // 状态绿字已取消（父亲 2026-10-05），跳转结果只进日志
@@ -2152,7 +2183,8 @@ class MainActivity : ComponentActivity() {
     /** 停止播放，回到界面（面板层） */
     private fun stopPlayback() {
         // 先取位置再释放播放器：这一条决定服务端记住看到哪儿
-        reportPlaybackStopped(player?.currentPosition?.times(10_000) ?: 0L)
+        // （位置走播放接口层，内核模式下同样有效）
+        reportPlaybackStopped(ctl.positionMs() * 10_000)
         stopPlaybackInternal()
         renderer.videoActive = false
         renderer.setHudText("")
@@ -2250,7 +2282,8 @@ class MainActivity : ComponentActivity() {
     /** 起播后：立刻上报"开始播放"，随后每 10 秒上报一次进度 */
     private fun startPlaybackReporting() {
         val itemId = reportedItemId ?: return
-        val startTicks = (player?.currentPosition ?: 0L).times(10_000)
+        // 起点位置走播放接口层：内核模式下同样能取到续播位置（父亲 2026-10-08）
+        val startTicks = ctl.positionMs().times(10_000)
         Log.i(TAG, "进度上报: 开始 item=$itemId user=${embySession.userId?.take(8) ?: "-"} playSession=${reportedPlaySessionId ?: "-"}")
         progressJob?.cancel()
         progressJob = scope.launch {
@@ -2271,14 +2304,18 @@ class MainActivity : ComponentActivity() {
             }
             while (renderer.videoActive) {
                 kotlinx.coroutines.delay(10_000)
-                val p = player ?: continue
                 val item = reportedItemId ?: continue
+                /*
+                 * 位置与播放态走播放接口层（父亲 2026-10-08）。
+                 * 原来这一句是 `val p = player ?: continue` —— 内核模式下播放器对象为空，
+                 * 于是**进度一条都不上报**，服务端记不住看到哪儿（app 记不住第几集的老毛病）。
+                 */
                 reportToServer(
                     "progress",
-                    playbackReportBody(item, p.currentPosition * 10_000, p.playWhenReady.not(), "timeupdate"),
+                    playbackReportBody(item, ctl.positionMs() * 10_000, !ctl.isPlaying(), "timeupdate"),
                     "进度",
                 )
-                Log.i(TAG, "进度上报: ${p.currentPosition / 1000}s item=$item")
+                Log.i(TAG, "进度上报: ${ctl.positionMs() / 1000}s item=$item")
             }
         }
     }
@@ -2645,13 +2682,13 @@ class MainActivity : ComponentActivity() {
         }
         osdState.onSeekCommit = { frac ->
             val dur = osdState.durationMs
-            val p = player
-            if (dur > 0L && p != null) {
+            if (dur > 0L && ctl.hasEngine()) {
                 val target = (dur * frac).toLong()
                 osdState.positionMs = target
                 // 拖进度条也是 seek：弹幕同样冻住（父亲 2026-10-07）
                 freezeDanmakuForSeek()
-                p.seekTo(target)
+                // 走播放接口层：内核模式下也生效（父亲 2026-10-08）
+                ctl.seekTo(target)
                 Log.i(TAG, "控制条拖进度 → ${target / 1000} 秒 / ${dur / 1000} 秒")
             }
         }

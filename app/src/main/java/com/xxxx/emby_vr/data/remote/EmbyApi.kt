@@ -491,6 +491,8 @@ object EmbyApi {
              */
             var dvByStream = false
             var probeDesc: String? = null
+            // 杜比视界的版本线索（如 DoviProfile81 / DoviProfile50）：决定起播走哪条解码路
+            var dvProfile: String? = null
             runCatching {
                 val probeUrl = "/Users/$userId/Items/$targetId" +
                     "?Fields=MediaSources&X-Emby-Token=$apiKey&reqformat=json"
@@ -505,6 +507,14 @@ object EmbyApi {
                 val vs = probe.mediaSources?.firstOrNull()?.mediaStreams
                     ?.firstOrNull { it.type.equals("Video", true) }
                 probeDesc = vs?.let { "${it.codec} ${it.videoRange} ${it.width}x${it.height}" }
+                // 版本线索：Emby 的 ExtendedVideoSubType 实测给 "DoviProfile81"；
+                // 拿不到就退回 VideoRangeType（8.1 报 DOVIWithHDR10，5.0 报 DOVI）
+                dvProfile = vs?.let {
+                    listOfNotNull(
+                        it.extendedVideoSubType?.takeIf { s -> s.isNotBlank() && s != "None" },
+                        it.videoRangeType?.takeIf { s -> s.isNotBlank() },
+                    ).joinToString("/").ifBlank { null }
+                }
                 if (vs?.width != null && vs.height != null && vs.height!! > 0) {
                     com.xxxx.emby_vr.player.PlaybackFlags.videoAspect =
                         vs.width!!.toFloat() / vs.height!!.toFloat()
@@ -521,28 +531,44 @@ object EmbyApi {
                 }
             }.onFailure { Log.w(TAG, "探片源失败：${it.message}") }
             val isDolbyVision = dvByStream || dvByName
-            Log.i(TAG, "片源判定：杜比视界=$isDolbyVision（按名=$dvByName 按流=$dvByStream）path=${sourcePath.takeLast(70)}")
             /*
-             * 杜比视界片源：起播时改走 mpv 解码内核（父亲 2026-10-08）。
+             * 起播走哪条解码路（父亲 2026-10-08 拍板）。
              *
-             * 服务端转码这条路走不通 —— Emby 对杜比视界走 QSV 硬解，日志里
-             * `[hevc_qsv] Error during QSV decoding.: unknown error (-21)` 刷一万条，
-             * 转码直接失败（连声音都没了）。而 PICO 上 4XVR 自带解码内核能正常播，
-             * 说明该由客户端自己解。这里只立标记，实际切换在 startPlayer。
+             * **只有 Profile 5.0 才走自带内核**：
+             *   · 8.1 是「HDR10 兼容」那一版（Emby 报 DoviProfile81 / DOVIWithHDR10），
+             *     底层就是标准 HDR10 —— 系统播放器播得了、颜色也对（父亲在 Mac 上
+             *     实测《律界战争》就是 8.1，服务端正常送）。普通片源与 8.1 保持原路径。
+             *   · 5.0（DoviProfile50 / 只报 DOVI、没有 HDR10 兼容层）画面用杜比私有的
+             *     色彩编码，系统既解不出画面（只有声音没画面）、也还原不了颜色，
+             *     必须由自带内核 + libplacebo 还原。
+             *
+             * 两边线索都没有时**按走内核处理**：内核最坏是软解吃性能（还能看），
+             * 而按普通路径处理最坏是「只有声音没有画面」（看不了）。
              */
+            val looksProfile8 = (dvProfile?.contains("8") == true) ||
+                (dvProfile?.contains("HDR10", true) == true)
+            val looksProfile5 = (dvProfile?.contains("5") == true) ||
+                (dvProfile?.equals("DOVI", true) == true)
+            val useKernel = isDolbyVision && (looksProfile5 || !looksProfile8)
+            Log.i(TAG, "片源判定：杜比视界=$isDolbyVision 版本=$dvProfile 走内核=$useKernel" +
+                "（按名=$dvByName 按流=$dvByStream）path=${sourcePath.takeLast(70)}")
             com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource = isDolbyVision
+            com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionProfile = dvProfile
+            com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder = useKernel
             com.xxxx.emby_vr.player.PlaybackFlags.videoDescriptor =
                 dto.mediaSources?.firstOrNull()?.mediaStreams
                     ?.firstOrNull { it.type.equals("Video", true) }
                     ?.let { "${it.codec} ${it.videoRange} ${it.width}x${it.height}" }
-            if (isDolbyVision) {
-                Log.i(TAG, "片源是杜比视界：起播改走 mpv 内核（系统解码器吃不下）")
-                val url2 = url + "&EnableDirectStream=false"
-                val result2 = httpAsJsonObject(context, serverUrl, apiKey, deviceId, url2, "POST", body)
-                dto = gson.fromJson(result2, MediaDto::class.java)
-                com.xxxx.emby_vr.util.DiagLog.w(context, "playbackInfo杜比视界",
-                    "id=$targetId 已改走转码 hasTranscodingUrl=" +
-                    (dto.mediaSources?.firstOrNull()?.transcodingUrl != null))
+            /*
+             * 杜比视界不再强制服务端转码（父亲 2026-10-08 定）。
+             *
+             * 原来对杜比视界一律补一个 EnableDirectStream=false 逼服务端全转码 ——
+             * 那是内核上线前的补救，实测那条转码本身是坏的（服务端 QSV 解不了杜比视界，
+             * 转出来只有声音没画面）。现在：8.1 与普通片源保持原路径，5.0 由客户端内核
+             * 直接拉原文件，两边都不需要服务端参与转码。
+             */
+            if (useKernel) {
+                Log.i(TAG, "杜比视界 Profile 5：客户端内核直连原文件，服务端不参与转码")
             }
             com.xxxx.emby_vr.util.DiagLog.w(context, "playbackInfo",
                 "id=$targetId sources=${dto.mediaSources?.size ?: 0} " +

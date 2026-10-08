@@ -10,10 +10,28 @@ package com.xxxx.emby_vr.player
 object PlaybackFlags {
 
     /**
-     * 本条片源是杜比视界，系统解码器吃不下 —— 起播时走 mpv 内核。
+     * 本条片源是杜比视界（不管哪一版）。只作诊断与日志用。
      */
     @Volatile
     var dolbyVisionSource: Boolean = false
+
+    /**
+     * 起播是否改走 mpv 内核（父亲 2026-10-08 定）。
+     *
+     * **只有杜比视界 Profile 5 才需要**：那一版的画面用杜比私有的色彩编码，
+     * 系统解码器既解不出画面、也还原不了颜色。
+     *
+     * 而 Profile 8.1 是「HDR10 兼容」的那一版 —— 底层就是标准 HDR10，
+     * 系统播放器把它当普通 HDR 播，颜色是对的（父亲 2026-10-08 在 Mac 上实测
+     * 《律界战争》就是 8.1，服务端能正常送）。所以**普通片源与 8.1 一律保持
+     * 原路径**，内核只留给 5.0。
+     */
+    @Volatile
+    var useKernelDecoder: Boolean = false
+
+    /** 探到的杜比视界版本（如 "DoviProfile81" / "DoviProfile50" / "未探到"），只写日志。 */
+    @Volatile
+    var dolbyVisionProfile: String? = null
 
     /** 片源的视频描述，写日志用（如 "hevc DolbyVision 3840x2160"）。 */
     @Volatile
@@ -25,6 +43,8 @@ object PlaybackFlags {
 
     fun reset() {
         dolbyVisionSource = false
+        useKernelDecoder = false
+        dolbyVisionProfile = null
         videoDescriptor = null
         videoAspect = null
     }
