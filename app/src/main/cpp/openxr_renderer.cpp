@@ -833,7 +833,10 @@ std::thread gThread;
  * （VrNative.attachPanelUpdater），每帧回调过去让它 updateTexImage。
  */
 std::function<void()> gPanelUpdate;
-std::function<void()> gVideoUpdate;   // 播放画面取帧（同面板：必须在 VR 渲染线程调）
+std::function<void()> gVideoUpdate;
+
+/** 统计周期内所有交换链等待（双眼/视频层/弹幕层）累计毫秒，读后清零 */
+double gSwapWaitMs = 0.0;   // 播放画面取帧（同面板：必须在 VR 渲染线程调）
 std::function<void()> gOsdUpdate;     // 控制条取帧（同上）
 std::function<void()> gMenuUpdate;    // 展开菜单取帧（同上）
 std::function<void()> gDanmakuUpdate; // 弹幕层取帧
@@ -2316,7 +2319,10 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
      * 改成 4ms（一帧预算的三分之一）：超时跳过这一帧的图层提交，场景照常跑。
      */
     wi.timeout = 4000000;
+    const auto eyeWaitT0 = std::chrono::steady_clock::now();
     const XrResult wr = api.WaitSwapchainImage(eye.handle, &wi);
+    gSwapWaitMs += std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - eyeWaitT0).count();
     if (XR_FAILED(wr)) {
         LOGE("等图失败（眼 %d）：%d", eyeIndex, (int) wr);
         XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
@@ -2929,11 +2935,16 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
      * 改成 4ms（一帧预算的三分之一）：超时跳过这一帧的图层提交，场景照常跑。
      */
     wi.timeout = 4000000;
+    const auto swapWaitT0 = std::chrono::steady_clock::now();
     if (XR_FAILED(api.WaitSwapchainImage(L.handle, &wi))) {
+        gSwapWaitMs += std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - swapWaitT0).count();
         XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
         api.ReleaseSwapchainImage(L.handle, &ri);
         return false;
     }
+    gSwapWaitMs += std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - swapWaitT0).count();
 
     ensureVideoLayerQuad(c);
 
@@ -3033,11 +3044,16 @@ bool fillVideoLayerBlack(VrContext &c, VideoLayerBuf &L) {
      * 改成 4ms（一帧预算的三分之一）：超时跳过这一帧的图层提交，场景照常跑。
      */
     wi.timeout = 4000000;
+    const auto swapWaitT0 = std::chrono::steady_clock::now();
     if (XR_FAILED(api.WaitSwapchainImage(L.handle, &wi))) {
+        gSwapWaitMs += std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - swapWaitT0).count();
         XrSwapchainImageReleaseInfo ri0{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
         api.ReleaseSwapchainImage(L.handle, &ri0);
         return false;
     }
+    gSwapWaitMs += std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - swapWaitT0).count();
     glBindFramebuffer(GL_FRAMEBUFFER, L.fbos[idx]);
     glViewport(0, 0, L.width, L.height);
     glDisable(GL_DEPTH_TEST);
@@ -3118,6 +3134,17 @@ void frameLoop(VrContext &c) {
     double statMaxMs = 0.0;
     int statOver = 0;
     auto statLast = std::chrono::steady_clock::now();
+    /*
+     * 分阶段统计（父亲 2026-10-08 晚）：只知道"帧只有 50~62"不够，
+     * 要分清时间花在视频层（取帧 + 绘制 + 等交换链）、界面层、双眼渲染，
+     * 还是收尾（图层组装 + xrEndFrame 等合成器）。各自留平均与峰值。
+     */
+    double statVideoMs = 0.0, statVideoMax = 0.0;
+    double statUiMs = 0.0, statUiMax = 0.0;
+    double statEyesMs = 0.0, statEyesMax = 0.0;
+    double statEndMs = 0.0, statEndMax = 0.0;
+    double statPeriodMs = 0.0, statPeriodMax = 0.0;
+    auto statPrevFrameStart = std::chrono::steady_clock::now();
     while (!gRequestStop) {
         pumpEvents(c);
         if (gRequestStop) break;
@@ -3136,6 +3163,9 @@ void frameLoop(VrContext &c) {
         XrFrameBeginInfo fbi{XR_TYPE_FRAME_BEGIN_INFO};
         api.BeginFrame(c.session, &fbi);
         const auto frameStart = std::chrono::steady_clock::now();
+        auto tVideo = frameStart;
+        auto tUi = frameStart;
+        auto tEyes = frameStart;
 
         /*
          * 取面板新一帧。必须在渲染线程做（与面板纹理同一个 GL 上下文），
@@ -3184,6 +3214,8 @@ void frameLoop(VrContext &c) {
          * 先渲染它，视频层才知道要不要兜底把弹幕画回自己身上。
          */
         c.danmakuLayer.submitted = false;
+        tVideo = std::chrono::steady_clock::now();
+
         if (c.danmakuLayerOk && c.danmakuVisible.load() && c.danmakuHasFrame.load() &&
             c.danmakuTex != 0) {
             static int danmakuLogTick = 0;
@@ -3229,6 +3261,7 @@ void frameLoop(VrContext &c) {
 
         // 手柄状态（诊断阶段：变化即打日志，先看清 PICO 到底发哪些事件）
         c.frameDisplayTime = fs.predictedDisplayTime;
+        tUi = std::chrono::steady_clock::now();
         syncInput(c);
         pushInput(c);   // 光柱指向 / 扳机 / 摇杆 / B 键 → Java（VR 模式的输入通道）
         if (c.aimValid[0] || c.aimValid[1]) {
@@ -3274,6 +3307,7 @@ void frameLoop(VrContext &c) {
                     projViews[i].subImage.imageRect.offset = {0, 0};
                     projViews[i].subImage.imageRect.extent = {c.eyes[i].width, c.eyes[i].height};
                 }
+                tEyes = std::chrono::steady_clock::now();
                 rendered = eyesOk;
                 if (rendered && loggedFrames < 3) {
                     LOGI("已渲染第 %d 帧（%u 眼）", loggedFrames + 1, viewCount);
@@ -3344,21 +3378,47 @@ void frameLoop(VrContext &c) {
 
         /* 帧时间统计（见循环上方的注释） */
         {
-            const double ms = std::chrono::duration<double, std::milli>(
-                    std::chrono::steady_clock::now() - frameStart).count();
+            const auto now = std::chrono::steady_clock::now();
+            const double ms = std::chrono::duration<double, std::milli>(now - frameStart).count();
+            const double videoMs =
+                    std::chrono::duration<double, std::milli>(tVideo - frameStart).count();
+            const double uiMs = std::chrono::duration<double, std::milli>(tUi - tVideo).count();
+            const double eyesMs = std::chrono::duration<double, std::milli>(tEyes - tUi).count();
+            const double endMs = std::chrono::duration<double, std::milli>(now - tEyes).count();
+            const double periodMs =
+                    std::chrono::duration<double, std::milli>(frameStart - statPrevFrameStart).count();
+            statPrevFrameStart = frameStart;
             statAccumMs += ms;
             statMaxMs = fmax(statMaxMs, ms);
+            statVideoMs += videoMs; statVideoMax = fmax(statVideoMax, videoMs);
+            statUiMs += uiMs; statUiMax = fmax(statUiMax, uiMs);
+            statEyesMs += eyesMs; statEyesMax = fmax(statEyesMax, eyesMs);
+            statEndMs += endMs; statEndMax = fmax(statEndMax, endMs);
+            statPeriodMs += periodMs; statPeriodMax = fmax(statPeriodMax, periodMs);
             statFrames++;
             if (ms > 11.0) statOver++;
-            auto now = std::chrono::steady_clock::now();
             if (std::chrono::duration<double, std::milli>(now - statLast).count() > 3000.0 &&
                 statFrames > 0) {
-                LOGI("帧耗时 %.1f-%.1f 毫秒（平均/最大），%.0f 帧里 %d 帧超 11ms",
-                     statAccumMs / statFrames, statMaxMs, (double) statFrames, statOver);
+                const double n = (double) statFrames;
+                LOGI("帧统计（均/峰 毫秒）：周期 %.1f/%.1f 视频 %.1f/%.1f 界面 %.1f/%.1f "
+                     "双眼 %.1f/%.1f 收尾 %.1f/%.1f | 帧 %.1f/%.1f，%.0f 帧里 %d 帧超 11ms，"
+                     "等交换链平均 %.2f",
+                     statPeriodMs / n, statPeriodMax,
+                     statVideoMs / n, statVideoMax,
+                     statUiMs / n, statUiMax,
+                     statEyesMs / n, statEyesMax,
+                     statEndMs / n, statEndMax,
+                     statAccumMs / n, statMaxMs, n, statOver, gSwapWaitMs / n);
                 statAccumMs = 0.0;
                 statMaxMs = 0.0;
+                statVideoMs = statVideoMax = 0.0;
+                statUiMs = statUiMax = 0.0;
+                statEyesMs = statEyesMax = 0.0;
+                statEndMs = statEndMax = 0.0;
+                statPeriodMs = statPeriodMax = 0.0;
                 statFrames = 0;
                 statOver = 0;
+                gSwapWaitMs = 0.0;
                 statLast = now;
             }
         }
