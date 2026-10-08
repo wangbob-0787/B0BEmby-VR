@@ -3087,6 +3087,19 @@ void frameLoop(VrContext &c) {
     const XrCompositionLayerBaseHeader *layerPtrs[3] = {nullptr, nullptr, nullptr};
 
     int loggedFrames = 0;
+    /*
+     * 帧时间统计（父亲 2026-10-08：「头一转动场景就抖」）。
+     *
+     * 抖大概率是渲染没跟上 90Hz 的刷新（11ms 一帧）：渲染超时的帧交给系统
+     * 做预测投影，静止时看不出，头一转动就抖。
+     * 每 3 秒打一行：渲染耗时（BeginFrame 之后到 EndFrame）的平均 / 最大，
+     * 以及本周期内有多少帧超过 11ms。
+     */
+    double statAccumMs = 0.0;
+    int statFrames = 0;
+    double statMaxMs = 0.0;
+    int statOver = 0;
+    auto statLast = std::chrono::steady_clock::now();
     while (!gRequestStop) {
         pumpEvents(c);
         if (gRequestStop) break;
@@ -3104,6 +3117,7 @@ void frameLoop(VrContext &c) {
         }
         XrFrameBeginInfo fbi{XR_TYPE_FRAME_BEGIN_INFO};
         api.BeginFrame(c.session, &fbi);
+        const auto frameStart = std::chrono::steady_clock::now();
 
         /*
          * 取面板新一帧。必须在渲染线程做（与面板纹理同一个 GL 上下文），
@@ -3309,6 +3323,27 @@ void frameLoop(VrContext &c) {
         fei.layerCount = layerCount;
         fei.layers = layerCount > 0 ? layerPtrs : nullptr;
         const XrResult endRes = api.EndFrame(c.session, &fei);
+
+        /* 帧时间统计（见循环上方的注释） */
+        {
+            const double ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - frameStart).count();
+            statAccumMs += ms;
+            statMaxMs = fmax(statMaxMs, ms);
+            statFrames++;
+            if (ms > 11.0) statOver++;
+            auto now = std::chrono::steady_clock::now();
+            if (std::chrono::duration<double, std::second>(now - statLast).count() > 3.0 &&
+                statFrames > 0) {
+                LOGI("帧耗时 %.1f-%.1f 毫秒（平均/最大），%.0f 帧里 %d 帧超 11ms",
+                     statAccumMs / statFrames, statMaxMs, (double) statFrames, statOver);
+                statAccumMs = 0.0;
+                statMaxMs = 0.0;
+                statFrames = 0;
+                statOver = 0;
+                statLast = now;
+            }
+        }
         if (XR_FAILED(endRes) && c.videoLayer.submitted) {
             /*
              * 运行时不接受独立视频层：永久退回老路（画进我们自己的画面），
