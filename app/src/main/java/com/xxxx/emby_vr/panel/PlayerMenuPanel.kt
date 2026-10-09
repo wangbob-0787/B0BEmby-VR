@@ -473,7 +473,7 @@ private fun DanmakuMenu(menu: MenuState) {
             },
             value = "",
             selected = menu.danmakuOffsetMs != 0,
-            onClick = { menu.onSelect?.invoke(MenuKind.DANMAKU, base + 2) },
+            onClick = { menu.onSelect?.invoke(MenuKind.DANMAKU, base + 4) },
         )
         MenuRow(
             label = "弹幕提前 0.5 秒",
@@ -486,6 +486,19 @@ private fun DanmakuMenu(menu: MenuState) {
             value = "",
             selected = false,
             onClick = { menu.onSelect?.invoke(MenuKind.DANMAKU, base + 1) },
+        )
+        // 粗调：差得多的时候半秒半秒点太累（父亲 2026-10-09：最多要能挪到 2 分半）
+        MenuRow(
+            label = "弹幕提前 10 秒",
+            value = "",
+            selected = false,
+            onClick = { menu.onSelect?.invoke(MenuKind.DANMAKU, base + 2) },
+        )
+        MenuRow(
+            label = "弹幕推后 10 秒",
+            value = "",
+            selected = false,
+            onClick = { menu.onSelect?.invoke(MenuKind.DANMAKU, base + 3) },
         )
     }
 }

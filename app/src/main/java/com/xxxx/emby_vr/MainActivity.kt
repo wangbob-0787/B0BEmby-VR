@@ -315,7 +315,9 @@ class MainActivity : ComponentActivity() {
      * 只影响喂给弹幕层的播放位置，不动画面与真实进度。范围 ±10 秒，落盘记住。
      */
     private var danmakuOffsetMs =
-        runCatching { placePrefs.getInt("danmaku_offset_ms", 0) }.getOrDefault(0)
+        runCatching { placePrefs.getInt("danmaku_offset_ms", 0) }
+            .getOrDefault(0)
+            .coerceIn(-kDanmakuOffsetMaxMs, kDanmakuOffsetMaxMs)
 
 
     /** 正在挑片（控制条上的「选片」打开的海报墙）：此时画面回到面板、控制条留着 */
@@ -2013,14 +2015,26 @@ class MainActivity : ComponentActivity() {
                     index in 1..n -> com.xxxx.emby_vr.panel.DANMAKU_SCALES
                         .getOrNull(index - 1)?.let { danmakuScale = it.first }
                     index == n + 1 -> {
-                        danmakuOffsetMs = (danmakuOffsetMs + 500).coerceAtMost(10_000)
-                        Log.i(TAG, "弹幕提前 → 偏移 ${danmakuOffsetMs}ms")
+                        danmakuOffsetMs =
+                            (danmakuOffsetMs + 500).coerceAtMost(kDanmakuOffsetMaxMs)
+                        Log.i(TAG, "弹幕提前 0.5 秒 → 偏移 ${danmakuOffsetMs}ms")
                     }
                     index == n + 2 -> {
-                        danmakuOffsetMs = (danmakuOffsetMs - 500).coerceAtLeast(-10_000)
-                        Log.i(TAG, "弹幕推后 → 偏移 ${danmakuOffsetMs}ms")
+                        danmakuOffsetMs =
+                            (danmakuOffsetMs - 500).coerceAtLeast(-kDanmakuOffsetMaxMs)
+                        Log.i(TAG, "弹幕推后 0.5 秒 → 偏移 ${danmakuOffsetMs}ms")
                     }
                     index == n + 3 -> {
+                        danmakuOffsetMs =
+                            (danmakuOffsetMs + 10_000).coerceAtMost(kDanmakuOffsetMaxMs)
+                        Log.i(TAG, "弹幕提前 10 秒 → 偏移 ${danmakuOffsetMs}ms")
+                    }
+                    index == n + 4 -> {
+                        danmakuOffsetMs =
+                            (danmakuOffsetMs - 10_000).coerceAtLeast(-kDanmakuOffsetMaxMs)
+                        Log.i(TAG, "弹幕推后 10 秒 → 偏移 ${danmakuOffsetMs}ms")
+                    }
+                    index == n + 5 -> {
                         danmakuOffsetMs = 0
                         Log.i(TAG, "弹幕偏移归零")
                     }
@@ -3035,6 +3049,9 @@ class MainActivity : ComponentActivity() {
      * 内核起得快的时候（一秒钟不到）原来会一闪而过，观感上"像没黑屏"。
      */
     private val kMinWaitingMs = 2000L
+
+    /** 弹幕时间偏移上限：±2 分半（父亲 2026-10-09 定） */
+    private val kDanmakuOffsetMaxMs = 150_000
 
     /** 本次等待期从什么时候开始（算最短停留用） */
     private var waitingStartedAtMs = 0L
