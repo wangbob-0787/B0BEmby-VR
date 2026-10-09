@@ -874,7 +874,7 @@ double gSwapWaitMs = 0.0;
  */
 std::atomic<float> gSuperSample{1.25f};      // 双眼渲染超采样倍数（下次起播生效）
 std::atomic<int> gSwapWaitTimeoutMs{4};      // 等交换链图像超时（毫秒，可运行时调）
-std::atomic<int> gLayerMask{0x7};            // bit0 视频独立层 bit1 弹幕层 bit2 片名 logo
+std::atomic<int> gLayerMask{0x3F};            // bit0 视频 bit1 弹幕 bit2 logo bit3 海报墙 bit4 控制条 bit5 菜单
 /*
  * 交回图像前的同步档（父亲 2026-10-08 手机拍到撕裂后加的对照开关）。
  *
@@ -914,6 +914,7 @@ std::atomic<int> gSwapWaitOk{0};
 std::atomic<int> gSwapWaitTimeout{0};
 std::atomic<int> gSwapWaitError{0};
 std::atomic<int> gEyeWaitTimeout{0};    // 眼缓冲（投影层）单独计数
+std::atomic<int> gLastLayerCount{0};    // 上一帧实际提交给 xrEndFrame 的图层数（阶梯实验要看这个）
 
 /* 无限等待的兜底定义（个别版本的 openxr.h 不带这个宏） */
 #ifndef XR_INFINITE_DURATION
@@ -2592,7 +2593,8 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
          * 由系统合成器按纹理原始像素贴。仅当独立层建不出来（panelLayerOk 被永久关掉）
          * 才退回老路画进眼缓冲兜底，免得海报墙整个消失。
          */
-        if (panelReady && c.panelShown.load() && !c.panelLayer.built) {
+        if (panelReady && c.panelShown.load() && !c.panelLayer.built &&
+            (gLayerMask.load() & 8) != 0) {
             drawScreen(panelPlacement(c), c.panelTex);
         }
 
@@ -2627,8 +2629,8 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
          * **独立层没建起来时仍走这条老路**：上一版把这段删掉，层一出问题控制条
          * 就整个消失（父亲实测），不再重犯。
          */
-        if (!c.osdLayer.submitted && c.osdVisible.load() && c.osdTex != 0 &&
-            c.osdHasFrame.load()) {
+        if (!c.osdLayer.submitted && (gLayerMask.load() & 16) != 0 &&
+            c.osdVisible.load() && c.osdTex != 0 && c.osdHasFrame.load()) {
             /*
              * 只给控制条开 alpha 混合（父亲 2026-10-06：「叠了两层，下层没有倒圆角」）：
              * Java 侧把控制条窗口背景清成透明，圆角外 alpha=0，这里混合后透出影院背景。
@@ -2675,8 +2677,8 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
          */
 
         /* 菜单同上（2026-10-09）：独立层提交成功就留空，没建起来仍走这条老路 */
-        if (!c.menuLayer.submitted && c.menuVisible.load() && c.menuTex != 0 &&
-            c.menuHasFrame.load()) {
+        if (!c.menuLayer.submitted && (gLayerMask.load() & 32) != 0 &&
+            c.menuVisible.load() && c.menuTex != 0 && c.menuHasFrame.load()) {
             glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             const float mth = kMenuTiltDeg * 3.14159265358979f / 180.f;
@@ -3187,7 +3189,7 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
      * 弹幕则改走独立合成层（见渲染循环），这里只在弹幕层建不起来时兜底，
      * 免得弹幕整个消失。
      */
-    if (videoLayerPass && !c.danmakuLayer.submitted &&
+    if (videoLayerPass && (gLayerMask.load() & 2) != 0 && !c.danmakuLayer.submitted &&
         c.danmakuVisible.load() && c.danmakuTex != 0 && c.danmakuHasFrame.load()) {
         drawOverlayIntoVideoLayer(c, c.danmakuTex, 0.f, 0.f, 1.f, 1.f);
     }
@@ -3409,9 +3411,39 @@ void frameLoop(VrContext &c) {
 
         XrFrameWaitInfo fwi{XR_TYPE_FRAME_WAIT_INFO};
         XrFrameState fs{XR_TYPE_FRAME_STATE};
+        /*
+         * 帧调度诊断（2026-10-09，ChatGPT 复查建议）：
+         * 实测帧周期在 11.5~50.2ms 之间乱跳，但我们自己每帧只渲染 0.9ms。
+         * 光看 xrBeginFrame 的调用间隔不足以判断"是运行时在节流，还是我们在别处阻塞"——
+         * 必须记录 xrWaitFrame 的耗时、运行时给的 predictedDisplayPeriod，
+         * 以及相邻 predictedDisplayTime 之差。三者一比就能分开：
+         *   · predictedDisplayPeriod ≈ 11.11ms 且 waitFrame 很快 → 运行时节奏正常，帧间隔变大是我们自己的问题
+         *   · predictedDisplayPeriod 本身就变大 → 运行时（合成器）在降速，属于外部节流
+         */
+        const auto waitFrameT0 = std::chrono::steady_clock::now();
         if (XR_FAILED(api.WaitFrame(c.session, &fwi, &fs))) {
             LOGE("xrWaitFrame 失败，退出循环");
             break;
+        }
+        const double waitFrameMs = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - waitFrameT0).count();
+        {
+            static XrTime prevPredicted = 0;
+            const double periodMs = (double) fs.predictedDisplayPeriod / 1000000.0;
+            const double deltaMs = prevPredicted ? (double) (fs.predictedDisplayTime - prevPredicted) / 1000000.0 : 0.0;
+            prevPredicted = fs.predictedDisplayTime;
+            static double accWait = 0.0, accPeriod = 0.0, accDelta = 0.0;
+            static int accN = 0;
+            static double lastLog = 0.0;
+            accWait += waitFrameMs; accPeriod += periodMs; accDelta += deltaMs; accN++;
+            if (nowMs() - lastLog > 3000.0 && accN > 0) {
+                LOGI("帧调度：%d 帧｜xrWaitFrame 均 %.2fms｜预测周期均 %.2fms（应为 11.11）"
+                     "｜预测显示时刻间隔均 %.2fms",
+                     accN, accWait / accN, accPeriod / accN, accDelta / accN);
+                accWait = accPeriod = accDelta = 0.0;
+                accN = 0;
+                lastLog = nowMs();
+            }
         }
         XrFrameBeginInfo fbi{XR_TYPE_FRAME_BEGIN_INFO};
         api.BeginFrame(c.session, &fbi);
@@ -3533,8 +3565,8 @@ void frameLoop(VrContext &c) {
          * 海报墙是 UI 面板，不走 layer_mask 门控。
          */
         c.panelLayer.submitted = false;
-        if (c.panelLayerOk && c.panelActive.load() && c.panelShown.load() &&
-            c.panelHasFrame.load() && c.panelTex != 0) {
+        if (c.panelLayerOk && (gLayerMask.load() & 8) != 0 && c.panelActive.load() &&
+            c.panelShown.load() && c.panelHasFrame.load() && c.panelTex != 0) {
             if (buildQuadLayer(c, c.panelLayer, 1920, 1080, "海报墙")) {
                 c.panelLayer.submitted = renderQuadLayer(c, c.panelLayer, c.panelTex, false);
             }
@@ -3551,13 +3583,15 @@ void frameLoop(VrContext &c) {
          * 层建不起来或提交失败时 submitted 保持 false，renderEye 会自动退回绘制。
          */
         c.osdLayer.submitted = false;
-        if (c.osdLayerOk && c.osdVisible.load() && c.osdHasFrame.load() && c.osdTex != 0) {
+        if (c.osdLayerOk && (gLayerMask.load() & 16) != 0 && c.osdVisible.load() &&
+            c.osdHasFrame.load() && c.osdTex != 0) {
             if (buildQuadLayer(c, c.osdLayer, (int32_t) kOsdPxW, (int32_t) kOsdPxH, "控制条")) {
                 c.osdLayer.submitted = renderQuadLayer(c, c.osdLayer, c.osdTex, false);
             }
         }
         c.menuLayer.submitted = false;
-        if (c.menuLayerOk && c.menuVisible.load() && c.menuHasFrame.load() && c.menuTex != 0) {
+        if (c.menuLayerOk && (gLayerMask.load() & 32) != 0 && c.menuVisible.load() &&
+            c.menuHasFrame.load() && c.menuTex != 0) {
             if (buildQuadLayer(c, c.menuLayer, (int32_t) kMenuPxW, (int32_t) kMenuPxH, "菜单")) {
                 c.menuLayer.submitted = renderQuadLayer(c, c.menuLayer, c.menuTex, false);
             }
@@ -3755,6 +3789,7 @@ void frameLoop(VrContext &c) {
             layerPtrs[layerCount++] =
                     reinterpret_cast<const XrCompositionLayerBaseHeader *>(&layer);
         }
+        gLastLayerCount.store((int) layerCount);
         fei.layerCount = layerCount;
         fei.layers = layerCount > 0 ? layerPtrs : nullptr;
         const XrResult endRes = api.EndFrame(c.session, &fei);
@@ -3787,7 +3822,7 @@ void frameLoop(VrContext &c) {
                      "双眼 %.1f/%.1f 收尾 %.1f/%.1f | 帧 %.1f/%.1f，%.0f 帧里 %d 帧超 11ms，"
                      "等交换链平均 %.2f｜当前参数 超采样 %.2f 超时 %dms 掩码 0x%x"
                      "｜跳过提交 眼 %d 视频层 %d 其他层 %d｜同步档 %d 刷新率档 %d"
-                     "｜等图 成功 %d 超时 %d 眼超时 %d 错误 %d",
+                     "｜等图 成功 %d 超时 %d 眼超时 %d 错误 %d｜提交图层数 %d",
                      statPeriodMs / n, statPeriodMax,
                      statVideoMs / n, statVideoMax,
                      statUiMs / n, statUiMax,
@@ -3799,7 +3834,7 @@ void frameLoop(VrContext &c) {
                      gEyeSkipCount.load(), gVideoLayerSkipCount.load(),
                      gOtherLayerSkipCount.load(), gSyncMode.load(), gRefreshHz.load(),
                      gSwapWaitOk.load(), gSwapWaitTimeout.load(), gEyeWaitTimeout.load(),
-                     gSwapWaitError.load());
+                     gSwapWaitError.load(), gLastLayerCount.load());
                 statAccumMs = 0.0;
                 statMaxMs = 0.0;
                 statVideoMs = statVideoMax = 0.0;
@@ -4375,8 +4410,18 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             break;
         case 3:
             gLayerMask.store((int) value);
-            LOGI("调参 → 层掩码 0x%x（视频层=%d 弹幕层=%d logo=%d）", (int) value,
-                 (int) value & 1, ((int) value >> 1) & 1, ((int) value >> 2) & 1);
+            /*
+             * 层掩码扩展（2026-10-09，图层阶梯实验用）：现在是 6 位，
+             * 每一位关掉一个图层 —— **层不提交、也不退回画进眼缓冲**（彻底不画），
+             * 这样"减少合成图层数"的实验才是干净的对照。
+             *   bit0 视频层 · bit1 弹幕层 · bit2 片名logo
+             *   bit3 海报墙 · bit4 控制条 · bit5 菜单
+             * 默认 0x3F 全开。投影层（眼缓冲）是必交层，无法关闭。
+             */
+            LOGI("调参 → 层掩码 0x%x（视频=%d 弹幕=%d logo=%d 海报墙=%d 控制条=%d 菜单=%d）",
+                 (int) value,
+                 (int) value & 1, ((int) value >> 1) & 1, ((int) value >> 2) & 1,
+                 ((int) value >> 3) & 1, ((int) value >> 4) & 1, ((int) value >> 5) & 1);
             break;
         case 5: {
             const int hz = (int) value;
