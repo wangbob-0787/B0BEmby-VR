@@ -1555,6 +1555,8 @@ class MainActivity : ComponentActivity() {
                 stickSeekDir = 0
                 stickSeekAccel = false
                 hideSeekHud()
+                // 外挂 ASS 到底是我们下载的弹幕还是片子自带字幕 —— 后台看内容定（父亲 2026-10-09）
+                probeExternalAssForDanmaku()
                 /*
                  * 视频层宽度按路径区分（2026-10-09 父亲要求）：
                  * 内核这条链（杜比视界 Profile 5）贵，1664 实测 GPU 15ms 超预算 → 1280。
@@ -1730,6 +1732,8 @@ class MainActivity : ComponentActivity() {
              * 只有内核那条（杜比视界 Profile 5）才需要压到 1280 换稳定。
              */
             com.xxxx.emby_vr.vr.VrNative.setVideoLayerMaxW(1920)
+            // 外挂 ASS 是弹幕还是片子自带字幕 —— 后台看内容定（父亲 2026-10-09）
+            probeExternalAssForDanmaku()
             picking = false
             osdState.title = title
             // 旧片已经停过（停止上报用的是旧身份），新片身份从现在起正式生效 —— 后面的字幕、弹幕、上报都要用它
@@ -2010,7 +2014,21 @@ class MainActivity : ComponentActivity() {
                             danmakuView?.setSubtitle("")
                             Log.i(TAG, "字幕关闭：播放器文字轨已关")
                         }
-                        else -> loadSubtitleTrack(selectedSubtitleIndex!!)
+                        else -> {
+                            /*
+                             * 外挂字幕（我们取服务端转出的文字自绘）：把播放器自己的
+                             * 文字轨关掉，免得它在我们的字出来之前又画一份（2026-10-09 复查）。
+                             */
+                            player?.let { pl ->
+                                pl.trackSelectionParameters = pl.trackSelectionParameters
+                                    .buildUpon()
+                                    .setTrackTypeDisabled(
+                                        androidx.media3.common.C.TRACK_TYPE_TEXT, true,
+                                    )
+                                    .build()
+                            }
+                            loadSubtitleTrack(selectedSubtitleIndex!!)
+                        }
                     }
                 }
             }
@@ -2260,7 +2278,67 @@ class MainActivity : ComponentActivity() {
             kDanmakuExts.any { pathLower.endsWith(it) }) {
             return true
         }
-        return false
+        /*
+         * ③ 名字认不出时看内容（起播后台探一次，见 probeExternalAssForDanmaku）。
+         *
+         * 我们的弹幕是**从各大视频网站下载的弹幕**再落盘成 ASS，历史上两种命名都用过：
+         * 带「弹幕」的（<片名>.弹幕.ass）和跟视频同名的（早期自动改名对齐那种）。
+         * 只按文件名判会漏掉后者 —— 那会被当普通字幕画在画面下方、一动不动，
+         * 而它其实该在画面**上方滚动**。所以名字认不出时看内容：
+         * 里面有大量位移标记的就是弹幕；片子自带的字幕基本不用位移。
+         */
+        return danmakuByContent[s.index] == true
+    }
+
+    /** 内容判定结果：流号 → 是不是弹幕（起播后台探测后填） */
+    private val danmakuByContent = java.util.concurrent.ConcurrentHashMap<Int, Boolean>()
+
+    /**
+     * 外挂 ASS/SSA 到底是「我们下载的弹幕」还是「片子自带字幕」—— 按内容认一遍
+     * （父亲 2026-10-09：弹幕文件放画面**上方**，字幕文件放画面**下方**）。
+     *
+     * 只探外挂的 ass/ssa（内封的不可能是我们下载的弹幕），拉下文本数位移标记：
+     * 够多就是弹幕。判定结果变了才刷新弹幕轨与字幕菜单。
+     */
+    private fun probeExternalAssForDanmaku() {
+        val mediaId = currentMediaId
+        if (mediaId.isBlank()) return
+        val sourceId = (pendingMediaSourceId ?: reportedMediaSourceId)
+            ?.takeIf { it.endsWith(mediaId) } ?: "mediasource_$mediaId"
+        val candidates = currentStreams.filter {
+            val c = (it.codec ?: "").lowercase()
+            it.type.equals("Subtitle", true) && it.isExternal == true &&
+                (c == "ass" || c == "ssa") &&
+                !isDanmakuStream(it) && it.index != null && !danmakuByContent.containsKey(it.index)
+        }
+        if (candidates.isEmpty()) return
+        scope.launch {
+            var changed = false
+            for (st in candidates) {
+                val idx = st.index ?: continue
+                val url = "${userServer()}/emby/Videos/$mediaId/$sourceId/Subtitles/$idx" +
+                    "/Stream.ass?api_key=${userToken()}"
+                val text = withContext(Dispatchers.IO) {
+                    runCatching {
+                        java.net.URL(url).openConnection().let { c ->
+                            c.connectTimeout = 8000
+                            c.readTimeout = 20000
+                            c.getInputStream().bufferedReader().use { it.readText() }
+                        }
+                    }.getOrNull()
+                } ?: continue
+                if (mediaId != currentMediaId) return@launch
+                val moves = Regex("\\\\move\\(").findAll(text).count()
+                val isDm = moves >= 20
+                danmakuByContent[idx] = isDm
+                Log.i(TAG, "字幕内容探测：流 $idx 位移标记 $moves 个 → ${if (isDm) "弹幕" else "普通字幕"}")
+                if (isDm) changed = true
+            }
+            if (changed && mediaId == currentMediaId) {
+                loadDanmaku()                       // 挂上弹幕层：画面上方滚动
+            }
+            refreshMenuRows(com.xxxx.emby_vr.panel.MenuKind.SUBTITLE)
+        }
     }
 
     /**
@@ -2271,8 +2349,19 @@ class MainActivity : ComponentActivity() {
      * 所以既不列进字幕菜单，也不当成弹幕。
      */
     private fun isImageSubtitle(s: com.xxxx.emby_vr.data.model.MediaStreamDto): Boolean {
-        if (s.isTextSubtitleStream == false) return true
         val c = (s.codec ?: "").lowercase()
+        /*
+         * 闭路字幕（EIA-608 / CEA-608）是**文字**，不是图片（2026-10-09 复查发现）。
+         *
+         * 服务端对这种轨常常不回 IsTextSubtitleStream（默认 false），原来只看这个字段
+         * 就会把它当图片字幕 —— 选中后触发一次多余的转码烧字幕，白等还降画质。
+         * 所以这里先按编码名排除，再看服务端的字段。
+         */
+        if (c.startsWith("eia") || c.startsWith("cea") || c == "cc608" ||
+            c == "eia_608" || c == "cea_608") {
+            return false
+        }
+        if (s.isTextSubtitleStream == false) return true
         return c.contains("pgs") || c.contains("vobsub") || c.contains("dvdsub") ||
             c.contains("dvb") || c.contains("xsub") || c.contains("pgssub")
     }
@@ -2841,7 +2930,7 @@ class MainActivity : ComponentActivity() {
      * 也按文件顺序，所以第 N 条内封文字轨 → 播放器第 N 条文字轨（跨分组拉平）。
      * 找不到（例如这条其实是外挂轨）就退回服务端取流那条老路。
      */
-    private fun selectEmbeddedTextTrack(streamIndex: Int) {
+    private fun selectEmbeddedTextTrack(streamIndex: Int, retry: Boolean = true) {
         val p = player ?: return
         val embedded = currentStreams
             .filter {
@@ -2857,25 +2946,59 @@ class MainActivity : ComponentActivity() {
         val textGroups = p.currentTracks.groups.filter {
             it.type == androidx.media3.common.C.TRACK_TYPE_TEXT
         }
+        /*
+         * 优先按**语言**配（2026-10-09 复查）：只按序号配在有闭路字幕（EIA-608）或
+         * 播放器不认某些轨时会错位一条，字幕就串到别的语言去了。
+         * 语言一致时再按序号兜底。
+         */
+        val wantLang = (currentStreams.firstOrNull { it.index == streamIndex }?.language ?: "")
+            .lowercase().take(3)
         var counter = 0
+        var ordinalHit: Pair<androidx.media3.common.TrackGroup, Int>? = null
         for (g in textGroups) {
             for (ti in 0 until g.length) {
-                if (counter == pos) {
-                    val override = androidx.media3.common.TrackSelectionOverride(
-                        g.mediaTrackGroup, intArrayOf(ti),
-                    )
-                    p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
-                        .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_TEXT, false)
-                        .setOverrideForType(override)
-                        .build()
-                    Log.i(TAG, "内封字幕 $streamIndex → 播放器文字轨第 $pos 条（就地解析，秒出）")
+                val fmtLang = (g.getFormat(ti).language ?: "").lowercase().take(3)
+                if (counter == pos) ordinalHit = g.mediaTrackGroup to ti
+                if (wantLang.isNotBlank() && fmtLang == wantLang) {
+                    applyTextOverride(p, g.mediaTrackGroup, ti)
+                    Log.i(TAG, "内封字幕 $streamIndex → 按语言 $wantLang 选中播放器文字轨（就地解析，秒出）")
                     return
                 }
                 counter++
             }
         }
-        Log.w(TAG, "播放器还没报出内封文字轨（共 ${textGroups.size} 组）→ 退回服务端取流")
+        ordinalHit?.let { (grp, ti) ->
+            applyTextOverride(p, grp, ti)
+            Log.i(TAG, "内封字幕 $streamIndex → 按序号第 $pos 条选中（就地解析，秒出）")
+            return
+        }
+        /*
+         * 轨还没报出来（刚起播、还在缓冲）——**先等一会儿再试一次**，
+         * 别急着退到"服务端挖整片"那条慢路（2026-10-09 复查）。
+         */
+        if (retry) {
+            Log.i(TAG, "内封字幕 $streamIndex：播放器还没报出文字轨，1.5 秒后重试")
+            handler.postDelayed({
+                if (currentMediaId.isNotBlank()) selectEmbeddedTextTrack(streamIndex, retry = false)
+            }, 1500L)
+            return
+        }
+        Log.w(TAG, "内封字幕 $streamIndex 两次都没选中 → 退回服务端取流（可能要等）")
         loadSubtitleTrack(streamIndex)
+    }
+
+    /** 把播放器的文字轨切到指定的一条（跨分组） */
+    private fun applyTextOverride(
+        p: androidx.media3.exoplayer.ExoPlayer,
+        group: androidx.media3.common.TrackGroup,
+        trackIndex: Int,
+    ) {
+        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+            .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_TEXT, false)
+            .setOverrideForType(
+                androidx.media3.common.TrackSelectionOverride(group, listOf(trackIndex)),
+            )
+            .build()
     }
 
     /** 内核内嵌字幕的取文轮询（Profile 5 专用，2026-10-09） */
@@ -2992,6 +3115,16 @@ class MainActivity : ComponentActivity() {
          */
         applyDanmakuCanvas(16f / 9f)
         waitingStartedAtMs = android.os.SystemClock.uptimeMillis()
+        /*
+         * 字幕表必须跟着换片清掉（2026-10-09 复查发现）。
+         *
+         * 自绘字幕是"按当前播放位置在表里找命中的那一条"——表不清，新的一集就会拿
+         * **上一集的字幕表**去匹配，时间轴又都是 0 起点，于是新集开头几分钟显示的是
+         * 上一集的台词，直到新表取回来才纠正。边界情况下（新表取失败）会一直错下去。
+         */
+        subtitleCues = emptyList()
+        subtitleCueStream = null
+        subtitleNow = ""
         /*
          * 换片了：上一次为图形字幕立的「请服务端烧字幕」标记作废（父亲 2026-10-09）。
          * 不清的话下一部片子会莫名其妙走转码。
