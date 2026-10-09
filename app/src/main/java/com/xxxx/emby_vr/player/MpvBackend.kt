@@ -138,6 +138,14 @@ class MpvBackend(private val context: Context) {
                     MPVLib.setOptionString("target-prim", "bt.709")
                     MPVLib.setOptionString("target-trc", "gamma2.2")
                     MPVLib.setOptionString("tone-mapping", "bt.2390")
+                    /*
+                     * 关键：关掉 HDR 逐帧峰值检测。
+                     * 默认 auto 对 HDR 源会逐帧统计画面峰值，色调映射曲线跟着每帧变，
+                     * 整幅画面就一会暖一会冷地"呼吸"。片源本身的杜比参数是恒定的
+                     * （实测 9 个采样帧 DM-id 全 0、场景刷新全 0），所以抖动来自这里。
+                     * 关掉后曲线固定，颜色全程稳定。
+                     */
+                    MPVLib.setOptionString("hdr-compute-peak", "no")
                     // 字幕我们自己画（弹幕层带字幕位），别让 mpv 再画一遍
                     MPVLib.setOptionString("sub-auto", "no")
                     MPVLib.setOptionString("sid", "no")
