@@ -659,6 +659,13 @@ struct VrContext {
      */
     VideoLayerBuf panelLayer;
     bool panelLayerOk = true;
+    /*
+     * 空屏层（2026-10-09 父亲实测）：未播放时，正前方那块暗色银幕原来画在投影层里，
+     * 而投影层永远在最上面 —— 它会把海报墙独立层整个盖住（现象：一播放就不挡了，
+     * 因为播放时投影层留空）。改成独立层后，它排在视频层的位置，稳在海报墙下面。
+     */
+    VideoLayerBuf blankLayer;
+    bool blankLayerOk = true;
     GLuint videoLayerVao = 0;
     GLuint videoLayerVbo = 0;
 
@@ -2504,7 +2511,12 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
          */
         if (c.videoLayer.submitted || c.spinnerWanted.load()) {
             // 留空：视频在黑幕下面那层，位置一致
-        } else {
+        } else if (!c.blankLayer.submitted) {
+            /*
+             * 空屏层已提交时这里留空（2026-10-09）：那块暗色银幕改走独立层了，
+             * 位置一致、层次稳在海报墙下面；这里再画一份会把海报墙盖回去。
+             * 独立层没建起来（blankLayer 失败）时仍走老路，银幕不会整个消失。
+             */
             drawScreen(frontScreen(c), videoReady ? c.videoTex : 0, true);
         }
 
@@ -3164,6 +3176,17 @@ bool fillVideoLayerBlack(VrContext &c, VideoLayerBuf &L) {
     return true;
 }
 
+/**
+ * 空屏层：未播放时正前方那块暗色银幕（2026-10-09）。
+ *
+ * 就是 fillVideoLayerBlack 的语义 —— 刷成不透明纯黑再提交。纯黑对色彩空间
+ * 不敏感（0 在 sRGB 与线性下都是 0），所以不必担心交换链格式带来的色差。
+ * 单独包一层是为了让日志与跳过计数指向「空屏」，不和视频层混在一起。
+ */
+bool renderBlankScreenLayer(VrContext &c, VideoLayerBuf &L) {
+    return fillVideoLayerBlack(c, L);
+}
+
 void frameLoop(VrContext &c) {
     /*
      * 图层结构（run 95 实机崩溃后按官方示例重写）：
@@ -3224,7 +3247,17 @@ void frameLoop(VrContext &c) {
     panelQuad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
     panelQuad.layerFlags = 0;
 
-    const XrCompositionLayerBaseHeader *layerPtrs[4] = {nullptr, nullptr, nullptr, nullptr};
+    /*
+     * 空屏层（2026-10-09）：未播放时正前方那块暗色银幕，不透明 quad。
+     * 排在视频层的位置（海报墙之下）。
+     */
+    XrCompositionLayerQuad blankQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+    blankQuad.space = c.localSpace;
+    blankQuad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+    blankQuad.layerFlags = 0;
+
+    const XrCompositionLayerBaseHeader *layerPtrs[5] = {nullptr, nullptr, nullptr, nullptr,
+                                                        nullptr};
 
     int loggedFrames = 0;
     /*
@@ -3312,6 +3345,19 @@ void frameLoop(VrContext &c) {
             }
             if (vw >= 64 && vh >= 64 && buildQuadLayer(c, c.videoLayer, vw, vh, "视频层")) {
                 c.videoLayer.submitted = renderQuadLayer(c, c.videoLayer, c.videoTex, true);
+            }
+        }
+
+        /*
+         * 空屏层（2026-10-09）：只在「海报墙正走独立层」且「没在播放、也不是等待期」
+         * 时提交。这三个条件与 renderEye 里画暗色银幕那条分支的条件对齐，两边不会同时画。
+         * 目的：把原来画在投影层（最上面）的暗色银幕挪到海报墙下面，别再压住海报墙。
+         */
+        c.blankLayer.submitted = false;
+        if (c.blankLayerOk && c.panelLayer.built && c.panelShown.load() &&
+            !c.videoLayer.submitted && !c.spinnerWanted.load()) {
+            if (buildQuadLayer(c, c.blankLayer, 64, 64, "空屏")) {
+                c.blankLayer.submitted = renderBlankScreenLayer(c, c.blankLayer);
             }
         }
 
@@ -3466,6 +3512,26 @@ void frameLoop(VrContext &c) {
                     reinterpret_cast<const XrCompositionLayerBaseHeader *>(&videoQuad);
         }
         /*
+         * 空屏层提交（2026-10-09）：与视频层同一个位置与朝向，未播放时顶上。
+         * 二者互斥（有视频就不提交空屏）。
+         */
+        if (rendered && c.blankLayer.submitted) {
+            const ScreenPlacement sp = frontScreen(c);
+            const float hy = sp.yawDeg * 3.14159265358979f / 360.f;
+            const float hp = sp.pitchDeg * 3.14159265358979f / 360.f;
+            const float sy2 = sinf(hy), cy2 = cosf(hy);
+            const float sp2 = sinf(hp), cp2 = cosf(hp);
+            blankQuad.pose.position = {sp.cx, sp.cy, sp.cz};
+            blankQuad.pose.orientation = {cy2 * sp2, sy2 * cp2, -sy2 * sp2, cy2 * cp2};
+            blankQuad.size = {sp.width, sp.width / fmaxf(0.1f, sp.aspect)};
+            blankQuad.subImage.swapchain = c.blankLayer.handle;
+            blankQuad.subImage.imageRect.offset = {0, 0};
+            blankQuad.subImage.imageRect.extent = {c.blankLayer.width, c.blankLayer.height};
+            blankQuad.subImage.imageArrayIndex = 0;
+            layerPtrs[layerCount++] =
+                    reinterpret_cast<const XrCompositionLayerBaseHeader *>(&blankQuad);
+        }
+        /*
          * 海报墙独立合成层提交（2026-10-09 父亲实测修正层次）：
          * 摆位跟随运行时拖动（panelPlacement），不透明 quad。
          *
@@ -3601,6 +3667,12 @@ void frameLoop(VrContext &c) {
             c.panelLayerOk = false;
             c.panelLayer.submitted = false;
             c.panelLayer.built = false;
+        }
+        if (XR_FAILED(endRes) && c.blankLayer.submitted) {
+            /* 空屏层不被接受：永久关掉，暗色银幕自动退回画进眼缓冲的老路 */
+            LOGE("提交空屏层失败（xrResult=%d），退回画进眼缓冲", (int) endRes);
+            c.blankLayerOk = false;
+            c.blankLayer.submitted = false;
         }
     }
     LOGI("渲染循环结束");
