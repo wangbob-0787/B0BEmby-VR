@@ -609,7 +609,20 @@ class MainActivity : ComponentActivity() {
                     java.net.URL(url).openConnection().let { conn ->
                         conn.connectTimeout = 8000
                         conn.readTimeout = 20000
-                        conn.getInputStream().bufferedReader().use { it.readText() }
+                        /*
+                         * 不能无条件按 UTF-8 读（2026-10-09 修，父亲实测「选了中文字幕是乱字符」）。
+                         *
+                         * Emby 的 Subtitles 接口把内封/外挂字幕转成 SRT 文本，但**可能保留
+                         * 原字幕的编码**（中文片常见 GBK/GB18030）。原来用 bufferedReader()
+                         * 默认 UTF-8 硬读 → 乱字符；同一部片 4XVR 字幕正常，因为它认编码。
+                         *
+                         * 策略：① 优先用响应头声明的 charset；
+                         *       ② 没声明就先按 UTF-8 **严格**解码，遇非法字节回退 GB18030。
+                         */
+                        val declared = conn.contentType
+                        Log.i(TAG, "自绘字幕：流 $index 响应类型=$declared")
+                        val bytes = conn.getInputStream().use { it.readBytes() }
+                        decodeSubtitleText(bytes, declared)
                     }
                 }.getOrNull()
             }
@@ -619,6 +632,30 @@ class MainActivity : ComponentActivity() {
             subtitleCues = cues
             Log.i(TAG, "自绘字幕：流 $index 取到 ${cues.size} 条")
             if (cues.isEmpty()) Log.w(TAG, "自绘字幕：流 $index 没取到内容（${raw?.length ?: 0} 字节）")
+        }
+    }
+
+    /**
+     * 字幕文本解码（2026-10-09）：优先响应头 charset，否则 UTF-8 严格解码失败回退 GB18030。
+     *
+     * 背景见 loadSubtitleTrack 里的注释：Emby 转出的 SRT 可能是 GBK 系编码，
+     * 按 UTF-8 硬读会得到乱字符。
+     */
+    private fun decodeSubtitleText(bytes: ByteArray, contentType: String?): String {
+        val declared = Regex("charset\\s*=\\s*([A-Za-z0-9_\\-]+)", RegexOption.IGNORE_CASE)
+            .find(contentType ?: "")?.groupValues?.getOrNull(1)
+        if (!declared.isNullOrBlank()) {
+            runCatching { return String(bytes, charset(declared)) }
+        }
+        return runCatching {
+            Charsets.UTF_8.newDecoder()
+                .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                .decode(java.nio.ByteBuffer.wrap(bytes))
+                .toString()
+        }.getOrElse {
+            Log.w(TAG, "自绘字幕：不是 UTF-8，回退 GB18030 解码")
+            String(bytes, charset("GB18030"))
         }
     }
 
