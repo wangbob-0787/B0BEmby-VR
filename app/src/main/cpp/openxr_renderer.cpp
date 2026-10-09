@@ -1769,8 +1769,15 @@ void drawSpinner(VrContext &c, const Mat4 &proj, const Mat4 &view4) {
             std::chrono::steady_clock::now().time_since_epoch()).count();
     constexpr int kSegs = 72;         // 整圈 72 段（每段 5°；父亲 2026-10-07：48 段太糙）
     constexpr int kGapSegs = 9;       // 缺口仍占 45°（9/72），缺口那头放箭头
-    constexpr float kRadius = 0.10f;  // 环半径（米，父亲：原来太大）
-    constexpr float kThick = 0.012f;  // 环的粗细（米，细一点更像实线）
+    /*
+     * 环的半径与粗细按银幕距离等比缩放（2026-10-09）：
+     * 这两个值当年是按银幕 3.2 米外调定的；现在银幕挪到 15 米外，
+     * 10 厘米的环只有 0.38° 视角，等于看不见。按距离放大以保持同样的观感。
+     * （这个转圈目前是关闭状态，先保持一致，免得以后打开就"没有圈"。）
+     */
+    const float ringScale = fmaxf(0.5f, gScreenDistance.load() / 3.2f);
+    const float kRadius = 0.10f * ringScale;   // 环半径（米）
+    const float kThick = 0.012f * ringScale;   // 环的粗细（米）
     /*
      * 段长 = 弧长 × 1.25：段与段首尾重叠才看不出接缝。
      * （原来按半径方向摆段、段间只剩细缝，远看就是毛糙的虚线。）
@@ -2916,7 +2923,19 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
             }
 
             // 光线：从手柄沿指向射出
-            const Mat4 rayModel = poseScaleModel(c.aimPose[h], kRayNear, kRayNear, rayLength);
+            /*
+             * 光柱截面粗细要按**银幕距离**等比缩放（2026-10-09）。
+             *
+             * kRayNear = 1mm 是"照抄官方 handScale 的 x/y 分量"，当年银幕在 3.2 米外时
+             * 勉强够看（约 0.37 像素，靠抗锯齿显形）。父亲把银幕按 IMAX 几何挪到 15 米外
+             * 之后，同样的 1 毫米只剩 0.08 像素 —— **光柱会直接消失**。
+             * 这里按 (银幕距离 / 参考距离) 放大，保证头显里看到的粗细与以前一致
+             * （也就是保持角粗细不变，这跟银幕放多远无关）。
+             */
+            const float kRayRefDistance = 3.2f;   // 参考距离：光柱原来按 3.2 米调的粗细
+            const float rayThick = kRayNear *
+                fmaxf(0.5f, gScreenDistance.load() / kRayRefDistance);
+            const Mat4 rayModel = poseScaleModel(c.aimPose[h], rayThick, rayThick, rayLength);
             drawMesh(c, c.rayVbo, c.rayVertexCount,
                      multiply(multiply(proj, view4), rayModel),
                      0.30f, 0.82f, 0.22f, false);   // 与 TV 版强调色一致的绿
