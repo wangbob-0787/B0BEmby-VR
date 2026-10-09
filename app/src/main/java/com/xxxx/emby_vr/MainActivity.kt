@@ -919,7 +919,16 @@ class MainActivity : ComponentActivity() {
     private var seekHudHideJob: kotlinx.coroutines.Job? = null
 
     private fun stickSeek(sx: Float) {
-        if (player == null) return
+        /*
+         * 用公共播放控制层判断，**不能看 ExoPlayer 对象**（2026-10-09 修）。
+         *
+         * 原来这一行是 `if (player == null) return`：内核（杜比视界 Profile 5）这条路
+         * 压根没有 ExoPlayer 实例，于是整个快进快退**第一步就返回** —— 连日志都不打。
+         * 父亲实测：光柱指着银幕、菜单关着、推了 6 次左右，日志里一条"摇杆短推"都没有。
+         * 其他片源走 ExoPlayer，player 不为空，所以**这个毛病只在 Profile 5 上出现**。
+         * ctl（PlaybackControl）本来就同时支持两套引擎，用它即可。
+         */
+        if (!ctl.hasEngine()) return
         val mag = kotlin.math.abs(sx)
         if (mag < 0.35f) {                                   // 回中 = 抬起
             if (stickSeekDir == 0) return
@@ -947,8 +956,9 @@ class MainActivity : ComponentActivity() {
             stickSeekAccel = true
             while (stickSeekDir == dir) {   // job 被 cancel 时 delay 会抛出并结束循环
                 seekBy(dir * 30_000L)                         // 电视版长按：每 200ms 跳 30 秒
-                val p = player ?: break
-                if (!p.playWhenReady) p.playWhenReady = true  // 电视版：长按时暂停会自动续播
+                if (!ctl.hasEngine()) break
+                // 电视版：长按时暂停会自动续播（同样走公共控制层，别碰 ExoPlayer 对象）
+                if (!ctl.isPlaying()) ctl.togglePlayPause()
                 armSeekHudDismiss()
                 kotlinx.coroutines.delay(200L)
             }
