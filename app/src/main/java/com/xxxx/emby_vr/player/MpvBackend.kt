@@ -160,9 +160,22 @@ class MpvBackend(private val context: Context) {
                      * 想还原画质可运行 `mpv_profile=` 清掉这一档。
                      */
                     MPVLib.setOptionString("profile", "fast")
-                    // 字幕我们自己画（弹幕层带字幕位），别让 mpv 再画一遍
+                    /*
+                     * 字幕交给**内核自己渲染**（2026-10-09 父亲拍板，Profile 5 专用结论）。
+                     *
+                     * 起因：Profile 5 走直链播放、Emby 不推流，服务端**根本没打开过那个文件**，
+                     * 所以它的字幕接口对这些片子完全不理（实测：P5 那片 2/3/5 号字幕全部
+                     * 25 秒超时零字节；同一台服务器上 8.1 那片 0.008 秒就返回）。
+                     * 我们原来那套"从 Emby 取字幕后自绘"在 P5 上根本拿不到数据。
+                     *
+                     * 而内核手里就握着那个文件、内封字幕轨它自己就能读，还自带 libass 排版
+                     * （`{\an8}` 这类 ASS 标记它认识，不会像我们那样画成乱字符）。
+                     * 所以 P5 这条路：字幕由 mpv 直接画进画面，我们不再自绘。
+                     *
+                     * `sub-auto=no` 保留：只禁"自动挑一条"，不禁止手动选（选轨走 sid）。
+                     * 起始不选任何字幕（sid 留空 = 由 mpv 按内封默认决定，通常是不显示）。
+                     */
                     MPVLib.setOptionString("sub-auto", "no")
-                    MPVLib.setOptionString("sid", "no")
                     // 静音状态由我们控制，先不静音
                     MPVLib.setOptionString("mute", "no")
                     /*
@@ -305,6 +318,66 @@ class MpvBackend(private val context: Context) {
             true
         } catch (t: Throwable) {
             Log.e(TAG, "内核切音轨失败: ${t.message}")
+            false
+        }
+    }
+
+    /**
+     * 内核侧的字幕轨 id 列表（按文件内顺序）；取不到返回空表。
+     *
+     * 与音轨同一套做法：Emby 的字幕清单里第几条 → 内核侧第几条，
+     * 序号映射靠"两边都是文件内顺序"这个前提（外挂弹幕轨不在内核清单里）。
+     */
+    fun subtitleTrackIds(): List<Int> {
+        val raw = try { MPVLib.getPropertyString("track-list") } catch (_: Throwable) { null }
+        if (raw.isNullOrBlank()) return emptyList()
+        return try {
+            val arr = org.json.JSONArray(raw)
+            val out = ArrayList<Int>()
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                if (o.optString("type") == "subtitle") out.add(o.optInt("id"))
+            }
+            out
+        } catch (t: Throwable) {
+            Log.w(TAG, "解析内核字幕列表失败: ${t.message}")
+            emptyList()
+        }
+    }
+
+    /**
+     * 按序号选字幕（内核自渲染）。
+     *
+     * ordinal = 在 Emby 字幕清单（已排除弹幕轨）里的下标；null 或越界 = 关字幕。
+     * 为什么改成走内核：见上面 `sub-auto` 那段的注释（P5 直链播放时 Emby 取不到字幕）。
+     */
+    fun setSubtitleByOrdinal(ordinal: Int?): Boolean {
+        if (ordinal == null) {
+            return try {
+                MPVLib.setPropertyString("sid", "no")
+                Log.i(TAG, "内核：字幕关闭（sid=no）")
+                true
+            } catch (t: Throwable) {
+                Log.e(TAG, "内核关字幕失败: ${t.message}")
+                false
+            }
+        }
+        val ids = subtitleTrackIds()
+        if (ids.isEmpty()) {
+            Log.w(TAG, "内核没有报出字幕轨，选字幕失败（文件里可能没有内封字幕）")
+            return false
+        }
+        val id = ids.getOrNull(ordinal)
+        if (id == null) {
+            Log.w(TAG, "字幕序号 $ordinal 超出范围（内核侧共 ${ids.size} 条）")
+            return false
+        }
+        return try {
+            MPVLib.setPropertyInt("sid", id)
+            Log.i(TAG, "内核选字幕：第 ${ordinal + 1} 条（sid=$id，共 ${ids.size} 条）")
+            true
+        } catch (t: Throwable) {
+            Log.e(TAG, "内核选字幕失败: ${t.message}")
             false
         }
     }

@@ -1387,6 +1387,18 @@ class MainActivity : ComponentActivity() {
                         kotlinx.coroutines.delay(4000)
                         m.dumpTracks()
                         m.dumpVideoParams()
+                        /*
+                         * 上次选过的字幕在内核路径要重新选上（2026-10-09）：
+                         * 内封轨道清单要等文件打开后才就绪，所以放在这个延时里。
+                         */
+                        val sel = selectedSubtitleIndex
+                        if (sel != null) {
+                            val ord = subtitleStreamIndices.indexOf(sel)
+                            if (ord >= 0) {
+                                Log.i(TAG, "内核模式：起播后恢复字幕 ${sel} → 序号 $ord 结果=" +
+                                    m.setSubtitleByOrdinal(ord))
+                            }
+                        }
                     }
                 }
                 /*
@@ -1822,20 +1834,28 @@ class MainActivity : ComponentActivity() {
                 refreshMenuRows(com.xxxx.emby_vr.panel.MenuKind.SUBTITLE)
                 if (ctl.kernelActive) {
                     /*
-                     * 内核模式（父亲 2026-10-08）：字幕是我们自己取回来画的
-                     * （loadSubtitleTrack 走 Emby 的字幕接口），跟播放内核没关系 ——
-                     * 换字幕只需要换字幕源，不需要重起播，也就不会再踩那个
-                     * stale Global 的原生崩溃。
+                     * 内核模式（Profile 5）：字幕交给**内核自己渲染**（2026-10-09 父亲拍板）。
+                     *
+                     * 为什么换掉原来那套"从 Emby 取字幕再自绘"：
+                     * P5 是直链播放、Emby 不推流 → 服务端**根本没打开过那个文件**，
+                     * 它的字幕接口对这些片子完全不响应。实测（curl，同一台 .15）：
+                     *   · P5 那片（item 3930930）字幕编号 2/3/5 → 全部 25 秒超时、零字节
+                     *   · 8.1 那片（item 3961760，走 Emby 取流）→ 0.008 秒返回 200
+                     * 而内核手里就握着文件，内封字幕轨它自己读得到，还自带 libass 排版
+                     * （`{\an8}` 这类 ASS 标记它认识，不会画成乱字符）。
+                     *
+                     * 序号映射：Emby 字幕清单（buildSubtitleRows 已排除弹幕轨）里的第几个
+                     * → 内核侧第几条（两边都按文件内顺序）。
                      */
-                    val idx = selectedSubtitleIndex
-                    if (idx == null) {
-                        subtitleCues = emptyList()
-                        subtitleCueStream = null
-                        Log.i(TAG, "内核模式：字幕关闭（自绘源清空）")
-                    } else {
-                        loadSubtitleTrack(idx)
-                        Log.i(TAG, "内核模式：字幕换到流 $idx（自绘，不动播放）")
-                    }
+                    val ordinal = selectedSubtitleIndex?.let { subtitleStreamIndices.indexOf(it) }
+                    val pick = ordinal?.takeIf { it >= 0 }
+                    val ok = mpvBackend?.setSubtitleByOrdinal(pick) == true
+                    Log.i(TAG, "内核模式：字幕 ${selectedSubtitleIndex ?: "关闭"} → 序号 $pick 结果=$ok")
+                    /* 自绘那套在内核路径不再使用，清掉免得留旧文本 */
+                    subtitleCues = emptyList()
+                    subtitleCueStream = null
+                    subtitleNow = ""
+                    danmakuView?.setSubtitle("")
                 } else {
                     replayKeepingPosition()
                 }
