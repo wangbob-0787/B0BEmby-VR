@@ -902,6 +902,23 @@ std::atomic<int> gRefreshHz{0};
 std::atomic<int> gEyeSkipCount{0};
 std::atomic<int> gVideoLayerSkipCount{0};
 std::atomic<int> gOtherLayerSkipCount{0};   // 播放画面取帧（同面板：必须在 VR 渲染线程调）
+/*
+ * 交换链等图的三种结果分别计数（2026-10-09 定位黑纹时补）。
+ *
+ * 为什么必须分开数：`XR_TIMEOUT_EXPIRED` 是**正值 1**，而 `XR_FAILED()` 只判负值 ——
+ * 原来是 `if (XR_FAILED(WaitSwapchainImage(...)))`，超时会被当成"成功"，
+ * 于是照样往一张**没等到**的图里写、照样 release → 合成器可能正在读它 → 横向撕裂。
+ * 更糟的是超时分支不执行，跳过计数器永远是 0，日志里「视频层 0」把证据也吞了。
+ */
+std::atomic<int> gSwapWaitOk{0};
+std::atomic<int> gSwapWaitTimeout{0};
+std::atomic<int> gSwapWaitError{0};
+std::atomic<int> gEyeWaitTimeout{0};    // 眼缓冲（投影层）单独计数
+
+/* 无限等待的兜底定义（个别版本的 openxr.h 不带这个宏） */
+#ifndef XR_INFINITE_DURATION
+#define XR_INFINITE_DURATION 0x7fffffffffffffffLL
+#endif
 std::function<void()> gOsdUpdate;     // 控制条取帧（同上）
 std::function<void()> gMenuUpdate;    // 展开菜单取帧（同上）
 std::function<void()> gDanmakuUpdate; // 弹幕层取帧
@@ -2385,16 +2402,32 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
      */
     wi.timeout = (XrDuration) (gSwapWaitTimeoutMs.load() * 1000000);
     const auto eyeWaitT0 = std::chrono::steady_clock::now();
-    const XrResult wr = api.WaitSwapchainImage(eye.handle, &wi);
+    XrResult wr = api.WaitSwapchainImage(eye.handle, &wi);
+    /*
+     * 眼缓冲这条等待**有和视频层一模一样的 bug**（2026-10-09 一起修）：
+     * `XR_TIMEOUT_EXPIRED` 是正值，`XR_FAILED()` 判不出来 → 超时被当成成功，
+     * 于是往一张还没拿到所有权的图里画。
+     *
+     * 这一条比视频层更值得怀疑：眼缓冲就是**投影层**，覆盖整个视野 ——
+     * 与父亲描述的"黑纹贯穿整个 VR 空间"吻合。规范要求超时后这张图仍处于
+     * acquired 状态，不能写、不能 release，只能继续等同一张图。
+     */
+    if (wr == XR_TIMEOUT_EXPIRED) {
+        gEyeWaitTimeout.fetch_add(1);
+        wi.timeout = XR_INFINITE_DURATION;
+        wr = api.WaitSwapchainImage(eye.handle, &wi);
+    }
     gSwapWaitMs += std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - eyeWaitT0).count();
     if (XR_FAILED(wr)) {
         gEyeSkipCount.fetch_add(1);
+        gSwapWaitError.fetch_add(1);
         LOGE("等图失败（眼 %d）：%d", eyeIndex, (int) wr);
         XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
         api.ReleaseSwapchainImage(eye.handle, &ri);
         return false;
     }
+    gSwapWaitOk.fetch_add(1);
 
     if (imageIndex >= eye.fbos.size() || eye.fbos[imageIndex] == 0) {
         LOGE("FBO 下标越界（眼 %d，index=%u，共 %zu）", eyeIndex, imageIndex, eye.fbos.size());
@@ -3017,16 +3050,41 @@ void drawOverlayIntoVideoLayer(VrContext &c, GLuint tex,
     glDisable(GL_BLEND);
 }
 
-bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
-                     bool videoLayerPass) {
-    // 视频层铺满整块、不透明；弹幕层是一层透明浮层，清屏必须透明，
-    // 否则它会变成一块黑板把视频整个盖住（父亲 2026-10-06 晚实测现象）。
-    if (!L.built || tex == 0 || c.program == 0) return false;
-
+/**
+ * 取一张"可以安全写"的交换链图像：acquire + wait，并按 OpenXR 规范处理超时。
+ *
+ * 2026-10-09 修（定位黑纹时发现的协议违规）：
+ *
+ *  `XR_TIMEOUT_EXPIRED` 是**正值 1**，而 `XR_FAILED()` 只判负值。原来写成
+ *  `if (XR_FAILED(WaitSwapchainImage(...)))` → 超时被当成"成功"，代码继续
+ *  往一张**没等到所有权**的图里写，末尾照常 release。合成器可能正在读这张图
+ *  → 画面被半途改写 → 横向撕裂/黑纹。而且超时分支不执行，
+ *  跳过计数永远是 0，日志把证据也吞了。
+ *
+ * 正确语义（规范要求）：超时后这张图**仍处于 acquired 状态**，
+ * 应用不能写、也不能把它 release 掉，只能**继续等待同一张图**直到成功。
+ * 所以这里超时后改用无限等待 —— 会真实反映"到底卡了多久"（计进等交换链耗时），
+ * 而不是假装成功往下画。
+ *
+ * 返回 true 时 outIdx 是一张已完成 wait、可以写的图；false 表示本帧放弃该层。
+ */
+bool acquireWritableImage(VrContext &c, VideoLayerBuf &L, uint32_t *outIdx,
+                          bool videoLayerPass) {
+    (void) c;
     XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
     uint32_t idx = 0;
-    if (XR_FAILED(api.AcquireSwapchainImage(L.handle, &ai, &idx))) return false;
-    if (idx >= L.fbos.size()) return false;
+    if (XR_FAILED(api.AcquireSwapchainImage(L.handle, &ai, &idx))) {
+        gSwapWaitError.fetch_add(1);
+        return false;
+    }
+    if (idx >= L.fbos.size()) {
+        /* acquire 成功但索引异常：必须把它还回去，否则交换链状态被卡死 */
+        gSwapWaitError.fetch_add(1);
+        XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+        api.ReleaseSwapchainImage(L.handle, &ri);
+        return false;
+    }
+
     XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
     /*
      * 原来写的是无限等待（父亲 2026-10-08 定案）：
@@ -3035,10 +3093,24 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
      * 改成 4ms（一帧预算的三分之一）：超时跳过这一帧的图层提交，场景照常跑。
      */
     wi.timeout = (XrDuration) (gSwapWaitTimeoutMs.load() * 1000000);
-    const auto swapWaitT0 = std::chrono::steady_clock::now();
-    if (XR_FAILED(api.WaitSwapchainImage(L.handle, &wi))) {
-        gSwapWaitMs += std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - swapWaitT0).count();
+    const auto t0 = std::chrono::steady_clock::now();
+    XrResult wr = api.WaitSwapchainImage(L.handle, &wi);
+
+    if (wr == XR_TIMEOUT_EXPIRED) {
+        /*
+         * 真的超时了 —— 这一句以前永远走不到（被 XR_FAILED 漏掉）。
+         * 计数 + 继续等同一张图（规范要求，不能 release）。
+         */
+        gSwapWaitTimeout.fetch_add(1);
+        wi.timeout = XR_INFINITE_DURATION;
+        wr = api.WaitSwapchainImage(L.handle, &wi);
+    }
+
+    gSwapWaitMs += std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - t0).count();
+
+    if (XR_FAILED(wr)) {
+        gSwapWaitError.fetch_add(1);
         if (videoLayerPass) {
             gVideoLayerSkipCount.fetch_add(1);
         } else {
@@ -3048,15 +3120,38 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
         api.ReleaseSwapchainImage(L.handle, &ri);
         return false;
     }
-    gSwapWaitMs += std::chrono::duration<double, std::milli>(
-            std::chrono::steady_clock::now() - swapWaitT0).count();
+    gSwapWaitOk.fetch_add(1);
+    *outIdx = idx;
+    return true;
+}
+
+bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
+                     bool videoLayerPass) {
+    // 视频层铺满整块、不透明；弹幕层是一层透明浮层，清屏必须透明，
+    // 否则它会变成一块黑板把视频整个盖住（父亲 2026-10-06 晚实测现象）。
+    if (!L.built || tex == 0 || c.program == 0) return false;
+
+    uint32_t idx = 0;
+    if (!acquireWritableImage(c, L, &idx, videoLayerPass)) return false;
 
     ensureVideoLayerQuad(c);
 
     glBindFramebuffer(GL_FRAMEBUFFER, L.fbos[idx]);
     glViewport(0, 0, L.width, L.height);
+    /*
+     * GL 状态显式清零（2026-10-09，ChatGPT 复查时指出）：
+     *
+     * 原来只关了深度和混合，没碰 GL_SCISSOR_TEST / GL_STENCIL_TEST / glColorMask。
+     * 这几个状态都会**限制写入区域** —— 前面眼缓冲或界面 pass 留下的裁剪/写掩码
+     * 一旦泄漏到这里，glClear 与 glDrawArrays 就只作用在一部分区域上，
+     * 交换链里剩下的区域保留旧内容 → 表现为横条状的"没更新"。
+     * 上下文是我们自己的，但**不能依赖"上一个 pass 应该恢复了状态"这种隐含约定**。
+     */
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_STENCIL_TEST);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_BLEND);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     glClearColor(0.f, 0.f, 0.f, videoLayerPass ? 1.f : 0.f);
     glClear(GL_COLOR_BUFFER_BIT);
 
@@ -3150,33 +3245,15 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
  */
 bool fillVideoLayerBlack(VrContext &c, VideoLayerBuf &L) {
     if (!L.built || c.program == 0) return false;
-    XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
     uint32_t idx = 0;
-    if (XR_FAILED(api.AcquireSwapchainImage(L.handle, &ai, &idx))) return false;
-    if (idx >= L.fbos.size()) return false;
-    XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
-    /*
-     * 原来写的是无限等待（父亲 2026-10-08 定案）：
-     * 系统合成器没准备好这块图时，渲染线程就卡在这里等，一卡就 10~30ms，
-     * 帧率从 72 掉到 50，头一转动就抖。
-     * 改成 4ms（一帧预算的三分之一）：超时跳过这一帧的图层提交，场景照常跑。
-     */
-    wi.timeout = (XrDuration) (gSwapWaitTimeoutMs.load() * 1000000);
-    const auto swapWaitT0 = std::chrono::steady_clock::now();
-    if (XR_FAILED(api.WaitSwapchainImage(L.handle, &wi))) {
-        gSwapWaitMs += std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - swapWaitT0).count();
-        gVideoLayerSkipCount.fetch_add(1);
-        XrSwapchainImageReleaseInfo ri0{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
-        api.ReleaseSwapchainImage(L.handle, &ri0);
-        return false;
-    }
-    gSwapWaitMs += std::chrono::duration<double, std::milli>(
-            std::chrono::steady_clock::now() - swapWaitT0).count();
+    if (!acquireWritableImage(c, L, &idx, true)) return false;
     glBindFramebuffer(GL_FRAMEBUFFER, L.fbos[idx]);
     glViewport(0, 0, L.width, L.height);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_STENCIL_TEST);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_BLEND);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     glClearColor(0.f, 0.f, 0.f, 1.f);   // 不透明黑
     glClear(GL_COLOR_BUFFER_BIT);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -3709,7 +3786,8 @@ void frameLoop(VrContext &c) {
                 LOGI("帧统计（均/峰 毫秒）：周期 %.1f/%.1f 视频 %.1f/%.1f 界面 %.1f/%.1f "
                      "双眼 %.1f/%.1f 收尾 %.1f/%.1f | 帧 %.1f/%.1f，%.0f 帧里 %d 帧超 11ms，"
                      "等交换链平均 %.2f｜当前参数 超采样 %.2f 超时 %dms 掩码 0x%x"
-                     "｜跳过提交 眼 %d 视频层 %d 其他层 %d｜同步档 %d 刷新率档 %d",
+                     "｜跳过提交 眼 %d 视频层 %d 其他层 %d｜同步档 %d 刷新率档 %d"
+                     "｜等图 成功 %d 超时 %d 眼超时 %d 错误 %d",
                      statPeriodMs / n, statPeriodMax,
                      statVideoMs / n, statVideoMax,
                      statUiMs / n, statUiMax,
@@ -3719,7 +3797,9 @@ void frameLoop(VrContext &c) {
                      (double) gSuperSample.load(), gSwapWaitTimeoutMs.load(),
                      gLayerMask.load(),
                      gEyeSkipCount.load(), gVideoLayerSkipCount.load(),
-                     gOtherLayerSkipCount.load(), gSyncMode.load(), gRefreshHz.load());
+                     gOtherLayerSkipCount.load(), gSyncMode.load(), gRefreshHz.load(),
+                     gSwapWaitOk.load(), gSwapWaitTimeout.load(), gEyeWaitTimeout.load(),
+                     gSwapWaitError.load());
                 statAccumMs = 0.0;
                 statMaxMs = 0.0;
                 statVideoMs = statVideoMax = 0.0;
@@ -3733,6 +3813,10 @@ void frameLoop(VrContext &c) {
                 gEyeSkipCount.store(0);
                 gVideoLayerSkipCount.store(0);
                 gOtherLayerSkipCount.store(0);
+                gSwapWaitOk.store(0);
+                gSwapWaitTimeout.store(0);
+                gEyeWaitTimeout.store(0);
+                gSwapWaitError.store(0);
                 statLast = now;
             }
         }
