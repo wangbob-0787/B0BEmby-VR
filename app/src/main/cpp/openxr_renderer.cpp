@@ -2688,7 +2688,8 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
         } else if (!c.blankLayer.submitted) {
             /*
              * 空屏层已提交时这里留空（2026-10-09）：那块暗色银幕改走独立层了，
-             * 位置一致、层次稳在海报墙下面；这里再画一份会把海报墙盖回去。
+             * 位置一致、层次稳在弹幕/海报墙/控制条/菜单下面；这里再画一份会把它们盖回去
+             * （父亲实测：控制条菜单被黑屏遮挡，就是这个原因）。
              * 独立层没建起来（blankLayer 失败）时仍走老路，银幕不会整个消失。
              */
             drawScreen(frontScreen(c), videoReady ? c.videoTex : 0, true);
@@ -3668,12 +3669,20 @@ void frameLoop(VrContext &c) {
         }
 
         /*
-         * 空屏层（2026-10-09）：只在「海报墙正走独立层」且「没在播放、也不是等待期」
-         * 时提交。这三个条件与 renderEye 里画暗色银幕那条分支的条件对齐，两边不会同时画。
-         * 目的：把原来画在投影层（最上面）的暗色银幕挪到海报墙下面，别再压住海报墙。
+         * 空屏层（2026-10-09，2026-10-09 晚扩条件）。
+         *
+         * 原来只在「海报墙正走独立层」时提交 —— 那天修的是"暗色银幕压住海报墙"。
+         * 父亲当天又报同源的第二例：「屏幕黑时展开控制条菜单，菜单被黑屏盖住」。
+         * 根子一模一样：投影层（眼缓冲）永远是最后一个提交 = 最上面，
+         * 而 renderEye 在"没视频、也不在等待期"时会把那块不透明暗色银幕画进投影层 ——
+         * 它是 26 米宽的大 quad，屏幕空间上正好压住近场那排控制条与菜单。
+         *
+         * 所以条件不再绑定海报墙：只要"没视频、也不在等待期"，空屏一律走独立层
+         * （独立层排在视频层的位置 = 最下面），投影层那条分支自然留空。
+         * 层次最终为：空屏 < 弹幕 < 海报墙 < 控制条 < 菜单 < 光柱。
          */
         c.blankLayer.submitted = false;
-        if (c.blankLayerOk && c.panelLayer.built && c.panelShown.load() &&
+        if (c.blankLayerOk &&
             !c.videoLayer.submitted && !c.spinnerWanted.load()) {
             if (buildQuadLayer(c, c.blankLayer, 64, 64, "空屏")) {
                 c.blankLayer.submitted = renderBlankScreenLayer(c, c.blankLayer);
