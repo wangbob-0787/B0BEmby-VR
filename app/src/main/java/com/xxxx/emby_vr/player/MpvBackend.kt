@@ -312,6 +312,23 @@ class MpvBackend(private val context: Context) {
         try { MPVLib.command(arrayOf("seek", sec.toString(), "absolute")) } catch (_: Throwable) {}
     }
 
+    /**
+     * 内核的缓冲档位（父亲 2026-10-09：控制条上的功能在 mpv 这条路上也要能用）。
+     *
+     * 系统播放器那边配的是 LoadControl 的缓冲上下限；内核走 mpv 自己的缓存策略，
+     * 所以这里把"档位"翻译成 mpv 的两个属性：
+     *  · cache-secs       —— 前后缓存多少秒（网络流靠它扛抖动）；
+     *  · demuxer-max-bytes —— 解复用器最多缓存多少字节。
+     * 运行中改这两个属性 mpv 会立刻生效，不用重起播。
+     */
+    fun applyBufferPreset(seconds: Int, maxBytesMb: Int) {
+        runCatching {
+            MPVLib.setPropertyInt("cache-secs", seconds.coerceIn(5, 600))
+            MPVLib.setPropertyInt("demuxer-max-bytes", (maxBytesMb.coerceIn(16, 2048)) * 1024 * 1024)
+            Log.i(TAG, "内核缓冲档位 → cache-secs=${seconds}s 上限=${maxBytesMb}MB")
+        }
+    }
+
     fun setSpeed(speed: Float) {
         try { MPVLib.setPropertyDouble("speed", speed.toDouble()) } catch (_: Throwable) {}
     }

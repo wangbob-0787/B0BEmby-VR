@@ -2230,8 +2230,24 @@ class MainActivity : ComponentActivity() {
          * 仅记录选择（下次走 Emby 取流的片源会用到），当前播放保持不动。
          */
         if (ctl.kernelActive) {
-            Log.i(TAG, "内核直链播放：画质档位对当前片源无效，不重起播（保持续播）")
-            hud("内核直链播放：画质由片源决定，已记录该档位")
+            /*
+             * 内核这条路上"画质"要真的能用（父亲 2026-10-09：控制条功能都要转过去）。
+             *
+             * 两种内核情形分开对待：
+             *  · 杜比视界（P5）：档位必须无效 —— 服务端转不了杜比视界，
+             *    切过去就是"只有声音没画面"，所以只记档位并提示；
+             *  · 普通片（因为选了图片字幕才走内核）：档位**真的生效** ——
+             *    清掉"走内核"的标记、回到系统播放器，由服务端按该码率出流。
+             */
+            if (com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource) {
+                Log.i(TAG, "杜比视界片源：画质档位无效（服务端转不了杜比视界），保持内核播放")
+                hud("杜比视界片源：画质由片源决定")
+                return
+            }
+            Log.i(TAG, "内核（图片字幕）→ 切画质：回到系统播放器，按该码率出流")
+            com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForImageSubs = false
+            hud("已按所选画质重新起播（图片字幕会关掉）")
+            replayKeepingPosition()
             return
         }
         replayKeepingPosition()
@@ -2264,8 +2280,22 @@ class MainActivity : ComponentActivity() {
          * 内核的缓存档位改用 mpv 的 `cache-secs`（若要接，走 mpv_ 透传即可）。
          */
         if (ctl.kernelActive) {
-            Log.i(TAG, "内核播放：缓冲档位对内核无效（走 mpv 缓存策略），不重起播（保持续播）")
-            hud("内核播放：缓冲由内核自己管理，已记录该档位")
+            /*
+             * 内核缓冲档位**真的下给 mpv**（父亲 2026-10-09）。
+             *
+             * 原来只是提示"无效"。现在翻译成 mpv 的 cache-secs / demuxer-max-bytes，
+             * 运行中改立刻生效，不用重起播。
+             */
+            val preset = com.xxxx.emby_vr.panel.BUFFER_PRESETS[bufferPresetIndex]
+            mpvBackend?.applyBufferPreset(
+                seconds = (preset.third / 1000).coerceAtLeast(15),
+                maxBytesMb = when (bufferPresetIndex) {
+                    0 -> 256
+                    1 -> 512
+                    else -> 1024
+                },
+            )
+            hud("内核缓冲已按「${preset.first}」调整")
             return
         }
         replayKeepingPosition()
