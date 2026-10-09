@@ -26,8 +26,15 @@ import java.io.File
  * | `swap_wait_ms` | 等交换链图像超时（毫秒，0~50） | 4 |
  * | `sync_mode` | 交回图像前的同步：0=只提交命令 1=等 GPU 画完 | 0 |
  * | `refresh_hz` | 刷新率档：0=自动（播放 72 / 界面 90）、72、90 | 0 |
- * | `layer_mask` | 层掩码：bit0 视频独立层 / bit1 弹幕层 / bit2 片名 logo | 7 |
- * | `video_layer` `danmaku_layer` `logo_layer` | 单层开关 0/1（写哪个改哪个位，其余保持默认） | — |
+ * | `layer_mask` | 层掩码 6 位：bit0 视频 / bit1 弹幕 / bit2 logo / bit3 海报墙 / bit4 控制条 / bit5 菜单 | 0x3F |
+ * | `video_layer` `danmaku_layer` `logo_layer` `panel_layer` `osd_layer` `menu_layer` | 单层开关 0/1（写哪个改哪个位，其余保持默认） | — |
+ * | `hide_projection` | 1=不提交投影层（只剩 quad 层），验证黑纹是否必须有投影层参与 | 0 |
+ * | `test_pattern` | 1=用固定测试图替代视频纹理，切断 mpv/MediaCodec/SurfaceTexture 输入链 | 0 |
+ * | `video_layer_max_w` | 视频层交换链宽度上限（0=按视频原分辨率），验证 4K 大图层是否本身是问题 | 0 |
+ * | `no_downsample` | 1=视频走单次纹理采样（关掉 4×4 高斯降采样分支） | 0 |
+ * | `no_jitter` | 1=抖动种子固定（排除逐帧变化的着色器输入） | 0 |
+ * | `force_rgba8` | 1=视频层交换链强制 GL_RGBA8（不试 sRGB） | 0 |
+ * | `no_postfx` | 1=画质增强与颜色调整全回中性 | 0 |
  * | `mpv_<属性>` | 透传给内核的同名属性，例如 `mpv_tone-mapping=spline` | — |
  * | `cmd` | 直接执行一条内核命令，例如 `cmd=screenshot-to-file <路径> video`（导出渲染画面，校色用） | — |
  *
@@ -45,6 +52,14 @@ object VrTuning {
     const val KEY_LAYER_MASK = 3
     const val KEY_SYNC_MODE = 4
     const val KEY_REFRESH_HZ = 5
+    /* 黑纹诊断开关（2026-10-09）：与原生 nativeSetTuning 的 case 6..12 一一对应 */
+    const val KEY_HIDE_PROJECTION = 6
+    const val KEY_TEST_PATTERN = 7
+    const val KEY_VIDEO_LAYER_MAX_W = 8
+    const val KEY_NO_DOWNSAMPLE = 9
+    const val KEY_NO_JITTER = 10
+    const val KEY_FORCE_RGBA8 = 11
+    const val KEY_NO_POSTFX = 12
 
     /** 上次应用的配置原文，只有变化才动手（避免每秒重复设置） */
     private var lastRaw: Map<String, String> = emptyMap()
@@ -158,8 +173,10 @@ object VrTuning {
             applied += if (it >= 1f) "同步档 glFinish" else "同步档 glFlush"
         }
         /*
-         * 层掩码：写了 `layer_mask` 就整份替换（默认 7）；
+         * 层掩码：写了 `layer_mask` 就整份替换（默认 0x3F 全开）；
          * 只写了单层开关，就在默认值上改那一位。
+         * 关掉某位 = 该层**既不提交、也不退回画进眼缓冲**（彻底不画），
+         * 这样"减少合成图层数"的阶梯实验才是干净对照（2026-10-09 扩展）。
          */
         val maskText = raw["layer_mask"]
         var wrote = false
@@ -167,8 +184,11 @@ object VrTuning {
             wrote = true
             maskText.toIntOrNull() ?: maskText.removePrefix("0x").toIntOrNull(16)
         } else {
-            var m = 7
-            listOf("video_layer" to 1, "danmaku_layer" to 2, "logo_layer" to 4).forEach { (n, b) ->
+            var m = 0x3F
+            listOf(
+                "video_layer" to 1, "danmaku_layer" to 2, "logo_layer" to 4,
+                "panel_layer" to 8, "osd_layer" to 16, "menu_layer" to 32,
+            ).forEach { (n, b) ->
                 raw[n]?.toIntOrNull()?.let { v ->
                     m = if (v != 0) m or b else m and b.inv()
                     wrote = true
@@ -176,6 +196,27 @@ object VrTuning {
             }
             m
         }
+        /*
+         * 黑纹诊断开关（2026-10-09）：每一条都对应 ChatGPT 复盘里的一个判定性实验。
+         * 全部改文件即生效，不用重编重装 —— 用户戴着头显就能一档一档试。
+         */
+        fun flag(name: String, key: Int, label: String) {
+            raw[name]?.toFloatOrNull()?.let {
+                VrNative.setTuning(key, it)
+                applied += "$label ${if (it != 0f) "开" else "关"}"
+            }
+        }
+        flag("hide_projection", KEY_HIDE_PROJECTION, "投影层不提交（只留 quad 层）")
+        flag("test_pattern", KEY_TEST_PATTERN, "固定测试图（切断解码输入链）")
+        raw["video_layer_max_w"]?.toFloatOrNull()?.let {
+            VrNative.setTuning(KEY_VIDEO_LAYER_MAX_W, it)
+            applied += "视频层宽度上限 ${it.toInt()}（0=原分辨率）"
+        }
+        flag("no_downsample", KEY_NO_DOWNSAMPLE, "视频降采样关闭")
+        flag("no_jitter", KEY_NO_JITTER, "抖动固定")
+        flag("force_rgba8", KEY_FORCE_RGBA8, "视频层强制 GL_RGBA8")
+        flag("no_postfx", KEY_NO_POSTFX, "画质增强全关")
+
         if (!wrote) return applied
         if (mask != null) {
             VrNative.setTuning(KEY_LAYER_MASK, mask.toFloat())

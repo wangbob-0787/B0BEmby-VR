@@ -307,6 +307,7 @@ uniform vec2 uTexel;          // 视频纹理一个像素的 UV 步长（锐化�
 uniform vec2 uScreenStep;     // 银幕上一个屏幕像素对应的 UV 步长（降采样用）
 uniform int uDownsample;      // 1 = 视频降采样（4×4 盒式平均）
 uniform float uJitter;        // 每帧变的抖动种子（打散 8 位量化的色带）
+uniform int uTestPattern;     // 1 = 用固定测试图替代视频纹理（黑纹诊断，2026-10-09）
 uniform samplerExternalOES uTexture;
 out vec4 fragColor;
 
@@ -319,7 +320,29 @@ float hash21(vec2 p) {
 
 void main() {
     vec4 outColor;
-    if (uUseTexture == 1) {
+    if (uTestPattern == 1) {
+        /*
+         * 固定测试图（2026-10-09 黑纹诊断）：完全不依赖视频输入链路。
+         *
+         * 用途：把 mpv / MediaCodec / SurfaceTexture 这条输入链整个切掉，
+         * 只保留"写交换链 + 提交图层"的路径。若测试图也有黑纹 → 黑纹不需要视频链路；
+         * 若测试图干净 → 视频输入链路（外部纹理/OES 采样/帧交付）是必要条件。
+         * 图里带细横线与竖条，便于发现"横条状未更新"。
+         */
+        float bars = floor(vUv.x * 8.0);
+        vec3 col = vec3(0.5);
+        if (bars < 1.0)      col = vec3(1.0, 1.0, 1.0);
+        else if (bars < 2.0) col = vec3(1.0, 1.0, 0.0);
+        else if (bars < 3.0) col = vec3(0.0, 1.0, 1.0);
+        else if (bars < 4.0) col = vec3(0.0, 1.0, 0.0);
+        else if (bars < 5.0) col = vec3(1.0, 0.0, 1.0);
+        else if (bars < 6.0) col = vec3(1.0, 0.0, 0.0);
+        else if (bars < 7.0) col = vec3(0.0, 0.0, 1.0);
+        else                 col = vec3(0.0);
+        float lines = step(0.97, fract(vUv.y * 100.0));
+        col = mix(col, vec3(0.0), lines * 0.85);
+        outColor = vec4(col, 1.0);
+    } else if (uUseTexture == 1) {
         vec4 c;
         if (uDownsample == 1) {
             /*
@@ -560,6 +583,7 @@ struct VrContext {
     GLint screenStepLoc = -1;      // uScreenStep：屏幕像素对应的 UV 步长（降采样）
     GLint downLoc = -1;            // uDownsample：是否对视频做盒式降采样
     GLint jitterLoc = -1;          // uJitter：抖动种子
+    GLint testPatternLoc = -1;     // uTestPattern：固定测试图（黑纹诊断）
     GLuint vbo = 0;                // 单位方块（面板 / 光点）
     /*
      * 手柄放着不动就把激光收起来（父亲 2026-10-07）。
@@ -915,6 +939,18 @@ std::atomic<int> gSwapWaitTimeout{0};
 std::atomic<int> gSwapWaitError{0};
 std::atomic<int> gEyeWaitTimeout{0};    // 眼缓冲（投影层）单独计数
 std::atomic<int> gLastLayerCount{0};    // 上一帧实际提交给 xrEndFrame 的图层数（阶梯实验要看这个）
+
+/*
+ * 黑纹诊断用的运行时开关（2026-10-09 父亲要求：多给参数，就能多做实验，不用反复编译）。
+ * 全部可在 vr-tuning.txt 里改，每秒生效。
+ */
+std::atomic<int> gHideProjection{0};    // 1 = 不提交投影层（只留 quad 层）—— ChatGPT 点名的判定实验
+std::atomic<int> gTestPattern{0};       // 1 = 用固定测试图替代视频纹理（切断解码输入链）
+std::atomic<int> gVideoLayerMaxW{0};    // >0 = 视频层交换链宽度上限（0=按视频原分辨率）
+std::atomic<int> gNoDownsample{0};      // 1 = 关掉视频降采样分支（只做单次纹理采样）
+std::atomic<int> gNoJitter{0};          // 1 = 抖动种子固定（排除逐帧变化输入）
+std::atomic<int> gForceRgba8{0};        // 1 = 视频层交换链强制 GL_RGBA8（不试 sRGB）
+std::atomic<int> gNoPostfx{0};          // 1 = 关掉全部画质增强与颜色调整
 
 /* 无限等待的兜底定义（个别版本的 openxr.h 不带这个宏） */
 #ifndef XR_INFINITE_DURATION
@@ -2471,6 +2507,15 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
         auto drawScreen = [&](const ScreenPlacement &place, unsigned tex, bool isVideo = false) {
             const Mat4 mvp = multiply(multiply(proj, view4), placementModel(place));
             glUseProgram(c.program);
+            /* 这一路永远不用测试图（2026-10-09 诊断开关，只在视频独立层开） */
+            if (c.testPatternLoc >= 0) glUniform1i(c.testPatternLoc, 0);
+            if (gNoPostfx.load() != 0) {
+                if (c.brightLoc >= 0) glUniform1f(c.brightLoc, 0.f);
+                if (c.contrastLoc >= 0) glUniform1f(c.contrastLoc, 1.f);
+                if (c.satLoc >= 0) glUniform1f(c.satLoc, 1.f);
+                if (c.sharpenLoc >= 0) glUniform1f(c.sharpenLoc, 0.f);
+                if (c.tempLoc >= 0) glUniform1f(c.tempLoc, 0.f);
+            }
             glUniformMatrix4fv(c.mvpLoc, 1, GL_FALSE, mvp.m);
             if (c.circleLoc >= 0) glUniform1i(c.circleLoc, 0);   // 屏是方的，不做圆形裁剪
             /*
@@ -2484,7 +2529,10 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
                 glUniform1i(c.texLoc, 0);
                 glUniform1i(c.useTexLoc, 1);
                 if (c.expandLoc >= 0) glUniform1i(c.expandLoc, 0);
-                if (c.downLoc >= 0) glUniform1i(c.downLoc, isVideo ? 1 : 0);
+                /* no_downsample：强制走单次纹理采样（2026-10-09 诊断开关） */
+                if (c.downLoc >= 0) {
+                    glUniform1i(c.downLoc, (isVideo && gNoDownsample.load() == 0) ? 1 : 0);
+                }
                 if (isVideo && c.screenStepLoc >= 0) {
                     /*
                      * 银幕上一个屏幕像素对应多大一块 UV —— 按投影的水平视角、银幕宽度、
@@ -2947,9 +2995,12 @@ bool buildQuadLayer(VrContext &c, VideoLayerBuf &L, int32_t w, int32_t h,
      * 格式先按 sRGB 试（与主画面输出一致：我们在着色器里已经把值转成线性，
      * 由运行时再编码回 sRGB）；不支持就退回普通 8 位。
      */
+    /* force_rgba8：只试 GL_RGBA8，跳过 sRGB（2026-10-09 诊断开关） */
     const int64_t candidates[2] = {GL_SRGB8_ALPHA8, GL_RGBA8};
+    const int candN = (gForceRgba8.load() != 0) ? 1 : 2;
     bool created = false;
-    for (int64_t fmt : candidates) {
+    for (int ci = 0; ci < candN; ci++) {
+        const int64_t fmt = candidates[gForceRgba8.load() != 0 ? 1 : ci];
         XrSwapchainCreateInfo sci{XR_TYPE_SWAPCHAIN_CREATE_INFO};
         sci.arraySize = 1;
         sci.mipCount = 1;
@@ -3168,16 +3219,25 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
     if (c.expandLoc >= 0) glUniform1i(c.expandLoc, 0);
     if (c.downLoc >= 0) glUniform1i(c.downLoc, 0);   // 这一层不缩，不做降采样
     glUniform4f(c.colorLoc, 1.f, 1.f, 1.f, 1.f);
-    /* 画面调整值与主画面保持一致 */
-    if (c.brightLoc >= 0) glUniform1f(c.brightLoc, c.brightness.load());
-    if (c.contrastLoc >= 0) glUniform1f(c.contrastLoc, c.contrast.load());
-    if (c.satLoc >= 0) glUniform1f(c.satLoc, c.saturation.load());
-    if (c.sharpenLoc >= 0) glUniform1f(c.sharpenLoc, c.sharpen.load());
-    if (c.tempLoc >= 0) glUniform1f(c.tempLoc, c.temperature.load());
+    /* 固定测试图只在"视频层"这一路开（2026-10-09 诊断开关） */
+    if (c.testPatternLoc >= 0) {
+        glUniform1i(c.testPatternLoc, (videoLayerPass && gTestPattern.load() != 0) ? 1 : 0);
+    }
+    /* 画面调整值与主画面保持一致；no_postfx 时全部回中性（排除画质分支） */
+    const bool fxOff = gNoPostfx.load() != 0;
+    if (c.brightLoc >= 0) glUniform1f(c.brightLoc, fxOff ? 0.f : c.brightness.load());
+    if (c.contrastLoc >= 0) glUniform1f(c.contrastLoc, fxOff ? 1.f : c.contrast.load());
+    if (c.satLoc >= 0) glUniform1f(c.satLoc, fxOff ? 1.f : c.saturation.load());
+    if (c.sharpenLoc >= 0) glUniform1f(c.sharpenLoc, fxOff ? 0.f : c.sharpen.load());
+    if (c.tempLoc >= 0) glUniform1f(c.tempLoc, fxOff ? 0.f : c.temperature.load());
     if (c.texelLoc >= 0) glUniform2f(c.texelLoc, c.texelX.load(), c.texelY.load());
     if (c.jitterLoc >= 0) {
-        static uint32_t layerJitter = 0;
-        glUniform1f(c.jitterLoc, (float) (layerJitter++ % 64u) * 1.7f);
+        if (gNoJitter.load() != 0) {
+            glUniform1f(c.jitterLoc, 0.f);
+        } else {
+            static uint32_t layerJitter = 0;
+            glUniform1f(c.jitterLoc, (float) (layerJitter++ % 64u) * 1.7f);
+        }
     }
 
     glBindVertexArray(c.videoLayerVao);
@@ -3483,8 +3543,13 @@ void frameLoop(VrContext &c) {
             int32_t vh = (int32_t) lroundf(1.f / fmaxf(1e-6f, c.texelY.load()));
             constexpr int32_t kMaxVideoW = 3840;
             constexpr int32_t kMaxVideoH = 2160;
-            if (vw > kMaxVideoW || vh > kMaxVideoH) {
-                const float k = fminf((float) kMaxVideoW / (float) vw,
+            int32_t capW = kMaxVideoW;
+            /* video_layer_max_w：把视频层交换链压到指定宽度（0 = 按视频原分辨率）。
+             * 用来验证"4K 大图层是否本身就是问题"（2026-10-09 诊断开关）。 */
+            const int32_t userCap = gVideoLayerMaxW.load();
+            if (userCap > 0) capW = userCap;
+            if (vw > capW || vh > kMaxVideoH) {
+                const float k = fminf((float) capW / (float) vw,
                                       (float) kMaxVideoH / (float) vh);
                 vw = (int32_t) ((float) vw * k);
                 vh = (int32_t) ((float) vh * k);
@@ -3785,7 +3850,9 @@ void frameLoop(VrContext &c) {
             layerPtrs[layerCount++] =
                     reinterpret_cast<const XrCompositionLayerBaseHeader *>(&menuQuad);
         }
-        if (rendered) {
+        /* 投影层可关（2026-10-09 诊断开关）：验证"黑纹是否必须有投影层参与"。
+         * 关掉后只剩 quad 层 —— 注意此时光柱/光标也会一起消失，属预期。 */
+        if (rendered && gHideProjection.load() == 0) {
             layerPtrs[layerCount++] =
                     reinterpret_cast<const XrCompositionLayerBaseHeader *>(&layer);
         }
@@ -3986,6 +4053,7 @@ void renderThreadMain() {
         c.screenStepLoc = glGetUniformLocation(c.program, "uScreenStep");
         c.downLoc = glGetUniformLocation(c.program, "uDownsample");
         c.jitterLoc = glGetUniformLocation(c.program, "uJitter");
+        c.testPatternLoc = glGetUniformLocation(c.program, "uTestPattern");
         makeQuadBuffers(c);
         makeRayBuffer(c);
         makeTriBuffer(c);
@@ -4440,6 +4508,41 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
         case 4:
             gSyncMode.store((int) value);
             LOGI("调参 → 交回图像同步档 %d（0=glFlush 1=glFinish）", (int) value);
+            break;
+        /*
+         * 6..12：黑纹诊断开关（2026-10-09 父亲要求"多给参数就能多做实验"）。
+         * 每一档都对应 ChatGPT 复盘里一个判定性实验，改文件即生效、不用重编。
+         */
+        case 6:
+            gHideProjection.store((int) value);
+            LOGI("调参 → 投影层 %s（关掉后只剩 quad 层）",
+                 (int) value ? "不提交" : "提交");
+            break;
+        case 7:
+            gTestPattern.store((int) value);
+            LOGI("调参 → 固定测试图 %s（切断 mpv/MediaCodec/SurfaceTexture 输入链）",
+                 (int) value ? "开" : "关");
+            break;
+        case 8:
+            gVideoLayerMaxW.store((int) value);
+            LOGI("调参 → 视频层宽度上限 %d（0=按视频原分辨率；下次重建生效）", (int) value);
+            break;
+        case 9:
+            gNoDownsample.store((int) value);
+            LOGI("调参 → 视频降采样分支 %s", (int) value ? "关（只做单次采样）" : "开");
+            break;
+        case 10:
+            gNoJitter.store((int) value);
+            LOGI("调参 → 抖动 %s", (int) value ? "固定（排除逐帧变化输入）" : "逐帧变化");
+            break;
+        case 11:
+            gForceRgba8.store((int) value);
+            LOGI("调参 → 视频层交换链格式 %s（下次重建生效）",
+                 (int) value ? "强制 GL_RGBA8" : "优先 sRGB");
+            break;
+        case 12:
+            gNoPostfx.store((int) value);
+            LOGI("调参 → 画质增强 %s", (int) value ? "全关" : "开");
             break;
         default:
             LOGI("调参 → 未知参数 key=%d（忽略）", (int) key);
