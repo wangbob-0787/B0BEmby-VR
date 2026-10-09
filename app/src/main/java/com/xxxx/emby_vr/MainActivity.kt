@@ -1737,7 +1737,18 @@ class MainActivity : ComponentActivity() {
              * 用户选过字幕 → 把那一条整条取回来自己画（父亲 2026-10-07）。
              * 没选 → 清掉自绘，交给播放器按语言偏好自动挑。
              */
-            selectedSubtitleIndex?.let { loadSubtitleTrack(it) }
+            selectedSubtitleIndex?.let { idx ->
+                /*
+                 * 起播恢复上次选的字幕（2026-10-09）：内封文字轨交给播放器就地解析（秒出），
+                 * 其余（外挂/图形）仍走服务端取流那条路。
+                 */
+                val st = currentStreams.firstOrNull { it.index == idx }
+                if (st != null && st.isExternal != true && !isImageSubtitle(st)) {
+                    selectEmbeddedTextTrack(idx)
+                } else {
+                    loadSubtitleTrack(idx)
+                }
+            }
                 ?: run {
                     subtitleCues = emptyList()
                     subtitleCueStream = null
@@ -1956,24 +1967,51 @@ class MainActivity : ComponentActivity() {
                     danmakuView?.setSubtitle("")
                 } else {
                     /*
-                     * 普通路径（非 Profile 5）：图形字幕只能靠服务端烧进画面（父亲 2026-10-09 定）。
+                     * 普通路径（非 Profile 5）分两种情况（父亲 2026-10-09）。
                      *
-                     * 图形字幕是图片不是文字，服务端转文字给的是空文件（实测 200 但 0 字节），
-                     * 客户端也没有画它的能力 —— 唯一出路是请服务端把这条字幕编进画面，
-                     * 代价必然是转码。所以：选中图形字幕 → 立标记后重播（走转码）；
-                     * 取消（点已勾的那条）或改选文字字幕 → 清标记后重播（回直送）。
+                     * ① 内封文字字幕 → **让播放器自己从原片里解析**（秒出）。
+                     *    官方客户端就是这个机制：直连播放时字幕是客户端从同一路流里
+                     *    就地解出来的，服务端不参与，所以一点就有。我们原来一律走
+                     *    "请服务端把内封轨挖成 SRT"，而片源在网盘上，服务端要读完整片
+                     *    才挖得出来（实测 30 秒都挖不完，我们一断服务端就取消任务）——
+                     *    这就是"切到别的字幕项都没有字幕"的原因。
+                     * ② 图形字幕（PGS）→ 只能请服务端烧进画面（必然转码），
+                     *    选中时立标记、取消或换文字字幕时清掉 → 回直送。
                      */
                     val stream = currentStreams.firstOrNull { it.index == selectedSubtitleIndex }
                     val image = stream != null && isImageSubtitle(stream)
+                    val embeddedText = stream != null && stream.isExternal != true && !image
                     val wasBurning = com.xxxx.emby_vr.player.PlaybackFlags.burnSubtitleIndex != null
                     com.xxxx.emby_vr.player.PlaybackFlags.burnSubtitleIndex =
                         if (image) selectedSubtitleIndex else null
-                    if (image) {
-                        Log.i(TAG, "图形字幕 ${selectedSubtitleIndex} → 请服务端烧进画面（自动转码）")
-                    } else if (wasBurning) {
-                        Log.i(TAG, "取消图形字幕 → 回直送（不再转码）")
+                    when {
+                        image -> {
+                            Log.i(TAG, "图形字幕 ${selectedSubtitleIndex} → 请服务端烧进画面（自动转码）")
+                            replayKeepingPosition()
+                        }
+                        wasBurning -> {
+                            Log.i(TAG, "取消图形字幕 → 回直送（不再转码）")
+                            replayKeepingPosition()
+                        }
+                        embeddedText -> {
+                            subtitleCues = emptyList()
+                            subtitleCueStream = null
+                            selectEmbeddedTextTrack(selectedSubtitleIndex!!)
+                        }
+                        selectedSubtitleIndex == null -> {
+                            // 关字幕：把播放器的文字轨一起关掉，并清掉屏上的字
+                            player?.trackSelectionParameters = player!!.trackSelectionParameters
+                                .buildUpon()
+                                .setTrackTypeDisabled(
+                                    androidx.media3.common.C.TRACK_TYPE_TEXT, true,
+                                )
+                                .build()
+                            subtitleNow = ""
+                            danmakuView?.setSubtitle("")
+                            Log.i(TAG, "字幕关闭：播放器文字轨已关")
+                        }
+                        else -> loadSubtitleTrack(selectedSubtitleIndex!!)
                     }
-                    replayKeepingPosition()
                 }
             }
             com.xxxx.emby_vr.panel.MenuKind.AUDIO -> {
@@ -2792,6 +2830,53 @@ class MainActivity : ComponentActivity() {
 
     /** 本次等待期从什么时候开始（算最短停留用） */
     private var waitingStartedAtMs = 0L
+
+    /**
+     * 让播放器选中某条**内封文字字幕**（父亲 2026-10-09）。
+     *
+     * 为什么走播放器：直连播放时原片就在播放器手里，内封字幕它能就地解出来（毫秒级），
+     * 官方客户端就是这么做的。走服务端则要在网盘上把整片读一遍，几十秒起步。
+     *
+     * 序号对应：Emby 的内封文字轨内嵌在文件里，顺序与文件一致；播放器报的文字轨
+     * 也按文件顺序，所以第 N 条内封文字轨 → 播放器第 N 条文字轨（跨分组拉平）。
+     * 找不到（例如这条其实是外挂轨）就退回服务端取流那条老路。
+     */
+    private fun selectEmbeddedTextTrack(streamIndex: Int) {
+        val p = player ?: return
+        val embedded = currentStreams
+            .filter {
+                it.type.equals("Subtitle", true) && it.isExternal != true && !isImageSubtitle(it)
+            }
+            .sortedBy { it.index ?: 0 }
+        val pos = embedded.indexOfFirst { it.index == streamIndex }
+        if (pos < 0) {
+            Log.i(TAG, "字幕 $streamIndex 不是内封文字轨 → 退回服务端取流")
+            loadSubtitleTrack(streamIndex)
+            return
+        }
+        val textGroups = p.currentTracks.groups.filter {
+            it.type == androidx.media3.common.C.TRACK_TYPE_TEXT
+        }
+        var counter = 0
+        for (g in textGroups) {
+            for (ti in 0 until g.length) {
+                if (counter == pos) {
+                    val override = androidx.media3.common.TrackSelectionOverride(
+                        g.mediaTrackGroup, intArrayOf(ti),
+                    )
+                    p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+                        .setTrackTypeDisabled(androidx.media3.common.C.TRACK_TYPE_TEXT, false)
+                        .setOverrideForType(override)
+                        .build()
+                    Log.i(TAG, "内封字幕 $streamIndex → 播放器文字轨第 $pos 条（就地解析，秒出）")
+                    return
+                }
+                counter++
+            }
+        }
+        Log.w(TAG, "播放器还没报出内封文字轨（共 ${textGroups.size} 组）→ 退回服务端取流")
+        loadSubtitleTrack(streamIndex)
+    }
 
     /** 内核内嵌字幕的取文轮询（Profile 5 专用，2026-10-09） */
     private var mpvSubtitleJob: kotlinx.coroutines.Job? = null
