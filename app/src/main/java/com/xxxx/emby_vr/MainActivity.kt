@@ -2095,7 +2095,16 @@ class MainActivity : ComponentActivity() {
             it.type.equals("Subtitle", ignoreCase = true) && isDanmakuStream(it)
         }
         subtitleDanmakuRow = hasDanmakuTrack
-        val subs = currentStreams.filter { it.type == "Subtitle" && !isDanmakuStream(it) }
+        val subs = currentStreams.filter {
+            it.type == "Subtitle" && !isDanmakuStream(it) && !isImageSubtitle(it)
+        }
+        val skipped = currentStreams.filter {
+            it.type == "Subtitle" && !isDanmakuStream(it) && isImageSubtitle(it)
+        }
+        if (skipped.isNotEmpty()) {
+            Log.i(TAG, "字幕菜单：跳过 ${skipped.size} 条图片型字幕（服务端转不出文字）：" +
+                skipped.joinToString(" | ") { "${it.index}:${it.codec}/${it.displayTitle ?: "-"}" })
+        }
         subtitleStreamIndices = subs.mapNotNull { it.index }
         val rows = mutableListOf<com.xxxx.emby_vr.panel.MenuRowItem>()
         if (hasDanmakuTrack) {
@@ -2127,7 +2136,34 @@ class MainActivity : ComponentActivity() {
     /** 这条字幕流是不是弹幕轨（ASS / SSA，由自绘弹幕层负责，不当普通字幕选） */
     private fun isDanmakuStream(s: com.xxxx.emby_vr.data.model.MediaStreamDto): Boolean {
         val codec = (s.codec ?: "").lowercase()
-        return codec == "ass" || codec == "ssa"
+        if (codec != "ass" && codec != "ssa") return false
+        /*
+         * 内嵌的 ASS 不等于弹幕（2026-10-09 父亲实测）。
+         *
+         * 原来只要格式是 ass/ssa 就当成弹幕轨 —— 于是片源里自带的中文 ASS 字幕
+         * （《黑帮领地》S02E02 就是这种）被塞进「弹幕」那一行，字幕列表里反而只剩
+         * 一条图片型字幕，选中后什么都出不来。
+         * 弹幕系统给的是**外挂** ass 文件（IsExternal=true），标题里通常也带弹幕字样；
+         * 两条都不满足的就当普通字幕看待。
+         */
+        val title = ((s.displayTitle ?: "") + " " + (s.title ?: "")).lowercase()
+        val looksDanmaku = title.contains("弹幕") || title.contains("danmaku") ||
+            title.contains("comment")
+        return s.isExternal == true || looksDanmaku
+    }
+
+    /**
+     * 图片型字幕（蓝光 PGS / DVD VobSub 等）：是图像不是文字（2026-10-09）。
+     *
+     * 这种轨服务端**转不出文字** —— 实测请求 `Subtitles/3/Stream.srt` 返回 200 但
+     * 0 字节，客户端拿到空内容只能清屏，看起来就是"怎么选都没有字幕"。
+     * 所以既不列进字幕菜单，也不当成弹幕。
+     */
+    private fun isImageSubtitle(s: com.xxxx.emby_vr.data.model.MediaStreamDto): Boolean {
+        if (s.isTextSubtitleStream == false) return true
+        val c = (s.codec ?: "").lowercase()
+        return c.contains("pgs") || c.contains("vobsub") || c.contains("dvdsub") ||
+            c.contains("dvb") || c.contains("xsub") || c.contains("pgssub")
     }
 
     /** 菜单里选完一项后刷新列表的勾选态（菜单保持打开，勾要跟着动） */
