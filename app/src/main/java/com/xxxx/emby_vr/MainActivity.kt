@@ -2957,7 +2957,7 @@ class MainActivity : ComponentActivity() {
         var ordinalHit: Pair<androidx.media3.common.TrackGroup, Int>? = null
         for (g in textGroups) {
             for (ti in 0 until g.length) {
-                val fmtLang = (g.getFormat(ti).language ?: "").lowercase().take(3)
+                val fmtLang = (g.mediaTrackGroup.getFormat(ti).language ?: "").lowercase().take(3)
                 if (counter == pos) ordinalHit = g.mediaTrackGroup to ti
                 if (wantLang.isNotBlank() && fmtLang == wantLang) {
                     applyTextOverride(p, g.mediaTrackGroup, ti)
