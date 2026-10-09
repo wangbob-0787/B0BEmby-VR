@@ -186,7 +186,8 @@ fun TopStatusBar(
 
                 // 用户信息
                 if (userInfo != null) {
-                    Spacer(modifier = Modifier.width(20.dp))
+                    // 头像与放大镜之间留出间距（父亲 2026-10-09：头像离名字/放大镜都太挤）
+                    Spacer(modifier = Modifier.width(28.dp))
 
                     Surface(
                         onClick = onUserInfoClick ?: {},
@@ -217,6 +218,8 @@ fun TopStatusBar(
                                     .size(38.dp)
                                     .clip(androidx.compose.foundation.shape.CircleShape)
                             )
+                            // 头像与名字之间留 10dp（原来贴在一起）
+                            Spacer(modifier = Modifier.width(10.dp))
                             Text(
                                 text = userInfo,
                                 fontSize = 18.sp,
