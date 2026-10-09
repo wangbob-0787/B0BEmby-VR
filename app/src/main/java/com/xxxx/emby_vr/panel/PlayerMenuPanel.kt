@@ -155,6 +155,9 @@ class MenuState {
     var danmakuOn by mutableStateOf(true)
     var danmakuScale by mutableStateOf(1f)
 
+    /** 弹幕时间偏移（毫秒）：正 = 提前，负 = 推后（父亲 2026-10-09 要求） */
+    var danmakuOffsetMs by mutableStateOf(0)
+
     var subtitleTracks by mutableStateOf<List<MenuRowItem>>(emptyList())
     var audioTracks by mutableStateOf<List<MenuRowItem>>(emptyList())
     var episodes by mutableStateOf<List<MenuRowItem>>(emptyList())
@@ -455,6 +458,35 @@ private fun DanmakuMenu(menu: MenuState) {
                 onClick = { menu.onSelect?.invoke(MenuKind.DANMAKU, i + 1) },
             )
         }
+        /*
+         * 弹幕时间偏移（父亲 2026-10-09）：弹幕与画面差半拍时手动对齐。
+         * 两行步进（提前 / 推后），一行显示当前值并归零。
+         * 下标约定：0 = 开关，1..N = 字号，N+1 = 提前，N+2 = 推后，N+3 = 归零。
+         */
+        val base = DANMAKU_SCALES.size + 1
+        val secs = menu.danmakuOffsetMs / 1000f
+        MenuRow(
+            label = "弹幕偏移：" + when {
+                menu.danmakuOffsetMs > 0 -> String.format("+%.1f 秒（提前）", secs)
+                menu.danmakuOffsetMs < 0 -> String.format("%.1f 秒（推后）", secs)
+                else -> "无"
+            },
+            value = "",
+            selected = menu.danmakuOffsetMs != 0,
+            onClick = { menu.onSelect?.invoke(MenuKind.DANMAKU, base + 2) },
+        )
+        MenuRow(
+            label = "弹幕提前 0.5 秒",
+            value = "",
+            selected = false,
+            onClick = { menu.onSelect?.invoke(MenuKind.DANMAKU, base) },
+        )
+        MenuRow(
+            label = "弹幕推后 0.5 秒",
+            value = "",
+            selected = false,
+            onClick = { menu.onSelect?.invoke(MenuKind.DANMAKU, base + 1) },
+        )
     }
 }
 

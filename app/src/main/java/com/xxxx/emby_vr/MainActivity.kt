@@ -265,7 +265,9 @@ class MainActivity : ComponentActivity() {
     private fun danmakuPosForPainter(): Long {
         val now = android.os.SystemClock.elapsedRealtime()
         val frozen = danmakuPaused || now < danmakuSeekFreezeUntilMs
-        return if (frozen) danmakuFreezePosMs else playbackPosEstimate()
+        if (frozen) return danmakuFreezePosMs
+        // 弹幕时间偏移：只挪弹幕看的位置，画面与真实进度不受影响（父亲 2026-10-09）
+        return (playbackPosEstimate() + danmakuOffsetMs).coerceAtLeast(0L)
     }
 
     /** seek 开始：冻住弹幕位置 */
@@ -305,6 +307,15 @@ class MainActivity : ComponentActivity() {
     private var playModeIndex = 0
     private var danmakuOn = true
     private var danmakuScale = 1f
+
+    /**
+     * 弹幕时间偏移（毫秒，正 = 提前）（父亲 2026-10-09）。
+     *
+     * 用途：片源和弹幕源对不齐（弹幕快半拍/慢半拍）时手动修。
+     * 只影响喂给弹幕层的播放位置，不动画面与真实进度。范围 ±10 秒，落盘记住。
+     */
+    private var danmakuOffsetMs =
+        runCatching { placePrefs.getInt("danmaku_offset_ms", 0) }.getOrDefault(0)
 
 
     /** 正在挑片（控制条上的「选片」打开的海报墙）：此时画面回到面板、控制条留着 */
@@ -1996,12 +2007,26 @@ class MainActivity : ComponentActivity() {
                 refreshMenuRows(kind)
             }
             com.xxxx.emby_vr.panel.MenuKind.DANMAKU -> {
-                if (index == 0) {
-                    danmakuOn = !danmakuOn
-                } else {
-                    com.xxxx.emby_vr.panel.DANMAKU_SCALES.getOrNull(index - 1)
-                        ?.let { danmakuScale = it.first }
+                val n = com.xxxx.emby_vr.panel.DANMAKU_SCALES.size
+                when {
+                    index == 0 -> danmakuOn = !danmakuOn
+                    index in 1..n -> com.xxxx.emby_vr.panel.DANMAKU_SCALES
+                        .getOrNull(index - 1)?.let { danmakuScale = it.first }
+                    index == n + 1 -> {
+                        danmakuOffsetMs = (danmakuOffsetMs + 500).coerceAtMost(10_000)
+                        Log.i(TAG, "弹幕提前 → 偏移 ${danmakuOffsetMs}ms")
+                    }
+                    index == n + 2 -> {
+                        danmakuOffsetMs = (danmakuOffsetMs - 500).coerceAtLeast(-10_000)
+                        Log.i(TAG, "弹幕推后 → 偏移 ${danmakuOffsetMs}ms")
+                    }
+                    index == n + 3 -> {
+                        danmakuOffsetMs = 0
+                        Log.i(TAG, "弹幕偏移归零")
+                    }
                 }
+                placePrefs.edit().putInt("danmaku_offset_ms", danmakuOffsetMs).apply()
+                menuState.danmakuOffsetMs = danmakuOffsetMs
                 applyDanmakuSetting()
                 Log.i(TAG, "弹幕设置 → ${if (danmakuOn) "开" else "关"}，字号 ${danmakuScale}")
             }
@@ -2243,6 +2268,7 @@ class MainActivity : ComponentActivity() {
             com.xxxx.emby_vr.panel.MenuKind.DANMAKU -> {
                 menuState.danmakuOn = danmakuOn
                 menuState.danmakuScale = danmakuScale
+                menuState.danmakuOffsetMs = danmakuOffsetMs
             }
             com.xxxx.emby_vr.panel.MenuKind.AUDIO -> menuState.audioTracks = buildAudioRows()
             com.xxxx.emby_vr.panel.MenuKind.SUBTITLE -> menuState.subtitleTracks = buildSubtitleRows()
@@ -2328,6 +2354,7 @@ class MainActivity : ComponentActivity() {
     private fun applyDanmakuSetting() {
         menuState.danmakuOn = danmakuOn
         menuState.danmakuScale = danmakuScale
+        menuState.danmakuOffsetMs = danmakuOffsetMs
         // 开关与字号立刻作用到弹幕内容：整层常开（它还承载片名 logo），只切轨道
         danmakuView?.userScale = danmakuScale
         danmakuView?.setTrack(if (danmakuOn) danmakuTrack else null)
