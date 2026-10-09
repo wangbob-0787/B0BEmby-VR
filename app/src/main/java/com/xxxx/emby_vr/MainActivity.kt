@@ -1266,7 +1266,13 @@ class MainActivity : ComponentActivity() {
                  */
                 val srcW = com.xxxx.emby_vr.player.PlaybackFlags.videoWidth.takeIf { it > 0 } ?: 1920
                 val srcH = com.xxxx.emby_vr.player.PlaybackFlags.videoHeight.takeIf { it > 0 } ?: 1080
-                val vw = if (srcW > 1920) 1920 else srcW
+                /*
+                 * 2026-10-09：上限可运行时调（vr-tuning 的 `video_surface_w`）。
+                 * 实测杜比还原每帧吃约 15ms GPU，开销与像素量成正比，
+                 * 把内核处理宽度压下来是当前最直接的省 GPU 手段。
+                 */
+                val cap = com.xxxx.emby_vr.vr.VrTuning.videoSurfaceMaxW.let { if (it > 0) it else 1920 }
+                val vw = if (srcW > cap) cap else srcW
                 val vh = (srcH.toLong() * vw / srcW).toInt().coerceAtLeast(64)
                 renderer.setVideoBufferSize(vw, vh)
                 mpvBackend = com.xxxx.emby_vr.player.MpvBackend(this).also { m ->
