@@ -353,6 +353,14 @@ object VrNative {
 
         /** 播放中扣扳机 = 开关控制条（由 Activity 决定显隐） */
         fun onToggleOsd()
+
+        /**
+         * 扳机**按住状态**变化（父亲 2026-10-09）。
+         *
+         * 与 onClick 的区别：onClick 只在"按下那一瞬"来一次，这个是状态 ——
+         * 界面拿它做"按住连发"（弹幕时间偏移：点一下走一档，按住就一直走、越走越快）。
+         */
+        fun onTriggerState(pressed: Boolean)
     }
 
     private external fun nativeAttachInputSink(sink: InputSink)

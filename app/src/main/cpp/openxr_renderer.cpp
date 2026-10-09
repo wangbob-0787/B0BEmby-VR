@@ -672,6 +672,9 @@ struct VrContext {
     float sinkMenuPointerX = 0.f;
     float sinkMenuPointerY = 0.f;
     bool sinkLastTrigger[2] = {false, false};
+    /* 扳机按住的**状态**（不是边沿）：界面要拿它做"按住连发"（父亲 2026-10-09） */
+    jmethodID sinkTriggerState = nullptr;
+    bool sinkLastTriggerState[2] = {false, false};
     bool sinkPanelFocusOn[2] = {false, false};   // 上一次回推的"光柱在海报墙上"状态
 
     /**
@@ -2081,6 +2084,21 @@ void pushInput(VrContext &c) {
             clearJavaException(env, "输入回调 onBack");
         }
         c.sinkLastBack[h] = c.bDown[h];
+
+        /*
+         * 扳机状态回推（父亲 2026-10-09：弹幕时间偏移要"点一下走一档、按住连续跑"）。
+         *
+         * 只在**按下/松开变化**时回推一次，界面据此启动 / 停止连发。
+         * 用独立的上次值，不碰 sinkLastTrigger —— 那个是"按下边沿"用的，两码事。
+         */
+        if (c.triggerDown[h] != c.sinkLastTriggerState[h]) {
+            c.sinkLastTriggerState[h] = c.triggerDown[h];
+            if (c.sinkTriggerState != nullptr) {
+                env->CallVoidMethod(c.inputSink, c.sinkTriggerState,
+                                    (jboolean) c.triggerDown[h]);
+                clearJavaException(env, "输入回调 onTriggerState");
+            }
+        }
 
         if (!c.aimValid[h]) continue;
 
@@ -4753,6 +4771,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachInputSink(JNIEnv *env, jobject /*
     }
     g.sinkPointer = g.sinkClick = g.sinkStick = g.sinkBack = nullptr;
     g.sinkOsdPointer = g.sinkOsdClick = g.sinkToggleOsd = nullptr;
+    g.sinkTriggerState = nullptr;
     g.sinkMenuPointer = g.sinkMenuClick = nullptr;
     g.sinkVideoFrame = nullptr;
     if (sink == nullptr) {
@@ -4769,6 +4788,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachInputSink(JNIEnv *env, jobject /*
     g.sinkToggleOsd = env->GetMethodID(cls, "onToggleOsd", "()V");
     g.sinkMenuPointer = env->GetMethodID(cls, "onMenuPointer", "(FF)V");
     g.sinkMenuClick = env->GetMethodID(cls, "onMenuClick", "(FF)V");
+    g.sinkTriggerState = env->GetMethodID(cls, "onTriggerState", "(Z)V");
     g.sinkBack = env->GetMethodID(cls, "onBack", "()V");
     g.sinkPanelFocus = env->GetMethodID(cls, "onPanelFocus", "(Z)V");
     // 视频画面首次到纹理层（换片等待期的黑幕 / 转圈等这个信号才收）

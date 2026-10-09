@@ -512,6 +512,16 @@ class MainActivity : ComponentActivity() {
             runOnUiThread { setOsdVisible(!osdVisible) }
         }
 
+        /**
+         * 扳机松开 → 停掉连发（父亲 2026-10-09）。
+         *
+         * 弹幕时间偏移那几行是"点一下走一档"，按住不放要一直走、越走越快；
+         * 这个回调就是那个"松开"的信号。
+         */
+        override fun onTriggerState(pressed: Boolean) {
+            if (!pressed) runOnUiThread { stopOffsetRepeat() }
+        }
+
         override fun onBack() {
             vrInputLive = true
             runOnUiThread {
@@ -2010,37 +2020,28 @@ class MainActivity : ComponentActivity() {
             }
             com.xxxx.emby_vr.panel.MenuKind.DANMAKU -> {
                 val n = com.xxxx.emby_vr.panel.DANMAKU_SCALES.size
+                var stepPerformed = false
                 when {
                     index == 0 -> danmakuOn = !danmakuOn
                     index in 1..n -> com.xxxx.emby_vr.panel.DANMAKU_SCALES
                         .getOrNull(index - 1)?.let { danmakuScale = it.first }
-                    index == n + 1 -> {
-                        danmakuOffsetMs =
-                            (danmakuOffsetMs + 500).coerceAtMost(kDanmakuOffsetMaxMs)
-                        Log.i(TAG, "弹幕提前 0.5 秒 → 偏移 ${danmakuOffsetMs}ms")
-                    }
-                    index == n + 2 -> {
-                        danmakuOffsetMs =
-                            (danmakuOffsetMs - 500).coerceAtLeast(-kDanmakuOffsetMaxMs)
-                        Log.i(TAG, "弹幕推后 0.5 秒 → 偏移 ${danmakuOffsetMs}ms")
-                    }
-                    index == n + 3 -> {
-                        danmakuOffsetMs =
-                            (danmakuOffsetMs + 10_000).coerceAtMost(kDanmakuOffsetMaxMs)
-                        Log.i(TAG, "弹幕提前 10 秒 → 偏移 ${danmakuOffsetMs}ms")
-                    }
-                    index == n + 4 -> {
-                        danmakuOffsetMs =
-                            (danmakuOffsetMs - 10_000).coerceAtLeast(-kDanmakuOffsetMaxMs)
-                        Log.i(TAG, "弹幕推后 10 秒 → 偏移 ${danmakuOffsetMs}ms")
+                    index in (n + 1)..(n + 4) -> {
+                        // 偏移步进抽成函数：按住连发时只重复这一步，不再重启连发
+                        stepDanmakuOffset(index, n)
+                        stepPerformed = true
                     }
                     index == n + 5 -> {
                         danmakuOffsetMs = 0
                         Log.i(TAG, "弹幕偏移归零")
                     }
                 }
-                placePrefs.edit().putInt("danmaku_offset_ms", danmakuOffsetMs).apply()
-                menuState.danmakuOffsetMs = danmakuOffsetMs
+                if (stepPerformed) {
+                    placePrefs.edit().putInt("danmaku_offset_ms", danmakuOffsetMs).apply()
+                    menuState.danmakuOffsetMs = danmakuOffsetMs
+                    startOffsetRepeat { stepDanmakuOffset(index, n) }
+                } else {
+                    stopOffsetRepeat()
+                }
                 applyDanmakuSetting()
                 Log.i(TAG, "弹幕设置 → ${if (danmakuOn) "开" else "关"}，字号 ${danmakuScale}")
             }
@@ -3135,6 +3136,64 @@ class MainActivity : ComponentActivity() {
                 androidx.media3.common.TrackSelectionOverride(group, listOf(trackIndex)),
             )
             .build()
+    }
+
+    /** 弹幕偏移连发：按住扳机时用 */
+    private var offsetRepeatJob: Runnable? = null
+    private var offsetRepeatDelayMs = 1000L
+
+    /**
+     * 弹幕时间偏移的"按住连发"（父亲 2026-10-09 定）。
+     *
+     * 手感：点一下走 0.5 秒/10 秒那两档各一次；按住不放先等 0.5 秒，
+     * 然后每隔一段时间自动走一档，间隔从 1 秒开始每次乘 0.85（越跑越快），
+     * 最快到 0.12 秒一档；扳机一松立刻停。
+     */
+    private fun startOffsetRepeat(step: () -> Unit) {
+        stopOffsetRepeat()
+        offsetRepeatDelayMs = 1000L
+        val job = object : Runnable {
+            override fun run() {
+                step()
+                placePrefs.edit()
+                    .putInt("danmaku_offset_ms", danmakuOffsetMs)
+                    .apply()
+                menuState.danmakuOffsetMs = danmakuOffsetMs
+                offsetRepeatDelayMs = (offsetRepeatDelayMs * 85L / 100L).coerceAtLeast(120L)
+                handler.postDelayed(this, offsetRepeatDelayMs)
+            }
+        }
+        offsetRepeatJob = job
+        // 先等 0.5 秒再开始连发：让"点一下"和"按住"区分开
+        handler.postDelayed(job, 500L)
+    }
+
+    /** 弹幕时间偏移走一档（父亲 2026-10-09：点一下 0.5 秒、按住连续跑） */
+    private fun stepDanmakuOffset(index: Int, n: Int) {
+        when (index) {
+            n + 1 -> {
+                danmakuOffsetMs = (danmakuOffsetMs + 500).coerceAtMost(kDanmakuOffsetMaxMs)
+                Log.i(TAG, "弹幕提前 0.5 秒 → 偏移 ${danmakuOffsetMs}ms")
+            }
+            n + 2 -> {
+                danmakuOffsetMs = (danmakuOffsetMs - 500).coerceAtLeast(-kDanmakuOffsetMaxMs)
+                Log.i(TAG, "弹幕推后 0.5 秒 → 偏移 ${danmakuOffsetMs}ms")
+            }
+            n + 3 -> {
+                danmakuOffsetMs = (danmakuOffsetMs + 10_000).coerceAtMost(kDanmakuOffsetMaxMs)
+                Log.i(TAG, "弹幕提前 10 秒 → 偏移 ${danmakuOffsetMs}ms")
+            }
+            n + 4 -> {
+                danmakuOffsetMs = (danmakuOffsetMs - 10_000).coerceAtLeast(-kDanmakuOffsetMaxMs)
+                Log.i(TAG, "弹幕推后 10 秒 → 偏移 ${danmakuOffsetMs}ms")
+            }
+        }
+    }
+
+    private fun stopOffsetRepeat() {
+        offsetRepeatJob?.let { handler.removeCallbacks(it) }
+        offsetRepeatJob = null
+        offsetRepeatDelayMs = 1000L
     }
 
     /** 内核内嵌字幕的取文轮询（Profile 5 专用，2026-10-09） */
