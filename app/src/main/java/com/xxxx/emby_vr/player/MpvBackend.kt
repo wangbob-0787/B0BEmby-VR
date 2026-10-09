@@ -146,6 +146,20 @@ class MpvBackend(private val context: Context) {
                      * 关掉后曲线固定，颜色全程稳定。
                      */
                     MPVLib.setOptionString("hdr-compute-peak", "no")
+                    /*
+                     * 内核快速档（2026-10-09 黑纹攻坚的收官手段）。
+                     *
+                     * 杜比还原那条链每帧吃 10~22ms GPU，是我们唯一真正吃紧的一环
+                     * （我们自己的渲染只花 0.9ms）。它一旦顶出帧预算，运行时就用上一帧
+                     * 做变形补偿，画面出现多条横向跳动的黑纹（详见台账 2026-10-09）。
+                     *
+                     * 快速档省掉一批**可选**的画质处理（去色带/抖动/高质量缩放等），
+                     * 实测把 GPU 从 5.4~12.2ms 压到 3.7~4.9ms、迟到帧归零；
+                     * 父亲实测确认**画面质量没有变化**。余量留着，设备烧热后也不会越界。
+                     *
+                     * 想还原画质可运行 `mpv_profile=` 清掉这一档。
+                     */
+                    MPVLib.setOptionString("profile", "fast")
                     // 字幕我们自己画（弹幕层带字幕位），别让 mpv 再画一遍
                     MPVLib.setOptionString("sub-auto", "no")
                     MPVLib.setOptionString("sid", "no")

@@ -624,8 +624,15 @@ class MainActivity : ComponentActivity() {
                          * 策略：① 优先用响应头声明的 charset；
                          *       ② 没声明就先按 UTF-8 **严格**解码，遇非法字节回退 GB18030。
                          */
+                        /*
+                         * 把请求细节打进日志（2026-10-09）：原来只看到"取到 0 条"，
+                         * 分不清是 URL 不对、权限不对，还是服务端真的没内容。
+                         * token 不落盘 —— 只打 URL 的问号之前部分 + 响应码。
+                         */
+                        val code = runCatching { conn.responseCode }.getOrDefault(-1)
                         val declared = conn.contentType
-                        Log.i(TAG, "自绘字幕：流 $index 响应类型=$declared")
+                        Log.i(TAG, "自绘字幕：流 $index 响应码=$code 类型=$declared " +
+                            "地址=${url.substringBefore("?")}")
                         val bytes = conn.getInputStream().use { it.readBytes() }
                         decodeSubtitleText(bytes, declared)
                     }
@@ -1775,6 +1782,12 @@ class MainActivity : ComponentActivity() {
                 selectedSubtitleIndex =
                     if (picked != null && picked == selectedSubtitleIndex) null else picked
                 Log.i(TAG, "字幕 → ${selectedSubtitleIndex ?: "关闭"}（菜单保持打开）")
+                /*
+                 * 勾选要**立刻就位**（2026-10-09 父亲实测：原来不打钩，得关掉菜单再打开才看见）。
+                 * 音轨那条分支一直有这句（父亲 2026-10-07 要求"菜单原地更新"），
+                 * 字幕这条漏了 —— 同一个毛病，同一个修法。
+                 */
+                refreshMenuRows(com.xxxx.emby_vr.panel.MenuKind.SUBTITLE)
                 if (ctl.kernelActive) {
                     /*
                      * 内核模式（父亲 2026-10-08）：字幕是我们自己取回来画的
