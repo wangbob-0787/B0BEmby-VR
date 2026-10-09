@@ -989,7 +989,18 @@ class MainActivity : ComponentActivity() {
                         ctl.durationMs(),
                         ctl.bufferedMs(),
                     )
-                    kotlinx.coroutines.delay(200L)
+                    /*
+                     * 刷新节奏与控制条上的进度条对齐（父亲 2026-10-09：
+                     * "跳动的距离和频率要和控制条上的进度条同步"）。
+                     *
+                     * 两条读的是同一个位置数据，差别在频率：
+                     *   控制条那条由 startOsdTicker 每 **1000ms** 刷一次；
+                     *   银幕这条原来每 **200ms** 刷一次 —— 于是银幕上的光标跳得密、
+                     *   控制条上的稳，看上去就是"不同步"。
+                     * 改成同一节奏；每次快进快退那一刻仍会立刻把目标位置写上去
+                     * （见 seekBy 里的 setSeekHud(target)），所以响应不打折。
+                     */
+                    kotlinx.coroutines.delay(1000L)
                 }
             }
         }
