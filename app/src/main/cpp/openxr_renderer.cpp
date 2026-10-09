@@ -951,6 +951,18 @@ std::atomic<int> gNoDownsample{0};      // 1 = 关掉视频降采样分支（只
 std::atomic<int> gNoJitter{0};          // 1 = 抖动种子固定（排除逐帧变化输入）
 std::atomic<int> gForceRgba8{0};        // 1 = 视频层交换链强制 GL_RGBA8（不试 sRGB）
 std::atomic<int> gNoPostfx{0};          // 1 = 关掉全部画质增强与颜色调整
+/*
+ * 1 = 在每次 updateTexImage 之前先 glFinish（2026-10-09 黑纹主嫌疑开关）。
+ *
+ * 机制：SurfaceTexture 取帧后，我们对 OES 纹理的采样是**异步 GPU 命令**；
+ * 而下一帧再调 updateTexImage 时，上一张缓冲会被还给生产者（mpv/MediaCodec），
+ * 生产者可能立刻往同一块缓冲写新帧 —— 若上一帧的采样还没执行完，
+ * 就会读到半新半旧的图像，表现正是**横向条带**。
+ * 只 glFlush（命令入队）不保证采样已经执行完；必须在"要回缓冲之前"等 GPU 干完。
+ * 这也解释了：拷贝模式能改变生产者时序、杜比还原让每帧 GPU 更重使窗口变大、
+ * 亮场景更明显、软解不走共享缓冲所以干净。
+ */
+std::atomic<int> gFinishBeforeTexUpdate{0};
 
 /* 无限等待的兜底定义（个别版本的 openxr.h 不带这个宏） */
 #ifndef XR_INFINITE_DURATION
@@ -3517,11 +3529,17 @@ void frameLoop(VrContext &c) {
          * 且要在画之前 —— 否则贴上去的永远是上一帧。
          */
         if (c.panelActive.load() && gPanelUpdate != nullptr) {
+            if (gFinishBeforeTexUpdate.load() != 0) glFinish();
             gPanelUpdate();
         }
 
         // 播放画面：同样必须在渲染线程取帧（与视频纹理同一个 GL 上下文）
         if (c.videoActive.load() && gVideoUpdate != nullptr) {
+            /*
+             * 关键（2026-10-09）：必须在 updateTexImage **之前**等 GPU 把上一帧的
+             * 采样做完 —— updateTexImage 会把上一张缓冲还给生产者，还早了就会被改写。
+             */
+            if (gFinishBeforeTexUpdate.load() != 0) glFinish();
             gVideoUpdate();
         }
 
@@ -3609,14 +3627,17 @@ void frameLoop(VrContext &c) {
 
         // 控制条：近场小面板，每帧取一次（与面板/视频同一套 SurfaceTexture 机制）
         if (c.osdVisible.load() && gOsdUpdate != nullptr) {
+            if (gFinishBeforeTexUpdate.load() != 0) glFinish();
             gOsdUpdate();
         }
 
         // 展开菜单：架在控制条正上方的透明面板，同样每帧取一次
         if (c.menuVisible.load() && gMenuUpdate != nullptr) {
+            if (gFinishBeforeTexUpdate.load() != 0) glFinish();
             gMenuUpdate();
         }
         if (c.danmakuVisible.load() && gDanmakuUpdate != nullptr) {
+            if (gFinishBeforeTexUpdate.load() != 0) glFinish();
             gDanmakuUpdate();
         }
         if ((gLayerMask.load() & 4) != 0 && c.logoVisible.load() && gLogoUpdate != nullptr) {
@@ -4543,6 +4564,11 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
         case 12:
             gNoPostfx.store((int) value);
             LOGI("调参 → 画质增强 %s", (int) value ? "全关" : "开");
+            break;
+        case 13:
+            gFinishBeforeTexUpdate.store((int) value);
+            LOGI("调参 → 取帧前先 glFinish %s（防外部纹理缓冲被提前回收）",
+                 (int) value ? "开" : "关");
             break;
         default:
             LOGI("调参 → 未知参数 key=%d（忽略）", (int) key);

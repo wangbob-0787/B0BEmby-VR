@@ -35,6 +35,7 @@ import java.io.File
  * | `no_jitter` | 1=抖动种子固定（排除逐帧变化的着色器输入） | 0 |
  * | `force_rgba8` | 1=视频层交换链强制 GL_RGBA8（不试 sRGB） | 0 |
  * | `no_postfx` | 1=画质增强与颜色调整全回中性 | 0 |
+ * | `finish_before_texupdate` | 1=每次取帧前先 glFinish（防外部纹理缓冲被提前回收，黑纹主嫌疑开关） | 0 |
  * | `mpv_<属性>` | 透传给内核的同名属性，例如 `mpv_tone-mapping=spline` | — |
  * | `cmd` | 直接执行一条内核命令，例如 `cmd=screenshot-to-file <路径> video`（导出渲染画面，校色用） | — |
  *
@@ -60,6 +61,7 @@ object VrTuning {
     const val KEY_NO_JITTER = 10
     const val KEY_FORCE_RGBA8 = 11
     const val KEY_NO_POSTFX = 12
+    const val KEY_FINISH_BEFORE_TEXUPDATE = 13
 
     /** 上次应用的配置原文，只有变化才动手（避免每秒重复设置） */
     private var lastRaw: Map<String, String> = emptyMap()
@@ -216,6 +218,7 @@ object VrTuning {
         flag("no_jitter", KEY_NO_JITTER, "抖动固定")
         flag("force_rgba8", KEY_FORCE_RGBA8, "视频层强制 GL_RGBA8")
         flag("no_postfx", KEY_NO_POSTFX, "画质增强全关")
+        flag("finish_before_texupdate", KEY_FINISH_BEFORE_TEXUPDATE, "取帧前先 glFinish")
 
         if (!wrote) return applied
         if (mask != null) {
