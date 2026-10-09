@@ -607,8 +607,13 @@ class MainActivity : ComponentActivity() {
             val raw = withContext(Dispatchers.IO) {
                 runCatching {
                     java.net.URL(url).openConnection().let { conn ->
-                        conn.connectTimeout = 8000
-                        conn.readTimeout = 20000
+                        conn.connectTimeout = 10000
+                        /*
+                         * 读超时放宽到 30 秒（2026-10-09）：Emby 对某些字幕轨（图片型/
+                         * 需要 OCR 的）转 SRT 会非常慢甚至长时间不回，20 秒不够，
+                         * 实测同一部剧有的轨秒回、有的直接挂住。
+                         */
+                        conn.readTimeout = 30000
                         /*
                          * 不能无条件按 UTF-8 读（2026-10-09 修，父亲实测「选了中文字幕是乱字符」）。
                          *
@@ -631,7 +636,18 @@ class MainActivity : ComponentActivity() {
             val cues = parseSrt(raw)
             subtitleCues = cues
             Log.i(TAG, "自绘字幕：流 $index 取到 ${cues.size} 条")
-            if (cues.isEmpty()) Log.w(TAG, "自绘字幕：流 $index 没取到内容（${raw?.length ?: 0} 字节）")
+            /*
+             * 取不到就**清屏**（2026-10-09 父亲要求）。
+             *
+             * 原来失败了什么都不做，屏幕上继续显示上一条字幕的残留 ——
+             * 切到别的语言时用户看到的就是"上一次的内容"，误以为是乱字符。
+             * 现在明确清空：宁可不显示，也不显示错的。
+             */
+            if (cues.isEmpty()) {
+                Log.w(TAG, "自绘字幕：流 $index 没取到内容（${raw?.length ?: 0} 字节）→ 清屏")
+                subtitleNow = ""
+                if (!waitingFirstFrame) danmakuView?.setSubtitle("")
+            }
         }
     }
 
