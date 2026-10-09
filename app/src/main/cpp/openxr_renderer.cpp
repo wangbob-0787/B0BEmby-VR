@@ -329,18 +329,30 @@ void main() {
          * 若测试图干净 → 视频输入链路（外部纹理/OES 采样/帧交付）是必要条件。
          * 图里带细横线与竖条，便于发现"横条状未更新"。
          */
-        float bars = floor(vUv.x * 8.0);
-        vec3 col = vec3(0.5);
-        if (bars < 1.0)      col = vec3(1.0, 1.0, 1.0);
-        else if (bars < 2.0) col = vec3(1.0, 1.0, 0.0);
-        else if (bars < 3.0) col = vec3(0.0, 1.0, 1.0);
-        else if (bars < 4.0) col = vec3(0.0, 1.0, 0.0);
-        else if (bars < 5.0) col = vec3(1.0, 0.0, 1.0);
-        else if (bars < 6.0) col = vec3(1.0, 0.0, 0.0);
-        else if (bars < 7.0) col = vec3(0.0, 0.0, 1.0);
-        else                 col = vec3(0.0);
-        float lines = step(0.97, fract(vUv.y * 100.0));
-        col = mix(col, vec3(0.0), lines * 0.85);
+        /*
+         * 图样改版（2026-10-09）：**不再画任何细线**。
+         *
+         * 上一版画了 100 条 0.2 像素粗的细线，缩放后会混成摩尔纹、显出几根粗带 ——
+         * 父亲把它当成黑纹，等于测试图自己制造了干扰。现在改成：
+         *   · 左边 3/4：8 段大块纯色（亮，条纹最容易看见）
+         *   · 右边 1/4：一条水平灰阶（最容易被"横条"破坏，一眼能看出来）
+         * 这样画面上任何线条都只可能来自真实的显示问题。
+         */
+        vec3 col;
+        if (vUv.x < 0.75) {
+            float bars = floor(vUv.x / 0.75 * 8.0);
+            if (bars < 1.0)      col = vec3(1.0, 1.0, 1.0);
+            else if (bars < 2.0) col = vec3(1.0, 1.0, 0.0);
+            else if (bars < 3.0) col = vec3(0.0, 1.0, 1.0);
+            else if (bars < 4.0) col = vec3(0.0, 1.0, 0.0);
+            else if (bars < 5.0) col = vec3(1.0, 0.0, 1.0);
+            else if (bars < 6.0) col = vec3(1.0, 0.0, 0.0);
+            else if (bars < 7.0) col = vec3(0.0, 0.0, 1.0);
+            else                 col = vec3(1.0, 1.0, 1.0);
+        } else {
+            float g = 1.0 - vUv.y;          // 上黑下白的平滑灰阶
+            col = vec3(g, g, g);
+        }
         outColor = vec4(col, 1.0);
     } else if (uUseTexture == 1) {
         vec4 c;
