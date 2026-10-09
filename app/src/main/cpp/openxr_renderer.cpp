@@ -3700,7 +3700,16 @@ void frameLoop(VrContext &c) {
         }
 
         bool rendered = false;
-        if (fs.shouldRender && c.sessionRunning) {
+        /*
+         * 眼缓冲也一并跳过（2026-10-09 诊断）：`hide_projection=1` 时既然不提交投影层，
+         * 就不必渲染它。目的：把我们自己的 GPU 负载压到接近零，用来验证
+         * 「GPU 每帧超支 → 每帧迟到 → 系统变形补偿 → 画面横条」这条机制。
+         * 副作用：光柱/光标消失（它们在投影层里），属预期。
+         */
+        const bool skipEyes = (gHideProjection.load() != 0);
+        if (fs.shouldRender && c.sessionRunning && skipEyes) {
+            rendered = true;   // 仍有 quad 层要提交
+        } else if (fs.shouldRender && c.sessionRunning) {
             XrViewLocateInfo vli{XR_TYPE_VIEW_LOCATE_INFO};
             vli.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
             vli.displayTime = fs.predictedDisplayTime;
