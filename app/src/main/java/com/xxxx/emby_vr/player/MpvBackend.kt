@@ -138,6 +138,13 @@ class MpvBackend(private val context: Context) {
                     MPVLib.setOptionString("target-prim", "bt.709")
                     MPVLib.setOptionString("target-trc", "gamma2.2")
                     MPVLib.setOptionString("tone-mapping", "bt.2390")
+                    /*
+                     * 杜比视界 Profile 5：保留正确白平衡（不偏紫），关掉 RPU 逐帧
+                     * 场景调色——HDR 降级 SDR 时不再还原导演「这场要暖/冷」的逐帧
+                     * 氛围，颜色全程稳定不跳。走 vf_format 的 dolbyvision=no 分支，
+                     * 把杜比映射还原成普通 SDR 参数后重新映射，RPU 逐帧 OETF 不生效。
+                     */
+                    MPVLib.setOptionString("vf", "format=dolbyvision=no")
                     // 字幕我们自己画（弹幕层带字幕位），别让 mpv 再画一遍
                     MPVLib.setOptionString("sub-auto", "no")
                     MPVLib.setOptionString("sid", "no")
