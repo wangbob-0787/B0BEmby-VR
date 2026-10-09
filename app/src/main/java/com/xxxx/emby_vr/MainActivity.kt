@@ -755,7 +755,9 @@ class MainActivity : ComponentActivity() {
     private fun cleanSubtitleText(s: String): String {
         val t = s
             .replace(Regex("""\{[^}]*\}"""), "")
-            .replace(Regex("""<[^>]{0,40}>"""), "")
+            // 标签不再限 40 字符：`<font face="微软雅黑" size="72" color="#ffe680">`
+            // 这种长标签原来删不掉，会被当正文画出来（父亲 2026-10-09 实测）
+            .replace(Regex("""<[^<>]{0,300}>"""), "")
             .replace(Regex("""\\[Nn]"""), "\n")
             .replace(Regex("""\\h"""), " ")
             .replace("\\", "")
@@ -766,11 +768,11 @@ class MainActivity : ComponentActivity() {
 
     private fun parseSrt(raw: String?): List<SubtitleCue> {
         if (raw.isNullOrBlank()) return emptyList()
-        val out = ArrayList<SubtitleCue>()
         val timeRe = Regex(
             """(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})\s*-->\s*(\d{1,2}):(\d{2}):(\d{2})[,.](\d{1,3})""",
         )
         val lines = raw.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        val rawCues = ArrayList<RawCue>()
         var i = 0
         fun toMs(g: Int, m: MatchResult): Long =
             (m.groupValues[g].toLong() * 3600 + m.groupValues[g + 1].toLong() * 60 +
@@ -786,19 +788,95 @@ class MainActivity : ComponentActivity() {
             val start = toMs(1, m)
             val end = toMs(5, m)
             i++
-            val sb = StringBuilder()
+            val body = ArrayList<String>()
             while (i < lines.size && lines[i].isNotBlank()) {
-                // 逐行清洗：ASS 排版标记必须在这里滤掉，否则会画到画面上
-                val line = cleanSubtitleText(lines[i])
-                if (line.isNotEmpty()) {
-                    if (sb.isNotEmpty()) sb.append("\n")
-                    sb.append(line)
-                }
+                body.add(lines[i])
                 i++
             }
-            if (sb.isNotEmpty()) out.add(SubtitleCue(start, end, sb.toString()))
+            if (body.isNotEmpty()) rawCues.add(RawCue(start, end, body))
         }
-        return out
+        /*
+         * 字号基准：取这一集**出现最多的那一档**当 1.0（2026-10-09）。
+         *
+         * 服务端把 ASS 转成 SRT 时，字号写进了 font 标签（如中文 size="72"、
+         * 英文 size="48"）。直接拿绝对值当像素画会大小失控，所以只取**相对比例**：
+         * 众数那档 = 1.0，其余按比例缩放 —— 中文字大、英文字小，与原片一致，
+         * 而整体大小仍由我们按银幕宽度定的基准决定。
+         */
+        val sizeCount = HashMap<Int, Int>()
+        for (c in rawCues) {
+            for (l in c.lines) {
+                parseStyle(l).size?.let { sizeCount[it] = (sizeCount[it] ?: 0) + 1 }
+            }
+        }
+        val refSize = sizeCount.maxByOrNull { it.value }?.key ?: 0
+        return rawCues.mapNotNull { c ->
+            val ls = c.lines.mapNotNull { rawLine ->
+                val st = parseStyle(rawLine)
+                val text = cleanSubtitleText(st.text)
+                if (text.isEmpty()) {
+                    null
+                } else {
+                    com.xxxx.emby_vr.danmaku.SubtitleLine(
+                        text = text,
+                        sizeFactor = if (refSize > 0 && st.size != null) {
+                            st.size.toFloat() / refSize.toFloat()
+                        } else {
+                            1f
+                        },
+                        color = st.color,
+                    )
+                }
+            }
+            if (ls.isEmpty()) null else SubtitleCue(c.startMs, c.endMs, ls.joinToString("\n") { it.text }, ls)
+        }
+    }
+
+    /** size="72" / color="#ffe680" 这些属性 */
+    private val kFontSizeRe = Regex("""size\s*=\s*"?(\d+)""", RegexOption.IGNORE_CASE)
+    private val kFontColorRe = Regex(
+        """color\s*=\s*"?(#[0-9a-fA-F]{6}|#[0-9a-fA-F]{8}|[a-zA-Z]+)""",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /**
+     * 把一行带样式标签的文本拆成「纯文字 + 字号 + 颜色」（父亲 2026-10-09）。
+     *
+     * 服务端转换后的样子：`<font face="微软雅黑" size="72" color="#ffe680"><b>中文</b></font>`
+     * 原来我们只删标签，且正则限了 40 字符长度 —— 长标签删不掉，于是
+     * 「微软雅黑 / size / color」被当正文画了出来。现在按标签解析，标签一律不画。
+     */
+    private fun parseStyle(rawLine: String): StyledRaw {
+        val sb = StringBuilder()
+        var size: Int? = null
+        var color: Int? = null
+        var i = 0
+        while (i < rawLine.length) {
+            val lt = rawLine.indexOf('<', i)
+            if (lt < 0) {
+                sb.append(rawLine, i, rawLine.length)
+                break
+            }
+            if (lt > i) sb.append(rawLine, i, lt)
+            val gt = rawLine.indexOf('>', lt)
+            if (gt < 0) break                       // 不闭合的标签：后面是垃圾，丢掉
+            val tag = rawLine.substring(lt, gt + 1).lowercase()
+            when {
+                tag.startsWith("<font") -> {
+                    kFontSizeRe.find(tag)?.groupValues?.getOrNull(1)?.toIntOrNull()?.let { size = it }
+                    kFontColorRe.find(tag)?.groupValues?.getOrNull(1)?.let { v ->
+                        runCatching { android.graphics.Color.parseColor(v) }.getOrNull()
+                            ?.let { color = it }
+                    }
+                }
+                tag.startsWith("</font") -> {
+                    size = null
+                    color = null
+                }
+            }
+            i = gt + 1
+        }
+        return StyledRaw(sb.toString(), size, color)
     }
 
     /**
@@ -809,9 +887,17 @@ class MainActivity : ComponentActivity() {
         if (mpvBackend != null) return
         if (subtitleCues.isEmpty()) return
         val pos = currentPositionMs()
-        val text = subtitleCues.firstOrNull { pos >= it.startMs && pos <= it.endMs }?.text.orEmpty()
+        val cue = subtitleCues.firstOrNull { pos >= it.startMs && pos <= it.endMs }
+        val text = cue?.text.orEmpty()
         subtitleNow = text
-        if (!waitingFirstFrame) danmakuView?.setSubtitle(text)
+        if (!waitingFirstFrame) {
+            // 有样式信息就按样式画（字号/颜色），没有就走纯文本那条老路
+            if (cue != null && cue.lines.isNotEmpty()) {
+                danmakuView?.setSubtitleRich(cue.lines)
+            } else {
+                danmakuView?.setSubtitle(text)
+            }
+        }
     }
 
     private fun attachDanmakuSurface(st: android.graphics.SurfaceTexture) {
@@ -3708,4 +3794,16 @@ class MainActivity : ComponentActivity() {
 }
 
 /** 一条字幕：起止时间（毫秒）+ 文本。客户端自绘字幕用（父亲 2026-10-07） */
-data class SubtitleCue(val startMs: Long, val endMs: Long, val text: String)
+data class SubtitleCue(
+    val startMs: Long,
+    val endMs: Long,
+    val text: String,
+    /** 带样式的行（字号倍数 / 颜色）；纯文本 SRT 时为空，退回 text 那条老路 */
+    val lines: List<com.xxxx.emby_vr.danmaku.SubtitleLine> = emptyList(),
+)
+
+/** 解析中间产物：一段字幕的原始行（还带着 HTML 风格样式标签） */
+private data class RawCue(val startMs: Long, val endMs: Long, val lines: MutableList<String>)
+
+/** 一行原始文本解析出来的三样东西 */
+private data class StyledRaw(val text: String, val size: Int?, val color: Int?)

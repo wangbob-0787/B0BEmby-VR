@@ -50,6 +50,9 @@ class DanmakuView(context: Context) : View(context) {
      */
     private var subtitle: String = ""
 
+    /** 带样式的字幕行（不为空时优先按它画，逐行字号/颜色） */
+    private var richLines: List<SubtitleLine>? = null
+
     /** 绘制日志节流计数（诊断用） */
     private var drawLogTick = 0
 
@@ -119,8 +122,23 @@ class DanmakuView(context: Context) : View(context) {
 
     /** 播放器报来当前该显示的字幕文字（空串 = 这一帧没有字幕） */
     fun setSubtitle(text: String) {
-        if (text == subtitle) return
+        if (text == subtitle && richLines == null) return
         subtitle = text
+        richLines = null
+        invalidate()
+    }
+
+    /**
+     * 带样式的字幕（父亲 2026-10-09）：按行给字号与颜色，照着片源里的样式画。
+     *
+     * 传 null / 空 = 退回纯文本那条路（内核 mpv 取到的文字没有样式信息）。
+     */
+    fun setSubtitleRich(lines: List<SubtitleLine>?) {
+        val v = lines?.filter { it.text.isNotBlank() }?.takeIf { it.isNotEmpty() }
+        val joined = v?.joinToString("\n") { it.text }.orEmpty()
+        if (joined == subtitle && richLines == v) return
+        richLines = v
+        subtitle = joined
         invalidate()
     }
 
@@ -285,7 +303,30 @@ class DanmakuView(context: Context) : View(context) {
      */
     private fun drawSubtitle(canvas: Canvas) {
         if (subtitle.isEmpty() || height <= 0) return
-        val size = max(12f, width * 0.05f * 9f / 16f)
+        val baseSize = max(12f, width * 0.05f * 9f / 16f)
+        /*
+         * 带样式的一路（2026-10-09）：每行按自己的字号倍数与颜色画 ——
+         * 中文字号大、英文字号小、颜色各按片源，和电视/官方客户端观感一致。
+         */
+        richLines?.let { lines ->
+            var ry = height - width * 0.07f * 9f / 16f
+            for (i in lines.indices.reversed()) {
+                val ln = lines[i]
+                if (ln.text.isNotEmpty()) {
+                    val sz = max(10f, baseSize * ln.sizeFactor.coerceIn(0.5f, 3f))
+                    subtitlePaint.textSize = sz
+                    subtitleOutline.textSize = sz
+                    subtitleOutline.strokeWidth = max(2f, sz * 0.09f)
+                    subtitlePaint.color = ln.color ?: android.graphics.Color.WHITE
+                    canvas.drawText(ln.text, width / 2f, ry, subtitleOutline)
+                    canvas.drawText(ln.text, width / 2f, ry, subtitlePaint)
+                }
+                ry -= max(10f, baseSize * ln.sizeFactor.coerceIn(0.5f, 3f)) * 1.25f
+            }
+            return
+        }
+        val size = baseSize
+        subtitlePaint.color = android.graphics.Color.WHITE
         subtitlePaint.textSize = size
         subtitleOutline.textSize = size
         subtitleOutline.strokeWidth = max(2f, size * 0.09f)
