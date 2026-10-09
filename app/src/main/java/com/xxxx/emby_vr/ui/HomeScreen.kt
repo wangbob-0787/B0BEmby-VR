@@ -54,6 +54,15 @@ fun HomeScreen(
      */
     onPlayNow: ((mediaId: String, positionTicks: Long) -> Unit)? = null,
 ) {
+    /*
+     * 整屏包一层 Box（父亲 2026-10-09：「首页菜单按钮扣扳机点不开」）。
+     *
+     * 起根原因是菜单原来用弹窗窗口实现 —— 窗口没落在 VR 面板那张虚拟屏上，
+     * 日志里能看到点击**命中了**（落点命中控件: top:menu → 控件动作已调用），
+     * 界面却什么都不出。现在菜单改成**同一棵界面树里的浮层**，
+     * 由这里的 Box 保证它铺满整屏、并且排在内容之后（画在最上层）。
+     */
+    Box(modifier = Modifier.fillMaxSize()) {
     val context = LocalContext.current
     var showMenu by remember { mutableStateOf(false) }
 
@@ -106,38 +115,6 @@ fun HomeScreen(
     // 检查更新
     LaunchedEffect(Unit) {
         mainViewModel.checkUpdate()
-    }
-
-    // 菜单对话框
-    if (showMenu) {
-        MenuDialog(
-            needUpdate = mainViewModel.needUpdate,
-            onDismiss = { showMenu = false },
-            onLogout = {
-                mainViewModel.logout()
-                showMenu = false
-            },
-            onUpdate = {
-                mainViewModel.checkUpdate()
-                showMenu = false
-                navController.navigate("update")
-            },
-            onThemeChange = { themeColor ->
-                mainViewModel.saveThemeId(themeColor.id)
-            },
-            onSwitchAccount = {
-                showMenu = false
-                onSwitchAccount()
-            },
-            onSearch = {
-                showMenu = false
-                navController.navigate("search")
-            },
-            onProxySettings = {
-                showMenu = false
-                navController.navigate("proxy_settings")
-            }
-        )
     }
 
     fun goPlay(item: BaseItemDto) {
@@ -381,6 +358,39 @@ fun HomeScreen(
                     )
                 }
             }
+        }
+    }
+
+        // 菜单浮层（放在内容之后 = 画在最上层）
+        if (showMenu) {
+            MenuDialog(
+                needUpdate = mainViewModel.needUpdate,
+                onDismiss = { showMenu = false },
+                onLogout = {
+                    mainViewModel.logout()
+                    showMenu = false
+                },
+                onUpdate = {
+                    mainViewModel.checkUpdate()
+                    showMenu = false
+                    navController.navigate("update")
+                },
+                onThemeChange = { themeColor ->
+                    mainViewModel.saveThemeId(themeColor.id)
+                },
+                onSwitchAccount = {
+                    showMenu = false
+                    onSwitchAccount()
+                },
+                onSearch = {
+                    showMenu = false
+                    navController.navigate("search")
+                },
+                onProxySettings = {
+                    showMenu = false
+                    navController.navigate("proxy_settings")
+                }
+            )
         }
     }
 }

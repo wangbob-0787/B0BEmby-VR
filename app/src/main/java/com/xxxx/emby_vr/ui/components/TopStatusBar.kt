@@ -65,7 +65,8 @@ fun TopStatusBar(
         modifier = Modifier
             .fillMaxWidth()
             .background(Color.Black.copy(alpha = 0.7f))
-            .padding(horizontal = 12.dp, vertical = 4.dp)
+            // 顶栏放大（父亲 2026-10-09：图标与字都太小）：四边留白跟着放大
+            .padding(horizontal = 16.dp, vertical = 8.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -77,7 +78,7 @@ fun TopStatusBar(
                     Surface(
                         onClick = onMenuClick,
                         modifier = Modifier
-                            .size(32.dp)
+                            .size(48.dp)
                             .focusRequester(menuFocusRequester)
                             // 登记进点击表（父亲 2026-10-05：顶栏图标扣扳机没反应 = 没登记）
                             .vrClickTarget(
@@ -103,17 +104,17 @@ fun TopStatusBar(
                             Icon(
                                 imageVector = Icons.Default.Menu,
                                 contentDescription = stringResource(R.string.menu),
-                                modifier = Modifier.size(18.dp)
+                                modifier = Modifier.size(28.dp)
                             )
                         }
                     }
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.width(12.dp))
                 }
 
                 Text(
                     text ="B0BEmby "+ currentVersion,
                     color = Color.White,
-                    fontSize = 12.sp,
+                    fontSize = 18.sp,
                     fontWeight = FontWeight.Bold
                 )
 
@@ -121,25 +122,25 @@ fun TopStatusBar(
                     Text(
                         text = " ( ${stringResource(R.string.new_version_available, newVersion)} )",
                         color = MaterialTheme.colorScheme.secondary,
-                        fontSize = 12.sp,
+                        fontSize = 18.sp,
                         fontWeight = FontWeight.Bold
                     )
                 }
 
                 if (proxyEnabled) {
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.width(12.dp))
                     Box(
                         modifier = Modifier
                             .background(
                                 MaterialTheme.colorScheme.onSecondary.copy(alpha = 0.8f),
                                 RoundedCornerShape(100)
                             )
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                            .padding(horizontal = 10.dp, vertical = 4.dp)
                     ) {
                         Text(
                             text = stringResource(R.string.proxy_indicator),
                             color = MaterialTheme.colorScheme.secondary,
-                            fontSize = 13.sp,
+                            fontSize = 18.sp,
                             fontWeight = FontWeight.Bold
                         )
                     }
@@ -152,7 +153,7 @@ fun TopStatusBar(
                     Surface(
                         onClick = onSearchClick,
                         modifier = Modifier
-                            .size(32.dp)
+                            .size(48.dp)
                             .focusRequester(searchFocusRequester)
                             .vrClickTarget(
                                 key = "top:search",
@@ -177,7 +178,7 @@ fun TopStatusBar(
                             Icon(
                                 imageVector = Icons.Default.Search,
                                 contentDescription = stringResource(R.string.search),
-                                modifier = Modifier.size(18.dp)
+                                modifier = Modifier.size(28.dp)
                             )
                         }
                     }
@@ -185,7 +186,7 @@ fun TopStatusBar(
 
                 // 用户信息
                 if (userInfo != null) {
-                    Spacer(modifier = Modifier.width(16.dp))
+                    Spacer(modifier = Modifier.width(20.dp))
 
                     Surface(
                         onClick = onUserInfoClick ?: {},
@@ -206,19 +207,19 @@ fun TopStatusBar(
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(end = 12.dp, start = 4.dp, top = 4.dp, bottom = 4.dp)
+                            modifier = Modifier.padding(end = 14.dp, start = 6.dp, top = 6.dp, bottom = 6.dp)
                         ) {
                             // 头像：用父亲 2026-10-02 给的图（圆形裁剪）
                             Image(
                                 painter = painterResource(R.drawable.ic_user_avatar),
                                 contentDescription = null,
                                 modifier = Modifier
-                                    .size(26.dp)
+                                    .size(38.dp)
                                     .clip(androidx.compose.foundation.shape.CircleShape)
                             )
                             Text(
                                 text = userInfo,
-                                fontSize = 12.sp,
+                                fontSize = 18.sp,
                                 fontWeight = FontWeight.Medium
                             )
                         }

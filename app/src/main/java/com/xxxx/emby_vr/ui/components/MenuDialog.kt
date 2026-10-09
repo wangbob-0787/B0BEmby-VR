@@ -34,6 +34,7 @@ import androidx.compose.ui.text.font.FontWeight
 import com.xxxx.emby_vr.R
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.xxxx.emby_vr.panel.vrClickTarget
 import com.xxxx.emby_vr.ui.theme.ThemeColorManager
 import com.xxxx.emby_vr.ui.theme.ThemeColor
 
@@ -68,12 +69,21 @@ fun MenuDialog(
             }
         )
     } else {
-        Dialog(
-            onDismissRequest = {
-                isMenuVisible.value = false
-                onDismiss()
-            },
-            properties = DialogProperties(usePlatformDefaultWidth = false) // 撑满全屏以实现渐变背景
+        /*
+         * 不再用弹窗窗口（父亲 2026-10-09「首页菜单按钮扣扳机点不开」）。
+         *
+         * 日志实证：点击**命中了**（`落点命中控件: top:menu` → `控件动作已调用`），
+         * 但弹窗窗口没落到 VR 面板那张虚拟屏上，头显里什么都不出。
+         * 改成同一棵界面树里的浮层：铺满整屏、由调用方排在内容之后，VR 光柱照常点。
+         * 点浮层空白 = 原来的"点外面关掉"。
+         */
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .vrClickTarget(key = "menu:scrim") {
+                    isMenuVisible.value = false
+                    onDismiss()
+                }
         ) {
             // 1. 全屏沉浸式渐变背景
             Box(
@@ -117,6 +127,7 @@ fun MenuDialog(
                         if (onSearch != null) {
                             menuItems.add {
                                 MenuListItem(
+                                    vrKey = "menu:search",
                                     text = stringResource(R.string.search),
                                     icon = Icons.Filled.Search,
                                     onClick = { onSearch(); onDismiss() },
@@ -129,6 +140,7 @@ fun MenuDialog(
                         if (onSwitchAccount != null) {
                             menuItems.add {
                                 MenuListItem(
+                                    vrKey = "menu:switch",
                                     text = stringResource(R.string.switch_account),
                                     icon = Icons.Filled.SwitchAccount,
                                     onClick = { onSwitchAccount(); onDismiss() },
@@ -141,6 +153,7 @@ fun MenuDialog(
                         if (isShowLogout) {
                             menuItems.add {
                                 MenuListItem(
+                                    vrKey = "menu:logout",
                                     text = stringResource(R.string.logout),
                                     icon = Icons.AutoMirrored.Filled.ExitToApp,
                                     onClick = { onLogout(); onDismiss() },
@@ -152,6 +165,7 @@ fun MenuDialog(
                         // 主题选择项
                         menuItems.add {
                             MenuListItem(
+                                vrKey = "menu:theme",
                                 text = stringResource(R.string.theme_color),
                                 icon = Icons.Filled.Palette,
                                 onClick = { showThemeSelection.value = true },
@@ -163,6 +177,7 @@ fun MenuDialog(
                         if (onProxySettings != null) {
                             menuItems.add {
                                 MenuListItem(
+                                    vrKey = "menu:proxy",
                                     text = stringResource(R.string.proxy_settings),
                                     icon = Icons.Filled.Settings,
                                     onClick = { onProxySettings(); onDismiss() },
@@ -175,6 +190,7 @@ fun MenuDialog(
                         if (needUpdate) {
                             menuItems.add {
                                 MenuListItem(
+                                    vrKey = "menu:update",
                                     text = stringResource(R.string.download_latest_version),
                                     icon = Icons.Filled.SystemUpdate,
                                     onClick = { onUpdate(); onDismiss() },
@@ -221,12 +237,22 @@ fun MenuListItem(
     icon: ImageVector,
     onClick: () -> Unit,
     primaryColor: Color,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /*
+     * 登记进 VR 点击表用的钥匙（父亲 2026-10-09）。
+     *
+     * VR 里的点击不走窗口派发，而是查坐标表 —— 不登记就点不动（顶栏图标当年就是这坑）。
+     */
+    vrKey: String? = null
 ) {
     ListItem(
         selected = false,
         onClick = onClick,
-        modifier = modifier,
+        modifier = if (vrKey != null) {
+            modifier.vrClickTarget(key = vrKey, onActivate = onClick)
+        } else {
+            modifier
+        },
         scale = ListItemDefaults.scale(focusedScale = 1f),
         shape = ListItemDefaults.shape(RoundedCornerShape(12.dp)),
         colors = ListItemDefaults.colors(
@@ -255,9 +281,14 @@ fun ThemeSelectionDialog(
     val context = LocalContext.current
     val firstItemFocusRequester = remember { FocusRequester() }
     val themeColors = ThemeColorManager.getThemeColors(context)
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false) // 撑满全屏
+    /*
+     * 与主菜单同一个原因改成同树浮层（父亲 2026-10-09）：
+     * 弹窗窗口不落在 VR 面板那张虚拟屏上，点开等于没反应。
+     */
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .vrClickTarget(key = "menu:theme:scrim") { onDismiss() }
     ) {
         // 1. 全屏沉浸式背景
         Box(
@@ -295,7 +326,11 @@ fun ThemeSelectionDialog(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(180.dp)
-                                .focusRequester(if (index == 0) firstItemFocusRequester else FocusRequester.Default),
+                                .focusRequester(if (index == 0) firstItemFocusRequester else FocusRequester.Default)
+                                .vrClickTarget(
+                                    key = "menu:theme:${theme.id}",
+                                    onActivate = { onThemeSelected(theme) },
+                                ),
                             scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
                             shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(16.dp)),
                             glow = ClickableSurfaceDefaults.glow(
