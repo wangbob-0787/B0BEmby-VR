@@ -487,7 +487,18 @@ object EmbyApi {
                         "&SubtitleMethod=Encode" +
                         "&EnableDirectPlay=false" +
                         "&EnableDirectStream=false"
-                    val r2 = httpAsJsonObject(context, serverUrl, apiKey, deviceId, burnUrl, "POST", body)
+                    /*
+                     * 烧图形字幕必须**真转码**（2026-10-09 父亲实测第二次仍未生效）。
+                     *
+                     * 服务端日志实证：第一次带了 SubtitleMethod=Encode 也白搭 ——
+                     * ffmpeg 命令行仍是 `-c:v:0 copy ... -sn`（视频原样拷、字幕丢掉）。
+                     * 服务端的规矩是：视频不用重编码就不烧字幕。而我们设备清单里声明了
+                     * HEVC 直通，服务端就有理由只转封装（copy 视频）。
+                     * 所以烧字幕这一趟把 HEVC 直通关掉（disableHevc=true）——
+                     * 服务端只能重编码，重编码时才会把图形字幕编进画面。
+                     */
+                    val burnBody = buildPlaybackInfoBody(context, true, maxStreamingBitrate)
+                    val r2 = httpAsJsonObject(context, serverUrl, apiKey, deviceId, burnUrl, "POST", burnBody)
                     val d2 = gson.fromJson(r2, MediaDto::class.java)
                     val t2 = d2.mediaSources?.firstOrNull()
                     if (t2?.transcodingUrl != null) {
