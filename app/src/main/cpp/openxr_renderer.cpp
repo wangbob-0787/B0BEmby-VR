@@ -564,6 +564,13 @@ constexpr ScreenPlacement kFrontScreen{0.f, 0.f, -3.2f, 0.f, 0.f, 3.5f, 16.f / 9
  *   · 与既有摆位规则天然契合：银幕/弹幕固定在世界里、控制条与海报墙跟随观影位。
  * 前提：走动的活动范围要有边界（别穿到银幕后面）。
  */
+/*
+ * 光柱粗细倍率（父亲 2026-10-09：银幕挪到 15 米后那根光柱"像拿着一根棍"，要细一点）。
+ * 距离缩放保证角粗细不随银幕远近变，这个倍率是在此基础上再乘一档。
+ * 1.0 = 与银幕 3.2 米时代同样的角粗细；0.35 = 现在采用的细光柱。
+ */
+std::atomic<float> gRayScale{0.35f};
+
 std::atomic<float> gScreenWidth{26.f};
 std::atomic<float> gScreenDistance{15.f};
 /**
@@ -2942,12 +2949,12 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
              * （也就是保持角粗细不变，这跟银幕放多远无关）。
              */
             const float kRayRefDistance = 3.2f;   // 参考距离：光柱原来按 3.2 米调的粗细
-            const float rayThick = kRayNear *
+            const float rayThick = kRayNear * gRayScale.load() *
                 fmaxf(0.5f, gScreenDistance.load() / kRayRefDistance);
             const Mat4 rayModel = poseScaleModel(c.aimPose[h], rayThick, rayThick, rayLength);
             drawMesh(c, c.rayVbo, c.rayVertexCount,
                      multiply(multiply(proj, view4), rayModel),
-                     0.30f, 0.82f, 0.22f, false);   // 与 TV 版强调色一致的绿
+                     1.f, 1.f, 1.f, false);   // 白光（父亲 2026-10-09：绿光改白）
 
             /*
              * 光点：贴在命中点上，朝眼睛方向抬几毫米（避免和面抢像素）。
@@ -2999,7 +3006,7 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
                 const Mat4 dotModel = poseScaleModel(dotPose, kDotSize * dotScale,
                                                      kDotSize * dotScale, 1.f);
                 drawMesh(c, c.vbo, 6, multiply(multiply(proj, view4), dotModel),
-                         0.55f, 0.98f, 0.45f, true);
+                         1.f, 1.f, 1.f, true);   // 白点（大小不变，父亲 2026-10-09）
             }
 
         }
@@ -4678,6 +4685,13 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
                 LOGI("调参 → 银幕距离 %.2f 米（宽 %.2f 米，水平视角 %.1f°）",
                      (double) value, (double) w,
                      (double) (2.0 * atan((w * 0.5) / value) * 180.0 / 3.14159265358979));
+            }
+            break;
+        case 16:
+            if (value >= 0.05f && value <= 3.f) {
+                gRayScale.store(value);
+                LOGI("调参 → 光柱粗细倍率 %.2f（1.0 = 银幕 3.2 米时代同样的角粗细）",
+                     (double) value);
             }
             break;
         default:
