@@ -455,8 +455,38 @@ object EmbyApi {
                     (selectedAudioIndex?.let { "&AudioStreamIndex=$it" } ?: "") +
                     (selectedSubtitleIndex?.let { "&SubtitleStreamIndex=$it" } ?: "")
 
-            val result = httpAsJsonObject(context, serverUrl, apiKey, deviceId, url, "POST", body)
+            var result = httpAsJsonObject(context, serverUrl, apiKey, deviceId, url, "POST", body)
             var dto = gson.fromJson(result, MediaDto::class.java)
+
+            /*
+             * 图形字幕 → 请服务端烧进画面（父亲 2026-10-09 定）。
+             *
+             * 图形字幕（PGS / VobSub）是图片，服务端转不成文字（实测 200 但 0 字节），
+             * 客户端也没有它的画法。唯一出路是让服务端把它烧进画面 —— 必然要转码，
+             * 所以这里补第二次请求：关掉直连与转封装，逼服务端真转码，并点名
+             * SubtitleMethod=Encode（把这条字幕编进画面）。
+             * 取消图形字幕时标记被清掉，下一次起播又回到直送。
+             */
+            val burnIdx = com.xxxx.emby_vr.player.PlaybackFlags.burnSubtitleIndex
+            if (burnIdx != null) {
+                runCatching {
+                    val burnUrl = url +
+                        "&SubtitleStreamIndex=$burnIdx" +
+                        "&SubtitleMethod=Encode" +
+                        "&EnableDirectPlay=false" +
+                        "&EnableDirectStream=false"
+                    val r2 = httpAsJsonObject(context, serverUrl, apiKey, deviceId, burnUrl, "POST", body)
+                    val d2 = gson.fromJson(r2, MediaDto::class.java)
+                    val t2 = d2.mediaSources?.firstOrNull()
+                    if (t2?.transcodingUrl != null) {
+                        dto = d2
+                        result = r2
+                        Log.i(TAG, "图形字幕 $burnIdx：服务端烧字幕转码已就绪")
+                    } else {
+                        Log.w(TAG, "图形字幕 $burnIdx：服务端没给转码地址，保持原路")
+                    }
+                }.onFailure { Log.w(TAG, "图形字幕烧字幕请求失败：${it.message}") }
+            }
 
             /*
              * 杜比视界片源改走完全转码（父亲 2026-10-07）。

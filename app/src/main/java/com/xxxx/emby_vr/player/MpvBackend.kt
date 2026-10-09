@@ -177,16 +177,18 @@ class MpvBackend(private val context: Context) {
                      */
                     MPVLib.setOptionString("sub-auto", "no")
                     /*
-                     * 内核**不自己画**字幕（2026-10-09 父亲实测）。
+                     * 内核**默认自己画**字幕（2026-10-09 父亲实测后定）。
                      *
-                     * 这台设备上内核的 libass 找不到字体，日志实证：
-                     *   sub/assfontselect: failed to find any fallback with glyph 0x0
-                     * 截图核对：银幕底部一个字都没有。
-                     * 所以文字由 Java 侧用 `sub-text` 取走、交给弹幕层去画，
-                     * 这里把内核自己的那层关掉，避免两边都画、字幕变重影。
-                     * 注意：sub-visibility 只影响"画不画"，`sub-text` 照样读得到文字。
+                     * 文字字幕它画不出来 —— 这台设备上 libass 找不到字体（日志实证
+                     * `sub/assfontselect: failed to find any fallback with glyph 0x0`，
+                     * 截图核对银幕底部一个字都没有），所以文字那类改由 Java 侧取文自绘。
+                     * 但**图形字幕（PGS/VobSub）内核画得了**：那是图片，不需要字体。
+                     *
+                     * 于是这里保持默认（能画），运行时再按实际情况收：
+                     * Java 侧一旦从 `sub-text` 读到文字（说明选中了文字轨），
+                     * 就把 sub-visibility 关掉，免得两边都画、字幕重影。
                      */
-                    MPVLib.setOptionString("sub-visibility", "no")
+                    MPVLib.setOptionString("sub-visibility", "yes")
                     // 静音状态由我们控制，先不静音
                     MPVLib.setOptionString("mute", "no")
                     /*
@@ -277,6 +279,11 @@ class MpvBackend(private val context: Context) {
      * 那句字幕的纯文本，不带 ASS 标记（`{\\an8}` 这类由内核剥掉），且不受 sub-visibility 影响。
      * 取不到（没选轨、此刻没有台词、属性不可读）时返回空串。
      */
+    /** 收 / 放内核自己那层字幕（文字字幕由我们自绘，图形字幕留给内核画）。 */
+    fun setSubVisible(visible: Boolean) {
+        runCatching { MPVLib.setPropertyString("sub-visibility", if (visible) "yes" else "no") }
+    }
+
     fun currentSubtitleText(): String = try {
         MPVLib.getPropertyString("sub-text").orEmpty()
     } catch (_: Throwable) {

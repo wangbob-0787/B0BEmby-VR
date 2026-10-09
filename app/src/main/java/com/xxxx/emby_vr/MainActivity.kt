@@ -353,19 +353,23 @@ class MainActivity : ComponentActivity() {
              */
             if (playerFrameSeen) Log.i(TAG, "原生已取到这一部的帧（黑幕按播放器首帧收）")
             /*
-             * 内核（Profile 5）这条路：这就是「新片画面真的到了」的信号
-             * （2026-10-09 父亲报「换片时上一部画面还在、不显示即将播放的片名」）。
-             * 留 120ms 给合成余量，再收黑幕 / 转圈 / 提示。
+             * 内核（Profile 5）这条路走**同一条收幕通道**（父亲 2026-10-09：
+             * 「切到 Profile 5 片、Profile 5 之间、选集之间的切换逻辑与文案，
+             *   要和非 Profile 5 之间切片做成一样」）。
+             *
+             * 也就是说：内核侧这个「画面已到纹理层」的回调当作播放器首帧用，
+             * 立 playerFrameSeen、再走 tryRevealWaitingFrame（+150ms 纹理余量），
+             * 与非 Profile 5 那条一模一样，不再另开一套。
+             * 另外压一个最短停留：黑幕/转圈/「即将播放：片名」至少亮 700ms，
+             * 否则内核起得快时会一闪而过，观感和普通片切换不一致。
              */
             if (mpvBackend != null) {
                 runOnUiThread {
                     if (!waitingFirstFrame) return@runOnUiThread
-                    handler.postDelayed({
-                        if (waitingFirstFrame && mpvBackend != null) {
-                            Log.i(TAG, "收黑幕：内核画面已到纹理层")
-                            revealDanmakuSubtitleLogo()
-                        }
-                    }, 120L)
+                    playerFrameSeen = true
+                    val since = android.os.SystemClock.uptimeMillis() - waitingStartedAtMs
+                    val delay = (150L).coerceAtLeast(kMinWaitingMs - since)
+                    handler.postDelayed({ tryRevealWaitingFrame() }, delay)
                 }
             }
         }
@@ -1916,6 +1920,24 @@ class MainActivity : ComponentActivity() {
                     subtitleNow = ""
                     danmakuView?.setSubtitle("")
                 } else {
+                    /*
+                     * 普通路径（非 Profile 5）：图形字幕只能靠服务端烧进画面（父亲 2026-10-09 定）。
+                     *
+                     * 图形字幕是图片不是文字，服务端转文字给的是空文件（实测 200 但 0 字节），
+                     * 客户端也没有画它的能力 —— 唯一出路是请服务端把这条字幕编进画面，
+                     * 代价必然是转码。所以：选中图形字幕 → 立标记后重播（走转码）；
+                     * 取消（点已勾的那条）或改选文字字幕 → 清标记后重播（回直送）。
+                     */
+                    val stream = currentStreams.firstOrNull { it.index == selectedSubtitleIndex }
+                    val image = stream != null && isImageSubtitle(stream)
+                    val wasBurning = com.xxxx.emby_vr.player.PlaybackFlags.burnSubtitleIndex != null
+                    com.xxxx.emby_vr.player.PlaybackFlags.burnSubtitleIndex =
+                        if (image) selectedSubtitleIndex else null
+                    if (image) {
+                        Log.i(TAG, "图形字幕 ${selectedSubtitleIndex} → 请服务端烧进画面（自动转码）")
+                    } else if (wasBurning) {
+                        Log.i(TAG, "取消图形字幕 → 回直送（不再转码）")
+                    }
                     replayKeepingPosition()
                 }
             }
@@ -2095,15 +2117,19 @@ class MainActivity : ComponentActivity() {
             it.type.equals("Subtitle", ignoreCase = true) && isDanmakuStream(it)
         }
         subtitleDanmakuRow = hasDanmakuTrack
-        val subs = currentStreams.filter {
-            it.type == "Subtitle" && !isDanmakuStream(it) && !isImageSubtitle(it)
-        }
-        val skipped = currentStreams.filter {
-            it.type == "Subtitle" && !isDanmakuStream(it) && isImageSubtitle(it)
-        }
-        if (skipped.isNotEmpty()) {
-            Log.i(TAG, "字幕菜单：跳过 ${skipped.size} 条图片型字幕（服务端转不出文字）：" +
-                skipped.joinToString(" | ") { "${it.index}:${it.codec}/${it.displayTitle ?: "-"}" })
+        /*
+         * 图形字幕（PGS 等）分两条路对待（父亲 2026-10-09 定）：
+         *   · 内核路径（Profile 5）：**列出来**，内核画得了图片字幕，选中就能显示；
+         *   · 普通路径：也列出来，选中后自动请服务端把字幕烧进画面（见 EmbyApi 的
+         *     burnSubtitleIndex 分支）—— 那条路必然转码，取消选择就回直送。
+         * 所以这里不再过滤，只留一行日志说明这条轨是图形字幕。
+         */
+        val subs = currentStreams.filter { it.type == "Subtitle" && !isDanmakuStream(it) }
+        val images = subs.filter { isImageSubtitle(it) }
+        if (images.isNotEmpty()) {
+            Log.i(TAG, "字幕菜单：图形字幕 ${images.size} 条 → " +
+                images.joinToString(" | ") { "${it.index}:${it.codec}" } +
+                "（内核=" + (mpvBackend != null) + "）")
         }
         subtitleStreamIndices = subs.mapNotNull { it.index }
         val rows = mutableListOf<com.xxxx.emby_vr.panel.MenuRowItem>()
@@ -2711,6 +2737,12 @@ class MainActivity : ComponentActivity() {
     /** 等待第一帧的兜底定时器：切片时要先撤掉上一只（父亲 2026-10-07） */
     private var firstFrameFallback: Runnable? = null
 
+    /** 等待期最短停留：黑幕 / 转圈 /「即将播放：片名」至少亮这么久（2026-10-09） */
+    private val kMinWaitingMs = 700L
+
+    /** 本次等待期从什么时候开始（算最短停留用） */
+    private var waitingStartedAtMs = 0L
+
     /** 内核内嵌字幕的取文轮询（Profile 5 专用，2026-10-09） */
     private var mpvSubtitleJob: kotlinx.coroutines.Job? = null
 
@@ -2725,10 +2757,30 @@ class MainActivity : ComponentActivity() {
         mpvSubtitleJob?.cancel()
         mpvSubtitleJob = scope.launch {
             var lastLogged = ""
+            var subVisibleDisabled = false
+            var idleTicks = 0
             while (isActive) {
                 val backend = mpvBackend ?: break
                 val raw = runCatching { backend.currentSubtitleText() }.getOrNull().orEmpty()
                 val text = cleanSubtitleText(raw)
+                /*
+                 * 内核那层字幕的收放（2026-10-09）：
+                 * 文字字幕（内核画不出来，字体缺失）→ 我们自己画，同时把内核那层关掉；
+                 * 图形字幕（内核画得了、我们读不到文字）→ 把内核那层放开。
+                 */
+                if (text.isNotEmpty()) {
+                    if (!subVisibleDisabled) {
+                        backend.setSubVisible(false)
+                        subVisibleDisabled = true
+                    }
+                } else if (subVisibleDisabled) {
+                    idleTicks += 1
+                    if (idleTicks > 40) {          // 约 3 秒没有文字 → 多半是图形字幕
+                        backend.setSubVisible(true)
+                        subVisibleDisabled = false
+                        idleTicks = 0
+                    }
+                }
                 if (text != subtitleNow) {
                     subtitleNow = text
                     withContext(kotlinx.coroutines.Dispatchers.Main) {
@@ -2804,6 +2856,12 @@ class MainActivity : ComponentActivity() {
          * 的比例，圆就被压成椭圆。两者永远是成对改的。
          */
         applyDanmakuCanvas(16f / 9f)
+        waitingStartedAtMs = android.os.SystemClock.uptimeMillis()
+        /*
+         * 换片了：上一次为图形字幕立的「请服务端烧字幕」标记作废（父亲 2026-10-09）。
+         * 不清的话下一部片子会莫名其妙走转码。
+         */
+        com.xxxx.emby_vr.player.PlaybackFlags.burnSubtitleIndex = null
         /*
          * 等待期这一层要露出来 —— 它上面要显示「即将播放：片名」那行提示
          * （弹幕内容与 logo 仍然等第一帧，见 logoBitmapProvider 的门控）。

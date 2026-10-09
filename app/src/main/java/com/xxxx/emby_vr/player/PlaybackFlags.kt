@@ -53,7 +53,18 @@ object PlaybackFlags {
     @Volatile
     var videoHeight: Int = 0
 
+    /**
+     * 要请服务端**烧进画面**的图形字幕流号（父亲 2026-10-09 定）。
+     *
+     * 图形字幕（蓝光 PGS / VobSub）是图片不是文字，服务端转不出文字（实测返回 200 但 0 字节），
+     * 普通播放路径画不出来。唯一能显示的办法是让服务端把这条字幕烧进画面 —— 必须转码。
+     * 选中图形字幕时立这个标记，取消选择（或换成文字字幕）时清掉，立刻回到直送。
+     */
+    @Volatile
+    var burnSubtitleIndex: Int? = null
+
     fun reset() {
+        burnSubtitleIndex = null
         dolbyVisionSource = false
         useKernelDecoder = false
         dolbyVisionProfile = null
