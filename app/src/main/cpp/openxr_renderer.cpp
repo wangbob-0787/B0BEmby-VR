@@ -666,6 +666,20 @@ struct VrContext {
      */
     VideoLayerBuf blankLayer;
     bool blankLayerOk = true;
+    /*
+     * 控制条 / 菜单独立合成层（2026-10-09，第二次实做）。
+     *
+     * 上一次（build 318）失败的教训有两条，这次都堵住：
+     *  1) 上一版拷贝纹理时开了 GL_BLEND —— 面板纹理的透明通道若为 0，
+     *     混合结果就是全透明，两块面板直接消失。这次**按弹幕层那条已验证的路子**：
+     *     清成透明后关混合、原样拷贝（alpha 原样带过去，交给系统合成器混合）。
+     *  2) 上一版把 renderEye 里的绘制删掉了，没有兜底 —— 层一旦出问题就彻底看不见。
+     *     这次**保留绘制**，只在层提交成功时跳过，层挂了自动退回老路。
+     */
+    VideoLayerBuf osdLayer;
+    bool osdLayerOk = true;
+    VideoLayerBuf menuLayer;
+    bool menuLayerOk = true;
     GLuint videoLayerVao = 0;
     GLuint videoLayerVbo = 0;
 
@@ -2574,7 +2588,14 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
          * 控制条（近场小面板，2026-10-05）：贴在观影者正前方偏下、上仰一点，
          * 与主画面同一套着色器与属性布局，只是换一张纹理、换一个模型矩阵。
          */
-        if (c.osdVisible.load() && c.osdTex != 0 && c.osdHasFrame.load()) {
+        /*
+         * 控制条：独立层提交成功时这里留空（2026-10-09）——面板已按原始像素交给
+         * 系统合成器，这里再画一份等于又画进眼缓冲、被降采样糊一次。
+         * **独立层没建起来时仍走这条老路**：上一版把这段删掉，层一出问题控制条
+         * 就整个消失（父亲实测），不再重犯。
+         */
+        if (!c.osdLayer.submitted && c.osdVisible.load() && c.osdTex != 0 &&
+            c.osdHasFrame.load()) {
             /*
              * 只给控制条开 alpha 混合（父亲 2026-10-06：「叠了两层，下层没有倒圆角」）：
              * Java 侧把控制条窗口背景清成透明，圆角外 alpha=0，这里混合后透出影院背景。
@@ -2620,7 +2641,9 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
          * logo 现在只画在视频层的合成图里（renderQuadLayer 的 videoLayerPass 分支）。
          */
 
-        if (c.menuVisible.load() && c.menuTex != 0 && c.menuHasFrame.load()) {
+        /* 菜单同上（2026-10-09）：独立层提交成功就留空，没建起来仍走这条老路 */
+        if (!c.menuLayer.submitted && c.menuVisible.load() && c.menuTex != 0 &&
+            c.menuHasFrame.load()) {
             glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             const float mth = kMenuTiltDeg * 3.14159265358979f / 180.f;
@@ -3256,8 +3279,22 @@ void frameLoop(VrContext &c) {
     blankQuad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
     blankQuad.layerFlags = 0;
 
-    const XrCompositionLayerBaseHeader *layerPtrs[5] = {nullptr, nullptr, nullptr, nullptr,
-                                                        nullptr};
+    /*
+     * 控制条 / 菜单独立层（2026-10-09）：都是透明面板（圆角外、菜单卡片外透明），
+     * 必须声明按源 alpha 混合，否则运行时会当成不透明黑板。
+     */
+    XrCompositionLayerQuad osdQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+    osdQuad.space = c.localSpace;
+    osdQuad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+    osdQuad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+
+    XrCompositionLayerQuad menuQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+    menuQuad.space = c.localSpace;
+    menuQuad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+    menuQuad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+
+    const XrCompositionLayerBaseHeader *layerPtrs[7] = {nullptr, nullptr, nullptr, nullptr,
+                                                        nullptr, nullptr, nullptr};
 
     int loggedFrames = 0;
     /*
@@ -3426,6 +3463,29 @@ void frameLoop(VrContext &c) {
             }
         }
 
+        /*
+         * 控制条 / 菜单独立合成层（2026-10-09 第二次实做）。
+         *
+         * 走弹幕层那条**已验证**的拷贝路径（renderQuadLayer 的 videoLayerPass=false）：
+         * 清成透明 → 关混合 → 原样拷贝，alpha 原样带过去，混合交给系统合成器。
+         * 上次失败就是因为拷贝时开了混合，纹理 alpha 若是 0 会被混成全透明。
+         *
+         * 纹理刚在上面 updateTexImage 过，这里按面板原始像素尺寸建层。
+         * 层建不起来或提交失败时 submitted 保持 false，renderEye 会自动退回绘制。
+         */
+        c.osdLayer.submitted = false;
+        if (c.osdLayerOk && c.osdVisible.load() && c.osdHasFrame.load() && c.osdTex != 0) {
+            if (buildQuadLayer(c, c.osdLayer, (int32_t) kOsdPxW, (int32_t) kOsdPxH, "控制条")) {
+                c.osdLayer.submitted = renderQuadLayer(c, c.osdLayer, c.osdTex, false);
+            }
+        }
+        c.menuLayer.submitted = false;
+        if (c.menuLayerOk && c.menuVisible.load() && c.menuHasFrame.load() && c.menuTex != 0) {
+            if (buildQuadLayer(c, c.menuLayer, (int32_t) kMenuPxW, (int32_t) kMenuPxH, "菜单")) {
+                c.menuLayer.submitted = renderQuadLayer(c, c.menuLayer, c.menuTex, false);
+            }
+        }
+
         // 手柄状态（诊断阶段：变化即打日志，先看清 PICO 到底发哪些事件）
         c.frameDisplayTime = fs.predictedDisplayTime;
         tUi = std::chrono::steady_clock::now();
@@ -3582,6 +3642,38 @@ void frameLoop(VrContext &c) {
             layerPtrs[layerCount++] =
                     reinterpret_cast<const XrCompositionLayerBaseHeader *>(&panelQuad);
         }
+        /*
+         * 控制条与菜单（2026-10-09）：都是近场面板（0.85m 一排），比海报墙更靠近
+         * 观影者，所以排在海报墙之后提交（画面在上）。原型里它们画在投影层
+         * （最上面、压过海报墙），这里维持同样的高低关系。
+         * 光柱在投影层、始终最上，扣扳机点按钮才不会失灵。
+         */
+        if (rendered && c.osdLayer.submitted) {
+            const float th = kOsdTiltDeg * 3.14159265358979f / 180.f;
+            osdQuad.pose.position = {0.f, kOsdCenterY, -kOsdDistance};
+            osdQuad.pose.orientation = {sinf(th * 0.5f), 0.f, 0.f, cosf(th * 0.5f)};
+            osdQuad.size = {kOsdWidth, kOsdHeight};
+            osdQuad.subImage.swapchain = c.osdLayer.handle;
+            osdQuad.subImage.imageRect.offset = {0, 0};
+            osdQuad.subImage.imageRect.extent = {c.osdLayer.width, c.osdLayer.height};
+            osdQuad.subImage.imageArrayIndex = 0;
+            layerPtrs[layerCount++] =
+                    reinterpret_cast<const XrCompositionLayerBaseHeader *>(&osdQuad);
+        }
+        if (rendered && c.menuLayer.submitted) {
+            const float mth = kMenuTiltDeg * 3.14159265358979f / 180.f;
+            float mcx, mcy, mcz, mnx, mny, mnz, mux, muy, muz, mvx, mvy, mvz;
+            menuBasis(&mcx, &mcy, &mcz, &mnx, &mny, &mnz, &mux, &muy, &muz, &mvx, &mvy, &mvz);
+            menuQuad.pose.position = {mcx, mcy, mcz};
+            menuQuad.pose.orientation = {sinf(mth * 0.5f), 0.f, 0.f, cosf(mth * 0.5f)};
+            menuQuad.size = {kMenuWidth, kMenuHeight};
+            menuQuad.subImage.swapchain = c.menuLayer.handle;
+            menuQuad.subImage.imageRect.offset = {0, 0};
+            menuQuad.subImage.imageRect.extent = {c.menuLayer.width, c.menuLayer.height};
+            menuQuad.subImage.imageArrayIndex = 0;
+            layerPtrs[layerCount++] =
+                    reinterpret_cast<const XrCompositionLayerBaseHeader *>(&menuQuad);
+        }
         if (rendered) {
             layerPtrs[layerCount++] =
                     reinterpret_cast<const XrCompositionLayerBaseHeader *>(&layer);
@@ -3673,6 +3765,17 @@ void frameLoop(VrContext &c) {
             LOGE("提交空屏层失败（xrResult=%d），退回画进眼缓冲", (int) endRes);
             c.blankLayerOk = false;
             c.blankLayer.submitted = false;
+        }
+        if (XR_FAILED(endRes) && c.osdLayer.submitted) {
+            /* 控制条层不被接受：永久关掉，自动退回画进眼缓冲（面板不会消失） */
+            LOGE("提交控制条独立层失败（xrResult=%d），退回画进眼缓冲", (int) endRes);
+            c.osdLayerOk = false;
+            c.osdLayer.submitted = false;
+        }
+        if (XR_FAILED(endRes) && c.menuLayer.submitted) {
+            LOGE("提交菜单独立层失败（xrResult=%d），退回画进眼缓冲", (int) endRes);
+            c.menuLayerOk = false;
+            c.menuLayer.submitted = false;
         }
     }
     LOGI("渲染循环结束");
