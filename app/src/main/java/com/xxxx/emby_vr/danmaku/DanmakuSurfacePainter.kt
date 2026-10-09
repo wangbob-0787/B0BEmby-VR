@@ -22,7 +22,8 @@ import android.view.View
  * 原生那边是按源透明度把它叠在视频上的，画了不透明底就会把视频盖住。
  */
 class DanmakuSurfacePainter(
-    context: Context,
+    // 提成属性：读面板刷新率要用（2026-10-09，电视版节奏对齐做法的 VR 版）
+    private val context: Context,
     private val surfaceTexture: SurfaceTexture,
     private var widthPx: Int,
     private var heightPx: Int,
@@ -110,18 +111,44 @@ class DanmakuSurfacePainter(
     private var frames = 0L
 
     /*
-     * 每帧间隔（毫秒）：11ms ≈ 每秒 90 张（父亲 2026-10-07 重影排查）。
+     * 每帧间隔：跟着**面板刷新率**走，并且按绝对时间排班（2026-10-09，借鉴电视版弹幕层的做法）。
      *
-     * 原来 16ms = 每秒 60 张，而头显每秒合成 72~90 次 —— 合成器会拿到重复的
-     * 画布，横移的弹幕就是"停一帧跳一帧"，叠上屏幕余晖看着像重影。
+     * 电视版那边弹幕层是 View，用 postInvalidateOnAnimation 跟 vsync 对齐；VR 这边
+     * 弹幕是独立纹理、由自己的线程画，没有 vsync 回调可用。于是借它的**思路**：
+     *   ① 间隔 = 1 / 面板刷新率（播放时 72Hz → 13.9ms，界面 90Hz → 11.1ms），
+     *      不再写死 11ms —— 画太快是白烧电，画太慢合成器拿到重复画布，
+     *      横移弹幕就"停一帧跳一帧"，叠上余晖看着像重影（父亲 2026-10-07 报过）；
+     *   ② 用绝对时间排班（nanoTime 累加）而不是"画完 sleep(11ms)"：
+     *      后者把绘制耗时也算进去，间隔变成 11ms + 绘制时间，节拍忽长忽短。
      */
-    private val frameGapMs = 11L
+    @Volatile
+    private var frameGapNs: Long = 11_000_000L
+
+    /** 面板刷新率（Hz）→ 每帧间隔；异常值兜底 90Hz */
+    fun setRefreshRate(hz: Float) {
+        val h = if (hz.isFinite() && hz >= 30f) hz else 90f
+        frameGapNs = (1_000_000_000.0 / h).toLong().coerceIn(8_000_000L, 20_000_000L)
+    }
+
+    /** 当前面板刷新率（读不到就按 90Hz） */
+    private fun displayHz(): Float = runCatching {
+        (context.getSystemService(Context.WINDOW_SERVICE) as android.view.WindowManager)
+            .defaultDisplay.refreshRate
+    }.getOrDefault(90f)
 
     fun start() {
         if (running) return
         running = true
+        setRefreshRate(displayHz())
         thread = Thread {
+            var nextNs = System.nanoTime()
+            var rateCheckAt = System.nanoTime()
             while (running) {
+                // 每 2 秒回读一次刷新率：播放/界面两档来回切时节奏跟着走
+                if (System.nanoTime() - rateCheckAt > 2_000_000_000L) {
+                    rateCheckAt = System.nanoTime()
+                    setRefreshRate(displayHz())
+                }
                 var canvas: android.graphics.Canvas? = null
                 try {
                     canvas = surface.lockCanvas(null)
@@ -129,7 +156,10 @@ class DanmakuSurfacePainter(
                     canvas = null
                 }
                 if (canvas == null) {
-                    Thread.sleep(frameGapMs)
+                    nextNs += frameGapNs
+                    val waitNs = nextNs - System.nanoTime()
+                    if (waitNs > 0) Thread.sleep(waitNs / 1_000_000, (waitNs % 1_000_000).toInt())
+                    else nextNs = System.nanoTime()
                     continue
                 }
                 try {
@@ -196,7 +226,14 @@ class DanmakuSurfacePainter(
                 } finally {
                     runCatching { surface.unlockCanvasAndPost(canvas) }
                 }
-                Thread.sleep(frameGapMs)
+                nextNs += frameGapNs
+                val waitNs = nextNs - System.nanoTime()
+                if (waitNs > 0) {
+                    Thread.sleep(waitNs / 1_000_000, (waitNs % 1_000_000).toInt())
+                } else {
+                    // 这一帧画超了（比如刚好在创建/回收纹理）—— 别追债，重新对齐
+                    nextNs = System.nanoTime()
+                }
             }
         }.also {
             it.name = "danmaku-painter"
