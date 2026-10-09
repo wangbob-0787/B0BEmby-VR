@@ -351,6 +351,22 @@ class MainActivity : ComponentActivity() {
              * （父亲 2026-10-07：声音都出来了黑幕还挂着）。
              */
             if (playerFrameSeen) Log.i(TAG, "原生已取到这一部的帧（黑幕按播放器首帧收）")
+            /*
+             * 内核（Profile 5）这条路：这就是「新片画面真的到了」的信号
+             * （2026-10-09 父亲报「换片时上一部画面还在、不显示即将播放的片名」）。
+             * 留 120ms 给合成余量，再收黑幕 / 转圈 / 提示。
+             */
+            if (mpvBackend != null) {
+                runOnUiThread {
+                    if (!waitingFirstFrame) return@runOnUiThread
+                    handler.postDelayed({
+                        if (waitingFirstFrame && mpvBackend != null) {
+                            Log.i(TAG, "收黑幕：内核画面已到纹理层")
+                            revealDanmakuSubtitleLogo()
+                        }
+                    }, 120L)
+                }
+            }
         }
 
         override fun onClick(px: Float, py: Float) {
@@ -749,6 +765,8 @@ class MainActivity : ComponentActivity() {
      * 自绘字幕跟片走（父亲 2026-10-07）：按当前播放位置找命中的那一条。
      */
     private fun updateDrawnSubtitle() {
+        // 内核（Profile 5）这条路的字幕由 mpvSubtitleJob 从内嵌轨道取文，别两边抢着写
+        if (mpvBackend != null) return
         if (subtitleCues.isEmpty()) return
         val pos = currentPositionMs()
         val text = subtitleCues.firstOrNull { pos >= it.startMs && pos <= it.endMs }?.text.orEmpty()
@@ -1434,8 +1452,15 @@ class MainActivity : ComponentActivity() {
                 com.xxxx.emby_vr.vr.VrNative.setVideoAspect(
                     com.xxxx.emby_vr.player.PlaybackFlags.videoAspect ?: (16f / 9f),
                 )
-                // mpv 没有 ExoPlayer 那套首帧回调，加载态直接放行，别把画面压住
-                waitingFirstFrame = false
+                /*
+                 * 等待态**不再直接放行**（2026-10-09 父亲实测）。
+                 *
+                 * 原来这里写 waitingFirstFrame = false，等于把 clearForNewMedia 刚拉起的
+                 * 黑幕 / 转圈 /「即将播放：片名」立刻收掉 —— 表现就是 Profile 5 换片时
+                 * 「上一部的画面还在、也不显示即将播放的片名」。
+                 * 内核这条路没有 ExoPlayer 的首帧回调，改用原生的「画面已到纹理层」信号收幕
+                 * （见 onVideoFrameReady），另有 clearForNewMedia 的 8 秒兜底。
+                 */
                 osdState.hasPlayback = true
 
                 /*
@@ -1462,11 +1487,17 @@ class MainActivity : ComponentActivity() {
                 // 弹幕与片名 logo：起播后就去拉，任何一步失败都不影响播放
                 loadDanmaku()
                 loadItemDetail()
-                com.xxxx.emby_vr.vr.VrNative.setSpinnerWanted(false)
-                danmakuHint.value = null
-                applyDanmakuSetting()
-                danmakuView?.setSubtitle(subtitleNow)
-                com.xxxx.emby_vr.vr.VrNative.setLogoVisible(logoBitmap.value != null)
+                /*
+                 * 内嵌字幕由我们自己画（2026-10-09 父亲实测「字幕还是出不来」）。
+                 *
+                 * 内核自己那套 libass 在这台设备上找不到字体：日志里明确写着
+                 *   sub/assfontselect: failed to find any fallback with glyph 0x0
+                 * 截图核对过银幕底部确实一个字都没有。所以改为**取文字、自己画**：
+                 * 内核握着文件与时间轴，我们用 `sub-text` 拿到当前这句的纯文本，
+                 * 交给已经调好的弹幕层去排版（它画中文/韩文一直是好的）。
+                 * 内核自己的那层同时关掉（sub-visibility=no），避免两边都画出现重影。
+                 */
+                startMpvSubtitlePoll()
                 /*
                  * 公共收尾必须在**内核这条路也做**（2026-10-09 查 Profile 5 问题时发现）。
                  *
@@ -2588,6 +2619,8 @@ class MainActivity : ComponentActivity() {
             runCatching { it.stop() }
         }
         mpvBackend = null
+        mpvSubtitleJob?.cancel()
+        mpvSubtitleJob = null
         seekTargetMs = null
         // 停止播放：快进快退进度条一并收起（别留在画面上）
         hideSeekHud()
@@ -2640,6 +2673,39 @@ class MainActivity : ComponentActivity() {
 
     /** 等待第一帧的兜底定时器：切片时要先撤掉上一只（父亲 2026-10-07） */
     private var firstFrameFallback: Runnable? = null
+
+    /** 内核内嵌字幕的取文轮询（Profile 5 专用，2026-10-09） */
+    private var mpvSubtitleJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * 内核内嵌字幕：每 80ms 问一次当前这句的纯文本，交给自己那层画（2026-10-09）。
+     *
+     * 为什么不用内核自己画：这台设备上它找不到字体，一个字都画不出来（见内核选项处的注释）。
+     * 为什么是轮询：内核没有"字幕变了"的回调，属性读一次很便宜（一次 JNI 字符串读）。
+     * 只在等待期结束后往层上写，避免把黑幕期的字幕提前露出来。
+     */
+    private fun startMpvSubtitlePoll() {
+        mpvSubtitleJob?.cancel()
+        mpvSubtitleJob = scope.launch {
+            var lastLogged = ""
+            while (isActive) {
+                val backend = mpvBackend ?: break
+                val raw = runCatching { backend.currentSubtitleText() }.getOrNull().orEmpty()
+                val text = cleanSubtitleText(raw)
+                if (text != subtitleNow) {
+                    subtitleNow = text
+                    withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        if (!waitingFirstFrame) danmakuView?.setSubtitle(text)
+                    }
+                }
+                if (text.isNotEmpty() && text != lastLogged) {
+                    lastLogged = text
+                    Log.i(TAG, "内核字幕：${text.take(40)}")
+                }
+                kotlinx.coroutines.delay(80L)
+            }
+        }
+    }
 
     private fun tryRevealWaitingFrame() {
         if (!waitingFirstFrame) return

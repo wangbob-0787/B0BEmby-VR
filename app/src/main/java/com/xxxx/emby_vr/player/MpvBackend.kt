@@ -176,6 +176,17 @@ class MpvBackend(private val context: Context) {
                      * 起始不选任何字幕（sid 留空 = 由 mpv 按内封默认决定，通常是不显示）。
                      */
                     MPVLib.setOptionString("sub-auto", "no")
+                    /*
+                     * 内核**不自己画**字幕（2026-10-09 父亲实测）。
+                     *
+                     * 这台设备上内核的 libass 找不到字体，日志实证：
+                     *   sub/assfontselect: failed to find any fallback with glyph 0x0
+                     * 截图核对：银幕底部一个字都没有。
+                     * 所以文字由 Java 侧用 `sub-text` 取走、交给弹幕层去画，
+                     * 这里把内核自己的那层关掉，避免两边都画、字幕变重影。
+                     * 注意：sub-visibility 只影响"画不画"，`sub-text` 照样读得到文字。
+                     */
+                    MPVLib.setOptionString("sub-visibility", "no")
                     // 静音状态由我们控制，先不静音
                     MPVLib.setOptionString("mute", "no")
                     /*
@@ -259,6 +270,19 @@ class MpvBackend(private val context: Context) {
     fun isPaused(): Boolean = try { MPVLib.getPropertyBoolean("pause") ?: false } catch (_: Throwable) { false }
 
     /** 播放位置（秒） */
+    /**
+     * 当前这句内嵌字幕的纯文本（Profile 5 用，2026-10-09）。
+     *
+     * 内核自己画不出来（找不到字体），但文字本身它有 —— `sub-text` 返回的是当前播放位置上
+     * 那句字幕的纯文本，不带 ASS 标记（`{\\an8}` 这类由内核剥掉），且不受 sub-visibility 影响。
+     * 取不到（没选轨、此刻没有台词、属性不可读）时返回空串。
+     */
+    fun currentSubtitleText(): String = try {
+        MPVLib.getPropertyString("sub-text").orEmpty()
+    } catch (_: Throwable) {
+        ""
+    }
+
     fun positionSec(): Double = try { MPVLib.getPropertyDouble("time-pos") ?: 0.0 } catch (_: Throwable) { 0.0 }
 
     /** 总时长（秒） */
