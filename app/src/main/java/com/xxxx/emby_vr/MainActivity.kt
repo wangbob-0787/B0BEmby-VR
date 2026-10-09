@@ -660,6 +660,28 @@ class MainActivity : ComponentActivity() {
     }
 
     /** SRT 解析：只要时间和文本，够弹幕层的字幕位用 */
+    /**
+     * 字幕文本清洗（2026-10-09 修，父亲实测「中英文字幕都是乱七八糟的字母」）。
+     *
+     * 根因：片源内封的字幕是从 ASS 转出来的 SRT，**每句都带着 ASS 排版标记**。
+     * 从 Emby 拉下来的原始字节实测：
+     *
+     *     1
+     *     00:00:06,800 --> 00:00:08,359
+     *     {\an8}Please put your hands together
+     *
+     * `{\an8}` 是「把这句显示在画面上方」的排版指令。我们把这行当纯文本画出去，
+     * 于是**每句话前面都多出一段 `{\an8}` 之类的符号** —— 中英文都一样，
+     * 看起来就是"乱七八糟的字母"。4XVR 认这些标记（它按 ASS 规则排版），所以正常。
+     *
+     * 处理：滤掉 `{...}` 排版块与残留的 `<...>` 标签，并压掉多余空白。
+     */
+    private fun cleanSubtitleText(s: String): String =
+        s.replace(Regex("""\{[^}]*\}"""), "")
+            .replace(Regex("""<[^>]{0,40}>"""), "")
+            .replace(Regex("""[ \t]+"""), " ")
+            .trim()
+
     private fun parseSrt(raw: String?): List<SubtitleCue> {
         if (raw.isNullOrBlank()) return emptyList()
         val out = ArrayList<SubtitleCue>()
@@ -684,11 +706,15 @@ class MainActivity : ComponentActivity() {
             i++
             val sb = StringBuilder()
             while (i < lines.size && lines[i].isNotBlank()) {
-                if (sb.isNotEmpty()) sb.append("\n")
-                sb.append(lines[i].trim())
+                // 逐行清洗：ASS 排版标记必须在这里滤掉，否则会画到画面上
+                val line = cleanSubtitleText(lines[i])
+                if (line.isNotEmpty()) {
+                    if (sb.isNotEmpty()) sb.append("\n")
+                    sb.append(line)
+                }
                 i++
             }
-            out.add(SubtitleCue(start, end, sb.toString()))
+            if (sb.isNotEmpty()) out.add(SubtitleCue(start, end, sb.toString()))
         }
         return out
     }
@@ -1449,9 +1475,15 @@ class MainActivity : ComponentActivity() {
                          * （视频画面直接走纹理），得把文字接过来自己画。画在弹幕层
                          * 最下方居中，弹幕在上面滚，互不干扰。
                          */
-                        val text = cueGroup.cues.joinToString("\n") { cue ->
-                            cue.text?.toString().orEmpty()
-                        }.trim()
+                        /*
+                         * 每句也要清洗：Media3 的 SubRip 解析器不认 ASS 排版标记，
+                         * 会把 `{\an8}` 原样留在文本里（2026-10-09 父亲实测到乱字符）。
+                         */
+                        val text = cleanSubtitleText(
+                            cueGroup.cues.joinToString("\n") { cue ->
+                                cue.text?.toString().orEmpty()
+                            }
+                        )
                         // 用户自己选了字幕时以自绘的那条为准，别被播放器挑的轨盖掉
                         if (subtitleCues.isNotEmpty()) return
                         subtitleNow = text
