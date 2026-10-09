@@ -459,68 +459,6 @@ object EmbyApi {
             var dto = gson.fromJson(result, MediaDto::class.java)
 
             /*
-             * 图形字幕 → 请服务端烧进画面（父亲 2026-10-09 定）。
-             *
-             * 图形字幕（PGS / VobSub）是图片，服务端转不成文字（实测 200 但 0 字节），
-             * 客户端也没有它的画法。唯一出路是让服务端把它烧进画面 —— 必然要转码，
-             * 所以这里补第二次请求：关掉直连与转封装，逼服务端真转码，并点名
-             * SubtitleMethod=Encode（把这条字幕编进画面）。
-             * 取消图形字幕时标记被清掉，下一次起播又回到直送。
-             */
-            val burnIdx = com.xxxx.emby_vr.player.PlaybackFlags.burnSubtitleIndex
-            if (burnIdx != null) {
-                runCatching {
-                    /*
-                     * 拼接前先把原来的字幕参数**摘掉**（2026-10-09 父亲实测：图片字幕没触发转码）。
-                     *
-                     * 服务端日志给了准确原因：
-                     *   System.FormatException: The input string '2,2' was not in a correct format.
-                     * 基础请求本身就带了 SubtitleStreamIndex（选中的那条），我们又追加了一遍，
-                     * 服务端把两个值拼成 "2,2" 去解析 → 500。摘干净再拼即可。
-                     */
-                    val baseUrl = url
-                        .replace(Regex("&SubtitleStreamIndex=\\d+"), "")
-                        .replace(Regex("\\?SubtitleStreamIndex=\\d+"), "?")
-                        .replace(Regex("&SubtitleMethod=\\w+"), "")
-                    val burnUrl = baseUrl +
-                        "&SubtitleStreamIndex=$burnIdx" +
-                        "&SubtitleMethod=Encode" +
-                        "&EnableDirectPlay=false" +
-                        "&EnableDirectStream=false"
-                    /*
-                     * 烧图形字幕必须**真转码**（2026-10-09 父亲实测第二次仍未生效）。
-                     *
-                     * 服务端日志实证：第一次带了 SubtitleMethod=Encode 也白搭 ——
-                     * ffmpeg 命令行仍是 `-c:v:0 copy ... -sn`（视频原样拷、字幕丢掉）。
-                     * 服务端的规矩是：视频不用重编码就不烧字幕。而我们设备清单里声明了
-                     * HEVC 直通，服务端就有理由只转封装（copy 视频）。
-                     * 所以烧字幕这一趟把 HEVC 直通关掉（disableHevc=true）——
-                     * 服务端只能重编码，重编码时才会把图形字幕编进画面。
-                     */
-                    val burnBody = buildPlaybackInfoBody(context, true, maxStreamingBitrate)
-                    val r2 = httpAsJsonObject(context, serverUrl, apiKey, deviceId, burnUrl, "POST", burnBody)
-                    val d2 = gson.fromJson(r2, MediaDto::class.java)
-                    val t2 = d2.mediaSources?.firstOrNull()
-                    if (t2?.transcodingUrl != null) {
-                        dto = d2
-                        result = r2
-                        Log.i(TAG, "图形字幕 $burnIdx：服务端烧字幕转码已就绪")
-                    } else {
-                        Log.w(TAG, "图形字幕 $burnIdx：服务端没给转码地址，保持原路")
-                    }
-                }.onFailure { Log.w(TAG, "图形字幕烧字幕请求失败：${it.message}") }
-            }
-
-            /*
-             * 杜比视界片源改走完全转码（父亲 2026-10-07）。
-             *
-             * 实况：《挑情丑闻》S01E01 源为 hevc Main 10 + VideoRange=DolbyVision。
-             * 上面虽然关掉了「直连原始文件」（EnableDirectPlay=false），服务端仍可以走
-             * DirectStream —— 那只换封装、视频原样送，头显解不了杜比视界流，于是
-             * 「只有声音没有画面」。所以检测到杜比视界时再请求一次，并把 DirectStream
-             * 也关掉，逼服务端真正转码。
-             */
-            /*
              * 判断片源是不是杜比视界 —— 两条证据并用（父亲 2026-10-08）。
              *
              * 教训：只看 PlaybackInfo 返回的 MediaStreams 不够。我们请求时带了设备能力，
@@ -608,7 +546,14 @@ object EmbyApi {
                 (dvProfile?.contains("HDR10", true) == true)
             val looksProfile5 = (dvProfile?.contains("5") == true) ||
                 (dvProfile?.equals("DOVI", true) == true)
-            val useKernel = isDolbyVision && (looksProfile5 || !looksProfile8)
+            /*
+             * 走内核的两种情形（父亲 2026-10-09）：
+             *  ① 杜比视界 Profile 5 —— 系统解码器解不出画面、也还原不了颜色；
+             *  ② 用户选了**图形字幕**（PGS/VobSub）—— 内核自己就能画图片字幕，
+             *     比"请服务端烧字幕"（要转码、实测还不烧）干净得多。
+             */
+            val useKernel = (isDolbyVision && (looksProfile5 || !looksProfile8)) ||
+                com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForImageSubs
             Log.i(TAG, "片源判定：杜比视界=$isDolbyVision 版本=$dvProfile 走内核=$useKernel" +
                 "（按名=$dvByName 按流=$dvByStream）path=${sourcePath.takeLast(70)}")
             com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource = isDolbyVision
@@ -1324,14 +1269,6 @@ object EmbyApi {
                      * 我们的清单里没有 pgs，它就没有理由烧，只能丢。
                      * 所以烧字幕这一趟要明确告诉它这几类图形字幕请"Encode"。
                      */
-                    if (com.xxxx.emby_vr.player.PlaybackFlags.burnSubtitleIndex != null) {
-                        add(createSubtitleProfile("pgssub", "Encode"))
-                        add(createSubtitleProfile("pgs", "Encode"))
-                        add(createSubtitleProfile("hdmv_pgs_subtitle", "Encode"))
-                        add(createSubtitleProfile("dvdsub", "Encode"))
-                        add(createSubtitleProfile("dvbsub", "Encode"))
-                        add(createSubtitleProfile("dvb_subtitle", "Encode"))
-                    }
                 })
 
                 add("ResponseProfiles", JsonArray().apply {

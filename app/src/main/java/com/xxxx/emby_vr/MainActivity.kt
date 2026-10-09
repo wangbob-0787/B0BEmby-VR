@@ -1674,7 +1674,14 @@ class MainActivity : ComponentActivity() {
                  * 视频层宽度按路径区分（2026-10-09 父亲要求）：
                  * 内核这条链（杜比视界 Profile 5）贵，1664 实测 GPU 15ms 超预算 → 1280。
                  */
-                com.xxxx.emby_vr.vr.VrNative.setVideoLayerMaxW(1280)
+                /*
+                 * 内核这条链的视频层宽度：杜比视界（P5）那条每帧吃 10~19ms GPU，
+                 * 压在 1280 换稳定；只是"因为选了图片字幕"而走内核的普通片没有这笔开销，
+                 * 给它 1920（父亲 2026-10-09）。
+                 */
+                com.xxxx.emby_vr.vr.VrNative.setVideoLayerMaxW(
+                    if (com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource) 1280 else 1920,
+                )
                 startPlaybackReporting()
                 Log.i(TAG, "开始播放（内核）: $title url=${url.take(160)}")
                 return
@@ -2115,16 +2122,23 @@ class MainActivity : ComponentActivity() {
                     val stream = currentStreams.firstOrNull { it.index == selectedSubtitleIndex }
                     val image = stream != null && isImageSubtitle(stream)
                     val embeddedText = stream != null && stream.isExternal != true && !image
-                    val wasBurning = com.xxxx.emby_vr.player.PlaybackFlags.burnSubtitleIndex != null
-                    com.xxxx.emby_vr.player.PlaybackFlags.burnSubtitleIndex =
-                        if (image) selectedSubtitleIndex else null
+                    val wasKernelForSubs =
+                        com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForImageSubs
+                    com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForImageSubs = image
                     when {
                         image -> {
-                            Log.i(TAG, "图形字幕 ${selectedSubtitleIndex} → 请服务端烧进画面（自动转码）")
+                            /*
+                             * 图形字幕（PGS/VobSub）→ **这部片改走自带内核**（父亲 2026-10-09 定）。
+                             *
+                             * 内核（mpv）自己会画图片字幕，不用转码、不掉画质。
+                             * 之前试过"请服务端烧字幕"：服务端确实重编码了，
+                             * 但命令里没有任何叠加字幕的滤镜，画面上什么都没有。
+                             */
+                            Log.i(TAG, "图形字幕 ${selectedSubtitleIndex} → 改走内核播放（内核自己画图片字幕）")
                             replayKeepingPosition()
                         }
-                        wasBurning -> {
-                            Log.i(TAG, "取消图形字幕 → 回直送（不再转码）")
+                        wasKernelForSubs -> {
+                            Log.i(TAG, "取消图形字幕 → 回到系统播放器")
                             replayKeepingPosition()
                         }
                         embeddedText -> {
@@ -2343,7 +2357,7 @@ class MainActivity : ComponentActivity() {
          * 图形字幕（PGS 等）分两条路对待（父亲 2026-10-09 定）：
          *   · 内核路径（Profile 5）：**列出来**，内核画得了图片字幕，选中就能显示；
          *   · 普通路径：也列出来，选中后自动请服务端把字幕烧进画面（见 EmbyApi 的
-         *     burnSubtitleIndex 分支）—— 那条路必然转码，取消选择就回直送。
+         *     选它会改走内核播放（内核自己画图片字幕）。
          * 所以这里不再过滤，只留一行日志说明这条轨是图形字幕。
          */
         val subs = currentStreams.filter { it.type == "Subtitle" && !isDanmakuStream(it) }
@@ -3339,10 +3353,10 @@ class MainActivity : ComponentActivity() {
         subtitleCueStream = null
         subtitleNow = ""
         /*
-         * 换片了：上一次为图形字幕立的「请服务端烧字幕」标记作废（父亲 2026-10-09）。
-         * 不清的话下一部片子会莫名其妙走转码。
+         * 换片了：上一次为图形字幕立的「改走内核」标记作废（父亲 2026-10-09）。
+         * 不清的话下一部片子会莫名其妙走内核。
          */
-        com.xxxx.emby_vr.player.PlaybackFlags.burnSubtitleIndex = null
+        com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForImageSubs = false
         /*
          * 等待期这一层要露出来 —— 它上面要显示「即将播放：片名」那行提示
          * （弹幕内容与 logo 仍然等第一帧，见 logoBitmapProvider 的门控）。

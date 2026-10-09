@@ -54,17 +54,23 @@ object PlaybackFlags {
     var videoHeight: Int = 0
 
     /**
-     * 要请服务端**烧进画面**的图形字幕流号（父亲 2026-10-09 定）。
+     * 选了**图形字幕**（蓝光 PGS / VobSub）时：这部片改走自带内核播放
+     * （父亲 2026-10-09 拍板试这条路）。
      *
-     * 图形字幕（蓝光 PGS / VobSub）是图片不是文字，服务端转不出文字（实测返回 200 但 0 字节），
-     * 普通播放路径画不出来。唯一能显示的办法是让服务端把这条字幕烧进画面 —— 必须转码。
-     * 选中图形字幕时立这个标记，取消选择（或换成文字字幕）时清掉，立刻回到直送。
+     * 为什么不请服务端烧字幕：图形字幕是图片不是文字，服务端转不出文字（实测 200 但 0 字节）；
+     * 让服务端把字幕编进画面那条路（SubtitleMethod=Encode）实测也不烧 ——
+     * 服务端确实重编码了，但命令里没有任何叠加字幕的滤镜，画面上什么都没有，
+     * 而且必然转码、掉一档画质。
+     *
+     * 改走内核：内核（mpv）自己就会画蓝光图片字幕，不需要字体、不需要服务端参与、
+     * 不转码。代价是这部片的视频也由内核解（内核那条链开销略高）。
+     * 选中图形字幕时立这个标记，取消选择（或换成文字字幕）时清掉 → 回到系统播放器。
      */
     @Volatile
-    var burnSubtitleIndex: Int? = null
+    var forceKernelForImageSubs: Boolean = false
 
     fun reset() {
-        burnSubtitleIndex = null
+        forceKernelForImageSubs = false
         dolbyVisionSource = false
         useKernelDecoder = false
         dolbyVisionProfile = null
