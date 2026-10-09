@@ -77,6 +77,16 @@ fun MenuDialog(
          * 改成同一棵界面树里的浮层：铺满整屏、由调用方排在内容之后，VR 光柱照常点。
          * 点浮层空白 = 原来的"点外面关掉"。
          */
+        /*
+         * 返回键关菜单（父亲 2026-10-09：进菜单后按返回键回不到上一层）。
+         *
+         * 菜单原来是弹窗窗口，返回键由那个窗口吃掉；改成同树浮层后没人接返回键了，
+         * 它会穿透到面板的导航栈上。这里显式接住：按返回 = 关菜单。
+         */
+        androidx.activity.compose.BackHandler(enabled = true) {
+            isMenuVisible.value = false
+            onDismiss()
+        }
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -285,6 +295,8 @@ fun ThemeSelectionDialog(
      * 与主菜单同一个原因改成同树浮层（父亲 2026-10-09）：
      * 弹窗窗口不落在 VR 面板那张虚拟屏上，点开等于没反应。
      */
+    // 主题选择这一层也要接返回键（同上）
+    androidx.activity.compose.BackHandler(enabled = true) { onDismiss() }
     Box(
         modifier = Modifier
             .fillMaxSize()
