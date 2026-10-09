@@ -37,6 +37,8 @@ import java.io.File
  * | `no_postfx` | 1=画质增强与颜色调整全回中性 | 0 |
  * | `finish_before_texupdate` | 1=每次取帧前先 glFinish（防外部纹理缓冲被提前回收，黑纹主嫌疑开关） | 0 |
  * | `video_surface_w` | 内核视频处理宽度上限（0=1920）。杜比还原开销与像素量成正比，调小可直接砍 GPU | 0 |
+ * | `screen_width` | 银幕宽度（米）。与 `screen_distance` 一起决定视角，默认按 IMAX 第10排几何 | 5.2 |
+ * | `screen_distance` | 银幕距离（米）。78° 水平视角 = 宽 5.2 / 距 3.2 | 3.2 |
  * | `mpv_<属性>` | 透传给内核的同名属性，例如 `mpv_tone-mapping=spline` | — |
  * | `cmd` | 直接执行一条内核命令，例如 `cmd=screenshot-to-file <路径> video`（导出渲染画面，校色用） | — |
  *
@@ -81,6 +83,9 @@ object VrTuning {
     const val KEY_FORCE_RGBA8 = 11
     const val KEY_NO_POSTFX = 12
     const val KEY_FINISH_BEFORE_TEXUPDATE = 13
+    /** 银幕几何（2026-10-09）：按「IMAX 第10排」定，也允许运行时调 */
+    const val KEY_SCREEN_WIDTH = 14
+    const val KEY_SCREEN_DISTANCE = 15
 
     /** 上次应用的配置原文，只有变化才动手（避免每秒重复设置） */
     private var lastRaw: Map<String, String> = emptyMap()
@@ -242,6 +247,14 @@ object VrTuning {
             applied += "视频处理宽度上限 $it（0=1920）"
         }
         flag("finish_before_texupdate", KEY_FINISH_BEFORE_TEXUPDATE, "取帧前先 glFinish")
+        raw["screen_width"]?.toFloatOrNull()?.let {
+            VrNative.setTuning(KEY_SCREEN_WIDTH, it)
+            applied += "银幕宽 ${it}m"
+        }
+        raw["screen_distance"]?.toFloatOrNull()?.let {
+            VrNative.setTuning(KEY_SCREEN_DISTANCE, it)
+            applied += "银幕距离 ${it}m"
+        }
 
         if (!wrote) return applied
         if (mask != null) {

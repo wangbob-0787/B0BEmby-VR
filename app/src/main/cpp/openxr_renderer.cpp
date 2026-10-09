@@ -537,6 +537,24 @@ struct ScreenPlacement {
 
 /** 正前方那块屏（银幕）：播放时贴视频，没播时是暗色空屏 */
 constexpr ScreenPlacement kFrontScreen{0.f, 0.f, -3.2f, 0.f, 0.f, 3.5f, 16.f / 9.f};
+
+/*
+ * 银幕尺寸与距离（2026-10-09 父亲定：按「标准 IMAX 影厅第 10 排」的观影几何）。
+ *
+ * 专业依据：IMAX 的坐席深度刻意做得很浅，行业经典规则是「最后一排到银幕 ≈ 1 个银幕高度」。
+ * 以 IMAX with Laser 常见的 1.90:1 银幕（约 26 m × 13.7 m、15~18 排、总深约 25 m）为例：
+ *   第 10 排（约 2/3 深度）距银幕 ≈ 15 m → 水平视角 2·atan(13/15) ≈ 82°
+ * 经典 1.43:1 IMAX（22 m × 15.4 m）：第 10 排 ≈ 13 m → 2·atan(11/13) ≈ 80°
+ * 取两者下限 78° 落到我们的 16:9 银幕：
+ *   宽 5.2 m、距离 3.2 m → 水平 2·atan(2.6/3.2) ≈ 78°，垂直 2·atan(1.4625/3.2) ≈ 49°
+ * 对照：THX/SMPTE 对普通影厅的要求是最远座 ≥36°、最佳座约 45~50° —— 所以这个值
+ * 明显比普通影厅大，观感就是"巨幕压在眼前"。
+ *
+ * 两者都做成运行时可调（vr-tuning.txt 的 `screen_width` / `screen_distance`），
+ * 免得以后调尺寸还要重新编译。
+ */
+std::atomic<float> gScreenWidth{5.2f};
+std::atomic<float> gScreenDistance{3.2f};
 /**
  * 海报墙的**初始**摆位：左前方、斜着正对观影者。
  *
@@ -1657,6 +1675,8 @@ ScreenPlacement panelPlacement(const VrContext &c) {
 /** 银幕当前摆位（宽高比跟着片子的实际比例走，父亲 2026-10-06） */
 ScreenPlacement frontScreen(const VrContext &c) {
     ScreenPlacement p = kFrontScreen;
+    p.cz = -gScreenDistance.load();     // 距离可运行时调
+    p.width = gScreenWidth.load();      // 尺寸可运行时调
     p.aspect = c.videoAspect.load();
     return p;
 }
@@ -1765,7 +1785,7 @@ void drawSpinner(VrContext &c, const Mat4 &proj, const Mat4 &view4) {
         XrPosef seg{};
         seg.position = {kFrontScreen.cx + cosf(ang) * kRadius,
                         kFrontScreen.cy + sinf(ang) * kRadius,
-                        kFrontScreen.cz + 0.012f};   // 稍微抬出来，别和银幕抢像素
+                        -gScreenDistance.load() + 0.012f};   // 稍微抬出来，别和银幕抢像素
         /*
          * 段的**长边沿切线**摆（父亲 2026-10-07：线要连续、不能毛糙）：
          * 绕 Z 转 θ 时方块的 +X 指向 θ —— 取 θ = ang + 90° 就是切线方向，
@@ -4590,6 +4610,24 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             gFinishBeforeTexUpdate.store((int) value);
             LOGI("调参 → 取帧前先 glFinish %s（防外部纹理缓冲被提前回收）",
                  (int) value ? "开" : "关");
+            break;
+        case 14:
+            if (value >= 1.f && value <= 12.f) {
+                gScreenWidth.store(value);
+                const float dist = gScreenDistance.load();
+                LOGI("调参 → 银幕宽 %.2f 米（距离 %.2f 米，水平视角 %.1f°）",
+                     (double) value, (double) dist,
+                     (double) (2.0 * atan((value * 0.5) / dist) * 180.0 / 3.14159265358979));
+            }
+            break;
+        case 15:
+            if (value >= 1.f && value <= 12.f) {
+                gScreenDistance.store(value);
+                const float w = gScreenWidth.load();
+                LOGI("调参 → 银幕距离 %.2f 米（宽 %.2f 米，水平视角 %.1f°）",
+                     (double) value, (double) w,
+                     (double) (2.0 * atan((w * 0.5) / value) * 180.0 / 3.14159265358979));
+            }
             break;
         default:
             LOGI("调参 → 未知参数 key=%d（忽略）", (int) key);
