@@ -723,11 +723,26 @@ class MainActivity : ComponentActivity() {
      *
      * 处理：滤掉 `{...}` 排版块与残留的 `<...>` 标签，并压掉多余空白。
      */
-    private fun cleanSubtitleText(s: String): String =
-        s.replace(Regex("""\{[^}]*\}"""), "")
+    /**
+     * 字幕文字清理（2026-10-09 父亲实测：SubRip 里的换行转义被原样画了出来）。
+     *
+     * 要处理的东西：
+     *   · `{\an8}` 这类 ASS 覆盖标记 → 去掉；
+     *   · `<i>` 这类 HTML 风格标记 → 去掉；
+     *   · `\N`（硬换行）`\n`（软换行）→ **真的换行**（字幕层按行绘制，能画多行）；
+     *   · `\h`（硬空格）→ 空格；其余反斜杠转义一律去掉。
+     */
+    private fun cleanSubtitleText(s: String): String {
+        val t = s
+            .replace(Regex("""\{[^}]*\}"""), "")
             .replace(Regex("""<[^>]{0,40}>"""), "")
-            .replace(Regex("""[ \t]+"""), " ")
-            .trim()
+            .replace(Regex("""\\[Nn]"""), "\n")
+            .replace(Regex("""\\h"""), " ")
+            .replace("\\", "")
+        return t.split("\n")
+            .joinToString("\n") { it.replace(Regex("""[ \t]+"""), " ").trim() }
+            .trim('\n', ' ', '\t')
+    }
 
     private fun parseSrt(raw: String?): List<SubtitleCue> {
         if (raw.isNullOrBlank()) return emptyList()
@@ -2160,22 +2175,34 @@ class MainActivity : ComponentActivity() {
     }
 
     /** 这条字幕流是不是弹幕轨（ASS / SSA，由自绘弹幕层负责，不当普通字幕选） */
+    /** 弹幕文件名/标题里的硬标志（父亲 2026-10-09 定：带「弹幕」两个字才是弹幕） */
+    private val kDanmakuNameHints = listOf("弹幕", "danmaku", "danmu")
+
+    /** 弹幕常见的文件后缀：ASS/SSA（ASS 式弹幕）、XML（B 站/弹弹play 导出）、JSON（弹弹play） */
+    private val kDanmakuExts = listOf(".ass", ".ssa", ".xml", ".json")
+
+    /**
+     * 这一条字幕轨是不是弹幕（父亲 2026-10-09 定的判据）。
+     *
+     * 起因：原来"格式是 ass/ssa 就算弹幕"，于是《黑帮领地》里内嵌的中文 ASS 字幕被当成
+     * 弹幕塞进「弹幕」那一行；后来又出现反例 —— **SubRip 字幕被当成弹幕画到屏幕上方**，
+     * 那些`{\an8}`/`\N` 之类的换行转义还照原样画了出来。
+     *
+     * 现在以**文件名**为准：我们自己和弹幕站生成的弹幕都是 `<片名>.弹幕.ass` 这种，
+     * 文件名/标题里带「弹幕」（或 danmaku/danmu）才算弹幕。除此之外只有弹幕专用的
+     * XML / JSON 容器（普通字幕基本不用这两种）也归弹幕 —— 免得当字幕画成乱码。
+     */
     private fun isDanmakuStream(s: com.xxxx.emby_vr.data.model.MediaStreamDto): Boolean {
-        val codec = (s.codec ?: "").lowercase()
-        if (codec != "ass" && codec != "ssa") return false
-        /*
-         * 内嵌的 ASS 不等于弹幕（2026-10-09 父亲实测）。
-         *
-         * 原来只要格式是 ass/ssa 就当成弹幕轨 —— 于是片源里自带的中文 ASS 字幕
-         * （《黑帮领地》S02E02 就是这种）被塞进「弹幕」那一行，字幕列表里反而只剩
-         * 一条图片型字幕，选中后什么都出不来。
-         * 弹幕系统给的是**外挂** ass 文件（IsExternal=true），标题里通常也带弹幕字样；
-         * 两条都不满足的就当普通字幕看待。
-         */
+        val path = s.path ?: ""
+        val pathLower = path.lowercase()
         val title = ((s.displayTitle ?: "") + " " + (s.title ?: "")).lowercase()
-        val looksDanmaku = title.contains("弹幕") || title.contains("danmaku") ||
-            title.contains("comment")
-        return s.isExternal == true || looksDanmaku
+        if (kDanmakuNameHints.any { title.contains(it) || pathLower.contains(it) }) return true
+        val codec = (s.codec ?: "").lowercase()
+        if (s.isExternal == true && (codec == "xml" || codec == "json") &&
+            kDanmakuExts.any { pathLower.endsWith(it) }) {
+            return true
+        }
+        return false
     }
 
     /**
