@@ -329,6 +329,27 @@ class MpvBackend(private val context: Context) {
         }
     }
 
+    /**
+     * 播放模式里的"循环"（父亲 2026-10-09：控制条功能在内核这条路上也要能用）。
+     *
+     * 系统播放器那边设的是 ExoPlayer 的 repeatMode；内核要用 mpv 的 loop-file：
+     *  · 列表循环 / 单集循环 → 单集本身循环（与系统播放器那边对单个片的语义一致）；
+     *  · 播完停止 → 不循环，由界面在播完时收场。
+     */
+    fun setLoopFile(loop: Boolean) {
+        runCatching {
+            MPVLib.setPropertyString("loop-file", if (loop) "inf" else "no")
+            Log.i(TAG, "内核循环 → ${if (loop) "开" else "关"}")
+        }
+    }
+
+    /** 内核有没有播到结尾（界面的"播完停止"靠它收场） */
+    fun endReached(): Boolean = try {
+        MPVLib.getPropertyBoolean("eof-reached") == true
+    } catch (_: Throwable) {
+        false
+    }
+
     fun setSpeed(speed: Float) {
         try { MPVLib.setPropertyDouble("speed", speed.toDouble()) } catch (_: Throwable) {}
     }

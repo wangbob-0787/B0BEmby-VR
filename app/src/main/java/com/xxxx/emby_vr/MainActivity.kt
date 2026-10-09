@@ -1959,9 +1959,11 @@ class MainActivity : ComponentActivity() {
                 toggleMenu(com.xxxx.emby_vr.panel.MenuKind.SUBTITLE, button)
             com.xxxx.emby_vr.panel.OsdButton.DANMAKU ->
                 toggleMenu(com.xxxx.emby_vr.panel.MenuKind.DANMAKU, button)
-            com.xxxx.emby_vr.panel.OsdButton.SEEK_BACK -> if (player != null) seekBy(-10_000)
+            // 内核（mpv）这条路上 player 恒为空 —— 判据要用播放接口层，
+            // 否则"因图片字幕走内核"的片子上，控制条的快退/快进按钮点了没反应（父亲 2026-10-09）
+            com.xxxx.emby_vr.panel.OsdButton.SEEK_BACK -> if (ctl.hasEngine()) seekBy(-10_000)
             com.xxxx.emby_vr.panel.OsdButton.PLAY_PAUSE -> togglePlayPause()
-            com.xxxx.emby_vr.panel.OsdButton.SEEK_FWD -> if (player != null) seekBy(+10_000)
+            com.xxxx.emby_vr.panel.OsdButton.SEEK_FWD -> if (ctl.hasEngine()) seekBy(+10_000)
             com.xxxx.emby_vr.panel.OsdButton.SPEED ->
                 toggleMenu(com.xxxx.emby_vr.panel.MenuKind.SPEED, button)
             com.xxxx.emby_vr.panel.OsdButton.EPISODES ->
@@ -2266,6 +2268,12 @@ class MainActivity : ComponentActivity() {
             1 -> androidx.media3.common.Player.REPEAT_MODE_ONE
             else -> androidx.media3.common.Player.REPEAT_MODE_OFF
         }
+        /*
+         * 内核这条路同样要跟上（父亲 2026-10-09）：mpv 的循环是与 ExoPlayer 不同的属性，
+         * 只设 player?.repeatMode 在内核下等于没设。
+         * 播完停止（2）不循环，由下面轮询里的 eof-reached 收场。
+         */
+        mpvBackend?.setLoopFile(playModeIndex != 2)
         Log.i(TAG, "播放模式 → ${com.xxxx.emby_vr.panel.PLAY_MODE_STEPS.getOrNull(playModeIndex)}")
     }
 
@@ -3264,6 +3272,20 @@ class MainActivity : ComponentActivity() {
                  * 内核出画判定（父亲 2026-10-09）：解出画面尺寸了才算真的出画，
                  * 配合最短停留两秒，收黑幕 / 转圈 /「即将播放」。
                  */
+                /*
+                 * 内核播到结尾（父亲 2026-10-09）：内核没有 ExoPlayer 那个"播放结束"回调，
+                 * 拿 mpv 的 eof-reached 当判据。"播完停止"这一档由界面收场；
+                 * 另外两档循环开着，正常不会走到这里。
+                 */
+                if (!waitingFirstFrame && playModeIndex == 2 &&
+                    runCatching { backend.endReached() }.getOrDefault(false)
+                ) {
+                    Log.i(TAG, "内核播放结束（eof-reached）→ 停止并回到界面")
+                    withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        runCatching { stopPlayback() }
+                    }
+                    break
+                }
                 if (waitingFirstFrame && runCatching { backend.videoReady() }.getOrDefault(false)) {
                     playerFrameSeen = true
                     withContext(kotlinx.coroutines.Dispatchers.Main) { tryRevealWaitingFrame() }
