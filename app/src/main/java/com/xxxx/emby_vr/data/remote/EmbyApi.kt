@@ -1303,6 +1303,24 @@ object EmbyApi {
                     add(createSubtitleProfile("ssa", "External"))
                     add(createSubtitleProfile("srt", "External"))
                     add(createSubtitleProfile("subrip", "Embed"))
+                    /*
+                     * 图形字幕（PGS/VobSub/DVB）——**只在要求服务端烧字幕时**才声明
+                     * 「编进画面」（2026-10-09 父亲实测：选了 PGS 字幕什么都没出）。
+                     *
+                     * 服务端日志实证：那次虽然带了 SubtitleMethod=Encode，ffmpeg 命令行
+                     * 却是 `-c:v:0 copy ... -sn`（视频原样拷、字幕直接丢掉）——
+                     * 服务端是按**客户端声明支持哪些字幕格式**来定处理方式的；
+                     * 我们的清单里没有 pgs，它就没有理由烧，只能丢。
+                     * 所以烧字幕这一趟要明确告诉它这几类图形字幕请"Encode"。
+                     */
+                    if (com.xxxx.emby_vr.player.PlaybackFlags.burnSubtitleIndex != null) {
+                        add(createSubtitleProfile("pgssub", "Encode"))
+                        add(createSubtitleProfile("pgs", "Encode"))
+                        add(createSubtitleProfile("hdmv_pgs_subtitle", "Encode"))
+                        add(createSubtitleProfile("dvdsub", "Encode"))
+                        add(createSubtitleProfile("dvbsub", "Encode"))
+                        add(createSubtitleProfile("dvb_subtitle", "Encode"))
+                    }
                 })
 
                 add("ResponseProfiles", JsonArray().apply {
