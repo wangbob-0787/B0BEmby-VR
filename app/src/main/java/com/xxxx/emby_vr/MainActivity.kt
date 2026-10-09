@@ -1484,6 +1484,11 @@ class MainActivity : ComponentActivity() {
                 stickSeekDir = 0
                 stickSeekAccel = false
                 hideSeekHud()
+                /*
+                 * 视频层宽度按路径区分（2026-10-09 父亲要求）：
+                 * 内核这条链（杜比视界 Profile 5）贵，1664 实测 GPU 15ms 超预算 → 1280。
+                 */
+                com.xxxx.emby_vr.vr.VrNative.setVideoLayerMaxW(1280)
                 startPlaybackReporting()
                 Log.i(TAG, "开始播放（内核）: $title url=${url.take(160)}")
                 return
@@ -1649,6 +1654,11 @@ class MainActivity : ComponentActivity() {
                 })
             }
             renderer.videoActive = true
+            /*
+             * 系统播放器路径 GPU 只要 1.8~2.4ms，视频层可以放开到 1920（2026-10-09）：
+             * 只有内核那条（杜比视界 Profile 5）才需要压到 1280 换稳定。
+             */
+            com.xxxx.emby_vr.vr.VrNative.setVideoLayerMaxW(1920)
             picking = false
             osdState.title = title
             // 旧片已经停过（停止上报用的是旧身份），新片身份从现在起正式生效 —— 后面的字幕、弹幕、上报都要用它

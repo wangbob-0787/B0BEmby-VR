@@ -4711,6 +4711,25 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetVideoSize(JNIEnv *env, jobject /* th
 }
 
 /**
+ * 按播放路径设置「视频独立层宽度上限」（2026-10-09 父亲要求区分）。
+ *
+ * 两条路的 GPU 预算完全不同：
+ *   · 内核路径（杜比视界 Profile 5）：杜比还原链很贵，实测视频处理宽度 1664 时
+ *     GPU 涨到 15ms 超出预算 → 只能给 1280。
+ *   · 系统播放器路径（Profile 8.x 等）：实测只要 1.8~2.4ms，完全吃得下更大的层。
+ * 所以由 Java 侧在起播时按实际路径下发，而不是全局一个值。
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetVideoLayerMaxW(JNIEnv *env, jobject /* this */,
+                                                           jint width) {
+    (void) env;
+    if (width > 0) {
+        gVideoLayerMaxW.store((int) width);
+        LOGI("调参 → 视频层宽度上限 %d（按播放路径下发）", (int) width);
+    }
+}
+
+/**
  * 注册 VR 输入回调（Java 侧实现 VrNative.InputSink）。
  *
  * 渲染线程每帧把光柱指向 / 扳机 / 摇杆 / B 键回推过去。持有全局引用，

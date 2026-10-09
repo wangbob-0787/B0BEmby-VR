@@ -209,6 +209,9 @@ object VrNative {
         temperature: Float,
     )
 
+    private external fun nativeSetVideoLayerMaxW(width: Int)
+
+
     private external fun nativeSetVideoSize(width: Int, height: Int)
     private external fun nativeSetDanmakuCanvas(width: Int, height: Int)
 
@@ -240,6 +243,18 @@ object VrNative {
             }
         } catch (t: Throwable) {
             Log.e(TAG, "设置画面调整失败：${t.message}")
+        }
+    }
+
+    /**
+     * 视频独立层宽度上限（2026-10-09）：按播放路径下发。
+     * 内核（杜比视界 Profile 5）这条链贵，给 1280；系统播放器那条便宜，可以给 1920。
+     */
+    fun setVideoLayerMaxW(width: Int) {
+        try {
+            if (loaded) nativeSetVideoLayerMaxW(width)
+        } catch (t: Throwable) {
+            Log.e(TAG, "设置视频层宽度上限失败：${t.message}")
         }
     }
 
