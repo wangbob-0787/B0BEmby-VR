@@ -553,8 +553,19 @@ constexpr ScreenPlacement kFrontScreen{0.f, 0.f, -3.2f, 0.f, 0.f, 3.5f, 16.f / 9
  * 两者都做成运行时可调（vr-tuning.txt 的 `screen_width` / `screen_distance`），
  * 免得以后调尺寸还要重新编译。
  */
-std::atomic<float> gScreenWidth{5.2f};
-std::atomic<float> gScreenDistance{3.2f};
+/*
+ * 默认 = 方案 C「照实」：26 m 宽的银幕放在 15 m 外（父亲 2026-10-09 选定）。
+ *
+ * 与真实 IMAX 第 10 排同一组比例（26/15），水平视角 2·atan(13/15) ≈ 81.6°、
+ * 垂直（16:9 内容）≈ 52°。**画面观感与"缩放到 5.2 m / 3.2 m"完全一样**
+ * （角度相同），区别只在深度感：
+ *   · 眼睛会聚接近平行 —— 与真影厅一致，也是 VR 里最舒服的注视距离；
+ *   · 走动一步，银幕的角大小几乎不变（真影厅行为）；小距离构型会明显"胀大"；
+ *   · 与既有摆位规则天然契合：银幕/弹幕固定在世界里、控制条与海报墙跟随观影位。
+ * 前提：走动的活动范围要有边界（别穿到银幕后面）。
+ */
+std::atomic<float> gScreenWidth{26.f};
+std::atomic<float> gScreenDistance{15.f};
 /**
  * 海报墙的**初始**摆位：左前方、斜着正对观影者。
  *
@@ -4612,7 +4623,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
                  (int) value ? "开" : "关");
             break;
         case 14:
-            if (value >= 1.f && value <= 12.f) {
+            if (value >= 1.f && value <= 40.f) {
                 gScreenWidth.store(value);
                 const float dist = gScreenDistance.load();
                 LOGI("调参 → 银幕宽 %.2f 米（距离 %.2f 米，水平视角 %.1f°）",
@@ -4621,7 +4632,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             }
             break;
         case 15:
-            if (value >= 1.f && value <= 12.f) {
+            if (value >= 1.f && value <= 40.f) {
                 gScreenDistance.store(value);
                 const float w = gScreenWidth.load();
                 LOGI("调参 → 银幕距离 %.2f 米（宽 %.2f 米，水平视角 %.1f°）",
