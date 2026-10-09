@@ -314,6 +314,9 @@ class MainActivity : ComponentActivity() {
      * 用途：片源和弹幕源对不齐（弹幕快半拍/慢半拍）时手动修。
      * 只影响喂给弹幕层的播放位置，不动画面与真实进度。范围 ±10 秒，落盘记住。
      */
+    /** 弹幕时间偏移上限：±2 分半（父亲 2026-10-09 定） */
+    private val kDanmakuOffsetMaxMs = 150_000
+
     private var danmakuOffsetMs =
         runCatching { placePrefs.getInt("danmaku_offset_ms", 0) }
             .getOrDefault(0)
@@ -3051,8 +3054,6 @@ class MainActivity : ComponentActivity() {
      */
     private val kMinWaitingMs = 2000L
 
-    /** 弹幕时间偏移上限：±2 分半（父亲 2026-10-09 定） */
-    private val kDanmakuOffsetMaxMs = 150_000
 
     /** 本次等待期从什么时候开始（算最短停留用） */
     private var waitingStartedAtMs = 0L
