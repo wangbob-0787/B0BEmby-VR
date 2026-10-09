@@ -2912,7 +2912,7 @@ bool buildQuadLayer(VrContext &c, VideoLayerBuf &L, int32_t w, int32_t h,
     if (XR_FAILED(api.EnumerateSwapchainImages(
                 L.handle, imgCount, &imgCount,
                 reinterpret_cast<XrSwapchainImageBaseHeader *>(L.images.data())))) {
-        LOGE("视频层图像枚举失败");
+        LOGE("%s图像枚举失败", what);
         api.DestroySwapchain(L.handle);
         L.handle = XR_NULL_HANDLE;
         return false;
@@ -2924,7 +2924,7 @@ bool buildQuadLayer(VrContext &c, VideoLayerBuf &L, int32_t w, int32_t h,
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
                                static_cast<GLuint>(L.images[k].image), 0);
         if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-            LOGE("视频层 FBO 不完整（图 %u）", k);
+            LOGE("%s FBO 不完整（图 %u）", what, k);
             glBindFramebuffer(GL_FRAMEBUFFER, 0);
             api.DestroySwapchain(L.handle);
             L.handle = XR_NULL_HANDLE;
@@ -2935,7 +2935,7 @@ bool buildQuadLayer(VrContext &c, VideoLayerBuf &L, int32_t w, int32_t h,
     L.width = w;
     L.height = h;
     L.built = true;
-    LOGI("视频独立层已就绪：%dx%d，%u 张图（缩放交给系统合成器）", w, h, imgCount);
+    LOGI("%s独立层已就绪：%dx%d，%u 张图（缩放交给系统合成器）", what, w, h, imgCount);
     return true;
 }
 
@@ -3466,26 +3466,14 @@ void frameLoop(VrContext &c) {
                     reinterpret_cast<const XrCompositionLayerBaseHeader *>(&videoQuad);
         }
         /*
-         * 海报墙独立合成层提交（2026-10-09）：摆位跟随运行时拖动（panelPlacement），
-         * 不透明 quad。放在视频之后、弹幕之前。
+         * 海报墙独立合成层提交（2026-10-09 父亲实测修正层次）：
+         * 摆位跟随运行时拖动（panelPlacement），不透明 quad。
+         *
+         * **必须放在弹幕层之后**：父亲实测——不播放时（黑屏/等待期）弹幕层是一块
+         * 黑幕，它提交在最后就把海报墙整个盖住。海报墙原来画在眼缓冲（最顶层），
+         * 层次本来就比视频/弹幕高，改独立层后要维持同样的高低关系。
+         * 只留手柄光柱（投影层）压在它上面，点击才不会失灵。
          */
-        if (rendered && c.panelLayer.submitted) {
-            const ScreenPlacement sp = panelPlacement(c);
-            const float hy = sp.yawDeg * 3.14159265358979f / 360.f;
-            const float hp = sp.pitchDeg * 3.14159265358979f / 360.f;
-            const float sy2 = sinf(hy), cy2 = cosf(hy);
-            const float sp2 = sinf(hp), cp2 = cosf(hp);
-            panelQuad.pose.position = {sp.cx, sp.cy, sp.cz};
-            panelQuad.pose.orientation = {cy2 * sp2, sy2 * cp2, -sy2 * sp2, cy2 * cp2};
-            panelQuad.size = {sp.width, sp.width / fmaxf(0.1f, sp.aspect)};
-            panelQuad.subImage.swapchain = c.panelLayer.handle;
-            panelQuad.subImage.imageRect.offset = {0, 0};
-            panelQuad.subImage.imageRect.extent = {c.panelLayer.width,
-                                                   c.panelLayer.height};
-            panelQuad.subImage.imageArrayIndex = 0;
-            layerPtrs[layerCount++] =
-                    reinterpret_cast<const XrCompositionLayerBaseHeader *>(&panelQuad);
-        }
         static int danmakuSubmitLogTick = 0;
         if ((danmakuSubmitLogTick++ % 180) == 0) {
             LOGI("弹幕层提交：已提交=%d 缓冲=%dx%d 已建=%d",
@@ -3509,6 +3497,24 @@ void frameLoop(VrContext &c) {
             danmakuQuad.subImage.imageArrayIndex = 0;
             layerPtrs[layerCount++] =
                     reinterpret_cast<const XrCompositionLayerBaseHeader *>(&danmakuQuad);
+        }
+        /* 海报墙压在视频与弹幕之上（见上方注释），只让投影层的光柱盖过它 */
+        if (rendered && c.panelLayer.submitted) {
+            const ScreenPlacement sp = panelPlacement(c);
+            const float hy = sp.yawDeg * 3.14159265358979f / 360.f;
+            const float hp = sp.pitchDeg * 3.14159265358979f / 360.f;
+            const float sy2 = sinf(hy), cy2 = cosf(hy);
+            const float sp2 = sinf(hp), cp2 = cosf(hp);
+            panelQuad.pose.position = {sp.cx, sp.cy, sp.cz};
+            panelQuad.pose.orientation = {cy2 * sp2, sy2 * cp2, -sy2 * sp2, cy2 * cp2};
+            panelQuad.size = {sp.width, sp.width / fmaxf(0.1f, sp.aspect)};
+            panelQuad.subImage.swapchain = c.panelLayer.handle;
+            panelQuad.subImage.imageRect.offset = {0, 0};
+            panelQuad.subImage.imageRect.extent = {c.panelLayer.width,
+                                                   c.panelLayer.height};
+            panelQuad.subImage.imageArrayIndex = 0;
+            layerPtrs[layerCount++] =
+                    reinterpret_cast<const XrCompositionLayerBaseHeader *>(&panelQuad);
         }
         if (rendered) {
             layerPtrs[layerCount++] =
