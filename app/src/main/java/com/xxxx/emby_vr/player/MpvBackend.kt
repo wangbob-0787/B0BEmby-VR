@@ -336,7 +336,14 @@ class MpvBackend(private val context: Context) {
             val out = ArrayList<Int>()
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
-                if (o.optString("type") == "subtitle") out.add(o.optInt("id"))
+                /*
+                 * 注意：mpv 的 track-list 里字幕类型是 **"sub"**，不是 "subtitle"
+                 * （2026-10-09 实测踩到：写成 "subtitle" 永远匹配不到，
+                 * 日志表现为"内核没有报出字幕轨"，字幕怎么选都不出来）。
+                 * 两个都认，防以后 mpv 改写法。
+                 */
+                val t = o.optString("type")
+                if (t == "sub" || t == "subtitle") out.add(o.optInt("id"))
             }
             out
         } catch (t: Throwable) {

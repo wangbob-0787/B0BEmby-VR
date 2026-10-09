@@ -231,7 +231,11 @@ class DanmakuView(context: Context) : View(context) {
         hudDimPaint.textSize = textSize
 
         val padX = width * 0.028f          // 电视版左右各 54dp / 1920 ≈ 2.8%
-        val rowCy = height - width * 0.14f * 9f / 16f   // 画面底部往上 14%（按宽度算）
+        /*
+         * 画面底部往上 20%（按宽度算）。父亲 2026-10-09：原来 14% 太靠下面了。
+         * 抬高之后它与字幕不再打架，所以下面 drawSubtitle 里的"HUD 显示期间抬起"也去掉了。
+         */
+        val rowCy = height - width * 0.20f * 9f / 16f
         val barH = max(3f, width * 0.0042f * 9f / 16f)
         val cursorW = max(3f, width * 0.0042f * 9f / 16f)
         val cursorH = width * 0.028f * 9f / 16f
@@ -290,8 +294,12 @@ class DanmakuView(context: Context) : View(context) {
          * 快进快退进度条也在画面底部，两条会撞在一起（多行字幕时尤其明显）：
          * HUD 显示期间把字幕整体上抬一档，让出底部那条。
          */
-        var y = height - width * 0.07f * 9f / 16f -
-            (if (hudVisible) width * 0.085f * 9f / 16f else 0f)
+        /*
+         * 字幕固定在底部 7% 处（2026-10-09）：进度条已抬到 20%，
+         * 两者不再重叠，所以取消原来"HUD 显示期间把字幕抬起"的补偿
+         * （那句补偿会让字幕为了躲 HUD 反而跳一下）。
+         */
+        var y = height - width * 0.07f * 9f / 16f
         for (i in lines.indices.reversed()) {
             val line = lines[i]
             if (line.isNotEmpty()) {
