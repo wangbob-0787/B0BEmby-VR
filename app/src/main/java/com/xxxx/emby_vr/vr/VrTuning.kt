@@ -64,9 +64,14 @@ object VrTuning {
      *   运行时用上一帧做变形补偿 → 画面出现多条横向跳动的黑纹（贯穿整个视野）。
      *   压到 1280 后 GPU 落到 10~12ms，满帧、条纹消失，且画质父亲认可。
      * 配合：播放时自动请求 72Hz（`gRefreshHz=0` 的自动档），预算 13.9ms，刚好装下。
+     *
+     * **默认值 1664（2026-10-09 随 IMAX 银幕几何一起重定）**：
+     * 银幕从 57° 放大到 82° 之后，1280 宽相对于面板的解析力就不够了
+     * （面板每度约 20.6 像素，82° 需要约 1690）。提到 1664 让视频与银幕同级清晰；
+     * 叠加内核快速档后 GPU 约 6~8ms，仍在 13.9ms 预算内。
      */
     @Volatile
-    var videoSurfaceMaxW: Int = 1280
+    var videoSurfaceMaxW: Int = 1664
 
     /** 与原生 `nativeSetTuning` 的 key 一一对应 */
     const val KEY_SUPER_SAMPLE = 1

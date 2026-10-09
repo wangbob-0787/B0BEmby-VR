@@ -987,7 +987,14 @@ std::atomic<int> gLastLayerCount{0};    // 上一帧实际提交给 xrEndFrame �
  */
 std::atomic<int> gHideProjection{0};    // 1 = 不提交投影层（只留 quad 层）—— ChatGPT 点名的判定实验
 std::atomic<int> gTestPattern{0};       // 1 = 用固定测试图替代视频纹理（切断解码输入链）
-std::atomic<int> gVideoLayerMaxW{0};    // >0 = 视频层交换链宽度上限（0=按视频原分辨率）
+/*
+ * 视频层交换链宽度上限。0 = 按视频原分辨率（4K 片源就是 3840，很贵）。
+ *
+ * 默认 **1664**（2026-10-09 随 IMAX 银幕几何一起重定）：银幕现在水平 82°，
+ * 面板每度约 20.6 像素 → 要 82×20.6 ≈ 1690 像素才和面板的解析力匹配。
+ * 原来压到 1280 是按 57° 的银幕算的，现在不改就是"欠采样"（画面发软）。
+ */
+std::atomic<int> gVideoLayerMaxW{1664};
 std::atomic<int> gNoDownsample{0};      // 1 = 关掉视频降采样分支（只做单次纹理采样）
 std::atomic<int> gNoJitter{0};          // 1 = 抖动种子固定（排除逐帧变化输入）
 std::atomic<int> gForceRgba8{0};        // 1 = 视频层交换链强制 GL_RGBA8（不试 sRGB）
@@ -2976,7 +2983,19 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
                         c.aimPose[h].position.z + dz * dotT + nz * 0.006f,
                 };
                 dotPose.orientation = rot;
-                const Mat4 dotModel = poseScaleModel(dotPose, kDotSize, kDotSize, 1.f);
+                /*
+                 * 光点大小按**命中距离**缩放（2026-10-09）。
+                 *
+                 * kDotSize = 1.1cm 是固定"米"尺寸，当年按银幕 3.2 米外调定的；
+                 * 银幕挪到 15 米外后，1.1cm 只剩 0.87 像素 —— 光点会看不见。
+                 * 只对**银幕**（dotKind==1）按距离等比放大，保持角大小与以前一致；
+                 * 控制条（0.85 m）与菜单（0.92 m）是近场，按老样子不动，
+                 * 免得把父亲已经调好的近场手感改掉。
+                 */
+                const float dotScale =
+                        (dotKind == 1) ? fmaxf(0.5f, dotT / 3.2f) : 1.f;
+                const Mat4 dotModel = poseScaleModel(dotPose, kDotSize * dotScale,
+                                                     kDotSize * dotScale, 1.f);
                 drawMesh(c, c.vbo, 6, multiply(multiply(proj, view4), dotModel),
                          0.55f, 0.98f, 0.45f, true);
             }
