@@ -251,13 +251,40 @@ class MpvBackend(private val context: Context) {
     /**
      * 播一个地址。[startSec] 是起播位置（秒）。
      */
+    /** 每次 loadfile 的序号：给延迟补跳用，避免上一部片排的回调把新片跳歪 */
+    private var loadGen = 0
+
     fun play(url: String, startSec: Double = 0.0) {
         ensureCreated(context)
+        loadGen += 1
+        val gen = loadGen
         try {
+            /*
+             * 续播位置必须在**加载文件之前**交代下去（父亲 2026-10-09：
+             * 「一切图片字幕就从零开始」）。
+             *
+             * 原因：loadfile 是异步的 —— 文件还没打开，紧跟其后的 seek 命令会被丢掉，
+             * 于是内核永远从片头起播。正确做法是用 mpv 的 start 选项（对下一个加载的
+             * 文件生效），另外再排一次延迟补跳兜底（万一 start 没被认）。
+             */
+            if (startSec > 0.5) {
+                runCatching { MPVLib.setPropertyString("start", "+" + startSec.toInt()) }
+            }
             MPVLib.command(arrayOf("loadfile", url, "replace"))
             if (startSec > 0.5) {
-                // 起播位置：% 是百分比定位，秒数绝对定位更稳
-                MPVLib.command(arrayOf("seek", startSec.toString(), "absolute+exact"))
+                val want = startSec
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    if (gen != loadGen) return@postDelayed        // 已经换片了，别动新片
+                    val pos = runCatching { MPVLib.getPropertyDouble("time-pos") }.getOrNull() ?: 0.0
+                    if (pos < want - 5.0) {
+                        runCatching {
+                            MPVLib.command(arrayOf("seek", want.toString(), "absolute+exact"))
+                        }
+                        Log.i(TAG, "内核起播位置补跳 → ${want.toInt()}s（当时 ${pos.toInt()}s）")
+                    } else {
+                        Log.i(TAG, "内核起播位置已对：${pos.toInt()}s")
+                    }
+                }, 1500L)
             }
             setPaused(false)
         } catch (t: Throwable) {

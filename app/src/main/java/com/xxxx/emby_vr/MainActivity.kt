@@ -1513,7 +1513,7 @@ class MainActivity : ComponentActivity() {
              * 能正常播的 4XVR 一个路子。标记由取播放信息那一步立起来。
              */
             if (com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder) {
-                Log.i(TAG, "起播走 mpv 内核（杜比视界 Profile 5，片源 ${com.xxxx.emby_vr.player.PlaybackFlags.videoDescriptor}，" +
+                Log.i(TAG, "起播走 mpv 内核（杜比视界 Profile 5 或选了图形字幕，片源 ${com.xxxx.emby_vr.player.PlaybackFlags.videoDescriptor}，" +
                     "版本 ${com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionProfile ?: "未探到"}）")
                 mpvBackend?.stop()
                 /*
