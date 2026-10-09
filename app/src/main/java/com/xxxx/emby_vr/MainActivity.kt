@@ -1425,6 +1425,25 @@ class MainActivity : ComponentActivity() {
                 applyDanmakuSetting()
                 danmakuView?.setSubtitle(subtitleNow)
                 com.xxxx.emby_vr.vr.VrNative.setLogoVisible(logoBitmap.value != null)
+                /*
+                 * 公共收尾必须在**内核这条路也做**（2026-10-09 查 Profile 5 问题时发现）。
+                 *
+                 * 这一段原来写在下面 ExoPlayer 那条路的尾部，而内核分支在上面就 return 了
+                 * —— 于是 Profile 5 这条路：
+                 *   ① **进度一条都不上报**（父亲实测：日志覆盖 10 分钟、零条"进度上报"；
+                 *      服务端因此记不住看到哪儿，继续观看也不更新）；
+                 *   ② 摇杆快进快退的**状态复位整段被跳过**（上一部的 stickSeekHoldJob /
+                 *      stickSeekDir 残留 → 表现为"光柱指着银幕摇杆也不快进快退"）；
+                 *   ③ 起播日志也不打。
+                 * 这些都是"提前 return 漏掉公共代码"的老毛病，与 10-08 修过的那两次同源。
+                 */
+                stickSeekHoldJob?.cancel()
+                stickSeekHoldJob = null
+                stickSeekDir = 0
+                stickSeekAccel = false
+                hideSeekHud()
+                startPlaybackReporting()
+                Log.i(TAG, "开始播放（内核）: $title url=${url.take(160)}")
                 return
             }
             // 缓冲档位（更多 → 缓冲设置）：起播缓冲与上限按菜单选的那一档
