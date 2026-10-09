@@ -1196,7 +1196,13 @@ class MainActivity : ComponentActivity() {
          */
         val effectiveStart =
             if (keepPosition) {
-                val from = ((player?.currentPosition ?: 0L) - kReplayBackMs).coerceAtLeast(0L)
+                /*
+                 * 位置必须从**公共控制层**取（2026-10-09 修）。
+                 * 原来写的是 `player?.currentPosition ?: 0L` —— 内核（Profile 5）下
+                 * player 恒为空 → 取到 0 → **任何重播都从片头开始**（父亲实测）。
+                 * ctl 同时支持 mpv 与 ExoPlayer，用它。
+                 */
+                val from = ((ctl.positionMs() - kReplayBackMs).coerceAtLeast(0L))
                 Log.i(TAG, "重播起始位置 ${from / 1000} 秒（当前位置回退 ${kReplayBackMs / 1000} 秒）")
                 from * 10_000L
             } else {
@@ -1907,6 +1913,17 @@ class MainActivity : ComponentActivity() {
     private fun applyQuality(index: Int) {
         qualityIndex = index.coerceIn(0, com.xxxx.emby_vr.panel.QUALITY_STEPS.size - 1)
         Log.i(TAG, "视频质量 → ${com.xxxx.emby_vr.panel.QUALITY_STEPS[qualityIndex].second}")
+        /*
+         * 内核（Profile 5）路径**不重起播**（2026-10-09 父亲要求）。
+         * 这条菜单改的是「让 Emby 转码到什么码率」，而 P5 走直链、服务端不推流，
+         * 档位对它没有任何作用 —— 重起播只是白等一次，还有踩崩溃的风险。
+         * 仅记录选择（下次走 Emby 取流的片源会用到），当前播放保持不动。
+         */
+        if (ctl.kernelActive) {
+            Log.i(TAG, "内核直链播放：画质档位对当前片源无效，不重起播（保持续播）")
+            hud("内核直链播放：画质由片源决定，已记录该档位")
+            return
+        }
         replayKeepingPosition()
     }
 
@@ -1930,6 +1947,17 @@ class MainActivity : ComponentActivity() {
     private fun applyBuffer(index: Int) {
         bufferPresetIndex = index.coerceIn(0, com.xxxx.emby_vr.panel.BUFFER_PRESETS.size - 1)
         Log.i(TAG, "缓冲档位 → ${com.xxxx.emby_vr.panel.BUFFER_PRESETS[bufferPresetIndex].first}")
+        /*
+         * 内核（Profile 5）路径**不重起播**（2026-10-09 父亲要求）。
+         * 这几个档位配的是 ExoPlayer 的 LoadControl，内核用的是 mpv 自己的缓存策略，
+         * 重起播并不会让它生效，只是白等一次。仅记录档位，当前播放保持不动。
+         * 内核的缓存档位改用 mpv 的 `cache-secs`（若要接，走 mpv_ 透传即可）。
+         */
+        if (ctl.kernelActive) {
+            Log.i(TAG, "内核播放：缓冲档位对内核无效（走 mpv 缓存策略），不重起播（保持续播）")
+            hud("内核播放：缓冲由内核自己管理，已记录该档位")
+            return
+        }
         replayKeepingPosition()
     }
 
