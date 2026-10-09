@@ -652,15 +652,6 @@ struct VrContext {
      */
     VideoLayerBuf danmakuLayer;
     bool danmakuLayerOk = true;    // 同上：运行时拒绝过就永久关掉
-    /*
-     * 控制条与菜单独立合成层（2026-10-09）：原来画进眼缓冲再贴上去，文字发糊。
-     * 改成各自的 swapchain，纹理按原始像素分辨率（2331×474 / 2331×760）直接交
-     * 给系统合成器，不再经眼缓冲缩放 —— 清晰度等于面板的原始像素密度。
-     */
-    VideoLayerBuf osdLayer;
-    bool osdLayerOk = true;
-    VideoLayerBuf menuLayer;
-    bool menuLayerOk = true;
     GLuint videoLayerVao = 0;
     GLuint videoLayerVbo = 0;
 
@@ -2554,10 +2545,86 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
         }
 
         /*
-         * 控制条与菜单已改为独立合成层（2026-10-09）：
-         * 原来画进眼缓冲再贴上去，文字发糊；现在各自的 swapchain 按原始
-         * 像素分辨率直接交给系统合成器。渲染在渲染循环的图层组装段完成。
+         * 控制条（近场小面板，2026-10-05）：贴在观影者正前方偏下、上仰一点，
+         * 与主画面同一套着色器与属性布局，只是换一张纹理、换一个模型矩阵。
          */
+        if (c.osdVisible.load() && c.osdTex != 0 && c.osdHasFrame.load()) {
+            /*
+             * 只给控制条开 alpha 混合（父亲 2026-10-06：「叠了两层，下层没有倒圆角」）：
+             * Java 侧把控制条窗口背景清成透明，圆角外 alpha=0，这里混合后透出影院背景。
+             * 上一版把这个 enable 放在全局，结果视频层也被混合成半透明 ——
+             * 父亲随即报「视频屏幕像蒙了一层纱」，所以改成只在控制条这一段开。
+             */
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            const float th = kOsdTiltDeg * 3.14159265358979f / 180.f;
+            XrPosef osdPose{};
+            osdPose.position = {0.f, kOsdCenterY, -kOsdDistance};
+            osdPose.orientation = {sinf(th * 0.5f), 0.f, 0.f, cosf(th * 0.5f)};
+            const Mat4 osdModel = poseScaleModel(osdPose, kOsdWidth, kOsdHeight, 1.f);
+            const Mat4 osdMvp = multiply(multiply(proj, view4), osdModel);
+            glUniformMatrix4fv(c.mvpLoc, 1, GL_FALSE, osdMvp.m);
+            if (c.circleLoc >= 0) glUniform1i(c.circleLoc, 0);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_EXTERNAL_OES, c.osdTex);
+            glUniform1i(c.texLoc, 0);
+            glUniform1i(c.useTexLoc, 1);
+            if (c.expandLoc >= 0) glUniform1i(c.expandLoc, 0);   // 控制条按全范围画，不拉
+            if (c.downLoc >= 0) glUniform1i(c.downLoc, 0);       // 控制条不做降采样
+            glUniform4f(c.colorLoc, 1.f, 1.f, 1.f, 1.f);
+            glBindBuffer(GL_ARRAY_BUFFER, c.vbo);
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void *) 0);
+            glEnableVertexAttribArray(1);
+            glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
+                                  (void *) (3 * sizeof(float)));
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+            glDisableVertexAttribArray(0);
+            glDisableVertexAttribArray(1);
+            glDisable(GL_BLEND);
+        }
+
+        /*
+         * 展开菜单（2026-10-06 父亲定）：与控制条同一套画法，只是一块更大的透明面板，
+         * 架在控制条正上方。卡片画在面板哪儿由 Java 侧决定（两面板等宽，坐标直接对齐）。
+         */
+        /*
+         * 片名 logo 的 GL 场景绘制已删（2026-10-07 00:55）：
+         * 它和视频层里那份叠加，父亲实测「肉眼可见至少两层 logo」。
+         * logo 现在只画在视频层的合成图里（renderQuadLayer 的 videoLayerPass 分支）。
+         */
+
+        if (c.menuVisible.load() && c.menuTex != 0 && c.menuHasFrame.load()) {
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            const float mth = kMenuTiltDeg * 3.14159265358979f / 180.f;
+            float mcx, mcy, mcz, mnx, mny, mnz, mux, muy, muz, mvx, mvy, mvz;
+            menuBasis(&mcx, &mcy, &mcz, &mnx, &mny, &mnz, &mux, &muy, &muz, &mvx, &mvy, &mvz);
+            XrPosef menuPose{};
+            menuPose.position = {mcx, mcy, mcz};
+            menuPose.orientation = {sinf(mth * 0.5f), 0.f, 0.f, cosf(mth * 0.5f)};
+            const Mat4 menuModel = poseScaleModel(menuPose, kMenuWidth, kMenuHeight, 1.f);
+            const Mat4 menuMvp = multiply(multiply(proj, view4), menuModel);
+            glUniformMatrix4fv(c.mvpLoc, 1, GL_FALSE, menuMvp.m);
+            if (c.circleLoc >= 0) glUniform1i(c.circleLoc, 0);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_EXTERNAL_OES, c.menuTex);
+            glUniform1i(c.texLoc, 0);
+            glUniform1i(c.useTexLoc, 1);
+            if (c.expandLoc >= 0) glUniform1i(c.expandLoc, 0);
+            if (c.downLoc >= 0) glUniform1i(c.downLoc, 0);
+            glUniform4f(c.colorLoc, 1.f, 1.f, 1.f, 1.f);
+            glBindBuffer(GL_ARRAY_BUFFER, c.vbo);
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void *) 0);
+            glEnableVertexAttribArray(1);
+            glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
+                                  (void *) (3 * sizeof(float)));
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+            glDisableVertexAttribArray(0);
+            glDisableVertexAttribArray(1);
+            glDisable(GL_BLEND);
+        }
     }
 
     /*
@@ -2831,7 +2898,7 @@ bool buildQuadLayer(VrContext &c, VideoLayerBuf &L, int32_t w, int32_t h,
     if (XR_FAILED(api.EnumerateSwapchainImages(
                 L.handle, imgCount, &imgCount,
                 reinterpret_cast<XrSwapchainImageBaseHeader *>(L.images.data())))) {
-        LOGE("%s图像枚举失败", what);
+        LOGE("视频层图像枚举失败");
         api.DestroySwapchain(L.handle);
         L.handle = XR_NULL_HANDLE;
         return false;
@@ -2843,7 +2910,7 @@ bool buildQuadLayer(VrContext &c, VideoLayerBuf &L, int32_t w, int32_t h,
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
                                static_cast<GLuint>(L.images[k].image), 0);
         if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-            LOGE("%s FBO 不完整（图 %u）", what, k);
+            LOGE("视频层 FBO 不完整（图 %u）", k);
             glBindFramebuffer(GL_FRAMEBUFFER, 0);
             api.DestroySwapchain(L.handle);
             L.handle = XR_NULL_HANDLE;
@@ -2854,7 +2921,7 @@ bool buildQuadLayer(VrContext &c, VideoLayerBuf &L, int32_t w, int32_t h,
     L.width = w;
     L.height = h;
     L.built = true;
-    LOGI("%s独立层已就绪：%dx%d，%u 张图（缩放交给系统合成器）", what, w, h, imgCount);
+    LOGI("视频独立层已就绪：%dx%d，%u 张图（缩放交给系统合成器）", w, h, imgCount);
     return true;
 }
 
@@ -3026,77 +3093,6 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
 }
 
 /**
- * 把一块透明面板（控制条 / 菜单）的 OES 纹理拷进独立合成层缓冲。
- *
- * 与 renderQuadLayer 的区别：清屏用透明色（alpha=0），开 alpha 混合，
- * 不做画面调整（亮度/对比度等只作用于视频）。面板的圆角与透明背景
- * 由 Compose 端画好，这里原样拷贝，合成器负责按 alpha 混合到场景里。
- */
-bool renderPanelLayer(VrContext &c, VideoLayerBuf &L, GLuint tex) {
-    if (!L.built || tex == 0 || c.program == 0) return false;
-
-    XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
-    uint32_t idx = 0;
-    if (XR_FAILED(api.AcquireSwapchainImage(L.handle, &ai, &idx))) return false;
-    if (idx >= L.fbos.size()) return false;
-    XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
-    wi.timeout = (XrDuration) (gSwapWaitTimeoutMs.load() * 1000000);
-    if (XR_FAILED(api.WaitSwapchainImage(L.handle, &wi))) {
-        XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
-        api.ReleaseSwapchainImage(L.handle, &ri);
-        return false;
-    }
-
-    ensureVideoLayerQuad(c);
-
-    glBindFramebuffer(GL_FRAMEBUFFER, L.fbos[idx]);
-    glViewport(0, 0, L.width, L.height);
-    glDisable(GL_DEPTH_TEST);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glClearColor(0.f, 0.f, 0.f, 0.f);
-    glClear(GL_COLOR_BUFFER_BIT);
-
-    glUseProgram(c.program);
-    const Mat4 id = identityMat();
-    glUniformMatrix4fv(c.mvpLoc, 1, GL_FALSE, id.m);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_EXTERNAL_OES, tex);
-    glUniform1i(c.texLoc, 0);
-    glUniform1i(c.useTexLoc, 1);
-    if (c.circleLoc >= 0) glUniform1i(c.circleLoc, 0);
-    if (c.expandLoc >= 0) glUniform1i(c.expandLoc, 0);
-    if (c.downLoc >= 0) glUniform1i(c.downLoc, 0);
-    glUniform4f(c.colorLoc, 1.f, 1.f, 1.f, 1.f);
-    /* 面板不做画面调整 */
-    if (c.brightLoc >= 0) glUniform1f(c.brightLoc, 0.f);
-    if (c.contrastLoc >= 0) glUniform1f(c.contrastLoc, 1.f);
-    if (c.satLoc >= 0) glUniform1f(c.satLoc, 1.f);
-    if (c.sharpenLoc >= 0) glUniform1f(c.sharpenLoc, 0.f);
-    if (c.tempLoc >= 0) glUniform1f(c.tempLoc, 0.f);
-    if (c.texelLoc >= 0) glUniform2f(c.texelLoc, c.texelX.load(), c.texelY.load());
-    if (c.jitterLoc >= 0) glUniform1f(c.jitterLoc, 0.f);
-
-    glBindVertexArray(c.videoLayerVao);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    glBindVertexArray(0);
-    glDisable(GL_BLEND);
-
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-    if (gSyncMode.load() == 1) {
-        glFinish();
-    } else {
-        glFlush();
-    }
-
-    XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
-    if (XR_FAILED(api.ReleaseSwapchainImage(L.handle, &ri))) return false;
-    L.index = idx;
-    return true;
-}
-
-/**
  * 把视频层刷成纯黑并提交（换片清屏，父亲 2026-10-07 实测）。
  *
  * 为什么不能只"停提交"：PICO 的合成器在某个 quad layer 这一帧缺席时，会把
@@ -3205,21 +3201,7 @@ void frameLoop(VrContext &c) {
     // 按源透明度混合：不声明的话运行时会把这层当不透明黑板，视频被盖住
     danmakuQuad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
 
-    /*
-     * 控制条与菜单独立合成层（2026-10-09）：透明面板，按源 alpha 混合。
-     * 摆位与 renderEye 里原来的模型矩阵一致（osdBasis / menuBasis）。
-     */
-    XrCompositionLayerQuad osdQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
-    osdQuad.space = c.localSpace;
-    osdQuad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-    osdQuad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
-
-    XrCompositionLayerQuad menuQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
-    menuQuad.space = c.localSpace;
-    menuQuad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-    menuQuad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
-
-    const XrCompositionLayerBaseHeader *layerPtrs[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+    const XrCompositionLayerBaseHeader *layerPtrs[3] = {nullptr, nullptr, nullptr};
 
     int loggedFrames = 0;
     /*
@@ -3361,24 +3343,6 @@ void frameLoop(VrContext &c) {
             gLogoUpdate();
         }
 
-        /*
-         * 控制条与菜单独立合成层渲染（2026-10-09）：
-         * 纹理已在上面 updateTexImage，这里按原始像素分辨率拷进各自 swapchain。
-         * 不走 layer_mask 门控 —— 它们是 UI，不是诊断用的可选层。
-         */
-        c.osdLayer.submitted = false;
-        if (c.osdLayerOk && c.osdVisible.load() && c.osdHasFrame.load() && c.osdTex != 0) {
-            if (buildQuadLayer(c, c.osdLayer, (int32_t) kOsdPxW, (int32_t) kOsdPxH, "控制条")) {
-                c.osdLayer.submitted = renderPanelLayer(c, c.osdLayer, c.osdTex);
-            }
-        }
-        c.menuLayer.submitted = false;
-        if (c.menuLayerOk && c.menuVisible.load() && c.menuHasFrame.load() && c.menuTex != 0) {
-            if (buildQuadLayer(c, c.menuLayer, (int32_t) kMenuPxW, (int32_t) kMenuPxH, "菜单")) {
-                c.menuLayer.submitted = renderPanelLayer(c, c.menuLayer, c.menuTex);
-            }
-        }
-
         // 手柄状态（诊断阶段：变化即打日志，先看清 PICO 到底发哪些事件）
         c.frameDisplayTime = fs.predictedDisplayTime;
         tUi = std::chrono::steady_clock::now();
@@ -3488,36 +3452,6 @@ void frameLoop(VrContext &c) {
             layerPtrs[layerCount++] =
                     reinterpret_cast<const XrCompositionLayerBaseHeader *>(&danmakuQuad);
         }
-        /*
-         * 控制条与菜单合成层（2026-10-09）：在眼缓冲之上提交，
-         * 控制条先、菜单后（菜单在控制条上方，后提交 = 画面在上）。
-         */
-        if (rendered && c.osdLayer.submitted) {
-            const float th = kOsdTiltDeg * 3.14159265358979f / 180.f;
-            osdQuad.pose.position = {0.f, kOsdCenterY, -kOsdDistance};
-            osdQuad.pose.orientation = {sinf(th * 0.5f), 0.f, 0.f, cosf(th * 0.5f)};
-            osdQuad.size = {kOsdWidth, kOsdHeight};
-            osdQuad.subImage.swapchain = c.osdLayer.handle;
-            osdQuad.subImage.imageRect.offset = {0, 0};
-            osdQuad.subImage.imageRect.extent = {c.osdLayer.width, c.osdLayer.height};
-            osdQuad.subImage.imageArrayIndex = 0;
-            layerPtrs[layerCount++] =
-                    reinterpret_cast<const XrCompositionLayerBaseHeader *>(&osdQuad);
-        }
-        if (rendered && c.menuLayer.submitted) {
-            const float mth = kMenuTiltDeg * 3.14159265358979f / 180.f;
-            float mcx, mcy, mcz, mnx, mny, mnz, mux, muy, muz, mvx, mvy, mvz;
-            menuBasis(&mcx, &mcy, &mcz, &mnx, &mny, &mnz, &mux, &muy, &muz, &mvx, &mvy, &mvz);
-            menuQuad.pose.position = {mcx, mcy, mcz};
-            menuQuad.pose.orientation = {sinf(mth * 0.5f), 0.f, 0.f, cosf(mth * 0.5f)};
-            menuQuad.size = {kMenuWidth, kMenuHeight};
-            menuQuad.subImage.swapchain = c.menuLayer.handle;
-            menuQuad.subImage.imageRect.offset = {0, 0};
-            menuQuad.subImage.imageRect.extent = {c.menuLayer.width, c.menuLayer.height};
-            menuQuad.subImage.imageArrayIndex = 0;
-            layerPtrs[layerCount++] =
-                    reinterpret_cast<const XrCompositionLayerBaseHeader *>(&menuQuad);
-        }
         if (rendered) {
             layerPtrs[layerCount++] =
                     reinterpret_cast<const XrCompositionLayerBaseHeader *>(&layer);
@@ -3593,16 +3527,6 @@ void frameLoop(VrContext &c) {
             LOGE("提交独立弹幕层失败（xrResult=%d），退回老路（画进视频层）", (int) endRes);
             c.danmakuLayerOk = false;
             c.danmakuLayer.submitted = false;
-        }
-        if (XR_FAILED(endRes) && c.osdLayer.submitted) {
-            LOGE("提交控制条独立层失败（xrResult=%d）", (int) endRes);
-            c.osdLayerOk = false;
-            c.osdLayer.submitted = false;
-        }
-        if (XR_FAILED(endRes) && c.menuLayer.submitted) {
-            LOGE("提交菜单独立层失败（xrResult=%d）", (int) endRes);
-            c.menuLayerOk = false;
-            c.menuLayer.submitted = false;
         }
     }
     LOGI("渲染循环结束");
