@@ -652,6 +652,13 @@ struct VrContext {
      */
     VideoLayerBuf danmakuLayer;
     bool danmakuLayerOk = true;    // 同上：运行时拒绝过就永久关掉
+    /*
+     * 海报墙独立合成层（2026-10-09 讨论后实做）：海报墙面板按纹理原始分辨率
+     * （1920×1080）直接交给系统合成器，不再画进眼睛画布被降采样糊掉。
+     * 海报墙是不透明面板（底色由 Compose 画好），提交时不带 alpha 混合标志。
+     */
+    VideoLayerBuf panelLayer;
+    bool panelLayerOk = true;
     GLuint videoLayerVao = 0;
     GLuint videoLayerVbo = 0;
 
@@ -2521,7 +2528,14 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
 
         // 海报墙：常驻左前方斜放；收起时不画，没出帧也先不画（不闪也不串）
         const bool panelReady = c.panelActive.load() && c.panelTex != 0 && c.panelHasFrame.load();
-        if (panelReady && c.panelShown.load()) drawScreen(panelPlacement(c), c.panelTex);
+        /*
+         * 海报墙走独立合成层（2026-10-09）：平时不再画进眼缓冲（否则被降采样糊掉），
+         * 由系统合成器按纹理原始像素贴。仅当独立层建不出来（panelLayerOk 被永久关掉）
+         * 才退回老路画进眼缓冲兜底，免得海报墙整个消失。
+         */
+        if (panelReady && c.panelShown.load() && !c.panelLayer.built) {
+            drawScreen(panelPlacement(c), c.panelTex);
+        }
 
         // 起播 / 换片到第一帧之间：银幕上转圈，别留上一部的画面（父亲 2026-10-05 要求）
         // 换片时先让银幕空一拍，再出转圈 —— 父亲 2026-10-06："先清屏，再显示加载箭头"
@@ -3201,7 +3215,16 @@ void frameLoop(VrContext &c) {
     // 按源透明度混合：不声明的话运行时会把这层当不透明黑板，视频被盖住
     danmakuQuad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
 
-    const XrCompositionLayerBaseHeader *layerPtrs[3] = {nullptr, nullptr, nullptr};
+    /*
+     * 海报墙独立合成层（2026-10-09）：不透明（底色由 Compose 画好），提交顺序
+     * 放在视频层之后、弹幕层之前（海报墙是左侧独立屏幕，弹幕压在前方视频上）。
+     */
+    XrCompositionLayerQuad panelQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+    panelQuad.space = c.localSpace;
+    panelQuad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+    panelQuad.layerFlags = 0;
+
+    const XrCompositionLayerBaseHeader *layerPtrs[4] = {nullptr, nullptr, nullptr, nullptr};
 
     int loggedFrames = 0;
     /*
@@ -3343,6 +3366,20 @@ void frameLoop(VrContext &c) {
             gLogoUpdate();
         }
 
+        /*
+         * 海报墙独立合成层渲染（2026-10-09）：纹理在 renderEye 之前 updateTexImage
+         * 过了，这里按纹理原始像素（1920×1080）拷进自己的交换链，交给系统合成器。
+         * 摆位跟随父在运行时拖动的海报墙位置（panelPlacement）。
+         * 海报墙是 UI 面板，不走 layer_mask 门控。
+         */
+        c.panelLayer.submitted = false;
+        if (c.panelLayerOk && c.panelActive.load() && c.panelShown.load() &&
+            c.panelHasFrame.load() && c.panelTex != 0) {
+            if (buildQuadLayer(c, c.panelLayer, 1920, 1080, "海报墙")) {
+                c.panelLayer.submitted = renderQuadLayer(c, c.panelLayer, c.panelTex, false);
+            }
+        }
+
         // 手柄状态（诊断阶段：变化即打日志，先看清 PICO 到底发哪些事件）
         c.frameDisplayTime = fs.predictedDisplayTime;
         tUi = std::chrono::steady_clock::now();
@@ -3427,6 +3464,27 @@ void frameLoop(VrContext &c) {
             videoQuad.subImage.imageArrayIndex = 0;
             layerPtrs[layerCount++] =
                     reinterpret_cast<const XrCompositionLayerBaseHeader *>(&videoQuad);
+        }
+        /*
+         * 海报墙独立合成层提交（2026-10-09）：摆位跟随运行时拖动（panelPlacement），
+         * 不透明 quad。放在视频之后、弹幕之前。
+         */
+        if (rendered && c.panelLayer.submitted) {
+            const ScreenPlacement sp = panelPlacement(c);
+            const float hy = sp.yawDeg * 3.14159265358979f / 360.f;
+            const float hp = sp.pitchDeg * 3.14159265358979f / 360.f;
+            const float sy2 = sinf(hy), cy2 = cosf(hy);
+            const float sp2 = sinf(hp), cp2 = cosf(hp);
+            panelQuad.pose.position = {sp.cx, sp.cy, sp.cz};
+            panelQuad.pose.orientation = {cy2 * sp2, sy2 * cp2, -sy2 * sp2, cy2 * cp2};
+            panelQuad.size = {sp.width, sp.width / fmaxf(0.1f, sp.aspect)};
+            panelQuad.subImage.swapchain = c.panelLayer.handle;
+            panelQuad.subImage.imageRect.offset = {0, 0};
+            panelQuad.subImage.imageRect.extent = {c.panelLayer.width,
+                                                   c.panelLayer.height};
+            panelQuad.subImage.imageArrayIndex = 0;
+            layerPtrs[layerCount++] =
+                    reinterpret_cast<const XrCompositionLayerBaseHeader *>(&panelQuad);
         }
         static int danmakuSubmitLogTick = 0;
         if ((danmakuSubmitLogTick++ % 180) == 0) {
@@ -3527,6 +3585,16 @@ void frameLoop(VrContext &c) {
             LOGE("提交独立弹幕层失败（xrResult=%d），退回老路（画进视频层）", (int) endRes);
             c.danmakuLayerOk = false;
             c.danmakuLayer.submitted = false;
+        }
+        if (XR_FAILED(endRes) && c.panelLayer.submitted) {
+            /*
+             * 运行时不接受海报墙独立层：永久关掉它，renderEye 会自动退回
+             * 「画进眼缓冲」的老路（判据是 panelLayer.built）。
+             */
+            LOGE("提交海报墙独立层失败（xrResult=%d），退回画进眼缓冲", (int) endRes);
+            c.panelLayerOk = false;
+            c.panelLayer.submitted = false;
+            c.panelLayer.built = false;
         }
     }
     LOGI("渲染循环结束");
