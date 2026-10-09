@@ -629,7 +629,10 @@ class MainActivity : ComponentActivity() {
                          * 分不清是 URL 不对、权限不对，还是服务端真的没内容。
                          * token 不落盘 —— 只打 URL 的问号之前部分 + 响应码。
                          */
-                        val code = runCatching { conn.responseCode }.getOrDefault(-1)
+                        /* responseCode 只有 HTTP(S) 连接才有，普通 URLConnection 没有 */
+                        val code = runCatching {
+                            (conn as? java.net.HttpURLConnection)?.responseCode ?: -1
+                        }.getOrDefault(-1)
                         val declared = conn.contentType
                         Log.i(TAG, "自绘字幕：流 $index 响应码=$code 类型=$declared " +
                             "地址=${url.substringBefore("?")}")
