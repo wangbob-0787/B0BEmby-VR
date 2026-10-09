@@ -470,7 +470,19 @@ object EmbyApi {
             val burnIdx = com.xxxx.emby_vr.player.PlaybackFlags.burnSubtitleIndex
             if (burnIdx != null) {
                 runCatching {
-                    val burnUrl = url +
+                    /*
+                     * 拼接前先把原来的字幕参数**摘掉**（2026-10-09 父亲实测：图片字幕没触发转码）。
+                     *
+                     * 服务端日志给了准确原因：
+                     *   System.FormatException: The input string '2,2' was not in a correct format.
+                     * 基础请求本身就带了 SubtitleStreamIndex（选中的那条），我们又追加了一遍，
+                     * 服务端把两个值拼成 "2,2" 去解析 → 500。摘干净再拼即可。
+                     */
+                    val baseUrl = url
+                        .replace(Regex("&SubtitleStreamIndex=\\d+"), "")
+                        .replace(Regex("\\?SubtitleStreamIndex=\\d+"), "?")
+                        .replace(Regex("&SubtitleMethod=\\w+"), "")
+                    val burnUrl = baseUrl +
                         "&SubtitleStreamIndex=$burnIdx" +
                         "&SubtitleMethod=Encode" +
                         "&EnableDirectPlay=false" +

@@ -619,8 +619,18 @@ class MainActivity : ComponentActivity() {
      */
     private fun loadSubtitleTrack(index: Int) {
         val mediaId = currentMediaId
-        val sourceId = reportedMediaSourceId ?: pendingMediaSourceId
-        if (mediaId.isBlank() || sourceId.isNullOrBlank()) return
+        /*
+         * 片源编号必须属于**当前这一集**（2026-10-09 服务端日志实证）。
+         *
+         * 日志里出现过 `/Videos/3930727/mediasource_3930720/Subtitles/3/Stream.srt`
+         * —— 集号是新的、片源编号还是上一集的，服务端直接
+         * `Sequence contains no matching element` → 返回 0 字节 → 字幕空。
+         * 所以先按集号核对，对不上就退回标准命名（单版本片源就是 mediasource_<集号>）。
+         */
+        val sourceId = (pendingMediaSourceId ?: reportedMediaSourceId)
+            ?.takeIf { it.endsWith(mediaId) }
+            ?: "mediasource_$mediaId"
+        if (mediaId.isBlank()) return
         subtitleCueStream = index
         val url = "${userServer()}/emby/Videos/$mediaId/$sourceId/Subtitles/$index" +
             "/Stream.srt?api_key=${userToken()}"
@@ -2257,7 +2267,10 @@ class MainActivity : ComponentActivity() {
             return
         }
         val index = sub.index
-        val sourceId = reportedMediaSourceId
+        // 片源编号要属于当前这一集（理由同 loadSubtitleTrack，2026-10-09）
+        val sourceId = (pendingMediaSourceId ?: reportedMediaSourceId)
+            ?.takeIf { it.endsWith(mediaId) }
+            ?: "mediasource_$mediaId"
         Log.i(TAG, "弹幕诊断：挑中弹幕轨 index=$index source=$sourceId")
         if (index == null || sourceId.isNullOrBlank()) {
             Log.w(TAG, "弹幕轨信息不全，跳过（index=$index source=$sourceId）")
