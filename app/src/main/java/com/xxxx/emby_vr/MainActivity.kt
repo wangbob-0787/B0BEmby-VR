@@ -363,15 +363,16 @@ class MainActivity : ComponentActivity() {
              * 另外压一个最短停留：黑幕/转圈/「即将播放：片名」至少亮 700ms，
              * 否则内核起得快时会一闪而过，观感和普通片切换不一致。
              */
-            if (mpvBackend != null) {
-                runOnUiThread {
-                    if (!waitingFirstFrame) return@runOnUiThread
-                    playerFrameSeen = true
-                    val since = android.os.SystemClock.uptimeMillis() - waitingStartedAtMs
-                    val delay = (150L).coerceAtLeast(kMinWaitingMs - since)
-                    handler.postDelayed({ tryRevealWaitingFrame() }, delay)
-                }
-            }
+            /*
+             * 内核这条路**不在这里收幕**（父亲 2026-10-09 实测：普通片切 Profile 5、
+             * Profile 5 之间互切，都"没有先黑屏"）。
+             *
+             * 原因：换片瞬间这块纹理里还留着**上一部的旧帧**，这个回调照样会响 ——
+             * 拿它当"新片出画了"，黑幕就被提前收掉，露出旧画面。
+             * 现在内核出画改由 mpvSubtitleJob 轮询 `video-params/w` 判定
+             * （第一个视频帧解出来才有值），另有 clearForNewMedia 的 8 秒兜底。
+             */
+            if (mpvBackend == null) Log.i(TAG, "原生首帧回调（非内核路径，按播放器首帧收幕）")
         }
 
         override fun onClick(px: Float, py: Float) {
@@ -3000,8 +3001,13 @@ class MainActivity : ComponentActivity() {
     /** 等待第一帧的兜底定时器：切片时要先撤掉上一只（父亲 2026-10-07） */
     private var firstFrameFallback: Runnable? = null
 
-    /** 等待期最短停留：黑幕 / 转圈 /「即将播放：片名」至少亮这么久（2026-10-09） */
-    private val kMinWaitingMs = 700L
+    /**
+     * 等待期最短停留（父亲 2026-10-09 定：至少两秒）。
+     *
+     * 换片时黑幕 / 转圈 /「即将播放：片名」至少要亮这么久 ——
+     * 内核起得快的时候（一秒钟不到）原来会一闪而过，观感上"像没黑屏"。
+     */
+    private val kMinWaitingMs = 2000L
 
     /** 本次等待期从什么时候开始（算最短停留用） */
     private var waitingStartedAtMs = 0L
@@ -3106,6 +3112,14 @@ class MainActivity : ComponentActivity() {
             while (isActive) {
                 val backend = mpvBackend ?: break
                 val raw = runCatching { backend.currentSubtitleText() }.getOrNull().orEmpty()
+                /*
+                 * 内核出画判定（父亲 2026-10-09）：解出画面尺寸了才算真的出画，
+                 * 配合最短停留两秒，收黑幕 / 转圈 /「即将播放」。
+                 */
+                if (waitingFirstFrame && runCatching { backend.videoReady() }.getOrDefault(false)) {
+                    playerFrameSeen = true
+                    withContext(kotlinx.coroutines.Dispatchers.Main) { tryRevealWaitingFrame() }
+                }
                 val text = cleanSubtitleText(raw)
                 /*
                  * 内核那层字幕的收放（2026-10-09）：
@@ -3144,7 +3158,16 @@ class MainActivity : ComponentActivity() {
         if (!waitingFirstFrame) return
         // 只认"播放器已渲染出第一帧"这一个条件（+150ms 纹理余量，见 onRenderedFirstFrame）
         if (!playerFrameSeen) return
-        Log.i(TAG, "收黑幕：播放器已渲染第一帧（再留 150ms 给纹理）")
+        /*
+         * 最短停留（父亲 2026-10-09：至少两秒）——两条路都走这里，所以统一卡在这。
+         * 不够就等够再来，别让「即将播放」一闪而过。
+         */
+        val since = android.os.SystemClock.uptimeMillis() - waitingStartedAtMs
+        if (since < kMinWaitingMs) {
+            handler.postDelayed({ tryRevealWaitingFrame() }, kMinWaitingMs - since)
+            return
+        }
+        Log.i(TAG, "收黑幕：播放器已渲染第一帧（等待 ${since}ms）")
         revealDanmakuSubtitleLogo()
     }
 

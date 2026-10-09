@@ -284,6 +284,19 @@ class MpvBackend(private val context: Context) {
         runCatching { MPVLib.setPropertyString("sub-visibility", if (visible) "yes" else "no") }
     }
 
+    /**
+     * 内核真的解出画面了吗（父亲 2026-10-09：换片时黑幕过早收掉，露出上一部的画面）。
+     *
+     * 判据用 `video-params/w`：内核拿到第一个视频帧、认出画面尺寸之后才有值；
+     * 没起播前它是空的（日志里那排 `格式=- 解码=-` 就是这个阶段）。
+     * 比"原生纹理来了一帧"可靠 —— 换片瞬间纹理层里还留着上一部的旧帧。
+     */
+    fun videoReady(): Boolean = try {
+        (MPVLib.getPropertyInt("video-params/w") ?: 0) > 0
+    } catch (_: Throwable) {
+        false
+    }
+
     fun currentSubtitleText(): String = try {
         MPVLib.getPropertyString("sub-text").orEmpty()
     } catch (_: Throwable) {
