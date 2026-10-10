@@ -599,6 +599,74 @@ constexpr float kScreenPresetImaxD = 15.f;
 /** 当前预设：1 = 影厅小屏（默认）· 2 = IMAX 大屏 · 0 = 手工改过宽度/距离（自定义） */
 std::atomic<int> gScreenPreset{1};
 
+/*
+ * ==================== 观影位锚点 / 走动（父亲 2026-10-10） ====================
+ *
+ * 父亲原话：「改成不固定屏幕和观影位距离，我可以走近屏幕，只是不允许穿过屏幕」。
+ *
+ * 做法：
+ *   1) 银幕、视频层、弹幕层固定在世界里（本来就是）—— 他往前走，银幕角尺寸自然变大；
+ *   2) 头显位置每帧读一次，算「他离银幕还有多远」；距离小于 gMinScreenGap（默认 1.0 m）时，
+ *      把整个场景往远处推同样多的量 —— 到墙根就推不动了，永远不会穿到银幕背后；
+ *   3) 控制条 / 菜单 / 海报墙（panelPlacement 那套）跟随观影位（父亲 2026-10-07 的规则），
+ *      他走近银幕时，控制条仍在伸手可及的位置，不会留在身后。
+ *
+ * 注意：起点是**开应用那一刻**的头显位置（首次读到有效位姿时记录），所有计算都用相对量。
+ */
+std::atomic<float> gViewerX{0.f};        // 平滑后的相对左右位移（相对起点）
+std::atomic<float> gViewerZ{0.f};        // 平滑后的相对前后位移（相对起点）
+std::atomic<float> gScenePush{0.f};      // 防穿越：场景整体往远处推多少米
+std::atomic<float> gMinScreenGap{1.0f};  // 最近允许走到离银幕多远
+std::atomic<int> gFollowViewer{1};       // 控制条/菜单/海报墙是否跟随观影位（运行时可关）
+std::atomic<float> gViewerOriginX{0.f};
+std::atomic<float> gViewerOriginZ{0.f};
+std::atomic<bool> gViewerOriginSet{false};
+/** 头部位置读数日志的节流（~1 秒一次），诊断用 */
+std::chrono::steady_clock::time_point gLastHeadLog{};
+
+/** 头部位姿 → 观影位锚点 + 防穿越推量。每帧在 LocateViews 成功之后调一次。 */
+void updateViewerAnchor(const XrPosef &head) {
+    const float hx = head.position.x;
+    const float hz = head.position.z;
+    if (!gViewerOriginSet.load()) {
+        gViewerOriginX.store(hx);
+        gViewerOriginZ.store(hz);
+        gViewerOriginSet.store(true);
+        LOGI("观影位锚点 → 起点记为 x=%.2f z=%.2f（后续所有走动都相对这个点）",
+             (double) hx, (double) hz);
+    }
+    // 低通平滑（0.25）：位姿有轻微抖动，直接跟随会让控制条抖
+    const float px = gViewerX.load(), pz = gViewerZ.load();
+    const float sx = px + ((hx - gViewerOriginX.load()) - px) * 0.25f;
+    const float sz = pz + ((hz - gViewerOriginZ.load()) - pz) * 0.25f;
+    gViewerX.store(sx);
+    gViewerZ.store(sz);
+
+    /*
+     * 防穿越：他离银幕（未推状态）的距离 = 前后位移 + 银幕距离。
+     * 小于 min_screen_gap 时，场景整体后推差值 —— 效果 = 到墙根推不动。
+     */
+    const float dist = sz + gScreenDistance.load();
+    const float gap = gMinScreenGap.load();
+    gScenePush.store(dist < gap ? gap - dist : 0.f);
+
+    // 1 秒一次的位置日志：诊断"走动到底有没有被头显报出来"就靠它
+    const auto now = std::chrono::steady_clock::now();
+    if (now - gLastHeadLog > std::chrono::seconds(1)) {
+        gLastHeadLog = now;
+        LOGI("观影位：x=%+.2f z=%+.2f（离银幕 %.2f 米，场景后推 %.3f 米）",
+             (double) sx, (double) sz, (double) dist, (double) gScenePush.load());
+    }
+}
+
+/** 跟随观影位的 XY 偏移（gFollowViewer=0 时为 0，退回固定世界摆位） */
+float viewerOffsetX() {
+    return gFollowViewer.load() != 0 ? gViewerX.load() : 0.f;
+}
+float viewerOffsetZ() {
+    return gFollowViewer.load() != 0 ? gViewerZ.load() : 0.f;
+}
+
 /** 切预设：同时改宽度与距离，并打一行日志（父亲戴着时靠这行确认切了哪套） */
 void applyScreenPreset(int preset) {
     if (preset == 1) {
@@ -1735,9 +1803,10 @@ constexpr float kPanelMaxWidth = 5.0f;
  */
 ScreenPlacement panelPlacement(const VrContext &c) {
     ScreenPlacement p = kSideScreen;
-    p.cx = c.panelPosX.load();
+    // 跟随观影位（父亲 2026-10-10：走近银幕时控制条/菜单不能留在身后）
+    p.cx = c.panelPosX.load() + viewerOffsetX();
     p.cy = c.panelPosY.load();
-    p.cz = c.panelPosZ.load();
+    p.cz = c.panelPosZ.load() + viewerOffsetZ();
     p.yawDeg = c.panelYawDeg.load();
     p.pitchDeg = c.panelPitchDeg.load();
     p.width = c.panelWidth.load();
@@ -1747,7 +1816,8 @@ ScreenPlacement panelPlacement(const VrContext &c) {
 /** 银幕当前摆位（宽高比跟着片子的实际比例走，父亲 2026-10-06） */
 ScreenPlacement frontScreen(const VrContext &c) {
     ScreenPlacement p = kFrontScreen;
-    p.cz = -gScreenDistance.load();     // 距离可运行时调
+    // 防穿越推量（2026-10-10）：走近银幕到墙根时场景整体后推，见 updateViewerAnchor
+    p.cz = -gScreenDistance.load() - gScenePush.load();
     p.width = gScreenWidth.load();      // 尺寸可运行时调
     p.aspect = c.videoAspect.load();
     return p;
@@ -2015,7 +2085,7 @@ void menuBasis(float *cx, float *cy, float *cz, float *nx, float *ny, float *nz,
     const float half = kOsdHeight * 0.5f + kMenuHeight * 0.5f;   // 两块面沿 v 轴的半高之和
     const float menuY = kOsdCenterY + ct * half - st * kMenuGap;
     const float menuDist = kOsdDistance - st * half - ct * kMenuGap;
-    *cx = 0.f; *cy = menuY; *cz = -menuDist;
+    *cx = viewerOffsetX(); *cy = menuY; *cz = -menuDist + viewerOffsetZ();
     *nx = 0.f; *ny = -st; *nz = ct;
     *ux = 1.f; *uy = 0.f; *uz = 0.f;
     *vx = 0.f; *vy = ct;  *vz = st;
@@ -3887,6 +3957,8 @@ void frameLoop(VrContext &c) {
                     (vs.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) != 0 &&
                     (vs.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) != 0;
             if (viewsValid) {
+                /* 观影位锚点 + 防穿越（2026-10-10）：在渲染之前算好，所有图层用同一组值 */
+                updateViewerAnchor(views[0].pose);
                 bool eyesOk = true;
                 for (uint32_t i = 0; i < viewCount; i++) {
                     if (!renderEye(c, (int) i, views[i])) {
@@ -4015,7 +4087,9 @@ void frameLoop(VrContext &c) {
          */
         if (rendered && c.osdLayer.submitted) {
             const float th = kOsdTiltDeg * 3.14159265358979f / 180.f;
-            osdQuad.pose.position = {0.f, kOsdCenterY, -kOsdDistance};
+            /* 控制条跟随观影位（父亲 2026-10-10：走近银幕时控制条留在伸手可及处） */
+            osdQuad.pose.position = {viewerOffsetX(), kOsdCenterY,
+                                     -kOsdDistance + viewerOffsetZ()};
             osdQuad.pose.orientation = {sinf(th * 0.5f), 0.f, 0.f, cosf(th * 0.5f)};
             osdQuad.size = {kOsdWidth, kOsdHeight};
             osdQuad.subImage.swapchain = c.osdLayer.handle;
@@ -4029,6 +4103,7 @@ void frameLoop(VrContext &c) {
             const float mth = kMenuTiltDeg * 3.14159265358979f / 180.f;
             float mcx, mcy, mcz, mnx, mny, mnz, mux, muy, muz, mvx, mvy, mvz;
             menuBasis(&mcx, &mcy, &mcz, &mnx, &mny, &mnz, &mux, &muy, &muz, &mvx, &mvy, &mvz);
+            /* 菜单跟随观影位：位置改在 menuBasis 里统一做，这里原样提交即可 */
             menuQuad.pose.position = {mcx, mcy, mcz};
             menuQuad.pose.orientation = {sinf(mth * 0.5f), 0.f, 0.f, cosf(mth * 0.5f)};
             menuQuad.size = {kMenuWidth, kMenuHeight};
@@ -4768,6 +4843,18 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
         case 17:
             /* 影院银幕预设（父亲 2026-10-10）：1 = 影厅小屏 5.2/3.2，2 = IMAX 大屏 26/15 */
             applyScreenPreset((int) value);
+            break;
+        case 18:
+            /* 防穿越：离银幕最近允许多少米（父亲 2026-10-10：可以走近银幕，不许穿过） */
+            if (value >= 0.3f && value <= 5.f) {
+                gMinScreenGap.store(value);
+                LOGI("调参 → 最近离银幕 %.2f 米（再走近，整个场景会跟着往远处推）", (double) value);
+            }
+            break;
+        case 19:
+            /* 控制条/菜单/海报墙是否跟随观影位（1 = 跟，0 = 固定在世界里） */
+            gFollowViewer.store(value >= 0.5f ? 1 : 0);
+            LOGI("调参 → 控制条跟随观影位 %s", gFollowViewer.load() != 0 ? "开" : "关");
             break;
         default:
             LOGI("调参 → 未知参数 key=%d（忽略）", (int) key);

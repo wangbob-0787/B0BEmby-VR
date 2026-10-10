@@ -40,6 +40,8 @@ import java.io.File
  * | `screen_width` | 银幕宽度（米）。与 `screen_distance` 一起决定视角，默认按 IMAX 第10排几何 | 5.2 |
  * | `screen_distance` | 银幕距离（米）。IMAX 几何 = 宽 26 / 距 15 | 3.2 |
  * | `screen_preset` | 影院银幕两套预设（2026-10-10）：1 = 影厅小屏 5.2/3.2 · 2 = IMAX 大屏 26/15 | 1 |
+ * | `min_screen_gap` | 最近允许走到离银幕多少米（再走近场景整体后推，不许穿过；0.3~5.0） | 1.0 |
+ * | `follow_viewer` | 控制条/菜单/海报墙是否跟随观影位（1=跟，0=固定；2026-10-10） | 1 |
  * | `ray_scale` | 光柱粗细倍率（1.0 = 银幕 3.2 米时代的角粗细） | 0.35 |
  * | `mpv_<属性>` | 透传给内核的同名属性，例如 `mpv_tone-mapping=spline` | — |
  * | `cmd` | 直接执行一条内核命令，例如 `cmd=screenshot-to-file <路径> video`（导出渲染画面，校色用） | — |
@@ -97,6 +99,10 @@ object VrTuning {
     const val KEY_RAY_SCALE = 16
     /** 影院银幕预设（2026-10-10）：1 = 影厅小屏 5.2/3.2 · 2 = IMAX 大屏 26/15 */
     const val KEY_SCREEN_PRESET = 17
+    /** 防穿越：离银幕最近允许多少米（2026-10-10：可以走近银幕，不许穿过） */
+    const val KEY_MIN_SCREEN_GAP = 18
+    /** 控制条/菜单/海报墙是否跟随观影位（2026-10-10：走近银幕时控制条留在伸手可及处） */
+    const val KEY_FOLLOW_VIEWER = 19
 
     /** 上次应用的配置原文，只有变化才动手（避免每秒重复设置） */
     private var lastRaw: Map<String, String> = emptyMap()
@@ -277,6 +283,16 @@ object VrTuning {
         raw["screen_preset"]?.toIntOrNull()?.let {
             VrNative.setTuning(KEY_SCREEN_PRESET, it.toFloat())
             applied += if (it == 2) "银幕预设 2 IMAX 大屏 26/15 米" else "银幕预设 1 影厅小屏 5.2/3.2 米"
+        }
+        /* 防穿越最近距离（2026-10-10）：走近银幕到这么近时，场景会整体后推，不许穿过 */
+        raw["min_screen_gap"]?.toFloatOrNull()?.let {
+            VrNative.setTuning(KEY_MIN_SCREEN_GAP, it)
+            applied += "最近离银幕 ${"%.1f".format(it)} 米"
+        }
+        /* 控制条/菜单是否跟随观影位（2026-10-10）：0 = 固定在原地（不跟） */
+        raw["follow_viewer"]?.toIntOrNull()?.let {
+            VrNative.setTuning(KEY_FOLLOW_VIEWER, it.toFloat())
+            applied += "跟随观影位 " + if (it != 0) "开" else "关"
         }
 
         if (!wrote) return applied
