@@ -2668,6 +2668,8 @@ class MainActivity : ComponentActivity() {
         menuState.kernelActive = ctl.kernelActive
         when (kind) {
             com.xxxx.emby_vr.panel.MenuKind.SPEED -> menuState.speed = playSpeed
+            /* 影厅亮度面板：数值由菜单状态自己带着（menuState.cinemaBright），这里不用填 */
+            com.xxxx.emby_vr.panel.MenuKind.CINEMA_LIGHT -> Unit
             com.xxxx.emby_vr.panel.MenuKind.QUALITY -> menuState.quality = qualityIndex
             com.xxxx.emby_vr.panel.MenuKind.MODE -> menuState.playMode = playModeIndex
             com.xxxx.emby_vr.panel.MenuKind.BUFFER -> menuState.buffer =
