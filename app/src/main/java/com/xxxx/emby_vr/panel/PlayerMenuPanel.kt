@@ -79,6 +79,7 @@ enum class MenuKind(val title: String) {
     SUBTITLE("字幕"),
     DANMAKU("弹幕设置"),
     SPEED("播放速度"),
+    CINEMA_LIGHT("影厅亮度"),
     EPISODES("选集"),
     INFO("信息"),
     CAST("演职人员"),
@@ -91,7 +92,7 @@ enum class MenuKind(val title: String) {
  */
 val MenuKind.isSubMenu: Boolean
     get() = this == MenuKind.AUDIO || this == MenuKind.QUALITY ||
-        this == MenuKind.MODE || this == MenuKind.BUFFER
+        this == MenuKind.MODE || this == MenuKind.BUFFER || this == MenuKind.CINEMA_LIGHT
 
 /** 菜单里的一行（轨道 / 集数这类：显示名 + 是否当前选中） */
 data class MenuRowItem(val label: String, val selected: Boolean, val payload: Int = -1)
@@ -393,6 +394,7 @@ fun PlayerMenuPanel(menu: MenuState, osd: OsdState) {
                 MenuKind.QUALITY -> QualityMenu(menu)
                 MenuKind.MODE -> ModeMenu(menu)
                 MenuKind.BUFFER -> BufferMenu(menu)
+                MenuKind.CINEMA_LIGHT -> CinemaLightMenu(menu)
                 MenuKind.DANMAKU -> DanmakuMenu(menu)
                 MenuKind.SUBTITLE -> TrackMenu(menu, menu.subtitleTracks, MenuKind.SUBTITLE)
                 MenuKind.AUDIO -> TrackMenu(menu, menu.audioTracks, MenuKind.AUDIO)
@@ -455,56 +457,51 @@ private fun MoreMenu(menu: MenuState) {
             onClick = { menu.onSelect?.invoke(MenuKind.MORE, 4) },
         )
         /*
-         * 影厅环境亮度条（父亲 2026-10-10「用亮度条操作」「调影厅环境光线」）：
-         * 一条可拖的横条，管的是**影厅的环境光**（影院 HDRI 的环境光 + 底光），
-         * 不是影片画面的亮度 —— 画面亮度归「图像调整」那一套。
-         * 位置要报给界面层（拖动靠它换算），行号固定排在「选座」之后（= 5）。
+         * 影厅亮度（父亲 2026-10-10）：**先有这一行，点进去才展开亮度条** ——
+         * 与上面四条一样是二级菜单（右箭头箭头表示还能进去），行号固定 = 5。
+         * 管的是影厅的环境光线（影院 HDRI 环境光 + 底光），不是影片画面亮度。
          */
-        CinemaBrightnessRow(menu)
+        MenuRow(
+            label = "影厅亮度",
+            value = "${(menu.cinemaBright * 100).toInt()}%",
+            selected = false,
+            hasSub = true,
+            onClick = { menu.onSelect?.invoke(MenuKind.MORE, 5) },
+        )
     }
 }
 
-/**
- * 影厅环境亮度条（父亲 2026-10-10）。
- *
- * 长得像一行菜单（同样的圆角、同样的内边距），右边留一条可以拖的横条：
- * 拖的是**影厅的环境光**，不是影片画面亮度。填充比例直接来自 [MenuState.cinemaBright]，
- * 值由界面层按光柱横坐标写入（原生那边把它换算成环境光强度与底光）。
- */
 @Composable
-private fun CinemaBrightnessRow(menu: MenuState) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 3.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .background(Color(0x14FFFFFF))
-            .padding(horizontal = 14.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = "影厅亮度",
-            color = Color(0xFFF1F5F7),
-            fontSize = 15.sp,
-            modifier = Modifier.weight(1f),
-        )
-        Text(
-            text = "${(menu.cinemaBright * 100).toInt()}%",
-            color = Color(0xB3F1F5F7),
-            fontSize = 14.sp,
-            modifier = Modifier.padding(end = 10.dp),
-        )
+private fun CinemaLightMenu(menu: MenuState) {
+    /* 离开这个二级菜单就把条子位置清掉，免得看不见的条子还能被拖到 */
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose { menu.brightBar = null }
+    }
+    Column {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "影厅环境光线",
+                color = Color(0xFFF1F5F7),
+                fontSize = 15.sp,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = "${(menu.cinemaBright * 100).toInt()}%",
+                color = Color(0xB3F1F5F7),
+                fontSize = 15.sp,
+            )
+        }
         Box(
             modifier = Modifier
-                .width(220.dp)
-                .height(18.dp)
-                .clip(RoundedCornerShape(9.dp))
+                .fillMaxWidth()
+                .height(26.dp)
+                .clip(RoundedCornerShape(13.dp))
                 .background(Color(0x33FFFFFF))
                 .onGloballyPositioned { coords ->
-                    /*
-                     * 报的是**整条轨道**的窗口矩形：光柱横坐标落到条上就换算成 0~1。
-                     * 高度给足一点（18dp），暗厅里用光柱点这么细的条不容易。
-                     */
+                    /* 报整条轨道的窗口矩形：光柱横坐标落到条上就换算成 0~1（见面板层的指针处理） */
                     menu.brightBar = coords.boundsInWindow()
                 },
         ) {
@@ -512,10 +509,16 @@ private fun CinemaBrightnessRow(menu: MenuState) {
                 modifier = Modifier
                     .fillMaxHeight()
                     .fillMaxWidth(menu.cinemaBright.coerceIn(0f, 1f))
-                    .clip(RoundedCornerShape(9.dp))
+                    .clip(RoundedCornerShape(13.dp))
                     .background(Color(0xFF4FC3F7)),
             )
         }
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "按住扳机左右拖：最左 = 全黑（只剩银幕的光）· 最右 = 影厅亮堂",
+            color = Color(0x8AF1F5F7),
+            fontSize = 12.sp,
+        )
     }
 }
 

@@ -2262,9 +2262,13 @@ class MainActivity : ComponentActivity() {
                     return
                 }
                 /*
-                 * 「影厅亮度」不再走菜单点击：它是「更多」里的一条**亮度条**，
-                 * 按住拖动由菜单指针路径处理（见上面的 onMenuPointer）。
+                 * 「影厅亮度」（父亲 2026-10-10）：跟上面四条一样是二级菜单 ——
+                 * 点这一行才展开亮度条，条子本身由菜单指针路径拖动（见 onMenuPointer）。
                  */
+                if (index == 5) {
+                    openMenu(com.xxxx.emby_vr.panel.MenuKind.CINEMA_LIGHT, com.xxxx.emby_vr.panel.OsdButton.MORE)
+                    return
+                }
                 val target = when (index) {
                     0 -> com.xxxx.emby_vr.panel.MenuKind.AUDIO
                     1 -> com.xxxx.emby_vr.panel.MenuKind.QUALITY
