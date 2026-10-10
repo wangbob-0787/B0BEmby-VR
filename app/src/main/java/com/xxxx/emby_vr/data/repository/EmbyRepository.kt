@@ -240,6 +240,22 @@ class EmbyRepository private constructor(private val context: Context) {
     }
 
     /**
+     * 全库条目名的一页（方案 B 拼音索引，父亲 2026-10-10）
+     */
+    suspend fun getItemNamesPage(startIndex: Int, limit: Int = 10000): List<BaseItemDto> {
+        requireLoggedIn()
+        return EmbyApi.getItemNamesPage(
+            context,
+            session.serverUrl!!,
+            session.apiKey!!,
+            session.deviceId,
+            session.userId!!,
+            startIndex,
+            limit,
+        )
+    }
+
+    /**
      * 演员详情（父亲 2026-10-10：演员页顶部要头像 + 简介）
      */
     suspend fun getPersonInfo(personId: String): BaseItemDto {

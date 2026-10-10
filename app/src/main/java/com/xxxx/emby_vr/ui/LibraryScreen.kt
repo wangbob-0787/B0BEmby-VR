@@ -483,7 +483,7 @@ private fun SortDialog(
                                             imageVector = if (currentSortOrder == "Ascending") Icons.Default.ArrowUpward else Icons.Default.ArrowDownward,
                                             contentDescription = null,
                                             modifier = Modifier.size(20.dp),
-                                            tint = MaterialTheme.colorScheme.primary
+                                            tint = MaterialTheme.colorScheme.secondary
                                         )
                                     }
                                 }

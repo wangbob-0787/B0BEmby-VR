@@ -66,9 +66,9 @@ fun TvInputDialog(
                 },
                 // 绿底白字（父亲 2026-10-04：这就是电视版主按钮的风格）
                 colors = ButtonDefaults.colors(
-                    containerColor = MaterialTheme.colorScheme.primary,
+                    containerColor = MaterialTheme.colorScheme.secondary,
                     contentColor = androidx.compose.ui.graphics.Color.White,
-                focusedContainerColor = MaterialTheme.colorScheme.primary,
+                focusedContainerColor = MaterialTheme.colorScheme.secondary,
                 focusedContentColor = androidx.compose.ui.graphics.Color.White,
             ),
             ) {
@@ -80,9 +80,9 @@ fun TvInputDialog(
                 onClick = onDismiss,
                 // 绿底白字（父亲 2026-10-04：这就是电视版主按钮的风格）
                 colors = ButtonDefaults.colors(
-                    containerColor = MaterialTheme.colorScheme.primary,
+                    containerColor = MaterialTheme.colorScheme.secondary,
                     contentColor = androidx.compose.ui.graphics.Color.White,
-                focusedContainerColor = MaterialTheme.colorScheme.primary,
+                focusedContainerColor = MaterialTheme.colorScheme.secondary,
                 focusedContentColor = androidx.compose.ui.graphics.Color.White,
             ),
             ) {

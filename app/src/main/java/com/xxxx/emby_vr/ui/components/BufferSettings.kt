@@ -300,11 +300,11 @@ private fun BufferSettingRow(
                     scale = ClickableSurfaceDefaults
                         .scale(focusedScale = 1f),
                     colors = ClickableSurfaceDefaults.colors(
-                        containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
+                        containerColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f),
                         contentColor = MaterialTheme.colorScheme.onPrimary,
                         pressedContentColor = MaterialTheme.colorScheme.onSecondary,
                         pressedContainerColor = MaterialTheme.colorScheme.secondary,
-                focusedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
+                focusedContainerColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f),
                 focusedContentColor = MaterialTheme.colorScheme.onPrimary,
             ),
                     modifier = Modifier

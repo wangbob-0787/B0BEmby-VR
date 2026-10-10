@@ -1415,6 +1415,24 @@ class MainActivity : ComponentActivity() {
         }
         currentMediaId = mediaId
         /*
+         * 应用「记住的上次字幕」（父亲 2026-10-10 定）。
+         *
+         * 必须在这里做、**赶在取播放信息之前**：取播放信息那一步会读
+         * forceKernelForImageSubs 来决定用系统播放器还是内核 —— 上次选的是图片字幕，
+         * 这一部就得直接走内核，否则又要手动去字幕菜单点一次才触发。
+         */
+        runCatching {
+            val mem = restoreSubtitleChoice(mediaId)
+            if (mem != null) {
+                selectedSubtitleIndex = mem.first
+                com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForImageSubs = mem.second
+                Log.i(
+                    TAG,
+                    "起播应用记住的字幕：流 ${mem.first ?: "关闭"}（图片字幕=${mem.second}）",
+                )
+            }
+        }
+        /*
          * 父亲 2026-10-06：播放中点海报墙的片子起不来、反而把正在播的暂停了。
          * 原因是这里原来有一句"正在播就切播放/暂停"的老逻辑 —— 那是给面板上的
          * 播放键用的，不该拦起播。现在点谁就播谁，旧片由 startPlayer 里的
@@ -2169,6 +2187,18 @@ class MainActivity : ComponentActivity() {
                     if (picked != null && picked == selectedSubtitleIndex) null else picked
                 Log.i(TAG, "字幕 → ${selectedSubtitleIndex ?: "关闭"}（菜单保持打开）")
                 /*
+                 * 记住这次选择（父亲 2026-10-10 定）：下次从海报墙起播这部片/这一集，
+                 * 直接按它来决定"要不要走内核"，不用再点一次字幕菜单。
+                 */
+                runCatching {
+                    val st = currentStreams.firstOrNull { it.index == selectedSubtitleIndex }
+                    rememberSubtitleChoice(
+                        mediaId = currentMediaId,
+                        index = selectedSubtitleIndex,
+                        isImage = st != null && isImageSubtitle(st),
+                    )
+                }
+                /*
                  * 勾选要**立刻就位**（2026-10-09 父亲实测：原来不打钩，得关掉菜单再打开才看见）。
                  * 音轨那条分支一直有这句（父亲 2026-10-07 要求"菜单原地更新"），
                  * 字幕这条漏了 —— 同一个毛病，同一个修法。
@@ -2508,6 +2538,32 @@ class MainActivity : ComponentActivity() {
             rows += com.xxxx.emby_vr.panel.MenuRowItem(label, s.index == selectedSubtitleIndex)
         }
         return rows
+    }
+
+    /**
+     * 记住这部片 / 这一集选过的字幕（父亲 2026-10-10 定）。
+     *
+     * index = null 表示"把字幕关掉"，也照样记住 —— 下次起播不该又自己冒出来。
+     * isImage = 是不是图片字幕（PGS/VobSub）：起播时靠它决定要不要**直接走内核**。
+     */
+    private fun rememberSubtitleChoice(mediaId: String, index: Int?, isImage: Boolean) {
+        if (mediaId.isBlank()) return
+        placePrefs.edit()
+            .putString("sub_choice_$mediaId", "${index ?: -1}|$isImage")
+            .apply()
+    }
+
+    /**
+     * 取这部片 / 这一集记住的字幕；没记过返回 null。
+     * 返回的 index 为 null 表示"上次是关字幕"。
+     */
+    private fun restoreSubtitleChoice(mediaId: String): Pair<Int?, Boolean>? {
+        if (mediaId.isBlank()) return null
+        val raw = placePrefs.getString("sub_choice_$mediaId", null) ?: return null
+        val parts = raw.split("|")
+        val idx = parts.getOrNull(0)?.toIntOrNull() ?: return null
+        val isImage = parts.getOrNull(1)?.equals("true", ignoreCase = true) == true
+        return (if (idx < 0) null else idx) to isImage
     }
 
     /**

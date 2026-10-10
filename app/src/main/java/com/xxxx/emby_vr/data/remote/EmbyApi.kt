@@ -233,6 +233,29 @@ object EmbyApi {
     }
 
     /**
+     * 拉全库条目名（方案 B 的拼音索引，父亲 2026-10-10）。
+     *
+     * 实测（2026-10-10）：一次最多能拿 10000 条（4.6 MB / 1.7 秒），
+     * Limit=30000 能给到 30000 条但要 14 MB / 4 秒 —— 所以按 10000 分页拉更稳。
+     * 只要 Id/Name/Type：本地建「片名 → 拼音」索引，用户打字母就能出中文候选。
+     */
+    suspend fun getItemNamesPage(
+        context: Context,
+        serverUrl: String,
+        apiKey: String,
+        deviceId: String,
+        userId: String,
+        startIndex: Int,
+        limit: Int = 10000,
+    ): List<BaseItemDto> {
+        val url = "/Users/$userId/Items?Recursive=true&IncludeItemTypes=Movie,Series" +
+                "&StartIndex=$startIndex&Limit=$limit" +
+                "&SortBy=SortName&SortOrder=Ascending" +
+                "&X-Emby-Token=$apiKey"
+        return httpAsBaseItemDtoList(context, serverUrl, apiKey, deviceId, url)
+    }
+
+    /**
      * 获取继续观看列表
      */
     suspend fun getResumeItems(

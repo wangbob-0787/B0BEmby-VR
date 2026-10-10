@@ -85,69 +85,84 @@ fun ActorScreen(
             .filter { it.second.isNotEmpty() }
     }
 
+    /** 照片尺寸（名字/生日/简介那一块的起始高度要按它算） */
+    val photoWidth = 180.dp
+    val photoAspect = 0.72f
+    val photoHeight = photoWidth / photoAspect
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 40.dp),
     ) {
-        // ---------- 顶部：头像 + 姓名 + 生日 + 小传 ----------
+        // ---------- 顶部：照片 + （名字/生日/简介）整块从照片 2/3 高处开始 ----------
         item(key = "header") {
-            Row(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(start = 40.dp, end = 40.dp, top = 24.dp, bottom = 18.dp),
-                horizontalArrangement = Arrangement.spacedBy(24.dp),
             ) {
-                Box(
-                    modifier = Modifier
-                        .width(180.dp)
-                        .aspectRatio(0.72f)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Color.White.copy(alpha = 0.06f)),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    if (avatarUrl != null) {
-                        AsyncImage(
-                            model = avatarUrl,
-                            contentDescription = personName,
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Crop,
-                        )
-                    } else {
-                        Text("无头像", color = Color.White.copy(alpha = 0.5f), fontSize = 16.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .width(photoWidth)
+                            .aspectRatio(photoAspect)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color.White.copy(alpha = 0.06f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (avatarUrl != null) {
+                            AsyncImage(
+                                model = avatarUrl,
+                                contentDescription = personName,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop,
+                            )
+                        } else {
+                            Text("无头像", color = Color.White.copy(alpha = 0.5f), fontSize = 16.sp)
+                        }
                     }
-                }
 
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = person?.name ?: personName,
-                        color = Color.White,
-                        fontSize = 30.sp,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    val birth = Utils.formatDate(person?.premiereDate)
-                    if (birth.isNotBlank()) {
-                        Spacer(modifier = Modifier.height(6.dp))
+                    /*
+                     * 名字 / 出生日期 / 简介这一整块整体下移（父亲 2026-10-10 定）：
+                     * 起始位置 = **照片高度的 2/3 处**。
+                     * 照片位置不动、这一列的水平位置与宽度也不动，只是从更低的地方开始排。
+                     */
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(top = photoHeight * 2f / 3f),
+                    ) {
                         Text(
-                            text = "出生日期：$birth",
-                            color = Color.White.copy(alpha = 0.75f),
+                            text = person?.name ?: personName,
+                            color = Color.White,
+                            fontSize = 30.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        val birth = Utils.formatDate(person?.premiereDate)
+                        if (birth.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "出生日期：$birth",
+                                color = Color.White.copy(alpha = 0.75f),
+                                fontSize = 16.sp,
+                            )
+                        }
+
+                        val overview = person?.overview
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                            text = when {
+                                overview.isNullOrBlank() && person != null -> "Emby 里没有这位演员的简介"
+                                overview.isNullOrBlank() -> "正在读取演员资料…"
+                                else -> overview
+                            },
+                            color = Color.White.copy(alpha = 0.85f),
                             fontSize = 16.sp,
+                            lineHeight = 24.sp,
                         )
                     }
-
-                    val overview = person?.overview
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Text(
-                        text = when {
-                            overview.isNullOrBlank() && person != null -> "Emby 里没有这位演员的简介"
-                            overview.isNullOrBlank() -> "正在读取演员资料…"
-                            else -> overview
-                        },
-                        color = Color.White.copy(alpha = 0.85f),
-                        fontSize = 16.sp,
-                        lineHeight = 24.sp,
-                    )
                 }
             }
         }

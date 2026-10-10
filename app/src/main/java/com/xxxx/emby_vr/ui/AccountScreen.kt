@@ -232,11 +232,11 @@ private fun AccountListItem(
                 containerColor = if (isCurrentAccount)  MaterialTheme.colorScheme.onTertiary.copy(alpha = 0.2f)
                 else  Color.White.copy(alpha = 0.05f)
                 ,
-                contentColor = if (isCurrentAccount)  MaterialTheme.colorScheme.primary
+                contentColor = if (isCurrentAccount)  MaterialTheme.colorScheme.secondary
                         else MaterialTheme.colorScheme.tertiary,
                 focusedContainerColor = if (isCurrentAccount)  MaterialTheme.colorScheme.onTertiary.copy(alpha = 0.2f)
                 else  Color.White.copy(alpha = 0.05f),
-                focusedContentColor = if (isCurrentAccount)  MaterialTheme.colorScheme.primary
+                focusedContentColor = if (isCurrentAccount)  MaterialTheme.colorScheme.secondary
                         else MaterialTheme.colorScheme.tertiary,
             )
         ) {

@@ -223,53 +223,36 @@ fun TopStatusBar(
                     }
                 }
 
-                // 用户信息
+                // 用户信息：只留头像，贴最右边（父亲 2026-10-10：用户名去掉、头像放最右）
                 if (userInfo != null) {
-                    // 放大镜与头像之间 = 与左边「菜单 ↔ 版本号」同一个间距（父亲 2026-10-10）
                     Spacer(modifier = Modifier.width(TopBarGap))
 
-                    /*
-                     * 只有**头像**可点（父亲 2026-10-10：点用户名不该弹账号管理）。
-                     * 所以这里不再整块包 Surface，只把头像包起来，用户名就是一行纯文字。
-                     */
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(vertical = 6.dp)
-                    ) {
-                        Surface(
-                            onClick = { (onUserInfoClick ?: {}).invoke() },
-                            modifier = Modifier
-                                .focusRequester(userInfoFocusRequester)
-                                .vrClickTarget(
-                                    key = "top:user",
-                                    focusRequester = userInfoFocusRequester,
-                                    onActivate = { (onUserInfoClick ?: {}).invoke() },
-                                ),
-                            shape = ClickableSurfaceDefaults.shape(
-                                androidx.compose.foundation.shape.CircleShape
+                    Surface(
+                        onClick = { (onUserInfoClick ?: {}).invoke() },
+                        modifier = Modifier
+                            .focusRequester(userInfoFocusRequester)
+                            .vrClickTarget(
+                                key = "top:user",
+                                focusRequester = userInfoFocusRequester,
+                                onActivate = { (onUserInfoClick ?: {}).invoke() },
                             ),
-                            colors = ClickableSurfaceDefaults.colors(
-                                containerColor = Color.Transparent,
-                                contentColor = Color.White,
-                                focusedContainerColor = Color.Transparent,
-                                focusedContentColor = Color.White,
-                            )
-                        ) {
-                            // 头像：用父亲 2026-10-02 给的图（圆形裁剪）
-                            Image(
-                                painter = painterResource(R.drawable.ic_user_avatar),
-                                contentDescription = null,
-                                modifier = Modifier
-                                    .size(38.dp)
-                                    .clip(androidx.compose.foundation.shape.CircleShape)
-                            )
-                        }
-                        // 头像与名字之间 = 同一个间距（父亲 2026-10-10）
-                        Spacer(modifier = Modifier.width(TopBarGap))
-                        Text(
-                            text = userInfo,
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Medium
+                        shape = ClickableSurfaceDefaults.shape(
+                            androidx.compose.foundation.shape.CircleShape
+                        ),
+                        colors = ClickableSurfaceDefaults.colors(
+                            containerColor = Color.Transparent,
+                            contentColor = Color.White,
+                            focusedContainerColor = Color.Transparent,
+                            focusedContentColor = Color.White,
+                        )
+                    ) {
+                        // 头像：用父亲 2026-10-02 给的图（圆形裁剪）
+                        Image(
+                            painter = painterResource(R.drawable.ic_user_avatar),
+                            contentDescription = null,
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(androidx.compose.foundation.shape.CircleShape)
                         )
                     }
                 }

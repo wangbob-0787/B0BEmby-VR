@@ -1,5 +1,6 @@
 package com.xxxx.emby_vr.ui.components
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -10,8 +11,6 @@ import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -27,10 +26,9 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.tv.material3.Button
@@ -40,12 +38,13 @@ import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
+import com.xxxx.emby_vr.data.PinyinIndex
 import com.xxxx.emby_vr.data.model.BaseItemDto
+import com.xxxx.emby_vr.data.repository.EmbyRepository
 import com.xxxx.emby_vr.panel.ClickTargets
 import com.xxxx.emby_vr.panel.vrClickBlocker
 import com.xxxx.emby_vr.panel.vrClickTarget
 import com.xxxx.emby_vr.ui.viewmodel.SearchViewModel
-import kotlinx.coroutines.delay
 
 /** 摇杆每拨一次滚多少（大约一个海报行的距离） */
 private const val kScrollStep = 300f
@@ -54,23 +53,22 @@ private const val kScrollStep = 300f
 private val kIdleBg = Color(0xFF3A3A3A)
 
 /**
- * 首页搜索浮层（父亲 2026-10-10）。
+ * 首页搜索浮层（父亲 2026-10-10 定稿）。
  *
  * 形态：**浮在海报墙上面**的一块面板，海报墙不动。
  *   · 第一行：输入框 + 「片名 / 演员」单选（记住上次选择）+「搜索」
- *     （不要关闭按钮 —— 手柄 B 键就是返回，父亲 2026-10-10 定）
- *   · 下面：结果标签（全部 / 电影 / 剧集 / 其他，**有内容才出现**）+ 海报网格
- *   · 点海报 → 进详情页
+ *   · 没开键盘时：结果标签（全部 / 电影 / 剧集 / 其他，有内容才出现）+ 海报网格
+ *   · 开了键盘时：拼音候选条 + **内置键盘**
  *
- * 两个关键机制：
- *   1. **模态组**：VR 的点击是「按坐标查表」、不看层级，所以浮层必须把自己
- *      登记成模态组（[ClickTargets.setModalGroup]），否则点浮层会点到后面的海报墙；
- *      同时铺一块全屏兜底矩形，点浮层空白处不会回退成 OK 键去激活焦点上的东西。
- *   2. **滚**：摇杆走的是「鼠标滚轮按坐标命中」，浮层里的网格天然能滚；
- *      这里再截上下键兜一手（焦点停在输入框里时文本框会吃掉方向键）。
+ * 三点关键：
+ *   1. **模态组**：VR 点击是「按坐标查表」、不看层级，所以浮层把自己登记成模态组，
+ *      否则点浮层会点到后面的海报墙；再铺一块全屏兜底，点空白也不会回退成 OK。
+ *   2. **内置键盘**：系统输入法弹不到我们这块自建虚拟屏上（实测），所以自己画。
+ *      打字母靠 [PinyinIndex] 出中文候选（qyn → 庆余年）；也能直接打英文片名。
+ *   3. **滚**：摇杆走「鼠标滚轮按坐标命中」，网格天然能滚；上下键再兜一手。
  *
- * 视觉照全站那套：面板半透明黑 + 1dp 白 15% 描边 + 12dp 圆角；
- * 胶囊未选中 #3A3A3A、**聚焦或选中才是绿底**（不用白底，父亲 2026-10-10）。
+ * 配色照全站：未选中 #3A3A3A、**聚焦或选中才是主题绿**（这个主题里 primary 是白色，
+ * 绿色在 secondary，别再写错）。
  */
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
@@ -80,16 +78,33 @@ fun SearchOverlay(
     onOpenItem: (BaseItemDto) -> Unit,
     onClose: () -> Unit,
 ) {
+    val context = LocalContext.current
+    val repository = remember { EmbyRepository.getInstance(context) }
+
     var query by remember { mutableStateOf(searchViewModel.currentQuery) }
     var tab by remember { mutableStateOf(SearchTab.ALL) }
+    var keyboardOpen by remember { mutableStateOf(false) }
     val fieldFocus = remember { FocusRequester() }
     /** 第一张结果海报的焦点锚点：输入框按「下」直接落到它上面 */
     val firstResultFocus = remember { FocusRequester() }
     val gridState = rememberLazyGridState()
-    val keyboard = LocalSoftwareKeyboardController.current
 
     /** 这一层浮层的"组"：所有控件都挂它，开着时设为模态组 */
     val overlayGroup = remember { Any() }
+
+    // 拼音索引（首次打开键盘时建，之后用缓存）
+    var indexReady by remember { mutableStateOf(PinyinIndex.isReady()) }
+    var indexBuilding by remember { mutableStateOf(false) }
+    LaunchedEffect(keyboardOpen) {
+        if (!keyboardOpen || PinyinIndex.isReady()) {
+            indexReady = PinyinIndex.isReady()
+            return@LaunchedEffect
+        }
+        indexBuilding = true
+        runCatching { PinyinIndex.ensure(context, repository) }
+        indexBuilding = false
+        indexReady = PinyinIndex.isReady()
+    }
 
     val results = searchViewModel.searchResults
     val isSearching = searchViewModel.isSearching
@@ -101,18 +116,13 @@ fun SearchOverlay(
         onDispose { ClickTargets.clearModalGroup(overlayGroup) }
     }
 
-    /*
-     * 手柄 B 键 = 返回：浮层开着时先关浮层（父亲 2026-10-10）。
-     * 走面板那条返回通道（PanelLayer.back → onBackPressedDispatcher），
-     * 浮层在 HomeScreen 里后注册，优先级高于 NavHost。
-     */
-    androidx.activity.compose.BackHandler(enabled = true) {
-        runCatching { keyboard?.hide() }
-        onClose()
+    // 手柄 B 键 = 返回：先关键盘，再关浮层（父亲 2026-10-10）
+    BackHandler(enabled = true) {
+        if (keyboardOpen) keyboardOpen = false else onClose()
     }
 
     LaunchedEffect(Unit) {
-        delay(150)
+        kotlinx.coroutines.delay(150)
         runCatching { fieldFocus.requestFocus() }
     }
 
@@ -124,7 +134,7 @@ fun SearchOverlay(
     fun runSearch() {
         if (query.isBlank()) return
         searchViewModel.search(query)
-        runCatching { keyboard?.hide() }
+        keyboardOpen = false
     }
 
     val allItems: List<BaseItemDto> = remember(results) {
@@ -138,7 +148,6 @@ fun SearchOverlay(
             SearchTab.OTHER -> allItems.filter { !isMovieOrSeries(it) }
         }
     }
-    /** 标签上的条数按实际拿到的算（服务端的总数不可信） */
     val counts: Map<SearchTab, Int> = remember(allItems) {
         mapOf(
             SearchTab.ALL to allItems.size,
@@ -147,26 +156,19 @@ fun SearchOverlay(
             SearchTab.OTHER to allItems.count { !isMovieOrSeries(it) },
         )
     }
+    /** 拼音候选（只在键盘开着、索引就绪时算） */
+    val candidates = remember(query, indexReady, keyboardOpen) {
+        if (keyboardOpen && indexReady) PinyinIndex.candidates(query, 8) else emptyList()
+    }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            // 压暗背景，海报墙仍可见 —— 是浮层，不是把海报墙换掉
             .background(Color.Black.copy(alpha = 0.45f))
-            /*
-             * 全屏兜底矩形（挂浮层组）：保证浮层范围内任何一处点击都"有东西可命中"，
-             * 不会穿透到后面的海报墙，也不会回退成 OK 键激活焦点上的东西。
-             * 查表取面积最小，所以真正的控件永远优先于它。
-             */
             .vrClickBlocker(key = "search:bg", group = overlayGroup)
-            // Compose 那层命中测试也吃掉，双保险
             .pointerInput(Unit) { detectTapGestures { } }
-            /*
-             * 再截一手上下键：焦点停在输入框里时，方向键会被文本框吃掉，
-             * 摇杆看着像滚不动结果。左右键不截，留给光标。
-             */
             .onPreviewKeyEvent { e ->
-                if (e.type != KeyEventType.KeyDown || shown.isEmpty()) {
+                if (e.type != KeyEventType.KeyDown || keyboardOpen || shown.isEmpty()) {
                     return@onPreviewKeyEvent false
                 }
                 when (e.key) {
@@ -185,21 +187,16 @@ fun SearchOverlay(
     ) {
         Column(
             modifier = Modifier
-                /*
-                 * 浮层尺寸（父亲 2026-10-10：浮动框不要太大）。
-                 * 收成 78% × 68% 居中，不铺满整屏 —— 结果一屏看不完，
-                 * 靠滚看剩下的，不是要一次全排下。
-                 */
                 .fillMaxWidth(0.78f)
-                .fillMaxHeight(0.68f)
+                .fillMaxHeight(if (keyboardOpen) 0.82f else 0.68f)
                 .background(Color.Black.copy(alpha = 0.72f), RoundedCornerShape(12.dp))
                 .border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(12.dp))
                 .padding(20.dp),
         ) {
-            // ---------- 第一行：输入 + 通道单选 + 搜索 ----------
+            // ---------- 第一行：输入框 + 通道单选 + 键盘开关 + 搜索 ----------
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Box(
                     modifier = Modifier
@@ -208,35 +205,33 @@ fun SearchOverlay(
                         .background(Color.White.copy(alpha = 0.06f))
                         .border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(12.dp))
                         .focusRequester(fieldFocus)
-                        // 输入框按「下」直接进结果网格
                         .focusProperties { down = firstResultFocus }
                         .vrClickTarget(
                             key = "search:field",
                             focusRequester = fieldFocus,
                             group = overlayGroup,
-                            onActivate = { runCatching { fieldFocus.requestFocus() } },
+                            // 点输入框 = 开我们自己的键盘（系统键盘在我们面板上弹不出来）
+                            onActivate = { keyboardOpen = true },
                         )
                         .padding(horizontal = 16.dp, vertical = 14.dp),
                 ) {
                     if (query.isEmpty()) {
                         Text(
                             text = if (channel == SearchViewModel.Channel.PERSON)
-                                "输入演员名，例如：刘德华" else "输入片名，例如：庆余年",
+                                "输入演员名（拼音首字母也行）" else "输入片名（拼音首字母也行）",
                             color = Color.White.copy(alpha = 0.45f),
                             fontSize = 17.sp,
                         )
                     }
+                    // 只读：文字只由我们自己的键盘写入（系统输入法在这块屏上不可用）
                     BasicTextField(
                         value = query,
-                        onValueChange = { query = it },
+                        onValueChange = { },
+                        readOnly = true,
                         singleLine = true,
                         textStyle = TextStyle(color = Color.White, fontSize = 18.sp),
                         cursorBrush = SolidColor(MaterialTheme.colorScheme.secondary),
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                        keyboardActions = KeyboardActions(onSearch = { runSearch() }),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .focusRequester(fieldFocus),
+                        modifier = Modifier.fillMaxWidth(),
                     )
                 }
 
@@ -258,9 +253,9 @@ fun SearchOverlay(
                 Button(
                     onClick = { runSearch() },
                     colors = ButtonDefaults.colors(
-                        containerColor = MaterialTheme.colorScheme.primary,
+                        containerColor = MaterialTheme.colorScheme.secondary,
                         contentColor = Color.White,
-                        focusedContainerColor = MaterialTheme.colorScheme.primary,
+                        focusedContainerColor = MaterialTheme.colorScheme.secondary,
                         focusedContentColor = Color.White,
                     ),
                 ) {
@@ -268,61 +263,98 @@ fun SearchOverlay(
                 }
             }
 
-            Spacer(modifier = Modifier.height(18.dp))
+            Spacer(modifier = Modifier.height(16.dp))
 
-            // ---------- 结果区 ----------
-            when {
-                isSearching -> CenteredNote("正在搜索…")
-
-                hint != null -> CenteredNote(hint)
-
-                results == null -> CenteredNote("选好片名或演员，输入关键词后点「搜索」")
-
-                shown.isEmpty() -> CenteredNote("这个标签下没有内容")
-
-                else -> {
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        SearchTab.entries.forEach { t ->
-                            val n = counts[t] ?: 0
-                            if (t == SearchTab.ALL || n > 0) {
+            if (keyboardOpen) {
+                // ---------- 键盘模式：拼音候选 + 内置键盘 ----------
+                when {
+                    indexBuilding -> CenteredNote("正在建立拼音索引…（首次约几秒）")
+                    candidates.isNotEmpty() -> {
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            candidates.forEach { c ->
                                 PillChip(
-                                    text = if (t == SearchTab.ALL) "全部 ($n)"
-                                    else "${t.label} ($n)",
-                                    selected = tab == t,
-                                    vrKey = "search:tab:${t.name}",
+                                    text = c.name,
+                                    selected = false,
+                                    vrKey = "cand:${c.id}",
                                     group = overlayGroup,
-                                    onClick = { tab = t },
+                                    onClick = {
+                                        query = c.name
+                                        runSearch()
+                                    },
                                 )
                             }
                         }
                     }
+                    else -> CenteredNote(
+                        "用字母打拼音首字母（qyn = 庆余年），也可以直接打英文片名"
+                    )
+                }
 
-                    Spacer(modifier = Modifier.height(14.dp))
+                Spacer(modifier = Modifier.height(10.dp))
 
-                    LazyVerticalGrid(
-                        state = gridState,
-                        // 海报缩小一档（浮层要小）：一行约 6 张
-                        columns = GridCells.Adaptive(minSize = 118.dp),
-                        horizontalArrangement = Arrangement.spacedBy(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(14.dp),
-                        contentPadding = PaddingValues(bottom = 12.dp),
-                        modifier = Modifier.fillMaxSize(),
-                    ) {
-                        itemsIndexed(
-                            shown,
-                            key = { _, item -> item.id ?: item.hashCode().toString() },
-                        ) { index, item ->
-                            BuildItem(
-                                item = item,
-                                imgWidth = 118.dp,
-                                aspectRatio = (item.primaryImageAspectRatio ?: 0.6667).toFloat(),
-                                modifier = Modifier.fillMaxWidth(),
-                                isMyLibrary = false,
-                                serverUrl = serverUrl,
-                                autoFocus = index == 0,
-                                focusRequester = if (index == 0) firstResultFocus else null,
-                                onItemClick = { onOpenItem(item) },
-                            )
+                VrKeyboard(
+                    group = overlayGroup,
+                    onChar = { c -> query = (query + c).take(40) },
+                    onSpace = { query = (query + " ").take(40) },
+                    onBackspace = { if (query.isNotEmpty()) query = query.dropLast(1) },
+                    onClear = { query = "" },
+                    onSearch = { runSearch() },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            } else {
+                // ---------- 结果区 ----------
+                when {
+                    isSearching -> CenteredNote("正在搜索…")
+
+                    hint != null -> CenteredNote(hint)
+
+                    results == null -> CenteredNote("点上面的输入框，用键盘打片名或拼音首字母")
+
+                    shown.isEmpty() -> CenteredNote("这个标签下没有内容")
+
+                    else -> {
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            SearchTab.entries.forEach { t ->
+                                val n = counts[t] ?: 0
+                                if (t == SearchTab.ALL || n > 0) {
+                                    PillChip(
+                                        text = if (t == SearchTab.ALL) "全部 ($n)"
+                                        else "${t.label} ($n)",
+                                        selected = tab == t,
+                                        vrKey = "search:tab:${t.name}",
+                                        group = overlayGroup,
+                                        onClick = { tab = t },
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        LazyVerticalGrid(
+                            state = gridState,
+                            columns = GridCells.Adaptive(minSize = 118.dp),
+                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(14.dp),
+                            contentPadding = PaddingValues(bottom = 12.dp),
+                            modifier = Modifier.fillMaxSize(),
+                        ) {
+                            itemsIndexed(
+                                shown,
+                                key = { _, item -> item.id ?: item.hashCode().toString() },
+                            ) { index, item ->
+                                BuildItem(
+                                    item = item,
+                                    imgWidth = 118.dp,
+                                    aspectRatio = (item.primaryImageAspectRatio ?: 0.6667).toFloat(),
+                                    modifier = Modifier.fillMaxWidth(),
+                                    isMyLibrary = false,
+                                    serverUrl = serverUrl,
+                                    autoFocus = index == 0,
+                                    focusRequester = if (index == 0) firstResultFocus else null,
+                                    onItemClick = { onOpenItem(item) },
+                                )
+                            }
                         }
                     }
                 }
@@ -336,8 +368,11 @@ private fun isMovieOrSeries(item: BaseItemDto): Boolean =
 
 @Composable
 private fun CenteredNote(text: String) {
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Text(text, color = Color.White.copy(alpha = 0.8f), fontSize = 18.sp)
+    Box(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(text, color = Color.White.copy(alpha = 0.8f), fontSize = 16.sp)
     }
 }
 
@@ -353,8 +388,10 @@ enum class SearchTab(val label: String) {
  * 胶囊按钮：**聚焦或选中 = 主题绿底**，其余时间 #3A3A3A —— 全站一致，不用白底
  * （父亲 2026-10-10：浮层里的选中色不能是白底）。
  *
- * 注：tv-material3 的默认焦点底色是白的，所以 focusedContainerColor 必须显式给，
- * 否则一聚焦就变白（2026-10-05 踩过一次）。
+ * 两个坑（都踩过）：
+ *   1. tv-material3 的默认焦点底色是白的，focusedContainerColor 必须显式给；
+ *   2. 这个主题里 **primary 就是纯白**，绿色在 **secondary** —— 用 primary 当高亮
+ *      就是"选中变白"，所以一律用 secondary。
  */
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
@@ -366,13 +403,14 @@ private fun PillChip(
     onClick: () -> Unit,
 ) {
     val focusRequester = remember { FocusRequester() }
+    val accent = MaterialTheme.colorScheme.secondary
     Surface(
         onClick = onClick,
         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
         colors = ClickableSurfaceDefaults.colors(
-            containerColor = if (selected) MaterialTheme.colorScheme.primary else kIdleBg,
+            containerColor = if (selected) accent else kIdleBg,
             contentColor = Color.White,
-            focusedContainerColor = MaterialTheme.colorScheme.primary,
+            focusedContainerColor = accent,
             focusedContentColor = Color.White,
         ),
         modifier = Modifier
@@ -384,7 +422,7 @@ private fun PillChip(
                 onActivate = onClick,
             ),
     ) {
-        Box(modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp)) {
+        Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
             Text(text, fontSize = 16.sp, fontWeight = FontWeight.Bold)
         }
     }

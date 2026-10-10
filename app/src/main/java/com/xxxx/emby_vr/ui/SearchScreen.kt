@@ -203,11 +203,11 @@ fun SearchScreen(
                             },
                             shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(12.dp)),
                             colors = ClickableSurfaceDefaults.colors(
-                                containerColor = if (isAllSelected) MaterialTheme.colorScheme.primary.copy(
+                                containerColor = if (isAllSelected) MaterialTheme.colorScheme.secondary.copy(
                                     alpha = 0.2f
                                 ) else Color.White.copy(alpha = 0.05f),
                                 contentColor = Color.White,
-                focusedContainerColor = if (isAllSelected) MaterialTheme.colorScheme.primary.copy(
+                focusedContainerColor = if (isAllSelected) MaterialTheme.colorScheme.secondary.copy(
                                     alpha = 0.2f
                                 ) else Color.White.copy(alpha = 0.05f),
                 focusedContentColor = Color.White,
@@ -216,7 +216,7 @@ fun SearchScreen(
                                 border = if (isAllSelected) Border(
                                     BorderStroke(
                                         1.dp,
-                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                                        MaterialTheme.colorScheme.secondary.copy(alpha = 0.5f)
                                     )
                                 ) else Border(BorderStroke(0.dp, Color.Transparent)),
                                 focusedBorder = androidx.tv.material3.Border(androidx.compose.foundation.BorderStroke(androidx.compose.ui.unit.Dp(0f), androidx.compose.ui.graphics.Color.Transparent))),
@@ -239,7 +239,7 @@ fun SearchScreen(
                                 Icon(
                                     imageVector = Icons.Default.Person,
                                     contentDescription = null,
-                                    tint = if (isAllSelected) MaterialTheme.colorScheme.primary else Color.White.copy(
+                                    tint = if (isAllSelected) MaterialTheme.colorScheme.secondary else Color.White.copy(
                                         alpha = 0.6f
                                     ),
                                     modifier = Modifier.size(20.dp)
@@ -274,11 +274,11 @@ fun SearchScreen(
                         },
                         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(12.dp)),
                         colors = ClickableSurfaceDefaults.colors(
-                            containerColor = if (isSelected) MaterialTheme.colorScheme.primary.copy(
+                            containerColor = if (isSelected) MaterialTheme.colorScheme.secondary.copy(
                                 alpha = 0.2f
                             ) else Color.White.copy(alpha = 0.05f),
                             contentColor = Color.White,
-                focusedContainerColor = if (isSelected) MaterialTheme.colorScheme.primary.copy(
+                focusedContainerColor = if (isSelected) MaterialTheme.colorScheme.secondary.copy(
                                 alpha = 0.2f
                             ) else Color.White.copy(alpha = 0.05f),
                 focusedContentColor = Color.White,
@@ -287,7 +287,7 @@ fun SearchScreen(
                             border = if (isSelected) Border(
                                 BorderStroke(
                                     1.dp,
-                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                                    MaterialTheme.colorScheme.secondary.copy(alpha = 0.5f)
                                 )
                             ) else Border(BorderStroke(0.dp, Color.Transparent)),
                             focusedBorder = androidx.tv.material3.Border(androidx.compose.foundation.BorderStroke(androidx.compose.ui.unit.Dp(0f), androidx.compose.ui.graphics.Color.Transparent))),
@@ -310,7 +310,7 @@ fun SearchScreen(
                             Icon(
                                 imageVector = Icons.Default.Person,
                                 contentDescription = null,
-                                tint = if (isSelected) MaterialTheme.colorScheme.primary else Color.White.copy(
+                                tint = if (isSelected) MaterialTheme.colorScheme.secondary else Color.White.copy(
                                     alpha = 0.6f
                                 ),
                                 modifier = Modifier.size(20.dp)

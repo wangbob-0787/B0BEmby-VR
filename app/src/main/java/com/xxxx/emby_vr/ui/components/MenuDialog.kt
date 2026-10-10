@@ -111,7 +111,7 @@ fun MenuDialog(
                     border = Border(BorderStroke(1.dp, Color.White.copy(alpha = 0.1f))),
                     colors = SurfaceDefaults.colors(
                         containerColor = MaterialTheme.colorScheme.onPrimary,
-                        contentColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.secondary,
             )
                 ) {
                     Column(

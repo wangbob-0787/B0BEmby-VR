@@ -1261,6 +1261,17 @@ private class PanelPresentation(
             window?.setFormat(android.graphics.PixelFormat.TRANSLUCENT)
         }
         /*
+         * 输入法（父亲 2026-10-10：屏幕键盘在别的 App 里能弹，我们的输入框弹不出来）。
+         *
+         * 面板是 Presentation（Dialog）窗口，默认 softInputMode 是 STATE_UNSPECIFIED ——
+         * 对系统输入法来说它不像"要键盘的窗口"。这里显式声明成「可缩放 + 由程序请键盘」
+         * （不写 ALWAYS_VISIBLE，免得一进登录页就自己弹出键盘）。
+         */
+        window?.setSoftInputMode(
+            WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or
+                WindowManager.LayoutParams.SOFT_INPUT_STATE_UNSPECIFIED
+        )
+        /*
          * 面板不是「弹窗」，绝不能按返回就被关掉（2026-10-04 父亲实测「按 B 黑屏」）：
          * Presentation 继承 Dialog，Dialog 对没人消费的返回键默认行为是关闭自己
          * —— 面板一关，VR 里就只剩黑底。这里两道保险：

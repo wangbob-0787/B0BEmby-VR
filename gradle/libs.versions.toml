@@ -10,6 +10,8 @@ coil = "3.0.4"
 coroutines = "1.9.0"
 serialization = "1.7.3"
 gson = "2.11.0"
+# 汉字转拼音（方案 B：内置键盘打拼音首字母搜中文，Apache-2.0）
+tinypinyin = "2.0.3"
 lifecycle = "2.8.7"
 savedstate = "1.2.1"
 tvMaterial = "1.0.1"
@@ -66,6 +68,9 @@ kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-
 # DTO 上全是 @SerializedName 注解，换 kotlinx.serialization 要重写全部模型，
 # 直接与 TV 版保持一致更省事、也便于两边同步修 bug。
 gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson" }
+
+# 汉字 → 拼音（内置键盘的拼音首字母匹配用）
+tinypinyin = { group = "com.github.promeg", name = "tinypinyin", version.ref = "tinypinyin" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
