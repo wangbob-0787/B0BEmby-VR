@@ -46,7 +46,6 @@ fun HomeScreen(
     homeViewModel: HomeViewModel,
     mainViewModel: MainViewModel,
     navController: NavController,
-    onSwitchAccount: () -> Unit = {},
     /*
      * VR 版专用：直接起播，不跳页面（父亲 2026-10-06 晚定）。
      *
@@ -296,7 +295,6 @@ fun HomeScreen(
                                 navController.navigate("library/$id?libraryName=$title&type=$type")
                             }
                         },
-                        onMenuPressed = {},
                         // 「电视直播」图块是网络返回后才插到第一位；LazyRow 默认保持"原第一张"的位置，
                         // 新图块会被挤到屏幕左边外（父亲 2026-10-02 报"图标跑到左侧外面"）→ 出现后滚回行首
                         scrollToStartSignal = liveTvView?.id
@@ -326,7 +324,6 @@ fun HomeScreen(
                             isContinueWatching = true,
                             serverUrl = serverUrl,
                             onItemSelected = { item -> goPlay(item) },
-                            onMenuPressed = {},
                             focusTarget = restoreId
                         )
                     }
@@ -341,7 +338,6 @@ fun HomeScreen(
                             isShowImg17 = true,
                             serverUrl = serverUrl,
                             onItemSelected = { item -> openDetail(item) },
-                            onMenuPressed = {},
                             focusTarget = restoreId
                         )
                     }
@@ -358,7 +354,6 @@ fun HomeScreen(
                         items = library.latestItems ?: emptyList(),
                         serverUrl = serverUrl,
                         onItemSelected = { item -> openDetail(item) },
-                        onMenuPressed = {},
                         focusTarget = restoreId
                     )
                 }
@@ -393,7 +388,6 @@ private fun MediaSection(
     isContinueWatching: Boolean = false,
     serverUrl: String,
     onItemSelected: (BaseItemDto) -> Unit,
-    onMenuPressed: () -> Unit,
     // 从详情页返回时要恢复焦点到的那一条（父亲 2026-10-02）
     focusTarget: String? = null,
     // 变成非空时把这一行滚回行首（用于"首项是异步插入"的场景）
@@ -464,7 +458,8 @@ private fun MediaSection(
                         isMyLibrary = isMyLibrary,
                         serverUrl = serverUrl,
                         onItemClick = { onItemSelected(item) },
-                        onMenuClick = { onMenuPressed() },
+                        // 长按呼出菜单那条路随首页菜单一起去掉了（父亲 2026-10-10）
+                        onMenuClick = null,
                         autoFocus = item.id != null && item.id == focusTarget,
                         rememberFocus = true,
                     )

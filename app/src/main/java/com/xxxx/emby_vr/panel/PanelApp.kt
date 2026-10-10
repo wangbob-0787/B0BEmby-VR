@@ -163,7 +163,6 @@ fun PanelApp(onPlayRequested: (mediaId: String, positionTicks: Long) -> Unit) {
                                 homeViewModel = homeViewModel,
                                 mainViewModel = mainViewModel,
                                 navController = navController,
-                                onSwitchAccount = { navController.navigate("account") },
                                 // 直接起播、不跳页：海报墙原地不动，不闪
                                 onPlayNow = { mediaId, position ->
                                     onPlayRequested(mediaId, position)
