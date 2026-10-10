@@ -479,6 +479,7 @@ private fun MoreMenu(menu: MenuState, playing: Boolean) {
          */
         MenuRow(
             label = "座椅调节",
+            /* 不传 enabled = 永远可点：没播片时也要能调座椅（父亲 2026-10-10 23:01） */
             value = "${"%+.2f".format(menu.seatUp)} / ${"%+.2f".format(menu.seatFwd)}",
             selected = false,
             hasSub = true,
@@ -1049,7 +1050,8 @@ private fun MenuRow(
         if (value.isNotBlank()) {
             Text(
                 text = value,
-                color = Color(0xFFFFFFFF),
+                /* 变灰时选项值也要一起灰（父亲 2026-10-10 23:01：原来只有名字灰了） */
+                color = if (enabled) Color(0xFFFFFFFF) else Color(0x59FFFFFF),
                 fontSize = 19.sp,
                 maxLines = 1,
             )
@@ -1064,7 +1066,11 @@ private fun MenuRow(
             )
         } else if (hasSub) {
             Spacer(modifier = Modifier.width(10.dp))
-            Text(text = "›", color = Color(0xFFFFFFFF), fontSize = 26.sp)
+            Text(
+                text = "›",
+                color = if (enabled) Color(0xFFFFFFFF) else Color(0x59FFFFFF),
+                fontSize = 26.sp,
+            )
         }
     }
 }
