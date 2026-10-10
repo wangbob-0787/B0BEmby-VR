@@ -195,6 +195,13 @@ class MainActivity : ComponentActivity() {
 
     /** 影厅亮度记忆键（父亲 2026-10-10：默认 0 = 全黑，之后记住上次选的） */
     private val PREF_CINEMA_BRIGHT = "cinema_bright"
+    /** 座椅调节记忆键（米） */
+    private val PREF_SEAT_UP = "seat_up"
+    private val PREF_SEAT_FWD = "seat_fwd"
+    /** 拖动目标 */
+    private val DRAG_BRIGHT = 0
+    private val DRAG_SEAT_UP = 1
+    private val DRAG_SEAT_FWD = 2
 
     /** 启动后的海报墙摆放是否已还原过（onResume 只做一次） */
     private var panelPlaceRestored = false
@@ -482,6 +489,28 @@ class MainActivity : ComponentActivity() {
                  * 这一页只有一条亮度条，摇杆左右就该推它 —— 别再往列表滚动通道送。
                  * 每次事件走 6%，推一下就到头也不至于失控。
                  */
+                /*
+                 * 座椅调节页（父亲 2026-10-10 22:56）：上下推 = 座椅高低、左右推 = 座椅前后。
+                 * 两条都只有滑条没有列表，所以不往菜单滚动通道送。
+                 */
+                if (menuState.kind == com.xxxx.emby_vr.panel.MenuKind.SEAT_ADJUST) {
+                    if (kotlin.math.abs(sy) > 0.15f) {
+                        val v = (menuState.seatUp + sy * 0.05f)
+                            .coerceIn(-com.xxxx.emby_vr.panel.SEAT_UP_RANGE, com.xxxx.emby_vr.panel.SEAT_UP_RANGE)
+                        menuState.seatUp = v
+                        com.xxxx.emby_vr.vr.VrNative.setTuning(com.xxxx.emby_vr.vr.VrTuning.KEY_SEAT_UP, v)
+                        placePrefs.edit().putFloat(PREF_SEAT_UP, v).apply()
+                    }
+                    if (kotlin.math.abs(sx) > 0.15f) {
+                        val v = (menuState.seatFwd + sx * 0.05f)
+                            .coerceIn(-com.xxxx.emby_vr.panel.SEAT_FWD_RANGE, com.xxxx.emby_vr.panel.SEAT_FWD_RANGE)
+                        menuState.seatFwd = v
+                        com.xxxx.emby_vr.vr.VrNative.setTuning(com.xxxx.emby_vr.vr.VrTuning.KEY_SEAT_FWD, v)
+                        placePrefs.edit().putFloat(PREF_SEAT_FWD, v).apply()
+                    }
+                    Log.i(TAG, "摇杆调座椅：sx=$sx sy=$sy → 高 ${"%.2f".format(menuState.seatUp)} 前后 ${"%.2f".format(menuState.seatFwd)}")
+                    return@runOnUiThread
+                }
                 if (menuState.kind == com.xxxx.emby_vr.panel.MenuKind.CINEMA_LIGHT) {
                     if (kotlin.math.abs(sx) > 0.15f) {
                         val v = (menuState.cinemaBright + sx * 0.06f).coerceIn(0f, 1f)
@@ -557,6 +586,8 @@ class MainActivity : ComponentActivity() {
         private var menuPressX = 0f
         private var menuPressY = 0f
         private var menuDraggingBar = false
+        /** 正在拖哪条：0 亮度 · 1 座椅高低 · 2 座椅前后 */
+        private var menuDragTarget = 0
         /** 上一帧扳机是否按着：只有"按下 → 抬起"的跳变才算一次点击 */
         private var menuWasPressed = false
 
@@ -564,21 +595,35 @@ class MainActivity : ComponentActivity() {
             vrInputLive = true
             lastMenuPointerAt = android.os.SystemClock.uptimeMillis()
             val bar = menuState.brightBar
+            val upBar = menuState.seatUpBar
+            val fwdBar = menuState.seatFwdBar
             if (pressed) {
                 if (!menuDraggingBar) {
                     /* 每次按下都记下起点：抬起时用它判断"这是点击还是拖动" */
                     menuPressX = px
                     menuPressY = py
                 }
-                if (!menuDraggingBar && bar != null &&
-                    bar.contains(androidx.compose.ui.geometry.Offset(px, py))
-                ) {
+                val at = androidx.compose.ui.geometry.Offset(px, py)
+                if (!menuDraggingBar && bar != null && bar.contains(at)) {
                     /* 按在亮度条上 = 开始拖，不算点击 */
                     menuDraggingBar = true
+                    menuDragTarget = DRAG_BRIGHT
                     applyCinemaBright(bar, px)
+                } else if (!menuDraggingBar && upBar != null && upBar.contains(at)) {
+                    menuDraggingBar = true
+                    menuDragTarget = DRAG_SEAT_UP
+                    applySeatAdjust(DRAG_SEAT_UP, upBar, px)
+                } else if (!menuDraggingBar && fwdBar != null && fwdBar.contains(at)) {
+                    menuDraggingBar = true
+                    menuDragTarget = DRAG_SEAT_FWD
+                    applySeatAdjust(DRAG_SEAT_FWD, fwdBar, px)
                 } else if (menuDraggingBar) {
                     // 拖出条外也继续跟随，手感更顺
-                    applyCinemaBright(bar, px)
+                    when (menuDragTarget) {
+                        DRAG_SEAT_UP -> applySeatAdjust(DRAG_SEAT_UP, upBar, px)
+                        DRAG_SEAT_FWD -> applySeatAdjust(DRAG_SEAT_FWD, fwdBar, px)
+                        else -> applyCinemaBright(bar, px)
+                    }
                 } else if (!menuWasPressed) {
                     /*
                      * 按下即点（跟改造前一模一样：原来原生是在扳机按下的那一刻发点击）。
@@ -593,6 +638,27 @@ class MainActivity : ComponentActivity() {
             }
             menuWasPressed = pressed
             runOnUiThread { if (menuReady()) menu.vrPointer(px, py) }
+        }
+
+        /** 座椅调节两条滑条：位置 → 米（范围与 PlayerMenuPanel 的常量一致） */
+        private fun applySeatAdjust(target: Int, bar: androidx.compose.ui.geometry.Rect?, px: Float) {
+            val r = bar ?: return
+            val f = ((px - r.left) / r.width).coerceIn(0f, 1f)
+            if (target == DRAG_SEAT_UP) {
+                val v = (f * 2f - 1f) * com.xxxx.emby_vr.panel.SEAT_UP_RANGE
+                menuState.seatUp = v
+                com.xxxx.emby_vr.vr.VrNative.setTuning(
+                    com.xxxx.emby_vr.vr.VrTuning.KEY_SEAT_UP, v,
+                )
+                placePrefs.edit().putFloat(PREF_SEAT_UP, v).apply()
+            } else {
+                val v = (f * 2f - 1f) * com.xxxx.emby_vr.panel.SEAT_FWD_RANGE
+                menuState.seatFwd = v
+                com.xxxx.emby_vr.vr.VrNative.setTuning(
+                    com.xxxx.emby_vr.vr.VrTuning.KEY_SEAT_FWD, v,
+                )
+                placePrefs.edit().putFloat(PREF_SEAT_FWD, v).apply()
+            }
         }
 
         /** 亮度条位置 → 0~1 的影厅环境亮度（原生的 key 24 负责换算环境光与底光） */
@@ -2302,6 +2368,13 @@ class MainActivity : ComponentActivity() {
                     return
                 }
                 /*
+                 * 「座椅调节」（父亲 2026-10-10 22:56）：二级菜单，进去是两条滑条。
+                 */
+                if (index == 6) {
+                    openMenu(com.xxxx.emby_vr.panel.MenuKind.SEAT_ADJUST, com.xxxx.emby_vr.panel.OsdButton.MORE)
+                    return
+                }
+                /*
                  * 「影厅亮度」（父亲 2026-10-10）：跟上面四条一样是二级菜单 ——
                  * 点这一行才展开亮度条，条子本身由菜单指针路径拖动（见 onMenuPointer）。
                  */
@@ -2710,6 +2783,8 @@ class MainActivity : ComponentActivity() {
             com.xxxx.emby_vr.panel.MenuKind.SPEED -> menuState.speed = playSpeed
             /* 影厅亮度面板：数值由菜单状态自己带着（menuState.cinemaBright），这里不用填 */
             com.xxxx.emby_vr.panel.MenuKind.CINEMA_LIGHT -> Unit
+            /* 座椅调节面板：同样自己带着（seatUp / seatFwd） */
+            com.xxxx.emby_vr.panel.MenuKind.SEAT_ADJUST -> Unit
             com.xxxx.emby_vr.panel.MenuKind.QUALITY -> menuState.quality = qualityIndex
             com.xxxx.emby_vr.panel.MenuKind.MODE -> menuState.playMode = playModeIndex
             com.xxxx.emby_vr.panel.MenuKind.BUFFER -> menuState.buffer =
@@ -4319,6 +4394,17 @@ class MainActivity : ComponentActivity() {
                 com.xxxx.emby_vr.vr.VrTuning.KEY_CINEMA_BRIGHT, saved,
             )
             Log.i(TAG, "影厅亮度恢复：${(saved * 100).toInt()}%")
+
+            /* 座椅调节也恢复上次的位置（父亲 2026-10-10 22:56：调好一次就别再动） */
+            val up = placePrefs.getFloat(PREF_SEAT_UP, 0.23f)
+                .coerceIn(-com.xxxx.emby_vr.panel.SEAT_UP_RANGE, com.xxxx.emby_vr.panel.SEAT_UP_RANGE)
+            val fwd = placePrefs.getFloat(PREF_SEAT_FWD, 0f)
+                .coerceIn(-com.xxxx.emby_vr.panel.SEAT_FWD_RANGE, com.xxxx.emby_vr.panel.SEAT_FWD_RANGE)
+            menuState.seatUp = up
+            menuState.seatFwd = fwd
+            com.xxxx.emby_vr.vr.VrNative.setTuning(com.xxxx.emby_vr.vr.VrTuning.KEY_SEAT_UP, up)
+            com.xxxx.emby_vr.vr.VrNative.setTuning(com.xxxx.emby_vr.vr.VrTuning.KEY_SEAT_FWD, fwd)
+            Log.i(TAG, "座椅调节恢复：高 ${"%.2f".format(up)} 前后 ${"%.2f".format(fwd)}")
         }
 
         /*

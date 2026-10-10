@@ -80,6 +80,7 @@ enum class MenuKind(val title: String) {
     DANMAKU("弹幕设置"),
     SPEED("播放速度"),
     CINEMA_LIGHT("影厅亮度"),
+    SEAT_ADJUST("座椅调节"),
     EPISODES("选集"),
     INFO("信息"),
     CAST("演职人员"),
@@ -92,7 +93,8 @@ enum class MenuKind(val title: String) {
  */
 val MenuKind.isSubMenu: Boolean
     get() = this == MenuKind.AUDIO || this == MenuKind.QUALITY ||
-        this == MenuKind.MODE || this == MenuKind.BUFFER || this == MenuKind.CINEMA_LIGHT
+        this == MenuKind.MODE || this == MenuKind.BUFFER || this == MenuKind.CINEMA_LIGHT ||
+        this == MenuKind.SEAT_ADJUST
 
 /** 菜单里的一行（轨道 / 集数这类：显示名 + 是否当前选中） */
 data class MenuRowItem(val label: String, val selected: Boolean, val payload: Int = -1)
@@ -186,6 +188,15 @@ class MenuState {
      * （不在「更多」菜单里），此时按下不会进入拖动。
      */
     var brightBar by mutableStateOf<androidx.compose.ui.geometry.Rect?>(null)
+
+    /**
+     * 座椅调节（父亲 2026-10-10：「点进去两个调节，低<->高、前<->后」，位置要记住）。
+     * seatUp：正 = 椅子相对人抬高（米）；seatFwd：正 = 人往椅子前部坐（米）。
+     */
+    var seatUp by mutableStateOf(0.23f)
+    var seatFwd by mutableStateOf(0f)
+    var seatUpBar by mutableStateOf<androidx.compose.ui.geometry.Rect?>(null)
+    var seatFwdBar by mutableStateOf<androidx.compose.ui.geometry.Rect?>(null)
 
     var subtitleTracks by mutableStateOf<List<MenuRowItem>>(emptyList())
     var audioTracks by mutableStateOf<List<MenuRowItem>>(emptyList())
@@ -395,6 +406,7 @@ fun PlayerMenuPanel(menu: MenuState, osd: OsdState) {
                 MenuKind.MODE -> ModeMenu(menu)
                 MenuKind.BUFFER -> BufferMenu(menu)
                 MenuKind.CINEMA_LIGHT -> CinemaLightMenu(menu)
+                MenuKind.SEAT_ADJUST -> SeatAdjustMenu(menu)
                 MenuKind.DANMAKU -> DanmakuMenu(menu)
                 MenuKind.SUBTITLE -> TrackMenu(menu, menu.subtitleTracks, MenuKind.SUBTITLE)
                 MenuKind.AUDIO -> TrackMenu(menu, menu.audioTracks, MenuKind.AUDIO)
@@ -462,6 +474,17 @@ private fun MoreMenu(menu: MenuState, playing: Boolean) {
             onClick = { menu.onSelect?.invoke(MenuKind.MORE, 4) },
         )
         /*
+         * 座椅调节（父亲 2026-10-10 22:56）：点进去两条滑条——低↔高、前↔后，
+         * 调到"刚好坐进椅子"的位置，数值 App 记住。行号 = 6。
+         */
+        MenuRow(
+            label = "座椅调节",
+            value = "${"%+.2f".format(menu.seatUp)} / ${"%+.2f".format(menu.seatFwd)}",
+            selected = false,
+            hasSub = true,
+            onClick = { menu.onSelect?.invoke(MenuKind.MORE, 6) },
+        )
+        /*
          * 影厅亮度（父亲 2026-10-10）：**先有这一行，点进去才展开亮度条** ——
          * 与上面四条一样是二级菜单（右箭头箭头表示还能进去），行号固定 = 5。
          * 管的是影厅的环境光线（影院 HDRI 环境光 + 底光），不是影片画面亮度。
@@ -524,6 +547,83 @@ private fun CinemaLightMenu(menu: MenuState) {
             color = Color(0x8AF1F5F7),
             fontSize = 12.sp,
         )
+    }
+}
+
+/**
+ * 座椅调节（父亲 2026-10-10 22:56 定）：两条滑条，一页里并排看得见。
+ *
+ *   低 ↔ 高：把椅子相对人抬高/放低（影厅整体上下平移），调到"屁股坐进座垫"
+ *   前 ↔ 后：人往椅子前部/后部坐（影厅整体前后平移），调到你背靠椅背刚好
+ *
+ * 两条都只有滑条没有列表，所以拖动/摇杆都由界面层换算（见 MainActivity 的
+ * onMenuPointer 与 onStick），条子把自己的矩形报上去。
+ */
+@Composable
+private fun SeatAdjustMenu(menu: MenuState) {
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose {
+            menu.seatUpBar = null
+            menu.seatFwdBar = null
+        }
+    }
+    Column {
+        AdjustBar(
+            title = "低 ↔ 高",
+            valueText = "${"%+.2f".format(menu.seatUp)} 米",
+            fraction = ((menu.seatUp + SEAT_UP_RANGE) / (SEAT_UP_RANGE * 2f)).coerceIn(0f, 1f),
+            onRect = { menu.seatUpBar = it },
+        )
+        Spacer(modifier = Modifier.height(10.dp))
+        AdjustBar(
+            title = "前 ↔ 后",
+            valueText = "${"%+.2f".format(menu.seatFwd)} 米",
+            fraction = ((menu.seatFwd + SEAT_FWD_RANGE) / (SEAT_FWD_RANGE * 2f)).coerceIn(0f, 1f),
+            onRect = { menu.seatFwdBar = it },
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "按住扳机左右拖，或推摇杆：上下调高低、左右调前后",
+            color = Color(0x8AF1F5F7),
+            fontSize = 12.sp,
+        )
+    }
+}
+
+/** 座椅调节的滑条范围（米）：界面层换算是同一个常量 */
+const val SEAT_UP_RANGE = 0.6f
+const val SEAT_FWD_RANGE = 0.8f
+
+@Composable
+private fun AdjustBar(
+    title: String,
+    valueText: String,
+    fraction: Float,
+    onRect: (androidx.compose.ui.geometry.Rect) -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(text = title, color = Color(0xFFF1F5F7), fontSize = 15.sp,
+                 modifier = Modifier.weight(1f))
+            Text(text = valueText, color = Color(0xB3F1F5F7), fontSize = 15.sp)
+        }
+        Spacer(modifier = Modifier.height(6.dp))
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(26.dp)
+                .clip(RoundedCornerShape(13.dp))
+                .background(Color(0x33FFFFFF))
+                .onGloballyPositioned { onRect(it.boundsInWindow()) },
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(fraction)
+                    .clip(RoundedCornerShape(13.dp))
+                    .background(Color(0xFF4FC3F7)),
+            )
+        }
     }
 }
 

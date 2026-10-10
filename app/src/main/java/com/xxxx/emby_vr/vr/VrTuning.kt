@@ -117,6 +117,10 @@ object VrTuning {
     const val KEY_CINEMA_LAYER = 25
     /** 银幕竖直微调（米，2026-10-10） */
     const val KEY_SCREEN_UP = 26
+    /** 座椅高度（米，2026-10-10：正 = 椅子相对人抬高） */
+    const val KEY_SEAT_UP = 27
+    /** 座椅前后（米，2026-10-10：正 = 人往椅子前部坐） */
+    const val KEY_SEAT_FWD = 28
 
     /** 上次应用的配置原文，只有变化才动手（避免每秒重复设置） */
     private var lastRaw: Map<String, String> = emptyMap()
@@ -324,6 +328,16 @@ object VrTuning {
         raw["cinema_env"]?.toFloatOrNull()?.let {
             VrNative.setTuning(KEY_CINEMA_ENV, it)
             applied += "影院环境光强度 ${"%.2f".format(it)}"
+        }
+        /* 座椅高度（米，2026-10-10） */
+        raw["seat_up"]?.toFloatOrNull()?.let {
+            VrNative.setTuning(KEY_SEAT_UP, it)
+            applied += "座椅高度 ${"%+.3f".format(it)} 米"
+        }
+        /* 座椅前后（米，2026-10-10） */
+        raw["seat_fwd"]?.toFloatOrNull()?.let {
+            VrNative.setTuning(KEY_SEAT_FWD, it)
+            applied += "座椅前后 ${"%+.3f".format(it)} 米"
         }
         /* 银幕竖直微调（米，2026-10-10） */
         raw["screen_up"]?.toFloatOrNull()?.let {

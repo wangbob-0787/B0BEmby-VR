@@ -583,7 +583,7 @@ std::atomic<int> gCinemaLayerMode{1};
  * 椅面只落在眼睛下方 0.37 米（胸口高度）。取 1.50 米把它压回大腿高度
  * （椅面约在眼睛下方 0.72 米），看上去才是"坐在椅子上"。
  */
-std::atomic<float> gCinemaEyeHeight{1.88f};
+std::atomic<float> gCinemaEyeHeight{1.65f};
 
 // ------------------------------------------------- 影厅环境（父亲 2026-10-10）
 /*
@@ -694,6 +694,17 @@ std::atomic<float> gCinemaAmbient{0.05f};
 std::atomic<float> gCinemaBright{0.f};
 /** 银幕竖直微调（米，vr-tuning 的 screen_up）：正数 = 往上挪 */
 std::atomic<float> gScreenUp{0.f};
+/**
+ * 座椅调节（父亲 2026-10-10 22:56：控制条「更多 → 座椅调节」里两条滑条）。
+ *
+ *   gSeatUp  · 低 ↔ 高：正数 = 椅子相对人抬高（影厅整体上移）
+ *   gSeatFwd · 前 ↔ 后：正数 = 人往椅子前部坐（影厅整体后移）
+ *
+ * 初始值 +0.23 米：实测座垫面在第 6 排是 1.85 米，标准坐姿眼睛应在座垫上方 0.72 米，
+ * 而资产当初按"座位网格中心 + 0.75"估的眼睛（被高椅背拉高 0.23 米）→ 抬高 0.23 修回来。
+ */
+std::atomic<float> gSeatUp{0.23f};
+std::atomic<float> gSeatFwd{0.f};
 /** 银幕发出的光色（默认中性白；后面按视频画面实时取样） */
 std::atomic<float> gScreenTintR{1.f};
 std::atomic<float> gScreenTintG{1.f};
@@ -829,8 +840,8 @@ void drawCinema(const Mat4 &proj, const Mat4 &view, const XrVector3f &eyePos) {
 
     Mat4 model = identity();
     model.m[12] = kCinemaShiftX;                              // 横向：让座位中心正对观影位
-    model.m[13] = s.dy + (1.65f - gCinemaEyeHeight.load());   // 坐姿眼高可调：眼高变了，厅跟着上下挪
-    model.m[14] = s.dz;
+    model.m[13] = s.dy + (1.65f - gCinemaEyeHeight.load()) + gSeatUp.load();
+    model.m[14] = s.dz - gSeatFwd.load();                     // 前/后：正数 = 人往椅子前部坐
     const Mat4 mvp = multiply(multiply(proj, view), model);
 
     glUseProgram(gCinemaProgram);
@@ -2269,7 +2280,8 @@ ScreenPlacement frontScreen(const VrContext &c) {
          * 上面露出的墙已经涂黑，观感上就是"幕布上边空着"，不会看到灰墙。
          */
         p.width = hallScreenFitWidth(p.aspect);
-        p.cy = hallScreenCenterY();     // 塞进幕框里居中（16:9 时正好顶满框高）
+        p.cy = hallScreenCenterY() + gSeatUp.load();      // 座椅调节时画面跟着厅一起挪
+        p.cz -= gSeatFwd.load();                          // （否则画面会从幕框里滑出去）
         /* 横向取影厅前墙/银幕的位置（他比厅中线偏 0.12 米，画面跟着墙走） */
         p.cx = -(kHallScreenModelX - kAssetOriginModelX) + kCinemaShiftX;
     }
@@ -5651,6 +5663,21 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             if (value >= 0.f && value <= 12.f) {
                 gEnvStrength.store(value);
                 LOGI("调参 → 影院环境光强度 %.2f", (double) value);
+            }
+            break;
+        case 27:
+            /* 座椅高度（米，正 = 椅子相对人抬高） */
+            if (value >= -0.6f && value <= 0.6f) {
+                gSeatUp.store(value);
+                LOGI("调参 → 座椅高度 %+.3f 米（厅整体上移；座垫在眼睛下方 %.2f 米）",
+                     (double) value, (double) (0.72f - value + 0.23f));
+            }
+            break;
+        case 28:
+            /* 座椅前后（米，正 = 人往椅子前部坐） */
+            if (value >= -0.8f && value <= 0.8f) {
+                gSeatFwd.store(value);
+                LOGI("调参 → 座椅前后 %+.3f 米（正数 = 往前坐）", (double) value);
             }
             break;
         case 26:
