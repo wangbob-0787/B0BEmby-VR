@@ -66,6 +66,8 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             resumeItems = cache.resume
             libraryLatestItems = cache.latest
             favoriteItems = cache.favorites
+            liveChannels = cache.live
+            liveTvView = cache.liveView
         } catch (e: Exception) {
             ErrorHandler.logError("HomeViewModel", "读取首页缓存失败", e)
         }
@@ -73,8 +75,17 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun saveCache() {
         try {
-            if (resumeItems.isNullOrEmpty() && libraryLatestItems.isNullOrEmpty() && favoriteItems.isNullOrEmpty()) return
-            cacheFile.writeText(gson.toJson(HomeCache(resumeItems, libraryLatestItems, favoriteItems)))
+            if (resumeItems.isNullOrEmpty() && libraryLatestItems.isNullOrEmpty() &&
+                favoriteItems.isNullOrEmpty() && liveChannels.isNullOrEmpty()
+            ) return
+            cacheFile.writeText(
+                gson.toJson(
+                    HomeCache(
+                        resumeItems, libraryLatestItems, favoriteItems,
+                        liveChannels, liveTvView,
+                    )
+                )
+            )
         } catch (e: Exception) {
             ErrorHandler.logError("HomeViewModel", "写入首页缓存失败", e)
         }
@@ -137,12 +148,27 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                     catch (e: Exception) { emptyList() }
                 }
 
-                resumeItems = resumeDeferred.await()
-                libraryLatestItems = latestDeferred.await()
-                favoriteItems = favDeferred.await()
-                liveChannels = liveDeferred.await()
-                liveTvView = viewsDeferred.await()
+                /*
+                 * 先把数据**全部等回来**，再一次性写进状态（父亲 2026-10-10）。
+                 *
+                 * 原来是一条一条 `await()` 跟着赋值：每赋一个值就重画一次，
+                 * 首页分四五步长出来 —— 直播行、每库最新行都是后一步才出现的，
+                 * 每出现一行下面的内容就往下挪一次，正好在那一刻扣扳机就点错东西。
+                 * 中间没有挂起点之后，这些赋值落在同一帧里，Compose 合成一次重画，
+                 * 首屏一次成型，位置不再跳。
+                 */
+                val resume = resumeDeferred.await()
+                val latest = latestDeferred.await()
+                val fav = favDeferred.await()
+                val live = liveDeferred.await()
+                val liveView = viewsDeferred.await()
                     .firstOrNull { it.collectionType.equals("livetv", ignoreCase = true) }
+
+                resumeItems = resume
+                libraryLatestItems = latest
+                favoriteItems = fav
+                liveChannels = live
+                liveTvView = liveView
             } catch (e: Exception) {
                 android.util.Log.w("B0BEmbyVR", "首页加载整体失败：${e.message}")
                 if (errorMessage == null) errorMessage = e.message
@@ -191,5 +217,13 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 private data class HomeCache(
     val resume: List<BaseItemDto>? = null,
     val latest: List<BaseItemDto>? = null,
-    val favorites: List<BaseItemDto>? = null
+    val favorites: List<BaseItemDto>? = null,
+    /*
+     * 电视直播也进缓存（父亲 2026-10-10 报的"误点直播"）：
+     * 直播行与「我的媒体库」里的直播图块都是网络回来后才有的，原先缓存不带它们 ——
+     * 首屏先按缓存画完，过一会儿直播才插进来，下面的内容整块往下跳；
+     * 父亲正好在那一下点海报，就点到刚冒出来的直播上了。带上它们后首屏位置就稳定。
+     */
+    val live: List<BaseItemDto>? = null,
+    val liveView: BaseItemDto? = null,
 )
