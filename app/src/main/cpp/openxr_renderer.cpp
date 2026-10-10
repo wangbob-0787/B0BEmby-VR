@@ -628,6 +628,7 @@ uniform float uAmbient;      // 底噪环境光（暗厅，但不至于全黑）
 uniform vec3 uEye;           // 当前眼睛位置（用于双面法线）
 uniform sampler2D uEnv;      // 影院 HDRI（Poly Haven CC0）降采样成 256×128 的环境光
 uniform float uEnvStrength;  // 环境光强度（vr-tuning 的 cinema_env）
+uniform float uBright;       // 影厅亮度条：顶灯余光等固定光也要跟着它走，否则拉到 0 还有微光
 out vec4 fragColor;
 
 /** 世界方向 → 等距柱状投影 UV（环境贴图是 360×180 全景） */
@@ -646,7 +647,8 @@ void main() {
     L /= max(d, 0.001);
     float lam = max(dot(n, L), 0.0);
     float atten = uScreenGlow / (1.0 + 0.06 * d * d);
-    float ceiling = max(dot(n, vec3(0.0, 1.0, 0.0)), 0.0) * 0.06;   // 顶灯一点余光
+    /* 顶灯余光：乘亮度条（父亲 2026-10-10：「亮度 0 不是真全黑」就是它漏的） */
+    float ceiling = max(dot(n, vec3(0.0, 1.0, 0.0)), 0.0) * 0.06 * uBright;
     /*
      * 环境光：拿 HDRI 沿法线方向采一次（降采样后本身就非常糊，等于粗糙辐照度），
      * 给暗厅一点真实的"影院空气感"——墙面、地毯、座椅不至于纯黑。
@@ -667,6 +669,7 @@ GLint gCinemaAmbientLoc = -1;
 GLint gCinemaEyeLoc = -1;
 GLint gCinemaEnvLoc = -1;
 GLint gCinemaEnvStrengthLoc = -1;
+GLint gCinemaBrightLoc = -1;
 /** 环境光贴图（影院 HDRI，256×128 RGB；由 Java 侧把 assets 里的 .b0benv 拷出来再加载） */
 GLuint gEnvTex = 0;
 std::atomic<float> gEnvStrength{2.6f};
@@ -860,6 +863,7 @@ void drawCinema(const Mat4 &proj, const Mat4 &view, const XrVector3f &eyePos) {
     glBindTexture(GL_TEXTURE_2D, gEnvTex);
     if (gCinemaEnvLoc >= 0) glUniform1i(gCinemaEnvLoc, 1);
     if (gCinemaEnvStrengthLoc >= 0) glUniform1f(gCinemaEnvStrengthLoc, gEnvStrength.load());
+    if (gCinemaBrightLoc >= 0) glUniform1f(gCinemaBrightLoc, gCinemaBright.load());
     glActiveTexture(GL_TEXTURE0);
 
     glEnable(GL_DEPTH_TEST);
@@ -3479,7 +3483,12 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
             } else {
                 glUniform1i(c.useTexLoc, 0);
                 if (c.downLoc >= 0) glUniform1i(c.downLoc, 0);
-                glUniform4f(c.colorLoc, 0.018f, 0.019f, 0.022f, 1.f);  // 近黑微光（父亲 2026-10-06：再暗一点）
+                /*
+                 * 空屏（没播片时那块"银幕"）：亮度拉到 0 时也要几乎看不见，
+                 * 否则黑厅里会浮出一块灰板（父亲 2026-10-10：「要真全黑」）。
+                 */
+                const float blankK = 0.15f + 0.85f * gCinemaBright.load();
+                glUniform4f(c.colorLoc, 0.018f * blankK, 0.019f * blankK, 0.022f * blankK, 1.f);
             }
             glBindBuffer(GL_ARRAY_BUFFER, c.vbo);
             glEnableVertexAttribArray(0);
@@ -5097,6 +5106,7 @@ void renderThreadMain() {
         gCinemaEyeLoc = glGetUniformLocation(gCinemaProgram, "uEye");
         gCinemaEnvLoc = glGetUniformLocation(gCinemaProgram, "uEnv");
         gCinemaEnvStrengthLoc = glGetUniformLocation(gCinemaProgram, "uEnvStrength");
+        gCinemaBrightLoc = glGetUniformLocation(gCinemaProgram, "uBright");
         applySeat(gSeat.load());
         /* 影厅几何 + 环境光贴图：路径由 Java 侧给（assets 已拷到应用目录） */
         if (!gEnvAssetPath.empty()) loadEnvAsset(gEnvAssetPath.c_str());
