@@ -760,7 +760,6 @@ fun PersonCard(
     // 点演员卡（父亲 2026-10-10：进演员页，列他演过的电影/电视剧/演唱会…）
     onClick: () -> Unit = {},
 ) {
-
     Surface(
         onClick = onClick,
         shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(12.dp)),
@@ -783,6 +782,15 @@ fun PersonCard(
                 if (upFocus != null) up = upFocus
                 if (downFocus != null) down = downFocus
             }
+            /*
+             * 演员卡必须登记进点击表（父亲 2026-10-10 实测「点演员头像没反应」）：
+             * 手柄点击是「按坐标查表」触发的，只写 Compose 的 onClick 收不到。
+             */
+            .vrClickTarget(
+                key = "person:${person.id ?: person.name}",
+                focusRequester = focusRequester,
+                onActivate = onClick,
+            )
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally

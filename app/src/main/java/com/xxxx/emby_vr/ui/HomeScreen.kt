@@ -22,6 +22,7 @@ import com.xxxx.emby_vr.data.model.BaseItemDto
 import androidx.compose.ui.res.stringResource
 import com.xxxx.emby_vr.R
 import com.xxxx.emby_vr.data.repository.EmbyRepository
+import com.xxxx.emby_vr.panel.vrClickBlocker
 import com.xxxx.emby_vr.ui.FocusMemory
 import com.xxxx.emby_vr.ui.components.BuildItem
 import com.xxxx.emby_vr.ui.components.HomeHeroCarousel
@@ -64,6 +65,17 @@ fun HomeScreen(
      * 由这里的 Box 保证它铺满整屏、并且排在内容之后（画在最上层）。
      */
     Box(modifier = Modifier.fillMaxSize()) {
+        /*
+         * 整屏兜底矩形（父亲 2026-10-10）：放在内容**之前**，只负责让首页空白处
+         * 「有东西可命中」—— 扣扳机落在空白上时不会回退成 OK 键去激活焦点上的东西
+         * （那正是"点顶栏/点空白却把大海报的片子播起来"的原因）。
+         * 查表取面积最小的，所以海报、按钮这些真控件永远优先于它。
+         */
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .vrClickBlocker(key = "home:bg")
+        )
     val context = LocalContext.current
     /*
      * 搜索浮层（父亲 2026-10-10 定）：原来的"菜单"整个去掉，放大镜挪到左上角，

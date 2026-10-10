@@ -46,6 +46,15 @@ object ClickTargets {
         val bottom: Float,
         val focus: (() -> Unit)?,
         val activate: () -> Unit,
+        /**
+         * 所属分组（父亲 2026-10-10：搜索浮层）。
+         *
+         * 查表是**只看矩形、不看层级**的（Compose 的命中测试不外露），
+         * 所以浮层压在画面上时，光点落在浮层上却会查到**后面海报墙**的矩形，
+         * 出现「点浮层把后面的海报点开了」。靠分组解决：浮层把自己的控件
+         * 全部登记成同一个组，同时把该组设为**模态组** —— 查表只在这个组里找。
+         */
+        val group: Any? = null,
     ) {
         val area: Float get() = (right - left) * (bottom - top)
 
@@ -111,6 +120,24 @@ object ClickTargets {
 
     private val targets = LinkedHashMap<Any, Target>()
 
+    /**
+     * 当前生效的模态组（浮层开着时 = 那个浮层的组）。
+     *
+     * 非 null 时，[findAt] 只在同一组的控件里找 —— 后面海报墙的矩形直接被无视，
+     * 于是「点浮层不会点到浮层后面的东西」。
+     */
+    private var modalGroup: Any? = null
+
+    /** 浮层打开时把它自己的组设为模态组 */
+    fun setModalGroup(group: Any?) {
+        synchronized(targets) { modalGroup = group }
+    }
+
+    /** 浮层关闭时撤销（只撤自己的那一组，避免误清别人的） */
+    fun clearModalGroup(group: Any) {
+        synchronized(targets) { if (modalGroup === group) modalGroup = null }
+    }
+
     /** 登记/查表诊断计数（首次装机时用来核对坐标是否与面板像素一致） */
     private var putCount = 0
 
@@ -123,15 +150,17 @@ object ClickTargets {
         bottom: Float,
         focus: (() -> Unit)?,
         activate: () -> Unit,
+        group: Any? = null,
     ) {
         synchronized(targets) {
-            targets[key] = Target(key, label, left, top, right, bottom, focus, activate)
+            targets[key] = Target(key, label, left, top, right, bottom, focus, activate, group)
             putCount++
             // 头 15 条 + 每 50 条打一行：既能核对坐标，又不会把日志刷爆
             if (putCount <= 15 || putCount % 50 == 0) {
                 android.util.Log.i(
                     "B0BEmbyVR",
-                    "坐标表登记 #$putCount $label = ($left, $top)-($right, $bottom) 表内 ${targets.size} 项",
+                    "坐标表登记 #$putCount $label = ($left, $top)-($right, $bottom) 表内 ${targets.size} 项" +
+                        if (group != null) "（模态组）" else "",
                 )
             }
         }
@@ -160,9 +189,15 @@ object ClickTargets {
      *
      * 有嵌套时（大控件里套小控件）取**面积最小**的那个 —— 最具体的赢，
      * 否则点海报卡里的按钮会打到整张卡。
+     *
+     * 有模态组时**只在模态组里找**（浮层开着 → 只认浮层自己的控件）。
      */
     fun findAt(x: Float, y: Float): Target? = synchronized(targets) {
-        targets.values.filter { it.contains(x, y) }.minByOrNull { it.area }
+        val g = modalGroup
+        targets.values
+            .filter { g == null || it.group === g }
+            .filter { it.contains(x, y) }
+            .minByOrNull { it.area }
     }
 
     /**
@@ -229,6 +264,7 @@ fun Modifier.vrScrollZone(key: Any, onStep: (Int) -> Unit): Modifier {
 fun Modifier.vrClickTarget(
     key: Any,
     focusRequester: FocusRequester? = null,
+    group: Any? = null,
     onActivate: () -> Unit,
 ): Modifier {
     // 用 rememberUpdatedState 拿最新的闭包/请求器，避免登记的是上一帧的旧值
@@ -262,6 +298,21 @@ fun Modifier.vrClickTarget(
             bottom = b.bottom,
             focus = requester?.let { r -> { runCatching { r.requestFocus() } } },
             activate = { activate() },
+            group = group,
         )
     }
 }
+
+/**
+ * 空白兜底：登记一块**点了什么都不做**的矩形（父亲 2026-10-10）。
+ *
+ * 为什么需要：扣扳机落在没有任何控件的空白处时，输入层会**回退成 OK 键**去激活
+ * 当前焦点上的东西 —— 首页上点顶栏（版本号那一行）就是这么把大海报的片子播起来的。
+ * 铺一块兜底矩形，空白处也"有东西可命中"，就不会再回退成 OK。
+ *
+ * 用法：铺在**内容下面**（先组合）或整行包一层；查表取面积最小的，
+ * 所以真正的控件永远优先，兜底只在真的没控件的地方生效。
+ */
+@Composable
+fun Modifier.vrClickBlocker(key: Any, group: Any? = null): Modifier =
+    vrClickTarget(key = key, focusRequester = null, group = group, onActivate = {})

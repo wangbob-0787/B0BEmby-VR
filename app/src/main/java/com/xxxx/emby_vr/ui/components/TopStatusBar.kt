@@ -28,6 +28,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import com.xxxx.emby_vr.panel.vrClickBlocker
 import com.xxxx.emby_vr.panel.vrClickTarget
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -74,7 +75,6 @@ fun TopStatusBar(
     val leadingSearchFocusRequester = remember { FocusRequester() }
     val searchFocusRequester = remember { FocusRequester() }
     val userInfoFocusRequester = remember { FocusRequester() }
-    val proxyEnabled = remember { PreferencesManager(context).proxyEnabled }
 
     Box(
         modifier = Modifier
@@ -82,6 +82,12 @@ fun TopStatusBar(
             .background(Color.Black.copy(alpha = 0.7f))
             // 顶栏放大（父亲 2026-10-09：图标与字都太小）：四边留白跟着放大
             .padding(horizontal = 16.dp, vertical = 8.dp)
+            /*
+             * 整行铺一块「点了什么都不做」的兜底矩形（父亲 2026-10-10）。
+             * 不铺的话，点版本号那种空白处查不到控件 → 输入层回退成 OK 键 →
+             * 把当前焦点上的东西激活（首页就是大海报的「续播」，于是开始播片）。
+             */
+            .vrClickBlocker(key = "top:bar")
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -178,25 +184,6 @@ fun TopStatusBar(
                         fontWeight = FontWeight.Bold
                     )
                 }
-
-                if (proxyEnabled) {
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Box(
-                        modifier = Modifier
-                            .background(
-                                MaterialTheme.colorScheme.onSecondary.copy(alpha = 0.8f),
-                                RoundedCornerShape(100)
-                            )
-                            .padding(horizontal = 10.dp, vertical = 4.dp)
-                    ) {
-                        Text(
-                            text = stringResource(R.string.proxy_indicator),
-                            color = MaterialTheme.colorScheme.secondary,
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
             }
 
             // 搜索按钮（右侧）
@@ -241,31 +228,32 @@ fun TopStatusBar(
                     // 放大镜与头像之间 = 与左边「菜单 ↔ 版本号」同一个间距（父亲 2026-10-10）
                     Spacer(modifier = Modifier.width(TopBarGap))
 
-                    Surface(
-                        onClick = onUserInfoClick ?: {},
-                        modifier = Modifier
-                            .focusRequester(userInfoFocusRequester)
-                            .vrClickTarget(
-                                key = "top:user",
-                                focusRequester = userInfoFocusRequester,
-                                onActivate = { (onUserInfoClick ?: {}).invoke() },
-                            ),
-                        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(16.dp)),
-                        colors = ClickableSurfaceDefaults.colors(
-                            containerColor = Color.Transparent,
-                            contentColor = MaterialTheme.colorScheme.onSecondary,
-                focusedContainerColor = Color.Transparent,
-                focusedContentColor = MaterialTheme.colorScheme.onSecondary,
-            )
+                    /*
+                     * 只有**头像**可点（父亲 2026-10-10：点用户名不该弹账号管理）。
+                     * 所以这里不再整块包 Surface，只把头像包起来，用户名就是一行纯文字。
+                     */
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(vertical = 6.dp)
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            /*
-                             * 水平内边距归零（父亲 2026-10-10）：原来的 start 6 / end 14 会在
-                             * Spacer 之外再多撑出 6dp 与 14dp，三处间距就凑不齐了 —— 现在
-                             * 「放大镜 ↔ 头像」与「头像 ↔ 用户名」两段完全由同一个 TopBarGap 决定。
-                             */
-                            modifier = Modifier.padding(vertical = 6.dp)
+                        Surface(
+                            onClick = { (onUserInfoClick ?: {}).invoke() },
+                            modifier = Modifier
+                                .focusRequester(userInfoFocusRequester)
+                                .vrClickTarget(
+                                    key = "top:user",
+                                    focusRequester = userInfoFocusRequester,
+                                    onActivate = { (onUserInfoClick ?: {}).invoke() },
+                                ),
+                            shape = ClickableSurfaceDefaults.shape(
+                                androidx.compose.foundation.shape.CircleShape
+                            ),
+                            colors = ClickableSurfaceDefaults.colors(
+                                containerColor = Color.Transparent,
+                                contentColor = Color.White,
+                                focusedContainerColor = Color.Transparent,
+                                focusedContentColor = Color.White,
+                            )
                         ) {
                             // 头像：用父亲 2026-10-02 给的图（圆形裁剪）
                             Image(
@@ -275,16 +263,15 @@ fun TopStatusBar(
                                     .size(38.dp)
                                     .clip(androidx.compose.foundation.shape.CircleShape)
                             )
-                            // 头像与名字之间 = 同一个间距（父亲 2026-10-10）
-                            Spacer(modifier = Modifier.width(TopBarGap))
-                            Text(
-                                text = userInfo,
-                                fontSize = 18.sp,
-                                fontWeight = FontWeight.Medium
-                            )
                         }
+                        // 头像与名字之间 = 同一个间距（父亲 2026-10-10）
+                        Spacer(modifier = Modifier.width(TopBarGap))
+                        Text(
+                            text = userInfo,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Medium
+                        )
                     }
-
                 }
             }
         }
