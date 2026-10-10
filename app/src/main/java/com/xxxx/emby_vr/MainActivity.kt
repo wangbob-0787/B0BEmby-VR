@@ -4408,6 +4408,26 @@ class MainActivity : ComponentActivity() {
         }
 
         /*
+         * 座椅布纹（父亲 2026-10-10：只贴座椅、只贴观影位前后各两排）：
+         * 在 Java 侧用 BitmapFactory 解码 PNG（native 里不带图像解码），
+         * 像素交给原生，GL 上传由渲染线程在上下文就绪后做。
+         */
+        runCatching {
+            assets.open("seat_fabric.png").use { ins ->
+                val bmp = android.graphics.BitmapFactory.decodeStream(ins)
+                if (bmp != null) {
+                    val px = IntArray(bmp.width * bmp.height)
+                    bmp.getPixels(px, 0, bmp.width, 0, 0, bmp.width, bmp.height)
+                    com.xxxx.emby_vr.vr.VrNative.setSeatTexture(px, bmp.width, bmp.height)
+                    Log.i(TAG, "座椅布纹已解码：${bmp.width}x${bmp.height}")
+                    bmp.recycle()
+                } else {
+                    Log.w(TAG, "座椅布纹解码失败")
+                }
+            }
+        }.onFailure { Log.w(TAG, "座椅布纹准备失败：${it.message}") }
+
+        /*
          * 影厅资源（父亲 2026-10-10）：assets 里的影厅几何与环境光贴图先落到应用目录，
          * 再把路径交给原生 —— 必须在 startVr 之前，原生在渲染线程起 GL 时就要读它们。
          */

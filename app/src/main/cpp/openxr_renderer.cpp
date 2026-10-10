@@ -557,8 +557,12 @@ constexpr float kSeatScreenWidth = 5.43f;
 /** 新厅（CGTrader Movie Theater）自带那块幕的矩形：宽 17.62 · 高 7.74 米（实测） */
 constexpr float kHallScreenW = 17.62f;
 constexpr float kHallScreenH = 7.74f;
-/** 幕下沿高度（模型坐标，米）：新厅幕底比眼睛低，正好不用仰头 */
-constexpr float kHallScreenBottomY = 1.04f;
+/**
+ * 画面下沿高度（模型坐标，米）。
+ * 模型自带那块幕下沿在 1.04 米，父亲 2026-10-10 要求再降——降到 0.30 米
+ * （墙能容的极限：16:9 时幕顶 8.04，仍在天花板 9.82 以下，也不会贴地）。
+ */
+constexpr float kHallScreenBottomY = 0.30f;
 /** 基准排（第 6 排）眼睛高度（模型坐标）——资产就是按它归零的 */
 constexpr float kHallRefEyeY = 2.80f;
 /** 当前座位：0 近 / 1 中 / 2 远（父亲坐在影厅里换排） */
@@ -603,15 +607,18 @@ const char *kCinemaVs = R"(#version 300 es
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec3 aNrm;
 layout(location = 2) in vec4 aCol;
+layout(location = 3) in vec2 aUv;      // UV.x < 0 = 这个部件不贴图
 uniform mat4 uMvp;
 uniform mat4 uModel;
 out vec3 vNrm;
 out vec4 vCol;
 out vec3 vPos;
+out vec2 vUv;
 void main() {
     vNrm = mat3(uModel) * aNrm;
     vCol = aCol;
     vPos = (uModel * vec4(aPos, 1.0)).xyz;
+    vUv = aUv;
     gl_Position = uMvp * vec4(aPos, 1.0);
 }
 )";
@@ -621,6 +628,10 @@ precision mediump float;
 in vec3 vNrm;
 in vec4 vCol;
 in vec3 vPos;
+in vec2 vUv;
+uniform sampler2D uSeatTex;  // 座椅布纹（父亲 2026-10-10：只贴座椅）
+uniform float uSeatTexOn;    // 贴图有没有就绪（没就绪就退回纯色）
+uniform float uSeatBandZ;    // 只在这条 z 带内采样（观影位前后各 2 排 ≈ ±2.3 米）
 uniform vec3 uScreenPos;     // 银幕中心（世界坐标）—— 影厅里唯一的主光源
 uniform vec3 uScreenTint;    // 银幕发光的颜色（跟画面联动，父亲后面要"画面照亮影厅"）
 uniform float uScreenGlow;   // 银幕光强
@@ -654,7 +665,16 @@ void main() {
      * 给暗厅一点真实的"影院空气感"——墙面、地毯、座椅不至于纯黑。
      */
     vec3 env = texture(uEnv, envUv(n)).rgb * uEnvStrength;
-    vec3 lit = vCol.rgb * (uAmbient + ceiling + env + lam * atten * uScreenTint);
+    /*
+     * 座椅布纹（父亲 2026-10-10 定：只贴座椅、只贴观影位前后各两排）：
+     * 带外的像素一次采样都不做 —— 采样开销只发生在眼前那几排座椅上。
+     * UV 用 mipmap 采样，远处座椅自动落到低分辨率级（"越远越模糊"）。
+     */
+    vec3 albedo = vCol.rgb;
+    if (uSeatTexOn > 0.5 && vUv.x >= 0.0 && abs(vPos.z) < uSeatBandZ) {
+        albedo = texture(uSeatTex, vUv).rgb * vCol.rgb * 2.2;   // 布纹 × 材质色
+    }
+    vec3 lit = albedo * (uAmbient + ceiling + env + lam * atten * uScreenTint);
     fragColor = vec4(lit, vCol.a);
 }
 )";
@@ -670,6 +690,17 @@ GLint gCinemaEyeLoc = -1;
 GLint gCinemaEnvLoc = -1;
 GLint gCinemaEnvStrengthLoc = -1;
 GLint gCinemaBrightLoc = -1;
+GLint gCinemaSeatTexLoc = -1;
+GLint gCinemaSeatTexOnLoc = -1;
+GLint gCinemaSeatBandZLoc = -1;
+/** 座椅布纹贴图（由 Java 侧解码 PNG 后传像素上来） */
+GLuint gSeatTex = 0;
+std::atomic<bool> gSeatTexReady{false};
+/** 待上传的像素（Java 侧填，渲染线程 GL 就绪后上传） */
+std::vector<unsigned char> gSeatTexPixels;
+int gSeatTexW = 0, gSeatTexH = 0;
+/** 采样带半宽（米）：观影位前后各两排 —— 一排约 1.05 米 */
+constexpr float kSeatTextureBandZ = 2.3f;
 /** 环境光贴图（影院 HDRI，256×128 RGB；由 Java 侧把 assets 里的 .b0benv 拷出来再加载） */
 GLuint gEnvTex = 0;
 std::atomic<float> gEnvStrength{2.6f};
@@ -683,9 +714,10 @@ std::string gEnvAssetPath;
 GLuint gCinemaVbo = 0;
 GLuint gCinemaIbo = 0;
 int gCinemaIndexCount = 0;
-/** 法线 / 顶点色两段在 VBO 里的字节偏移（加载时算好，绘制时用） */
+/** 法线 / 顶点色 / UV 三段在 VBO 里的字节偏移（加载时算好，绘制时用） */
 long gCinemaNormalOffset = 0;
 long gCinemaColorOffset = 0;
+long gCinemaUvOffset = 0;
 std::atomic<bool> gCinemaReady{false};
 /** 影厅参数（可在 vr-tuning.txt 里改：cinema_glow / cinema_ambient / cinema_on） */
 std::atomic<float> gCinemaGlow{1.35f};
@@ -753,17 +785,19 @@ bool loadCinemaAsset(const char *path) {
     if (ok && matCount > 0) {
         ok = fseek(f, (long) (4 * matCount), SEEK_CUR) == 0;
     }
-    std::vector<float> pos, nrm;
+    std::vector<float> pos, nrm, uvs;
     std::vector<unsigned char> col;
     std::vector<uint32_t> idx;
     if (ok && vcount > 0 && icount > 0) {
         pos.resize((size_t) vcount * 3);
         nrm.resize((size_t) vcount * 3);
         col.resize((size_t) vcount * 4);
+        uvs.resize((size_t) vcount * 2);
         idx.resize(icount);
         ok = fread(pos.data(), sizeof(float), pos.size(), f) == pos.size() &&
              fread(nrm.data(), sizeof(float), nrm.size(), f) == nrm.size() &&
              fread(col.data(), 1, col.size(), f) == col.size() &&
+             fread(uvs.data(), sizeof(float), uvs.size(), f) == uvs.size() &&
              fread(idx.data(), sizeof(uint32_t), idx.size(), f) == idx.size();
     }
     fclose(f);
@@ -776,7 +810,7 @@ bool loadCinemaAsset(const char *path) {
     if (gCinemaIbo == 0) glGenBuffers(1, &gCinemaIbo);
     glBindBuffer(GL_ARRAY_BUFFER, gCinemaVbo);
     glBufferData(GL_ARRAY_BUFFER,
-                 (GLsizeiptr) ((size_t) vcount * (3 + 3) * sizeof(float) +
+                 (GLsizeiptr) ((size_t) vcount * (3 + 3 + 2) * sizeof(float) +
                                (size_t) vcount * 4), nullptr, GL_STATIC_DRAW);
     glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr) (pos.size() * sizeof(float)),
                     pos.data());
@@ -785,6 +819,9 @@ bool loadCinemaAsset(const char *path) {
     glBufferSubData(GL_ARRAY_BUFFER,
                     (GLintptr) ((pos.size() + nrm.size()) * sizeof(float)),
                     (GLsizeiptr) col.size(), col.data());
+    glBufferSubData(GL_ARRAY_BUFFER,
+                    (GLintptr) ((pos.size() + nrm.size()) * sizeof(float) + col.size()),
+                    (GLsizeiptr) (uvs.size() * sizeof(float)), uvs.data());
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gCinemaIbo);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr) (idx.size() * sizeof(uint32_t)),
                  idx.data(), GL_STATIC_DRAW);
@@ -793,6 +830,7 @@ bool loadCinemaAsset(const char *path) {
     gCinemaIndexCount = (int) idx.size();
     gCinemaNormalOffset = (long) (pos.size() * sizeof(float));
     gCinemaColorOffset = (long) ((pos.size() + nrm.size()) * sizeof(float));
+    gCinemaUvOffset = (long) ((pos.size() + nrm.size()) * sizeof(float) + col.size());
     gCinemaReady.store(true);
     LOGI("影厅几何已加载：%u 顶点 / %u 三角形（%s）", vcount, icount / 3, path);
     return true;
@@ -835,6 +873,25 @@ bool loadEnvAsset(const char *path) {
     return true;
 }
 
+/** 上传座椅布纹（Java 侧已解码成 RGBA8888；mipmap 让远处座椅自动用低分辨率级） */
+void uploadSeatTexture() {
+    if (gSeatTexPixels.empty() || gSeatTexW <= 0 || gSeatTexH <= 0) return;
+    if (gSeatTex == 0) glGenTextures(1, &gSeatTex);
+    glBindTexture(GL_TEXTURE_2D, gSeatTex);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, gSeatTexW, gSeatTexH, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, gSeatTexPixels.data());
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    gSeatTexReady.store(true);
+    LOGI("座椅布纹已上传：%dx%d（带内采样 ±%.1f 米）", gSeatTexW, gSeatTexH,
+         (double) kSeatTextureBandZ);
+}
+
 /** 画影厅：模型矩阵 = 换排平移；光源就是银幕 */
 void drawCinema(const Mat4 &proj, const Mat4 &view, const XrVector3f &eyePos) {
     if (!gCinemaReady.load() || gCinemaOn.load() == 0 || gCinemaProgram == 0) return;
@@ -864,6 +921,15 @@ void drawCinema(const Mat4 &proj, const Mat4 &view, const XrVector3f &eyePos) {
     if (gCinemaEnvLoc >= 0) glUniform1i(gCinemaEnvLoc, 1);
     if (gCinemaEnvStrengthLoc >= 0) glUniform1f(gCinemaEnvStrengthLoc, gEnvStrength.load());
     if (gCinemaBrightLoc >= 0) glUniform1f(gCinemaBrightLoc, gCinemaBright.load());
+    /* 座椅布纹：贴 2 号纹理单元（0 号是视频、1 号是环境光） */
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, gSeatTex);
+    if (gCinemaSeatTexLoc >= 0) glUniform1i(gCinemaSeatTexLoc, 2);
+    if (gCinemaSeatTexOnLoc >= 0) {
+        glUniform1f(gCinemaSeatTexOnLoc, gSeatTexReady.load() ? 1.f : 0.f);
+    }
+    if (gCinemaSeatBandZLoc >= 0) glUniform1f(gCinemaSeatBandZLoc, kSeatTextureBandZ);
+    glActiveTexture(GL_TEXTURE0);
     glActiveTexture(GL_TEXTURE0);
 
     glEnable(GL_DEPTH_TEST);
@@ -882,11 +948,14 @@ void drawCinema(const Mat4 &proj, const Mat4 &view, const XrVector3f &eyePos) {
     glEnableVertexAttribArray(2);
     glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, 0,
                           (void *) (size_t) gCinemaColorOffset);
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, 0, (void *) (size_t) gCinemaUvOffset);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gCinemaIbo);
     glDrawElements(GL_TRIANGLES, gCinemaIndexCount, GL_UNSIGNED_INT, nullptr);
     glDisableVertexAttribArray(0);
     glDisableVertexAttribArray(1);
     glDisableVertexAttribArray(2);
+    glDisableVertexAttribArray(3);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
     glDisable(GL_DEPTH_TEST);
@@ -2284,8 +2353,10 @@ ScreenPlacement frontScreen(const VrContext &c) {
          * 上面露出的墙已经涂黑，观感上就是"幕布上边空着"，不会看到灰墙。
          */
         p.width = hallScreenFitWidth(p.aspect);
-        p.cy = hallScreenCenterY() + gSeatUp.load();      // 座椅调节时画面跟着厅一起挪
-        p.cz -= gSeatFwd.load();                          // （否则画面会从幕框里滑出去）
+        /* 下沿锚定在 kHallScreenBottomY（换排/座椅调节都跟着走），上沿按片子比例往上长 */
+        const float h = p.width / fmaxf(0.2f, p.aspect);
+        p.cy = hallScreenBottomY() + h * 0.5f;
+        p.cz -= gSeatFwd.load();
         /* 横向取影厅前墙/银幕的位置（他比厅中线偏 0.12 米，画面跟着墙走） */
         p.cx = -(kHallScreenModelX - kAssetOriginModelX) + kCinemaShiftX;
     }
@@ -5107,6 +5178,10 @@ void renderThreadMain() {
         gCinemaEnvLoc = glGetUniformLocation(gCinemaProgram, "uEnv");
         gCinemaEnvStrengthLoc = glGetUniformLocation(gCinemaProgram, "uEnvStrength");
         gCinemaBrightLoc = glGetUniformLocation(gCinemaProgram, "uBright");
+        gCinemaSeatTexLoc = glGetUniformLocation(gCinemaProgram, "uSeatTex");
+        gCinemaSeatTexOnLoc = glGetUniformLocation(gCinemaProgram, "uSeatTexOn");
+        gCinemaSeatBandZLoc = glGetUniformLocation(gCinemaProgram, "uSeatBandZ");
+        uploadSeatTexture();
         applySeat(gSeat.load());
         /* 影厅几何 + 环境光贴图：路径由 Java 侧给（assets 已拷到应用目录） */
         if (!gEnvAssetPath.empty()) loadEnvAsset(gEnvAssetPath.c_str());
@@ -5771,6 +5846,32 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetAssetPaths(JNIEnv *env, jobject /* t
         }
     }
     LOGI("影厅资源路径：几何=%s 环境光=%s", gCinemaAssetPath.c_str(), gEnvAssetPath.c_str());
+}
+
+/**
+ * 座椅布纹像素（Java 侧用 BitmapFactory 解码 PNG，避免 native 里再带一套图像解码）。
+ * 真正的 GL 上传在渲染线程里做（uploadSeatTexture），这里只存下来。
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetSeatTexture(JNIEnv *env, jobject /* this */,
+                                                        jintArray pixels, jint w, jint h) {
+    if (pixels == nullptr || w <= 0 || h <= 0) return;
+    const jsize n = env->GetArrayLength(pixels);
+    if (n < w * h) return;
+    jint *buf = env->GetIntArrayElements(pixels, nullptr);
+    if (buf == nullptr) return;
+    gSeatTexPixels.resize((size_t) w * h * 4);
+    for (jsize i = 0; i < w * h; i++) {
+        const jint p = buf[i];                       // ARGB (Android Bitmap)
+        gSeatTexPixels[i * 4 + 0] = (unsigned char) ((p >> 16) & 0xFF);
+        gSeatTexPixels[i * 4 + 1] = (unsigned char) ((p >> 8) & 0xFF);
+        gSeatTexPixels[i * 4 + 2] = (unsigned char) (p & 0xFF);
+        gSeatTexPixels[i * 4 + 3] = (unsigned char) ((p >> 24) & 0xFF);
+    }
+    env->ReleaseIntArrayElements(pixels, buf, JNI_ABORT);
+    gSeatTexW = w;
+    gSeatTexH = h;
+    LOGI("座椅布纹像素已收到：%dx%d（等渲染线程上传）", w, h);
 }
 
 /** 选座（0 近 / 1 中 / 2 远）：控制条上点一下就换排 */

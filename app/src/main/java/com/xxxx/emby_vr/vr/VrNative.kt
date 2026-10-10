@@ -44,6 +44,18 @@ object VrNative {
     /** 选座：0 = 近排（第 1 排）· 1 = 中排（第 3 排）· 2 = 远排（第 6 排） */
     private external fun nativeSetSeat(seat: Int)
 
+    /** 座椅布纹像素（ARGB）；GL 上传在渲染线程里做 */
+    private external fun nativeSetSeatTexture(pixels: IntArray, width: Int, height: Int)
+
+    /** 把座椅布纹交给原生（必须在 [startVr] 之前调，渲染线程起来时才上传） */
+    fun setSeatTexture(pixels: IntArray, width: Int, height: Int) {
+        try {
+            if (loaded) nativeSetSeatTexture(pixels, width, height)
+        } catch (t: Throwable) {
+            Log.e(TAG, "传座椅布纹失败：${t.message}")
+        }
+    }
+
     /** 把影厅资源路径交给原生（必须在 [startVr] 之前调） */
     fun setAssetPaths(cinemaPath: String, envPath: String) {
         try {
