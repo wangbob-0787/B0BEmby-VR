@@ -181,6 +181,58 @@ object EmbyApi {
     }
 
     /**
+     * 按人名找演员（父亲 2026-10-10「演员通道」第一步）。
+     *
+     * 实测（2026-10-10）：Emby 的 SearchTerm 只匹配**片名**，喂演员名进去只会返回
+     * 片名里带这几个字的片子（搜「刘德华」出来的是《刘德华红馆跨年演唱会》这类），
+     * 所以演员必须走两步：先用这里拿到演员的 Id，再用 [getItemsByPerson] 拿他的作品。
+     */
+    suspend fun searchPersons(
+        context: Context,
+        serverUrl: String,
+        apiKey: String,
+        deviceId: String,
+        userId: String,
+        query: String,
+        limit: Int = 8,
+    ): List<BaseItemDto> {
+        val q = java.net.URLEncoder.encode(query, "UTF-8")
+        val url = "/Persons?SearchTerm=$q&UserId=$userId&Recursive=true&Limit=$limit" +
+                "&X-Emby-Token=$apiKey"
+        return httpAsBaseItemDtoList(context, serverUrl, apiKey, deviceId, url)
+    }
+
+    /**
+     * 取某个演员在库里的全部作品（父亲 2026-10-10）。
+     *
+     * 排序固定「上映/开播时间从新到旧」（父亲 2026-10-10 定：最近上映的放最前）；
+     * 同时点出 Genres 与 Type —— 界面要按 电影/电视剧/演唱会/纪录片 分组，
+     * 分组在客户端本地算，凭这两个字段就够，不必再按库多发请求。
+     *
+     * 注意：服务端给的 TotalRecordCount 不可信（实测会给 0 或给全库数），
+     * 数量一律以 `items.size` 为准，这里的 total 只做参考。
+     */
+    suspend fun getItemsByPerson(
+        context: Context,
+        serverUrl: String,
+        apiKey: String,
+        deviceId: String,
+        userId: String,
+        personId: String,
+        startIndex: Int = 0,
+        limit: Int = 300,
+    ): Pair<List<BaseItemDto>, Int> {
+        val url = "/Users/$userId/Items?PersonIds=$personId" +
+                "&IncludeItemTypes=Movie,Series,Video,BoxSet" +
+                "&Fields=Genres,Type,PremiereDate,ProductionYear,PrimaryImageAspectRatio,BasicSyncInfo" +
+                "&SortBy=PremiereDate&SortOrder=Descending" +
+                "&StartIndex=$startIndex" +
+                "&EnableImageTypes=Primary,Backdrop,Thumb&ImageTypeLimit=1&Recursive=true&Limit=$limit" +
+                "&X-Emby-Token=$apiKey"
+        return httpAsBaseItemDtoListWithTotal(context, serverUrl, apiKey, deviceId, url)
+    }
+
+    /**
      * 获取继续观看列表
      */
     suspend fun getResumeItems(
@@ -306,6 +358,28 @@ object EmbyApi {
     }
 
     // ==================== 详情与剧集 ====================
+
+    /**
+     * 演员详情（父亲 2026-10-10：演员页顶部要头像 + 演员介绍）。
+     *
+     * 实测（2026-10-10）：`/Persons/{id}` 这条会 500，能取到简介的是
+     * `/Users/{uid}/Items/{personId}` —— 返回姓名、Overview（人物小传）、
+     * PremiereDate（出生日期）、ImageTags（头像）。所以走这一条。
+     */
+    suspend fun getPersonInfo(
+        context: Context,
+        serverUrl: String,
+        apiKey: String,
+        deviceId: String,
+        userId: String,
+        personId: String,
+    ): BaseItemDto {
+        return httpAsBaseItemDto(
+            context, serverUrl, apiKey, deviceId,
+            "/Users/$userId/Items/$personId?Fields=Overview,PremiereDate,ImageTags" +
+                "&X-Emby-Token=$apiKey"
+        )
+    }
 
     /**
      * 获取媒体详情

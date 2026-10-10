@@ -35,6 +35,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.xxxx.emby_vr.ui.AccountScreen
+import com.xxxx.emby_vr.ui.ActorScreen
 import com.xxxx.emby_vr.ui.HomeScreen
 import com.xxxx.emby_vr.ui.LibraryScreen
 import com.xxxx.emby_vr.ui.LoginScreen
@@ -311,6 +312,12 @@ fun PanelApp(onPlayRequested: (mediaId: String, positionTicks: Long) -> Unit) {
                                     mediaItem.userData?.playbackPositionTicks ?: 0L,
                                 )
                             },
+                            onNavigateToPerson = { personId, personName, imageTag ->
+                                navController.navigate(
+                                    "person/$personId?name=${android.net.Uri.encode(personName)}" +
+                                        "&imgTag=${imageTag.orEmpty()}"
+                                )
+                            },
                         )
                     }
 
@@ -331,6 +338,47 @@ fun PanelApp(onPlayRequested: (mediaId: String, positionTicks: Long) -> Unit) {
                                     mediaItem.id ?: "",
                                     mediaItem.userData?.playbackPositionTicks ?: 0L,
                                 )
+                            },
+                            onNavigateToPerson = { personId, personName, imageTag ->
+                                navController.navigate(
+                                    "person/$personId?name=${android.net.Uri.encode(personName)}" +
+                                        "&imgTag=${imageTag.orEmpty()}"
+                                )
+                            },
+                        )
+                    }
+
+                    /*
+                     * 演员页（父亲 2026-10-10）：详情页点演员头像进来。
+                     * 顶部是头像 + 姓名 + 出生日期 + 人物小传；下面是他的作品，
+                     * 按 电影 / 电视剧 / 演唱会 / 纪录片 / 其他 分组，有内容的那组才出现。
+                     */
+                    composable(
+                        "person/{personId}?name={name}&imgTag={imgTag}",
+                        arguments = listOf(
+                            navArgument("personId") { type = NavType.StringType },
+                            navArgument("name") {
+                                type = NavType.StringType
+                                defaultValue = ""
+                            },
+                            navArgument("imgTag") {
+                                type = NavType.StringType
+                                defaultValue = ""
+                            },
+                        ),
+                    ) { backStackEntry ->
+                        val personId = backStackEntry.arguments?.getString("personId") ?: ""
+                        val personName = backStackEntry.arguments?.getString("name") ?: ""
+                        val imgTag = backStackEntry.arguments?.getString("imgTag")
+                            ?.takeIf { it.isNotBlank() }
+                        ActorScreen(
+                            personId = personId,
+                            personName = personName,
+                            imageTag = imgTag,
+                            onOpenItem = { item ->
+                                val id = item.id ?: ""
+                                if (item.isSeries) navController.navigate("series/$id")
+                                else navController.navigate("media/$id")
                             },
                         )
                     }

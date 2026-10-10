@@ -37,6 +37,16 @@ class PreferencesManager(context: Context) {
         get() = prefs.getString(KEY_LIBRARY_SORT_ORDER, "Ascending") ?: "Ascending"
         set(value) = prefs.edit().putString(KEY_LIBRARY_SORT_ORDER, value).apply()
 
+    // === 搜索设置 ===
+
+    /**
+     * 搜索通道（父亲 2026-10-10 定）：**单选** —— 片名 或 演员。
+     * 记住上一次的选择，下次打开搜索框沿用（父亲明确要求）。
+     */
+    var searchChannel: String
+        get() = prefs.getString(KEY_SEARCH_CHANNEL, SEARCH_CHANNEL_NAME) ?: SEARCH_CHANNEL_NAME
+        set(value) = prefs.edit().putString(KEY_SEARCH_CHANNEL, value).apply()
+
     // === 代理设置 ===
 
     var proxyEnabled: Boolean
@@ -179,6 +189,9 @@ class PreferencesManager(context: Context) {
     companion object {
         private const val KEY_LIBRARY_SORT_BY = "library_sort_by"
         private const val KEY_LIBRARY_SORT_ORDER = "library_sort_order"
+        private const val KEY_SEARCH_CHANNEL = "search_channel"
+        const val SEARCH_CHANNEL_NAME = "name"
+        const val SEARCH_CHANNEL_PERSON = "person"
 
         private const val KEY_THEME_ID = "selected_theme_id"
         private const val KEY_PREFER_DIRECT_PLAY = "prefer_direct_play"

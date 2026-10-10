@@ -240,6 +240,40 @@ class EmbyRepository private constructor(private val context: Context) {
     }
 
     /**
+     * 演员详情（父亲 2026-10-10：演员页顶部要头像 + 简介）
+     */
+    suspend fun getPersonInfo(personId: String): BaseItemDto {
+        requireLoggedIn()
+        return EmbyApi.getPersonInfo(
+            context,
+            session.serverUrl!!,
+            session.apiKey!!,
+            session.deviceId,
+            session.userId!!,
+            personId
+        )
+    }
+
+    /**
+     * 某个演员在库里的全部作品（父亲 2026-10-10 演员页用）。
+     *
+     * 服务端已按上映/开播时间从新到旧排好；数量以返回条数为准（服务端的总数不可信）。
+     */
+    suspend fun getWorksByPerson(personId: String, limit: Int = 300): List<BaseItemDto> {
+        requireLoggedIn()
+        return EmbyApi.getItemsByPerson(
+            context,
+            session.serverUrl!!,
+            session.apiKey!!,
+            session.deviceId,
+            session.userId!!,
+            personId,
+            0,
+            limit
+        ).first
+    }
+
+    /**
      * 获取季列表
      */
     suspend fun getSeasonList(seriesId: String): List<BaseItemDto> {

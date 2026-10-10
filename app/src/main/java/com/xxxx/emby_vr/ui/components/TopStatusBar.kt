@@ -62,10 +62,16 @@ fun TopStatusBar(
     userInfo: String? = null,
     onMenuClick: (() -> Unit)? = null,
     onSearchClick: (() -> Unit)? = null,
+    /*
+     * 左上角的搜索按钮（父亲 2026-10-10：菜单按钮整个去掉，放大镜挪到那个位置）。
+     * 与 onMenuClick 共用同一个位置：给了它就画放大镜，否则才画菜单图标。
+     */
+    onLeadingSearchClick: (() -> Unit)? = null,
     onUserInfoClick: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val menuFocusRequester = remember { FocusRequester() }
+    val leadingSearchFocusRequester = remember { FocusRequester() }
     val searchFocusRequester = remember { FocusRequester() }
     val userInfoFocusRequester = remember { FocusRequester() }
     val proxyEnabled = remember { PreferencesManager(context).proxyEnabled }
@@ -83,7 +89,44 @@ fun TopStatusBar(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (onMenuClick != null) {
+                /*
+                 * 左上角：搜索（父亲 2026-10-10 —— 原来的菜单按钮去掉，放大镜挪到这里）。
+                 * 给了 onLeadingSearchClick 就画放大镜，否则保持原来的菜单图标。
+                 */
+                if (onLeadingSearchClick != null) {
+                    Surface(
+                        onClick = onLeadingSearchClick,
+                        modifier = Modifier
+                            .size(48.dp)
+                            .focusRequester(leadingSearchFocusRequester)
+                            .vrClickTarget(
+                                key = "top:search",
+                                focusRequester = leadingSearchFocusRequester,
+                                onActivate = { onLeadingSearchClick?.invoke() },
+                            ),
+                        shape = ClickableSurfaceDefaults.shape(androidx.compose.foundation.shape.CircleShape),
+                        colors = ClickableSurfaceDefaults.colors(
+                            containerColor = Color.Transparent,
+                            contentColor = Color.White,
+                            focusedContainerColor = Color.Transparent,
+                            focusedContentColor = Color.White,
+                        )
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .fillMaxHeight(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Search,
+                                contentDescription = stringResource(R.string.search),
+                                modifier = Modifier.size(28.dp)
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(TopBarGap))
+                } else if (onMenuClick != null) {
                     Surface(
                         onClick = onMenuClick,
                         modifier = Modifier

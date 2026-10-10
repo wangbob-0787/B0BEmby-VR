@@ -59,6 +59,11 @@ fun MediaDetailScreen(
     detailViewModel: DetailViewModel,
     onNavigateToSeries: (String) -> Unit,
     onNavigateToPlayer: (BaseItemDto) -> Unit,
+    /*
+     * 点演员头像 → 演员页（父亲 2026-10-10 定）。
+     * 三个参数：演员 id（取作品用）、姓名、头像 tag（没 tag 时演员页只显示占位）。
+     */
+    onNavigateToPerson: (id: String, name: String, imageTag: String?) -> Unit = { _, _, _ -> },
 ) {
     val context = LocalContext.current
     val repository = remember { EmbyRepository.getInstance(context) }
@@ -585,7 +590,10 @@ fun MediaDetailScreen(
                                 lastEpisodeIndex.coerceIn(0, (episodeFocusers.size - 1).coerceAtLeast(0))
                             ),
                             downFocus = crewFocusers.getOrNull(lastCrewIndex),
-                            onFocused = { lastCastIndex = it }
+                            onFocused = { lastCastIndex = it },
+                            onPersonClick = { p ->
+                                onNavigateToPerson(p.id ?: "", p.name ?: "", p.primaryImageTag)
+                            },
                         )
                         Spacer(modifier = Modifier.height(32.dp))
                     }
@@ -603,7 +611,10 @@ fun MediaDetailScreen(
                             serverUrl = serverUrl,
                             focusers = crewFocusers,
                             upFocus = castFocusers.getOrNull(lastCastIndex),
-                            onFocused = { lastCrewIndex = it }
+                            onFocused = { lastCrewIndex = it },
+                            onPersonClick = { p ->
+                                onNavigateToPerson(p.id ?: "", p.name ?: "", p.primaryImageTag)
+                            },
                         )
                         Spacer(modifier = Modifier.height(32.dp))
                     }
@@ -746,10 +757,12 @@ fun PersonCard(
     upFocus: FocusRequester? = null,
     downFocus: FocusRequester? = null,
     onFocused: (() -> Unit)? = null,
+    // 点演员卡（父亲 2026-10-10：进演员页，列他演过的电影/电视剧/演唱会…）
+    onClick: () -> Unit = {},
 ) {
 
     Surface(
-        onClick = {},
+        onClick = onClick,
         shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(12.dp)),
         border = ClickableSurfaceDefaults.border(
             focusedBorder = androidx.tv.material3.Border(androidx.compose.foundation.BorderStroke(androidx.compose.ui.unit.Dp(0f), androidx.compose.ui.graphics.Color.Transparent))),
@@ -838,6 +851,8 @@ private fun PersonRow(
     upFocus: FocusRequester? = null,
     downFocus: FocusRequester? = null,
     onFocused: ((Int) -> Unit)? = null,
+    // 点某一位演员 → 演员页（父亲 2026-10-10）
+    onPersonClick: ((PersonInfo) -> Unit)? = null,
 ) {
     val maxAspectRatio = 0.66f
     val imgWidth = (160f * maxAspectRatio).dp
@@ -857,7 +872,8 @@ private fun PersonRow(
                 focusRequester = focusers.getOrNull(index),
                 upFocus = upFocus,
                 downFocus = downFocus,
-                onFocused = onFocused?.let { cb -> { cb(index) } }
+                onFocused = onFocused?.let { cb -> { cb(index) } },
+                onClick = { onPersonClick?.invoke(person) },
             )
         }
     }

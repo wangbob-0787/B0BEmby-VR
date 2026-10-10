@@ -27,13 +27,15 @@ import com.xxxx.emby_vr.ui.components.BuildItem
 import com.xxxx.emby_vr.ui.components.HomeHeroCarousel
 import com.xxxx.emby_vr.ui.components.LiveTvRow
 import com.xxxx.emby_vr.ui.components.Loading
-import com.xxxx.emby_vr.ui.components.MenuDialog
 import com.xxxx.emby_vr.ui.components.NoData
+import com.xxxx.emby_vr.ui.components.SearchOverlay
 import com.xxxx.emby_vr.ui.components.TopStatusBar
 import com.xxxx.emby_vr.util.DiagLog
 import com.xxxx.emby_vr.util.ErrorHandler
 import com.xxxx.emby_vr.ui.viewmodel.HomeViewModel
 import com.xxxx.emby_vr.ui.viewmodel.MainViewModel
+import com.xxxx.emby_vr.ui.viewmodel.SearchViewModel
+import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.yield
 
@@ -64,7 +66,13 @@ fun HomeScreen(
      */
     Box(modifier = Modifier.fillMaxSize()) {
     val context = LocalContext.current
-    var showMenu by remember { mutableStateOf(false) }
+    /*
+     * 搜索浮层（父亲 2026-10-10 定）：原来的"菜单"整个去掉，放大镜挪到左上角，
+     * 点开浮出一块面板（输入框 + 片名/演员单选 + 搜索），结果显示在同一块浮层里，
+     * 后面的海报墙保持不动。
+     */
+    var showSearch by remember { mutableStateOf(false) }
+    val searchViewModel: SearchViewModel = viewModel()
 
     // 获取 serverUrl
     val repository = remember { EmbyRepository.getInstance(context) }
@@ -229,12 +237,9 @@ fun HomeScreen(
             currentVersion = mainViewModel.currentVersion,
             newVersion = mainViewModel.newVersion,
             needUpdate = mainViewModel.needUpdate,
-            showSearchButton = true,
             userInfo = userInfo,
-            onMenuClick = { showMenu = true },
-            onSearchClick = {
-                navController.navigate("search")
-            },
+            // 放大镜挪到左上角（原菜单按钮的位置）：点开搜索浮层（父亲 2026-10-10）
+            onLeadingSearchClick = { showSearch = true },
             onUserInfoClick = {
                 navController.navigate("account")
             }
@@ -291,7 +296,7 @@ fun HomeScreen(
                                 navController.navigate("library/$id?libraryName=$title&type=$type")
                             }
                         },
-                        onMenuPressed = { showMenu = true },
+                        onMenuPressed = {},
                         // 「电视直播」图块是网络返回后才插到第一位；LazyRow 默认保持"原第一张"的位置，
                         // 新图块会被挤到屏幕左边外（父亲 2026-10-02 报"图标跑到左侧外面"）→ 出现后滚回行首
                         scrollToStartSignal = liveTvView?.id
@@ -321,7 +326,7 @@ fun HomeScreen(
                             isContinueWatching = true,
                             serverUrl = serverUrl,
                             onItemSelected = { item -> goPlay(item) },
-                            onMenuPressed = { showMenu = true },
+                            onMenuPressed = {},
                             focusTarget = restoreId
                         )
                     }
@@ -336,7 +341,7 @@ fun HomeScreen(
                             isShowImg17 = true,
                             serverUrl = serverUrl,
                             onItemSelected = { item -> openDetail(item) },
-                            onMenuPressed = { showMenu = true },
+                            onMenuPressed = {},
                             focusTarget = restoreId
                         )
                     }
@@ -353,7 +358,7 @@ fun HomeScreen(
                         items = library.latestItems ?: emptyList(),
                         serverUrl = serverUrl,
                         onItemSelected = { item -> openDetail(item) },
-                        onMenuPressed = { showMenu = true },
+                        onMenuPressed = {},
                         focusTarget = restoreId
                     )
                 }
@@ -361,35 +366,18 @@ fun HomeScreen(
         }
     }
 
-        // 菜单浮层（放在内容之后 = 画在最上层）
-        if (showMenu) {
-            MenuDialog(
-                needUpdate = mainViewModel.needUpdate,
-                onDismiss = { showMenu = false },
-                onLogout = {
-                    mainViewModel.logout()
-                    showMenu = false
-                },
-                onUpdate = {
-                    mainViewModel.checkUpdate()
-                    showMenu = false
-                    navController.navigate("update")
-                },
-                onThemeChange = { themeColor ->
-                    mainViewModel.saveThemeId(themeColor.id)
-                },
-                onSwitchAccount = {
-                    showMenu = false
-                    onSwitchAccount()
-                },
-                onSearch = {
-                    showMenu = false
-                    navController.navigate("search")
-                },
-                onProxySettings = {
-                    showMenu = false
-                    navController.navigate("proxy_settings")
-                }
+        /*
+         * 搜索浮层（放在内容之后 = 画在最上层）。
+         *
+         * 输入框与**搜索结果都在这一块浮层里**，后面的海报墙保持不动
+         * （父亲 2026-10-10：结果不要占海报墙）。
+         */
+        if (showSearch) {
+            SearchOverlay(
+                searchViewModel = searchViewModel,
+                serverUrl = serverUrl,
+                onOpenItem = { item -> openDetail(item) },
+                onClose = { showSearch = false },
             )
         }
     }
