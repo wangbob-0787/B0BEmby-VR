@@ -2213,10 +2213,18 @@ class MainActivity : ComponentActivity() {
         return runCatching {
             val dir = java.io.File(filesDir, "vr-assets").apply { mkdirs() }
             val out = java.io.File(dir, name)
-            val assetLen = assets.openFd(name).use { it.length }
-            if (out.exists() && out.length() == assetLen) return out.absolutePath
-            assets.open(name).use { input ->
-                java.io.FileOutputStream(out).use { output -> input.copyTo(output, 64 * 1024) }
+            /*
+             * 不用 assets.openFd()：文件被压缩时它会直接抛异常（2026-10-10 装机踩坑，
+             * 影厅几何就是这么"丢"的）。open() + available() 压缩与否都能量出大小。
+             */
+            val input = assets.open(name)
+            val assetLen = input.available().toLong()
+            if (out.exists() && out.length() == assetLen) {
+                input.close()
+                return out.absolutePath
+            }
+            input.use { ins ->
+                java.io.FileOutputStream(out).use { output -> ins.copyTo(output, 64 * 1024) }
             }
             Log.i(TAG, "影厅资源已拷贝：$name ${out.length() / 1024} KB")
             out.absolutePath

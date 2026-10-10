@@ -37,6 +37,16 @@ android {
     namespace = "com.xxxx.emby_vr"
     compileSdk = 36
 
+    /*
+     * 影厅资源不压缩（父亲 2026-10-10 装机实测踩坑）：assets 里被压缩的文件
+     * AssetManager.openFd() 会直接抛异常 —— 界面层第一版就用 openFd 量大小，
+     * 于是"影厅几何缺失"，VR 里只剩黑背景。不压缩后 openFd 可用，
+     * 拷贝时也不用现解压（8.5 MB 几何本来就不该再压）。
+     */
+    androidResources {
+        noCompress += listOf("b0bcin", "b0benv")
+    }
+
     buildFeatures {
         compose = true
         buildConfig = true
