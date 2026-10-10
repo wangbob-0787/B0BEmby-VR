@@ -87,6 +87,14 @@ fun BuildItem(
     onFocused: (() -> Unit)? = null,
     // 图片缩放方式（默认裁切；直播台标传 Fit，避免横版台标被裁）
     imageScale: ContentScale = ContentScale.Crop,
+    /*
+     * 点击登记进哪个分组（父亲 2026-10-10：搜索浮层里的海报点了没反应）。
+     *
+     * VR 的点击是「按坐标查表」，而浮层开着时会把它自己设成**模态组**、查表只认同组的控件 ——
+     * 海报卡原来登记在默认组（null），于是浮层里的海报点不到、点是点在一块"兜底空白"上。
+     * 浮层里的海报卡要把浮层那个组传进来。
+     */
+    clickGroup: Any? = null,
 ) {
     val myFocusRequester = remember { FocusRequester() }
     val focusAnchor = focusRequester ?: myFocusRequester
@@ -155,6 +163,7 @@ fun BuildItem(
             .vrClickTarget(
                 key = "card:$itemId",
                 focusRequester = focusAnchor,
+                group = clickGroup,
                 onActivate = onItemClick,
             )
             .focusProperties {

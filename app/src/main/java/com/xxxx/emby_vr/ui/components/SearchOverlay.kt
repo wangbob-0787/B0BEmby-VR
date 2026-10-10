@@ -257,6 +257,12 @@ fun SearchOverlay(
                         focusedContainerColor = MaterialTheme.colorScheme.secondary,
                         focusedContentColor = Color.White,
                     ),
+                    // 必须登记进点击表（父亲 2026-10-10：点这颗没反应，只有键盘上的"搜索"才行）
+                    modifier = Modifier.vrClickTarget(
+                        key = "search:go",
+                        group = overlayGroup,
+                        onActivate = { runSearch() },
+                    ),
                 ) {
                     Text("搜索", fontSize = 18.sp, fontWeight = FontWeight.Bold)
                 }
@@ -351,6 +357,8 @@ fun SearchOverlay(
                                     serverUrl = serverUrl,
                                     autoFocus = index == 0,
                                     focusRequester = if (index == 0) firstResultFocus else null,
+                                    // 挂浮层那个组：否则模态查表找不到它（点了不跳详情）
+                                    clickGroup = overlayGroup,
                                     onItemClick = { onOpenItem(item) },
                                 )
                             }

@@ -12,7 +12,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -123,31 +125,47 @@ fun ActorScreen(
                     }
 
                     /*
-                     * 名字 / 出生日期 / 简介这一整块整体下移（父亲 2026-10-10 定）：
-                     * 起始位置 = **照片高度的 2/3 处**。
-                     * 照片位置不动、这一列的水平位置与宽度也不动，只是从更低的地方开始排。
+                     * 名字 / 出生日期 / 简介这一整块（父亲 2026-10-10 定，两轮才对齐）：
+                     *   · 起始位置 = **照片底部往上 2/3 的高度**（也就是从照片顶部往下 1/3）；
+                     *   · 整块与照片**等高** —— 简介最后一行不能越过照片的底边；
+                     *   · 简介放不下就截断加「…」（按可用高度算能放几行）。
+                     * 照片的位置、这一列的水平位置与宽度都不动。
                      */
+                    var headerBlockH by remember { mutableStateOf(0.dp) }
+                    val density = LocalDensity.current
+                    val blockTop = photoHeight / 3f
+                    val overviewSpace =
+                        (photoHeight - blockTop - headerBlockH - 10.dp).coerceAtLeast(24.dp)
+                    val overviewMaxLines = (overviewSpace / 24.dp).toInt().coerceAtLeast(1)
+
                     Column(
                         modifier = Modifier
                             .weight(1f)
-                            .padding(top = photoHeight * 2f / 3f),
+                            .height(photoHeight)
+                            .padding(top = blockTop),
                     ) {
-                        Text(
-                            text = person?.name ?: personName,
-                            color = Color.White,
-                            fontSize = 30.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        val birth = Utils.formatDate(person?.premiereDate)
-                        if (birth.isNotBlank()) {
-                            Spacer(modifier = Modifier.height(6.dp))
+                        Column(
+                            modifier = Modifier.onGloballyPositioned {
+                                headerBlockH = with(density) { it.size.height.toDp() }
+                            },
+                        ) {
                             Text(
-                                text = "出生日期：$birth",
-                                color = Color.White.copy(alpha = 0.75f),
-                                fontSize = 16.sp,
+                                text = person?.name ?: personName,
+                                color = Color.White,
+                                fontSize = 30.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
                             )
+                            val birth = Utils.formatDate(person?.premiereDate)
+                            if (birth.isNotBlank()) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = "出生日期：$birth",
+                                    color = Color.White.copy(alpha = 0.75f),
+                                    fontSize = 16.sp,
+                                )
+                            }
                         }
 
                         val overview = person?.overview
@@ -161,6 +179,9 @@ fun ActorScreen(
                             color = Color.White.copy(alpha = 0.85f),
                             fontSize = 16.sp,
                             lineHeight = 24.sp,
+                            // 放不下就截断加「…」，绝不越过照片底边（父亲 2026-10-10）
+                            maxLines = overviewMaxLines,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     }
                 }
