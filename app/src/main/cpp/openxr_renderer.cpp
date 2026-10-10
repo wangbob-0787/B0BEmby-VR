@@ -656,8 +656,11 @@ std::atomic<bool> gCinemaReady{false};
 /** 影厅参数（可在 vr-tuning.txt 里改：cinema_glow / cinema_ambient / cinema_on） */
 std::atomic<float> gCinemaGlow{1.35f};
 std::atomic<float> gCinemaAmbient{0.05f};
-/** 影厅环境亮度条 0~1（父亲 2026-10-10）：同时驱动环境光强度与底光 */
-std::atomic<float> gCinemaBright{0.45f};
+/**
+ * 影厅环境亮度条 0~1（父亲 2026-10-10）：同时驱动底光、环境光强度、以及
+ * "画面照亮影厅"那一份。0 = 全黑（只剩我们那块画面的自发光），1 = 最亮。
+ */
+std::atomic<float> gCinemaBright{0.65f};
 /** 银幕竖直微调（米，vr-tuning 的 screen_up）：正数 = 往上挪 */
 std::atomic<float> gScreenUp{0.f};
 /** 银幕发出的光色（默认中性白；后面按视频画面实时取样） */
@@ -806,7 +809,8 @@ void drawCinema(const Mat4 &proj, const Mat4 &view, const XrVector3f &eyePos) {
     glUniform3f(gCinemaScreenPosLoc, 0.f, 0.55f, -s.distance);
     glUniform3f(gCinemaTintLoc, gScreenTintR.load(), gScreenTintG.load(),
                 gScreenTintB.load());
-    glUniform1f(gCinemaGlowLoc, gCinemaGlow.load());
+    /* 画面照亮影厅的那份也乘亮度条（0 = 全黑） */
+    glUniform1f(gCinemaGlowLoc, gCinemaGlow.load() * gCinemaBright.load());
     glUniform1f(gCinemaAmbientLoc, gCinemaAmbient.load());
     glUniform3f(gCinemaEyeLoc, eyePos.x, eyePos.y, eyePos.z);
     /* 环境光：HDRI 放 1 号纹理单元（0 号单元是运行时的 OES 视频纹理，别抢） */
@@ -5608,9 +5612,14 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
              * 银幕那块画面光不跟着变（画面亮度是影片自己的事，另有画面调整那一套）。
              */
             if (value >= 0.f && value <= 1.f) {
+                /*
+                 * 归零就真全黑（父亲 2026-10-10：「调到 0 的时候影厅没有全黑」）：
+                 * 原来最左端还留着底光 0.02 + 环境光 0.30，所以黑不下去。
+                 * 现在三项（底光 / 环境光 / 画面照亮影厅的那份）一起随亮度条走。
+                 */
                 gCinemaBright.store(value);
-                gCinemaAmbient.store(0.02f + 0.10f * value);
-                gEnvStrength.store(0.30f + 5.0f * value);
+                gCinemaAmbient.store(0.10f * value);
+                gEnvStrength.store(5.0f * value);
                 LOGI("调参 → 影厅环境亮度条 %.2f（环境光 %.2f / 底光 %.3f）", (double) value,
                      (double) gEnvStrength.load(), (double) gCinemaAmbient.load());
             }
