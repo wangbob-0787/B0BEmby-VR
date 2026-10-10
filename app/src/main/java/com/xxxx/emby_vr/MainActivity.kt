@@ -1087,8 +1087,13 @@ class MainActivity : ComponentActivity() {
         val seasonPart = if (season != null) "第${season}季 " else ""
         return when {
             !series.isNullOrBlank() && ep != null ->
-                if (!name.isNullOrBlank() && name != series) "$series $seasonPart第${ep}集 $name"
-                else "$series $seasonPart第${ep}集"
+                /*
+                 * 注意 `${seasonPart}` 必须带花括号：中文字符在 Kotlin 里算合法标识符字符，
+                 * 写成 `$seasonPart第` 会被当成变量名 `seasonPart第` → 编译不过
+                 * （2026-10-10 实测又踩一次，笔记里记过这个坑）。
+                 */
+                if (!name.isNullOrBlank() && name != series) "$series ${seasonPart}第${ep}集 $name"
+                else "$series ${seasonPart}第${ep}集"
             !series.isNullOrBlank() -> series
             else -> name ?: ""
         }
