@@ -480,6 +480,41 @@ GLuint buildProgram() {
     return p;
 }
 
+/*
+ * ==================== 影厅环境 + 选座（父亲 2026-10-10 17:35「我要坐着看电影」） ====================
+ *
+ * 不再是"两块银幕尺寸"，而是**在影厅里换排**：近 / 中 / 远 = 影厅第 1 / 3 / 6 排。
+ * 影厅是真实坡度（每排抬高 0.3 米，银幕中心固定在厅里、在座位区地面之上 2.3 米），
+ * 所以换排时整间影厅要同时平移 y 与 z —— 让**选中那一排的座位正好落在父亲身上**：
+ *   dy / dz = 影厅几何（assets/cinema.b0bcin）的平移量，米；
+ *   distance = 那一排眼睛到银幕的距离，直接写进 gScreenDistance
+ *              （视频层、弹幕层、光柱、进度环都读这个值，所以一处改、处处对）。
+ *
+ * 数值怎么来的（不许手改，改就重算）：
+ *   影厅模型第 k 排：座位下沿 y = -0.5 + 0.3(k-1)，眼睛在座位上方 1.15 米（坐姿）；
+ *   第 k 排眼睛到银幕：z 距离 3.44 / 5.14 / 7.74 米（第 1 / 3 / 6 排）。
+ *   导出资产时已把"第 1 排眼睛"放在原点，所以 dy = -(该排眼高) + 1.65、dz = -(该排眼距) + 3.2。
+ */
+struct CinemaSeat {
+    const char *name;
+    float dy;         // 影厅整体上下平移（米）
+    float dz;         // 影厅整体前后平移（米）
+    float distance;   // 该排眼睛到银幕的距离（米）
+};
+constexpr CinemaSeat kCinemaSeats[3] = {
+        {"近排 · 第 1 排", 0.50f, -0.24f, 3.44f},
+        {"中排 · 第 3 排", -0.10f, -1.94f, 5.14f},
+        {"远排 · 第 6 排", -1.00f, -4.54f, 7.74f},
+};
+/** 影厅这块银幕宽度：模型银幕墙 5.65 米，留边取 5.2 米（父亲 2026-10-10 之前定的那套） */
+constexpr float kSeatScreenWidth = 5.2f;
+/** 当前座位：0 近 / 1 中 / 2 远（父亲坐在影厅里换排） */
+std::atomic<int> gSeat{0};
+/** 影厅环境总开关（0 = 回到黑背景，出问题时可远程关掉） */
+std::atomic<int> gCinemaOn{1};
+/** 坐姿眼高（米）：影厅座位区地面到眼睛的距离，vr-tuning 的 cinema_eye_height 可调 */
+std::atomic<float> gCinemaEyeHeight{1.15f};
+
 // ------------------------------------------------- 影厅环境（父亲 2026-10-10）
 /*
  * 影厅几何 assets/cinema.b0bcin —— 由 tools/build_cinema_asset.py 生成。
@@ -582,6 +617,8 @@ std::atomic<bool> gCinemaReady{false};
 /** 影厅参数（可在 vr-tuning.txt 里改：cinema_glow / cinema_ambient / cinema_on） */
 std::atomic<float> gCinemaGlow{1.35f};
 std::atomic<float> gCinemaAmbient{0.05f};
+/** 影厅环境亮度条 0~1（父亲 2026-10-10）：同时驱动环境光强度与底光 */
+std::atomic<float> gCinemaBright{0.45f};
 /** 银幕发出的光色（默认中性白；后面按视频画面实时取样） */
 std::atomic<float> gScreenTintR{1.f};
 std::atomic<float> gScreenTintG{1.f};
@@ -859,40 +896,7 @@ std::atomic<float> gRayScale{0.35f};
 std::atomic<float> gScreenWidth{26.f};
 std::atomic<float> gScreenDistance{15.f};
 
-/*
- * ==================== 影厅环境 + 选座（父亲 2026-10-10 17:35「我要坐着看电影」） ====================
- *
- * 不再是"两块银幕尺寸"，而是**在影厅里换排**：近 / 中 / 远 = 影厅第 1 / 3 / 6 排。
- * 影厅是真实坡度（每排抬高 0.3 米，银幕中心固定在厅里、在座位区地面之上 2.3 米），
- * 所以换排时整间影厅要同时平移 y 与 z —— 让**选中那一排的座位正好落在父亲身上**：
- *   dy / dz = 影厅几何（assets/cinema.b0bcin）的平移量，米；
- *   distance = 那一排眼睛到银幕的距离，直接写进 gScreenDistance
- *              （视频层、弹幕层、光柱、进度环都读这个值，所以一处改、处处对）。
- *
- * 数值怎么来的（不许手改，改就重算）：
- *   影厅模型第 k 排：座位下沿 y = -0.5 + 0.3(k-1)，眼睛在座位上方 1.15 米（坐姿）；
- *   第 k 排眼睛到银幕：z 距离 3.44 / 5.14 / 7.74 米（第 1 / 3 / 6 排）。
- *   导出资产时已把"第 1 排眼睛"放在原点，所以 dy = -(该排眼高) + 1.65、dz = -(该排眼距) + 3.2。
- */
-struct CinemaSeat {
-    const char *name;
-    float dy;         // 影厅整体上下平移（米）
-    float dz;         // 影厅整体前后平移（米）
-    float distance;   // 该排眼睛到银幕的距离（米）
-};
-constexpr CinemaSeat kCinemaSeats[3] = {
-        {"近排 · 第 1 排", 0.50f, -0.24f, 3.44f},
-        {"中排 · 第 3 排", -0.10f, -1.94f, 5.14f},
-        {"远排 · 第 6 排", -1.00f, -4.54f, 7.74f},
-};
-/** 影厅这块银幕宽度：模型银幕墙 5.65 米，留边取 5.2 米（父亲 2026-10-10 之前定的那套） */
-constexpr float kSeatScreenWidth = 5.2f;
-/** 当前座位：0 近 / 1 中 / 2 远（父亲坐在影厅里换排） */
-std::atomic<int> gSeat{0};
-/** 影厅环境总开关（0 = 回到黑背景，出问题时可远程关掉） */
-std::atomic<int> gCinemaOn{1};
-/** 坐姿眼高（米）：影厅座位区地面到眼睛的距离，vr-tuning 的 cinema_eye_height 可调 */
-std::atomic<float> gCinemaEyeHeight{1.15f};
+
 
 /*
  * ==================== 观影位锚点 / 走动（父亲 2026-10-10） ====================
@@ -1071,6 +1075,7 @@ struct VrContext {
     // 上一次采样时，光柱是不是指着控制条（离开时补一个面板外坐标，清掉悬停高亮）
     bool sinkOsdOnPanel = false;
     bool sinkMenuPointerValid = false;  // 展开菜单上的指针位置
+    bool sinkMenuPressed = false;       // 展开菜单上的扳机态（亮度条要按住拖）
     float sinkMenuPointerX = 0.f;
     float sinkMenuPointerY = 0.f;
     bool sinkLastTrigger[2] = {false, false};
@@ -2527,20 +2532,25 @@ void pushInput(VrContext &c) {
             if (rayHitsMenu(c, c.aimPose[h], &mT, &mu, &mv)) {
                 const float mpx = (mu / kMenuWidth + 0.5f) * kMenuPxW;
                 const float mpy = (0.5f - mv / kMenuHeight) * kMenuPxH;
+                /*
+                 * 菜单指针改成「按下 / 拖动 / 抬起」三态（父亲 2026-10-10 玩亮度条）：
+                 * 与控制条同一条路子 —— 面板层发鼠标式事件，行按钮照样点得动
+                 * （按下没动就抬起 = 点击），亮度条则能按住拖。
+                 * 原来的单次 onMenuClick 不再发：两套一起发会让"按住拖"顺带点一次行。
+                 */
+                const bool menuPressed = c.triggerDown[h];
                 if (!c.sinkMenuPointerValid || fabsf(mpx - c.sinkMenuPointerX) > 2.f ||
-                    fabsf(mpy - c.sinkMenuPointerY) > 2.f) {
+                    fabsf(mpy - c.sinkMenuPointerY) > 2.f ||
+                    menuPressed != c.sinkMenuPressed) {
                     if (c.sinkMenuPointer != nullptr) {
-                        env->CallVoidMethod(c.inputSink, c.sinkMenuPointer, mpx, mpy);
+                        env->CallVoidMethod(c.inputSink, c.sinkMenuPointer, mpx, mpy,
+                                            menuPressed ? JNI_TRUE : JNI_FALSE);
                         clearJavaException(env, "输入回调 onMenuPointer");
                     }
                     c.sinkMenuPointerX = mpx;
                     c.sinkMenuPointerY = mpy;
+                    c.sinkMenuPressed = menuPressed;
                     c.sinkMenuPointerValid = true;
-                }
-                if (c.triggerDown[h] && !c.sinkLastTrigger[h] && c.sinkMenuClick != nullptr) {
-                    LOGI("VR 输入：%s 扳机 → 菜单点击 (%d, %d)", handName[h], (int) mpx, (int) mpy);
-                    env->CallVoidMethod(c.inputSink, c.sinkMenuClick, mpx, mpy);
-                    clearJavaException(env, "输入回调 onMenuClick");
                 }
                 c.sinkLastTrigger[h] = c.triggerDown[h];
 
@@ -5326,6 +5336,20 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
                 LOGI("调参 → 影院环境光强度 %.2f", (double) value);
             }
             break;
+        case 24:
+            /*
+             * 影厅环境亮度条（父亲 2026-10-10「用亮度条操作」「调影厅环境光线」）：
+             * 一条 0~1 的滑块，同时带动「影院 HDRI 环境光强度」和「底光」——
+             * 银幕那块画面光不跟着变（画面亮度是影片自己的事，另有画面调整那一套）。
+             */
+            if (value >= 0.f && value <= 1.f) {
+                gCinemaBright.store(value);
+                gCinemaAmbient.store(0.02f + 0.10f * value);
+                gEnvStrength.store(0.30f + 5.0f * value);
+                LOGI("调参 → 影厅环境亮度条 %.2f（环境光 %.2f / 底光 %.3f）", (double) value,
+                     (double) gEnvStrength.load(), (double) gCinemaAmbient.load());
+            }
+            break;
         case 23:
             /* 坐姿眼高（米）：父亲是坐着看电影，地面到眼睛的距离 */
             if (value >= 0.7f && value <= 1.9f) {
@@ -5443,7 +5467,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachInputSink(JNIEnv *env, jobject /*
     g.sinkOsdPointer = env->GetMethodID(cls, "onOsdPointer", "(FFZ)V");
     g.sinkOsdClick = env->GetMethodID(cls, "onOsdClick", "(FF)V");
     g.sinkToggleOsd = env->GetMethodID(cls, "onToggleOsd", "()V");
-    g.sinkMenuPointer = env->GetMethodID(cls, "onMenuPointer", "(FF)V");
+    g.sinkMenuPointer = env->GetMethodID(cls, "onMenuPointer", "(FFZ)V");
     g.sinkMenuClick = env->GetMethodID(cls, "onMenuClick", "(FF)V");
     g.sinkTriggerState = env->GetMethodID(cls, "onTriggerState", "(Z)V");
     g.sinkBack = env->GetMethodID(cls, "onBack", "()V");

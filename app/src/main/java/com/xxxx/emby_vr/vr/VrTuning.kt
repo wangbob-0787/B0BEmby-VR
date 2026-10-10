@@ -111,6 +111,8 @@ object VrTuning {
     const val KEY_CINEMA_ENV = 22
     /** 坐姿眼高（米，2026-10-10：坐着看电影） */
     const val KEY_CINEMA_EYE_HEIGHT = 23
+    /** 影厅环境亮度条（0~1，2026-10-10：环境光 + 底光一起走，不含画面亮度） */
+    const val KEY_CINEMA_BRIGHT = 24
 
     /** 上次应用的配置原文，只有变化才动手（避免每秒重复设置） */
     private var lastRaw: Map<String, String> = emptyMap()
@@ -311,6 +313,11 @@ object VrTuning {
         raw["cinema_env"]?.toFloatOrNull()?.let {
             VrNative.setTuning(KEY_CINEMA_ENV, it)
             applied += "影院环境光强度 ${"%.2f".format(it)}"
+        }
+        /* 影厅环境亮度条（2026-10-10）：0~1，环境光与底光一起走 */
+        raw["cinema_bright"]?.toFloatOrNull()?.let {
+            VrNative.setTuning(KEY_CINEMA_BRIGHT, it)
+            applied += "影厅环境亮度 ${"%.2f".format(it)}"
         }
         /* 坐姿眼高（2026-10-10）：坐着看电影，地面到眼睛的距离 */
         raw["cinema_eye_height"]?.toFloatOrNull()?.let {

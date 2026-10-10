@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -43,6 +44,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalWindowInfo
@@ -171,6 +173,18 @@ class MenuState {
      * 0 = 近排（第 1 排）· 1 = 中排（第 3 排）· 2 = 远排（第 6 排）
      */
     var screenPreset by mutableStateOf(0)
+
+    /** 影厅亮度档（0 暗 / 1 标准 / 2 亮）：只影响影厅环境光，不影响银幕画面 */
+    var cinemaBright by mutableStateOf(0.45f)
+
+    /**
+     * 「影厅亮度条」在窗口里的矩形（面板像素）。
+     *
+     * 拖动不在 Compose 里做：光柱的按下/拖动由界面层换算（见 MainActivity 的
+     * onMenuPointer），所以条子要把自己的位置报上来。为 null 表示条子没显示
+     * （不在「更多」菜单里），此时按下不会进入拖动。
+     */
+    var brightBar by mutableStateOf<androidx.compose.ui.geometry.Rect?>(null)
 
     var subtitleTracks by mutableStateOf<List<MenuRowItem>>(emptyList())
     var audioTracks by mutableStateOf<List<MenuRowItem>>(emptyList())
@@ -440,12 +454,73 @@ private fun MoreMenu(menu: MenuState) {
             hasSub = false,
             onClick = { menu.onSelect?.invoke(MenuKind.MORE, 4) },
         )
+        /*
+         * 影厅环境亮度条（父亲 2026-10-10「用亮度条操作」「调影厅环境光线」）：
+         * 一条可拖的横条，管的是**影厅的环境光**（影院 HDRI 的环境光 + 底光），
+         * 不是影片画面的亮度 —— 画面亮度归「图像调整」那一套。
+         * 位置要报给界面层（拖动靠它换算），行号固定排在「选座」之后（= 5）。
+         */
+        CinemaBrightnessRow(menu)
+    }
+}
+
+/**
+ * 影厅环境亮度条（父亲 2026-10-10）。
+ *
+ * 长得像一行菜单（同样的圆角、同样的内边距），右边留一条可以拖的横条：
+ * 拖的是**影厅的环境光**，不是影片画面亮度。填充比例直接来自 [MenuState.cinemaBright]，
+ * 值由界面层按光柱横坐标写入（原生那边把它换算成环境光强度与底光）。
+ */
+@Composable
+private fun CinemaBrightnessRow(menu: MenuState) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 3.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color(0x14FFFFFF))
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "影厅亮度",
+            color = Color(0xFFF1F5F7),
+            fontSize = 15.sp,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            text = "${(menu.cinemaBright * 100).toInt()}%",
+            color = Color(0xB3F1F5F7),
+            fontSize = 14.sp,
+            modifier = Modifier.padding(end = 10.dp),
+        )
+        Box(
+            modifier = Modifier
+                .width(220.dp)
+                .height(18.dp)
+                .clip(RoundedCornerShape(9.dp))
+                .background(Color(0x33FFFFFF))
+                .onGloballyPositioned { coords ->
+                    /*
+                     * 报的是**整条轨道**的窗口矩形：光柱横坐标落到条上就换算成 0~1。
+                     * 高度给足一点（18dp），暗厅里用光柱点这么细的条不容易。
+                     */
+                    menu.brightBar = coords.boundsInWindow()
+                },
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(menu.cinemaBright.coerceIn(0f, 1f))
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(Color(0xFF4FC3F7)),
+            )
+        }
     }
 }
 
 @Composable
-private fun SpeedMenu(menu: MenuState) {
-    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+private fun SpeedMenu(menu: MenuState) {    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
         SPEED_STEPS.forEachIndexed { i, s ->
             val label = if (s == 1.0f) "1.0x（正常）" else "${s}x"
             MenuRow(

@@ -373,7 +373,11 @@ object VrNative {
         fun onOsdClick(px: Float, py: Float)
 
         /** 展开菜单上的指针（坐标是菜单面板像素：2560×1200） */
-        fun onMenuPointer(px: Float, py: Float)
+        /**
+         * 展开菜单上的指针（2026-10-10 加扳机态）：控制条那条路子照搬过来，
+         * 菜单里的「影厅亮度条」才拖得动。按下没动就抬起 = 一次点击。
+         */
+        fun onMenuPointer(px: Float, py: Float, pressed: Boolean)
 
         /** 展开菜单上的一次点击（扣扳机） */
         fun onMenuClick(px: Float, py: Float)

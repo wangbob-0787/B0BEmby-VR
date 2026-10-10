@@ -528,20 +528,60 @@ class MainActivity : ComponentActivity() {
             Log.i(TAG, "控制条扳机按下 (${px.toInt()}, ${py.toInt()})")
         }
 
-        override fun onMenuPointer(px: Float, py: Float) {
+        /**
+         * 菜单指针：按下 / 拖动 / 抬起三态（父亲 2026-10-10 调影厅亮度条）。
+         *
+         * 「影厅亮度条」是菜单里唯一要拖的控件：按下点在条上就进入拖动，横坐标换算成
+         * 0~1 的亮度值；按下没怎么动就抬起，仍旧当成一次普通点击（原本的行点击不能丢）。
+         */
+        private var menuPressX = 0f
+        private var menuPressY = 0f
+        private var menuDraggingBar = false
+
+        override fun onMenuPointer(px: Float, py: Float, pressed: Boolean) {
             vrInputLive = true
             lastMenuPointerAt = android.os.SystemClock.uptimeMillis()
+            val bar = menuState.brightBar
+            if (pressed) {
+                if (!menuDraggingBar && bar != null &&
+                    bar.contains(androidx.compose.ui.geometry.Offset(px, py))
+                ) {
+                    menuDraggingBar = true
+                    menuPressX = px
+                    menuPressY = py
+                    applyCinemaBright(bar, px)
+                } else if (menuDraggingBar) {
+                    // 拖出条外也继续跟随，手感更顺
+                    applyCinemaBright(bar, px)
+                }
+            } else {
+                if (menuDraggingBar) {
+                    menuDraggingBar = false
+                }
+                runOnUiThread {
+                    if (menuReady()) {
+                        val moved = kotlin.math.abs(px - menuPressX) + kotlin.math.abs(py - menuPressY)
+                        if (moved < 12f) menu.vrClick(px, py)   // 按住没动 = 原来的一次点击
+                    }
+                }
+            }
             runOnUiThread { if (menuReady()) menu.vrPointer(px, py) }
+        }
+
+        /** 亮度条位置 → 0~1 的影厅环境亮度（原生的 key 24 负责换算环境光与底光） */
+        private fun applyCinemaBright(bar: androidx.compose.ui.geometry.Rect?, px: Float) {
+            val r = bar ?: return
+            val v = ((px - r.left) / r.width).coerceIn(0f, 1f)
+            if (kotlin.math.abs(v - menuState.cinemaBright) < 0.01f) return
+            menuState.cinemaBright = v
+            com.xxxx.emby_vr.vr.VrNative.setTuning(
+                com.xxxx.emby_vr.vr.VrTuning.KEY_CINEMA_BRIGHT, v,
+            )
         }
 
         override fun onMenuClick(px: Float, py: Float) {
             vrInputLive = true
-            runOnUiThread {
-                if (menuReady()) {
-                    Log.i(TAG, "菜单点击 (${px.toInt()}, ${py.toInt()})")
-                    menu.vrClick(px, py)
-                }
-            }
+            runOnUiThread { Log.i(TAG, "菜单点击 (${px.toInt()}, ${py.toInt()})") }
         }
 
         override fun onToggleOsd() {
@@ -2221,6 +2261,10 @@ class MainActivity : ComponentActivity() {
                     refreshMenuRows(kind)
                     return
                 }
+                /*
+                 * 「影厅亮度」不再走菜单点击：它是「更多」里的一条**亮度条**，
+                 * 按住拖动由菜单指针路径处理（见上面的 onMenuPointer）。
+                 */
                 val target = when (index) {
                     0 -> com.xxxx.emby_vr.panel.MenuKind.AUDIO
                     1 -> com.xxxx.emby_vr.panel.MenuKind.QUALITY
