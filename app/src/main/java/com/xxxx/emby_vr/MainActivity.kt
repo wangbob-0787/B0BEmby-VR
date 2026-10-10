@@ -1604,15 +1604,37 @@ class MainActivity : ComponentActivity() {
                         m.dumpTracks()
                         m.dumpVideoParams()
                         /*
-                         * 上次选过的字幕在内核路径要重新选上（2026-10-09）：
-                         * 内封轨道清单要等文件打开后才就绪，所以放在这个延时里。
+                         * 上次选过的字幕在内核路径要重新选上（2026-10-09）。
+                         *
+                         * **必须等内核真的报出字幕轨再选**（2026-10-10 修）。
+                         * 原来这里固定等 4 秒、只试一次：网盘上那个几 GB 的原文件打开慢的时候，
+                         * 4 秒时内核还没报出轨道 → 选不上，而且不再重试 →
+                         * 表现就是父亲报的「图片字幕勾了有时不出来，取消再勾一次又出来了」
+                         * （第二次文件已就绪，4 秒足够了）。
+                         * 现在改成轮询等轨道就绪（最多 20 秒），等到了再选，并打日志。
                          */
                         val sel = selectedSubtitleIndex
                         if (sel != null) {
-                            val ord = subtitleStreamIndices.indexOf(sel)
-                            if (ord >= 0) {
-                                Log.i(TAG, "内核模式：起播后恢复字幕 ${sel} → 序号 $ord 结果=" +
-                                    m.setSubtitleByOrdinal(ord))
+                            var waited = 0
+                            while (waited < 20000 && m.subtitleTrackIds().isEmpty()) {
+                                kotlinx.coroutines.delay(1000)
+                                waited += 1000
+                                // 等待期间用户又改了选择（或停了播放）→ 放弃这次恢复
+                                if (selectedSubtitleIndex != sel) return@launch
+                            }
+                            val ids = m.subtitleTrackIds()
+                            val ord = ordinalOfSubtitleStream(sel)
+                            if (ord != null && ord < ids.size) {
+                                Log.i(
+                                    TAG,
+                                    "内核模式：恢复字幕 $sel → 序号 $ord（等了 ${waited}ms，" +
+                                        "内核共 ${ids.size} 条）结果=${m.setSubtitleByOrdinal(ord)}",
+                                )
+                            } else {
+                                Log.w(
+                                    TAG,
+                                    "内核模式：恢复字幕 $sel 没选上（序号=$ord，内核 ${ids.size} 条）",
+                                )
                             }
                         }
                     }
@@ -2167,7 +2189,7 @@ class MainActivity : ComponentActivity() {
                      * 序号映射：Emby 字幕清单（buildSubtitleRows 已排除弹幕轨）里的第几个
                      * → 内核侧第几条（两边都按文件内顺序）。
                      */
-                    val ordinal = selectedSubtitleIndex?.let { subtitleStreamIndices.indexOf(it) }
+                    val ordinal = selectedSubtitleIndex?.let { ordinalOfSubtitleStream(it) }
                     val pick = ordinal?.takeIf { it >= 0 }
                     val ok = mpvBackend?.setSubtitleByOrdinal(pick) == true
                     Log.i(TAG, "内核模式：字幕 ${selectedSubtitleIndex ?: "关闭"} → 序号 $pick 结果=$ok")
@@ -2486,6 +2508,22 @@ class MainActivity : ComponentActivity() {
             rows += com.xxxx.emby_vr.panel.MenuRowItem(label, s.index == selectedSubtitleIndex)
         }
         return rows
+    }
+
+    /**
+     * Emby 的字幕流序号 → **内核侧第几条字幕**（2026-10-10）。
+     *
+     * 口径与字幕菜单一致：Emby 字幕清单里排除弹幕轨之后的顺序（两边都按文件内顺序）。
+     * 为什么不直接用 `subtitleStreamIndices`：那张表是**打开菜单时**重算的，
+     * 菜单没开过就可能还是上一部片或空的 —— 拿它去映射会得到错的序号（甚至 -1）。
+     * 这里每次从 currentStreams 现算，是权威值。
+     */
+    private fun ordinalOfSubtitleStream(streamIndex: Int): Int? {
+        val subs = currentStreams
+            .filter { it.type.equals("Subtitle", ignoreCase = true) && !isDanmakuStream(it) }
+            .sortedBy { it.index ?: 0 }
+        val ord = subs.indexOfFirst { it.index == streamIndex }
+        return if (ord >= 0) ord else null
     }
 
     /** 把弹幕开关与字号立刻作用到弹幕层（弹幕菜单与字幕菜单里的弹幕行共用） */
