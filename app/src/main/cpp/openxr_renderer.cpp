@@ -548,6 +548,9 @@ constexpr float kCinemaShiftX = 0.f;
  * 模型前墙 x 从 -72.21 到 -66.78，宽 5.43 米。
  */
 constexpr float kSeatScreenWidth = 5.43f;
+/** 新厅（CGTrader Movie Theater）自带那块幕的矩形：宽 17.62 · 高 7.74 米（实测） */
+constexpr float kHallScreenW = 17.62f;
+constexpr float kHallScreenH = 7.74f;
 /** 幕下沿高度（模型坐标，米）：新厅幕底比眼睛低，正好不用仰头 */
 constexpr float kHallScreenBottomY = 1.04f;
 /** 基准排（第 6 排）眼睛高度（模型坐标）——资产就是按它归零的 */
@@ -1074,12 +1077,12 @@ void applySeat(int seat) {
     if (seat < 0) seat = 0;
     if (seat > 2) seat = 2;
     gSeat.store(seat);
-    gScreenWidth.store(kSeatScreenWidth);
+    gScreenWidth.store(kHallScreenW);
     gScreenDistance.store(kCinemaSeats[seat].distance);
     LOGI("选座 → %s：屏幕距离 %.2f 米 · 影厅平移 dy=%.2f dz=%.2f（水平视角 %.1f°）",
          kCinemaSeats[seat].name, (double) kCinemaSeats[seat].distance,
          (double) kCinemaSeats[seat].dy, (double) kCinemaSeats[seat].dz,
-         (double) (2.0 * atan((kSeatScreenWidth * 0.5) / kCinemaSeats[seat].distance) *
+         (double) (2.0 * atan((kHallScreenW * 0.5) / kCinemaSeats[seat].distance) *
                    180.0 / 3.14159265358979));
 }
 /**
