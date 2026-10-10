@@ -193,6 +193,9 @@ class MainActivity : ComponentActivity() {
     /** 海报墙摆放的本地存档（下次打开 APP 还原） */
     private val placePrefs by lazy { getSharedPreferences("b0bemby_vr", MODE_PRIVATE) }
 
+    /** 影厅亮度记忆键（父亲 2026-10-10：默认 0 = 全黑，之后记住上次选的） */
+    private val PREF_CINEMA_BRIGHT = "cinema_bright"
+
     /** 启动后的海报墙摆放是否已还原过（onResume 只做一次） */
     private var panelPlaceRestored = false
 
@@ -486,6 +489,7 @@ class MainActivity : ComponentActivity() {
                         com.xxxx.emby_vr.vr.VrNative.setTuning(
                             com.xxxx.emby_vr.vr.VrTuning.KEY_CINEMA_BRIGHT, v,
                         )
+                        placePrefs.edit().putFloat(PREF_CINEMA_BRIGHT, v).apply()
                         Log.i(TAG, "摇杆调影厅亮度：sx=$sx → ${(v * 100).toInt()}%")
                     }
                     return@runOnUiThread
@@ -4303,6 +4307,19 @@ class MainActivity : ComponentActivity() {
                 com.xxxx.emby_vr.player.MpvBackend.commandRuntime(args)
             },
         )
+
+        /*
+         * 影厅亮度记住上次（父亲 2026-10-10：「默认设为 0，或者记住我上次选的亮度」）：
+         * 没存过 → 0（影厅全黑，只剩画面自己发光）；存过 → 用上次那一档。
+         */
+        runCatching {
+            val saved = placePrefs.getFloat(PREF_CINEMA_BRIGHT, 0f).coerceIn(0f, 1f)
+            menuState.cinemaBright = saved
+            com.xxxx.emby_vr.vr.VrNative.setTuning(
+                com.xxxx.emby_vr.vr.VrTuning.KEY_CINEMA_BRIGHT, saved,
+            )
+            Log.i(TAG, "影厅亮度恢复：${(saved * 100).toInt()}%")
+        }
 
         /*
          * 影厅资源（父亲 2026-10-10）：assets 里的影厅几何与环境光贴图先落到应用目录，
