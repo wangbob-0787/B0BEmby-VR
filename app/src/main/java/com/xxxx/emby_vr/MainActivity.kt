@@ -658,6 +658,24 @@ class MainActivity : ComponentActivity() {
             ?.takeIf { it.endsWith(mediaId) }
             ?: "mediasource_$mediaId"
         if (mediaId.isBlank()) return
+        /*
+         * 弹幕轨永远不当普通字幕画（2026-10-10 父亲明确：弹幕的 ASS 文件名里带「弹幕」，
+         * 用文件名就能把弹幕和普通字幕分开）。
+         *
+         * 走到这里说明有条弹幕轨的序号被交给了字幕通道 —— 可能是清单还没更新时的旧序号，
+         * 也可能是播放器自己挑轨挑中了它。结果就是同一份弹幕在画面下方又当字幕画了一遍，
+         * 看起来「上下都有弹幕」。这里按文件名直接拒掉，弹幕只归弹幕层。
+         */
+        currentStreams.firstOrNull { it.index == index }?.let { meta ->
+            if (isDanmakuStream(meta)) {
+                Log.w(TAG, "拒画：流 $index 是弹幕轨（${meta.displayTitle ?: meta.path ?: "?"}）→ 交给弹幕层")
+                subtitleCues = emptyList()
+                subtitleCueStream = null
+                subtitleNow = ""
+                danmakuView?.setSubtitle("")
+                return
+            }
+        }
         subtitleCueStream = index
         val url = "${userServer()}/emby/Videos/$mediaId/$sourceId/Subtitles/$index" +
             "/Stream.srt?api_key=${userToken()}"
@@ -1786,10 +1804,8 @@ class MainActivity : ComponentActivity() {
                         val selectedIsDanmaku = player?.currentTracks?.groups?.any { g ->
                             g.type == androidx.media3.common.C.TRACK_TYPE_TEXT && g.isSelected &&
                                 (0 until g.length).any { ti ->
-                                    val lbl = g.mediaTrackGroup.getFormat(ti).label.orEmpty()
-                                    lbl.contains("弹幕") ||
-                                        lbl.contains("danmaku", ignoreCase = true) ||
-                                        lbl.contains("danmu", ignoreCase = true)
+                                    val lbl = g.mediaTrackGroup.getFormat(ti).label.orEmpty().lowercase()
+                                    kDanmakuNameHints.any { lbl.contains(it) }
                                 }
                         } == true
                         if (selectedIsDanmaku || rawCues.contains("\\move(")) {
