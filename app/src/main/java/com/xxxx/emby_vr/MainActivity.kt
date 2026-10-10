@@ -569,26 +569,23 @@ class MainActivity : ComponentActivity() {
                 if (!menuDraggingBar && bar != null &&
                     bar.contains(androidx.compose.ui.geometry.Offset(px, py))
                 ) {
+                    /* 按在亮度条上 = 开始拖，不算点击 */
                     menuDraggingBar = true
                     applyCinemaBright(bar, px)
                 } else if (menuDraggingBar) {
                     // 拖出条外也继续跟随，手感更顺
                     applyCinemaBright(bar, px)
-                }
-            } else {
-                val moved = kotlin.math.abs(px - menuPressX) + kotlin.math.abs(py - menuPressY)
-                val wasDragging = menuDraggingBar
-                menuDraggingBar = false
-                /*
-                 * 抬起：没在拖亮度条、位移也小 → 当成一次普通点击。
-                 *
-                 * **只在"按下 → 抬起"那一帧算一次**（父亲 2026-10-10 19:05：选座点一下
-                 * 自己 1→3→6 连跳）。原来松手后光点每微动一下都会再进来一次，
-                 * 每次都当成一次新点击，于是连点。
-                 */
-                if (menuWasPressed && !wasDragging && moved < 24f) {
+                } else if (!menuWasPressed) {
+                    /*
+                     * 按下即点（跟改造前一模一样：原来原生是在扳机按下的那一刻发点击）。
+                     * 这样手抖不影响命中 —— 改成"抬起才算"的话，按住时手一晃超过阈值，
+                     * 这一下点击就丢了。
+                     */
                     runOnUiThread { if (menuReady()) menu.vrClick(px, py) }
                 }
+            } else {
+                /* 松手：结束拖动。点击已经在按下那一刻发过了（不在这里补发，否则会连点） */
+                menuDraggingBar = false
             }
             menuWasPressed = pressed
             runOnUiThread { if (menuReady()) menu.vrPointer(px, py) }
