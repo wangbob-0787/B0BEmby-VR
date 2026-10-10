@@ -47,8 +47,7 @@ fun ExitConfirmDialog(
 ) {
     val cancelFocus = remember { FocusRequester() }
     LaunchedEffect(Unit) {
-        delay(80)
-        runCatching { cancelFocus.requestFocus() }
+        cancelFocus.requestFocusRetry()
     }
 
     Box(

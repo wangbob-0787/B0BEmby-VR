@@ -122,8 +122,7 @@ fun SearchOverlay(
     }
 
     LaunchedEffect(Unit) {
-        kotlinx.coroutines.delay(150)
-        runCatching { fieldFocus.requestFocus() }
+        fieldFocus.requestFocusRetry()
     }
 
     // 换了词或换了通道 → 回到「全部」

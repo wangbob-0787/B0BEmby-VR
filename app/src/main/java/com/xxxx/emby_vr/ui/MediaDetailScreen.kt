@@ -19,6 +19,7 @@ import androidx.compose.ui.layout.ContentScale
 import coil3.compose.AsyncImage
 import com.xxxx.emby_vr.panel.vrClickTarget
 import com.xxxx.emby_vr.ui.components.BuildItem
+import com.xxxx.emby_vr.ui.components.requestFocusRetry
 import com.xxxx.emby_vr.Utils
 import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -169,8 +170,7 @@ fun MediaDetailScreen(
     // 进页面的默认焦点：放在顶部块（标题/元数据/海报）上，页面不滚动
     LaunchedEffect(mediaInfo, isLoadingSeriesData) {
         if (mediaInfo != null && !isLoadingSeriesData) {
-            delay(150)
-            runCatching { headerFocusRequester.requestFocus() }
+            headerFocusRequester.requestFocusRetry()
         }
     }
 

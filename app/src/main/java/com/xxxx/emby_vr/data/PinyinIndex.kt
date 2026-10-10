@@ -2,7 +2,6 @@ package com.xxxx.emby_vr.data
 
 import android.content.Context
 import android.util.Log
-import com.github.promeg.pinyinhelper.Pinyin
 import com.xxxx.emby_vr.data.repository.EmbyRepository
 import java.io.File
 
@@ -28,6 +27,7 @@ object PinyinIndex {
 
     private const val TAG = "B0BEmbyVR"
     private const val FILE_NAME = "pinyin_index.txt"
+    private const val TABLE_ASSET = "pinyin_table.txt"
     private const val PAGE_SIZE = 10000
     private const val MAX_ITEMS = 200_000
     private const val MAX_AGE_MS = 7L * 24 * 3600 * 1000
@@ -36,6 +36,37 @@ object PinyinIndex {
 
     private val lock = Any()
     private var entries: List<Entry> = emptyList()
+
+    /**
+     * 汉字 → 拼音表（内置资源 `pinyin_table.txt`，26704 字，211 KB）。
+     *
+     * 父亲 2026-10-10 问「能不能用电视上那种拼音库」—— 能：那种电视端拼音搜索用的
+     * 就是这类表（TinyPinyin 之类），我们直接自带一份**全量**的（中日韩统一表意文字
+     * 扩展A + 基本区 + 兼容区），不依赖任何第三方包、纯离线。
+     * 表里的拼音不带声调、全小写；`initials` 取每个字拼音的首字母。
+     */
+    private var table: Map<Char, String> = emptyMap()
+
+    private fun ensureTable(context: Context) {
+        if (table.isNotEmpty()) return
+        synchronized(lock) {
+            if (table.isNotEmpty()) return
+            table = runCatching {
+                context.assets.open(TABLE_ASSET).bufferedReader().useLines { lines ->
+                    val m = HashMap<Char, String>(30000)
+                    lines.forEach { line ->
+                        val t = line.indexOf('\t')
+                        if (t == 1 && line.length > 2) m[line[0]] = line.substring(2).trim()
+                    }
+                    m
+                }
+            }.getOrElse {
+                Log.w(TAG, "拼音表载入失败：${it.message}")
+                emptyMap()
+            }
+            Log.i(TAG, "拼音表：载入 ${table.size} 字")
+        }
+    }
 
     @Volatile
     private var building = false
@@ -55,6 +86,7 @@ object PinyinIndex {
      * 可以重复调用（例如每次打开键盘时调一次），正在建的时候直接返回。
      */
     suspend fun ensure(context: Context, repository: EmbyRepository, force: Boolean = false) {
+        ensureTable(context)
         synchronized(lock) {
             if (building) return
             val f = File(context.filesDir, FILE_NAME)
@@ -73,9 +105,24 @@ object PinyinIndex {
             val all = ArrayList<Entry>(4096)
             var start = 0
             while (all.size < MAX_ITEMS) {
-                val page = runCatching { repository.getItemNamesPage(start, PAGE_SIZE) }
+                var page = runCatching { repository.getItemNamesPage(start, PAGE_SIZE) }
                     .getOrElse { emptyList() }
-                if (page.isEmpty()) break
+                if (page.isEmpty()) {
+                    /*
+                     * 单页失败重试两次（2026-10-10 系统排查）。
+                     * 原来是一次失败就直接结束翻页 —— 索引只有前面一小部分，拼音搜会漏片。
+                     */
+                    for (retry in 0 until 2) {
+                        kotlinx.coroutines.delay(900L)
+                        page = runCatching { repository.getItemNamesPage(start, PAGE_SIZE) }
+                            .getOrElse { emptyList() }
+                        if (page.isNotEmpty()) break
+                    }
+                }
+                if (page.isEmpty()) {
+                    Log.w(TAG, "拼音索引：第 ${start / PAGE_SIZE + 1} 页三次都没拉到，索引到此为止")
+                    break
+                }
                 all += page.mapNotNull { item ->
                     val name = item.name?.trim().orEmpty()
                     if (name.isEmpty()) return@mapNotNull null
@@ -124,18 +171,16 @@ object PinyinIndex {
             .take(limit)
     }
 
-    /** 汉字 → 全拼 + 首字母（非汉字按原样收进去，英文片名照样能打） */
+    /** 汉字 → 全拼 + 首字母（表里没有的字符按原样收进去，英文片名照样能打） */
     private fun pinyinOf(name: String): Pair<String, String> {
         val full = StringBuilder(name.length * 4)
         val initials = StringBuilder(name.length)
         for (ch in name) {
+            val py = table[ch]
             when {
-                Pinyin.isChinese(ch) -> {
-                    val py = runCatching { Pinyin.toPinyin(ch) }.getOrDefault("")
-                    if (py.isNotEmpty()) {
-                        full.append(py.lowercase())
-                        initials.append(py.first().lowercaseChar())
-                    }
+                py != null && py.isNotEmpty() -> {
+                    full.append(py)
+                    initials.append(py.first())
                 }
                 ch.isLetterOrDigit() -> {
                     full.append(ch.lowercaseChar())

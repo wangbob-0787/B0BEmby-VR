@@ -150,6 +150,14 @@ class MainActivity : ComponentActivity() {
     /** 换轨重播时往回退多少毫秒（父亲 2026-10-06 晚定） */
     private val kReplayBackMs = 10_000L
 
+    /**
+     * 等「播放器报出内封文字轨」最多试几次（每次 1.2 秒，共约 24 秒）。
+     *
+     * 2026-10-10：换画质重播后播放器要重新缓冲，3 秒内报不出轨道；
+     * 原来两次就放弃 → 退到"服务端挖字幕"那条在网盘片源上走不通的路 → 字幕不显示。
+     */
+    private val kSubtitleTrackWaitAttempts = 20
+
     // ── 光柱交互状态（2026-10-06 下午）──
     /** 最近一次控制条 / 菜单指针到达的时间：用来判断「光柱指着画面还是指着面板」 */
     private var lastOsdPointerAt = 0L
@@ -2221,8 +2229,14 @@ class MainActivity : ComponentActivity() {
                      */
                     val ordinal = selectedSubtitleIndex?.let { ordinalOfSubtitleStream(it) }
                     val pick = ordinal?.takeIf { it >= 0 }
-                    val ok = mpvBackend?.setSubtitleByOrdinal(pick) == true
-                    Log.i(TAG, "内核模式：字幕 ${selectedSubtitleIndex ?: "关闭"} → 序号 $pick 结果=$ok")
+                    Log.i(TAG, "内核模式：字幕 ${selectedSubtitleIndex ?: "关闭"} → 序号 $pick（失败会重试）")
+                    retryKernelTrackSwitch("字幕", selectedSubtitleIndex) {
+                        val m = mpvBackend
+                        if (m == null) false
+                        else m.setSubtitleByOrdinal(
+                            selectedSubtitleIndex?.let { ordinalOfSubtitleStream(it) }
+                        )
+                    }
                     /* 自绘那套在内核路径不再使用，清掉免得留旧文本 */
                     subtitleCues = emptyList()
                     subtitleCueStream = null
@@ -2310,9 +2324,13 @@ class MainActivity : ComponentActivity() {
                      * 内核侧的音轨 id 与 Emby 的流序号不是一回事，所以按顺序映射：
                      * Emby 音频清单里的第几个，就取内核侧第几条。
                      */
-                    val ordinal = audioStreamIndices.indexOf(selectedAudioIndex).coerceAtLeast(0)
-                    val ok = mpvBackend?.setAudioTrackByOrdinal(ordinal) == true
-                    Log.i(TAG, "内核模式：切音轨 流=${selectedAudioIndex ?: "默认"} 序号=$ordinal 结果=$ok")
+                    val ordinal = ordinalOfAudioStream(selectedAudioIndex) ?: 0
+                    Log.i(TAG, "内核模式：切音轨 流=${selectedAudioIndex ?: "默认"} 序号=$ordinal（失败会重试）")
+                    retryKernelTrackSwitch("音轨", selectedAudioIndex) {
+                        val m = mpvBackend
+                        if (m == null) false
+                        else m.setAudioTrackByOrdinal(ordinalOfAudioStream(selectedAudioIndex) ?: 0)
+                    }
                 } else {
                     replayKeepingPosition()
                 }
@@ -2582,6 +2600,46 @@ class MainActivity : ComponentActivity() {
         return if (ord >= 0) ord else null
     }
 
+    /**
+     * Emby 的音频流序号 → 内核侧第几条音轨（从 currentStreams 现算）。
+     *
+     * 与字幕同理：菜单那张表是打开菜单时建的，可能过期或为空，拿它映射会得到错的序号。
+     */
+    private fun ordinalOfAudioStream(streamIndex: Int?): Int? {
+        if (streamIndex == null) return null
+        val audios = currentStreams
+            .filter { it.type.equals("Audio", ignoreCase = true) }
+            .sortedBy { it.index ?: 0 }
+        val ord = audios.indexOfFirst { it.index == streamIndex }
+        return if (ord >= 0) ord else null
+    }
+
+    /**
+     * 内核侧切音轨 / 字幕：**失败就轮询重试**（2026-10-10 系统排查后统一）。
+     *
+     * 文件刚打开时内核还没报出轨道，这时候切轨会返回 false —— 原来只打一行日志、
+     * 不再重试，用户看起来就是"点了没反应"，得再点一次才成。
+     * 现在最多试 10 次、每次隔 800 毫秒；期间用户改了选择就自动放弃（闭包里读的是最新值）。
+     */
+    private fun retryKernelTrackSwitch(
+        label: String,
+        streamIndex: Int?,
+        attempts: Int = 10,
+        apply: () -> Boolean,
+    ) {
+        scope.launch {
+            repeat(attempts) { i ->
+                val ok = runCatching { apply() }.getOrDefault(false)
+                if (ok) {
+                    Log.i(TAG, "内核切$label 成功（第 ${i + 1} 次，流 ${streamIndex ?: "关闭"}）")
+                    return@launch
+                }
+                kotlinx.coroutines.delay(800L)
+            }
+            Log.w(TAG, "内核切$label 试了 $attempts 次都没成（流 ${streamIndex ?: "关闭"}）")
+        }
+    }
+
     /** 把弹幕开关与字号立刻作用到弹幕层（弹幕菜单与字幕菜单里的弹幕行共用） */
     private fun applyDanmakuSetting() {
         menuState.danmakuOn = danmakuOn
@@ -2776,22 +2834,35 @@ class MainActivity : ComponentActivity() {
         val url = "${userServer()}/emby/Videos/$mediaId/$sourceId/Subtitles/$index" +
             "/Stream.ass?api_key=${userToken()}"
         scope.launch {
-            val raw = withContext(Dispatchers.IO) {
-                runCatching {
-                    java.net.URL(url).openConnection().let { conn ->
-                        conn.connectTimeout = 8000
-                        conn.readTimeout = 15000
-                        conn.getInputStream().bufferedReader().use { it.readText() }
-                    }
-                }.getOrNull()
+            /*
+             * 弹幕文件：**失败重试 3 次**（2026-10-10 系统排查）。
+             * 原来只有一次机会，网络抖一下就是"这一集没弹幕"，而且不再补 ——
+             * 明明重新起播就有。重试间隔 1.5 秒，中途换集立刻放弃。
+             */
+            var raw: String? = null
+            for (attempt in 0 until 3) {
+                if (mediaId != currentMediaId) return@launch
+                raw = withContext(Dispatchers.IO) {
+                    runCatching {
+                        java.net.URL(url).openConnection().let { conn ->
+                            conn.connectTimeout = 8000
+                            conn.readTimeout = 15000
+                            conn.getInputStream().bufferedReader().use { it.readText() }
+                        }
+                    }.getOrNull()
+                }
+                if (!raw.isNullOrBlank()) break
+                Log.w(TAG, "弹幕文件没拉到（第 ${attempt + 1} 次）：$mediaId")
+                if (attempt < 2) kotlinx.coroutines.delay(1500L)
             }
             if (mediaId != currentMediaId) return@launch          // 中途换集了，丢弃
-            if (raw.isNullOrBlank()) {
-                Log.w(TAG, "弹幕文件没拉到：$mediaId")
+            val text = raw
+            if (text.isNullOrBlank()) {
+                Log.w(TAG, "弹幕文件三次都没拉到：$mediaId（这一集先不显示弹幕）")
                 return@launch
             }
             val track = runCatching {
-                com.xxxx.emby_vr.danmaku.AssDanmakuParser.parse(raw)
+                com.xxxx.emby_vr.danmaku.AssDanmakuParser.parse(text)
             }.getOrNull()
             if (track == null || track.items.isEmpty()) {
                 Log.w(TAG, "弹幕解析失败或没有内容：$mediaId")
@@ -2810,13 +2881,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** 取这一集的详情：剧集 id / 季 id / 简介 / 演员（信息与演职人员菜单用） */
-    private fun loadItemDetail() {
-        val id = currentMediaId
-        if (id.isBlank()) return
-        scope.launch {
-            try {
-                val item = EmbyApi.getMediaInfo(
+    /**
+     * 取条目详情，**失败重试 3 次**（2026-10-10 系统排查后统一）。
+     * 返回 null 表示三次都没拿到；中途换片直接放弃。
+     */
+    private suspend fun fetchItemDetailWithRetry(
+        id: String,
+    ): com.xxxx.emby_vr.data.model.BaseItemDto? {
+        repeat(3) { attempt ->
+            if (id != currentMediaId) return null
+            val item = runCatching {
+                EmbyApi.getMediaInfo(
                     context = this@MainActivity,
                     serverUrl = userServer(),
                     apiKey = userToken(),
@@ -2824,6 +2899,27 @@ class MainActivity : ComponentActivity() {
                     userId = BuildConfig.EMBY_USER_ID,
                     mediaId = id,
                 )
+            }.getOrNull()
+            if (item != null) return item
+            Log.w(TAG, "取详情失败（第 ${attempt + 1} 次）：$id")
+            if (attempt < 2) kotlinx.coroutines.delay(800L)
+        }
+        return null
+    }
+
+    /** 取这一集的详情：剧集 id / 季 id / 简介 / 演员（信息与演职人员菜单用） */
+    private fun loadItemDetail() {        val id = currentMediaId
+        if (id.isBlank()) return
+        scope.launch {
+            try {
+                /*
+                 * 详情**失败重试 3 次**（2026-10-10 系统排查）。
+                 * 原来只试一次：拿不到的话，信息、选集、演员三块全空着，用户看不出为什么。
+                 */
+                val item = fetchItemDetailWithRetry(id) ?: run {
+                    Log.w(TAG, "详情三次都没取到：$id（信息/选集/演员先空着）")
+                    return@launch
+                }
                 if (id != currentMediaId) return@launch   // 中途换片了，丢弃
                 currentItem = item
                 currentSeriesId = item.seriesId
@@ -3296,7 +3392,7 @@ class MainActivity : ComponentActivity() {
      * 也按文件顺序，所以第 N 条内封文字轨 → 播放器第 N 条文字轨（跨分组拉平）。
      * 找不到（例如这条其实是外挂轨）就退回服务端取流那条老路。
      */
-    private fun selectEmbeddedTextTrack(streamIndex: Int, retry: Boolean = true) {
+    private fun selectEmbeddedTextTrack(streamIndex: Int, attempt: Int = 0) {
         val p = player ?: return
         val embedded = currentStreams
             .filter {
@@ -3339,17 +3435,29 @@ class MainActivity : ComponentActivity() {
             return
         }
         /*
-         * 轨还没报出来（刚起播、还在缓冲）——**先等一会儿再试一次**，
-         * 别急着退到"服务端挖整片"那条慢路（2026-10-09 复查）。
+         * 轨还没报出来（刚起播/刚换画质重播，还在缓冲）→ **轮询等它**。
+         *
+         * 2026-10-10 修：原来只重试两次（约 3 秒）就放弃，然后退到"请服务端从原文件里
+         * 挖字幕"那条路 —— 而网盘片源上服务端挖不动（实测：那条请求挂住不响应，
+         * 客户端连接被重置、0 字节），结果就是**换画质之后中文字幕整个不显示**，
+         * 切回原画（直连、不用等缓冲）才正常。
+         *
+         * 现在最多等 kSubtitleTrackWaitAttempts × 1.2 秒（约 24 秒），
+         * 期间换片或改选别的字幕就放弃这次等待。
          */
-        if (retry) {
-            Log.i(TAG, "内封字幕 $streamIndex：播放器还没报出文字轨，1.5 秒后重试")
+        if (attempt < kSubtitleTrackWaitAttempts) {
+            Log.i(TAG, "内封字幕 $streamIndex：播放器还没报出文字轨（第 ${attempt + 1} 次）→ 1.2 秒后再试")
             handler.postDelayed({
-                if (currentMediaId.isNotBlank()) selectEmbeddedTextTrack(streamIndex, retry = false)
-            }, 1500L)
+                if (currentMediaId.isNotBlank() && selectedSubtitleIndex == streamIndex) {
+                    selectEmbeddedTextTrack(streamIndex, attempt + 1)
+                }
+            }, 1200L)
             return
         }
-        Log.w(TAG, "内封字幕 $streamIndex 两次都没选中 → 退回服务端取流（可能要等）")
+        Log.w(
+            TAG,
+            "内封字幕 $streamIndex 等了 ${(kSubtitleTrackWaitAttempts * 1.2).toInt()} 秒仍未报出轨道 → 退回服务端取流",
+        )
         loadSubtitleTrack(streamIndex)
     }
 
@@ -3612,12 +3720,21 @@ class MainActivity : ComponentActivity() {
         firstFrameFallback?.let { handler.removeCallbacks(it) }
         val fallback = Runnable {
             if (waitingFirstFrame) {
-                Log.w(TAG, "等第一帧超时（8 秒），兜底把弹幕 / 字幕 / logo 放出来")
+                /*
+                 * 兜底放行（2026-10-10 从 8 秒放宽到 20 秒）。
+                 *
+                 * 8 秒是照"本地/局域网片源"估的，但我们的片源在网盘上，冷启动
+                 * （服务端现拉原文件）经常超过 8 秒 —— 实测日志里已经在打
+                 * 「等第一帧超时（8 秒）」，于是黑幕提前收掉：画面还没到，
+                 * 弹幕/字幕/logo 先亮，看起来就是"空屏/旧画面 + 弹幕在飘"。
+                 * 放宽到 20 秒，正常起播不会等满（帧到就收），真失败时才兜底。
+                 */
+                Log.w(TAG, "等第一帧超时（20 秒），兜底把弹幕 / 字幕 / logo 放出来")
                 revealDanmakuSubtitleLogo()
             }
         }
         firstFrameFallback = fallback
-        handler.postDelayed(fallback, 8000L)
+        handler.postDelayed(fallback, 20_000L)
     }
 
     /**
