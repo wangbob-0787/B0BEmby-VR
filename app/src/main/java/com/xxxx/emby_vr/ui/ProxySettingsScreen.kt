@@ -452,9 +452,9 @@ private fun ProxyTypeButton(
             ),
             focusedBorder = androidx.tv.material3.Border(androidx.compose.foundation.BorderStroke(androidx.compose.ui.unit.Dp(0f), androidx.compose.ui.graphics.Color.Transparent))),
         colors = ClickableSurfaceDefaults.colors(
-            containerColor = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surface.copy(alpha = 0.3f),
+            containerColor = if (selected) VrSelectedBg else MaterialTheme.colorScheme.surface.copy(alpha = 0.3f),
             contentColor = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                focusedContainerColor = if (isSelected) VrSelectedBg else VrHoverBg,
+                focusedContainerColor = if (selected) VrSelectedBg else VrHoverBg,
                 focusedContentColor = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
             ),
         modifier = modifier.height(56.dp)

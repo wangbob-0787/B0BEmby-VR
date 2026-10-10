@@ -449,12 +449,17 @@ fun MediaDetailScreen(
                                 onClick = { selectedSeasonIndex = index },
                                 shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(8.dp)),
                                 colors = ClickableSurfaceDefaults.colors(
-                                    // 父亲 2026-10-02：**只有聚焦才是绿底**；当前季不聚焦时也是暗灰
-                                    containerColor = Color(0xFF3A3A3A),
+                                    /*
+                                     * 两态要分得开（父亲 2026-10-10）：
+                                     *   被选（当前季）= 半透明绿，不聚焦也一直亮着；
+                                     *   被光柱扫到     = 半透明白（跟控制条同一档）。
+                                     * 原来是"只有聚焦才绿、当前季也是暗灰"，看不出在看第几季。
+                                     */
+                                    containerColor = if (selected) VrSelectedBg else Color(0xFF3A3A3A),
                                     contentColor = Color.White,
-                focusedContainerColor = VrHoverBg,
-                focusedContentColor = Color.White,
-            ),
+                                    focusedContainerColor = if (selected) VrSelectedBg else VrHoverBg,
+                                    focusedContentColor = Color.White,
+                                ),
                                 modifier = Modifier
                                     .width(DetailButtonWidth)
                                     .height(DetailButtonHeight)

@@ -174,6 +174,9 @@ class MenuState {
     var subtitleTracks by mutableStateOf<List<MenuRowItem>>(emptyList())
     var audioTracks by mutableStateOf<List<MenuRowItem>>(emptyList())
     var episodes by mutableStateOf<List<MenuRowItem>>(emptyList())
+
+    /** 选集菜单的标题 = 当前第几季（父亲 2026-10-10：「第 2 季」当标题，下面才是集） */
+    var episodesTitle by mutableStateOf("")
     var people by mutableStateOf<List<PersonItem>>(emptyList())
     var info by mutableStateOf<MediaInfoView?>(null)
     var buffer by mutableStateOf<BufferView?>(null)
@@ -613,14 +616,29 @@ private fun EpisodeMenu(menu: MenuState) {
         val idx = menu.episodes.indexOfFirst { it.selected }
         if (idx > 0) listState.scrollToItem(idx)
     }
-    LazyColumn(state = listState, modifier = Modifier.heightIn(max = 270.dp)) {
-        itemsIndexed(menu.episodes) { i, row ->
-            MenuRow(
-                label = row.label,
-                value = "",
-                selected = row.selected,
-                onClick = { menu.onSelect?.invoke(MenuKind.EPISODES, i) },
+    Column {
+        /*
+         * 选集菜单的标题 = 当前第几季（父亲 2026-10-10）：
+         * 「第 2 季」当标题，下面才是这一季的集。
+         */
+        if (menu.episodesTitle.isNotBlank()) {
+            Text(
+                text = menu.episodesTitle,
+                color = Color(0xFFFFFFFF),
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(bottom = 8.dp),
             )
+        }
+        LazyColumn(state = listState, modifier = Modifier.heightIn(max = 240.dp)) {
+            itemsIndexed(menu.episodes) { i, row ->
+                MenuRow(
+                    label = row.label,
+                    value = "",
+                    selected = row.selected,
+                    onClick = { menu.onSelect?.invoke(MenuKind.EPISODES, i) },
+                )
+            }
         }
     }
 }

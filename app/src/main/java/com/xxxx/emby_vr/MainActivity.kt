@@ -1077,12 +1077,18 @@ class MainActivity : ComponentActivity() {
      */
     private fun itemTitleOf(item: com.xxxx.emby_vr.data.model.BaseItemDto?): String {
         val series = item?.seriesName
+        /*
+         * 集号前面要带**季号**（父亲 2026-10-10）：
+         * 只写"第 3 集"在长剧里分不清是哪一季的，控制条的"正在播放 / 即将播放"都要带上。
+         */
+        val season = item?.parentIndexNumber
         val ep = item?.indexNumber
         val name = item?.name
+        val seasonPart = if (season != null) "第${season}季 " else ""
         return when {
             !series.isNullOrBlank() && ep != null ->
-                if (!name.isNullOrBlank() && name != series) "$series 第${ep}集 $name"
-                else "$series 第${ep}集"
+                if (!name.isNullOrBlank() && name != series) "$series $seasonPart第${ep}集 $name"
+                else "$series $seasonPart第${ep}集"
             !series.isNullOrBlank() -> series
             else -> name ?: ""
         }
@@ -3157,17 +3163,23 @@ class MainActivity : ComponentActivity() {
                 )
                 episodeIds = eps.map { it.id ?: "" }
                 episodePositions = eps.map { it.userData?.playbackPositionTicks ?: 0L }
+                /*
+                 * 季号提出来当**菜单标题**（父亲 2026-10-10）：
+                 * 原来每一行都写"第 X 季 第 Y 集"，季号重复刷屏；
+                 * 现在标题写一次"第 X 季"，下面每行只写"第 Y 集 集名"。
+                 */
+                val seasonNo = eps.firstOrNull()?.parentIndexNumber
+                    ?: currentItem?.parentIndexNumber
+                menuState.episodesTitle = if (seasonNo != null) "第 $seasonNo 季" else ""
                 menuState.episodes = eps.mapIndexed { i, e ->
-                    val season = e.parentIndexNumber
                     val num = e.indexNumber ?: (i + 1)
                     val name = e.name ?: ""
                     com.xxxx.emby_vr.panel.MenuRowItem(
-                        label = if (season != null) "第 $season 季 第 $num 集  $name"
-                        else "第 $num 集  $name",
+                        label = if (name.isBlank()) "第 $num 集" else "第 $num 集  $name",
                         selected = e.id == currentMediaId,
                     )
                 }
-                Log.i(TAG, "选集列表 ${eps.size} 集")
+                Log.i(TAG, "选集列表 ${eps.size} 集（标题=${menuState.episodesTitle}）")
             } catch (t: Throwable) {
                 Log.e(TAG, "取选集失败", t)
                 hud("取选集失败")
