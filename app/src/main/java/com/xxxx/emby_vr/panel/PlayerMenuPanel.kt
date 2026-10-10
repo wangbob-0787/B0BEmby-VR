@@ -158,6 +158,14 @@ class MenuState {
     /** 弹幕时间偏移（毫秒）：正 = 提前，负 = 推后（父亲 2026-10-09 要求） */
     var danmakuOffsetMs by mutableStateOf(0)
 
+    /**
+     * 影院银幕预设（父亲 2026-10-10）：1 = 影厅小屏 5.2/3.2 · 2 = IMAX 大屏 26/15。
+     *
+     * 只用于「更多 → 影院银幕」这一行显示当前是哪套；真正生效的是原生侧的
+     * gScreenWidth / gScreenDistance（见 openxr_renderer.cpp 的 applyScreenPreset）。
+     */
+    var screenPreset by mutableStateOf(1)
+
     var subtitleTracks by mutableStateOf<List<MenuRowItem>>(emptyList())
     var audioTracks by mutableStateOf<List<MenuRowItem>>(emptyList())
     var episodes by mutableStateOf<List<MenuRowItem>>(emptyList())
@@ -380,6 +388,18 @@ private fun MoreMenu(menu: MenuState) {
                 onClick = { menu.onSelect?.invoke(MenuKind.MORE, i) },
             )
         }
+        /*
+         * 影院银幕（父亲 2026-10-10）：不在二级菜单里，点一下就地切换两套影院尺寸 ——
+         * 戴着直接对比「影厅小屏 5.2/3.2 米」和「IMAX 大屏 26/15 米」的纵深观感，
+         * 不用我改配置、也不用重装。行号固定排在上面四条之后（= 4）。
+         */
+        MenuRow(
+            label = "影院银幕",
+            value = if (menu.screenPreset == 2) "IMAX 大屏 26 米" else "影厅小屏 5.2 米",
+            selected = false,
+            hasSub = false,
+            onClick = { menu.onSelect?.invoke(MenuKind.MORE, 4) },
+        )
     }
 }
 

@@ -573,6 +573,48 @@ std::atomic<float> gRayScale{0.35f};
 
 std::atomic<float> gScreenWidth{26.f};
 std::atomic<float> gScreenDistance{15.f};
+
+/*
+ * ==================== 影院银幕两套预设（父亲 2026-10-10） ====================
+ *
+ * 父亲要"两套影院尺寸，运行时能切、戴着直接对比"，所以银幕几何不再是单一默认值，
+ * 而是两个命名预设，扣一次控制条「更多 → 影院银幕」即切换（也可由 vr-tuning.txt 的
+ * `screen_preset` 下发，都是当场生效，不用重编重装）。
+ *
+ *   1 = 影厅小屏：宽 5.2 m / 距 3.2 m
+ *       水平视角 2·atan(2.6/3.2) ≈ 78°，与 IMAX 大屏**角尺寸相同**；3.2 m 是这套代码
+ *       光柱/进度环的参考距离，切回来正好是当初调好的比例。影厅 1:1 尺度下唯一自洽的
+ *       摆位（模型银幕墙宽 5.65 m，画面能落在墙上）。
+ *   2 = IMAX 大屏：宽 26 m / 距 15 m（2026-10-09 父亲按 IMAX 第 10 排定的原值）
+ *       水平视角 2·atan(13/15) ≈ 81.6°。纵深最接近真影厅（眼睛会聚接近平行、走动时
+ *       银幕大小几乎不变），但没有一间实体影厅装得下这块银幕。
+ *
+ * 两者差 3.6° —— 观感差别在纵深，不在大小；选哪个由父亲戴着定。
+ */
+constexpr float kScreenPresetHallW = 5.2f;
+constexpr float kScreenPresetHallD = 3.2f;
+constexpr float kScreenPresetImaxW = 26.f;
+constexpr float kScreenPresetImaxD = 15.f;
+
+/** 当前预设：1 = 影厅小屏（默认）· 2 = IMAX 大屏 · 0 = 手工改过宽度/距离（自定义） */
+std::atomic<int> gScreenPreset{1};
+
+/** 切预设：同时改宽度与距离，并打一行日志（父亲戴着时靠这行确认切了哪套） */
+void applyScreenPreset(int preset) {
+    if (preset == 1) {
+        gScreenWidth.store(kScreenPresetHallW);
+        gScreenDistance.store(kScreenPresetHallD);
+        gScreenPreset.store(1);
+        LOGI("银幕预设 → 1 影厅小屏：宽 %.1f m · 距 %.1f m（视角约 78°）",
+             (double) kScreenPresetHallW, (double) kScreenPresetHallD);
+    } else if (preset == 2) {
+        gScreenWidth.store(kScreenPresetImaxW);
+        gScreenDistance.store(kScreenPresetImaxD);
+        gScreenPreset.store(2);
+        LOGI("银幕预设 → 2 IMAX 大屏：宽 %.1f m · 距 %.1f m（视角约 81.6°）",
+             (double) kScreenPresetImaxW, (double) kScreenPresetImaxD);
+    }
+}
 /**
  * 海报墙的**初始**摆位：左前方、斜着正对观影者。
  *
@@ -4699,6 +4741,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
         case 14:
             if (value >= 1.f && value <= 40.f) {
                 gScreenWidth.store(value);
+                gScreenPreset.store(0);          // 手工改过 = 自定义，不再是某套预设
                 const float dist = gScreenDistance.load();
                 LOGI("调参 → 银幕宽 %.2f 米（距离 %.2f 米，水平视角 %.1f°）",
                      (double) value, (double) dist,
@@ -4708,6 +4751,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
         case 15:
             if (value >= 1.f && value <= 40.f) {
                 gScreenDistance.store(value);
+                gScreenPreset.store(0);          // 手工改过 = 自定义，不再是某套预设
                 const float w = gScreenWidth.load();
                 LOGI("调参 → 银幕距离 %.2f 米（宽 %.2f 米，水平视角 %.1f°）",
                      (double) value, (double) w,
@@ -4720,6 +4764,10 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
                 LOGI("调参 → 光柱粗细倍率 %.2f（1.0 = 银幕 3.2 米时代同样的角粗细）",
                      (double) value);
             }
+            break;
+        case 17:
+            /* 影院银幕预设（父亲 2026-10-10）：1 = 影厅小屏 5.2/3.2，2 = IMAX 大屏 26/15 */
+            applyScreenPreset((int) value);
             break;
         default:
             LOGI("调参 → 未知参数 key=%d（忽略）", (int) key);

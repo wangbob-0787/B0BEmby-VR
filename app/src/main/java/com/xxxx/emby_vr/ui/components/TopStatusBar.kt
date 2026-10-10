@@ -43,6 +43,15 @@ import androidx.tv.material3.Text
 import com.xxxx.emby_vr.R
 import com.xxxx.emby_vr.data.local.PreferencesManager
 
+/**
+ * 顶栏元素之间的统一间距（父亲 2026-10-10 定）。
+ *
+ * 父亲原话：左边「菜单图标 ↔ 版本号」的间距加大一点，右边
+ * 「放大镜 ↔ 头像 ↔ wangbob@192.168.150.15」的间距与它**相同**。
+ * 所以三处都用这一个常量，改一处三处一起变。
+ */
+private val TopBarGap = 24.dp
+
 
 @Composable
 fun TopStatusBar(
@@ -108,7 +117,7 @@ fun TopStatusBar(
                             )
                         }
                     }
-                    Spacer(modifier = Modifier.width(12.dp))
+                    Spacer(modifier = Modifier.width(TopBarGap))
                 }
 
                 Text(
@@ -186,8 +195,8 @@ fun TopStatusBar(
 
                 // 用户信息
                 if (userInfo != null) {
-                    // 头像与放大镜之间留出间距（父亲 2026-10-09：头像离名字/放大镜都太挤）
-                    Spacer(modifier = Modifier.width(28.dp))
+                    // 放大镜与头像之间 = 与左边「菜单 ↔ 版本号」同一个间距（父亲 2026-10-10）
+                    Spacer(modifier = Modifier.width(TopBarGap))
 
                     Surface(
                         onClick = onUserInfoClick ?: {},
@@ -208,7 +217,12 @@ fun TopStatusBar(
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(end = 14.dp, start = 6.dp, top = 6.dp, bottom = 6.dp)
+                            /*
+                             * 水平内边距归零（父亲 2026-10-10）：原来的 start 6 / end 14 会在
+                             * Spacer 之外再多撑出 6dp 与 14dp，三处间距就凑不齐了 —— 现在
+                             * 「放大镜 ↔ 头像」与「头像 ↔ 用户名」两段完全由同一个 TopBarGap 决定。
+                             */
+                            modifier = Modifier.padding(vertical = 6.dp)
                         ) {
                             // 头像：用父亲 2026-10-02 给的图（圆形裁剪）
                             Image(
@@ -218,8 +232,8 @@ fun TopStatusBar(
                                     .size(38.dp)
                                     .clip(androidx.compose.foundation.shape.CircleShape)
                             )
-                            // 头像与名字之间留 10dp（原来贴在一起）
-                            Spacer(modifier = Modifier.width(10.dp))
+                            // 头像与名字之间 = 同一个间距（父亲 2026-10-10）
+                            Spacer(modifier = Modifier.width(TopBarGap))
                             Text(
                                 text = userInfo,
                                 fontSize = 18.sp,

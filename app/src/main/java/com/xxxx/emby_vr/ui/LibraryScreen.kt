@@ -10,6 +10,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowUpward
@@ -33,6 +34,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.tv.material3.*
 import com.xxxx.emby_vr.R
 import com.xxxx.emby_vr.data.repository.EmbyRepository
+import com.xxxx.emby_vr.panel.vrClickTarget
 import com.xxxx.emby_vr.ui.components.Loading
 import com.xxxx.emby_vr.ui.components.NoData
 import com.xxxx.emby_vr.ui.viewmodel.LibraryViewModel
@@ -110,17 +112,15 @@ fun LibraryScreen(
         }
     }
 
-    if (showSortDialog) {
-        SortDialog(
-            currentSortBy = currentSortBy,
-            currentSortOrder = currentSortOrder,
-            onSortSelected = { sortBy, sortOrder ->
-                libraryViewModel.updateSortAndFilter(sortBy, sortOrder, currentFilter)
-                showSortDialog = false
-            },
-            onDismiss = { showSortDialog = false }
-        )
-    }
+    /*
+     * 排序面板改**同一棵界面树里的浮层**（父亲 2026-10-10「媒体库所有按钮无法操作」）。
+     *
+     * 与首页菜单同一个病：`Dialog` 会另开一个窗口，那个窗口不落在 VR 面板那张虚拟屏上，
+     * 所以排序面板在头显里既看不见也点不着；而且它的坐标也不在该屏的坐标系里，
+     * 光点命中判定必然对不上。改成同树浮层后，光柱照常点，浮层也排在内容之后（在最上层）。
+     * 下面 124 行起用 Box 把整页内容与浮层包在一起。
+     */
+    Box(modifier = Modifier.fillMaxSize()) {
 
     Column(
         modifier = Modifier
@@ -167,7 +167,10 @@ fun LibraryScreen(
             ),
                 border = ClickableSurfaceDefaults.border(
                     focusedBorder = androidx.tv.material3.Border(androidx.compose.foundation.BorderStroke(androidx.compose.ui.unit.Dp(0f), androidx.compose.ui.graphics.Color.Transparent))),
-                modifier = Modifier.padding(end = 12.dp)
+                modifier = Modifier
+                    .padding(end = 12.dp)
+                    // 排序入口登记进坐标表（父亲 2026-10-10：媒体库按钮点不动）
+                    .vrClickTarget(key = "lib:sort") { showSortDialog = true }
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
@@ -192,15 +195,20 @@ fun LibraryScreen(
                 val label = stringResource(labelRes)
                 val isSelected = currentFilter == filterValue
 
+                // 同一个动作引用给 onClick 与坐标表（VR 扣扳机走登记那条路）
+                val doFilter: () -> Unit = {
+                    if (!isSelected) {
+                        libraryViewModel.updateSortAndFilter(
+                            currentSortBy, currentSortOrder, filterValue
+                        )
+                    }
+                }
+
                 Surface(
-                    onClick = {
-                        if (!isSelected) {
-                            libraryViewModel.updateSortAndFilter(
-                                currentSortBy, currentSortOrder, filterValue
-                            )
-                        }
-                    },
-                    modifier = Modifier.padding(horizontal = 4.dp),
+                    onClick = doFilter,
+                    modifier = Modifier
+                        .padding(horizontal = 4.dp)
+                        .vrClickTarget(key = "lib:filter:$filterValue", onActivate = doFilter),
                     shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(50)),
                     colors = ClickableSurfaceDefaults.colors(
                         containerColor = if (isSelected) {
@@ -338,6 +346,20 @@ fun LibraryScreen(
                 }
             }
         }
+        }
+
+        // 排序浮层：排在内容之后（最上层），点空白关掉
+        if (showSortDialog) {
+            SortDialog(
+                currentSortBy = currentSortBy,
+                currentSortOrder = currentSortOrder,
+                onSortSelected = { sortBy, sortOrder ->
+                    libraryViewModel.updateSortAndFilter(sortBy, sortOrder, currentFilter)
+                    showSortDialog = false
+                },
+                onDismiss = { showSortDialog = false }
+            )
+        }
     }
 }
 
@@ -352,14 +374,19 @@ private fun SortDialog(
     val listState = rememberLazyListState()
     val focusRequesters = remember { LibraryViewModel.SORT_OPTIONS.map { FocusRequester() } }
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+    /*
+     * 同树浮层（不再用 Dialog 窗口）：Dialog 会另开窗口，那个窗口不落在 VR 面板那张
+     * 虚拟屏上 —— 排序面板在头显里既看不见也点不着，而且它的坐标不在该屏坐标系里，
+     * 光点命中判定必然对不上（父亲 2026-10-10「媒体库所有按钮无法操作」）。
+     */
+    androidx.activity.compose.BackHandler(enabled = true) { onDismiss() }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.55f))
+            .vrClickTarget(key = "sort:scrim") { onDismiss() },
+        contentAlignment = Alignment.Center
     ) {
-        Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center
-        ) {
             Surface(
                 modifier = Modifier
                     .width(360.dp)
@@ -395,18 +422,26 @@ private fun SortDialog(
                             val label = stringResource(labelRes)
                             val isSelected = currentSortBy == sortByValue
 
+                            // 同一个动作引用给 onClick 与坐标表：VR 扣扳机走的是登记那条路
+                            val doSort: () -> Unit = {
+                                val newOrder = if (sortByValue == currentSortBy) {
+                                    if (currentSortOrder == "Ascending") "Descending" else "Ascending"
+                                } else {
+                                    currentSortOrder
+                                }
+                                onSortSelected(sortByValue, newOrder)
+                            }
+
                             Surface(
-                                onClick = {
-                                    val newOrder = if (sortByValue == currentSortBy) {
-                                        if (currentSortOrder == "Ascending") "Descending" else "Ascending"
-                                    } else {
-                                        currentSortOrder
-                                    }
-                                    onSortSelected(sortByValue, newOrder)
-                                },
+                                onClick = doSort,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .focusRequester(focusRequesters[index]),
+                                    .focusRequester(focusRequesters[index])
+                                    .vrClickTarget(
+                                        key = "sort:$sortByValue",
+                                        focusRequester = focusRequesters[index],
+                                        onActivate = doSort,
+                                    ),
                                 shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(8.dp)),
                                 colors = ClickableSurfaceDefaults.colors(
                                     containerColor = if (isSelected) {
@@ -458,6 +493,5 @@ private fun SortDialog(
                     focusRequesters[targetIndex].requestFocus()
                 }
             }
-        }
     }
 }

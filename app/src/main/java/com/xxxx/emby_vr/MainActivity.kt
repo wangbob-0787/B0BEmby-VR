@@ -2001,6 +2001,26 @@ class MainActivity : ComponentActivity() {
         Log.i(TAG, "菜单选择：${kind.title} #$index")
         when (kind) {
             com.xxxx.emby_vr.panel.MenuKind.MORE -> {
+                /*
+                 * 第 5 行「影院银幕」（父亲 2026-10-10）：点一下就地切换两套影院尺寸，
+                 * 戴着直接对比纵深观感。只改原生侧的银幕宽度/距离 —— 视频层、弹幕层、
+                 * 光柱、进度环都按新值当场重算，不用重起播、不用重装。
+                 */
+                if (index == 4) {
+                    val next = if (menuState.screenPreset == 2) 1 else 2
+                    com.xxxx.emby_vr.vr.VrNative.setTuning(
+                        com.xxxx.emby_vr.vr.VrTuning.KEY_SCREEN_PRESET,
+                        next.toFloat(),
+                    )
+                    menuState.screenPreset = next
+                    Log.i(
+                        TAG,
+                        if (next == 2) "影院银幕 → 预设 2 IMAX 大屏（宽 26 米 / 距 15 米）"
+                        else "影院银幕 → 预设 1 影厅小屏（宽 5.2 米 / 距 3.2 米）",
+                    )
+                    refreshMenuRows(kind)
+                    return
+                }
                 val target = when (index) {
                     0 -> com.xxxx.emby_vr.panel.MenuKind.AUDIO
                     1 -> com.xxxx.emby_vr.panel.MenuKind.QUALITY
