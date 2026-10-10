@@ -27,7 +27,7 @@ import com.xxxx.emby_vr.ui.components.BuildItem
 import com.xxxx.emby_vr.ui.viewmodel.PersonWorkGroup
 import com.xxxx.emby_vr.ui.viewmodel.classifyPersonWork
 import com.xxxx.emby_vr.util.ErrorHandler
-import com.xxxx.emby_vr.util.Utils
+import com.xxxx.emby_vr.Utils
 
 /**
  * 演员页（父亲 2026-10-10 定）。
