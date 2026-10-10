@@ -2,11 +2,10 @@ package com.xxxx.emby_vr.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -39,7 +38,9 @@ import com.xxxx.emby_vr.util.Utils
  *      **每组标题带条数，没有内容的那一组不显示**；组内按上映/开播时间从新到旧。
  *
  * 点海报 → 进详情页（父亲 2026-10-10：先进详情页，不直接播）。
- * 分组全在本地算（一次请求就把 Type 与 Genres 带回来了）。
+ *
+ * 容器用 LazyColumn（不是 Column + verticalScroll）：**焦点走到下面那一组时页面会自动
+ * 跟着滚**，手柄摇杆（= 方向键）就能一路往下翻（父亲 2026-10-10：新页面要能用摇杆滚）。
  */
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
@@ -79,126 +80,135 @@ fun ActorScreen(
     /** 分组：按固定顺序，只保留有内容的组 */
     val groups: List<Pair<PersonWorkGroup, List<BaseItemDto>>> = remember(list) {
         if (list == null) emptyList()
-        else PersonWorkGroup.entries.map { g -> g to list.filter { classifyPersonWork(it) == g } }
+        else PersonWorkGroup.entries
+            .map { g -> g to list.filter { classifyPersonWork(it) == g } }
             .filter { it.second.isNotEmpty() }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(bottom = 40.dp),
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(bottom = 40.dp),
     ) {
         // ---------- 顶部：头像 + 姓名 + 生日 + 小传 ----------
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 40.dp, end = 40.dp, top = 24.dp, bottom = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(24.dp),
-        ) {
-            Box(
+        item(key = "header") {
+            Row(
                 modifier = Modifier
-                    .width(180.dp)
-                    .aspectRatio(0.72f)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(Color(0xFF2D2D2D)),
-                contentAlignment = Alignment.Center,
+                    .fillMaxWidth()
+                    .padding(start = 40.dp, end = 40.dp, top = 24.dp, bottom = 18.dp),
+                horizontalArrangement = Arrangement.spacedBy(24.dp),
             ) {
-                if (avatarUrl != null) {
-                    AsyncImage(
-                        model = avatarUrl,
-                        contentDescription = personName,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop,
-                    )
-                } else {
-                    Text("无头像", color = Color.White.copy(alpha = 0.5f), fontSize = 16.sp)
+                Box(
+                    modifier = Modifier
+                        .width(180.dp)
+                        .aspectRatio(0.72f)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color.White.copy(alpha = 0.06f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (avatarUrl != null) {
+                        AsyncImage(
+                            model = avatarUrl,
+                            contentDescription = personName,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop,
+                        )
+                    } else {
+                        Text("无头像", color = Color.White.copy(alpha = 0.5f), fontSize = 16.sp)
+                    }
                 }
-            }
 
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = person?.name ?: personName,
-                    color = Color.White,
-                    fontSize = 30.sp,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                val birth = Utils.formatDate(person?.premiereDate)
-                if (birth.isNotBlank()) {
-                    Spacer(modifier = Modifier.height(6.dp))
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "出生日期：$birth",
-                        color = Color.White.copy(alpha = 0.75f),
+                        text = person?.name ?: personName,
+                        color = Color.White,
+                        fontSize = 30.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    val birth = Utils.formatDate(person?.premiereDate)
+                    if (birth.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "出生日期：$birth",
+                            color = Color.White.copy(alpha = 0.75f),
+                            fontSize = 16.sp,
+                        )
+                    }
+
+                    val overview = person?.overview
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = when {
+                            overview.isNullOrBlank() && person != null -> "Emby 里没有这位演员的简介"
+                            overview.isNullOrBlank() -> "正在读取演员资料…"
+                            else -> overview
+                        },
+                        color = Color.White.copy(alpha = 0.85f),
                         fontSize = 16.sp,
+                        lineHeight = 24.sp,
                     )
                 }
-
-                val overview = person?.overview
-                Spacer(modifier = Modifier.height(10.dp))
-                Text(
-                    text = when {
-                        overview.isNullOrBlank() && person != null -> "Emby 里没有这位演员的简介"
-                        overview.isNullOrBlank() -> "正在读取演员资料…"
-                        else -> overview
-                    },
-                    color = Color.White.copy(alpha = 0.85f),
-                    fontSize = 16.sp,
-                    lineHeight = 24.sp,
-                )
             }
         }
 
-        Spacer(modifier = Modifier.height(10.dp))
-
         // ---------- 作品分组 ----------
         when {
-            list == null -> Box(
-                modifier = Modifier.fillMaxWidth().padding(40.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text("正在读取作品…", color = Color.White.copy(alpha = 0.8f), fontSize = 18.sp)
+            list == null -> item(key = "loading") {
+                Box(
+                    modifier = Modifier.fillMaxWidth().padding(40.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("正在读取作品…", color = Color.White.copy(alpha = 0.8f), fontSize = 18.sp)
+                }
             }
 
-            groups.isEmpty() -> Box(
-                modifier = Modifier.fillMaxWidth().padding(40.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    "库里没有这位演员的作品",
-                    color = Color.White.copy(alpha = 0.8f),
-                    fontSize = 18.sp,
-                )
+            groups.isEmpty() -> item(key = "empty") {
+                Box(
+                    modifier = Modifier.fillMaxWidth().padding(40.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "库里没有这位演员的作品",
+                        color = Color.White.copy(alpha = 0.8f),
+                        fontSize = 18.sp,
+                    )
+                }
             }
 
             else -> groups.forEachIndexed { groupIndex, (group, groupItems) ->
-                Text(
-                    text = "${group.label} (${groupItems.size})",
-                    // 分节标题照详情页那套（titleLarge + 粗体），全站一致
-                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                    color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.padding(start = 40.dp, top = 18.dp, bottom = 10.dp),
-                )
-                LazyRow(
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
-                    contentPadding = PaddingValues(start = 40.dp, end = 40.dp),
-                ) {
-                    items(
-                        groupItems,
-                        key = { it.id ?: "${it.name}-${it.hashCode()}" },
-                    ) { item ->
-                        BuildItem(
-                            item = item,
-                            imgWidth = 150.dp,
-                            aspectRatio = (item.primaryImageAspectRatio ?: 0.6667).toFloat(),
-                            modifier = Modifier,
-                            isMyLibrary = false,
-                            serverUrl = serverUrl,
-                            // 进页面时焦点落在第一组的第一张（VR：光柱/遥控器都有落点）
-                            autoFocus = groupIndex == 0 && item === groupItems.firstOrNull(),
-                            onItemClick = { onOpenItem(item) },
-                        )
+                item(key = "title-${group.name}") {
+                    Text(
+                        text = "${group.label} (${groupItems.size})",
+                        // 分节标题照详情页那套（titleLarge + 粗体），全站一致
+                        style = MaterialTheme.typography.titleLarge.copy(
+                            fontWeight = FontWeight.Bold,
+                        ),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(start = 40.dp, top = 18.dp, bottom = 10.dp),
+                    )
+                }
+                item(key = "row-${group.name}") {
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        contentPadding = PaddingValues(start = 40.dp, end = 40.dp),
+                    ) {
+                        items(
+                            groupItems,
+                            key = { it.id ?: "${it.name}-${it.hashCode()}" },
+                        ) { item ->
+                            BuildItem(
+                                item = item,
+                                imgWidth = 150.dp,
+                                aspectRatio = (item.primaryImageAspectRatio ?: 0.6667).toFloat(),
+                                modifier = Modifier,
+                                isMyLibrary = false,
+                                serverUrl = serverUrl,
+                                // 进页面时焦点落在第一组的第一张（VR：光柱/遥控器都有落点）
+                                autoFocus = groupIndex == 0 && item === groupItems.firstOrNull(),
+                                onItemClick = { onOpenItem(item) },
+                            )
+                        }
                     }
                 }
             }

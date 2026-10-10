@@ -2,10 +2,12 @@ package com.xxxx.emby_vr.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -15,9 +17,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -35,6 +44,9 @@ import com.xxxx.emby_vr.data.model.BaseItemDto
 import com.xxxx.emby_vr.panel.vrClickTarget
 import com.xxxx.emby_vr.ui.viewmodel.SearchViewModel
 import kotlinx.coroutines.delay
+
+/** 摇杆每拨一次滚多少（大约一个海报行的距离） */
+private const val kScrollStep = 300f
 
 /**
  * 首页搜索浮层（父亲 2026-10-10 定稿）。
@@ -60,6 +72,9 @@ fun SearchOverlay(
     var query by remember { mutableStateOf(searchViewModel.currentQuery) }
     var tab by remember { mutableStateOf(SearchTab.ALL) }
     val fieldFocus = remember { FocusRequester() }
+    /** 第一张结果海报的焦点锚点：输入框按「下」直接落到它上面（摇杆就能开始滚结果） */
+    val firstResultFocus = remember { FocusRequester() }
+    val gridState = rememberLazyGridState()
     val keyboard = LocalSoftwareKeyboardController.current
 
     val results = searchViewModel.searchResults
@@ -118,7 +133,35 @@ fun SearchOverlay(
         modifier = Modifier
             .fillMaxSize()
             // 压暗背景，海报墙仍可见 —— 是浮层，不是把海报墙换掉
-            .background(Color.Black.copy(alpha = 0.45f)),
+            .background(Color.Black.copy(alpha = 0.45f))
+            /*
+             * 浮层开着时把点击吃掉：不然扣扳机指着空白处会点到**后面海报墙**上的卡片，
+             * 焦点跟着跑出浮层，摇杆就滚不动这块浮层了（父亲 2026-10-10：摇杆要接进来）。
+             */
+            .pointerInput(Unit) { detectTapGestures { } }
+            /*
+             * 摇杆 = 遥控器方向键（父亲 2026-10-10：摇杆必须能滚这块浮层）。
+             *
+             * 这里直接在浮层根上截「上/下」，自己滚结果网格 —— 不靠焦点移动，
+             * 因为焦点可能停在输入框里（文本框会把方向键吃掉），那样摇杆看着像没反应。
+             * 左右键不截，留给文本框移光标；没有结果时不截，照常走焦点（方便回到输入框）。
+             */
+            .onPreviewKeyEvent { e ->
+                if (e.type != KeyEventType.KeyDown || shown.isEmpty()) {
+                    return@onPreviewKeyEvent false
+                }
+                when (e.key) {
+                    Key.DirectionDown -> {
+                        gridState.dispatchRawDelta(kScrollStep)
+                        true
+                    }
+                    Key.DirectionUp -> {
+                        gridState.dispatchRawDelta(-kScrollStep)
+                        true
+                    }
+                    else -> false
+                }
+            },
         contentAlignment = Alignment.Center,
     ) {
         Column(
@@ -141,6 +184,12 @@ fun SearchOverlay(
                         .background(Color.White.copy(alpha = 0.06f))
                         .border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(12.dp))
                         .focusRequester(fieldFocus)
+                        /*
+                         * 输入框按「下」直接进结果网格（父亲 2026-10-10：摇杆要能滚）。
+                         * 文本框会把方向键吃掉当光标移动，不这样接一下，焦点就一直困在框里，
+                         * 摇杆看着像没反应。
+                         */
+                        .focusProperties { down = firstResultFocus }
                         .vrClickTarget(
                             key = "search:field",
                             focusRequester = fieldFocus,
@@ -237,13 +286,22 @@ fun SearchOverlay(
                     Spacer(modifier = Modifier.height(14.dp))
 
                     LazyVerticalGrid(
+                        state = gridState,
                         columns = GridCells.Adaptive(minSize = 150.dp),
                         horizontalArrangement = Arrangement.spacedBy(16.dp),
                         verticalArrangement = Arrangement.spacedBy(18.dp),
                         contentPadding = PaddingValues(bottom = 12.dp),
                         modifier = Modifier.fillMaxSize(),
                     ) {
-                        items(shown, key = { it.id ?: it.hashCode().toString() }) { item ->
+                        /*
+                         * 结果出来后焦点自动落到第一张（父亲 2026-10-10：摇杆要能滚）。
+                         * 网格本身会跟着焦点滚；焦点在输入框里时方向键被文本框吃掉，
+                         * 所以搜完就把焦点交出来，摇杆立刻能上下滚结果。
+                         */
+                        itemsIndexed(
+                            shown,
+                            key = { _, item -> item.id ?: item.hashCode().toString() },
+                        ) { index, item ->
                             BuildItem(
                                 item = item,
                                 imgWidth = 150.dp,
@@ -251,6 +309,8 @@ fun SearchOverlay(
                                 modifier = Modifier.fillMaxWidth(),
                                 isMyLibrary = false,
                                 serverUrl = serverUrl,
+                                autoFocus = index == 0,
+                                focusRequester = if (index == 0) firstResultFocus else null,
                                 onItemClick = { onOpenItem(item) },
                             )
                         }
