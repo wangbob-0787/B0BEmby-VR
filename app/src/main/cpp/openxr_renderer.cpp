@@ -746,6 +746,92 @@ bool loadEnvAsset(const char *path) {
     return true;
 }
 
+/* drawCinema 在后面定义，这里先用一声明（影厅图层要在它前面调用） */
+void drawCinema(const Mat4 &proj, const Mat4 &view, const XrVector3f &eyePos);
+
+/** 建影厅图层的交换链（分辨率按 scale 缩一点：影厅是暗场，省下来的 GPU 留给正片） */
+bool createCinemaSwapchains(VrContext &c, float scale) {
+    if (c.cinemaEyesOk) return true;
+    c.cinemaEyes.clear();
+    c.cinemaEyes.resize(c.eyes.size());
+    for (size_t i = 0; i < c.eyes.size(); i++) {
+        EyeSwapchain &ce = c.cinemaEyes[i];
+        ce.width = (int32_t) fmaxf(64.f, (float) c.eyes[i].width * scale);
+        ce.height = (int32_t) fmaxf(64.f, (float) c.eyes[i].height * scale);
+        XrSwapchainCreateInfo sci{XR_TYPE_SWAPCHAIN_CREATE_INFO};
+        sci.arraySize = 1;
+        sci.mipCount = 1;
+        sci.faceCount = 1;
+        sci.format = c.eyeFormat;
+        sci.width = ce.width;
+        sci.height = ce.height;
+        sci.sampleCount = 1;
+        sci.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
+        if (XR_FAILED(api.CreateSwapchain(c.session, &sci, &ce.handle))) {
+            LOGE("影厅交换链创建失败（眼 %zu）", i);
+            return false;
+        }
+        uint32_t imgCount = 0;
+        api.EnumerateSwapchainImages(ce.handle, 0, &imgCount, nullptr);
+        ce.images.resize(imgCount, {XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR});
+        if (XR_FAILED(api.EnumerateSwapchainImages(
+                ce.handle, imgCount, &imgCount,
+                reinterpret_cast<XrSwapchainImageBaseHeader *>(ce.images.data())))) {
+            return false;
+        }
+        ce.fbos.resize(imgCount, 0);
+        ce.depthRbos.assign(imgCount, 0);
+        for (uint32_t k = 0; k < imgCount; k++) {
+            glGenFramebuffers(1, &ce.fbos[k]);
+            glBindFramebuffer(GL_FRAMEBUFFER, ce.fbos[k]);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                                   static_cast<GLuint>(ce.images[k].image), 0);
+            glGenRenderbuffers(1, &ce.depthRbos[k]);
+            glBindRenderbuffer(GL_RENDERBUFFER, ce.depthRbos[k]);
+            glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, ce.width, ce.height);
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER,
+                                      ce.depthRbos[k]);
+            if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+                LOGE("影厅 FBO 不完整（眼 %zu 图 %u）", i, k);
+                return false;
+            }
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        LOGI("影厅图层交换链：眼 %zu %dx%d（%u 张图）", i, ce.width, ce.height, imgCount);
+    }
+    c.cinemaEyesOk = true;
+    return true;
+}
+
+/** 把影厅画进影厅图层（一只眼一张） */
+bool renderCinemaEye(VrContext &c, int i, const XrView &view) {
+    if (i < 0 || i >= (int) c.cinemaEyes.size()) return false;
+    EyeSwapchain &ce = c.cinemaEyes[i];
+    uint32_t imageIndex = 0;
+    XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+    if (XR_FAILED(api.AcquireSwapchainImage(ce.handle, &ai, &imageIndex))) return false;
+    XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+    /*
+     * 这一层**无限等**：它不是关键路径（影厅画面晚一帧没人看得出来），
+     * 超时后按规范那张图仍是 acquired、不能写也不能 release，索性等到底。
+     */
+    wi.timeout = XR_INFINITE_DURATION;
+    if (XR_FAILED(api.WaitSwapchainImage(ce.handle, &wi))) return false;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, ce.fbos[imageIndex]);
+    glViewport(0, 0, ce.width, ce.height);
+    /* 透明底：影厅没盖到的地方（理论上没有）也不该糊住下面 */
+    glClearColor(0.f, 0.f, 0.f, 0.f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    const Mat4 proj = perspectiveFromFov(view.fov, 0.05f, 100.f);
+    const Mat4 view4 = viewMatrixFromPose(view.pose);
+    if (!c.cinemaEyesOk) drawCinema(proj, view4, view.pose.position);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+    return XR_SUCCEEDED(api.ReleaseSwapchainImage(ce.handle, &ri));
+}
+
 /** 画影厅：模型矩阵 = 换排平移；光源就是银幕 */
 void drawCinema(const Mat4 &proj, const Mat4 &view, const XrVector3f &eyePos) {
     if (!gCinemaReady.load() || gCinemaOn.load() == 0 || gCinemaProgram == 0) return;
@@ -1019,6 +1105,19 @@ struct VrContext {
     EGLSurface eglSurface = EGL_NO_SURFACE;
 
     std::vector<EyeSwapchain> eyes;
+    /*
+     * 影厅独立底层（父亲 2026-10-10 装机实测后改的架构）。
+     *
+     * 图层顺序里投影层在最上面，而影厅是布满整个视野的 3D 几何 —— 画进投影层就等于
+     * 把下面的视频、弹幕、海报墙、控制条、菜单全糊住（父亲实测：一转头控制条闪一下
+     * 局部就没了，把影厅关掉它们立刻回来）。
+     *
+     * 所以影厅自己拿一对交换链，作为**最底下**的投影层提交；原来那层投影层保持
+     * 透明背景，只画光柱这类近场元素。谁都不挡谁，视频与面板的独立层清晰度也不受影响。
+     */
+    std::vector<EyeSwapchain> cinemaEyes;
+    bool cinemaEyesOk = false;
+    int64_t eyeFormat = 0;
     std::vector<XrViewConfigurationView> viewConfigs;
 
     GLuint program = 0;
@@ -1686,6 +1785,7 @@ bool createSwapchains(VrContext &c) {
         if (f == GL_RGBA8) chosen = f;
     }
     LOGI("swapchain 格式选定 0x%llx（候选 %u 个）", (unsigned long long) chosen, count);
+    c.eyeFormat = chosen;   // 影厅图层的交换链用同一个格式
 
     c.eyes.resize(c.viewConfigs.size());
     for (size_t i = 0; i < c.viewConfigs.size(); i++) {
@@ -3161,7 +3261,7 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
      * 影厅先画（父亲 2026-10-10）：开深度、画完立刻关掉 —— 后面的银幕/海报墙/控制条/弹幕
      * 还是原来的图层顺序，一层层叠上去，不受影厅遮挡影响。
      */
-    drawCinema(proj, view4, view.pose.position);
+    if (!c.cinemaEyesOk) drawCinema(proj, view4, view.pose.position);
     if (c.program != 0 && c.mvpLoc >= 0) {
         /*
          * 一块屏：摆位 → 位置/朝向/尺寸，贴 tex（tex = 0 就画底色）。
@@ -4059,6 +4159,13 @@ void frameLoop(VrContext &c) {
     std::vector<XrCompositionLayerProjectionView> projViews(c.viewConfigs.size());
     for (auto &pv : projViews) pv = {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW};
 
+    /* 影厅图层（最底下那层）的视图数组 */
+    std::vector<XrCompositionLayerProjectionView> cinemaViews(c.viewConfigs.size());
+    for (auto &cv : cinemaViews) cv = {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW};
+    XrCompositionLayerProjection cinemaProj{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+    uint32_t cinemaViewCount = 0;
+    bool cinemaLayerOk = false;
+
     XrCompositionLayerProjection layer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
     layer.space = c.localSpace;
     layer.viewCount = (uint32_t) projViews.size();
@@ -4122,7 +4229,7 @@ void frameLoop(VrContext &c) {
     menuQuad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
     menuQuad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
 
-    const XrCompositionLayerBaseHeader *layerPtrs[7] = {nullptr, nullptr, nullptr, nullptr,
+    const XrCompositionLayerBaseHeader *layerPtrs[8] = {nullptr, nullptr, nullptr, nullptr,
                                                         nullptr, nullptr, nullptr};
 
     int loggedFrames = 0;
@@ -4428,6 +4535,28 @@ void frameLoop(VrContext &c) {
                     projViews[i].subImage.imageRect.offset = {0, 0};
                     projViews[i].subImage.imageRect.extent = {c.eyes[i].width, c.eyes[i].height};
                 }
+                /*
+                 * 影厅图层（最底下那层）：单独渲染，与上面那层互不遮挡（父亲 2026-10-10）。
+                 * 失败就整帧不提交这一层，不影响别的图层。
+                 */
+                cinemaLayerOk = false;
+                if (eyesOk && c.cinemaEyesOk && gCinemaReady.load() && gCinemaOn.load() != 0) {
+                    bool cinemaOk = true;
+                    for (uint32_t i = 0; i < viewCount; i++) {
+                        if (!renderCinemaEye(c, (int) i, views[i])) {
+                            cinemaOk = false;
+                            break;
+                        }
+                        cinemaViews[i].pose = views[i].pose;
+                        cinemaViews[i].fov = views[i].fov;
+                        cinemaViews[i].subImage.swapchain = c.cinemaEyes[i].handle;
+                        cinemaViews[i].subImage.imageRect.offset = {0, 0};
+                        cinemaViews[i].subImage.imageRect.extent = {c.cinemaEyes[i].width,
+                                                                    c.cinemaEyes[i].height};
+                    }
+                    cinemaLayerOk = cinemaOk;
+                    cinemaViewCount = viewCount;
+                }
                 tEyes = std::chrono::steady_clock::now();
                 rendered = eyesOk;
                 if (rendered && loggedFrames < 3) {
@@ -4449,6 +4578,18 @@ void frameLoop(VrContext &c) {
          * 视频层没有内容（没开播、还没出帧、或运行时拒绝）时只提交界面层。
          */
         uint32_t layerCount = 0;
+        /*
+         * 影厅第一个提交 = 最底下那层（OpenXR 按数组顺序合成，先提交的在下）。
+         * 上面才是视频、弹幕、海报墙、控制条、菜单，最后是画光柱的那层投影层。
+         */
+        if (rendered && cinemaLayerOk && cinemaViewCount == c.viewConfigs.size()) {
+            cinemaProj.space = c.localSpace;
+            cinemaProj.viewCount = cinemaViewCount;
+            cinemaProj.views = cinemaViews.data();
+            cinemaProj.layerFlags = 0;   // 不透明：影厅是背景
+            layerPtrs[layerCount++] =
+                    reinterpret_cast<const XrCompositionLayerBaseHeader *>(&cinemaProj);
+        }
         if (rendered && c.videoLayer.submitted) {
             const ScreenPlacement sp = frontScreen(c);
             const float hy = sp.yawDeg * 3.14159265358979f / 360.f;
@@ -4777,7 +4918,13 @@ void renderThreadMain() {
         applySeat(gSeat.load());
         /* 影厅几何 + 环境光贴图：路径由 Java 侧给（assets 已拷到应用目录） */
         if (!gEnvAssetPath.empty()) loadEnvAsset(gEnvAssetPath.c_str());
-        if (!gCinemaAssetPath.empty()) loadCinemaAsset(gCinemaAssetPath.c_str());
+        if (!gCinemaAssetPath.empty() && loadCinemaAsset(gCinemaAssetPath.c_str())) {
+            /*
+             * 影厅单独占一层（0.75 倍分辨率：暗场细节看不太出来，省下的 GPU 给正片）。
+             * 建失败就退回"画进主投影层"的老路（会糊住面板，但至少看得到影厅）。
+             */
+            createCinemaSwapchains(c, 0.75f);
+        }
         c.mvpLoc = glGetUniformLocation(c.program, "uMvp");
         c.colorLoc = glGetUniformLocation(c.program, "uColor");
         c.useTexLoc = glGetUniformLocation(c.program, "uUseTexture");
