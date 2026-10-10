@@ -53,6 +53,13 @@ private const val kScrollStep = 300f
 private val kIdleBg = Color(0xFF3A3A3A)
 
 /**
+ * 控制条按钮的两档底色（父亲 2026-10-10：搜索面板的选中/聚焦要跟控制条一致）。
+ * 取值与 `PlayerOsd.OsdButtonView` 里的一字不差。
+ */
+private val kOsdSelectedBg = Color(0x3D2FD57C)   // 选中：半透明绿
+private val kOsdHoverBg = Color(0x24FFFFFF)      // 悬停/聚焦：半透明白
+
+/**
  * 首页搜索浮层（父亲 2026-10-10 定稿）。
  *
  * 形态：**浮在海报墙上面**的一块面板，海报墙不动。
@@ -396,14 +403,21 @@ private fun PillChip(
     onClick: () -> Unit,
 ) {
     val focusRequester = remember { FocusRequester() }
-    val accent = MaterialTheme.colorScheme.secondary
     Surface(
         onClick = onClick,
-        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
+        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(22.dp)),
+        /*
+         * 配色**跟播放页控制条那排按钮完全一致**（父亲 2026-10-10）：
+         *   常态   = 透明底 + 白字
+         *   悬停/聚焦 = 半透明白（14%）
+         *   选中   = 半透明绿（#2FD57C 24%）
+         * 控制条那边的取值就是这么写的（见 PlayerOsd.OsdButtonView），这里照抄，
+         * 用户在两个界面看到的是同一套反馈语言。
+         */
         colors = ClickableSurfaceDefaults.colors(
-            containerColor = if (selected) accent else kIdleBg,
+            containerColor = if (selected) kOsdSelectedBg else Color.Transparent,
             contentColor = Color.White,
-            focusedContainerColor = accent,
+            focusedContainerColor = if (selected) kOsdSelectedBg else kOsdHoverBg,
             focusedContentColor = Color.White,
         ),
         modifier = Modifier
