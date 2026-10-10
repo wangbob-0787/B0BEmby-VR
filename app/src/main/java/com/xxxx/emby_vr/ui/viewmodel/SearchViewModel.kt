@@ -76,8 +76,13 @@ class SearchViewModel(application: Application) : AndroidViewModel(application) 
     )
         private set
 
-    /** 切换通道并记住，下次打开搜索框沿用 */
-    fun setChannel(c: Channel) {
+    /**
+     * 切换通道并记住，下次打开搜索框沿用。
+     *
+     * 方法名不能叫 setChannel —— `var channel` 会自动生成同名 setter，JVM 签名冲突（编译报
+     * Platform declaration clash），所以用 selectChannel。
+     */
+    fun selectChannel(c: Channel) {
         if (channel == c) return
         channel = c
         prefs.searchChannel = if (c == Channel.PERSON) {

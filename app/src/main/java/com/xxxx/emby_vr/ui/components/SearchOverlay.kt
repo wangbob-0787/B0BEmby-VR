@@ -228,13 +228,13 @@ fun SearchOverlay(
                     text = "片名",
                     selected = channel == SearchViewModel.Channel.NAME,
                     vrKey = "search:channel:name",
-                    onClick = { searchViewModel.setChannel(SearchViewModel.Channel.NAME) },
+                    onClick = { searchViewModel.selectChannel(SearchViewModel.Channel.NAME) },
                 )
                 PillChip(
                     text = "演员",
                     selected = channel == SearchViewModel.Channel.PERSON,
                     vrKey = "search:channel:person",
-                    onClick = { searchViewModel.setChannel(SearchViewModel.Channel.PERSON) },
+                    onClick = { searchViewModel.selectChannel(SearchViewModel.Channel.PERSON) },
                 )
 
                 Button(
