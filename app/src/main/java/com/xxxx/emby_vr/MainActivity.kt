@@ -158,6 +158,14 @@ class MainActivity : ComponentActivity() {
      */
     private val kSubtitleTrackWaitAttempts = 20
 
+    /**
+     * 本次起播的播放方式（DirectPlay / DirectStream / Transcode）。
+     *
+     * 用途：决定字幕走哪条路 —— **转码的流里播放器报不出内封文字轨**（实测），
+     * 那就别等它，直接让服务端转 SRT 自绘；直连才用"播放器就地解析"那条快路。
+     */
+    private var lastPlayMethod: String = ""
+
     // ── 光柱交互状态（2026-10-06 下午）──
     /** 最近一次控制条 / 菜单指针到达的时间：用来判断「光柱指着画面还是指着面板」 */
     private var lastOsdPointerAt = 0L
@@ -1515,6 +1523,7 @@ class MainActivity : ComponentActivity() {
                  * HDR 转 SDR、换封装）全绕过去了。现在照 TV 版那套判定走。
                  */
                 val method = Utils.determinePlayMethod(media)
+                lastPlayMethod = method
                 val path0 = when (method) {
                     "DirectPlay" -> source?.directStreamUrl
                     else -> source?.transcodingUrl ?: source?.directStreamUrl
@@ -1959,13 +1968,23 @@ class MainActivity : ComponentActivity() {
              */
             selectedSubtitleIndex?.let { idx ->
                 /*
-                 * 起播恢复上次选的字幕（2026-10-09）：内封文字轨交给播放器就地解析（秒出），
-                 * 其余（外挂/图形）仍走服务端取流那条路。
+                 * 起播恢复上次选的字幕（2026-10-10 再修：**按播放方式分路**）。
+                 *
+                 * 实测（父亲切画质那条日志）：**服务端转码的流里播放器永远报不出文字轨**，
+                 * 于是"等播放器就绪"白等 24 秒，最后还是要退回服务端转 SRT —— 用户看到的就是
+                 * "切到 1080p 后中文字幕没了"（其实 25 秒后才出来）。
+                 *
+                 * 所以：
+                 *   · 转码 → **直接走服务端转 SRT 自绘**（服务端这时正在推流、文件是热的，
+                 *     实测 0.45 秒返回 1064 条）；
+                 *   · 直连（DirectPlay/DirectStream）→ 播放器就地解析（毫秒级，官方也是这套）。
                  */
                 val st = currentStreams.firstOrNull { it.index == idx }
-                if (st != null && st.isExternal != true && !isImageSubtitle(st)) {
+                val embeddedText = st != null && st.isExternal != true && !isImageSubtitle(st)
+                if (embeddedText && lastPlayMethod != "Transcode") {
                     selectEmbeddedTextTrack(idx)
                 } else {
+                    Log.i(TAG, "字幕 $idx → 走服务端转 SRT 自绘（播放方式=$lastPlayMethod）")
                     loadSubtitleTrack(idx)
                 }
             }
@@ -2280,7 +2299,16 @@ class MainActivity : ComponentActivity() {
                         embeddedText -> {
                             subtitleCues = emptyList()
                             subtitleCueStream = null
-                            selectEmbeddedTextTrack(selectedSubtitleIndex!!)
+                            /*
+                             * 转码的流里播放器报不出内封文字轨（实测）→ 直接请服务端转 SRT 自绘，
+                             * 别让它在那儿白等 24 秒（父亲 2026-10-10：切到 1080p 后中文字幕没了）。
+                             */
+                            if (lastPlayMethod == "Transcode") {
+                                Log.i(TAG, "转码流：内封文字轨改走服务端转 SRT 自绘")
+                                loadSubtitleTrack(selectedSubtitleIndex!!)
+                            } else {
+                                selectEmbeddedTextTrack(selectedSubtitleIndex!!)
+                            }
                         }
                         selectedSubtitleIndex == null -> {
                             // 关字幕：把播放器的文字轨一起关掉，并清掉屏上的字
