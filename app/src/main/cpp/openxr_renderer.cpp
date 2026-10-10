@@ -3047,24 +3047,6 @@ bool renderCinemaEye(VrContext &c, int i, const XrView &view) {
     if (!c.cinemaEyesOk) drawCinema(proj, view4, view.pose.position);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    /*
-     * 体检（2026-10-10）：影厅图层画完立刻回读中心 4×4 的平均亮度。
-     * 目的是分清两种"影厅不见了"：①画出来就是黑的（渲染问题）②画出来了但运行时没合成
-     * 这一层（图层问题）。日志里一行就能判。
-     */
-    if (i == 0) {
-        static double lastCinemaLog = 0.0;
-        if (nowMs() - lastCinemaLog > 2000.0) {
-            lastCinemaLog = nowMs();
-            unsigned char px[4 * 4 * 4];
-            glReadPixels(ce.width / 2 - 2, ce.height / 2 - 2, 4, 4, GL_RGBA, GL_UNSIGNED_BYTE, px);
-            int sum = 0;
-            for (int k = 0; k < 16; k++) sum += px[k * 4] + px[k * 4 + 1] + px[k * 4 + 2];
-            LOGI("影厅图层体检：中心平均色 %d/765 · 图层可用=%d 提交数=%d", sum / 16,
-                 gCinemaOn.load(), gLastLayerCount.load());
-        }
-    }
-
     XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
     return XR_SUCCEEDED(api.ReleaseSwapchainImage(ce.handle, &ri));
 }
