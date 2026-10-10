@@ -753,92 +753,6 @@ bool loadEnvAsset(const char *path) {
     return true;
 }
 
-/* drawCinema 在后面定义，这里先用一声明（影厅图层要在它前面调用） */
-void drawCinema(const Mat4 &proj, const Mat4 &view, const XrVector3f &eyePos);
-
-/** 建影厅图层的交换链（分辨率按 scale 缩一点：影厅是暗场，省下来的 GPU 留给正片） */
-bool createCinemaSwapchains(VrContext &c, float scale) {
-    if (c.cinemaEyesOk) return true;
-    c.cinemaEyes.clear();
-    c.cinemaEyes.resize(c.eyes.size());
-    for (size_t i = 0; i < c.eyes.size(); i++) {
-        EyeSwapchain &ce = c.cinemaEyes[i];
-        ce.width = (int32_t) fmaxf(64.f, (float) c.eyes[i].width * scale);
-        ce.height = (int32_t) fmaxf(64.f, (float) c.eyes[i].height * scale);
-        XrSwapchainCreateInfo sci{XR_TYPE_SWAPCHAIN_CREATE_INFO};
-        sci.arraySize = 1;
-        sci.mipCount = 1;
-        sci.faceCount = 1;
-        sci.format = c.eyeFormat;
-        sci.width = ce.width;
-        sci.height = ce.height;
-        sci.sampleCount = 1;
-        sci.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
-        if (XR_FAILED(api.CreateSwapchain(c.session, &sci, &ce.handle))) {
-            LOGE("影厅交换链创建失败（眼 %zu）", i);
-            return false;
-        }
-        uint32_t imgCount = 0;
-        api.EnumerateSwapchainImages(ce.handle, 0, &imgCount, nullptr);
-        ce.images.resize(imgCount, {XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR});
-        if (XR_FAILED(api.EnumerateSwapchainImages(
-                ce.handle, imgCount, &imgCount,
-                reinterpret_cast<XrSwapchainImageBaseHeader *>(ce.images.data())))) {
-            return false;
-        }
-        ce.fbos.resize(imgCount, 0);
-        ce.depthRbos.assign(imgCount, 0);
-        for (uint32_t k = 0; k < imgCount; k++) {
-            glGenFramebuffers(1, &ce.fbos[k]);
-            glBindFramebuffer(GL_FRAMEBUFFER, ce.fbos[k]);
-            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
-                                   static_cast<GLuint>(ce.images[k].image), 0);
-            glGenRenderbuffers(1, &ce.depthRbos[k]);
-            glBindRenderbuffer(GL_RENDERBUFFER, ce.depthRbos[k]);
-            glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, ce.width, ce.height);
-            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER,
-                                      ce.depthRbos[k]);
-            if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-                LOGE("影厅 FBO 不完整（眼 %zu 图 %u）", i, k);
-                return false;
-            }
-        }
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        LOGI("影厅图层交换链：眼 %zu %dx%d（%u 张图）", i, ce.width, ce.height, imgCount);
-    }
-    c.cinemaEyesOk = true;
-    return true;
-}
-
-/** 把影厅画进影厅图层（一只眼一张） */
-bool renderCinemaEye(VrContext &c, int i, const XrView &view) {
-    if (i < 0 || i >= (int) c.cinemaEyes.size()) return false;
-    EyeSwapchain &ce = c.cinemaEyes[i];
-    uint32_t imageIndex = 0;
-    XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
-    if (XR_FAILED(api.AcquireSwapchainImage(ce.handle, &ai, &imageIndex))) return false;
-    XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
-    /*
-     * 这一层**无限等**：它不是关键路径（影厅画面晚一帧没人看得出来），
-     * 超时后按规范那张图仍是 acquired、不能写也不能 release，索性等到底。
-     */
-    wi.timeout = XR_INFINITE_DURATION;
-    if (XR_FAILED(api.WaitSwapchainImage(ce.handle, &wi))) return false;
-
-    glBindFramebuffer(GL_FRAMEBUFFER, ce.fbos[imageIndex]);
-    glViewport(0, 0, ce.width, ce.height);
-    /* 透明底：影厅没盖到的地方（理论上没有）也不该糊住下面 */
-    glClearColor(0.f, 0.f, 0.f, 0.f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    const Mat4 proj = perspectiveFromFov(view.fov, 0.05f, 100.f);
-    const Mat4 view4 = viewMatrixFromPose(view.pose);
-    if (!c.cinemaEyesOk) drawCinema(proj, view4, view.pose.position);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-    XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
-    return XR_SUCCEEDED(api.ReleaseSwapchainImage(ce.handle, &ri));
-}
-
 /** 画影厅：模型矩阵 = 换排平移；光源就是银幕 */
 void drawCinema(const Mat4 &proj, const Mat4 &view, const XrVector3f &eyePos) {
     if (!gCinemaReady.load() || gCinemaOn.load() == 0 || gCinemaProgram == 0) return;
@@ -3050,6 +2964,93 @@ void pumpEvents(VrContext &c) {
         ev = {XR_TYPE_EVENT_DATA_BUFFER};
     }
 }
+
+/* drawCinema 在后面定义，这里先用一声明（影厅图层要在它前面调用） */
+void drawCinema(const Mat4 &proj, const Mat4 &view, const XrVector3f &eyePos);
+
+/** 建影厅图层的交换链（分辨率按 scale 缩一点：影厅是暗场，省下来的 GPU 留给正片） */
+bool createCinemaSwapchains(VrContext &c, float scale) {
+    if (c.cinemaEyesOk) return true;
+    c.cinemaEyes.clear();
+    c.cinemaEyes.resize(c.eyes.size());
+    for (size_t i = 0; i < c.eyes.size(); i++) {
+        EyeSwapchain &ce = c.cinemaEyes[i];
+        ce.width = (int32_t) fmaxf(64.f, (float) c.eyes[i].width * scale);
+        ce.height = (int32_t) fmaxf(64.f, (float) c.eyes[i].height * scale);
+        XrSwapchainCreateInfo sci{XR_TYPE_SWAPCHAIN_CREATE_INFO};
+        sci.arraySize = 1;
+        sci.mipCount = 1;
+        sci.faceCount = 1;
+        sci.format = c.eyeFormat;
+        sci.width = ce.width;
+        sci.height = ce.height;
+        sci.sampleCount = 1;
+        sci.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
+        if (XR_FAILED(api.CreateSwapchain(c.session, &sci, &ce.handle))) {
+            LOGE("影厅交换链创建失败（眼 %zu）", i);
+            return false;
+        }
+        uint32_t imgCount = 0;
+        api.EnumerateSwapchainImages(ce.handle, 0, &imgCount, nullptr);
+        ce.images.resize(imgCount, {XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR});
+        if (XR_FAILED(api.EnumerateSwapchainImages(
+                ce.handle, imgCount, &imgCount,
+                reinterpret_cast<XrSwapchainImageBaseHeader *>(ce.images.data())))) {
+            return false;
+        }
+        ce.fbos.resize(imgCount, 0);
+        ce.depthRbos.assign(imgCount, 0);
+        for (uint32_t k = 0; k < imgCount; k++) {
+            glGenFramebuffers(1, &ce.fbos[k]);
+            glBindFramebuffer(GL_FRAMEBUFFER, ce.fbos[k]);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                                   static_cast<GLuint>(ce.images[k].image), 0);
+            glGenRenderbuffers(1, &ce.depthRbos[k]);
+            glBindRenderbuffer(GL_RENDERBUFFER, ce.depthRbos[k]);
+            glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, ce.width, ce.height);
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER,
+                                      ce.depthRbos[k]);
+            if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+                LOGE("影厅 FBO 不完整（眼 %zu 图 %u）", i, k);
+                return false;
+            }
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        LOGI("影厅图层交换链：眼 %zu %dx%d（%u 张图）", i, ce.width, ce.height, imgCount);
+    }
+    c.cinemaEyesOk = true;
+    return true;
+}
+
+/** 把影厅画进影厅图层（一只眼一张） */
+bool renderCinemaEye(VrContext &c, int i, const XrView &view) {
+    if (i < 0 || i >= (int) c.cinemaEyes.size()) return false;
+    EyeSwapchain &ce = c.cinemaEyes[i];
+    uint32_t imageIndex = 0;
+    XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+    if (XR_FAILED(api.AcquireSwapchainImage(ce.handle, &ai, &imageIndex))) return false;
+    XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+    /*
+     * 这一层**无限等**：它不是关键路径（影厅画面晚一帧没人看得出来），
+     * 超时后按规范那张图仍是 acquired、不能写也不能 release，索性等到底。
+     */
+    wi.timeout = XR_INFINITE_DURATION;
+    if (XR_FAILED(api.WaitSwapchainImage(ce.handle, &wi))) return false;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, ce.fbos[imageIndex]);
+    glViewport(0, 0, ce.width, ce.height);
+    /* 透明底：影厅没盖到的地方（理论上没有）也不该糊住下面 */
+    glClearColor(0.f, 0.f, 0.f, 0.f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    const Mat4 proj = perspectiveFromFov(view.fov, 0.05f, 100.f);
+    const Mat4 view4 = viewMatrixFromPose(view.pose);
+    if (!c.cinemaEyesOk) drawCinema(proj, view4, view.pose.position);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+    return XR_SUCCEEDED(api.ReleaseSwapchainImage(ce.handle, &ri));
+}
+
 
 /*
  * ==================== 银幕灯光联动（父亲 2026-10-10「把灯光也要加进去」） ====================
