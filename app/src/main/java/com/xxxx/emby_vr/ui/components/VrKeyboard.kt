@@ -82,15 +82,8 @@ fun VrKeyboard(
             Key("空格", group, "kb:space", Modifier.weight(2.2f), onSpace)
             Key("退格", group, "kb:back", Modifier.weight(1.3f), onBackspace)
             Key("清空", group, "kb:clear", Modifier.weight(1.3f), onClear)
-            // 搜索键=主按钮：常亮绿底
-            Key(
-                label = "搜索",
-                group = group,
-                vrKey = "kb:search",
-                modifier = Modifier.weight(1.6f),
-                onClick = onSearch,
-                alwaysAccent = true,
-            )
+            // 搜索键也跟其它键同一个风格（父亲 2026-10-10：不要给它单独的绿底）
+            Key("搜索", group, "kb:search", Modifier.weight(1.6f), onSearch)
         }
     }
 }
