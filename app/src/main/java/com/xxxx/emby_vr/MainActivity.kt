@@ -543,26 +543,30 @@ class MainActivity : ComponentActivity() {
             lastMenuPointerAt = android.os.SystemClock.uptimeMillis()
             val bar = menuState.brightBar
             if (pressed) {
+                if (!menuDraggingBar) {
+                    /* 每次按下都记下起点：抬起时用它判断"这是点击还是拖动" */
+                    menuPressX = px
+                    menuPressY = py
+                }
                 if (!menuDraggingBar && bar != null &&
                     bar.contains(androidx.compose.ui.geometry.Offset(px, py))
                 ) {
                     menuDraggingBar = true
-                    menuPressX = px
-                    menuPressY = py
                     applyCinemaBright(bar, px)
                 } else if (menuDraggingBar) {
                     // 拖出条外也继续跟随，手感更顺
                     applyCinemaBright(bar, px)
                 }
             } else {
-                if (menuDraggingBar) {
-                    menuDraggingBar = false
-                }
-                runOnUiThread {
-                    if (menuReady()) {
-                        val moved = kotlin.math.abs(px - menuPressX) + kotlin.math.abs(py - menuPressY)
-                        if (moved < 12f) menu.vrClick(px, py)   // 按住没动 = 原来的一次点击
-                    }
+                val moved = kotlin.math.abs(px - menuPressX) + kotlin.math.abs(py - menuPressY)
+                val wasDragging = menuDraggingBar
+                menuDraggingBar = false
+                /*
+                 * 抬起：没在拖亮度条、位移也小 → 当成一次普通点击。
+                 * 菜单行的老行为靠这里（「选座」「影厅亮度」这些行点得动全靠它）。
+                 */
+                if (!wasDragging && moved < 24f) {
+                    runOnUiThread { if (menuReady()) menu.vrClick(px, py) }
                 }
             }
             runOnUiThread { if (menuReady()) menu.vrPointer(px, py) }

@@ -389,7 +389,7 @@ fun PlayerMenuPanel(menu: MenuState, osd: OsdState) {
             Spacer(modifier = Modifier.height(14.dp))
             }
             when (kind) {
-                MenuKind.MORE -> MoreMenu(menu)
+                MenuKind.MORE -> MoreMenu(menu, osd.hasPlayback)
                 MenuKind.SPEED -> SpeedMenu(menu)
                 MenuKind.QUALITY -> QualityMenu(menu)
                 MenuKind.MODE -> ModeMenu(menu)
@@ -410,7 +410,7 @@ fun PlayerMenuPanel(menu: MenuState, osd: OsdState) {
 private fun pxToDp(px: Float) = (px / 1.5f).dp
 
 @Composable
-private fun MoreMenu(menu: MenuState) {
+private fun MoreMenu(menu: MenuState, playing: Boolean) {
     val entries = listOf(
         MenuKind.AUDIO to "音频选择",
         MenuKind.QUALITY to "视频质量",
@@ -436,6 +436,11 @@ private fun MoreMenu(menu: MenuState) {
                 },
                 selected = false,
                 hasSub = true,
+                /*
+                 * 没在播放时这四项没有意义（音频/质量/模式/缓冲都要有片子），
+                 * 灰掉且点不动（父亲 2026-10-10）。
+                 */
+                enabled = playing,
                 onClick = { menu.onSelect?.invoke(MenuKind.MORE, i) },
             )
         }
@@ -911,6 +916,8 @@ private fun MenuRow(
     value: String,
     selected: Boolean,
     hasSub: Boolean = false,
+    /** false = 灰掉且点不动（父亲 2026-10-10：没播放时「更多」里只留选座与影厅亮度） */
+    enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
     Row(
@@ -924,13 +931,13 @@ private fun MenuRow(
              * 「被光柱扫到」—— 14dp 与上面 clip 的圆角一致（父亲 2026-10-10）。
              */
             .vrHoverPointer(radius = 14.dp)
-            .clickable { onClick() }
+            .clickable(enabled = enabled) { onClick() }
             .padding(horizontal = 22.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             text = label,
-            color = Color.White,
+            color = if (enabled) Color.White else Color(0x59FFFFFF),
             fontSize = 24.sp,
             modifier = Modifier.weight(1f),
             maxLines = 1,
