@@ -2447,24 +2447,34 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
+     * 内核处理分辨率的**硬上限：1280 宽**（父亲 2026-10-10 明确：超过就出黑纹）。
+     *
+     * 所有档位、所有入口都被这个值卡住 —— 即使以后有人加了更大的档位、
+     * 或者调参文件写了更大的 `video_surface_w`，也不会真的把内核推过这条线。
+     */
+    private val kKernelWidthCap = 1280
+
+    /**
      * 画质档位 → **内核（mpv）处理分辨率的上限宽度**（父亲 2026-10-10 定）。
      *
      * 内核那条链每帧开销与像素量成正比，所以档位在这里的语义是"内核跑多大"：
-     *   原画          → 1280（72Hz 下 GPU 预算实测就这档稳）
+     *   原画          → 1280（**就是上限**，最高画质）
      *   1080p 10 兆   → 1080
      *   1080p 5 兆    → 1024
      *   1080p 1 兆    → 768
      */
-    private fun kernelWidthForQuality(index: Int): Int = when (index) {
-        0 -> 1280
-        1 -> 1080
-        2 -> 1024
-        else -> 768
-    }
+    private fun kernelWidthForQuality(index: Int): Int =
+        (when (index) {
+            0 -> 1280
+            1 -> 1080
+            2 -> 1024
+            else -> 768
+        }).coerceAtMost(kKernelWidthCap)
 
     /** 立刻把内核的处理分辨率改成「宽 w」（高度按片源比例算），不重起播 */
-    private fun applyKernelWidth(w: Int): Boolean {
+    private fun applyKernelWidth(requested: Int): Boolean {
         val m = mpvBackend ?: return false
+        val w = requested.coerceAtMost(kKernelWidthCap)   // 硬卡上限，不许超 1280
         val srcW = com.xxxx.emby_vr.player.PlaybackFlags.videoWidth.takeIf { it > 0 } ?: 1920
         val srcH = com.xxxx.emby_vr.player.PlaybackFlags.videoHeight.takeIf { it > 0 } ?: 1080
         val vw = if (srcW > w) w else srcW
@@ -2472,7 +2482,7 @@ class MainActivity : ComponentActivity() {
         renderer.setVideoBufferSize(vw, vh)
         m.setSurfaceSize(vw, vh)
         com.xxxx.emby_vr.vr.VrTuning.videoSurfaceMaxW = w
-        Log.i(TAG, "内核处理分辨率 → ${vw}x${vh}（上限宽 $w）")
+        Log.i(TAG, "内核处理分辨率 → ${vw}x${vh}（上限宽 $w，硬上限 $kKernelWidthCap）")
         return true
     }
 
