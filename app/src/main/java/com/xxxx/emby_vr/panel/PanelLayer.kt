@@ -812,6 +812,16 @@ class PanelLayer(
         lastPanelY = py
         scrollAnchorX = px
         scrollAnchorY = py
+        /*
+         * 「被光柱扫到」的统一出口（父亲 2026-10-10）：
+         *   · VrHover —— 查坐标表得出"指着谁"，登记进表的控件（海报卡、按钮、胶囊…）
+         *     在 draw 阶段比钥匙点亮自己。只有**用这张表的**面板才查（控制条/菜单是直通派发，
+         *     坐标口径不同，查了会点亮后面那张根本不在这里的海报）。
+         *   · VrPointer —— 原始坐标（节流发布），给没进表的控件（播放菜单的行）自己判断。
+         * 两边同一套坐标，所以"看到亮的"和"点下去中的"是同一个控件。
+         */
+        if (!directClick) VrHover.update(ClickTargets.findHoverAt(px, py)?.key)
+        VrPointer.publish(px, py)
     }
 
     /**

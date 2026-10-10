@@ -169,6 +169,9 @@ fun HomeHeroCarousel(
                 .vrClickTarget(
                     key = "hero",
                     focusRequester = heroFocus,
+                    // 这层只覆盖左侧 55%，和整块 hero-anywhere 重叠；让它不参与"扫到"的点亮，
+                    // 否则光柱在左侧亮 55%、右侧亮整块，看着像抖（父亲 2026-10-10）
+                    hover = false,
                     onActivate = { onOpenItem(list[index.coerceIn(0, list.lastIndex)]) },
                 )
                 .onPreviewKeyEvent { e ->

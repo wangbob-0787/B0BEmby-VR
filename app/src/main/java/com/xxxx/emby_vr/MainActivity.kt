@@ -378,7 +378,18 @@ class MainActivity : ComponentActivity() {
 
         override fun onPanelFocus(onPanel: Boolean) {
             // 原生只在变化时推：光柱是否落在海报墙上
-            runOnUiThread { panelPointerOnPanel = onPanel }
+            runOnUiThread {
+                panelPointerOnPanel = onPanel
+                /*
+                 * 光柱离开面板 / 面板收起 → 把「扫到谁」清掉（父亲 2026-10-10）。
+                 * 不清的话会留着一个已经不存在的控件钥匙，或者光柱早就不在墙上了、
+                 * 某张海报还亮着。
+                 */
+                if (!onPanel) {
+                    com.xxxx.emby_vr.panel.VrHover.clear()
+                    com.xxxx.emby_vr.panel.VrPointer.clear()
+                }
+            }
         }
 
         /**

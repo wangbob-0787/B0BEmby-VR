@@ -6,10 +6,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 
 /**
  * 控件坐标表（自建，2026-10-04 父亲定案）。
@@ -46,6 +50,15 @@ object ClickTargets {
         val bottom: Float,
         val focus: (() -> Unit)?,
         val activate: () -> Unit,
+        /**
+         * 是否参与「被光柱扫到」的点亮（父亲 2026-10-10）。
+         *
+         * 大多数控件是 true。两类要关掉：
+         *   · 全屏遮罩/兜底矩形 —— 亮起来会把整屏糊白；
+         *   · 与另一个控件**重叠的辅助点击区**（比如大海报左侧 55% 那层焦点区）——
+         *     留着会让同一个区域亮出两种大小，看着像抖。
+         */
+        val hoverable: Boolean = true,
         /**
          * 所属分组（父亲 2026-10-10：搜索浮层）。
          *
@@ -151,9 +164,11 @@ object ClickTargets {
         focus: (() -> Unit)?,
         activate: () -> Unit,
         group: Any? = null,
+        hoverable: Boolean = true,
     ) {
         synchronized(targets) {
-            targets[key] = Target(key, label, left, top, right, bottom, focus, activate, group)
+            targets[key] =
+                Target(key, label, left, top, right, bottom, focus, activate, hoverable, group)
             putCount++
             // 头 15 条 + 每 50 条打一行：既能核对坐标，又不会把日志刷爆
             if (putCount <= 15 || putCount % 50 == 0) {
@@ -194,10 +209,49 @@ object ClickTargets {
      */
     fun findAt(x: Float, y: Float): Target? = synchronized(targets) {
         val g = modalGroup
-        targets.values
-            .filter { g == null || it.group === g }
-            .filter { it.contains(x, y) }
-            .minByOrNull { it.area }
+        // 单趟扫描、不建中间列表：这个方法现在**每帧**都会被调用（光柱扫到谁 = 高亮谁），
+        // 原来的 filter+filter+minByOrNull 每帧要分配两三个 List，72Hz 下就是垃圾回收压力。
+        var best: Target? = null
+        var bestArea = Float.MAX_VALUE
+        for (t in targets.values) {
+            if (g != null && t.group !== g) continue
+            if (!t.contains(x, y)) continue
+            val a = t.area
+            if (a < bestArea) {
+                bestArea = a
+                best = t
+            }
+        }
+        best
+    }
+
+    /**
+     * 查光柱**该点亮谁**（父亲 2026-10-10）。
+     *
+     * 与 [findAt] 同一套规则（模态组过滤 + 取面积最小），只多一条：
+     * 跳过 hoverable=false 的控件（全屏遮罩、与别的控件重叠的辅助点击区）。
+     * 于是「点下去中的」和「看到亮的」仍是同一套命中逻辑，只是看得见的那些才亮。
+     */
+    fun findHoverAt(x: Float, y: Float): Target? = synchronized(targets) {
+        val g = modalGroup
+        var best: Target? = null
+        var bestArea = Float.MAX_VALUE
+        for (t in targets.values) {
+            if (!t.hoverable) continue
+            if (g != null && t.group !== g) continue
+            if (!t.contains(x, y)) continue
+            val a = t.area
+            if (a < bestArea) {
+                bestArea = a
+                best = t
+            }
+        }
+        best
+    }
+
+    /** 模态组开着时，只有同组的控件算"可交互"（[VrHover] 用它过滤背景控件） */
+    fun modalAllows(group: Any?): Boolean = synchronized(targets) {
+        modalGroup == null || modalGroup === group
     }
 
     /**
@@ -265,6 +319,16 @@ fun Modifier.vrClickTarget(
     key: Any,
     focusRequester: FocusRequester? = null,
     group: Any? = null,
+    /**
+     * 是否画"被光柱扫到"的那层白（父亲 2026-10-10）。
+     *
+     * 默认开：登记的控件就是"能点的控件"，扫到它就该有反馈。
+     * 只有**看不见的兜底矩形**（[vrClickBlocker]）才关掉 —— 那种矩形铺在内容下面，
+     * 亮起来会糊住后面真正的内容。
+     */
+    hover: Boolean = true,
+    /** 白层的圆角，跟控件自身的圆角一致 */
+    hoverRadius: Dp = 12.dp,
     onActivate: () -> Unit,
 ): Modifier {
     // 用 rememberUpdatedState 拿最新的闭包/请求器，避免登记的是上一帧的旧值
@@ -299,8 +363,28 @@ fun Modifier.vrClickTarget(
             focus = requester?.let { r -> { runCatching { r.requestFocus() } } },
             activate = { activate() },
             group = group,
+            hoverable = hover,
         )
-    }
+    }.then(
+        /*
+         * 「被光柱扫到」的反馈（父亲 2026-10-10）：
+         * 光柱位置由 [VrHover] 每帧写一次（扫到的目标变了才写），这里在 draw 阶段比钥匙 —— 
+         * 命中就盖一层半透明白。放在 draw 阶段读 state，只重绘这一层，不重建组合。
+         */
+        if (!hover) {
+            Modifier
+        } else {
+            Modifier.drawWithContent {
+                drawContent()
+                if (VrHover.key === instance) {
+                    drawRoundRect(
+                        color = VrHover.overlayColor,
+                        cornerRadius = CornerRadius(hoverRadius.toPx()),
+                    )
+                }
+            }
+        }
+    )
 }
 
 /**
@@ -315,4 +399,5 @@ fun Modifier.vrClickTarget(
  */
 @Composable
 fun Modifier.vrClickBlocker(key: Any, group: Any? = null): Modifier =
-    vrClickTarget(key = key, focusRequester = null, group = group, onActivate = {})
+    // 兜底矩形是"看不见的一块地方"，扫到它不该亮（会糊住后面真正的内容）
+    vrClickTarget(key = key, focusRequester = null, group = group, hover = false, onActivate = {})

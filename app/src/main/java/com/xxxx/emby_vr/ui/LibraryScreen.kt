@@ -391,7 +391,7 @@ private fun SortDialog(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black.copy(alpha = 0.55f))
-            .vrClickTarget(key = "sort:scrim") { onDismiss() },
+            .vrClickTarget(key = "sort:scrim", hover = false) { onDismiss() },
         contentAlignment = Alignment.Center
     ) {
             Surface(

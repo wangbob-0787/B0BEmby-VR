@@ -99,8 +99,6 @@ fun BuildItem(
     clickGroup: Any? = null,
 ) {
     val myFocusRequester = remember { FocusRequester() }
-    /** 当前是否被光柱扫到（画那层半透明白用，父亲 2026-10-10） */
-    var focusedForHover by remember { mutableStateOf(false) }
     val focusAnchor = focusRequester ?: myFocusRequester
     val ctx = LocalContext.current
     LaunchedEffect(autoFocus, focusAnchor) {
@@ -154,7 +152,6 @@ fun BuildItem(
             .wrapContentHeight()
             // 记住"最后聚焦的条目"：从详情页返回时用它把焦点送回来（父亲 2026-10-02）
             .onFocusChanged {
-                focusedForHover = it.isFocused
                 if (it.isFocused) {
                     if (rememberFocus) FocusMemory.lastItemId = itemId
                     onFocused?.invoke()
@@ -370,15 +367,9 @@ fun BuildItem(
                 }
             }
             }
-            // 「被光柱扫到」：盖一层半透明白（与控制条按钮同一档，父亲 2026-10-10）
-            if (focusedForHover) {
-                Box(
-                    modifier = Modifier
-                        .matchParentSize()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(VrHoverBg),
-                )
-            }
+            // 「被光柱扫到」的白层改由 vrClickTarget 统一画（父亲 2026-10-10）：
+            // 卡片的 vrClickTarget 已经登记了矩形，光柱扫到就盖一层白；
+            // 这里不再按"焦点"另画一层 —— 否则扫到 + 有焦点时叠成两层，白得发灰。
         }
     }
 }

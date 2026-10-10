@@ -627,7 +627,12 @@ private fun EpisodeMenu(menu: MenuState) {
                 color = Color(0xFFFFFFFF),
                 fontSize = 22.sp,
                 fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(bottom = 8.dp),
+                /*
+                 * 左缩进 22dp = 集行的内边距（MenuRow 的 horizontal padding）：
+                 * 父亲 2026-10-10 实测后定的口径 —— 季标题要和「第 1 集 xxx」的**文字**左边缘
+                 * 对齐，而不是和集那一行的圆角框左边缘对齐。
+                 */
+                modifier = Modifier.padding(start = 22.dp, bottom = 8.dp),
             )
         }
         LazyColumn(state = listState, modifier = Modifier.heightIn(max = 240.dp)) {
@@ -830,6 +835,11 @@ private fun MenuRow(
             .padding(vertical = 3.dp)
             .clip(RoundedCornerShape(14.dp))
             .background(if (selected) Color(0x2E4CAF50) else Color(0x14FFFFFF))
+            /*
+             * 播放菜单的行没登记进坐标表（菜单点击走坐标注入），所以这里按坐标自己判断
+             * 「被光柱扫到」—— 14dp 与上面 clip 的圆角一致（父亲 2026-10-10）。
+             */
+            .vrHoverPointer(radius = 14.dp)
             .clickable { onClick() }
             .padding(horizontal = 22.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,

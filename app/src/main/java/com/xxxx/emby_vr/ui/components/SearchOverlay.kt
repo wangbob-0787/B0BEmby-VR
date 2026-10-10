@@ -15,6 +15,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
@@ -170,7 +171,13 @@ fun SearchOverlay(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.45f))
+            /*
+             * 打开搜索时把海报墙**压暗**（父亲 2026-10-10）。
+             * 真"虚化"这台头显做不了：系统是 Android 10，Compose 的虚化要 Android 12 以上；
+             * 压暗 + 浮层自己的投影/亮边，是这台机器上能做到的"浮在前面"的表达。
+             * 45% → 62%：以前压得太轻，浮层和墙糊在一起，看着像贴死的。
+             */
+            .background(Color.Black.copy(alpha = 0.62f))
             .vrClickBlocker(key = "search:bg", group = overlayGroup)
             .pointerInput(Unit) { detectTapGestures { } }
             .onPreviewKeyEvent { e ->
@@ -195,8 +202,17 @@ fun SearchOverlay(
             modifier = Modifier
                 .fillMaxWidth(0.78f)
                 .fillMaxHeight(if (keyboardOpen) 0.82f else 0.68f)
-                .background(Color.Black.copy(alpha = 0.72f), RoundedCornerShape(12.dp))
-                .border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(12.dp))
+                /*
+                 * "浮在海报墙上面"的三个视觉线索（父亲 2026-10-10 选了 A 方案）：
+                 *   1. 投下一圈影子 —— 说明它离背景有距离；
+                 *   2. 实底、不透明 —— 背景透不过来，眼睛读到的是"另一层"；
+                 *   3. 亮一圈细描边 —— 给这层一个清楚的边缘。
+                 * 影子必须画在 clip/底色**之前**，否则会被自己的圆角裁掉。
+                 */
+                .shadow(elevation = 34.dp, shape = RoundedCornerShape(12.dp), clip = false)
+                .clip(RoundedCornerShape(12.dp))
+                .background(Color(0xFF15171B))
+                .border(1.dp, Color.White.copy(alpha = 0.26f), RoundedCornerShape(12.dp))
                 .padding(20.dp),
         ) {
             // ---------- 第一行：输入框 + 通道单选 + 键盘开关 + 搜索 ----------

@@ -90,7 +90,8 @@ fun MenuDialog(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .vrClickTarget(key = "menu:scrim") {
+                // 全屏遮罩：只负责"点空白关掉"，不参与"扫到"的点亮（亮起来整屏发白）
+                .vrClickTarget(key = "menu:scrim", hover = false) {
                     isMenuVisible.value = false
                     onDismiss()
                 }
@@ -300,7 +301,7 @@ fun ThemeSelectionDialog(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .vrClickTarget(key = "menu:theme:scrim") { onDismiss() }
+            .vrClickTarget(key = "menu:theme:scrim", hover = false) { onDismiss() }
     ) {
         // 1. 全屏沉浸式背景
         Box(
