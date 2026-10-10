@@ -2380,8 +2380,21 @@ class MainActivity : ComponentActivity() {
              *    清掉"走内核"的标记、回到系统播放器，由服务端按该码率出流。
              */
             if (com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource) {
-                Log.i(TAG, "杜比视界片源：画质档位无效（服务端转不了杜比视界），保持内核播放")
-                hud("杜比视界片源：画质由片源决定")
+                /*
+                 * 杜比视界（P5）：**码率档位对它没有意义**（服务端转不了杜比视界，
+                 * 切过去就是"只有声音没画面"），但**内核处理分辨率有意义**
+                 * （父亲 2026-10-10：别把内核钉死在 1280，选更差的档位就该用更小的分辨率）。
+                 *
+                 * 于是这个档位在 P5 下改成"调内核跑多大"：原画/10 兆 → 1280（GPU 预算实测稳），
+                 * 5 兆 → 1024，1 兆 → 768。当场生效，不重起播。
+                 */
+                val w = kernelWidthForQuality(qualityIndex)
+                val ok = applyKernelWidth(w)
+                Log.i(TAG, "杜比视界片源：画质档位 → 内核处理分辨率 宽 $w（结果=$ok）")
+                hud(
+                    if (ok) "杜比片：内核处理分辨率 → 宽 $w（码率由片源定）"
+                    else "杜比片：画质由片源决定"
+                )
                 return
             }
             Log.i(TAG, "内核（图片字幕）→ 切画质：回到系统播放器，按该码率出流")
@@ -2391,6 +2404,35 @@ class MainActivity : ComponentActivity() {
             return
         }
         replayKeepingPosition()
+    }
+
+    /**
+     * 画质档位 → **内核（mpv）处理分辨率的上限宽度**（父亲 2026-10-10 定）。
+     *
+     * 为什么需要：内核那条链每帧开销与像素量成正比，原来固定 1280 ——
+     * 选更差的档位也降不下来。现在档位真的能调：
+     *   原画 / 1080p 10 兆 → 1280（72Hz 下 GPU 预算实测就这档稳）
+     *   1080p 5 兆        → 1024
+     *   1080p 1 兆        → 768
+     */
+    private fun kernelWidthForQuality(index: Int): Int = when (index) {
+        0, 1 -> 1280
+        2 -> 1024
+        else -> 768
+    }
+
+    /** 立刻把内核的处理分辨率改成「宽 w」（高度按片源比例算），不重起播 */
+    private fun applyKernelWidth(w: Int): Boolean {
+        val m = mpvBackend ?: return false
+        val srcW = com.xxxx.emby_vr.player.PlaybackFlags.videoWidth.takeIf { it > 0 } ?: 1920
+        val srcH = com.xxxx.emby_vr.player.PlaybackFlags.videoHeight.takeIf { it > 0 } ?: 1080
+        val vw = if (srcW > w) w else srcW
+        val vh = (srcH.toLong() * vw / srcW).toInt().coerceAtLeast(64)
+        renderer.setVideoBufferSize(vw, vh)
+        m.setSurfaceSize(vw, vh)
+        com.xxxx.emby_vr.vr.VrTuning.videoSurfaceMaxW = w
+        Log.i(TAG, "内核处理分辨率 → ${vw}x${vh}（上限宽 $w）")
+        return true
     }
 
     private fun bitrateForQuality(): Int {
