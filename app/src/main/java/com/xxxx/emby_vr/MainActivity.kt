@@ -756,7 +756,8 @@ class MainActivity : ComponentActivity() {
                         val bytes = conn.getInputStream().use { it.readBytes() }
                         decodeSubtitleText(bytes, declared)
                     }
-                }.getOrNull()
+                    }.getOrNull()
+                }
                 if (!raw.isNullOrBlank()) break
                 Log.w(TAG, "自绘字幕：流 $index 第 ${attempt + 1} 次没取到")
                 if (attempt < 2) kotlinx.coroutines.delay(1200L)
@@ -1858,6 +1859,20 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
+                    /*
+                     * 轨清单/选中态变了 → 把"播放器实际选中的字幕"回填到菜单勾选（父亲 2026-10-10）。
+                     *
+                     * 起因：起播时是**播放器按语言偏好自己挑**的一条（我们只给了
+                     * setPreferredTextLanguage("chi,zh,zho")，没设 selectedSubtitleIndex），
+                     * 字幕正常显示，但打开字幕菜单一看**一项都没勾**。
+                     * 这里把播放器真正选中的那条映射回 Emby 的流序号，回填并刷新菜单。
+                     */
+                    override fun onTracksChanged(
+                        tracks: androidx.media3.common.Tracks,
+                    ) {
+                        syncSelectedSubtitleFromPlayer()
+                    }
+
                     override fun onCues(
                         cueGroup: androidx.media3.common.text.CueGroup,
                     ) {
@@ -2554,6 +2569,9 @@ class MainActivity : ComponentActivity() {
     /** 往菜单里填数据（打开菜单时调） */
     private fun fillMenuData(kind: com.xxxx.emby_vr.panel.MenuKind) {
         menuState.serverUrl = userServer()
+        // 内核片「视频质量」= 内核跑多大；普通片才是转码档位（父亲 2026-10-10）。
+        // 放在这里：无论打开哪个菜单（含"更多"那条当前值）都能拿到正确的说明。
+        menuState.kernelActive = ctl.kernelActive
         when (kind) {
             com.xxxx.emby_vr.panel.MenuKind.SPEED -> menuState.speed = playSpeed
             com.xxxx.emby_vr.panel.MenuKind.QUALITY -> menuState.quality = qualityIndex
@@ -3485,6 +3503,53 @@ class MainActivity : ComponentActivity() {
      * 也按文件顺序，所以第 N 条内封文字轨 → 播放器第 N 条文字轨（跨分组拉平）。
      * 找不到（例如这条其实是外挂轨）就退回服务端取流那条老路。
      */
+    /**
+     * 把「播放器实际选中的字幕轨」回填成 Emby 的流序号（父亲 2026-10-10：字幕在放、菜单没勾）。
+     *
+     * 反查口径与 selectEmbeddedTextTrack 对齐：先按语言、再按序号（只算内封文字轨，按 index 排序）。
+     * 内核路径不插手（那儿的字幕选择归内核那套）。
+     */
+    private fun syncSelectedSubtitleFromPlayer() {
+        val p = player ?: return
+        if (ctl.kernelActive) return
+
+        var ordinal = -1
+        var lang = ""
+        var counter = 0
+        val groups = p.currentTracks.groups.filter {
+            it.type == androidx.media3.common.C.TRACK_TYPE_TEXT
+        }
+        loop@ for (g in groups) {
+            for (ti in 0 until g.length) {
+                if (g.isTrackSelected(ti)) {
+                    ordinal = counter
+                    lang = (g.mediaTrackGroup.getFormat(ti).language ?: "").lowercase().take(3)
+                    break@loop
+                }
+                counter++
+            }
+        }
+
+        val subs = currentStreams
+            .filter {
+                it.type.equals("Subtitle", ignoreCase = true) &&
+                    it.isExternal != true && !isImageSubtitle(it)
+            }
+            .sortedBy { it.index ?: 0 }
+        val byLang = if (lang.isNotBlank()) {
+            subs.firstOrNull { (it.language ?: "").lowercase().take(3) == lang }
+        } else {
+            null
+        }
+        val idx = (byLang ?: subs.getOrNull(ordinal))?.index ?: return
+
+        if (idx != selectedSubtitleIndex) {
+            Log.i(TAG, "播放器自动选中的字幕 = 流 $idx（语言=$lang）→ 回填菜单勾选")
+            selectedSubtitleIndex = idx
+            refreshMenuRows(com.xxxx.emby_vr.panel.MenuKind.SUBTITLE)
+        }
+    }
+
     private fun selectEmbeddedTextTrack(streamIndex: Int, attempt: Int = 0) {
         val p = player ?: return
         val embedded = currentStreams

@@ -248,24 +248,10 @@ fun SearchOverlay(
                     group = overlayGroup,
                     onClick = { searchViewModel.selectChannel(SearchViewModel.Channel.PERSON) },
                 )
-
-                Button(
-                    onClick = { runSearch() },
-                    colors = ButtonDefaults.colors(
-                        containerColor = MaterialTheme.colorScheme.secondary,
-                        contentColor = Color.White,
-                        focusedContainerColor = MaterialTheme.colorScheme.secondary,
-                        focusedContentColor = Color.White,
-                    ),
-                    // 必须登记进点击表（父亲 2026-10-10：点这颗没反应，只有键盘上的"搜索"才行）
-                    modifier = Modifier.vrClickTarget(
-                        key = "search:go",
-                        group = overlayGroup,
-                        onActivate = { runSearch() },
-                    ),
-                ) {
-                    Text("搜索", fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                }
+                /*
+                 * 这里原来还有一颗「搜索」按钮 —— 已删（父亲 2026-10-10）：
+                 * 键盘上那颗「搜索」就够用，一行里两颗重复，点了还容易搞混。
+                 */
             }
 
             Spacer(modifier = Modifier.height(16.dp))

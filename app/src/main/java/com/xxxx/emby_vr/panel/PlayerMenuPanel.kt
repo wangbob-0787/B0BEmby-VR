@@ -151,6 +151,11 @@ class MenuState {
     // ── 各菜单的数据（由 Activity 填） ──
     var speed by mutableStateOf(1f)
     var quality by mutableStateOf(0)
+    /**
+     * 当前是不是内核（mpv）在放 —— 决定「视频质量」那几档的含义
+     * （内核片 = 内核处理分辨率；普通片 = 服务端转码档位。父亲 2026-10-10）。
+     */
+    var kernelActive by mutableStateOf(false)
     var playMode by mutableStateOf(0)
     var danmakuOn by mutableStateOf(true)
     var danmakuScale by mutableStateOf(1f)
@@ -200,12 +205,35 @@ class MenuState {
  */
 val SPEED_STEPS = listOf(0.5f, 1.0f, 1.5f, 2.0f)
 
-/** 视频质量档位：值 = 码率上限（0 表示原画不转码） */
+/** 视频质量档位：值 = 码率上限（0 表示原画不转码）。
+ *
+ *  标签**两个路径统一**成「原画 / 1080 / 1024 / 768」（父亲 2026-10-10）：
+ *   · 普通片：三档 = 让服务端转码到该档（约 10 / 5 / 1 兆），原画 = 直推不转码；
+ *   · 内核片（杜比 P5 / 图片字幕）：三档 = 内核处理分辨率上限 1080 / 1024 / 768 宽，
+ *     原画 = 内核 1280 宽（1280 是上限，超了出黑纹）。
+ *  每个档位具体是什么意思，写在行尾的 value 里（见下面两个 VALUES 表），不会含糊。
+ */
 val QUALITY_STEPS = listOf(
-    0 to "原画（不转码）",
-    10_000_000 to "1080p（10 兆）",
-    5_000_000 to "1080p（5 兆）",
-    1_000_000 to "1080p（1 兆·省流）",
+    0 to "原画",
+    10_000_000 to "1080",
+    5_000_000 to "1024",
+    1_000_000 to "768",
+)
+
+/** 内核路径下的档位说明（内核片这个菜单控制"内核跑多大"，不是码率） */
+val KERNEL_QUALITY_VALUES = listOf(
+    "内核 1280 宽（上限）",
+    "内核 1080 宽",
+    "内核 1024 宽",
+    "内核 768 宽",
+)
+
+/** 普通路径下的档位说明（这里是真的让服务端转码出流） */
+val NORMAL_QUALITY_VALUES = listOf(
+    "直推不转码",
+    "转码 ≈10 兆",
+    "转码 ≈5 兆",
+    "转码 ≈1 兆",
 )
 
 /** 播放模式 */
@@ -374,8 +402,11 @@ private fun MoreMenu(menu: MenuState) {
             MenuRow(
                 label = label,
                 value = when (k) {
-                    MenuKind.QUALITY -> QUALITY_STEPS
-                        .getOrNull(menu.quality)?.second ?: ""
+                    MenuKind.QUALITY -> if (menu.kernelActive) {
+                        KERNEL_QUALITY_VALUES.getOrNull(menu.quality) ?: ""
+                    } else {
+                        NORMAL_QUALITY_VALUES.getOrNull(menu.quality) ?: ""
+                    }
                     MenuKind.MODE -> PLAY_MODE_STEPS.getOrNull(menu.playMode) ?: ""
                     MenuKind.AUDIO -> menu.audioTracks.firstOrNull { it.selected }?.label ?: ""
                     else -> {
@@ -424,7 +455,12 @@ private fun QualityMenu(menu: MenuState) {
         QUALITY_STEPS.forEachIndexed { i, (_, label) ->
             MenuRow(
                 label = label,
-                value = "",
+                // 行尾写清这一档在当前路径下到底是什么意思（内核=跑多大；普通=转码多少兆）
+                value = if (menu.kernelActive) {
+                    KERNEL_QUALITY_VALUES.getOrNull(i) ?: ""
+                } else {
+                    NORMAL_QUALITY_VALUES.getOrNull(i) ?: ""
+                },
                 selected = menu.quality == i,
                 onClick = { menu.onSelect?.invoke(MenuKind.QUALITY, i) },
             )
