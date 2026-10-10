@@ -3028,14 +3028,26 @@ bool renderCinemaEye(VrContext &c, int i, const XrView &view) {
     EyeSwapchain &ce = c.cinemaEyes[i];
     uint32_t imageIndex = 0;
     XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
-    if (XR_FAILED(api.AcquireSwapchainImage(ce.handle, &ai, &imageIndex))) return false;
+    const XrResult ar = api.AcquireSwapchainImage(ce.handle, &ai, &imageIndex);
+    if (XR_FAILED(ar)) {
+        static int acqFail = 0;
+        if (acqFail++ < 3) LOGE("影厅图层取图失败：%d", (int) ar);
+        return false;
+    }
     XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
     /*
      * 这一层**无限等**：它不是关键路径（影厅画面晚一帧没人看得出来），
      * 超时后按规范那张图仍是 acquired、不能写也不能 release，索性等到底。
      */
     wi.timeout = XR_INFINITE_DURATION;
-    if (XR_FAILED(api.WaitSwapchainImage(ce.handle, &wi))) return false;
+    const XrResult wr = api.WaitSwapchainImage(ce.handle, &wi);
+    if (XR_FAILED(wr)) {
+        static int waitFail = 0;
+        if (waitFail++ < 3) LOGE("影厅图层等图失败：%d", (int) wr);
+        XrSwapchainImageReleaseInfo fri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+        api.ReleaseSwapchainImage(ce.handle, &fri);
+        return false;
+    }
 
     glBindFramebuffer(GL_FRAMEBUFFER, ce.fbos[imageIndex]);
     glViewport(0, 0, ce.width, ce.height);
@@ -4548,6 +4560,14 @@ void frameLoop(VrContext &c) {
                  * 失败就整帧不提交这一层，不影响别的图层。
                  */
                 cinemaLayerOk = false;
+                {
+                    static double lastGate = 0.0;
+                    if (nowMs() - lastGate > 3000.0) {
+                        lastGate = nowMs();
+                        LOGI("影厅图层闸门：eyesOk=%d 交换链=%d 几何=%d 开关=%d",
+                             eyesOk, c.cinemaEyesOk, gCinemaReady.load(), gCinemaOn.load());
+                    }
+                }
                 if (eyesOk && c.cinemaEyesOk && gCinemaReady.load() && gCinemaOn.load() != 0) {
                     bool cinemaOk = true;
                     for (uint32_t i = 0; i < viewCount; i++) {

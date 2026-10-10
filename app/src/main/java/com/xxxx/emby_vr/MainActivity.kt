@@ -474,6 +474,22 @@ class MainActivity : ComponentActivity() {
                  * 选集和演职人员滚不动）。取主方向 —— 竖直列表用上下推，
                  * 演职人员那一排是横向的，左右推也认。
                  */
+                /*
+                 * 影厅亮度面板（父亲 2026-10-10 19:05「影厅亮度摇杆左右操作不动」）：
+                 * 这一页只有一条亮度条，摇杆左右就该推它 —— 别再往列表滚动通道送。
+                 * 每次事件走 6%，推一下就到头也不至于失控。
+                 */
+                if (menuState.kind == com.xxxx.emby_vr.panel.MenuKind.CINEMA_LIGHT) {
+                    if (kotlin.math.abs(sx) > 0.15f) {
+                        val v = (menuState.cinemaBright + sx * 0.06f).coerceIn(0f, 1f)
+                        menuState.cinemaBright = v
+                        com.xxxx.emby_vr.vr.VrNative.setTuning(
+                            com.xxxx.emby_vr.vr.VrTuning.KEY_CINEMA_BRIGHT, v,
+                        )
+                        Log.i(TAG, "摇杆调影厅亮度：sx=$sx → ${(v * 100).toInt()}%")
+                    }
+                    return@runOnUiThread
+                }
                 if (menuState.kind != null && ::menu.isInitialized) {
                     /*
                      * 菜单开着：摇杆滚菜单。
@@ -537,6 +553,8 @@ class MainActivity : ComponentActivity() {
         private var menuPressX = 0f
         private var menuPressY = 0f
         private var menuDraggingBar = false
+        /** 上一帧扳机是否按着：只有"按下 → 抬起"的跳变才算一次点击 */
+        private var menuWasPressed = false
 
         override fun onMenuPointer(px: Float, py: Float, pressed: Boolean) {
             vrInputLive = true
@@ -563,12 +581,16 @@ class MainActivity : ComponentActivity() {
                 menuDraggingBar = false
                 /*
                  * 抬起：没在拖亮度条、位移也小 → 当成一次普通点击。
-                 * 菜单行的老行为靠这里（「选座」「影厅亮度」这些行点得动全靠它）。
+                 *
+                 * **只在"按下 → 抬起"那一帧算一次**（父亲 2026-10-10 19:05：选座点一下
+                 * 自己 1→3→6 连跳）。原来松手后光点每微动一下都会再进来一次，
+                 * 每次都当成一次新点击，于是连点。
                  */
-                if (!wasDragging && moved < 24f) {
+                if (menuWasPressed && !wasDragging && moved < 24f) {
                     runOnUiThread { if (menuReady()) menu.vrClick(px, py) }
                 }
             }
+            menuWasPressed = pressed
             runOnUiThread { if (menuReady()) menu.vrPointer(px, py) }
         }
 
