@@ -166,11 +166,16 @@ fun SearchOverlay(
     ) {
         Column(
             modifier = Modifier
-                .fillMaxWidth(0.93f)
-                .fillMaxHeight(0.88f)
+                /*
+                 * 浮层尺寸（父亲 2026-10-10：浮动框不要太大）。
+                 * 收成 78% × 68% 居中，不铺满整屏 —— 结果是一屏看不完的（每个标签最多 60 条），
+                 * 靠摇杆/焦点滚动看剩下的，不是要一次全排下。
+                 */
+                .fillMaxWidth(0.78f)
+                .fillMaxHeight(0.68f)
                 .background(Color.Black.copy(alpha = 0.72f), RoundedCornerShape(12.dp))
                 .border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(12.dp))
-                .padding(24.dp),
+                .padding(20.dp),
         ) {
             // ---------- 第一行：输入 + 通道单选 + 搜索 + 关闭 ----------
             Row(
@@ -287,9 +292,10 @@ fun SearchOverlay(
 
                     LazyVerticalGrid(
                         state = gridState,
-                        columns = GridCells.Adaptive(minSize = 150.dp),
-                        horizontalArrangement = Arrangement.spacedBy(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(18.dp),
+                        // 海报缩小一档（父亲 2026-10-10：浮层要小）：一行约 6 张，一屏 3 行
+                        columns = GridCells.Adaptive(minSize = 118.dp),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp),
                         contentPadding = PaddingValues(bottom = 12.dp),
                         modifier = Modifier.fillMaxSize(),
                     ) {
@@ -304,7 +310,7 @@ fun SearchOverlay(
                         ) { index, item ->
                             BuildItem(
                                 item = item,
-                                imgWidth = 150.dp,
+                                imgWidth = 118.dp,
                                 aspectRatio = (item.primaryImageAspectRatio ?: 0.6667).toFloat(),
                                 modifier = Modifier.fillMaxWidth(),
                                 isMyLibrary = false,
