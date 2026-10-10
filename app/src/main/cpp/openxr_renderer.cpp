@@ -2010,7 +2010,8 @@ void osdBasis(float *cx, float *cy, float *cz, float *nx, float *ny, float *nz, 
               float *uy, float *uz, float *vx, float *vy, float *vz) {
     const float th = kOsdTiltDeg * 3.14159265358979f / 180.f;
     const float ct = cosf(th), st = sinf(th);
-    *cx = 0.f; *cy = kOsdCenterY; *cz = -kOsdDistance;
+    /* 控制条跟随观影位（2026-10-10）：命中计算必须和实际渲染位置一致，否则光柱偏 */
+    *cx = viewerOffsetX(); *cy = kOsdCenterY; *cz = -kOsdDistance + viewerOffsetZ();
     // 绕 X 轴转 th：法线 (0,0,1) → (0,-sin,cos)；面内 y 轴 (0,1,0) → (0,cos,sin)
     *nx = 0.f; *ny = -st; *nz = ct;
     *ux = 1.f; *uy = 0.f; *uz = 0.f;
