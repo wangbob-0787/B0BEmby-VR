@@ -2371,36 +2371,24 @@ class MainActivity : ComponentActivity() {
          */
         if (ctl.kernelActive) {
             /*
-             * 内核这条路上"画质"要真的能用（父亲 2026-10-09：控制条功能都要转过去）。
+             * 内核这条路上「画质」= **调内核处理分辨率**（父亲 2026-10-10 定）。
              *
-             * 两种内核情形分开对待：
-             *  · 杜比视界（P5）：档位必须无效 —— 服务端转不了杜比视界，
-             *    切过去就是"只有声音没画面"，所以只记档位并提示；
-             *  · 普通片（因为选了图片字幕才走内核）：档位**真的生效** ——
-             *    清掉"走内核"的标记、回到系统播放器，由服务端按该码率出流。
+             * 为什么不是码率：内核放的是**原始文件直连**（Static=true），服务端不推流，
+             * 码率档位对它完全无效。内核每帧开销与像素量成正比，所以这里改成
+             * 「内核跑多大」：原画 / 10 兆 → 1280，5 兆 → 1024，1 兆 → 768 ——
+             * 当场生效、不重起播。
+             *
+             * 两种进内核的情形（杜比 P5 / 因为选了图片字幕）**一样处理：都留在内核里**。
+             * 尤其图片字幕那类，一旦退回系统播放器字幕就没了（英文片没字幕没法看）。
              */
-            if (com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource) {
-                /*
-                 * 杜比视界（P5）：**码率档位对它没有意义**（服务端转不了杜比视界，
-                 * 切过去就是"只有声音没画面"），但**内核处理分辨率有意义**
-                 * （父亲 2026-10-10：别把内核钉死在 1280，选更差的档位就该用更小的分辨率）。
-                 *
-                 * 于是这个档位在 P5 下改成"调内核跑多大"：原画/10 兆 → 1280（GPU 预算实测稳），
-                 * 5 兆 → 1024，1 兆 → 768。当场生效，不重起播。
-                 */
-                val w = kernelWidthForQuality(qualityIndex)
-                val ok = applyKernelWidth(w)
-                Log.i(TAG, "杜比视界片源：画质档位 → 内核处理分辨率 宽 $w（结果=$ok）")
-                hud(
-                    if (ok) "杜比片：内核处理分辨率 → 宽 $w（码率由片源定）"
-                    else "杜比片：画质由片源决定"
-                )
-                return
-            }
-            Log.i(TAG, "内核（图片字幕）→ 切画质：回到系统播放器，按该码率出流")
-            com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForImageSubs = false
-            hud("已按所选画质重新起播（图片字幕会关掉）")
-            replayKeepingPosition()
+            val w = kernelWidthForQuality(qualityIndex)
+            val ok = applyKernelWidth(w)
+            Log.i(
+                TAG,
+                "内核路径：画质档位 → 内核处理分辨率 宽 $w（结果=$ok，" +
+                    "杜比=${com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource}）",
+            )
+            hud(if (ok) "内核处理分辨率 → 宽 $w（码率由片源定）" else "画质由片源决定")
             return
         }
         replayKeepingPosition()
