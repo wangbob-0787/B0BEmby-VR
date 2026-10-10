@@ -156,7 +156,14 @@ class MainActivity : ComponentActivity() {
      * 2026-10-10：换画质重播后播放器要重新缓冲，3 秒内报不出轨道；
      * 原来两次就放弃 → 退到"服务端挖字幕"那条在网盘片源上走不通的路 → 字幕不显示。
      */
-    private val kSubtitleTrackWaitAttempts = 20
+    /**
+     * 等「播放器报出内封文字轨」最多试几次（每次 1.2 秒）。
+     *
+     * 2026-10-10 定稿：**只有直连才指望播放器**（转码的流里它永远报不出来，见 lastPlayMethod
+     * 分路）。所以这里不用等太久 —— 等不到就换"服务端转 SRT 自绘"那条路兜底，
+     * 两条互相兜底，不给用户"字幕没了"的空窗。
+     */
+    private val kSubtitleTrackWaitAttempts = 6
 
     /**
      * 本次起播的播放方式（DirectPlay / DirectStream / Transcode）。
@@ -696,7 +703,15 @@ class MainActivity : ComponentActivity() {
         val url = "${userServer()}/emby/Videos/$mediaId/$sourceId/Subtitles/$index" +
             "/Stream.srt?api_key=${userToken()}"
         scope.launch {
-            val raw = withContext(Dispatchers.IO) {
+            /*
+             * 取字幕整条：**失败重试 3 次**（2026-10-10 系统排查）。
+             * 网盘片源第一次要服务端现挖，偶尔连接被重置（实测 响应码=-1），
+             * 重试通常就成；三次都不成才放弃，并在屏幕上说一句（不再"字幕凭空没了"）。
+             */
+            var raw: String? = null
+            for (attempt in 0 until 3) {
+                if (mediaId != currentMediaId || subtitleCueStream != index) return@launch
+                raw = withContext(Dispatchers.IO) {
                 runCatching {
                     java.net.URL(url).openConnection().let { conn ->
                         conn.connectTimeout = 10000
@@ -742,6 +757,9 @@ class MainActivity : ComponentActivity() {
                         decodeSubtitleText(bytes, declared)
                     }
                 }.getOrNull()
+                if (!raw.isNullOrBlank()) break
+                Log.w(TAG, "自绘字幕：流 $index 第 ${attempt + 1} 次没取到")
+                if (attempt < 2) kotlinx.coroutines.delay(1200L)
             }
             // 中途换片 / 换字幕轨 → 结果丢掉
             if (mediaId != currentMediaId || subtitleCueStream != index) return@launch
@@ -756,9 +774,15 @@ class MainActivity : ComponentActivity() {
              * 现在明确清空：宁可不显示，也不显示错的。
              */
             if (cues.isEmpty()) {
-                Log.w(TAG, "自绘字幕：流 $index 没取到内容（${raw?.length ?: 0} 字节）→ 清屏")
+                Log.w(TAG, "自绘字幕：流 $index 三次都没取到内容（${raw?.length ?: 0} 字节）→ 清屏")
                 subtitleNow = ""
                 if (!waitingFirstFrame) danmakuView?.setSubtitle("")
+                /*
+                 * 屏幕上说一句（父亲 2026-10-10：别再"字幕凭空没了"）。
+                 * 网盘片源第一次要服务端现挖整片，可能真的取不到；再点一次字幕菜单
+                 * 通常就成了（服务端挖完会缓存）。
+                 */
+                hud("这条字幕服务端没取到，可在字幕菜单里再点一次")
             }
         }
     }
