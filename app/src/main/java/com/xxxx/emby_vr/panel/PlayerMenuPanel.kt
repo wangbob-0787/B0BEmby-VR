@@ -713,9 +713,13 @@ private fun EpisodeMenu(menu: MenuState) {
         if (menu.episodesTitle.isNotBlank()) {
             Text(
                 text = menu.episodesTitle,
-                color = Color(0xFFFFFFFF),
-                fontSize = 22.sp,
-                fontWeight = FontWeight.Bold,
+                color = Color.White,
+                /*
+                 * 字号与字重跟「第 1 集 xxx」那一行完全一致（父亲 2026-10-10）：
+                 * 集行是 MenuRow 的 24sp 常规体白字，季标题原来 22sp 加粗，看着是两套字。
+                 */
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Normal,
                 /*
                  * 左缩进 22dp = 集行的内边距（MenuRow 的 horizontal padding）：
                  * 父亲 2026-10-10 实测后定的口径 —— 季标题要和「第 1 集 xxx」的**文字**左边缘
