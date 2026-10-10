@@ -3062,10 +3062,13 @@ bool renderCinemaEye(VrContext &c, int i, const XrView &view) {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     const Mat4 proj = perspectiveFromFov(view.fov, 0.05f, 100.f);
     const Mat4 view4 = viewMatrixFromPose(view.pose);
-    /* 独立层模式下影厅不画在这里（画在下面那层），否则会糊住面板 */
-    if (!c.cinemaEyesOk || gCinemaLayerMode.load() == 0) {
-        drawCinema(proj, view4, view.pose.position);
-    }
+    /*
+     * 这里**必须无条件画**（2026-10-10 19:31 抓到的真凶）：
+     * 上一版把"独立层模式下不画"的判断条件误插进了这个函数 —— 结果影厅图层
+     * 每帧都被清空成透明，父亲那边就是"影厅环境又不见了"。
+     * 那句判断只属于 renderEye（主投影层那边）。
+     */
+    drawCinema(proj, view4, view.pose.position);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
