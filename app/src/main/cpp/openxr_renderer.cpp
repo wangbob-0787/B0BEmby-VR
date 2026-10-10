@@ -513,6 +513,12 @@ std::atomic<int> gSeat{0};
 /** 影厅环境总开关（0 = 回到黑背景，出问题时可远程关掉） */
 std::atomic<int> gCinemaOn{1};
 /**
+ * 影厅画在哪一层（vr-tuning 的 cinema_layer）：
+ *   1 = 独立底层（默认，父亲要的正解：谁都不挡谁）
+ *   0 = 画进主投影层（老路：会挡住海报墙/控制条/视频，只作应急对照）
+ */
+std::atomic<int> gCinemaLayerMode{1};
+/**
  * 坐姿眼高（米）：影厅座位区地面到眼睛的距离，vr-tuning 的 cinema_eye_height 可调。
  *
  * 父亲 2026-10-10 装机实测：「椅子太高了，座椅台面跑到我胸口了」——
@@ -3056,7 +3062,10 @@ bool renderCinemaEye(VrContext &c, int i, const XrView &view) {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     const Mat4 proj = perspectiveFromFov(view.fov, 0.05f, 100.f);
     const Mat4 view4 = viewMatrixFromPose(view.pose);
-    if (!c.cinemaEyesOk) drawCinema(proj, view4, view.pose.position);
+    /* 独立层模式下影厅不画在这里（画在下面那层），否则会糊住面板 */
+    if (!c.cinemaEyesOk || gCinemaLayerMode.load() == 0) {
+        drawCinema(proj, view4, view.pose.position);
+    }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
@@ -3281,7 +3290,10 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
      * 影厅先画（父亲 2026-10-10）：开深度、画完立刻关掉 —— 后面的银幕/海报墙/控制条/弹幕
      * 还是原来的图层顺序，一层层叠上去，不受影厅遮挡影响。
      */
-    if (!c.cinemaEyesOk) drawCinema(proj, view4, view.pose.position);
+    /* 独立层模式下影厅不画在这里（画在下面那层），否则会糊住面板 */
+    if (!c.cinemaEyesOk || gCinemaLayerMode.load() == 0) {
+        drawCinema(proj, view4, view.pose.position);
+    }
     if (c.program != 0 && c.mvpLoc >= 0) {
         /*
          * 一块屏：摆位 → 位置/朝向/尺寸，贴 tex（tex = 0 就画底色）。
@@ -4568,7 +4580,8 @@ void frameLoop(VrContext &c) {
                              eyesOk, c.cinemaEyesOk, gCinemaReady.load(), gCinemaOn.load());
                     }
                 }
-                if (eyesOk && c.cinemaEyesOk && gCinemaReady.load() && gCinemaOn.load() != 0) {
+                if (eyesOk && c.cinemaEyesOk && gCinemaLayerMode.load() != 0 &&
+                    gCinemaReady.load() && gCinemaOn.load() != 0) {
                     bool cinemaOk = true;
                     for (uint32_t i = 0; i < viewCount; i++) {
                         if (!renderCinemaEye(c, (int) i, views[i])) {
@@ -4584,6 +4597,15 @@ void frameLoop(VrContext &c) {
                     }
                     cinemaLayerOk = cinemaOk;
                     cinemaViewCount = viewCount;
+                    if (cinemaOk) {
+                        static bool firstCinemaLogged = false;
+                        if (!firstCinemaLogged) {
+                            firstCinemaLogged = true;
+                            LOGI("影厅图层首帧已画：%ux%u × %u 眼",
+                                 (unsigned) c.cinemaEyes[0].width,
+                                 (unsigned) c.cinemaEyes[0].height, viewCount);
+                        }
+                    }
                 }
                 tEyes = std::chrono::steady_clock::now();
                 rendered = eyesOk;
@@ -5510,6 +5532,11 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
                 gEnvStrength.store(value);
                 LOGI("调参 → 影院环境光强度 %.2f", (double) value);
             }
+            break;
+        case 25:
+            /* 影厅画在哪一层（1 = 独立底层 / 0 = 主投影层，对照用） */
+            gCinemaLayerMode.store(value >= 0.5f ? 1 : 0);
+            LOGI("调参 → 影厅图层模式 %d（1=独立底层 0=主投影层）", gCinemaLayerMode.load());
             break;
         case 24:
             /*

@@ -113,6 +113,8 @@ object VrTuning {
     const val KEY_CINEMA_EYE_HEIGHT = 23
     /** 影厅环境亮度条（0~1，2026-10-10：环境光 + 底光一起走，不含画面亮度） */
     const val KEY_CINEMA_BRIGHT = 24
+    /** 影厅画在哪一层（1 = 独立底层 · 0 = 主投影层，应急对照用） */
+    const val KEY_CINEMA_LAYER = 25
 
     /** 上次应用的配置原文，只有变化才动手（避免每秒重复设置） */
     private var lastRaw: Map<String, String> = emptyMap()
@@ -320,6 +322,11 @@ object VrTuning {
         raw["cinema_env"]?.toFloatOrNull()?.let {
             VrNative.setTuning(KEY_CINEMA_ENV, it)
             applied += "影院环境光强度 ${"%.2f".format(it)}"
+        }
+        /* 影厅图层模式（2026-10-10）：1 = 独立底层，0 = 画进主投影层（对照） */
+        raw["cinema_layer"]?.toIntOrNull()?.let {
+            VrNative.setTuning(KEY_CINEMA_LAYER, it.toFloat())
+            applied += "影厅图层 " + if (it != 0) "独立底层" else "主投影层"
         }
         /* 影厅环境亮度条（2026-10-10）：0~1，环境光与底光一起走 */
         raw["cinema_bright"]?.toFloatOrNull()?.let {
