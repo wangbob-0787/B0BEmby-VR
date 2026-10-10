@@ -405,7 +405,9 @@ private fun PillChip(
     val focusRequester = remember { FocusRequester() }
     Surface(
         onClick = onClick,
-        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(22.dp)),
+        // 圆角跟全站统一：8dp（详情页季胶囊 / 菜单行 / 键盘按键同一档）。
+        // 原来写成 22dp（那是控制条圆形图标按钮的档），父亲 2026-10-10 一眼看出不统一。
+        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
         /*
          * 配色**跟播放页控制条那排按钮完全一致**（父亲 2026-10-10）：
          *   常态   = 透明底 + 白字
