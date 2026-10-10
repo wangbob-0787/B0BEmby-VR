@@ -512,8 +512,15 @@ constexpr float kSeatScreenWidth = 5.2f;
 std::atomic<int> gSeat{0};
 /** 影厅环境总开关（0 = 回到黑背景，出问题时可远程关掉） */
 std::atomic<int> gCinemaOn{1};
-/** 坐姿眼高（米）：影厅座位区地面到眼睛的距离，vr-tuning 的 cinema_eye_height 可调 */
-std::atomic<float> gCinemaEyeHeight{1.15f};
+/**
+ * 坐姿眼高（米）：影厅座位区地面到眼睛的距离，vr-tuning 的 cinema_eye_height 可调。
+ *
+ * 父亲 2026-10-10 装机实测：「椅子太高了，座椅台面跑到我胸口了」——
+ * 这个模型是按"站着的 1.65 米眼高"建的，座椅本身就偏高偏大；按真实坐姿 1.15 米摆，
+ * 椅面只落在眼睛下方 0.37 米（胸口高度）。取 1.50 米把它压回大腿高度
+ * （椅面约在眼睛下方 0.72 米），看上去才是"坐在椅子上"。
+ */
+std::atomic<float> gCinemaEyeHeight{1.50f};
 
 // ------------------------------------------------- 影厅环境（父亲 2026-10-10）
 /*
