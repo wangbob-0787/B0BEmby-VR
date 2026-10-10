@@ -49,6 +49,12 @@ fun LibraryScreen(
     onNavigateToSeries: (String) -> Unit,
     // 直播频道（TvChannel）点击直接播（父亲 2026-10-02：电视直播库点进去就是频道）
     onNavigateToPlayer: (String) -> Unit = {},
+    /*
+     * 合集（BoxSet）点击：打开它自己的子项网格（2026-10-10 修「合集点进去看不到影片」）。
+     * 合集不是剧集 —— 详情页取季/集用的 /Shows/{id}/Seasons 对它直接 404（实测），
+     * 所以页面是空白的。合集的孩子是影片，用本页的网格列出来最省事。
+     */
+    onOpenBoxSet: (String, String) -> Unit = { _, _ -> },
 ) {
     val context = LocalContext.current
     val firstItemFocusRequester = remember { FocusRequester() }
@@ -317,10 +323,13 @@ fun LibraryScreen(
                                 onItemClick = {
                                     returnFocusIndex = index
                                     shouldFocusOnReturn = true
-                                    if (item.type.equals("TvChannel", ignoreCase = true)) {
-                                        onNavigateToPlayer(id)
-                                    } else {
-                                        onNavigateToSeries(id)
+                                    when {
+                                        item.type.equals("TvChannel", ignoreCase = true) ->
+                                            onNavigateToPlayer(id)
+                                        // 合集 → 打开它自己的子项网格（影片/剧集都能列）
+                                        item.type.equals("BoxSet", ignoreCase = true) ->
+                                            onOpenBoxSet(id, item.name ?: "")
+                                        else -> onNavigateToSeries(id)
                                     }
                                 }
                             )

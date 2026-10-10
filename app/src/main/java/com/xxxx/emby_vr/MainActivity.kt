@@ -1456,6 +1456,16 @@ class MainActivity : ComponentActivity() {
                 // 字幕 / 音轨菜单要用它列选项（切轨靠 Emby 重新出流）
                 currentStreams = source?.mediaStreams ?: emptyList()
                 /*
+                 * 清单到手的这一刻立刻重算一遍（2026-10-10 修「字幕菜单有时空 / 有时列的是
+                 * 别的片子的项 / 点了不生效，过一会又对了」）。
+                 *
+                 * 根因：currentStreams 要等这条网络请求回来才有值，而列表是**打开菜单那一刻**
+                 * 才生成的 —— 在请求回来之前打开：首次起播拿到空表（菜单空），换片拿到上一部片
+                 * 的表（项是别的片子的，序号也对不上，点了自然不生效）；等请求回来之后再打开
+                 * 就正常了。所以这里在数据到手时主动重建，并把正开着的菜单一起刷新。
+                 */
+                rebuildTrackMenus()
+                /*
                  * 按服务端给的判定挑地址（2026-10-06 父亲报「长宽比不对 / 没声音 / 灰蒙蒙」）。
                  * 原来无脑优先 directStreamUrl，等于把服务端的转码决定（音频转 AAC、
                  * HDR 转 SDR、换封装）全绕过去了。现在照 TV 版那套判定走。
@@ -1761,11 +1771,33 @@ class MainActivity : ComponentActivity() {
                          * 每句也要清洗：Media3 的 SubRip 解析器不认 ASS 排版标记，
                          * 会把 `{\an8}` 原样留在文本里（2026-10-09 父亲实测到乱字符）。
                          */
-                        val text = cleanSubtitleText(
-                            cueGroup.cues.joinToString("\n") { cue ->
-                                cue.text?.toString().orEmpty()
-                            }
-                        )
+                        val rawCues = cueGroup.cues.joinToString("\n") { cue ->
+                            cue.text?.toString().orEmpty()
+                        }
+                        /*
+                         * 弹幕被播放器当普通字幕选中 → 会从这条回调回来（2026-10-10 修
+                         * 「有时候弹幕画在影片下方，上下都有弹幕」）。
+                         *
+                         * 两条路都要挡：
+                         *   ① 文本里带 `\move(` —— 那是滚动弹幕的 ASS 位移标记，普通字幕不会有；
+                         *   ② 播放器当前选中的文字轨，标题里带「弹幕 / danmaku」。
+                         * 弹幕只由我们自己的弹幕层画（画面上方），不能在底部再当字幕画一遍。
+                         */
+                        val selectedIsDanmaku = player?.currentTracks?.groups?.any { g ->
+                            g.type == androidx.media3.common.C.TRACK_TYPE_TEXT && g.isSelected &&
+                                (0 until g.length).any { ti ->
+                                    val lbl = g.mediaTrackGroup.getFormat(ti).label.orEmpty()
+                                    lbl.contains("弹幕") ||
+                                        lbl.contains("danmaku", ignoreCase = true) ||
+                                        lbl.contains("danmu", ignoreCase = true)
+                                }
+                        } == true
+                        if (selectedIsDanmaku || rawCues.contains("\\move(")) {
+                            Log.i(TAG, "字幕回调是弹幕轨（轨命中=$selectedIsDanmaku，" +
+                                "位移标记=${rawCues.contains("\\move(")}）→ 丢弃，交给弹幕层画")
+                            return
+                        }
+                        val text = cleanSubtitleText(rawCues)
                         // 用户自己选了字幕时以自绘的那条为准，别被播放器挑的轨盖掉
                         if (subtitleCues.isNotEmpty()) return
                         subtitleNow = text
@@ -2568,6 +2600,20 @@ class MainActivity : ComponentActivity() {
         if (s.isTextSubtitleStream == false) return true
         return c.contains("pgs") || c.contains("vobsub") || c.contains("dvdsub") ||
             c.contains("dvb") || c.contains("xsub") || c.contains("pgssub")
+    }
+
+    /**
+     * 流清单（currentStreams）更新后立刻重算字幕 / 音轨菜单内容与索引表。
+     *
+     * 索引表（subtitleStreamIndices / audioStreamIndices）与菜单内容必须**同源同时**更新：
+     * 菜单里点的第 N 项 → 用索引表换回流的 index。两者只要有一个还是上一部片的，
+     * 就会出现「选项是别的片子的、点了不生效」（2026-10-10 修）。
+     */
+    private fun rebuildTrackMenus() {
+        menuState.subtitleTracks = buildSubtitleRows()
+        menuState.audioTracks = buildAudioRows()
+        // 正开着的菜单要立刻看到新内容（音频菜单也一起，同理）
+        menuState.kind?.let { refreshMenuRows(it) }
     }
 
     /** 菜单里选完一项后刷新列表的勾选态（菜单保持打开，勾要跟着动） */
@@ -3381,6 +3427,15 @@ class MainActivity : ComponentActivity() {
         } else {
             Log.i(TAG, "起播：先清空银幕 / 弹幕 / 字幕 / logo，等第一帧")
         }
+        /*
+         * 换片：旧的流清单立刻作废（2026-10-10 修）。
+         * 不清的话，在新片的播放信息请求回来之前打开字幕/音轨菜单，会看到**上一部片**的选项，
+         * 点下去序号对不上、什么都不发生；等清单更新后重建（rebuildTrackMenus）才恢复正常。
+         * 清成空表后这段时间菜单是空的（诚实的"还没拿到"），而不是错的。
+         */
+        currentStreams = emptyList()
+        audioStreamIndices = emptyList()
+        subtitleStreamIndices = emptyList()
         /*
          * 从这一刻起「藏起来等第一帧」（父亲 2026-10-07）：
          * 弹幕 / 字幕 / 片名 logo 都等新片画面出来再一起亮。

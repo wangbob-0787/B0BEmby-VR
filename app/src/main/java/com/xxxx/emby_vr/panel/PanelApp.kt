@@ -283,6 +283,13 @@ fun PanelApp(onPlayRequested: (mediaId: String, positionTicks: Long) -> Unit) {
                             onNavigateToPlayer = { channelId ->
                                 onPlayRequested(channelId, 0L)
                             },
+                            // 合集 → 用本页网格列它的子项（影片/剧集），见 LibraryScreen 注释
+                            onOpenBoxSet = { boxSetId, boxSetName ->
+                                navController.navigate(
+                                    "library/$boxSetId?libraryName=$boxSetName" +
+                                        "&type=Movie,Series,Video"
+                                )
+                            },
                         )
                     }
 
