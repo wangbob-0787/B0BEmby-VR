@@ -1796,10 +1796,15 @@ class MainActivity : ComponentActivity() {
                     com.xxxx.emby_vr.vr.VrNative.setVideoActive(true)
                     Log.i(TAG, "mpv 播放画面已切到 VR 原生（面板收起）")
                 }
-                // 比例先用片源探到的尺寸；探不到就按 16:9
-                com.xxxx.emby_vr.vr.VrNative.setVideoAspect(
-                    com.xxxx.emby_vr.player.PlaybackFlags.videoAspect ?: (16f / 9f),
-                )
+                /*
+                 * 内核路径也要更新画布比例（父亲 2026-10-10 实测《骄阳似我》）：
+                 * 那部片是 2.39:1 的宽银幕、走内核播放，而画布比例原来只在系统播放器的
+                 * onVideoSizeChanged 里更新 —— 内核路径没更新，画布还是 16:9，
+                 * 却被按 2.39 的形状贴出去，于是转圈、片名这些字被压扁（父亲看到的"字体变形"）。
+                 */
+                val kernelAspect = com.xxxx.emby_vr.player.PlaybackFlags.videoAspect ?: (16f / 9f)
+                com.xxxx.emby_vr.vr.VrNative.setVideoAspect(kernelAspect)
+                applyDanmakuCanvas(kernelAspect)
                 /*
                  * 等待态**不再直接放行**（2026-10-09 父亲实测）。
                  *

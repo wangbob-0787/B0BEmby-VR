@@ -502,7 +502,8 @@ struct CinemaSeat {
     float distance;   // 该排眼睛到银幕的距离（米）
 };
 constexpr CinemaSeat kCinemaSeats[3] = {
-        {"近排 · 第 1 排", 0.50f, -0.24f, 3.44f},
+        /* 近排从第 1 排改成第 2 排（父亲 2026-10-10：第一排离幕太近、仰角太大） */
+        {"近排 · 第 2 排", 0.20f, -1.09f, 4.29f},
         {"中排 · 第 3 排", -0.10f, -1.94f, 5.14f},
         {"远排 · 第 6 排", -1.00f, -4.54f, 7.74f},
 };
@@ -532,8 +533,15 @@ constexpr float kAssetOriginModelX = -69.475f;
 constexpr float kSeatColumnModelX = -69.595f;
 /** 影厅横向平移量（app 米）：让上面那个座位中心落在原点 */
 constexpr float kCinemaShiftX = kSeatColumnModelX - kAssetOriginModelX;
-/** 影厅这块银幕的宽度（米）：直接取模型里那块白幕的宽 —— 画面铺满开口，不留黑边 */
-constexpr float kSeatScreenWidth = 4.07f;
+/**
+ * 影厅这块银幕的宽度（米）：**前墙的宽度**（父亲 2026-10-10 定：铺满前面那面墙）。
+ * 模型前墙 x 从 -72.21 到 -66.78，宽 5.43 米。
+ */
+constexpr float kSeatScreenWidth = 5.43f;
+/** 舞台台面高度（模型坐标）：影厅前面那个比座位区高的台子 */
+constexpr float kHallStageModelY = 0.0f;
+/** 幕下沿离舞台台面的距离（父亲 2026-10-10：稍微高一点点就行） */
+constexpr float kScreenBottomAboveStage = 0.15f;
 /** 当前座位：0 近 / 1 中 / 2 远（父亲坐在影厅里换排） */
 std::atomic<int> gSeat{0};
 /** 影厅环境总开关（0 = 回到黑背景，出问题时可远程关掉） */
@@ -1024,6 +1032,20 @@ float hallScreenCenterY() {
     const CinemaSeat &s = kCinemaSeats[seat];
     return (kHallScreenModelY - 1.15f) + s.dy + (1.65f - gCinemaEyeHeight.load()) +
            gScreenUp.load();
+}
+
+/**
+ * 我们那块画面**下沿**在 app 坐标里的高度（父亲 2026-10-10 定的口径）。
+ *
+ * 取「舞台台面 + 0.15 米」：画面下沿永远贴着舞台上方一点点，
+ * 上沿按片子比例自动往上长（16:9 时正好到天花板下方 0.30 米；
+ * 宽银幕片矮一些，上面留出的那截墙已经涂黑，看不出来）。
+ */
+float hallScreenBottomY() {
+    const int seat = gSeat.load();
+    const CinemaSeat &s = kCinemaSeats[seat];
+    return (kHallStageModelY + kScreenBottomAboveStage - 1.15f) + s.dy +
+           (1.65f - gCinemaEyeHeight.load()) + gScreenUp.load();
 }
 
 /** 换排：整间影厅平移 + 银幕距离跟着变（父亲戴着时靠这行日志确认换到哪排） */
@@ -2208,8 +2230,13 @@ ScreenPlacement frontScreen(const VrContext &c) {
      * 而不是钉在眼睛高度 —— 否则换一排除屏与墙的关系就变（父亲 2026-10-10 实测）。
      */
     if (gCinemaOn.load() != 0 && gCinemaReady.load()) {
-        p.cy = hallScreenCenterY();
-        /* 横向也取影厅那块银幕的位置（他比厅中线偏 0.12 米，画面跟着墙走） */
+        /*
+         * 下沿锚定 + 按片子比例往上长（父亲 2026-10-10）：宽银幕时画面矮一些，
+         * 上面露出的墙已经涂黑，观感上就是"幕布上边空着"，不会看到灰墙。
+         */
+        const float h = p.width / fmaxf(0.2f, p.aspect);
+        p.cy = hallScreenBottomY() + h * 0.5f;
+        /* 横向取影厅前墙/银幕的位置（他比厅中线偏 0.12 米，画面跟着墙走） */
         p.cx = -(kHallScreenModelX - kAssetOriginModelX) + kCinemaShiftX;
     }
     return p;
