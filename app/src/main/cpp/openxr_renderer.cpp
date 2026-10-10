@@ -629,7 +629,7 @@ in vec3 vNrm;
 in vec4 vCol;
 in vec3 vPos;
 in vec2 vUv;
-uniform sampler2D uSeatTex;  // 座椅布纹（父亲 2026-10-10：只贴座椅）
+uniform sampler2D uSeatTex;  // 座椅贴图集（绒布/扶手皮面/木框/杯托 四宫格，父亲 2026-10-10）
 uniform float uSeatTexOn;    // 贴图有没有就绪（没就绪就退回纯色）
 uniform float uSeatBandZ;    // 只在这条 z 带内采样（观影位前后各 2 排 ≈ ±2.3 米）
 uniform vec3 uScreenPos;     // 银幕中心（世界坐标）—— 影厅里唯一的主光源
@@ -672,7 +672,8 @@ void main() {
      */
     vec3 albedo = vCol.rgb;
     if (uSeatTexOn > 0.5 && vUv.x >= 0.0 && abs(vPos.z) < uSeatBandZ) {
-        albedo = texture(uSeatTex, vUv).rgb * vCol.rgb * 2.2;   // 布纹 × 材质色
+        /* 贴图集每格都归一化过（均值 0.55）→ 花纹来自贴图、颜色来自顶点色 */
+        albedo = vCol.rgb * texture(uSeatTex, vUv).rgb * 1.8;
     }
     vec3 lit = albedo * (uAmbient + ceiling + env + lam * atten * uScreenTint);
     fragColor = vec4(lit, vCol.a);
@@ -888,8 +889,8 @@ void uploadSeatTexture() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
     glBindTexture(GL_TEXTURE_2D, 0);
     gSeatTexReady.store(true);
-    LOGI("座椅布纹已上传：%dx%d（带内采样 ±%.1f 米）", gSeatTexW, gSeatTexH,
-         (double) kSeatTextureBandZ);
+    LOGI("座椅贴图集已上传：%dx%d（四宫格：绒布/皮面/木框/杯托；带内采样 ±%.1f 米）",
+         gSeatTexW, gSeatTexH, (double) kSeatTextureBandZ);
 }
 
 /** 画影厅：模型矩阵 = 换排平移；光源就是银幕 */

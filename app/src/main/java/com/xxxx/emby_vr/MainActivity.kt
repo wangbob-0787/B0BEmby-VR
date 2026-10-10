@@ -4413,13 +4413,13 @@ class MainActivity : ComponentActivity() {
          * 像素交给原生，GL 上传由渲染线程在上下文就绪后做。
          */
         runCatching {
-            assets.open("seat_fabric.png").use { ins ->
+            assets.open("seat_fabrics.png").use { ins ->
                 val bmp = android.graphics.BitmapFactory.decodeStream(ins)
                 if (bmp != null) {
                     val px = IntArray(bmp.width * bmp.height)
                     bmp.getPixels(px, 0, bmp.width, 0, 0, bmp.width, bmp.height)
                     com.xxxx.emby_vr.vr.VrNative.setSeatTexture(px, bmp.width, bmp.height)
-                    Log.i(TAG, "座椅布纹已解码：${bmp.width}x${bmp.height}")
+                    Log.i(TAG, "座椅贴图集已解码：${bmp.width}x${bmp.height}")
                     bmp.recycle()
                 } else {
                     Log.w(TAG, "座椅布纹解码失败")
