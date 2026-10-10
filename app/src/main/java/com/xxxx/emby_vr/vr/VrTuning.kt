@@ -166,6 +166,12 @@ object VrTuning {
     ) {
         val raw = read(context) ?: return
         if (raw.isEmpty() || raw == lastRaw) return
+        /*
+         * 上一版（父亲 2026-10-10 实测踩坑）：文件里任何一个键变了，就把**整份**配置重发一遍，
+         * 包括 mpv_ 那几个内核属性 —— 同一个属性重设会让播放器内核直接 die（当天崩了两次）。
+         * 现在按"值真的变了才发"逐个比对，改一个键只动那一件事。
+         */
+        val prev = lastRaw
         lastRaw = raw
 
         val applied = mutableListOf<String>()
@@ -180,6 +186,7 @@ object VrTuning {
         applied += applyNative(raw)
 
         raw.filterKeys { it.startsWith("mpv_") }.forEach { (k, v) ->
+            if (prev[k] == v) return@forEach          // 值没变 → 不重发（重设内核属性会崩）
             val prop = k.removePrefix("mpv_")
             onMpvOption(prop, v)
             applied += "内核 $prop=$v"
@@ -191,7 +198,7 @@ object VrTuning {
          * 写法 `cmd=screenshot-to-file /sdcard/Android/data/com.xxxx.emby_vr/files/shot1.png video`
          * 轮询只在"文件原文有变化"时动手，所以同一行只执行一次；想再截一张就改一下文件名。
          */
-        raw["cmd"]?.trim()?.takeIf { it.isNotEmpty() }?.let { line ->
+        raw["cmd"]?.takeIf { it != prev["cmd"] }?.trim()?.takeIf { it.isNotEmpty() }?.let { line ->
             val parts = line.split(Regex("\\s+")).filter { it.isNotEmpty() }
             if (parts.isNotEmpty()) {
                 onMpvCommand(parts)
