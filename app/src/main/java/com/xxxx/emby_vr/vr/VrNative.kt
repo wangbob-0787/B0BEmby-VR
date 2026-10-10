@@ -36,6 +36,33 @@ object VrNative {
     private external fun nativeSetTuning(key: Int, value: Float)
 
     /**
+     * 影厅资源路径（父亲 2026-10-10）：assets 里的影厅几何 / 环境光贴图先拷到应用目录，
+     * 再把两个路径塞给原生。原生读不到 APK 里的 assets，只认文件路径。
+     */
+    private external fun nativeSetAssetPaths(cinemaPath: String, envPath: String)
+
+    /** 选座：0 = 近排（第 1 排）· 1 = 中排（第 3 排）· 2 = 远排（第 6 排） */
+    private external fun nativeSetSeat(seat: Int)
+
+    /** 把影厅资源路径交给原生（必须在 [startVr] 之前调） */
+    fun setAssetPaths(cinemaPath: String, envPath: String) {
+        try {
+            if (loaded) nativeSetAssetPaths(cinemaPath, envPath)
+        } catch (t: Throwable) {
+            Log.e(TAG, "设置影厅资源路径失败：${t.message}")
+        }
+    }
+
+    /** 换排（控制条上的「选座」） */
+    fun setSeat(seat: Int) {
+        try {
+            if (loaded) nativeSetSeat(seat)
+        } catch (t: Throwable) {
+            Log.e(TAG, "选座失败：${t.message}")
+        }
+    }
+
+    /**
      * 三张画面纹理的回调（2026-10-05 晚修）。
      *
      * 纹理由**原生渲染线程在自己的 GL 上下文里**建好 —— 这是关键：之前建在 2D

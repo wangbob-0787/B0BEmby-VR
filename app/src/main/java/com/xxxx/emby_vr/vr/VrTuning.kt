@@ -97,12 +97,20 @@ object VrTuning {
     const val KEY_SCREEN_DISTANCE = 15
     /** 光柱粗细倍率（2026-10-09）：1.0 = 银幕 3.2 米时代同样的角粗细 */
     const val KEY_RAY_SCALE = 16
-    /** 影院银幕预设（2026-10-10）：1 = 影厅小屏 5.2/3.2 · 2 = IMAX 大屏 26/15 */
+    /** 选座（2026-10-10 17:35）：0 = 近排（第 1 排）· 1 = 中排（第 3 排）· 2 = 远排（第 6 排） */
     const val KEY_SCREEN_PRESET = 17
     /** 防穿越：离银幕最近允许多少米（2026-10-10：可以走近银幕，不许穿过） */
     const val KEY_MIN_SCREEN_GAP = 18
     /** 控制条/菜单/海报墙是否跟随观影位（2026-10-10：走近银幕时控制条留在伸手可及处） */
     const val KEY_FOLLOW_VIEWER = 19
+    /** 影厅环境开关（2026-10-10）：0 = 回黑背景 */
+    const val KEY_CINEMA_ON = 20
+    /** 影厅底光（2026-10-10） */
+    const val KEY_CINEMA_AMBIENT = 21
+    /** 影院 HDRI 环境光强度（2026-10-10） */
+    const val KEY_CINEMA_ENV = 22
+    /** 坐姿眼高（米，2026-10-10：坐着看电影） */
+    const val KEY_CINEMA_EYE_HEIGHT = 23
 
     /** 上次应用的配置原文，只有变化才动手（避免每秒重复设置） */
     private var lastRaw: Map<String, String> = emptyMap()
@@ -277,12 +285,37 @@ object VrTuning {
             applied += "光柱粗细倍率 $it"
         }
         /*
-         * 影院银幕两套预设（父亲 2026-10-10）：戴着直接对比两种影院尺寸。
-         * 1 = 影厅小屏 5.2 m / 3.2 m（影厅模型尺度可用）· 2 = IMAX 大屏 26 m / 15 m（纵深真实）
+         * 选座（父亲 2026-10-10 17:35「我要坐着看电影」）：0 = 近排（第 1 排）·
+         * 1 = 中排（第 3 排）· 2 = 远排（第 6 排）。影厅整体跟着挪，银幕距离跟着变。
          */
-        raw["screen_preset"]?.toIntOrNull()?.let {
+        raw["seat"]?.toIntOrNull()?.let {
             VrNative.setTuning(KEY_SCREEN_PRESET, it.toFloat())
-            applied += if (it == 2) "银幕预设 2 IMAX 大屏 26/15 米" else "银幕预设 1 影厅小屏 5.2/3.2 米"
+            applied += "选座 " + when (it) {
+                0 -> "近排（第 1 排）"
+                1 -> "中排（第 3 排）"
+                2 -> "远排（第 6 排）"
+                else -> "$it"
+            }
+        }
+        /* 影厅环境开关（2026-10-10）：0 = 回黑背景 */
+        raw["cinema_on"]?.toIntOrNull()?.let {
+            VrNative.setTuning(KEY_CINEMA_ON, it.toFloat())
+            applied += "影厅环境 " + if (it != 0) "开" else "关"
+        }
+        /* 影厅底光（2026-10-10） */
+        raw["cinema_ambient"]?.toFloatOrNull()?.let {
+            VrNative.setTuning(KEY_CINEMA_AMBIENT, it)
+            applied += "影厅底光 ${"%.3f".format(it)}"
+        }
+        /* 影院 HDRI 环境光强度（2026-10-10，用下载的那套全景图当环境光） */
+        raw["cinema_env"]?.toFloatOrNull()?.let {
+            VrNative.setTuning(KEY_CINEMA_ENV, it)
+            applied += "影院环境光强度 ${"%.2f".format(it)}"
+        }
+        /* 坐姿眼高（2026-10-10）：坐着看电影，地面到眼睛的距离 */
+        raw["cinema_eye_height"]?.toFloatOrNull()?.let {
+            VrNative.setTuning(KEY_CINEMA_EYE_HEIGHT, it)
+            applied += "坐姿眼高 ${"%.2f".format(it)} 米"
         }
         /* 防穿越最近距离（2026-10-10）：走近银幕到这么近时，场景会整体后推，不许穿过 */
         raw["min_screen_gap"]?.toFloatOrNull()?.let {

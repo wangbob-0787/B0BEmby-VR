@@ -104,7 +104,9 @@ val OSD_LEFT_GROUP = listOf(OsdButton.SUBTITLE, OsdButton.DANMAKU)
  * 只留与"当前这部片"无关的入口 —— 选片（换一部看）与退出。
  * 其余按钮在没有片子可操作时置灰且点不动。
  */
-val OSD_ALWAYS_ENABLED = setOf(OsdButton.PICK, OsdButton.EXIT)
+/** 空闲（没在播放）时也能点的按钮：选片、退出，以及「更多」—— 更多里第一件是「选座」
+ *  （父亲 2026-10-10：没播放时也想能点选座） */
+val OSD_ALWAYS_ENABLED = setOf(OsdButton.PICK, OsdButton.EXIT, OsdButton.MORE)
 
 /** 中组：夹在左右两组之间 */
 val OSD_CENTER_GROUP = listOf(OsdButton.SEEK_BACK, OsdButton.PLAY_PAUSE, OsdButton.SEEK_FWD)

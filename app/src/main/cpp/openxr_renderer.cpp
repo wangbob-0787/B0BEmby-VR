@@ -480,6 +480,289 @@ GLuint buildProgram() {
     return p;
 }
 
+// ------------------------------------------------- 影厅环境（父亲 2026-10-10）
+/*
+ * 影厅几何 assets/cinema.b0bcin —— 由 tools/build_cinema_asset.py 生成。
+ *
+ * 源模型：Sketchfab `cinema/movie theater_[interior]` by **Comicaroid**（CC-BY，须署名）。
+ * 处理：烘焙节点变换（模型是毫米建的）→ 摆位（转 180°、银幕对到 -z、第 1 排眼睛落在原点）
+ *      → 减面到约 18 万面 → 顶点色合并成单一缓冲。
+ *
+ * 为什么自带 loader：现有渲染器只有"画方片"一条路，没有 glTF 解析器；
+ * 这个格式就是几段裸数组（见文件头注释），读进来直接上传，比引第三方库省事也更可控。
+ *
+ * 深度：影厅是 3D 几何，必须开深度测试（原来全关、纯 2D 叠层），所以眼缓冲加了深度附件；
+ * 影厅画完立刻关掉深度，后面的视频/面板/弹幕照旧按图层顺序叠着画。
+ */
+const char *kCinemaVs = R"(#version 300 es
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aNrm;
+layout(location = 2) in vec4 aCol;
+uniform mat4 uMvp;
+uniform mat4 uModel;
+out vec3 vNrm;
+out vec4 vCol;
+out vec3 vPos;
+void main() {
+    vNrm = mat3(uModel) * aNrm;
+    vCol = aCol;
+    vPos = (uModel * vec4(aPos, 1.0)).xyz;
+    gl_Position = uMvp * vec4(aPos, 1.0);
+}
+)";
+
+const char *kCinemaFs = R"(#version 300 es
+precision mediump float;
+in vec3 vNrm;
+in vec4 vCol;
+in vec3 vPos;
+uniform vec3 uScreenPos;     // 银幕中心（世界坐标）—— 影厅里唯一的主光源
+uniform vec3 uScreenTint;    // 银幕发光的颜色（跟画面联动，父亲后面要"画面照亮影厅"）
+uniform float uScreenGlow;   // 银幕光强
+uniform float uAmbient;      // 底噪环境光（暗厅，但不至于全黑）
+uniform vec3 uEye;           // 当前眼睛位置（用于双面法线）
+uniform sampler2D uEnv;      // 影院 HDRI（Poly Haven CC0）降采样成 256×128 的环境光
+uniform float uEnvStrength;  // 环境光强度（vr-tuning 的 cinema_env）
+out vec4 fragColor;
+
+/** 世界方向 → 等距柱状投影 UV（环境贴图是 360×180 全景） */
+vec2 envUv(vec3 dir) {
+    const float kPi = 3.14159265358979;
+    float u = atan(dir.z, dir.x) / (2.0 * kPi) + 0.5;
+    float v = acos(clamp(dir.y, -1.0, 1.0)) / kPi;
+    return vec2(u, v);
+}
+
+void main() {
+    vec3 n = normalize(vNrm);
+    if (dot(n, normalize(uEye - vPos)) < 0.0) n = -n;   // 双面：暗厅里背面也要有亮度
+    vec3 L = uScreenPos - vPos;
+    float d = length(L);
+    L /= max(d, 0.001);
+    float lam = max(dot(n, L), 0.0);
+    float atten = uScreenGlow / (1.0 + 0.06 * d * d);
+    float ceiling = max(dot(n, vec3(0.0, 1.0, 0.0)), 0.0) * 0.06;   // 顶灯一点余光
+    /*
+     * 环境光：拿 HDRI 沿法线方向采一次（降采样后本身就非常糊，等于粗糙辐照度），
+     * 给暗厅一点真实的"影院空气感"——墙面、地毯、座椅不至于纯黑。
+     */
+    vec3 env = texture(uEnv, envUv(n)).rgb * uEnvStrength;
+    vec3 lit = vCol.rgb * (uAmbient + ceiling + env + lam * atten * uScreenTint);
+    fragColor = vec4(lit, vCol.a);
+}
+)";
+
+GLuint gCinemaProgram = 0;
+GLint gCinemaMvpLoc = -1;
+GLint gCinemaModelLoc = -1;
+GLint gCinemaScreenPosLoc = -1;
+GLint gCinemaTintLoc = -1;
+GLint gCinemaGlowLoc = -1;
+GLint gCinemaAmbientLoc = -1;
+GLint gCinemaEyeLoc = -1;
+GLint gCinemaEnvLoc = -1;
+GLint gCinemaEnvStrengthLoc = -1;
+/** 环境光贴图（影院 HDRI，256×128 RGB；由 Java 侧把 assets 里的 .b0benv 拷出来再加载） */
+GLuint gEnvTex = 0;
+std::atomic<float> gEnvStrength{2.6f};
+/*
+ * 影厅几何与环境光贴图的文件路径：由 Java 侧先把 assets 里的文件拷到应用目录，
+ * 再把路径传进来（native 读不到 APK 里的 assets）。真正的读盘+上传发生在这里——
+ * 在渲染线程、EGL 上下文就绪之后，GL 对象才建得对。
+ */
+std::string gCinemaAssetPath;
+std::string gEnvAssetPath;
+GLuint gCinemaVbo = 0;
+GLuint gCinemaIbo = 0;
+int gCinemaIndexCount = 0;
+/** 法线 / 顶点色两段在 VBO 里的字节偏移（加载时算好，绘制时用） */
+long gCinemaNormalOffset = 0;
+long gCinemaColorOffset = 0;
+std::atomic<bool> gCinemaReady{false};
+/** 影厅参数（可在 vr-tuning.txt 里改：cinema_glow / cinema_ambient / cinema_on） */
+std::atomic<float> gCinemaGlow{1.35f};
+std::atomic<float> gCinemaAmbient{0.05f};
+/** 银幕发出的光色（默认中性白；后面按视频画面实时取样） */
+std::atomic<float> gScreenTintR{1.f};
+std::atomic<float> gScreenTintG{1.f};
+std::atomic<float> gScreenTintB{1.f};
+
+GLuint buildCinemaProgram() {
+    GLuint vs = compile(GL_VERTEX_SHADER, kCinemaVs);
+    GLuint fs = compile(GL_FRAGMENT_SHADER, kCinemaFs);
+    GLuint p = glCreateProgram();
+    glAttachShader(p, vs);
+    glAttachShader(p, fs);
+    glLinkProgram(p);
+    GLint ok = 0;
+    glGetProgramiv(p, GL_LINK_STATUS, &ok);
+    if (!ok) {
+        char log[512];
+        glGetProgramInfoLog(p, sizeof(log), nullptr, log);
+        LOGE("影厅着色器链接失败: %s", log);
+    }
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    return p;
+}
+
+/** 读 cinema.b0bcin（格式见文件头注释），上传顶点/索引缓冲 */
+bool loadCinemaAsset(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (f == nullptr) {
+        LOGE("影厅几何打开失败：%s", path);
+        return false;
+    }
+    char magic[8] = {0};
+    uint32_t geomCount = 0, vcount = 0, icount = 0, matCount = 0;
+    float posOffset[3] = {0, 0, 0}, bmin[3] = {0, 0, 0}, bmax[3] = {0, 0, 0};
+    bool ok = fread(magic, 1, 8, f) == 8 && memcmp(magic, "B0BCIN1", 7) == 0 &&
+              fread(&geomCount, sizeof(uint32_t), 1, f) == 1 &&
+              fread(&vcount, sizeof(uint32_t), 1, f) == 1 &&
+              fread(&icount, sizeof(uint32_t), 1, f) == 1 &&
+              fread(posOffset, sizeof(float), 3, f) == 3 &&
+              fread(bmin, sizeof(float), 3, f) == 3 &&
+              fread(bmax, sizeof(float), 3, f) == 3 &&
+              fread(&matCount, sizeof(uint32_t), 1, f) == 1;
+    if (ok && matCount > 0) {
+        ok = fseek(f, (long) (4 * matCount), SEEK_CUR) == 0;
+    }
+    std::vector<float> pos, nrm;
+    std::vector<unsigned char> col;
+    std::vector<uint32_t> idx;
+    if (ok && vcount > 0 && icount > 0) {
+        pos.resize((size_t) vcount * 3);
+        nrm.resize((size_t) vcount * 3);
+        col.resize((size_t) vcount * 4);
+        idx.resize(icount);
+        ok = fread(pos.data(), sizeof(float), pos.size(), f) == pos.size() &&
+             fread(nrm.data(), sizeof(float), nrm.size(), f) == nrm.size() &&
+             fread(col.data(), 1, col.size(), f) == col.size() &&
+             fread(idx.data(), sizeof(uint32_t), idx.size(), f) == idx.size();
+    }
+    fclose(f);
+    if (!ok) {
+        LOGE("影厅几何解析失败（magic/长度不符）");
+        return false;
+    }
+
+    if (gCinemaVbo == 0) glGenBuffers(1, &gCinemaVbo);
+    if (gCinemaIbo == 0) glGenBuffers(1, &gCinemaIbo);
+    glBindBuffer(GL_ARRAY_BUFFER, gCinemaVbo);
+    glBufferData(GL_ARRAY_BUFFER,
+                 (GLsizeiptr) ((size_t) vcount * (3 + 3) * sizeof(float) +
+                               (size_t) vcount * 4), nullptr, GL_STATIC_DRAW);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr) (pos.size() * sizeof(float)),
+                    pos.data());
+    glBufferSubData(GL_ARRAY_BUFFER, (GLintptr) (pos.size() * sizeof(float)),
+                    (GLsizeiptr) (nrm.size() * sizeof(float)), nrm.data());
+    glBufferSubData(GL_ARRAY_BUFFER,
+                    (GLintptr) ((pos.size() + nrm.size()) * sizeof(float)),
+                    (GLsizeiptr) col.size(), col.data());
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gCinemaIbo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr) (idx.size() * sizeof(uint32_t)),
+                 idx.data(), GL_STATIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    gCinemaIndexCount = (int) idx.size();
+    gCinemaNormalOffset = (long) (pos.size() * sizeof(float));
+    gCinemaColorOffset = (long) ((pos.size() + nrm.size()) * sizeof(float));
+    gCinemaReady.store(true);
+    LOGI("影厅几何已加载：%u 顶点 / %u 三角形（%s）", vcount, icount / 3, path);
+    return true;
+}
+
+/** 读 cinema_env.b0benv（256×128 RGB888），上传成 GL 纹理 */
+bool loadEnvAsset(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (f == nullptr) {
+        LOGE("环境光贴图打开失败：%s", path);
+        return false;
+    }
+    char magic[8] = {0};
+    uint32_t w = 0, h = 0;
+    bool ok = fread(magic, 1, 8, f) == 8 && memcmp(magic, "B0BENV1", 7) == 0 &&
+              fread(&w, sizeof(uint32_t), 1, f) == 1 &&
+              fread(&h, sizeof(uint32_t), 1, f) == 1 && w > 0 && h > 0 && w <= 4096 &&
+              h <= 4096;
+    std::vector<unsigned char> px;
+    if (ok) {
+        px.resize((size_t) w * h * 3);
+        ok = fread(px.data(), 1, px.size(), f) == px.size();
+    }
+    fclose(f);
+    if (!ok) {
+        LOGE("环境光贴图解析失败（magic/长度不符）");
+        return false;
+    }
+    if (gEnvTex == 0) glGenTextures(1, &gEnvTex);
+    glBindTexture(GL_TEXTURE_2D, gEnvTex);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, (GLsizei) w, (GLsizei) h, 0, GL_RGB,
+                 GL_UNSIGNED_BYTE, px.data());
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    LOGI("环境光贴图已加载：%ux%u（%s）", w, h, path);
+    return true;
+}
+
+/** 画影厅：模型矩阵 = 换排平移；光源就是银幕 */
+void drawCinema(const Mat4 &proj, const Mat4 &view, const XrVector3f &eyePos) {
+    if (!gCinemaReady.load() || gCinemaOn.load() == 0 || gCinemaProgram == 0) return;
+    const int seat = gSeat.load();
+    const CinemaSeat &s = kCinemaSeats[seat];
+
+    Mat4 model = identity();
+    model.m[13] = s.dy + (1.65f - gCinemaEyeHeight.load());   // 坐姿眼高可调：眼高变了，厅跟着上下挪
+    model.m[14] = s.dz;
+    const Mat4 mvp = multiply(multiply(proj, view), model);
+
+    glUseProgram(gCinemaProgram);
+    glUniformMatrix4fv(gCinemaMvpLoc, 1, GL_FALSE, mvp.m);
+    glUniformMatrix4fv(gCinemaModelLoc, 1, GL_FALSE, model.m);
+    /* 银幕中心：世界坐标里就在观影位正前方 distance 米处（影厅平移也跟着走） */
+    glUniform3f(gCinemaScreenPosLoc, 0.f, 0.55f, -s.distance);
+    glUniform3f(gCinemaTintLoc, gScreenTintR.load(), gScreenTintG.load(),
+                gScreenTintB.load());
+    glUniform1f(gCinemaGlowLoc, gCinemaGlow.load());
+    glUniform1f(gCinemaAmbientLoc, gCinemaAmbient.load());
+    glUniform3f(gCinemaEyeLoc, eyePos.x, eyePos.y, eyePos.z);
+    /* 环境光：HDRI 放 1 号纹理单元（0 号单元是运行时的 OES 视频纹理，别抢） */
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, gEnvTex);
+    if (gCinemaEnvLoc >= 0) glUniform1i(gCinemaEnvLoc, 1);
+    if (gCinemaEnvStrengthLoc >= 0) glUniform1f(gCinemaEnvStrengthLoc, gEnvStrength.load());
+    glActiveTexture(GL_TEXTURE0);
+
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+    glDisable(GL_CULL_FACE);
+    glBindBuffer(GL_ARRAY_BUFFER, gCinemaVbo);
+    /*
+     * 缓冲是「三段连续」而不是交错：[所有位置][所有法线][所有顶点色]，
+     * 所以每个属性各自 stride = 0（紧密排列），靠偏移跳到自己的那段。
+     */
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, (void *) 0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 0,
+                          (void *) (size_t) gCinemaNormalOffset);
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, 0,
+                          (void *) (size_t) gCinemaColorOffset);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gCinemaIbo);
+    glDrawElements(GL_TRIANGLES, gCinemaIndexCount, GL_UNSIGNED_INT, nullptr);
+    glDisableVertexAttribArray(0);
+    glDisableVertexAttribArray(1);
+    glDisableVertexAttribArray(2);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    glDisable(GL_DEPTH_TEST);
+}
+
 // ---------------------------------------------------------------- 会话上下文
 struct EyeSwapchain {
     XrSwapchain handle = XR_NULL_HANDLE;
@@ -487,6 +770,8 @@ struct EyeSwapchain {
     int32_t height = 0;
     std::vector<XrSwapchainImageOpenGLESKHR> images;
     std::vector<GLuint> fbos;
+    /* 深度附件（影厅几何要深度测试；面板/视频照旧不测深度） */
+    std::vector<GLuint> depthRbos;
 };
 
 /**
@@ -575,29 +860,39 @@ std::atomic<float> gScreenWidth{26.f};
 std::atomic<float> gScreenDistance{15.f};
 
 /*
- * ==================== 影院银幕两套预设（父亲 2026-10-10） ====================
+ * ==================== 影厅环境 + 选座（父亲 2026-10-10 17:35「我要坐着看电影」） ====================
  *
- * 父亲要"两套影院尺寸，运行时能切、戴着直接对比"，所以银幕几何不再是单一默认值，
- * 而是两个命名预设，扣一次控制条「更多 → 影院银幕」即切换（也可由 vr-tuning.txt 的
- * `screen_preset` 下发，都是当场生效，不用重编重装）。
+ * 不再是"两块银幕尺寸"，而是**在影厅里换排**：近 / 中 / 远 = 影厅第 1 / 3 / 6 排。
+ * 影厅是真实坡度（每排抬高 0.3 米，银幕中心固定在厅里、在座位区地面之上 2.3 米），
+ * 所以换排时整间影厅要同时平移 y 与 z —— 让**选中那一排的座位正好落在父亲身上**：
+ *   dy / dz = 影厅几何（assets/cinema.b0bcin）的平移量，米；
+ *   distance = 那一排眼睛到银幕的距离，直接写进 gScreenDistance
+ *              （视频层、弹幕层、光柱、进度环都读这个值，所以一处改、处处对）。
  *
- *   1 = 影厅小屏：宽 5.2 m / 距 3.2 m
- *       水平视角 2·atan(2.6/3.2) ≈ 78°，与 IMAX 大屏**角尺寸相同**；3.2 m 是这套代码
- *       光柱/进度环的参考距离，切回来正好是当初调好的比例。影厅 1:1 尺度下唯一自洽的
- *       摆位（模型银幕墙宽 5.65 m，画面能落在墙上）。
- *   2 = IMAX 大屏：宽 26 m / 距 15 m（2026-10-09 父亲按 IMAX 第 10 排定的原值）
- *       水平视角 2·atan(13/15) ≈ 81.6°。纵深最接近真影厅（眼睛会聚接近平行、走动时
- *       银幕大小几乎不变），但没有一间实体影厅装得下这块银幕。
- *
- * 两者差 3.6° —— 观感差别在纵深，不在大小；选哪个由父亲戴着定。
+ * 数值怎么来的（不许手改，改就重算）：
+ *   影厅模型第 k 排：座位下沿 y = -0.5 + 0.3(k-1)，眼睛在座位上方 1.15 米（坐姿）；
+ *   第 k 排眼睛到银幕：z 距离 3.44 / 5.14 / 7.74 米（第 1 / 3 / 6 排）。
+ *   导出资产时已把"第 1 排眼睛"放在原点，所以 dy = -(该排眼高) + 1.65、dz = -(该排眼距) + 3.2。
  */
-constexpr float kScreenPresetHallW = 5.2f;
-constexpr float kScreenPresetHallD = 3.2f;
-constexpr float kScreenPresetImaxW = 26.f;
-constexpr float kScreenPresetImaxD = 15.f;
-
-/** 当前预设：1 = 影厅小屏（默认）· 2 = IMAX 大屏 · 0 = 手工改过宽度/距离（自定义） */
-std::atomic<int> gScreenPreset{1};
+struct CinemaSeat {
+    const char *name;
+    float dy;         // 影厅整体上下平移（米）
+    float dz;         // 影厅整体前后平移（米）
+    float distance;   // 该排眼睛到银幕的距离（米）
+};
+constexpr CinemaSeat kCinemaSeats[3] = {
+        {"近排 · 第 1 排", 0.50f, -0.24f, 3.44f},
+        {"中排 · 第 3 排", -0.10f, -1.94f, 5.14f},
+        {"远排 · 第 6 排", -1.00f, -4.54f, 7.74f},
+};
+/** 影厅这块银幕宽度：模型银幕墙 5.65 米，留边取 5.2 米（父亲 2026-10-10 之前定的那套） */
+constexpr float kSeatScreenWidth = 5.2f;
+/** 当前座位：0 近 / 1 中 / 2 远（父亲坐在影厅里换排） */
+std::atomic<int> gSeat{0};
+/** 影厅环境总开关（0 = 回到黑背景，出问题时可远程关掉） */
+std::atomic<int> gCinemaOn{1};
+/** 坐姿眼高（米）：影厅座位区地面到眼睛的距离，vr-tuning 的 cinema_eye_height 可调 */
+std::atomic<float> gCinemaEyeHeight{1.15f};
 
 /*
  * ==================== 观影位锚点 / 走动（父亲 2026-10-10） ====================
@@ -667,21 +962,18 @@ float viewerOffsetZ() {
     return gFollowViewer.load() != 0 ? gViewerZ.load() : 0.f;
 }
 
-/** 切预设：同时改宽度与距离，并打一行日志（父亲戴着时靠这行确认切了哪套） */
-void applyScreenPreset(int preset) {
-    if (preset == 1) {
-        gScreenWidth.store(kScreenPresetHallW);
-        gScreenDistance.store(kScreenPresetHallD);
-        gScreenPreset.store(1);
-        LOGI("银幕预设 → 1 影厅小屏：宽 %.1f m · 距 %.1f m（视角约 78°）",
-             (double) kScreenPresetHallW, (double) kScreenPresetHallD);
-    } else if (preset == 2) {
-        gScreenWidth.store(kScreenPresetImaxW);
-        gScreenDistance.store(kScreenPresetImaxD);
-        gScreenPreset.store(2);
-        LOGI("银幕预设 → 2 IMAX 大屏：宽 %.1f m · 距 %.1f m（视角约 81.6°）",
-             (double) kScreenPresetImaxW, (double) kScreenPresetImaxD);
-    }
+/** 换排：整间影厅平移 + 银幕距离跟着变（父亲戴着时靠这行日志确认换到哪排） */
+void applySeat(int seat) {
+    if (seat < 0) seat = 0;
+    if (seat > 2) seat = 2;
+    gSeat.store(seat);
+    gScreenWidth.store(kSeatScreenWidth);
+    gScreenDistance.store(kCinemaSeats[seat].distance);
+    LOGI("选座 → %s：屏幕距离 %.2f 米 · 影厅平移 dy=%.2f dz=%.2f（水平视角 %.1f°）",
+         kCinemaSeats[seat].name, (double) kCinemaSeats[seat].distance,
+         (double) kCinemaSeats[seat].dy, (double) kCinemaSeats[seat].dz,
+         (double) (2.0 * atan((kSeatScreenWidth * 0.5) / kCinemaSeats[seat].distance) *
+                   180.0 / 3.14159265358979));
 }
 /**
  * 海报墙的**初始**摆位：左前方、斜着正对观影者。
@@ -1336,7 +1628,8 @@ bool initEgl(VrContext &c) {
             EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
             EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
             EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
-            EGL_DEPTH_SIZE, 0,
+            /* 而不是 0：影厅是 3D 几何，要深度测试才能正确遮挡（父亲 2026-10-10） */
+            EGL_DEPTH_SIZE, 24,
             EGL_NONE,
     };
     EGLint numConfigs = 0;
@@ -1433,11 +1726,22 @@ bool createSwapchains(VrContext &c) {
             return false;
         }
         eye.fbos.resize(imgCount, 0);
+        eye.depthRbos.assign(imgCount, 0);
         for (uint32_t k = 0; k < imgCount; k++) {
             glGenFramebuffers(1, &eye.fbos[k]);
             glBindFramebuffer(GL_FRAMEBUFFER, eye.fbos[k]);
             glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
                                    static_cast<GLuint>(eye.images[k].image), 0);
+            /*
+             * 深度附件（父亲 2026-10-10 影院）：每张眼图配一个深度 renderbuffer。
+             * 不共用同一个 —— 交换链多图轮转，共用会导致上一张图的深度被下一张读到。
+             */
+            glGenRenderbuffers(1, &eye.depthRbos[k]);
+            glBindRenderbuffer(GL_RENDERBUFFER, eye.depthRbos[k]);
+            glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, eye.width,
+                                  eye.height);
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER,
+                                      eye.depthRbos[k]);
             if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
                 LOGE("FBO 不完整（眼 %zu 图 %u）", i, k);
                 return false;
@@ -2630,7 +2934,144 @@ void pumpEvents(VrContext &c) {
     }
 }
 
+/*
+ * ==================== 银幕灯光联动（父亲 2026-10-10「把灯光也要加进去」） ====================
+ *
+ * 影厅里唯一的光源就是那块银幕 —— 所以银幕演什么，厅里就被照成什么颜色：
+ * 爆炸场面偏橙、雪景偏冷白、黑场时厅里几乎全黑（只剩顶灯余光）。
+ *
+ * 做法（花钱最少的那条）：把这个视频帧缩到 16×16 画进一张小 FBO，readPixels 取回来
+ * 算平均色与亮度，再指数平滑一下喂给影厅着色器。16×16 的绘制 + 回读，每 4 帧一次，
+ * 开销可以忽略；比"在片源里插探针"稳得多，也不用改播放器。
+ */
+GLuint gLightFbo = 0;
+GLuint gLightTex = 0;
+int gLightTick = 0;
+/** 影厅里的实际亮度（0~1，日志与调参用） */
+std::atomic<float> gCinemaLuma{0.f};
+
+void updateScreenLightFromVideo(VrContext &c) {
+    const int N = 16;
+    const bool hasVideo = c.videoTex != 0 && c.videoActive.load() && c.videoHasFrame.load();
+
+    if (!hasVideo) {
+        /* 没画面（空闲/等待中）：灯慢慢暗下去，留一点顶灯余光，别让厅里全黑 */
+        const float k = 0.12f;
+        gScreenTintR.store(gScreenTintR.load() + (0.55f - gScreenTintR.load()) * k);
+        gScreenTintG.store(gScreenTintG.load() + (0.58f - gScreenTintG.load()) * k);
+        gScreenTintB.store(gScreenTintB.load() + (0.70f - gScreenTintB.load()) * k);
+        gCinemaGlow.store(gCinemaGlow.load() + (0.28f - gCinemaGlow.load()) * k);
+        gCinemaLuma.store(gCinemaLuma.load() * (1.f - k));
+        return;
+    }
+    if ((gLightTick++ % 4) != 0) return;
+
+    if (gLightFbo == 0) {
+        glGenFramebuffers(1, &gLightFbo);
+        glGenTextures(1, &gLightTex);
+        glBindTexture(GL_TEXTURE_2D, gLightTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, N, N, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                     nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindFramebuffer(GL_FRAMEBUFFER, gLightFbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                               gLightTex, 0);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+            LOGE("灯光采样 FBO 建不起来，灯光联动关掉");
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            glDeleteFramebuffers(1, &gLightFbo);
+            gLightFbo = 0;
+            return;
+        }
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, gLightFbo);
+    glViewport(0, 0, N, N);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glClearColor(0.f, 0.f, 0.f, 1.f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    glUseProgram(c.program);
+    Mat4 id = identity();
+    glUniformMatrix4fv(c.mvpLoc, 1, GL_FALSE, id.m);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, c.videoTex);
+    if (c.texLoc >= 0) glUniform1i(c.texLoc, 0);
+    if (c.useTexLoc >= 0) glUniform1i(c.useTexLoc, 1);
+    if (c.circleLoc >= 0) glUniform1i(c.circleLoc, 0);
+    if (c.expandLoc >= 0) glUniform1i(c.expandLoc, 0);
+    if (c.downLoc >= 0) glUniform1i(c.downLoc, 0);
+    if (c.testPatternLoc >= 0) glUniform1i(c.testPatternLoc, 0);
+    if (c.brightLoc >= 0) glUniform1f(c.brightLoc, 0.f);
+    if (c.contrastLoc >= 0) glUniform1f(c.contrastLoc, 1.f);
+    if (c.satLoc >= 0) glUniform1f(c.satLoc, 1.f);
+    if (c.sharpenLoc >= 0) glUniform1f(c.sharpenLoc, 0.f);
+    if (c.tempLoc >= 0) glUniform1f(c.tempLoc, 0.f);
+    if (c.jitterLoc >= 0) glUniform1f(c.jitterLoc, 0.f);
+    glUniform4f(c.colorLoc, 1.f, 1.f, 1.f, 1.f);
+    glBindBuffer(GL_ARRAY_BUFFER, c.vbo);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void *) 0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
+                          (void *) (3 * sizeof(float)));
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glDisableVertexAttribArray(0);
+    glDisableVertexAttribArray(1);
+
+    unsigned char px[N * N * 4];
+    glReadPixels(0, 0, N, N, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    float sr = 0.f, sg = 0.f, sb = 0.f;
+    for (int i = 0; i < N * N; i++) {
+        sr += (float) px[i * 4 + 0];
+        sg += (float) px[i * 4 + 1];
+        sb += (float) px[i * 4 + 2];
+    }
+    const float inv = 1.f / (float) (N * N * 255);
+    sr *= inv;
+    sg *= inv;
+    sb *= inv;
+    /* 亮度用 Rec.709 加权（和人眼感受一致） */
+    const float luma = 0.2126f * sr + 0.7152f * sg + 0.0722f * sb;
+    /* 颜色归一化成"色相"：暗场不要被噪声带偏，亮度单独走 glow */
+    const float mx = fmaxf(sr, fmaxf(sg, sb));
+    float tr = 1.f, tg = 1.f, tb = 1.f;
+    if (mx > 0.02f) {
+        tr = sr / mx;
+        tg = sg / mx;
+        tb = sb / mx;
+    }
+    /* 平滑（0.18）：灯别跟着画面闪，一帧一变的灯会晃眼 */
+    const float k = 0.18f;
+    gScreenTintR.store(gScreenTintR.load() + (tr - gScreenTintR.load()) * k);
+    gScreenTintG.store(gScreenTintG.load() + (tg - gScreenTintG.load()) * k);
+    gScreenTintB.store(gScreenTintB.load() + (tb - gScreenTintB.load()) * k);
+    const float wantGlow = fminf(3.0f, 0.30f + luma * 3.2f);
+    gCinemaGlow.store(gCinemaGlow.load() + (wantGlow - gCinemaGlow.load()) * k);
+    gCinemaLuma.store(gCinemaLuma.load() + (luma - gCinemaLuma.load()) * k);
+
+    /* 每 5 秒一行体检：父亲戴着时读这一行就能报"灯太亮/太暗/偏色" */
+    static double lastLightLog = 0.0;
+    if (nowMs() - lastLightLog > 5000.0) {
+        lastLightLog = nowMs();
+        LOGI("影厅灯光：画面亮度 %.2f → 光强 %.2f · 色调 (%.2f,%.2f,%.2f) · 环境光 %.2f · 座位 %d",
+             (double) gCinemaLuma.load(), (double) gCinemaGlow.load(),
+             (double) gScreenTintR.load(), (double) gScreenTintG.load(),
+             (double) gScreenTintB.load(), (double) gEnvStrength.load(), gSeat.load());
+    }
+}
+
 bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
+    /* 银幕灯光联动（只算一次，两只眼共用）：把当前画面采成 16×16 喂给影厅光照 */
+    if (eyeIndex == 0) updateScreenLightFromVideo(c);
     EyeSwapchain &eye = c.eyes[eyeIndex];
     uint32_t imageIndex = 0;
     XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
@@ -2702,10 +3143,15 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
         static uint32_t jitterTick = 0;
         glUniform1f(c.jitterLoc, (float) (jitterTick++ % 64u) * 1.7f);
     }
-    glClear(GL_COLOR_BUFFER_BIT);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     const Mat4 proj = perspectiveFromFov(view.fov, 0.05f, 100.f);
     const Mat4 view4 = viewMatrixFromPose(view.pose);
+    /*
+     * 影厅先画（父亲 2026-10-10）：开深度、画完立刻关掉 —— 后面的银幕/海报墙/控制条/弹幕
+     * 还是原来的图层顺序，一层层叠上去，不受影厅遮挡影响。
+     */
+    drawCinema(proj, view4, view.pose.position);
     if (c.program != 0 && c.mvpLoc >= 0) {
         /*
          * 一块屏：摆位 → 位置/朝向/尺寸，贴 tex（tex = 0 就画底色）。
@@ -4303,6 +4749,25 @@ void renderThreadMain() {
         if (!createOesSources(c)) LOGW("画面纹理没建起来，VR 里只会看到底色");
 
         c.program = buildProgram();
+        /*
+         * 影厅环境（父亲 2026-10-10）：着色器 + 默认座位一起就位。
+         * 几何本身由 Java 侧把 assets 里的 cinema.b0bcin 拷出来后再喊 nativeLoadCinema
+         * （native 层读不到 assets，只有文件路径）。
+         */
+        gCinemaProgram = buildCinemaProgram();
+        gCinemaMvpLoc = glGetUniformLocation(gCinemaProgram, "uMvp");
+        gCinemaModelLoc = glGetUniformLocation(gCinemaProgram, "uModel");
+        gCinemaScreenPosLoc = glGetUniformLocation(gCinemaProgram, "uScreenPos");
+        gCinemaTintLoc = glGetUniformLocation(gCinemaProgram, "uScreenTint");
+        gCinemaGlowLoc = glGetUniformLocation(gCinemaProgram, "uScreenGlow");
+        gCinemaAmbientLoc = glGetUniformLocation(gCinemaProgram, "uAmbient");
+        gCinemaEyeLoc = glGetUniformLocation(gCinemaProgram, "uEye");
+        gCinemaEnvLoc = glGetUniformLocation(gCinemaProgram, "uEnv");
+        gCinemaEnvStrengthLoc = glGetUniformLocation(gCinemaProgram, "uEnvStrength");
+        applySeat(gSeat.load());
+        /* 影厅几何 + 环境光贴图：路径由 Java 侧给（assets 已拷到应用目录） */
+        if (!gEnvAssetPath.empty()) loadEnvAsset(gEnvAssetPath.c_str());
+        if (!gCinemaAssetPath.empty()) loadCinemaAsset(gCinemaAssetPath.c_str());
         c.mvpLoc = glGetUniformLocation(c.program, "uMvp");
         c.colorLoc = glGetUniformLocation(c.program, "uColor");
         c.useTexLoc = glGetUniformLocation(c.program, "uUseTexture");
@@ -4817,7 +5282,6 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
         case 14:
             if (value >= 1.f && value <= 40.f) {
                 gScreenWidth.store(value);
-                gScreenPreset.store(0);          // 手工改过 = 自定义，不再是某套预设
                 const float dist = gScreenDistance.load();
                 LOGI("调参 → 银幕宽 %.2f 米（距离 %.2f 米，水平视角 %.1f°）",
                      (double) value, (double) dist,
@@ -4827,7 +5291,6 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
         case 15:
             if (value >= 1.f && value <= 40.f) {
                 gScreenDistance.store(value);
-                gScreenPreset.store(0);          // 手工改过 = 自定义，不再是某套预设
                 const float w = gScreenWidth.load();
                 LOGI("调参 → 银幕距离 %.2f 米（宽 %.2f 米，水平视角 %.1f°）",
                      (double) value, (double) w,
@@ -4842,8 +5305,34 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             }
             break;
         case 17:
-            /* 影院银幕预设（父亲 2026-10-10）：1 = 影厅小屏 5.2/3.2，2 = IMAX 大屏 26/15 */
-            applyScreenPreset((int) value);
+            /* 选座（父亲 2026-10-10 17:35）：0 = 近排（第 1 排）· 1 = 中排（第 3 排）· 2 = 远排（第 6 排） */
+            applySeat((int) value);
+            break;
+        case 20:
+            /* 影厅环境开关（出问题时一键回黑背景，不用重装） */
+            gCinemaOn.store(value >= 0.5f ? 1 : 0);
+            LOGI("调参 → 影厅环境 %s", gCinemaOn.load() ? "开" : "关（只剩黑背景）");
+            break;
+        case 21:
+            if (value >= 0.f && value <= 0.5f) {
+                gCinemaAmbient.store(value);
+                LOGI("调参 → 影厅底光 %.3f", (double) value);
+            }
+            break;
+        case 22:
+            /* 影院 HDRI 环境光强度（父亲 2026-10-10：灯光用下载的那套全景图） */
+            if (value >= 0.f && value <= 12.f) {
+                gEnvStrength.store(value);
+                LOGI("调参 → 影院环境光强度 %.2f", (double) value);
+            }
+            break;
+        case 23:
+            /* 坐姿眼高（米）：父亲是坐着看电影，地面到眼睛的距离 */
+            if (value >= 0.7f && value <= 1.9f) {
+                gCinemaEyeHeight.store(value);
+                LOGI("调参 → 坐姿眼高 %.2f 米（影厅跟着挪 %.2f 米）", (double) value,
+                     (double) (1.65f - value));
+            }
             break;
         case 18:
             /* 防穿越：离银幕最近允许多少米（父亲 2026-10-10：可以走近银幕，不许穿过） */
@@ -4861,6 +5350,38 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             LOGI("调参 → 未知参数 key=%d（忽略）", (int) key);
             break;
     }
+}
+
+/*
+ * 影厅资源路径（父亲 2026-10-10）：Java 侧先把 assets 里的两个文件拷到应用私有目录，
+ * 再在起 VR 之前把路径塞进来。真正的读盘/上传在渲染线程里做（GL 上下文就绪之后）。
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetAssetPaths(JNIEnv *env, jobject /* this */,
+                                                       jstring cinemaPath,
+                                                       jstring envPath) {
+    if (cinemaPath != nullptr) {
+        const char *p = env->GetStringUTFChars(cinemaPath, nullptr);
+        if (p != nullptr) {
+            gCinemaAssetPath = p;
+            env->ReleaseStringUTFChars(cinemaPath, p);
+        }
+    }
+    if (envPath != nullptr) {
+        const char *p = env->GetStringUTFChars(envPath, nullptr);
+        if (p != nullptr) {
+            gEnvAssetPath = p;
+            env->ReleaseStringUTFChars(envPath, p);
+        }
+    }
+    LOGI("影厅资源路径：几何=%s 环境光=%s", gCinemaAssetPath.c_str(), gEnvAssetPath.c_str());
+}
+
+/** 选座（0 近 / 1 中 / 2 远）：控制条上点一下就换排 */
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetSeat(JNIEnv *env, jobject /* this */, jint seat) {
+    (void) env;
+    applySeat((int) seat);
 }
 
 /** 视频纹理尺寸（锐化的邻域步长要用真实像素）*/

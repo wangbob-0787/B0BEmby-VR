@@ -2163,6 +2163,26 @@ class MainActivity : ComponentActivity() {
         if (menuState.kind == kind) closeMenu() else openMenu(kind, anchor)
     }
 
+    /**
+     * 把 assets 里的文件拷到应用目录，返回绝对路径（2026-10-10）。
+     *
+     * 为什么要拷：原生渲染线程读不到 APK 里的 assets，只认文件路径。
+     * 已经拷过且大小一致就跳过 —— 影厅几何 8.5 MB，不必每次启动都重写。
+     */
+    private fun copyAssetIfNeeded(name: String): String? {
+        return runCatching {
+            val dir = java.io.File(filesDir, "vr-assets").apply { mkdirs() }
+            val out = java.io.File(dir, name)
+            val assetLen = assets.openFd(name).use { it.length }
+            if (out.exists() && out.length() == assetLen) return out.absolutePath
+            assets.open(name).use { input ->
+                java.io.FileOutputStream(out).use { output -> input.copyTo(output, 64 * 1024) }
+            }
+            Log.i(TAG, "影厅资源已拷贝：$name ${out.length() / 1024} KB")
+            out.absolutePath
+        }.getOrNull()
+    }
+
     /** 退出 = 结束进程（父亲 2026-10-06 定：点退出就是退出 B0BEmby VR） */
     private fun exitApp() {
         Log.i(TAG, "控制条：退出应用（结束进程）")
@@ -2178,12 +2198,13 @@ class MainActivity : ComponentActivity() {
         when (kind) {
             com.xxxx.emby_vr.panel.MenuKind.MORE -> {
                 /*
-                 * 第 5 行「影院银幕」（父亲 2026-10-10）：点一下就地切换两套影院尺寸，
-                 * 戴着直接对比纵深观感。只改原生侧的银幕宽度/距离 —— 视频层、弹幕层、
-                 * 光柱、进度环都按新值当场重算，不用重起播、不用重装。
+                 * 第 5 行「选座」（父亲 2026-10-10 17:35「我要坐着看电影」）：
+                 * 点一下换一排：近（第 1 排）→ 中（第 3 排）→ 远（第 6 排）→ 近……
+                 * 原生侧把整间影厅挪一挪，银幕距离跟着变；视频层、弹幕、光柱、进度环
+                 * 都按新距离当场重算，不用重起播、不用重装。
                  */
                 if (index == 4) {
-                    val next = if (menuState.screenPreset == 2) 1 else 2
+                    val next = (menuState.screenPreset + 1) % 3
                     com.xxxx.emby_vr.vr.VrNative.setTuning(
                         com.xxxx.emby_vr.vr.VrTuning.KEY_SCREEN_PRESET,
                         next.toFloat(),
@@ -2191,8 +2212,11 @@ class MainActivity : ComponentActivity() {
                     menuState.screenPreset = next
                     Log.i(
                         TAG,
-                        if (next == 2) "影院银幕 → 预设 2 IMAX 大屏（宽 26 米 / 距 15 米）"
-                        else "影院银幕 → 预设 1 影厅小屏（宽 5.2 米 / 距 3.2 米）",
+                        "选座 → " + when (next) {
+                            0 -> "近排（第 1 排，离银幕 3.44 米）"
+                            1 -> "中排（第 3 排，离银幕 5.14 米）"
+                            else -> "远排（第 6 排，离银幕 7.74 米）"
+                        },
                     )
                     refreshMenuRows(kind)
                     return
@@ -4193,6 +4217,21 @@ class MainActivity : ComponentActivity() {
                 com.xxxx.emby_vr.player.MpvBackend.commandRuntime(args)
             },
         )
+
+        /*
+         * 影厅资源（父亲 2026-10-10）：assets 里的影厅几何与环境光贴图先落到应用目录，
+         * 再把路径交给原生 —— 必须在 startVr 之前，原生在渲染线程起 GL 时就要读它们。
+         */
+        runCatching {
+            val cinema = copyAssetIfNeeded("cinema.b0bcin")
+            val env = copyAssetIfNeeded("cinema_env.b0benv")
+            if (cinema != null) {
+                com.xxxx.emby_vr.vr.VrNative.setAssetPaths(cinema, env ?: "")
+                Log.i(TAG, "影厅资源就绪：几何=$cinema 环境光=$env")
+            } else {
+                Log.w(TAG, "影厅几何缺失，VR 里只有黑背景")
+            }
+        }.onFailure { Log.w(TAG, "影厅资源准备失败：${it.message}") }
 
         val vrOk = com.xxxx.emby_vr.vr.VrNative.startVr(this)
         Log.i(TAG, "OpenXR 会话启动: $vrOk")

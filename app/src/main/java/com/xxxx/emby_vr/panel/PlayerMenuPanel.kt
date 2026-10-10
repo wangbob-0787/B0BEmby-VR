@@ -166,10 +166,11 @@ class MenuState {
     /**
      * 影院银幕预设（父亲 2026-10-10）：1 = 影厅小屏 5.2/3.2 · 2 = IMAX 大屏 26/15。
      *
-     * 只用于「更多 → 影院银幕」这一行显示当前是哪套；真正生效的是原生侧的
-     * gScreenWidth / gScreenDistance（见 openxr_renderer.cpp 的 applyScreenPreset）。
+     * 只用于「更多 → 选座」这一行显示当前坐哪排；真正生效的是原生侧的
+     * gSeat / gScreenDistance（见 openxr_renderer.cpp 的 applySeat）。
+     * 0 = 近排（第 1 排）· 1 = 中排（第 3 排）· 2 = 远排（第 6 排）
      */
-    var screenPreset by mutableStateOf(1)
+    var screenPreset by mutableStateOf(0)
 
     var subtitleTracks by mutableStateOf<List<MenuRowItem>>(emptyList())
     var audioTracks by mutableStateOf<List<MenuRowItem>>(emptyList())
@@ -423,13 +424,18 @@ private fun MoreMenu(menu: MenuState) {
             )
         }
         /*
-         * 影院银幕（父亲 2026-10-10）：不在二级菜单里，点一下就地切换两套影院尺寸 ——
-         * 戴着直接对比「影厅小屏 5.2/3.2 米」和「IMAX 大屏 26/15 米」的纵深观感，
-         * 不用我改配置、也不用重装。行号固定排在上面四条之后（= 4）。
+         * 选座（父亲 2026-10-10 17:35「我要坐着看电影」）：不在二级菜单里，点一下就换排。
+         * 近 / 中 / 远 = 影厅第 1 / 3 / 6 排（眼睛离银幕 3.44 / 5.14 / 7.74 米）——
+         * 整间影厅跟着挪，等于"换个座位"，画面大小与纵深一起变。
+         * 行号固定排在上面四条之后（= 4）。
          */
         MenuRow(
-            label = "影院银幕",
-            value = if (menu.screenPreset == 2) "IMAX 大屏 26 米" else "影厅小屏 5.2 米",
+            label = "选座",
+            value = when (menu.screenPreset) {
+                1 -> "中排（第 3 排）"
+                2 -> "远排（第 6 排）"
+                else -> "近排（第 1 排）"
+            },
             selected = false,
             hasSub = false,
             onClick = { menu.onSelect?.invoke(MenuKind.MORE, 4) },
