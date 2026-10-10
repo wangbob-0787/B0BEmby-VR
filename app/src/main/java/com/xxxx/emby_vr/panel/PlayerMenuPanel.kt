@@ -171,7 +171,7 @@ class MenuState {
      *
      * 只用于「更多 → 选座」这一行显示当前坐哪排；真正生效的是原生侧的
      * gSeat / gScreenDistance（见 openxr_renderer.cpp 的 applySeat）。
-     * 0 = 近排（第 1 排）· 1 = 中排（第 3 排）· 2 = 远排（第 6 排）
+     * 0 = 近排（第 4 排，水平视角 85°）· 1 = 中排（第 6 排，72°）· 2 = 远排（第 9 排，60°）
      */
     var screenPreset by mutableStateOf(0)
 
@@ -453,9 +453,9 @@ private fun MoreMenu(menu: MenuState, playing: Boolean) {
         MenuRow(
             label = "选座",
             value = when (menu.screenPreset) {
-                1 -> "中排（第 3 排）"
-                2 -> "远排（第 6 排）"
-                else -> "近排（第 1 排）"
+                1 -> "中排（第 6 排）"
+                2 -> "远排（第 9 排）"
+                else -> "近排（第 4 排）"
             },
             selected = false,
             hasSub = false,

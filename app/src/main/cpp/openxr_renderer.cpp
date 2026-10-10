@@ -501,11 +501,11 @@ struct CinemaSeat {
     float dz;         // 影厅整体前后平移（米）
     float distance;   // 该排眼睛到银幕的距离（米）
 };
+/* dy = -(该排眼高 - 基准排眼高)；dz = -(该排离幕距离) + 基准排离幕距离(12.18) */
 constexpr CinemaSeat kCinemaSeats[3] = {
-        /* 近排从第 1 排改成第 2 排（父亲 2026-10-10：第一排离幕太近、仰角太大） */
-        {"近排 · 第 2 排", 0.20f, -1.09f, 4.29f},
-        {"中排 · 第 3 排", -0.10f, -1.94f, 5.14f},
-        {"远排 · 第 6 排", -1.00f, -4.54f, 7.74f},
+        {"近排 · 第 4 排", 0.38f, 2.62f, 9.56f},    // 水平视角 85°，最包裹
+        {"中排 · 第 6 排", 0.00f, 0.00f, 12.18f},   // 71.7°，默认
+        {"远排 · 第 9 排", -0.60f, -3.07f, 15.25f}, // 60°
 };
 /**
  * 影厅自带那块银幕（模型几何）——我们的画面就钉在它上面。
@@ -517,11 +517,21 @@ constexpr CinemaSeat kCinemaSeats[3] = {
  * 因为换排时影厅整体上下平移（dy），而我们那块画面一直钉在眼睛高度，
  * 于是画面与墙上原有银幕开口的相对关系随排数漂移。
  */
-constexpr float kHallScreenModelY = 1.792f;    // 模型坐标：影厅银幕中心高度
+/*
+ * ============ 换厅：CGTrader「Movie Theater Low-poly」（父亲 2026-10-10 买） ============
+ *
+ * 旧厅（Sketchfab 漫画背景用的那个）三个死结：座距 0.44 米、舞台把幕顶到仰角 19°、
+ * 天花板离幕顶一大截。新厅是真正的放映厅（实测）：
+ *   厅 20.04 × 9.82 × 20.5 米 · 12 排 271 座 · 座距 0.72 米 · 台阶式 · 幕 17.62 × 7.74 米
+ *   幕顶离天花板 1.04 米 · 幕底比眼睛低 → 不用仰头看。
+ * 资产里已经把「第 6 排眼睛」放在原点：第 6 排 = 12.18 米、水平视角 71.7°
+ * （比 IMAX 参考座位 60~70° 略猛，幕顶仰角 26.1°，在 SMPTE 35° 限内）。
+ */
+constexpr float kHallScreenModelY = 4.91f;     // 模型坐标：影厅银幕中心高度
 constexpr float kHallScreenModelZ = -22.461f;  // 模型坐标：前墙/银幕平面
-constexpr float kHallScreenModelX = -69.472f;  // 模型坐标：影厅银幕中心（横向）
+constexpr float kHallScreenModelX = 0.f;       // 模型坐标：影厅银幕中心（横向，厅左右对称）
 /** 导出资产时用的横向原点（build_cinema_asset.py 的 SCREEN[0]） */
-constexpr float kAssetOriginModelX = -69.475f;
+constexpr float kAssetOriginModelX = 0.f;
 /**
  * 他坐的那一列座位的中心（模型坐标）。
  *
@@ -530,18 +540,18 @@ constexpr float kAssetOriginModelX = -69.475f;
  * 而导出原点是 -69.475，正落在这个座位靠右扶手 0.12 米处 —— 所以屁股坐在扶手上。
  * 把影厅横向挪 0.12 米，让座位中心正对观影位。
  */
-constexpr float kSeatColumnModelX = -69.595f;
-/** 影厅横向平移量（app 米）：让上面那个座位中心落在原点 */
-constexpr float kCinemaShiftX = kSeatColumnModelX - kAssetOriginModelX;
+constexpr float kSeatColumnModelX = 0.f;
+/** 影厅横向平移量（app 米）：新厅左右对称，已经居中 */
+constexpr float kCinemaShiftX = 0.f;
 /**
  * 影厅这块银幕的宽度（米）：**前墙的宽度**（父亲 2026-10-10 定：铺满前面那面墙）。
  * 模型前墙 x 从 -72.21 到 -66.78，宽 5.43 米。
  */
 constexpr float kSeatScreenWidth = 5.43f;
-/** 舞台台面高度（模型坐标）：影厅前面那个比座位区高的台子 */
-constexpr float kHallStageModelY = 0.0f;
-/** 幕下沿离舞台台面的距离（父亲 2026-10-10：稍微高一点点就行） */
-constexpr float kScreenBottomAboveStage = 0.15f;
+/** 幕下沿高度（模型坐标，米）：新厅幕底比眼睛低，正好不用仰头 */
+constexpr float kHallScreenBottomY = 1.04f;
+/** 基准排（第 6 排）眼睛高度（模型坐标）——资产就是按它归零的 */
+constexpr float kHallRefEyeY = 2.80f;
 /** 当前座位：0 近 / 1 中 / 2 远（父亲坐在影厅里换排） */
 std::atomic<int> gSeat{0};
 /** 影厅环境总开关（0 = 回到黑背景，出问题时可远程关掉） */
@@ -560,7 +570,7 @@ std::atomic<int> gCinemaLayerMode{1};
  * 椅面只落在眼睛下方 0.37 米（胸口高度）。取 1.50 米把它压回大腿高度
  * （椅面约在眼睛下方 0.72 米），看上去才是"坐在椅子上"。
  */
-std::atomic<float> gCinemaEyeHeight{1.50f};
+std::atomic<float> gCinemaEyeHeight{1.65f};
 
 // ------------------------------------------------- 影厅环境（父亲 2026-10-10）
 /*
@@ -1021,6 +1031,17 @@ float viewerOffsetZ() {
 }
 
 /**
+ * 画面尺寸：永远塞进影厅自带那块幕的矩形里（保住片子比例）。
+ *
+ * 16:9（1.778）比这块幕（2.28:1）高，就按高度顶满 → 宽 7.74×1.778 = 13.76 米；
+ * 宽银幕（2.39:1）比幕扁，就按宽度顶满 → 17.62 米宽、7.37 米高。
+ */
+float hallScreenFitWidth(float aspect) {
+    const float a = fmaxf(0.2f, aspect);
+    return (a <= kHallScreenW / kHallScreenH) ? (kHallScreenH * a) : kHallScreenW;
+}
+
+/**
  * 当前座位下，影厅自带那块银幕在我们坐标里的中心高度。
  *
  * 影厅的纵向平移 = s.dy + (1.65 - 坐姿眼高)，影厅几何里银幕中心在
@@ -1030,7 +1051,7 @@ float viewerOffsetZ() {
 float hallScreenCenterY() {
     const int seat = gSeat.load();
     const CinemaSeat &s = kCinemaSeats[seat];
-    return (kHallScreenModelY - 1.15f) + s.dy + (1.65f - gCinemaEyeHeight.load()) +
+    return (kHallScreenModelY - kHallRefEyeY) + s.dy + (1.65f - gCinemaEyeHeight.load()) +
            gScreenUp.load();
 }
 
@@ -1044,8 +1065,8 @@ float hallScreenCenterY() {
 float hallScreenBottomY() {
     const int seat = gSeat.load();
     const CinemaSeat &s = kCinemaSeats[seat];
-    return (kHallStageModelY + kScreenBottomAboveStage - 1.15f) + s.dy +
-           (1.65f - gCinemaEyeHeight.load()) + gScreenUp.load();
+    return (kHallScreenBottomY - kHallRefEyeY) + s.dy + (1.65f - gCinemaEyeHeight.load()) +
+           gScreenUp.load();
 }
 
 /** 换排：整间影厅平移 + 银幕距离跟着变（父亲戴着时靠这行日志确认换到哪排） */
@@ -2234,8 +2255,8 @@ ScreenPlacement frontScreen(const VrContext &c) {
          * 下沿锚定 + 按片子比例往上长（父亲 2026-10-10）：宽银幕时画面矮一些，
          * 上面露出的墙已经涂黑，观感上就是"幕布上边空着"，不会看到灰墙。
          */
-        const float h = p.width / fmaxf(0.2f, p.aspect);
-        p.cy = hallScreenBottomY() + h * 0.5f;
+        p.width = hallScreenFitWidth(p.aspect);
+        p.cy = hallScreenCenterY();     // 塞进幕框里居中（16:9 时正好顶满框高）
         /* 横向取影厅前墙/银幕的位置（他比厅中线偏 0.12 米，画面跟着墙走） */
         p.cx = -(kHallScreenModelX - kAssetOriginModelX) + kCinemaShiftX;
     }
