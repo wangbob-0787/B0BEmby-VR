@@ -191,7 +191,7 @@ private fun DialogButton(
         colors = ClickableSurfaceDefaults.colors(
             containerColor = if (accent) accentColor else kDialogIdle,
             contentColor = Color.White,
-            focusedContainerColor = accentColor,
+            focusedContainerColor = VrHoverBg,
             focusedContentColor = Color.White,
         ),
         modifier = Modifier

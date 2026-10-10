@@ -114,7 +114,7 @@ fun TopStatusBar(
                         colors = ClickableSurfaceDefaults.colors(
                             containerColor = Color.Transparent,
                             contentColor = Color.White,
-                            focusedContainerColor = Color.Transparent,
+                            focusedContainerColor = VrHoverBg,
                             focusedContentColor = Color.White,
                         )
                     ) {
@@ -149,7 +149,7 @@ fun TopStatusBar(
                         colors = ClickableSurfaceDefaults.colors(
                             containerColor = Color.Transparent,
                             contentColor = Color.White,
-                focusedContainerColor = Color.Transparent,
+                focusedContainerColor = VrHoverBg,
                 focusedContentColor = Color.White,
             )
                     ) {
@@ -204,7 +204,7 @@ fun TopStatusBar(
                         colors = ClickableSurfaceDefaults.colors(
                             containerColor = Color.Transparent,
                             contentColor = Color.White,
-                focusedContainerColor = Color.Transparent,
+                focusedContainerColor = VrHoverBg,
                 focusedContentColor = Color.White,
             )
                     ) {
@@ -242,7 +242,7 @@ fun TopStatusBar(
                         colors = ClickableSurfaceDefaults.colors(
                             containerColor = Color.Transparent,
                             contentColor = Color.White,
-                            focusedContainerColor = Color.Transparent,
+                            focusedContainerColor = VrHoverBg,
                             focusedContentColor = Color.White,
                         )
                     ) {

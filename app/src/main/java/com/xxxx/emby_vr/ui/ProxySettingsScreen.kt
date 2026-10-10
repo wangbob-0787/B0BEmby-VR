@@ -31,6 +31,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import com.xxxx.emby_vr.ui.components.VrHoverBg
+import com.xxxx.emby_vr.ui.components.VrSelectedBg
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -322,7 +324,7 @@ fun ProxySettingsScreen(
                         colors = ButtonDefaults.colors(
                             containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.3f),
                             contentColor = MaterialTheme.colorScheme.onSurface,
-                focusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.3f),
+                focusedContainerColor = VrHoverBg,
                 focusedContentColor = MaterialTheme.colorScheme.onSurface,
             ),
                         shape = ButtonDefaults.shape()
@@ -394,7 +396,7 @@ private fun ProxySwitchRow(
         colors = ClickableSurfaceDefaults.colors(
             containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.15f),
             contentColor = Color.White,
-                focusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.15f),
+                focusedContainerColor = VrHoverBg,
                 focusedContentColor = Color.White,
             ),
         modifier = modifier.height(56.dp)
@@ -452,7 +454,7 @@ private fun ProxyTypeButton(
         colors = ClickableSurfaceDefaults.colors(
             containerColor = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surface.copy(alpha = 0.3f),
             contentColor = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                focusedContainerColor = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.2f) else MaterialTheme.colorScheme.surface.copy(alpha = 0.3f),
+                focusedContainerColor = if (isSelected) VrSelectedBg else VrHoverBg,
                 focusedContentColor = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
             ),
         modifier = modifier.height(56.dp)
@@ -492,7 +494,7 @@ private fun ProxyTvInputButton(
         colors = ClickableSurfaceDefaults.colors(
             containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.3f),
             contentColor = MaterialTheme.colorScheme.onSurface,
-                focusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.3f),
+                focusedContainerColor = VrHoverBg,
                 focusedContentColor = MaterialTheme.colorScheme.onSurface,
             ),
         modifier = modifier

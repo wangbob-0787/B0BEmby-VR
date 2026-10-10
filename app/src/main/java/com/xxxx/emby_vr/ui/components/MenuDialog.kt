@@ -269,7 +269,7 @@ fun MenuListItem(
             containerColor = Color.White.copy(alpha = 0.05f),
             contentColor = Color.White.copy(alpha = 0.8f),
 // 聚焦时使用当前选中的主题色！,
-                focusedContainerColor = Color.White.copy(alpha = 0.05f),
+                focusedContainerColor = VrHoverBg,
                 focusedContentColor = Color.White.copy(alpha = 0.8f),
             ),
         headlineContent = {
@@ -353,7 +353,7 @@ fun ThemeSelectionDialog(
                                 focusedBorder = androidx.tv.material3.Border(androidx.compose.foundation.BorderStroke(androidx.compose.ui.unit.Dp(0f), androidx.compose.ui.graphics.Color.Transparent))),
                             colors = ClickableSurfaceDefaults.colors(
                                 containerColor = Color.Transparent,
-                focusedContainerColor = Color.Transparent,
+                focusedContainerColor = VrHoverBg,
                 focusedContentColor = androidx.compose.ui.graphics.Color.White,
             )
                         ) {

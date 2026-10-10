@@ -10,6 +10,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import com.xxxx.emby_vr.ui.components.VrHoverBg
+import com.xxxx.emby_vr.ui.components.VrSelectedBg
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -344,7 +346,7 @@ fun LoginScreen(
                     colors = ButtonDefaults.colors(
                         containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.3f),
                         contentColor = MaterialTheme.colorScheme.onSurface,
-                focusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.3f),
+                focusedContainerColor = VrHoverBg,
                 focusedContentColor = MaterialTheme.colorScheme.onSurface,
             ),
                     shape = ButtonDefaults.shape()
@@ -388,7 +390,7 @@ fun LoginScreen(
                     colors = ClickableSurfaceDefaults.colors(
                         containerColor = Color.Transparent,
                         contentColor = Color.White.copy(alpha = 0.5f),
-                focusedContainerColor = Color.Transparent,
+                focusedContainerColor = VrHoverBg,
                 focusedContentColor = Color.White.copy(alpha = 0.5f),
             ),
                     modifier = Modifier.fillMaxWidth(0.8f)
@@ -506,7 +508,7 @@ fun TvInputButton(
         colors = ClickableSurfaceDefaults.colors(
             containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.3f),
             contentColor = MaterialTheme.colorScheme.onSurface,
-                focusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.3f),
+                focusedContainerColor = VrHoverBg,
                 focusedContentColor = MaterialTheme.colorScheme.onSurface,
             ),
         modifier = modifier
@@ -568,7 +570,7 @@ fun ProtocolButton(
         colors = ClickableSurfaceDefaults.colors(
             containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.3f),
             contentColor = MaterialTheme.colorScheme.onSurface,
-                focusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.3f),
+                focusedContainerColor = VrHoverBg,
                 focusedContentColor = MaterialTheme.colorScheme.onSurface,
             ),
         modifier = modifier.height(64.dp)

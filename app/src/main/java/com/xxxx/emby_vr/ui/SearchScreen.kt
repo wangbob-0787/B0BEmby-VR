@@ -19,6 +19,8 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import com.xxxx.emby_vr.ui.components.VrHoverBg
+import com.xxxx.emby_vr.ui.components.VrSelectedBg
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -207,9 +209,7 @@ fun SearchScreen(
                                     alpha = 0.2f
                                 ) else Color.White.copy(alpha = 0.05f),
                                 contentColor = Color.White,
-                focusedContainerColor = if (isAllSelected) MaterialTheme.colorScheme.secondary.copy(
-                                    alpha = 0.2f
-                                ) else Color.White.copy(alpha = 0.05f),
+                focusedContainerColor = if (isAllSelected) VrSelectedBg else VrHoverBg,
                 focusedContentColor = Color.White,
             ),
                             border = ClickableSurfaceDefaults.border(
@@ -278,9 +278,7 @@ fun SearchScreen(
                                 alpha = 0.2f
                             ) else Color.White.copy(alpha = 0.05f),
                             contentColor = Color.White,
-                focusedContainerColor = if (isSelected) MaterialTheme.colorScheme.secondary.copy(
-                                alpha = 0.2f
-                            ) else Color.White.copy(alpha = 0.05f),
+                focusedContainerColor = if (isSelected) VrSelectedBg else VrHoverBg,
                 focusedContentColor = Color.White,
             ),
                         border = ClickableSurfaceDefaults.border(
@@ -375,7 +373,7 @@ fun SearchScreen(
                     colors = ClickableSurfaceDefaults.colors(
                         containerColor = Color.White.copy(alpha = 0.1f),
                         contentColor = Color.White,
-                focusedContainerColor = Color.White.copy(alpha = 0.1f),
+                focusedContainerColor = VrHoverBg,
                 focusedContentColor = Color.White,
             )
                 ) {

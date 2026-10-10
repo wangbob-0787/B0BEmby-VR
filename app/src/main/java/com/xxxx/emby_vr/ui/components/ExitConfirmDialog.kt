@@ -100,7 +100,7 @@ private fun DialogButton(
         colors = ClickableSurfaceDefaults.colors(
             containerColor = Color(0xFF333333),
             contentColor = Color.White,
-                focusedContainerColor = Color(0xFF333333),
+                focusedContainerColor = VrHoverBg,
                 focusedContentColor = Color.White,
             ),
         modifier = Modifier.then(

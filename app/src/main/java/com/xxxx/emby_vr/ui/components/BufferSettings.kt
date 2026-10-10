@@ -64,7 +64,7 @@ fun BufferSettingsTab(
                 colors = ClickableSurfaceDefaults.colors(
                     containerColor = Color.Transparent,
                     contentColor = MaterialTheme.colorScheme.onSurface,
-                focusedContainerColor = Color.Transparent,
+                focusedContainerColor = VrHoverBg,
                 focusedContentColor = MaterialTheme.colorScheme.onSurface,
             ),
                 scale = ClickableSurfaceDefaults.scale(
@@ -180,7 +180,7 @@ fun BufferSettingsTab(
                 colors = ClickableSurfaceDefaults.colors(
                     containerColor = Color.Transparent,
                     contentColor = TvMaterialTheme.colorScheme.onSecondary,
-                focusedContainerColor = Color.Transparent,
+                focusedContainerColor = VrHoverBg,
                 focusedContentColor = TvMaterialTheme.colorScheme.onSecondary,
             ),
                 scale = ClickableSurfaceDefaults.scale(
@@ -212,7 +212,7 @@ fun BufferSettingsTab(
                 colors = ClickableSurfaceDefaults.colors(
                     containerColor = Color.Transparent,
                     contentColor = TvMaterialTheme.colorScheme.onSecondary,
-                focusedContainerColor = Color.Transparent,
+                focusedContainerColor = VrHoverBg,
                 focusedContentColor = TvMaterialTheme.colorScheme.onSecondary,
             ),
                 scale = ClickableSurfaceDefaults.scale(
@@ -304,7 +304,7 @@ private fun BufferSettingRow(
                         contentColor = MaterialTheme.colorScheme.onPrimary,
                         pressedContentColor = MaterialTheme.colorScheme.onSecondary,
                         pressedContainerColor = MaterialTheme.colorScheme.secondary,
-                focusedContainerColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f),
+                focusedContainerColor = VrHoverBg,
                 focusedContentColor = MaterialTheme.colorScheme.onPrimary,
             ),
                     modifier = Modifier

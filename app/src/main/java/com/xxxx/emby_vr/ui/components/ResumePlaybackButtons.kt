@@ -104,7 +104,7 @@ fun ResumePlaybackButtons(
                 colors = ClickableSurfaceDefaults.colors(
                     containerColor = Color.White.copy(alpha = 0.1f),
                     contentColor = Color.White,
-                focusedContainerColor = Color.White.copy(alpha = 0.1f),
+                focusedContainerColor = VrHoverBg,
                 focusedContentColor = Color.White,
             )
             ) {
@@ -142,7 +142,7 @@ fun ResumePlaybackButtons(
                 colors = ClickableSurfaceDefaults.colors(
                     containerColor = Color.White.copy(alpha = 0.1f),
                     contentColor = Color.White,
-                focusedContainerColor = Color.White.copy(alpha = 0.1f),
+                focusedContainerColor = VrHoverBg,
                 focusedContentColor = Color.White,
             )
             ) {

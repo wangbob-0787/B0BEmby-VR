@@ -4,6 +4,8 @@ import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import com.xxxx.emby_vr.ui.components.VrHoverBg
+import com.xxxx.emby_vr.ui.components.VrSelectedBg
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -450,7 +452,7 @@ fun MediaDetailScreen(
                                     // 父亲 2026-10-02：**只有聚焦才是绿底**；当前季不聚焦时也是暗灰
                                     containerColor = Color(0xFF3A3A3A),
                                     contentColor = Color.White,
-                focusedContainerColor = androidx.compose.ui.graphics.Color.Transparent,
+                focusedContainerColor = VrHoverBg,
                 focusedContentColor = Color.White,
             ),
                                 modifier = Modifier
@@ -715,7 +717,7 @@ fun MetaRow(label: String, value: String) {
             colors = ClickableSurfaceDefaults.colors(
                 containerColor = Color.Transparent,
                 contentColor = Color.White,
-                focusedContainerColor = Color.Transparent,
+                focusedContainerColor = VrHoverBg,
                 focusedContentColor = Color.White,
             ),
             scale = ClickableSurfaceDefaults.scale(
@@ -771,7 +773,7 @@ fun PersonCard(
             containerColor = Color.Black.copy(alpha = 0.2f),
             contentColor = MaterialTheme.colorScheme.onSurface,
             pressedContentColor = MaterialTheme.colorScheme.surface,
-                focusedContainerColor = Color.Black.copy(alpha = 0.2f),
+                focusedContainerColor = VrHoverBg,
                 focusedContentColor = MaterialTheme.colorScheme.onSurface,
             ),
         modifier = Modifier
@@ -903,7 +905,7 @@ private fun SongRow(
         scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
         colors = ClickableSurfaceDefaults.colors(
             containerColor = Color.White.copy(alpha = 0.06f),
-                focusedContainerColor = Color.White.copy(alpha = 0.06f),
+                focusedContainerColor = VrHoverBg,
                 focusedContentColor = androidx.compose.ui.graphics.Color.White,
             ),
         modifier = Modifier.fillMaxWidth()
@@ -957,7 +959,7 @@ private fun ActionTile(
         colors = ClickableSurfaceDefaults.colors(
             containerColor = Color(0xFF3A3A3A),
             contentColor = Color.White,
-                focusedContainerColor = Color(0xFF3A3A3A),
+                focusedContainerColor = VrHoverBg,
                 focusedContentColor = Color.White,
             ),
         modifier = Modifier
@@ -1030,7 +1032,7 @@ private fun EpisodeRow(
         scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
         colors = ClickableSurfaceDefaults.colors(
             containerColor = Color.White.copy(alpha = 0.05f),
-                focusedContainerColor = Color.White.copy(alpha = 0.05f),
+                focusedContainerColor = VrHoverBg,
                 focusedContentColor = androidx.compose.ui.graphics.Color.White,
             ),
         modifier = Modifier

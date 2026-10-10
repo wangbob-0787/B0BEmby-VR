@@ -14,6 +14,8 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import com.xxxx.emby_vr.ui.components.VrHoverBg
+import com.xxxx.emby_vr.ui.components.VrSelectedBg
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -161,7 +163,7 @@ fun AccountScreen(
                         colors = ClickableSurfaceDefaults.colors(
                             containerColor = Color.White.copy(alpha = 0.08f),
                             contentColor = Color.White,
-                focusedContainerColor = Color.White.copy(alpha = 0.08f),
+                focusedContainerColor = VrHoverBg,
                 focusedContentColor = Color.White,
             )
                     ) {
@@ -234,8 +236,7 @@ private fun AccountListItem(
                 ,
                 contentColor = if (isCurrentAccount)  MaterialTheme.colorScheme.secondary
                         else MaterialTheme.colorScheme.tertiary,
-                focusedContainerColor = if (isCurrentAccount)  MaterialTheme.colorScheme.onTertiary.copy(alpha = 0.2f)
-                else  Color.White.copy(alpha = 0.05f),
+                focusedContainerColor = if (isCurrentAccount) VrSelectedBg else VrHoverBg,
                 focusedContentColor = if (isCurrentAccount)  MaterialTheme.colorScheme.secondary
                         else MaterialTheme.colorScheme.tertiary,
             )
@@ -308,7 +309,7 @@ private fun AccountListItem(
             colors = ClickableSurfaceDefaults.colors(
                 containerColor = Color.White.copy(alpha = 0.05f),
                 contentColor = Color.White.copy(alpha = 0.6f),
-                focusedContainerColor = Color.White.copy(alpha = 0.05f),
+                focusedContainerColor = VrHoverBg,
                 focusedContentColor = Color.White.copy(alpha = 0.6f),
             )
         ) {
@@ -406,7 +407,7 @@ private fun DeleteConfirmDialog(
                             colors = ClickableSurfaceDefaults.colors(
                                 containerColor = Color.White.copy(alpha = 0.1f),
                                 contentColor = Color.White,
-                focusedContainerColor = Color.White.copy(alpha = 0.1f),
+                focusedContainerColor = VrHoverBg,
                 focusedContentColor = Color.White,
             )
                         ) {
@@ -433,7 +434,7 @@ private fun DeleteConfirmDialog(
                             colors = ClickableSurfaceDefaults.colors(
                                 containerColor = Color(0xFFEF5350).copy(alpha = 0.7f),
                                 contentColor = Color.White,
-                focusedContainerColor = Color(0xFFEF5350).copy(alpha = 0.7f),
+                focusedContainerColor = VrHoverBg,
                 focusedContentColor = Color.White,
             )
                         ) {
