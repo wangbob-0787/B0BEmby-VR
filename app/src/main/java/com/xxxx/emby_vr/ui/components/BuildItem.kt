@@ -31,7 +31,9 @@ import coil3.request.ImageRequest
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
@@ -97,6 +99,8 @@ fun BuildItem(
     clickGroup: Any? = null,
 ) {
     val myFocusRequester = remember { FocusRequester() }
+    /** 当前是否被光柱扫到（画那层半透明白用，父亲 2026-10-10） */
+    var focusedForHover by remember { mutableStateOf(false) }
     val focusAnchor = focusRequester ?: myFocusRequester
     val ctx = LocalContext.current
     LaunchedEffect(autoFocus, focusAnchor) {
@@ -150,6 +154,7 @@ fun BuildItem(
             .wrapContentHeight()
             // 记住"最后聚焦的条目"：从详情页返回时用它把焦点送回来（父亲 2026-10-02）
             .onFocusChanged {
+                focusedForHover = it.isFocused
                 if (it.isFocused) {
                     if (rememberFocus) FocusMemory.lastItemId = itemId
                     onFocused?.invoke()
@@ -187,7 +192,16 @@ fun BuildItem(
                 } else false
             }
     ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
+        /*
+         * 「被光柱扫到」的反馈（父亲 2026-10-10 改的口径）。
+         *
+         * 原来卡片**故意不画焦点**（2026-10-04：靠光点判断位置就够）—— 实测父亲看不见自己在扫哪张，
+         * 所以改成和控制条按钮同一档：扫到 = 盖一层半透明白（VrHoverBg 14%）。
+         * 卡片上盖着海报，底色是看不见的，必须画在**最上层**；只画当前聚焦的那一张，
+         * 同屏最多一张，GPU 代价可以忽略。
+         */
+        Box(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.fillMaxWidth()) {
             // 1. 顶部图片区域
             Box(
                 modifier = Modifier
@@ -354,6 +368,16 @@ fun BuildItem(
                         modifier = Modifier.padding(top = 4.dp)
                     )
                 }
+            }
+            }
+            // 「被光柱扫到」：盖一层半透明白（与控制条按钮同一档，父亲 2026-10-10）
+            if (focusedForHover) {
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(VrHoverBg),
+                )
             }
         }
     }
