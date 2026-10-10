@@ -506,8 +506,34 @@ constexpr CinemaSeat kCinemaSeats[3] = {
         {"中排 · 第 3 排", -0.10f, -1.94f, 5.14f},
         {"远排 · 第 6 排", -1.00f, -4.54f, 7.74f},
 };
-/** 影厅这块银幕宽度：模型银幕墙 5.65 米，留边取 5.2 米（父亲 2026-10-10 之前定的那套） */
-constexpr float kSeatScreenWidth = 5.2f;
+/**
+ * 影厅自带那块银幕（模型几何）——我们的画面就钉在它上面。
+ *
+ * 量出来的精确值（tools 里的测量脚本，模型坐标）：白幕 4.07 × 1.85，
+ * 中心 (x=房间中线, y=1.792, z=-22.461)。这几个数**必须跟着模型走**，
+ * 父亲 2026-10-10 实测的怪现象就是它们没跟着走：
+ * 「坐最后一排感觉屏幕贴在墙上，坐第一排就不对，中间那排又贴上了」——
+ * 因为换排时影厅整体上下平移（dy），而我们那块画面一直钉在眼睛高度，
+ * 于是画面与墙上原有银幕开口的相对关系随排数漂移。
+ */
+constexpr float kHallScreenModelY = 1.792f;    // 模型坐标：影厅银幕中心高度
+constexpr float kHallScreenModelZ = -22.461f;  // 模型坐标：前墙/银幕平面
+constexpr float kHallScreenModelX = -69.472f;  // 模型坐标：影厅银幕中心（横向）
+/** 导出资产时用的横向原点（build_cinema_asset.py 的 SCREEN[0]） */
+constexpr float kAssetOriginModelX = -69.475f;
+/**
+ * 他坐的那一列座位的中心（模型坐标）。
+ *
+ * 父亲 2026-10-10 实测：「我坐在了椅子的扶手上」。第一排相邻两条扶手在
+ * x = -69.82 与 -69.37（座距 0.44 米），中间那个座位中心 = -69.595；
+ * 而导出原点是 -69.475，正落在这个座位靠右扶手 0.12 米处 —— 所以屁股坐在扶手上。
+ * 把影厅横向挪 0.12 米，让座位中心正对观影位。
+ */
+constexpr float kSeatColumnModelX = -69.595f;
+/** 影厅横向平移量（app 米）：让上面那个座位中心落在原点 */
+constexpr float kCinemaShiftX = kSeatColumnModelX - kAssetOriginModelX;
+/** 影厅这块银幕的宽度（米）：直接取模型里那块白幕的宽 —— 画面铺满开口，不留黑边 */
+constexpr float kSeatScreenWidth = 4.07f;
 /** 当前座位：0 近 / 1 中 / 2 远（父亲坐在影厅里换排） */
 std::atomic<int> gSeat{0};
 /** 影厅环境总开关（0 = 回到黑背景，出问题时可远程关掉） */
@@ -632,6 +658,8 @@ std::atomic<float> gCinemaGlow{1.35f};
 std::atomic<float> gCinemaAmbient{0.05f};
 /** 影厅环境亮度条 0~1（父亲 2026-10-10）：同时驱动环境光强度与底光 */
 std::atomic<float> gCinemaBright{0.45f};
+/** 银幕竖直微调（米，vr-tuning 的 screen_up）：正数 = 往上挪 */
+std::atomic<float> gScreenUp{0.f};
 /** 银幕发出的光色（默认中性白；后面按视频画面实时取样） */
 std::atomic<float> gScreenTintR{1.f};
 std::atomic<float> gScreenTintG{1.f};
@@ -766,6 +794,7 @@ void drawCinema(const Mat4 &proj, const Mat4 &view, const XrVector3f &eyePos) {
     const CinemaSeat &s = kCinemaSeats[seat];
 
     Mat4 model = identity();
+    model.m[12] = kCinemaShiftX;                              // 横向：让座位中心正对观影位
     model.m[13] = s.dy + (1.65f - gCinemaEyeHeight.load());   // 坐姿眼高可调：眼高变了，厅跟着上下挪
     model.m[14] = s.dz;
     const Mat4 mvp = multiply(multiply(proj, view), model);
@@ -977,6 +1006,20 @@ float viewerOffsetX() {
 }
 float viewerOffsetZ() {
     return gFollowViewer.load() != 0 ? gViewerZ.load() : 0.f;
+}
+
+/**
+ * 当前座位下，影厅自带那块银幕在我们坐标里的中心高度。
+ *
+ * 影厅的纵向平移 = s.dy + (1.65 - 坐姿眼高)，影厅几何里银幕中心在
+ * kHallScreenModelY，导出时又整体减掉了 1.15（SCREEN_FLOOR_Y + EYE_HEIGHT）——
+ * 所以 app_y = (kHallScreenModelY - 1.15) + 影厅纵向平移量。
+ */
+float hallScreenCenterY() {
+    const int seat = gSeat.load();
+    const CinemaSeat &s = kCinemaSeats[seat];
+    return (kHallScreenModelY - 1.15f) + s.dy + (1.65f - gCinemaEyeHeight.load()) +
+           gScreenUp.load();
 }
 
 /** 换排：整间影厅平移 + 银幕距离跟着变（父亲戴着时靠这行日志确认换到哪排） */
@@ -2156,6 +2199,15 @@ ScreenPlacement frontScreen(const VrContext &c) {
     p.cz = -gScreenDistance.load() - gScenePush.load();
     p.width = gScreenWidth.load();      // 尺寸可运行时调
     p.aspect = c.videoAspect.load();
+    /*
+     * 影厅开着的时候，画面必须钉在影厅前墙那块银幕开口上（跟着换排一起挪），
+     * 而不是钉在眼睛高度 —— 否则换一排除屏与墙的关系就变（父亲 2026-10-10 实测）。
+     */
+    if (gCinemaOn.load() != 0 && gCinemaReady.load()) {
+        p.cy = hallScreenCenterY();
+        /* 横向也取影厅那块银幕的位置（他比厅中线偏 0.12 米，画面跟着墙走） */
+        p.cx = -(kHallScreenModelX - kAssetOriginModelX) + kCinemaShiftX;
+    }
     return p;
 }
 
@@ -5534,6 +5586,14 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             if (value >= 0.f && value <= 12.f) {
                 gEnvStrength.store(value);
                 LOGI("调参 → 影院环境光强度 %.2f", (double) value);
+            }
+            break;
+        case 26:
+            /* 银幕竖直微调（米）：影厅对好之后按父亲观感微调 */
+            if (value >= -2.f && value <= 2.f) {
+                gScreenUp.store(value);
+                LOGI("调参 → 银幕竖直微调 %+.2f 米（影厅银幕中心 %.2f）", (double) value,
+                     (double) hallScreenCenterY());
             }
             break;
         case 25:
