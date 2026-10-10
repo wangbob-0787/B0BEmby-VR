@@ -912,8 +912,9 @@ void drawCinema(const Mat4 &proj, const Mat4 &view, const XrVector3f &eyePos) {
     glUniform3f(gCinemaScreenPosLoc, 0.f, 0.55f, -s.distance);
     glUniform3f(gCinemaTintLoc, gScreenTintR.load(), gScreenTintG.load(),
                 gScreenTintB.load());
-    /* 画面照亮影厅的那份也乘亮度条（0 = 全黑） */
-    glUniform1f(gCinemaGlowLoc, gCinemaGlow.load() * gCinemaBright.load());
+    /* 画面照亮影厅的那份也乘亮度条（0 = 全黑），并按父亲 2026-10-11 的要求砍半 */
+    glUniform1f(gCinemaGlowLoc,
+                gCinemaGlow.load() * gCinemaBright.load() * 0.5f);
     glUniform1f(gCinemaAmbientLoc, gCinemaAmbient.load());
     glUniform3f(gCinemaEyeLoc, eyePos.x, eyePos.y, eyePos.z);
     /* 环境光：HDRI 放 1 号纹理单元（0 号单元是运行时的 OES 视频纹理，别抢） */
@@ -5792,8 +5793,9 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
                  * 现在三项（底光 / 环境光 / 画面照亮影厅的那份）一起随亮度条走。
                  */
                 gCinemaBright.store(value);
-                gCinemaAmbient.store(0.10f * value);
-                gEnvStrength.store(5.0f * value);
+                /* 父亲 2026-10-11 00:11：最亮档再砍一半（底光 0.10→0.05、环境光 5.0→2.5） */
+                gCinemaAmbient.store(0.05f * value);
+                gEnvStrength.store(2.5f * value);
                 LOGI("调参 → 影厅环境亮度条 %.2f（环境光 %.2f / 底光 %.3f）", (double) value,
                      (double) gEnvStrength.load(), (double) gCinemaAmbient.load());
             }
