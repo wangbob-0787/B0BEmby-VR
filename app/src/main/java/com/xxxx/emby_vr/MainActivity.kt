@@ -3134,17 +3134,61 @@ class MainActivity : ComponentActivity() {
         val stream = currentStreams.firstOrNull { it.index == index }
         val image = stream != null && isImageSubtitle(stream)
         val mediaId = currentMediaId
-        if (!image && mediaId.isNotBlank()) {
-            val sourceId = (pendingMediaSourceId ?: reportedMediaSourceId)
-                ?.takeIf { it.endsWith(mediaId) }
-                ?: "mediasource_$mediaId"
-            val url = "${userServer()}/emby/Videos/$mediaId/$sourceId/Subtitles/$index" +
-                "/Stream.srt?api_key=${userToken()}"
-            if (m.addSubtitleUrl(url)) {
-                Log.i(TAG, "内核模式：字幕 $index 按地址加载（不再按序号挑轨）")
+        /*
+         * 能不能"按序号选"，先看两边清单对不对得上（2026-10-11 父亲实测后定）。
+         *
+         * 背景：按序号选踩过坑（《蜘蛛侠》Emby 只索引 1 条、文件里 38 条 → 选出来是
+         * 英文/保加利亚语），所以改成了按地址加载。但**地址加载要服务器去取字幕**，
+         * 对直连播放的片子服务器取不出来 —— 实测 logcat：mpv 等满 60 秒才报
+         * `Failed to open .../Subtitles/4/Stream.srt`，这 60 秒里界面线程被按死，
+         * 表现就是父亲报的"点一下字幕，控制条和海报墙卡好一阵"，而且字幕压根没出来。
+         *
+         * 现在两条路各归各位：
+         *  · 两边内封轨条数一致 → 序号一定对得上，直接按序号从**文件里**选（秒出、不联网）；
+         *  · 对不上（Emby 索引不全）→ 才走地址加载，且放后台执行 + 事后核对。
+         */
+        if (!image) {
+            val embyEmbedded = currentStreams.count {
+                it.type.equals("Subtitle", ignoreCase = true) &&
+                    !isDanmakuStream(it) && it.isExternal != true
+            }
+            val kernelEmbedded = m.embeddedSubtitleCount()
+            if (kernelEmbedded > 0 && kernelEmbedded == embyEmbedded) {
+                Log.i(
+                    TAG,
+                    "内核模式：字幕 $index 两边内封轨一致（$kernelEmbedded 条）→ 按序号选，不联网",
+                )
+                retryKernelTrackSwitch("字幕", index) {
+                    mpvBackend?.setSubtitleByOrdinal(ordinalOfSubtitleStream(index)) ?: false
+                }
                 return
             }
-            Log.w(TAG, "内核模式：字幕 $index 地址加载没成功 → 退回按序号选")
+            if (mediaId.isNotBlank()) {
+                val sourceId = (pendingMediaSourceId ?: reportedMediaSourceId)
+                    ?.takeIf { it.endsWith(mediaId) }
+                    ?: "mediasource_$mediaId"
+                val url = "${userServer()}/emby/Videos/$mediaId/$sourceId/Subtitles/$index" +
+                    "/Stream.srt?api_key=${userToken()}"
+                m.addSubtitleUrl(url)
+                Log.i(TAG, "内核模式：字幕 $index 按地址加载（后台执行，界面不等它）")
+                /*
+                 * 事后核对：地址加载成功的话内核会多出一条**外挂**字幕轨并选中它。
+                 * 等几秒还没有，就退回按序号选 —— 至少字幕要出得来。
+                 */
+                scope.launch {
+                    kotlinx.coroutines.delay(4000L)
+                    if (mpvBackend !== m || selectedSubtitleIndex != index) return@launch
+                    if (m.externalSubtitleSelected()) {
+                        Log.i(TAG, "内核模式：字幕 $index 地址加载已生效")
+                        return@launch
+                    }
+                    Log.w(TAG, "内核模式：字幕 $index 地址加载没生效 → 退回按序号选")
+                    retryKernelTrackSwitch("字幕", index) {
+                        mpvBackend?.setSubtitleByOrdinal(ordinalOfSubtitleStream(index)) ?: false
+                    }
+                }
+                return
+            }
         }
         val ord = ordinalOfSubtitleStream(index)
         Log.i(TAG, "内核模式：字幕 $index → 序号 $ord（失败会重试）")

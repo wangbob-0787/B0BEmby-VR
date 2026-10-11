@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import android.view.Surface
 import dev.jdtech.mpv.MPVLib
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -92,6 +93,59 @@ class MpvBackend(private val context: Context) {
         @Volatile private var polling = false
 
         private val pollerStarted = AtomicBoolean(false)
+
+        /**
+         * mpv 调用线程（2026-10-11，父亲实测《挑情丑闻》选字幕卡死 60 秒的修复）。
+         *
+         * 所有**改** mpv 的调用都排到这条线程上执行，界面线程一次都不碰 mpv。
+         * 起因（logcat 硬证据）：菜单里点一条字幕 → `sub-add <Emby 字幕地址>`，
+         * mpv 同步去打开那个地址；Emby 对直连播放的片子取不出字幕，ffmpeg 在
+         * 网络读上等满 60 秒才报 Failed to open —— 这 60 秒里界面线程被按死，
+         * 控制条点不动、海报墙拖不动，松手后积压的点击一起生效（日志里那一刻
+         * 一堆"控制条按压被丢弃"同毫秒涌出）。
+         *
+         * 单线程是为了保序（play 的 start 选项必须先于 loadfile 生效）。
+         */
+        private val mpvExec = Executors.newSingleThreadExecutor { r ->
+            Thread(r, "mpv-cmd").also { it.isDaemon = true }
+        }
+
+        /** 把一次 mpv 调用排到 mpv 线程上（界面线程立即返回） */
+        private fun post(block: () -> Unit) {
+            runCatching { mpvExec.execute { runCatching(block) } }
+        }
+
+        /**
+         * 外挂字幕加载单独一条线程。
+         *
+         * 原因：`sub-add <地址>` 可能在里面卡满 mpv 自己的网络超时（默认 60 秒）。
+         * 跟其它命令共用一条线程的话，这 60 秒里用户的快进/暂停也得排在后面等 ——
+         * 界面不卡了，但操作还是迟钝。分开之后它只拖住自己。
+         */
+        private val subExec = Executors.newSingleThreadExecutor { r ->
+            Thread(r, "mpv-sub").also { it.isDaemon = true }
+        }
+
+        /** 内核侧**内封**字幕轨条数（用于判断能不能按序号选，见 applyKernelSubtitle） */
+        fun embeddedSubtitleCount(): Int = parseTrackList(cTrackList).count {
+            it.optString("type") == "sub" && !it.optBoolean("external", false)
+        }
+
+        /** 内核侧当前是否选中了一条**外挂**字幕轨（地址加载成功与否的判据） */
+        fun externalSubtitleSelected(): Boolean = parseTrackList(cTrackList).any {
+            it.optString("type") == "sub" && it.optBoolean("external", false) &&
+                it.optBoolean("selected", false)
+        }
+
+        private fun parseTrackList(raw: String): List<org.json.JSONObject> {
+            if (raw.isBlank()) return emptyList()
+            return try {
+                val arr = org.json.JSONArray(raw)
+                (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }
+            } catch (_: Throwable) {
+                emptyList()
+            }
+        }
 
         /**
          * 两条后台轮询线程。
@@ -404,9 +458,9 @@ class MpvBackend(private val context: Context) {
              * 文件生效），另外再排一次延迟补跳兜底（万一 start 没被认）。
              */
             if (startSec > 0.5) {
-                runCatching { MPVLib.setPropertyString("start", "+" + startSec.toInt()) }
+                post { MPVLib.setPropertyString("start", "+" + startSec.toInt()) }
             }
-            MPVLib.command(arrayOf("loadfile", url, "replace"))
+            post { MPVLib.command(arrayOf("loadfile", url, "replace")) }
             if (startSec > 0.5) {
                 val want = startSec
                 android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
@@ -414,7 +468,7 @@ class MpvBackend(private val context: Context) {
                     // 走缓存（界面线程不碰 mpv 属性读取，见 companion 里的属性缓存注释）
                     val pos = positionSec()
                     if (pos < want - 5.0) {
-                        runCatching {
+                        post {
                             MPVLib.command(arrayOf("seek", want.toString(), "absolute+exact"))
                         }
                         Log.i(TAG, "内核起播位置补跳 → ${want.toInt()}s（当时 ${pos.toInt()}s）")
@@ -432,7 +486,7 @@ class MpvBackend(private val context: Context) {
     fun setPaused(paused: Boolean) {
         // 顺手更新缓存：界面按了暂停键立刻读 isPaused() 也要拿到新值，别等下一轮轮询
         cPaused = paused
-        try { MPVLib.setPropertyBoolean("pause", paused) } catch (_: Throwable) {}
+        post { MPVLib.setPropertyBoolean("pause", paused) }
     }
 
     fun isPaused(): Boolean = cPaused
@@ -447,7 +501,7 @@ class MpvBackend(private val context: Context) {
      */
     /** 收 / 放内核自己那层字幕（文字字幕由我们自绘，图形字幕留给内核画）。 */
     fun setSubVisible(visible: Boolean) {
-        runCatching { MPVLib.setPropertyString("sub-visibility", if (visible) "yes" else "no") }
+        post { MPVLib.setPropertyString("sub-visibility", if (visible) "yes" else "no") }
     }
 
     /**
@@ -481,7 +535,7 @@ class MpvBackend(private val context: Context) {
     fun cachedTimeSec(): Double = cCacheTime
 
     fun seekToSec(sec: Double) {
-        try { MPVLib.command(arrayOf("seek", sec.toString(), "absolute")) } catch (_: Throwable) {}
+        post { MPVLib.command(arrayOf("seek", sec.toString(), "absolute")) }
     }
 
     /**
@@ -494,7 +548,7 @@ class MpvBackend(private val context: Context) {
      * 运行中改这两个属性 mpv 会立刻生效，不用重起播。
      */
     fun applyBufferPreset(seconds: Int, maxBytesMb: Int) {
-        runCatching {
+        post {
             MPVLib.setPropertyInt("cache-secs", seconds.coerceIn(5, 600))
             MPVLib.setPropertyInt("demuxer-max-bytes", (maxBytesMb.coerceIn(16, 2048)) * 1024 * 1024)
             Log.i(TAG, "内核缓冲档位 → cache-secs=${seconds}s 上限=${maxBytesMb}MB")
@@ -509,7 +563,7 @@ class MpvBackend(private val context: Context) {
      *  · 播完停止 → 不循环，由界面在播完时收场。
      */
     fun setLoopFile(loop: Boolean) {
-        runCatching {
+        post {
             MPVLib.setPropertyString("loop-file", if (loop) "inf" else "no")
             Log.i(TAG, "内核循环 → ${if (loop) "开" else "关"}")
         }
@@ -519,7 +573,7 @@ class MpvBackend(private val context: Context) {
     fun endReached(): Boolean = cEof
 
     fun setSpeed(speed: Float) {
-        try { MPVLib.setPropertyDouble("speed", speed.toDouble()) } catch (_: Throwable) {}
+        post { MPVLib.setPropertyDouble("speed", speed.toDouble()) }
     }
 
     /**
@@ -534,11 +588,9 @@ class MpvBackend(private val context: Context) {
      */
     fun setSurfaceSize(w: Int, h: Int) {
         if (w < 64 || h < 64) return
-        try {
+        post {
             MPVLib.setPropertyString("android-surface-size", "${w}x$h")
             Log.i(TAG, "内核画布尺寸 → ${w}x$h")
-        } catch (t: Throwable) {
-            Log.w(TAG, "内核画布尺寸设置失败: ${t.message}")
         }
     }
 
@@ -562,14 +614,11 @@ class MpvBackend(private val context: Context) {
             Log.w(TAG, "音轨序号 $ordinal 超出范围（内核侧共 ${ids.size} 条）")
             return false
         }
-        return try {
+        post {
             MPVLib.setPropertyInt("aid", id)
             Log.i(TAG, "内核切音轨：第 ${ordinal + 1} 条（aid=$id）")
-            true
-        } catch (t: Throwable) {
-            Log.e(TAG, "内核切音轨失败: ${t.message}")
-            false
         }
+        return true
     }
 
     /**
@@ -593,7 +642,14 @@ class MpvBackend(private val context: Context) {
                  * 两个都认，防以后 mpv 改写法。
                  */
                 val t = o.optString("type")
-                if (t == "sub" || t == "subtitle") out.add(o.optInt("id"))
+                /*
+                 * 只数**内封**轨（2026-10-11）：外挂轨是地址加载（sub-add）加进来的，
+                 * 而序号映射的另一头（Emby 清单）数的是内封轨 —— 不排除外挂，
+                 * 加载过一次地址之后每一条序号都会错位。
+                 */
+                if ((t == "sub" || t == "subtitle") && !o.optBoolean("external", false)) {
+                    out.add(o.optInt("id"))
+                }
             }
             out
         } catch (t: Throwable) {
@@ -613,14 +669,20 @@ class MpvBackend(private val context: Context) {
      * 走这条地址加载，内核拿到的就是 Emby 那一条，内容与菜单一一对应。
      */
     fun addSubtitleUrl(url: String): Boolean {
-        return try {
-            MPVLib.command(arrayOf("sub-add", url, "select"))
-            Log.i(TAG, "内核加载字幕地址：${url.take(140)}")
-            true
-        } catch (t: Throwable) {
-            Log.w(TAG, "内核加载字幕地址失败: ${t.message}")
-            false
+        /*
+         * 排到 mpv 线程上（2026-10-11）：这一步会让 mpv 同步去打开那个地址，
+         * 服务端取不出字幕时要等 60 秒才失败 —— 放在界面线程上就是把界面按死。
+         * 这里立刻返回，结果靠 externalSubtitleSelected() 事后核对。
+         */
+        runCatching {
+            subExec.execute {
+                runCatching {
+                    MPVLib.command(arrayOf("sub-add", url, "select"))
+                    Log.i(TAG, "内核加载字幕地址：${url.take(140)}")
+                }
+            }
         }
+        return true
     }
 
     /**
@@ -631,14 +693,11 @@ class MpvBackend(private val context: Context) {
      */
     fun setSubtitleByOrdinal(ordinal: Int?): Boolean {
         if (ordinal == null) {
-            return try {
+            post {
                 MPVLib.setPropertyString("sid", "no")
                 Log.i(TAG, "内核：字幕关闭（sid=no）")
-                true
-            } catch (t: Throwable) {
-                Log.e(TAG, "内核关字幕失败: ${t.message}")
-                false
             }
+            return true
         }
         val ids = subtitleTrackIds()
         if (ids.isEmpty()) {
@@ -650,14 +709,11 @@ class MpvBackend(private val context: Context) {
             Log.w(TAG, "字幕序号 $ordinal 超出范围（内核侧共 ${ids.size} 条）")
             return false
         }
-        return try {
+        post {
             MPVLib.setPropertyInt("sid", id)
             Log.i(TAG, "内核选字幕：第 ${ordinal + 1} 条（sid=$id，共 ${ids.size} 条）")
-            true
-        } catch (t: Throwable) {
-            Log.e(TAG, "内核选字幕失败: ${t.message}")
-            false
         }
+        return true
     }
 
     /** 内核侧的音轨 id 列表（按文件内顺序）；取不到返回空表 */
@@ -705,7 +761,7 @@ class MpvBackend(private val context: Context) {
 
     fun stop() {
         endPolling()
-        try { MPVLib.command(arrayOf("stop")) } catch (_: Throwable) {}
+        post { MPVLib.command(arrayOf("stop")) }
         try {
             MPVLib.detachSurface()
             surfaceAttached = false
