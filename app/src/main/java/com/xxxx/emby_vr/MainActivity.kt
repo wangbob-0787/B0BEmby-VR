@@ -2178,18 +2178,19 @@ class MainActivity : ComponentActivity() {
                         // 否则每秒刷新的绿字会把错误盖掉
                         renderer.videoActive = false
                         /*
-                         * 解码器报错 → 改走自带内核（父亲 2026-10-11）。
+                         * 出错先试自带内核（父亲 2026-10-11）。
                          *
-                         * 元数据与文件名都可能把片源判错（元数据把 4K 杜比报成 1080p、
-                         * 文件名里的 DV 只是资源组的习惯写法），系统解码器遇到真杜比
-                         * 会直接报错 —— 内核自带 FFmpeg，解得了。只切一次，防来回切。
+                         * 父亲点的关键问题：「本该走内核、却交给了服务端转码」的片，
+                         * 出错方式不止解码器报错一种 —— 服务端转码**推不出流**（源错误 /
+                         * 超时）、流本身解析不了，都算。所以除"网络断了"之外一律先试内核：
+                         * 内核直接拉原文件，根本不走服务端转码这条路。
+                         * 内核也救不了（已经是内核了）才退回下面换 H.264 重来。
                          */
                         val code = error.errorCode
-                        val decodeFailed =
-                            code == PlaybackException.ERROR_CODE_DECODER_INIT_FAILED ||
-                                code == PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED ||
-                                code == PlaybackException.ERROR_CODE_DECODING_FAILED
-                        if (decodeFailed && switchToKernelForFallback("解码器报错($code)")) return
+                        val networkGone =
+                            code == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+                                code == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT
+                        if (!networkGone && switchToKernelForFallback("播放出错($code)")) return
                         /*
                          * 崩一次就换 H.264 重来（父亲 2026-10-07：《律界战争》卡在开头）。
                          * 只重试一次，且只影响这一部片 —— 换片时 forceH264 复位。
@@ -2856,13 +2857,30 @@ class MainActivity : ComponentActivity() {
         return true
     }
 
-    /** 起播看门狗：系统播放器若干秒还出不了画面就改走内核（真杜比片的症状是"有声无画"）。 */
+    /**
+     * 起播看门狗（父亲 2026-10-11）。
+     *
+     * 「本该走内核、却交给了服务端转码」的片有两种下场，都要兜住：
+     *   ① 偏色 —— 机器判断不了，只能从源头堵（见取播放地址那段的 VideoCodec 判定）；
+     *   ② 有声音没画面、甚至连声音也没有 —— 服务端转码转不出来 / 推不出流。
+     * 这里管第 ② 种，分两档等：已经出声了再等 8 秒还没画面就切；什么都没出来等到 15 秒。
+     * 切过去由 switchToKernelForFallback 让内核直接拉原文件，绕开服务端转码这条路。
+     */
     private fun startKernelFallbackWatchdog() {
         kernelFallbackJob?.cancel()
         kernelFallbackJob = scope.launch {
-            kotlinx.coroutines.delay(15_000L)
-            if (mpvBackend != null || playerFrameSeen) return@launch
-            switchToKernelForFallback("起播 15 秒没有画面")
+            var waited = 0L
+            while (waited < 15_000L) {
+                kotlinx.coroutines.delay(1_000L)
+                waited += 1_000L
+                if (mpvBackend != null || playerFrameSeen) return@launch
+                val sounding = runCatching { player?.isPlaying == true }.getOrDefault(false)
+                if (sounding && waited >= 8_000L) {
+                    switchToKernelForFallback("有声无画 ${waited / 1000} 秒")
+                    return@launch
+                }
+            }
+            switchToKernelForFallback("起播 15 秒既没画面也没声音")
         }
     }
 
