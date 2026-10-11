@@ -17,8 +17,8 @@ PICO 4 上的 Emby 客户端，VR 虚拟影院版本。家庭自用。
 
 | 项 | 值 | 依据 |
 |---|---|---|
-| 设备 | PICO 4（Android 10 / API 29）；实测系统 5.13.7 | `app/build.gradle.kts`、`app/src/main/cpp/native_bridge.cpp` |
-| VR 运行时 | 官方 OpenXR（Khronos loader 1.1.49），要求 PICO OS ≥ 5.9；原生库或会话起不来时退化为老的 2D 面板管线，应用不崩 | `gradle/libs.versions.toml`、`app/src/main/cpp/CMakeLists.txt`、`vr/VrNative.kt` |
+| 设备 | PICO 4（Android 10 / API 29）；开发机实测系统 5.13.7 | `app/build.gradle.kts`、`app/src/main/cpp/native_bridge.cpp` |
+| VR 运行时 | 官方 OpenXR（Khronos loader 1.1.49）；PICO OS ≥ 5.9 是官方 OpenXR 的支持起点（实机只在 5.13.7 上验证）；独立图层建不起来时回退成画进眼缓冲（能用，清晰度下降） | `gradle/libs.versions.toml`、`app/src/main/cpp/CMakeLists.txt`、`vr/VrNative.kt` |
 | 应用类型 | `pvr.app.type=vr`，由系统按 VR 应用合成 | `app/src/main/AndroidManifest.xml` |
 | minSdk / targetSdk / compileSdk | 29 / 33 / 36 | `app/build.gradle.kts` |
 | ABI | 仅 arm64-v8a | `app/build.gradle.kts` |
@@ -39,7 +39,7 @@ PICO 4 上的 Emby 客户端，VR 虚拟影院版本。家庭自用。
 | 详情页 | 简介、季集、选集、续播、收藏、播放 | `ui/MediaDetailScreen.kt`、`ui/viewmodel/DetailViewModel.kt` |
 | 演员页 | 按演员查作品 | `ui/ActorScreen.kt` |
 | 账号页 | 多账号保存与切换、退出登录 | `ui/AccountScreen.kt`、`data/session/SessionManager.kt` |
-| 代理设置 | HTTP / SOCKS5，可仅代理 Emby 流量，可扫码配置 | `ui/ProxySettingsScreen.kt`、`data/remote/HttpClient.kt` |
+| 代理设置 | HTTP / SOCKS5，代理只作用于 Emby 请求（应用本身也只连 Emby），可扫码配置 | `ui/ProxySettingsScreen.kt`、`data/remote/HttpClient.kt` |
 | 虚拟键盘 | VR 内输入（英文直打，中文靠拼音候选） | `ui/components/VrKeyboard.kt`、`TvInputDialog.kt` |
 | 数据层 | Emby 接口、DTO、会话管理，与电视版同源 | `data/remote/EmbyApi.kt`、`data/remote/HttpClient.kt`、`data/repository/EmbyRepository.kt` |
 
@@ -56,7 +56,7 @@ PICO 4 上的 Emby 客户端，VR 虚拟影院版本。家庭自用。
 | 光柱悬停反馈 | 光柱扫过的控件统一点亮 | `panel/VrHover.kt` |
 | 光柱点击 | 自建控件坐标表，扣扳机时按坐标命中并触发（Compose 无公开命中测试接口） | `panel/ClickTargets.kt` |
 | 手柄输入 | 方向键 / 摇杆 → 焦点，A / 扳机 → 确认，B → 返回，射线 → 悬停即焦点 | `vr/InputRouter.kt`、`MainActivity.kt` |
-| 运行时调参 | 参数写在应用私有目录的 `vr-tuning.txt`，adb 可改、约 1 秒生效（画面尺寸、超采样、刷新率、影厅亮度、座椅前后高低等） | `vr/VrTuning.kt` |
+| 运行时调参 | 参数写在 `vr-tuning.txt`（adb 路径 `/sdcard/Android/data/com.xxxx.emby_vr/files/vr-tuning.txt`），改完约 1 秒生效（画面尺寸、超采样、刷新率、影厅亮度、座椅前后高低等） | `vr/VrTuning.kt` |
 
 ### 播放
 
@@ -85,7 +85,7 @@ PICO 4 上的 Emby 客户端，VR 虚拟影院版本。家庭自用。
 | 时间偏移 | 弹幕整体提前 / 延后，最多 ±2 分半，画面与真实进度不受影响 | `MainActivity.kt` |
 | 暂停与快进 | 暂停时弹幕停在原地，快进快退期间弹幕位置冻结 | `MainActivity.kt` |
 | 画笔随影片比例 | 弹幕画布比例跟影片走，弹幕 / 字幕 / logo 不被拉伸 | `MainActivity.kt` |
-| 片名 logo | 画在右下角，从视频层分离成独立图层 | `danmaku/DanmakuSurfacePainter.kt` |
+| 片名 logo | 画在弹幕层画布上、最后绘制压住弹幕，位置固定在右下角（原生侧独立的 logo 合成层已停用） | `danmaku/DanmakuSurfacePainter.kt`、`app/src/main/cpp/openxr_renderer.cpp` |
 
 ## 仓库结构
 
@@ -114,7 +114,7 @@ kernel/libmpv-dovi/          DV 内核源码（含 ffmpeg RPU 补丁），由仓
   Emby 连接参数由 GitHub Secrets 注入（`EMBY_API_KEY` 必填，`EMBY_SERVER`、`EMBY_USER_ID` 选填），
   CI 写入 `local.properties`，不进源码。
 - **内核 AAR**：`.github/workflows/kernel.yml` **手动触发**（改 DV 补丁或 FFmpeg 侧时才跑，编 4 个 ABI 很吃额度），
-  产物发布到 `kernel-dovi` Release，取回后放 `app/libs/libmpv-dovi.aar`。
+  产物以 `libmpv-release.aar` 之名发布到 `kernel-dovi` Release，取回后重命名放到 `app/libs/libmpv-dovi.aar`。
 - **装机**：一律用 release 包，且**必须带来源参数**，否则 PICO 会把应用标成「未知来源」：
 
   ```bash
@@ -126,17 +126,18 @@ kernel/libmpv-dovi/          DV 内核源码（含 ffmpeg RPU 补丁），由仓
 
 ## 已知限制
 
-- 只针对 PICO 4 与 PICO 的 VR 模式做过实机验证；需要 PICO OS ≥ 5.9（OpenXR 支持）。
+- 只针对 PICO 4 与 PICO 的 VR 模式做过实机验证；PICO OS ≥ 5.9（官方 OpenXR 支持起点），实机只在 5.13.7 上验证过。
 - 只出 arm64-v8a 包。
 - `targetSdk` 固定 33（PICO OS 兼容；本项目不上架 Google Play，release 构建关闭了 lint 致命检查）。
 - 应用内不做更新检查，更新走云端编译 + 装机（面板层去掉了更新路由）。
-- 字幕位置与字幕同步只有字符串资源残留，VR 版菜单未接入（见下节待办）。
+- 字幕位置与字幕同步只有字符串资源残留（`values` 与 `values-zh` 两边都有 key、代码零引用），VR 版菜单未接入（见下节待办）。
+- 弹幕轨判据含 `.xml` / `.json` 扩展名，但解析器只实现了 ASS / SSA，这两种扩展名会被判成弹幕轨却画不出内容。
 - 图形字幕（PGS / VobSub）只能走自带内核自绘，系统播放器这条路不处理图片字幕。
 
 ## 待办
 
-- 字幕位置 / 字幕同步接入 VR 播放菜单（文案已在 `app/src/main/res/values-zh/strings.xml`，代码无引用）。
-- 影厅与座椅材质目前一套（`assets/seat_fabrics.png` 为四宫格贴图）。
+- 字幕位置 / 字幕同步接入 VR 播放菜单（文案在 `app/src/main/res/values/strings.xml` 与 `values-zh/strings.xml` 两边都有，代码零引用，将来删要两边一起删）。
+- 影厅与座椅材质目前一套（`assets/seat_fabrics.png` 是 2×2 贴图集，目前只用其中一格）。
 
 ## 许可与署名
 
