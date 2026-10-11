@@ -1727,8 +1727,22 @@ class MainActivity : ComponentActivity() {
                  */
                 val method = Utils.determinePlayMethod(media)
                 lastPlayMethod = method
-                val path0 = when (method) {
-                    "DirectPlay" -> source?.directStreamUrl
+                /*
+                 * 杜比视界片不走服务端转码（父亲 2026-10-11）。
+                 *
+                 * 服务端硬解杜比会把色彩解丢 → 推过来的流是**偏色**的，而客户端看不出来
+                 * （画面有、声音也有，只是颜色不对 —— 机器没法判断"正确颜色"长什么样）。
+                 * 所以从源头堵：认出是杜比片就把转码地址换回直连地址。
+                 * 真需要转码才播得了的片，会在起播看门狗里改走自带内核（内核拉原文件）。
+                 */
+                val dvSource = com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource
+                val path0 = when {
+                    dvSource && method != "DirectPlay" -> {
+                        Log.i(TAG, "杜比视界片：不用服务端转码（$method）→ 换直连，避免偏色")
+                        lastPlayMethod = "DirectPlay"
+                        source?.directStreamUrl ?: source?.transcodingUrl
+                    }
+                    method == "DirectPlay" -> source?.directStreamUrl
                     else -> source?.transcodingUrl ?: source?.directStreamUrl
                 }
                 Log.i(TAG, "播放方式=$method")
@@ -2149,6 +2163,19 @@ class MainActivity : ComponentActivity() {
                         // 否则每秒刷新的绿字会把错误盖掉
                         renderer.videoActive = false
                         /*
+                         * 解码器报错 → 改走自带内核（父亲 2026-10-11）。
+                         *
+                         * 元数据与文件名都可能把片源判错（元数据把 4K 杜比报成 1080p、
+                         * 文件名里的 DV 只是资源组的习惯写法），系统解码器遇到真杜比
+                         * 会直接报错 —— 内核自带 FFmpeg，解得了。只切一次，防来回切。
+                         */
+                        val code = error.errorCode
+                        val decodeFailed =
+                            code == PlaybackException.ERROR_CODE_DECODER_INIT_FAILED ||
+                                code == PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED ||
+                                code == PlaybackException.ERROR_CODE_DECODING_FAILED
+                        if (decodeFailed && switchToKernelForFallback("解码器报错($code)")) return
+                        /*
                          * 崩一次就换 H.264 重来（父亲 2026-10-07：《律界战争》卡在开头）。
                          * 只重试一次，且只影响这一部片 —— 换片时 forceH264 复位。
                          * 位置按崩住的地方接着播，不从头。
@@ -2167,6 +2194,12 @@ class MainActivity : ComponentActivity() {
                         hud("播放出错：${friendlyError(error)}")
                     }
                 })
+                /*
+                 * 起播看门狗（父亲 2026-10-11）：起播前的线索（元数据 / 文件名）都可能判错，
+                 * 所以起播后再用**事实**兜一次 —— 系统播放器若干秒仍出不了画面，
+                 * 就改走自带内核重播（位置接着走）。真杜比片在系统解码器上就是这个症状。
+                 */
+                startKernelFallbackWatchdog()
             }
             renderer.videoActive = true
             /*
@@ -2789,6 +2822,35 @@ class MainActivity : ComponentActivity() {
     private fun bufferMaxMs(): Int = com.xxxx.emby_vr.panel.BUFFER_PRESETS[bufferPresetIndex].third
 
     /** 保持当前位置重新起播（切字幕 / 音轨 / 质量 / 缓冲用） */
+    /**
+     * 兜底：改走自带内核重播（父亲 2026-10-11 定）。
+     *
+     * 起因：起播前的两条线索都可能判错 —— 元数据把这部 4K 杜比视界报成 1080p H264，
+     * 而文件名里的 DV 也可能只是资源组的习惯写法。光靠线索选解码器，总会碰上选错的片。
+     * 所以补运行时的兜底：① 起播若干秒仍出不了画面；② 解码器直接报错。
+     * 命中任一条就改走自带内核重播一次，位置接着走。
+     * 每部片只自动切一次（kernelFallbackDone），防两边来回切。
+     */
+    private fun switchToKernelForFallback(reason: String): Boolean {
+        if (mpvBackend != null || kernelFallbackDone) return false
+        kernelFallbackDone = true
+        Log.w(TAG, "兜底：$reason → 改走自带内核重播（位置接着走）")
+        hud("这条流系统解不了，改用内核解码重来")
+        com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder = true
+        replayKeepingPosition()
+        return true
+    }
+
+    /** 起播看门狗：系统播放器若干秒还出不了画面就改走内核（真杜比片的症状是"有声无画"）。 */
+    private fun startKernelFallbackWatchdog() {
+        kernelFallbackJob?.cancel()
+        kernelFallbackJob = scope.launch {
+            kotlinx.coroutines.delay(15_000L)
+            if (mpvBackend != null || playerFrameSeen) return@launch
+            switchToKernelForFallback("起播 15 秒没有画面")
+        }
+    }
+
     private fun replayKeepingPosition() {
         if (currentMediaId.isBlank()) return
         replaying = true
@@ -4042,6 +4104,10 @@ class MainActivity : ComponentActivity() {
 
     /** 内核内嵌字幕的取文轮询（Profile 5 专用，2026-10-09） */
     private var mpvSubtitleJob: kotlinx.coroutines.Job? = null
+    /** 起播看门狗的 job（见 switchToKernelForFallback，父亲 2026-10-11） */
+    private var kernelFallbackJob: kotlinx.coroutines.Job? = null
+    /** 这一部片是否已经自动切过内核 —— 每部只切一次，防两边来回切 */
+    private var kernelFallbackDone = false
 
     /**
      * 内核内嵌字幕：每 80ms 问一次当前这句的纯文本，交给自己那层画（2026-10-09）。
@@ -4140,6 +4206,10 @@ class MainActivity : ComponentActivity() {
      * 真正的起播由 playMedia → startPlayer 接手。
      */
     private fun clearForNewMedia() {
+        // 换片：兜底标记复位，新片可以再自动切一次内核（父亲 2026-10-11）
+        kernelFallbackDone = false
+        kernelFallbackJob?.cancel()
+        kernelFallbackJob = null
         val hadPlayback = player != null || currentMediaId.isNotBlank()
         if (hadPlayback) {
             Log.i(TAG, "换片：停掉旧片、清空银幕 / 弹幕 / 字幕 / logo，等新片起播")
