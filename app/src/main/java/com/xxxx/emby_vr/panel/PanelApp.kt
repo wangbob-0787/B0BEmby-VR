@@ -1,5 +1,6 @@
 package com.xxxx.emby_vr.panel
 
+import com.xxxx.emby_vr.data.model.BaseItemDto
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import androidx.compose.ui.focus.FocusRequester

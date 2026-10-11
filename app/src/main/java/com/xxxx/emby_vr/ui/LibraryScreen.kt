@@ -1,5 +1,6 @@
 package com.xxxx.emby_vr.ui
 
+import com.xxxx.emby_vr.data.model.BaseItemDto
 import com.xxxx.emby_vr.ui.components.BuildItem
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
