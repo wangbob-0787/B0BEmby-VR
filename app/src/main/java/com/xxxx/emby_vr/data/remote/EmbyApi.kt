@@ -644,8 +644,23 @@ object EmbyApi {
              * 两边线索都没有时**按走内核处理**：内核最坏是软解吃性能（还能看），
              * 而按普通路径处理最坏是「只有声音没有画面」（看不了）。
              */
+            /*
+             * 文件名同时带 DV 与 HDR → 按「有 HDR10 兼容层」处理（2026-10-11 实测）。
+             *
+             * 《蜘蛛侠：崭新之日》文件名是 `…2160p.iT.WEB-DL…DV.HDR.H.265-BYNDR.mkv`，
+             * ffprobe 直读该文件：hevc Main 10 / bt2020 / PQ **并且**带 DOVI 记录 ——
+             * 就是 8.x 那种「HDR10 打底 + 杜比动态层」，系统播放器播得了、颜色也对
+             * （官方客户端就是这么播的，父亲实测字幕与画面都正常）。
+             * 但服务端对这部片的流信息报的是 1080p H264 SDR（元数据与文件不符），
+             * dvProfile 探不到 → 旧逻辑按「线索不明就保守走内核」把它推进了内核，
+             * 白白软解吃性能，字幕还得内核这边管（父亲 2026-10-11 问「Emby 自己
+             * 能解码，为什么推给 MPV」）。所以这里补一条：DV 与 HDR 同时出现 = 8。
+             */
+            val nameLooksHdr = listOf("HDR10", ".HDR.", " HDR ", "HDR10+")
+                .any { sourcePath.contains(it, ignoreCase = true) }
             val looksProfile8 = (dvProfile?.contains("8") == true) ||
-                (dvProfile?.contains("HDR10", true) == true)
+                (dvProfile?.contains("HDR10", true) == true) ||
+                (dvByName && nameLooksHdr)
             val looksProfile5 = (dvProfile?.contains("5") == true) ||
                 (dvProfile?.equals("DOVI", true) == true)
             /*
