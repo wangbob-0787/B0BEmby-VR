@@ -126,26 +126,6 @@ class MpvBackend(private val context: Context) {
             Thread(r, "mpv-sub").also { it.isDaemon = true }
         }
 
-        /** 内核侧**内封**字幕轨条数（用于判断能不能按序号选，见 applyKernelSubtitle） */
-        fun embeddedSubtitleCount(): Int = parseTrackList(cTrackList).count {
-            it.optString("type") == "sub" && !it.optBoolean("external", false)
-        }
-
-        /** 内核侧当前是否选中了一条**外挂**字幕轨（地址加载成功与否的判据） */
-        fun externalSubtitleSelected(): Boolean = parseTrackList(cTrackList).any {
-            it.optString("type") == "sub" && it.optBoolean("external", false) &&
-                it.optBoolean("selected", false)
-        }
-
-        private fun parseTrackList(raw: String): List<org.json.JSONObject> {
-            if (raw.isBlank()) return emptyList()
-            return try {
-                val arr = org.json.JSONArray(raw)
-                (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }
-            } catch (_: Throwable) {
-                emptyList()
-            }
-        }
 
         /**
          * 两条后台轮询线程。
@@ -619,6 +599,34 @@ class MpvBackend(private val context: Context) {
             Log.i(TAG, "内核切音轨：第 ${ordinal + 1} 条（aid=$id）")
         }
         return true
+    }
+
+    /**
+     * 内核侧**内封**字幕轨条数。
+     *
+     * 用途（2026-10-11）：判断"能不能按序号选字幕"。Emby 报出的内封轨条数与内核
+     * 手里的条数一致时，两边顺序必然对得上，按序号从**文件里**直接选即可（秒出、
+     * 不联网）；对不上（Emby 索引不全，如《蜘蛛侠》Emby 报 1 条、文件里 38 条）
+     * 才需要按地址去服务器取。
+     */
+    fun embeddedSubtitleCount(): Int = parseTrackList(cTrackList).count {
+        it.optString("type") == "sub" && !it.optBoolean("external", false)
+    }
+
+    /** 内核侧当前是否选中了一条**外挂**字幕轨（地址加载成功与否的判据） */
+    fun externalSubtitleSelected(): Boolean = parseTrackList(cTrackList).any {
+        it.optString("type") == "sub" && it.optBoolean("external", false) &&
+            it.optBoolean("selected", false)
+    }
+
+    private fun parseTrackList(raw: String): List<org.json.JSONObject> {
+        if (raw.isBlank()) return emptyList()
+        return try {
+            val arr = org.json.JSONArray(raw)
+            (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }
+        } catch (_: Throwable) {
+            emptyList()
+        }
     }
 
     /**
