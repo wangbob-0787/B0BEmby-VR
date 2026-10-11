@@ -1906,8 +1906,15 @@ class MainActivity : ComponentActivity() {
                      */
                     scope.launch {
                         kotlinx.coroutines.delay(4000)
-                        m.dumpTracks()
-                        m.dumpVideoParams()
+                        /*
+                         * 轨道清单与画面参数在**后台线程**上打（父亲 2026-10-11）。
+                         * mpv 的属性读取是同步的，核心线程在做网络 I/O 时会等很久；
+                         * 这两条 dump 读的属性多，放界面线程上就是一次几十秒的假死。
+                         */
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            m.dumpTracks()
+                            m.dumpVideoParams()
+                        }
                         /*
                          * 上次选过的字幕在内核路径要重新选上（2026-10-09）。
                          *

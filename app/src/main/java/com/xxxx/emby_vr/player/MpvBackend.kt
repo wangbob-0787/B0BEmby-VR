@@ -63,6 +63,139 @@ class MpvBackend(private val context: Context) {
             }
         }
 
+        /*
+         * ── 属性缓存（2026-10-11，父亲报的「控制条点不动、海报墙拖不动」的根因修复）──
+         *
+         * mpv 的属性读取是**同步**的：`mpv_get_property` 把取值派给 mpv 自己的核心
+         * 线程去执行，核心线程正在做网络 I/O（解复用器读流、ffmpeg 重连）时，
+         * 这个读会一直等 —— 实测能等几十秒。
+         *
+         * 我们原来在**界面线程**上直接读：位置、时长、字幕文字、轨道清单，上一版
+         * 又给进度条加了「缓冲点」（`demuxer-cache-time`）。这个属性恰好要在解复用器
+         * 的锁上取，片源网络一抖界面线程就被按住几十秒 —— 表现就是控制条按钮点不动、
+         * 菜单出不来、海报墙拖不动，等它松手时积压的点击一起生效（父亲实测：点了
+         * 海报 46 秒后才换片）。之前几版没有这一条读，所以没这个毛病。
+         *
+         * 现在所有读取都在这条后台线程上做，界面侧只读下面的缓存变量，永不阻塞。
+         */
+        @Volatile private var cTimePos = 0.0
+        @Volatile private var cDuration = 0.0
+        @Volatile private var cCacheTime = 0.0
+        @Volatile private var cVideoW = 0
+        @Volatile private var cSubText = ""
+        @Volatile private var cEof = false
+        @Volatile private var cPaused = false
+        @Volatile private var cTrackList = ""
+        @Volatile private var cHasVideo = false
+
+        /** 有没有在播：没播时不轮询（属性读不到会刷错误日志） */
+        @Volatile private var polling = false
+
+        private val pollerStarted = AtomicBoolean(false)
+
+        /**
+         * 两条后台轮询线程。
+         *
+         * 为什么分两条：`demuxer-cache-time` 是已知会长时间阻塞的那一个（它要在
+         * 解复用器的锁上取值，解复用器正在读流时读它要等）。把它和位置/字幕放在
+         * 同一条线程上，网络一抖位置也跟着冻住 —— 进度条就卡住了。分开之后，
+         * 它最多拖住自己那条。
+         */
+        private fun startPropertyPoller() {
+            if (!pollerStarted.compareAndSet(false, true)) return
+            startPollThread("mpv-props", 100L, 400L, ::readFastProps)
+            startPollThread("mpv-cache", 500L, 500L, ::readSlowProps)
+        }
+
+        private fun startPollThread(
+            name: String,
+            fastMs: Long,
+            slowMs: Long,
+            body: (Long) -> Boolean,
+        ) {
+            val t = Thread({
+                var tick = 0L
+                while (true) {
+                    var ok = true
+                    if (polling) {
+                        ok = body(++tick)
+                    } else {
+                        tick = 0
+                    }
+                    // 读不到（文件还没打开）就放慢，别把日志刷满
+                    try {
+                        Thread.sleep(if (ok) fastMs else slowMs)
+                    } catch (_: InterruptedException) {
+                        return@Thread
+                    }
+                }
+            }, name)
+            t.isDaemon = true
+            t.priority = Thread.MIN_PRIORITY + 1
+            t.start()
+        }
+
+        /** 便宜且随时可读的那几项：位置、字幕文字、暂停、播完、出画尺寸 */
+        private fun readFastProps(tick: Long): Boolean {
+            var ok = true
+            fun d(name: String, apply: (Double) -> Unit) {
+                val v = try { MPVLib.getPropertyDouble(name) } catch (_: Throwable) { null }
+                if (v == null) ok = false else apply(v)
+            }
+            fun b(name: String, apply: (Boolean) -> Unit) {
+                val v = try { MPVLib.getPropertyBoolean(name) } catch (_: Throwable) { null }
+                if (v == null) ok = false else apply(v)
+            }
+            fun s(name: String, apply: (String) -> Unit) {
+                val v = try { MPVLib.getPropertyString(name) } catch (_: Throwable) { null }
+                if (v == null) ok = false else apply(v)
+            }
+            d("time-pos") { cTimePos = it }
+            s("sub-text") { cSubText = it }
+            b("pause") { cPaused = it }
+            b("eof-reached") { cEof = it }
+            b("video") { cHasVideo = it }
+            if (tick % 2L == 1L) {
+                val w = try { MPVLib.getPropertyInt("video-params/w") } catch (_: Throwable) { null }
+                if (w == null) ok = false else cVideoW = w
+            }
+            return ok
+        }
+
+        /** 可能长时间阻塞的那几项：缓冲点、总时长、轨道清单 */
+        private fun readSlowProps(tick: Long): Boolean {
+            var ok = true
+            val cached = try { MPVLib.getPropertyDouble("demuxer-cache-time") } catch (_: Throwable) { null }
+            if (cached == null) ok = false else cCacheTime = cached
+            if (tick % 2L == 0L) {
+                val d = try { MPVLib.getPropertyDouble("duration") } catch (_: Throwable) { null }
+                if (d == null) ok = false else cDuration = d
+            }
+            if (tick % 4L == 1L) {
+                val tl = try { MPVLib.getPropertyString("track-list") } catch (_: Throwable) { null }
+                if (tl == null) ok = false else cTrackList = tl
+            }
+            return ok
+        }
+
+        /** 起播：清缓存并开始轮询 */
+        private fun beginPolling() {
+            cTimePos = 0.0
+            cDuration = 0.0
+            cCacheTime = 0.0
+            cVideoW = 0
+            cSubText = ""
+            cEof = false
+            cTrackList = ""
+            cHasVideo = false
+            polling = true
+        }
+
+        /** 停止播放：不再轮询（属性不可读时读取会刷错误日志） */
+        private fun endPolling() {
+            polling = false
+        }
+
         /**
          * 初始化内核。幂等，重复调用直接返回。
          */
@@ -219,6 +352,8 @@ class MpvBackend(private val context: Context) {
                         Log.i(TAG, "mpv[$level] ${prefix ?: ""}$text")
                     }
                     MPVLib.init()
+                    // 属性轮询线程：所有属性读取都归它，界面线程只读缓存（见上方属性缓存注释）
+                    startPropertyPoller()
                     Log.i(TAG, "mpv 内核已就绪（gpu-next + libplacebo，软解，杜比视界 Profile 5）")
                 } catch (t: Throwable) {
                     created.set(false)
@@ -256,6 +391,7 @@ class MpvBackend(private val context: Context) {
 
     fun play(url: String, startSec: Double = 0.0) {
         ensureCreated(context)
+        beginPolling()
         loadGen += 1
         val gen = loadGen
         try {
@@ -275,7 +411,8 @@ class MpvBackend(private val context: Context) {
                 val want = startSec
                 android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                     if (gen != loadGen) return@postDelayed        // 已经换片了，别动新片
-                    val pos = runCatching { MPVLib.getPropertyDouble("time-pos") }.getOrNull() ?: 0.0
+                    // 走缓存（界面线程不碰 mpv 属性读取，见 companion 里的属性缓存注释）
+                    val pos = positionSec()
                     if (pos < want - 5.0) {
                         runCatching {
                             MPVLib.command(arrayOf("seek", want.toString(), "absolute+exact"))
@@ -293,10 +430,12 @@ class MpvBackend(private val context: Context) {
     }
 
     fun setPaused(paused: Boolean) {
+        // 顺手更新缓存：界面按了暂停键立刻读 isPaused() 也要拿到新值，别等下一轮轮询
+        cPaused = paused
         try { MPVLib.setPropertyBoolean("pause", paused) } catch (_: Throwable) {}
     }
 
-    fun isPaused(): Boolean = try { MPVLib.getPropertyBoolean("pause") ?: false } catch (_: Throwable) { false }
+    fun isPaused(): Boolean = cPaused
 
     /** 播放位置（秒） */
     /**
@@ -318,22 +457,14 @@ class MpvBackend(private val context: Context) {
      * 没起播前它是空的（日志里那排 `格式=- 解码=-` 就是这个阶段）。
      * 比"原生纹理来了一帧"可靠 —— 换片瞬间纹理层里还留着上一部的旧帧。
      */
-    fun videoReady(): Boolean = try {
-        (MPVLib.getPropertyInt("video-params/w") ?: 0) > 0
-    } catch (_: Throwable) {
-        false
-    }
+    fun videoReady(): Boolean = cVideoW > 0
 
-    fun currentSubtitleText(): String = try {
-        MPVLib.getPropertyString("sub-text").orEmpty()
-    } catch (_: Throwable) {
-        ""
-    }
+    fun currentSubtitleText(): String = cSubText
 
-    fun positionSec(): Double = try { MPVLib.getPropertyDouble("time-pos") ?: 0.0 } catch (_: Throwable) { 0.0 }
+    fun positionSec(): Double = cTimePos
 
     /** 总时长（秒） */
-    fun durationSec(): Double = try { MPVLib.getPropertyDouble("duration") ?: 0.0 } catch (_: Throwable) { 0.0 }
+    fun durationSec(): Double = cDuration
 
     /**
      * 内核已经缓存到的时间轴位置（秒）—— 进度条上那段"比播放进度更长"的缓冲靠它。
@@ -343,9 +474,11 @@ class MpvBackend(private val context: Context) {
      *
      * 起因：父亲 2026-10-11 报内核这条路进度条上看不到任何缓冲、改档位也没变化 ——
      * 原来是 PlaybackControl.bufferedMs() 在内核路径直接返回了当前位置。
+     *
+     * 注意：这个属性**必须**走后台线程读（父亲 2026-10-11 实测：在界面线程上读它，
+     * 片源网络一抖界面就卡住几十秒，控制条点不动）。这里只返回缓存值。
      */
-    fun cachedTimeSec(): Double =
-        try { MPVLib.getPropertyDouble("demuxer-cache-time") ?: 0.0 } catch (_: Throwable) { 0.0 }
+    fun cachedTimeSec(): Double = cCacheTime
 
     fun seekToSec(sec: Double) {
         try { MPVLib.command(arrayOf("seek", sec.toString(), "absolute")) } catch (_: Throwable) {}
@@ -383,11 +516,7 @@ class MpvBackend(private val context: Context) {
     }
 
     /** 内核有没有播到结尾（界面的"播完停止"靠它收场） */
-    fun endReached(): Boolean = try {
-        MPVLib.getPropertyBoolean("eof-reached") == true
-    } catch (_: Throwable) {
-        false
-    }
+    fun endReached(): Boolean = cEof
 
     fun setSpeed(speed: Float) {
         try { MPVLib.setPropertyDouble("speed", speed.toDouble()) } catch (_: Throwable) {}
@@ -450,7 +579,7 @@ class MpvBackend(private val context: Context) {
      * 序号映射靠"两边都是文件内顺序"这个前提（外挂弹幕轨不在内核清单里）。
      */
     fun subtitleTrackIds(): List<Int> {
-        val raw = try { MPVLib.getPropertyString("track-list") } catch (_: Throwable) { null }
+        val raw = cTrackList.takeIf { it.isNotBlank() }
         if (raw.isNullOrBlank()) return emptyList()
         return try {
             val arr = org.json.JSONArray(raw)
@@ -533,7 +662,7 @@ class MpvBackend(private val context: Context) {
 
     /** 内核侧的音轨 id 列表（按文件内顺序）；取不到返回空表 */
     fun audioTrackIds(): List<Int> {
-        val raw = try { MPVLib.getPropertyString("track-list") } catch (_: Throwable) { null }
+        val raw = cTrackList.takeIf { it.isNotBlank() }
         if (raw.isNullOrBlank()) return emptyList()
         return try {
             val arr = org.json.JSONArray(raw)
@@ -551,8 +680,7 @@ class MpvBackend(private val context: Context) {
 
     /** 起播后把内核侧轨道清单打进日志：切轨排错靠它 */
     fun dumpTracks() {
-        val raw = try { MPVLib.getPropertyString("track-list") } catch (_: Throwable) { null }
-        Log.i(TAG, "内核轨道清单：${raw ?: "取不到"}")
+        Log.i(TAG, "内核轨道清单：${cTrackList.ifBlank { "取不到" }}")
     }
 
     /**
@@ -573,9 +701,10 @@ class MpvBackend(private val context: Context) {
     }
 
     /** 是否已经吃进流、开始出画 */
-    fun hasVideo(): Boolean = try { MPVLib.getPropertyBoolean("video") ?: false } catch (_: Throwable) { false }
+    fun hasVideo(): Boolean = cHasVideo
 
     fun stop() {
+        endPolling()
         try { MPVLib.command(arrayOf("stop")) } catch (_: Throwable) {}
         try {
             MPVLib.detachSurface()
