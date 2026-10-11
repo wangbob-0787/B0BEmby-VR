@@ -1,0 +1,385 @@
+diff --git a/libavcodec/mediacodecdec.c b/libavcodec/mediacodecdec.c
+index cc55b30..2e82104 100644
+--- a/libavcodec/mediacodecdec.c
++++ b/libavcodec/mediacodecdec.c
+@@ -39,12 +39,24 @@
+ #include "h264_parse.h"
+ #include "h264_ps.h"
+ #include "hevc/parse.h"
++#include "h2645_parse.h"
++#include "dovi_rpu.h"
+ #include "hwconfig.h"
+ #include "internal.h"
+ #include "jni.h"
+ #include "mediacodec_wrapper.h"
+ #include "mediacodecdec_common.h"
+ 
++#define MEDIACODEC_DOVI_FIFO_MAX 512
++/* Number of RPUs parsed before the metadata is frozen (see attach). */
++#define MEDIACODEC_DOVI_FREEZE_AFTER 8
++
++typedef struct MediaCodecDoviRpuEntry {
++    int64_t pts;
++    AVDOVIMetadata *md;
++    int size;
++} MediaCodecDoviRpuEntry;
++
+ typedef struct MediaCodecH264DecContext {
+ 
+     AVClass *avclass;
+@@ -57,8 +69,40 @@ typedef struct MediaCodecH264DecContext {
+     int amlogic_mpeg2_api23_workaround;
+ 
+     int use_ndk_codec;
++
++    /* Dolby Vision RPU injection: scan input packets for RPU NALs,
++     * parse with ff_dovi_rpu_parse(), attach to output frames as
++     * AV_FRAME_DATA_DOVI_METADATA. P5 frames inherit the newest RPU
++     * state not newer than the frame (never consume matched entries:
++     * B-frame reorder + MediaCodec latency make PTS non-monotonic,
++     * dropping would cause bt.709/dolbyvision flapping between
++     * frames and libplacebo would rebuild color management). */
++    int hevc_dovi;
++    DOVIContext dovi_ctx;
++    H2645Packet dovi_pkt;
++    MediaCodecDoviRpuEntry dovi_fifo[MEDIACODEC_DOVI_FIFO_MAX];
++    int dovi_fifo_len;
++    /* Frozen (stream-constant) Dolby metadata, see mediacodec_dovi_attach(). */
++    uint8_t *dovi_frozen;
++    int dovi_frozen_size;
++    int dovi_seen;
++    /* Diagnostics: how the per-frame RPU lookup lines up with output PTS. */
++    int dovi_diag_frames;
++    int64_t dovi_diag_min;
++    int64_t dovi_diag_max;
+ } MediaCodecH264DecContext;
+ 
++static av_cold void mediacodec_dovi_uninit(MediaCodecH264DecContext *s);
++static av_cold void mediacodec_dovi_reset(MediaCodecH264DecContext *s);
++static av_cold int  mediacodec_dovi_init(AVCodecContext *avctx,
++                                         MediaCodecH264DecContext *s);
++static void mediacodec_dovi_scan(AVCodecContext *avctx,
++                                  MediaCodecH264DecContext *s,
++                                  const AVPacket *pkt);
++static void mediacodec_dovi_attach(AVCodecContext *avctx,
++                                   MediaCodecH264DecContext *s,
++                                   AVFrame *frame);
++
+ static av_cold int mediacodec_decode_close(AVCodecContext *avctx)
+ {
+     MediaCodecH264DecContext *s = avctx->priv_data;
+@@ -68,6 +112,7 @@ static av_cold int mediacodec_decode_close(AVCodecContext *avctx)
+ 
+     av_packet_unref(&s->buffered_pkt);
+ 
++    mediacodec_dovi_uninit(s);
+     return 0;
+ }
+ 
+@@ -308,6 +353,241 @@ static int common_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
+ }
+ #endif
+ 
++
++/* ------------------------- Dolby Vision RPU injection ------------------ */
++
++static av_cold void mediacodec_dovi_fifo_clear(MediaCodecH264DecContext *s)
++{
++    for (int i = 0; i < s->dovi_fifo_len; i++)
++        av_free(s->dovi_fifo[i].md);
++    s->dovi_fifo_len = 0;
++}
++
++static av_cold void mediacodec_dovi_uninit(MediaCodecH264DecContext *s)
++{
++    mediacodec_dovi_fifo_clear(s);
++    av_freep(&s->dovi_frozen);
++    s->dovi_frozen_size = 0;
++    s->dovi_seen = 0;
++    ff_h2645_packet_uninit(&s->dovi_pkt);
++    ff_dovi_ctx_unref(&s->dovi_ctx);
++}
++
++static av_cold void mediacodec_dovi_reset(MediaCodecH264DecContext *s)
++{
++    mediacodec_dovi_fifo_clear(s);
++    ff_dovi_ctx_flush(&s->dovi_ctx);
++}
++
++static av_cold int mediacodec_dovi_init(AVCodecContext *avctx,
++                                        MediaCodecH264DecContext *s)
++{
++    const AVPacketSideData *sd;
++
++    ff_h2645_packet_uninit(&s->dovi_pkt);
++    ff_dovi_ctx_unref(&s->dovi_ctx);
++    s->dovi_ctx.logctx = avctx;
++
++    sd = ff_get_coded_side_data(avctx, AV_PKT_DATA_DOVI_CONF);
++    if (sd && sd->size >= sizeof(s->dovi_ctx.cfg))
++        s->dovi_ctx.cfg = *(AVDOVIDecoderConfigurationRecord *)sd->data;
++
++    s->hevc_dovi = 1;
++    s->dovi_fifo_len = 0;
++    s->dovi_diag_frames = 0;
++    s->dovi_diag_min = INT64_MAX;
++    s->dovi_diag_max = INT64_MIN;
++
++    if (!s->dovi_ctx.cfg.dv_profile)
++        av_log(avctx, AV_LOG_WARNING, "dovi: no DOVI configuration record in coded side data; parsing with guessed profile\n");
++    return 0;
++}
++
++/* Parse Dolby Vision RPU NALs in the packet, key by PTS, append to the
++ * FIFO. Only the LAST RPU in a packet defines the AU's state. */
++static void mediacodec_dovi_scan(AVCodecContext *avctx,
++                                 MediaCodecH264DecContext *s,
++                                 const AVPacket *pkt)
++{
++    int ret;
++    int flags = H2645_FLAG_SMALL_PADDING;
++    int nal_length_size = 0;
++    int64_t pts;
++
++    if (!s->hevc_dovi || pkt->size <= 4)
++        return;
++
++    /* Detect matroska/MP4 4-byte length prefixes; annex-B otherwise. */
++    {
++        size_t off = 0;
++        int ok = 1;
++        while (off + 4 <= (size_t)pkt->size) {
++            uint32_t len = AV_RB32(pkt->data + off);
++            if (!len || off + 4 + len > (size_t)pkt->size) { ok = 0; break; }
++            off += 4 + len;
++        }
++        if (ok && off == (size_t)pkt->size)
++            nal_length_size = 4;
++    }
++
++    ff_h2645_packet_uninit(&s->dovi_pkt);
++    ret = ff_h2645_packet_split(&s->dovi_pkt, pkt->data, pkt->size, avctx,
++                                nal_length_size, AV_CODEC_ID_HEVC, flags);
++    if (ret < 0) {
++        ff_h2645_packet_uninit(&s->dovi_pkt);
++        return;
++    }
++
++    for (int i = s->dovi_pkt.nb_nals - 1; i >= 0; i--) {
++        H2645NAL *nal = &s->dovi_pkt.nals[i];
++
++        /* Dolby Vision RPUs masquerade as unregistered NALs of type 62 */
++        if (nal->type != 62 || nal->size <= 2 ||
++            nal->nuh_layer_id || nal->temporal_id)
++            continue;
++
++        ret = ff_dovi_rpu_parse(&s->dovi_ctx, nal->data + 2, nal->size - 2, 0);
++        if (ret < 0) {
++            av_log(avctx, AV_LOG_WARNING, "Error parsing DOVI NAL unit.\n");
++            break;
++        }
++
++        {
++            AVDOVIMetadata *md = NULL;
++            int md_size = ff_dovi_get_metadata(&s->dovi_ctx, &md);
++            if (md_size <= 0) {
++                if (md)
++                    av_free(md);
++                break;
++            }
++            if (s->dovi_fifo_len == MEDIACODEC_DOVI_FIFO_MAX) {
++                av_free(s->dovi_fifo[0].md);
++                memmove(&s->dovi_fifo[0], &s->dovi_fifo[1],
++                        (MEDIACODEC_DOVI_FIFO_MAX - 1) * sizeof(s->dovi_fifo[0]));
++                s->dovi_fifo_len--;
++            }
++            pts = pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts;
++            s->dovi_fifo[s->dovi_fifo_len] = (MediaCodecDoviRpuEntry) {
++                pts, md, md_size
++            };
++            s->dovi_fifo_len++;
++
++            /* Keep one representative RPU and reuse it for every frame.
++             * The per-frame RPU curves in real P5 content differ enough
++             * that following them frame by frame makes the whole picture
++             * "breathe" (visible as warm/cool and dark/bright pumping),
++             * because the mapping applied per frame does not line up with
++             * the reordered hardware-decoder output. Freezing after the
++             * first few AUs gives one stable, correct mapping. */
++            if (s->dovi_seen < MEDIACODEC_DOVI_FREEZE_AFTER) {
++                void *copy = av_malloc(md_size);
++                if (copy) {
++                    memcpy(copy, md, md_size);
++                    av_freep(&s->dovi_frozen);
++                    s->dovi_frozen = copy;
++                    s->dovi_frozen_size = md_size;
++                }
++            }
++            s->dovi_seen++;
++
++            break; /* one RPU per AU */
++        }
++    }
++
++    ff_h2645_packet_uninit(&s->dovi_pkt);
++}
++
++/* Attach the RPU state to the frame: the newest RPU not newer than the
++ * frame's PTS (inherit semantics). Never consume matched entries. */
++static void mediacodec_dovi_attach(AVCodecContext *avctx,
++                                   MediaCodecH264DecContext *s,
++                                   AVFrame *frame)
++{
++    AVBufferRef *buf;
++    MediaCodecDoviRpuEntry *e = NULL;
++    AVDOVIMetadata *m, *fz;
++    int64_t pts = frame->pts;
++    int i;
++
++    if (!s->hevc_dovi || !s->dovi_frozen || s->dovi_frozen_size <= 0)
++        return; /* cold start: no RPU parsed yet */
++
++    if (pts != AV_NOPTS_VALUE) {
++        for (i = 0; i < s->dovi_fifo_len; i++) {
++            int64_t p = s->dovi_fifo[i].pts;
++            if (p == AV_NOPTS_VALUE)
++                continue;
++            if (p <= pts && (!e || p > e->pts))
++                e = &s->dovi_fifo[i];
++        }
++    }
++    if (!e && s->dovi_fifo_len)
++        e = &s->dovi_fifo[0];
++
++    if (!e) {
++        buf = av_buffer_alloc(s->dovi_frozen_size);
++        if (!buf)
++            return;
++        memcpy(buf->data, s->dovi_frozen, s->dovi_frozen_size);
++        av_frame_new_side_data_from_buf(frame, AV_FRAME_DATA_DOVI_METADATA, buf);
++        return;
++    }
++
++    buf = av_buffer_alloc(e->size);
++    if (!buf)
++        return;
++    memcpy(buf->data, e->md, e->size);
++
++    m  = (AVDOVIMetadata *)buf->data;
++    fz = (AVDOVIMetadata *)s->dovi_frozen;
++    if (m->ext_block_offset > m->color_offset &&
++        fz->ext_block_offset > fz->color_offset &&
++        (m->ext_block_offset - m->color_offset) ==
++        (fz->ext_block_offset - fz->color_offset)) {
++        memcpy((uint8_t *)m + m->color_offset,
++               (uint8_t *)fz + fz->color_offset,
++               fz->ext_block_offset - fz->color_offset);
++    }
++    if (m->num_ext_blocks > 0 && fz->num_ext_blocks > 0 &&
++        m->ext_block_size == fz->ext_block_size) {
++        int n = FFMIN(m->num_ext_blocks, fz->num_ext_blocks);
++        memcpy((uint8_t *)m + m->ext_block_offset,
++               (uint8_t *)fz + fz->ext_block_offset,
++               (size_t)n * fz->ext_block_size);
++        m->num_ext_blocks = n;
++    }
++
++    av_frame_new_side_data_from_buf(frame, AV_FRAME_DATA_DOVI_METADATA, buf);
++
++    if (pts != AV_NOPTS_VALUE && e->pts != AV_NOPTS_VALUE) {
++        int64_t d = pts - e->pts;
++        if (d < s->dovi_diag_min)
++            s->dovi_diag_min = d;
++        if (d > s->dovi_diag_max)
++            s->dovi_diag_max = d;
++    }
++    s->dovi_diag_frames++;
++    if (s->dovi_diag_frames >= 120) {
++        int l1_avg = -1, l1_max = -1;
++        for (i = 0; i < m->num_ext_blocks; i++) {
++            AVDOVIDmData *ext = av_dovi_get_ext(m, i);
++            if (ext->level == 1) {
++                l1_avg = ext->l1.avg_pq;
++                l1_max = ext->l1.max_pq;
++                break;
++            }
++        }
++        av_log(avctx, AV_LOG_INFO,
++               "dovi-diag: frames=%d fifo=%d pts_delta=[%lld..%lld] ext=%d/%d l1_avg=%d l1_max=%d\n",
++               s->dovi_diag_frames, s->dovi_fifo_len,
++               (long long)s->dovi_diag_min, (long long)s->dovi_diag_max,
++               m->num_ext_blocks, fz->num_ext_blocks, l1_avg, l1_max);
++        s->dovi_diag_frames = 0;
++        s->dovi_diag_min = INT64_MAX;
++        s->dovi_diag_max = INT64_MIN;
++    }
++}
++
+ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+ {
+     int ret;
+@@ -461,6 +741,12 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+            "MediaCodec started successfully: codec = %s, ret = %d\n",
+            s->ctx->codec_name, ret);
+ 
++    if (avctx->codec_id == AV_CODEC_ID_HEVC) {
++        ret = mediacodec_dovi_init(avctx, s);
++        if (ret < 0)
++            goto done;
++    }
++
+     sdk_int = ff_Build_SDK_INT(avctx);
+     /* ff_Build_SDK_INT can fail when target API < 24 and JVM isn't available.
+      * If we don't check sdk_int > 0, the workaround might be enabled by
+@@ -503,6 +789,8 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+ 
+     /* poll for new frame */
+     ret = ff_mediacodec_dec_receive(avctx, s->ctx, frame, false);
++    if (ret == 0)
++        mediacodec_dovi_attach(avctx, s, frame);
+     if (ret != AVERROR(EAGAIN))
+         return ret;
+ 
+@@ -514,6 +802,8 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+             if (index < 0) {
+                 /* no space, block for an output frame to appear */
+                 ret = ff_mediacodec_dec_receive(avctx, s->ctx, frame, true);
++                if (ret == 0)
++                    mediacodec_dovi_attach(avctx, s, frame);
+                 /* Try again if both input port and output port return EAGAIN.
+                  * If no data is consumed and no frame in output, it can make
+                  * both avcodec_send_packet() and avcodec_receive_frame()
+@@ -554,14 +844,22 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+ 
+         /* fetch new packet or eof */
+         ret = ff_decode_get_packet(avctx, &s->buffered_pkt);
++        if (ret == 0)
++            mediacodec_dovi_scan(avctx, s, &s->buffered_pkt);
+         if (ret == AVERROR_EOF) {
+             AVPacket null_pkt = { 0 };
+             ret = ff_mediacodec_dec_send(avctx, s->ctx, &null_pkt, true);
+             if (ret < 0)
+                 return ret;
+-            return ff_mediacodec_dec_receive(avctx, s->ctx, frame, true);
++            ret = ff_mediacodec_dec_receive(avctx, s->ctx, frame, true);
++            if (ret == 0)
++                mediacodec_dovi_attach(avctx, s, frame);
++            return ret;
+         } else if (ret == AVERROR(EAGAIN) && s->ctx->current_input_buffer < 0) {
+-            return ff_mediacodec_dec_receive(avctx, s->ctx, frame, true);
++            ret = ff_mediacodec_dec_receive(avctx, s->ctx, frame, true);
++            if (ret == 0)
++                mediacodec_dovi_attach(avctx, s, frame);
++            return ret;
+         } else if (ret < 0) {
+             return ret;
+         }
+@@ -576,6 +874,8 @@ static void mediacodec_decode_flush(AVCodecContext *avctx)
+ 
+     av_packet_unref(&s->buffered_pkt);
+ 
++    mediacodec_dovi_reset(s);
++
+     ff_mediacodec_dec_flush(avctx, s->ctx);
+ }
+ 

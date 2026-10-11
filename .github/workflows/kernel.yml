@@ -1,0 +1,56 @@
+name: build-kernel
+
+# 手动触发:只在改 dovi 补丁 / FFmpeg 侧时跑一次。
+# 客户端日常改动不触发内核重编 —— 内核要编 4 个 ABI,很吃 Actions 额度。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  kernel:
+    name: libmpv-android(DV RPU 补丁版)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 装 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # 内核老流程靠 runner 自带的 ANDROID_HOME + NDK,buildscripts 只认这个软链路径
+      - name: 建 SDK 软链
+        working-directory: ./kernel/libmpv-dovi/buildscripts
+        run: |
+          mkdir -p sdk
+          ln -sfn ${ANDROID_HOME} ./sdk/android-sdk-linux
+
+      - name: 下载依赖(FFmpeg 等)
+        working-directory: ./kernel/libmpv-dovi/buildscripts
+        run: ./download.sh
+
+      - name: 打 dovi 补丁
+        working-directory: ./kernel/libmpv-dovi/buildscripts
+        run: ./patch.sh
+
+      - name: 编译 AAR
+        working-directory: ./kernel/libmpv-dovi/buildscripts
+        run: ./build.sh
+
+      - name: 上传 AAR 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: libmpv-release-aar
+          path: kernel/libmpv-dovi/libmpv/build/outputs/aar/libmpv-release.aar
+
+      # 本网络拉 Actions artifact 通道不可靠,统一从 Release 取(私有仓库,下载要带令牌)
+      - name: 发布到 Release(kernel-dovi)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view kernel-dovi >/dev/null 2>&1 || \
+            gh release create kernel-dovi --title "DV 内核构建" --notes "libmpv-android + kernel/libmpv-dovi 下的杜比视界 RPU 补丁"
+          gh release upload kernel-dovi kernel/libmpv-dovi/libmpv/build/outputs/aar/libmpv-release.aar --clobber
