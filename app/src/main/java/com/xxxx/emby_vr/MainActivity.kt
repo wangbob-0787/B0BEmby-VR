@@ -844,6 +844,29 @@ class MainActivity : ComponentActivity() {
             }
         }
         subtitleCueStream = index
+        /*
+         * 自绘字幕接管时，必须把播放器自己那条文字轨关掉（2026-10-11 修）。
+         *
+         * 症状（父亲实测《初潮》）：切到低画质触发转码后，字幕菜单里换字幕「没反应」，
+         * 而且屏上字幕与画面进度对不上；直推时正常。
+         *
+         * 根因：转码时服务端会顺带出一条 HLS 字幕轨，播放器按语言偏好自己把它选上
+         * （日志实证：`播放器自动选中的字幕 = 流 2`），而我们另有一条自绘的 ——
+         * 两路字幕写同一个字幕层，且播放器那路按**转码流的分片时间轴**走，与画面
+         * 进度不一致。切字幕只换了我们自绘这条，播放器那条没跟着换，于是
+         * 「切了没反应」「字幕与进度对不上」。
+         *
+         * 这里统一断掉播放器文字轨：凡走自绘（转码 / 外挂字幕）的场合都只剩我们这一路。
+         * 直推/直连不受影响 —— 那条路走 selectEmbeddedTextTrack，不经过这里。
+         */
+        player?.let { pl ->
+            pl.trackSelectionParameters = pl.trackSelectionParameters
+                .buildUpon()
+                .setTrackTypeDisabled(
+                    androidx.media3.common.C.TRACK_TYPE_TEXT, true,
+                )
+                .build()
+        }
         val url = "${userServer()}/emby/Videos/$mediaId/$sourceId/Subtitles/$index" +
             "/Stream.srt?api_key=${userToken()}"
         scope.launch {
