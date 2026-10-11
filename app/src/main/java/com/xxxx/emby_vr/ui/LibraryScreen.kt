@@ -144,7 +144,15 @@ fun LibraryScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp)
+            /*
+             * 整页页边距 40dp，与详情页一致（父亲 2026-10-11）。
+             *
+             * 原来这里是 16dp，而下面的海报网格自己又加了 24dp 的 contentPadding ——
+             * 标题 / 排序按钮在 16dp、海报在 40dp，三者不在一条竖线上。
+             * 现在外层统一 40dp（详情页就是 40dp），网格左右内边距归零，
+             * 标题、排序按钮、海报全部左对齐。
+             */
+            .padding(40.dp)
     ) {
         Row(
             modifier = Modifier
@@ -299,7 +307,12 @@ fun LibraryScreen(
             LazyVerticalGrid(
                 columns = GridCells.Fixed(num),
                 state = gridState,
-                contentPadding = PaddingValues(24.dp),
+                /*
+                 * 左右内边距归零（父亲 2026-10-11）：外层 Column 已经给了 40dp，
+                 * 这里再加 24dp 海报就会比标题、排序按钮右移一截，三者对不齐。
+                 * 上下的 24dp 保留（滚动时的呼吸感）。
+                 */
+                contentPadding = PaddingValues(horizontal = 0.dp, vertical = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(22.dp),
                 horizontalArrangement = Arrangement.spacedBy(22.dp),
                 modifier = Modifier.fillMaxSize()

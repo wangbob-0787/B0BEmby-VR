@@ -78,9 +78,11 @@ fun LiveTvRow(
             color = Color.White,
             fontSize = 21.sp,
             fontWeight = FontWeight.Bold,
-            // 与首页内容行同一套（父亲 2026-10-11）：点击登记在留白外层，整块标题都能点；
-            // 留白 20/16 → 24/12，视觉位置不变，点击区变大，离下面的频道卡还剩 12dp（18 像素）
+            // 与首页内容行同一套（父亲 2026-10-11）：高亮框左边缘对齐下面的频道卡（24dp，
+            // 见下面 LazyRow 的 contentPadding），框内留 8dp 对称内边距让标题居中；
+            // 文字本身仍落在 32dp 处（外 24 + 内 8），视觉位置不变。
             modifier = Modifier
+                .padding(start = 24.dp, top = 12.dp, bottom = 8.dp)
                 .then(
                     if (onTitleClick != null) {
                         Modifier.vrClickTarget(key = "row-title:$title", onActivate = onTitleClick)
@@ -88,7 +90,7 @@ fun LiveTvRow(
                         Modifier
                     }
                 )
-                .padding(start = 32.dp, top = 24.dp, bottom = 12.dp)
+                .padding(horizontal = 8.dp, vertical = 8.dp)
         )
 
         LazyRow(

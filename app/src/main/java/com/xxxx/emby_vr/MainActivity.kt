@@ -564,7 +564,21 @@ class MainActivity : ComponentActivity() {
             } else {
                 (py / com.xxxx.emby_vr.panel.OSD_PANEL_H).coerceIn(0f, 1f)
             }
-            runOnUiThread { if (osdReady()) osd.vrPointerPressed(px, py, pressed) }
+            runOnUiThread {
+                /*
+                 * 丢弃时也要留痕（父亲 2026-10-11：内核模式控制条点不动，日志里
+                 * 只有原生的"控制条扳机按下"，界面这一侧一条都没有 —— 查不下去）。
+                 */
+                if (osdReady()) {
+                    osd.vrPointerPressed(px, py, pressed)
+                } else {
+                    Log.w(
+                        TAG,
+                        "控制条按压被丢弃：就绪=${::osd.isInitialized && osd.osdReady} " +
+                            "可见=$osdVisible 按下=$pressed (${px.toInt()}, ${py.toInt()})",
+                    )
+                }
+            }
         }
 
         override fun onOsdClick(px: Float, py: Float) {
@@ -1496,10 +1510,18 @@ class MainActivity : ComponentActivity() {
      * 所以不再因为"在播放"就整块关掉 —— 改由光柱位置决定：光柱指在海报墙上
      * （原生回推 onPanelFocus）时就接，指别处时不接。
      */
+    /**
+     * 面板能不能接这一下点击（父亲 2026-10-11 修）。
+     *
+     * 原条件还多一条「视频活跃时必须 `panelPointerOnPanel`」—— 那是 2026-10-04 防误触加的。
+     * 实测（父亲 2026-10-11）：**内核播放时海报墙点不动**，日志里连"光柱点击被丢弃"都没有，
+     * 说明被这条静默挡住了：原生在内核这条路上不推那个指针标志。
+     * 而原生推 onClick 的前提本来就是"光柱落在面板 / 控制条上"（指着银幕时它走的是
+     * "控制条开关"那条动作），所以这里只留「面板已就绪且在交互态」就够。
+     */
     private fun panelInputReady(): Boolean =
         ::panel.isInitialized && panel.ready &&
-            com.xxxx.emby_vr.vr.VrNative.panelActive &&
-            (!renderer.videoActive || panelPointerOnPanel)
+            com.xxxx.emby_vr.vr.VrNative.panelActive
 
     /**
      * 手柄/按键输入 → UI 动作。

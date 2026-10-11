@@ -486,6 +486,16 @@ private fun MediaSection(
              * 不会点标题点到海报（父亲 2026-10-11 要求先核对间距）。
              */
             modifier = Modifier
+                /*
+                 * 高亮框与下面的海报左对齐、标题在框里居中（父亲 2026-10-11）。
+                 *
+                 * 海报行的左右留白是 24dp（见下面 LazyRow 的 contentPadding），
+                 * 所以框的左边缘取 24dp；框内再留 8dp 对称内边距 —— 标题在框里天然居中，
+                 * 而文字本身仍落在 32dp 处（外 24 + 内 8），与原来位置一致。
+                 * 原来是 24/12 不对称的上下留白被包进框里，框偏高、标题偏下。
+                 * 总高仍是「文字 + 36dp」，和之前一样好瞄。
+                 */
+                .padding(start = 24.dp, top = 12.dp, bottom = 8.dp)
                 .then(
                     if (onTitleClick != null) {
                         Modifier.vrClickTarget(key = "row-title:$title", onActivate = onTitleClick)
@@ -493,7 +503,7 @@ private fun MediaSection(
                         Modifier
                     }
                 )
-                .padding(start = 32.dp, top = 24.dp, bottom = 12.dp)
+                .padding(horizontal = 8.dp, vertical = 8.dp)
         )
 
         if (items.isEmpty()) {
