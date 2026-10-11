@@ -1315,8 +1315,24 @@ object EmbyApi {
                 add("ContainerProfiles", JsonArray())
 
                 add("CodecProfiles", JsonArray().apply {
-                    // 0. 不接杜比视界（Dolby Vision）：否则服务端会直通，头显解不了（见函数注释）
-                    add(createCodecProfileNoDolbyVision())
+                    /*
+                     * 不再声明"不支持杜比视界"（父亲 2026-10-11 点破的漏洞）。
+                     *
+                     * 2026-10-07 加这条时内核还没打通：服务端直通杜比片，头显那条
+                     * 解码器吃不下，结果"只有声音没画面"。于是我们主动告诉服务端
+                     * "我不支持杜比视界"，服务端只好把杜比片**转码**再送。
+                     *
+                     * 内核 2026-10-08 打通之后，这条声明的代价就显出来了（父亲
+                     * 2026-10-11 原话：没声明的格式 Emby 就去转码，转码就会出现
+                     * 没画面 / 没声音 / 偏色）：服务端硬解杜比本来就不行，转出来的流
+                     * 要么推不出来、要么偏色，而客户端从转码流里看不出原始信息。
+                     *
+                     * 现在改成"支持"：让服务端把原文件**直推**过来，由客户端自己决定
+                     * 怎么解 —— 杜比 5 走自带内核、杜比 8 与 HDR10 走系统播放器。
+                     * 判错也有兜底：起播看门狗（没画面/有声无画）与真实轨道核对
+                     * （见 MainActivity 的 switchToKernelForFallback / checkRealTrackColor）。
+                     */
+                    // add(createCodecProfileNoDolbyVision())
 
                     // 1. 声明高级音频支持，并解除声道限制（针对 7.1 声道原盘）
                     add(createCodecProfileAudio("truehd", maxChannels = 8))

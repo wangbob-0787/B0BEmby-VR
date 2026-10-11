@@ -2078,6 +2078,7 @@ class MainActivity : ComponentActivity() {
                         tracks: androidx.media3.common.Tracks,
                     ) {
                         syncSelectedSubtitleFromPlayer()
+                        checkRealTrackColor(tracks)
                     }
 
                     override fun onCues(
@@ -2855,6 +2856,42 @@ class MainActivity : ComponentActivity() {
         com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder = true
         replayKeepingPosition()
         return true
+    }
+
+    /**
+     * 从播放器解析出的**真实轨道**核对一次片源色彩（父亲 2026-10-11）。
+     *
+     * 起播前的线索（元数据 / 文件名）都可能判错，播放器手里的轨道信息才是事实 ——
+     * 而且**直推（不转码）时流是原样的，色彩标记齐全**：
+     *   · `codecs` 带 `dvhe` / `dvh1` 就是杜比视界，其中 `.05.` 那档（Profile 5）
+     *     系统解码器解不出画面、也还原不了颜色；
+     *   · `colorInfo.colorTransfer` 是 PQ / HLG 说明是 HDR 流。
+     * 命中杜比 5 就切内核；HDR10 只记日志（系统这条路已有颜色映射，不必白软解）。
+     *
+     * 注意：**转码流判不了** —— 服务端转完码，原始色彩标记已经没了。那条只能靠
+     * "不让它重编码"（取播放地址那段的 VideoCodec 判定）加人眼兜底。
+     */
+    private fun checkRealTrackColor(tracks: androidx.media3.common.Tracks) {
+        var codecs: String? = null
+        var transfer = -1
+        for (group in tracks.groups) {
+            if (group.type != androidx.media3.common.C.TRACK_TYPE_VIDEO) continue
+            for (i in 0 until group.length) {
+                val f = group.getTrackFormat(i)
+                codecs = f.codecs ?: codecs
+                transfer = f.colorInfo?.colorTransfer ?: transfer
+            }
+        }
+        if (codecs == null && transfer < 0) return
+        val c = codecs.orEmpty().lowercase()
+        val isDv = c.contains("dvh1") || c.contains("dvhe") || c.contains("dovi")
+        val dv5 = isDv && (c.contains(".05.") || c.contains("05.0"))
+        val hdr = transfer == androidx.media3.common.C.COLOR_TRANSFER_ST2084 ||
+            transfer == androidx.media3.common.C.COLOR_TRANSFER_HLG
+        Log.i(TAG, "真实轨道：codecs=$codecs 色彩传输=$transfer 杜比=$isDv 杜比5=$dv5 HDR=$hdr")
+        if (dv5 && mpvBackend == null) {
+            switchToKernelForFallback("真实轨道是杜比视界 Profile 5（系统解不出颜色）")
+        }
     }
 
     /**
