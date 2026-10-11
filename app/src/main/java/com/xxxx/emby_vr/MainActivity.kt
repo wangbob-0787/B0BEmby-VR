@@ -2972,7 +2972,7 @@ class MainActivity : ComponentActivity() {
         val ord = ordinalOfSubtitleStream(index)
         Log.i(TAG, "内核模式：字幕 $index → 序号 $ord（失败会重试）")
         retryKernelTrackSwitch("字幕", index) {
-            mpvBackend?.setSubtitleByOrdinal(ordinalOfSubtitleStream(index))
+            mpvBackend?.setSubtitleByOrdinal(ordinalOfSubtitleStream(index)) ?: false
         }
     }
 
