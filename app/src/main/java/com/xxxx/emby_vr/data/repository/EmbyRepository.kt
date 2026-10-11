@@ -91,7 +91,7 @@ class EmbyRepository private constructor(private val context: Context) {
     /**
      * 获取继续观看列表
      */
-    suspend fun getResumeItems(seriesId: String = ""): List<BaseItemDto> {
+    suspend fun getResumeItems(seriesId: String = "", limit: Int = 0): List<BaseItemDto> {
         requireLoggedIn()
         return EmbyApi.getResumeItems(
             context,
@@ -99,7 +99,8 @@ class EmbyRepository private constructor(private val context: Context) {
             session.apiKey!!,
             session.deviceId,
             session.userId!!,
-            seriesId
+            seriesId,
+            limit
         )
     }
 
@@ -211,14 +212,15 @@ class EmbyRepository private constructor(private val context: Context) {
     /**
      * 获取收藏列表
      */
-    suspend fun getFavoriteItems(): List<BaseItemDto> {
+    suspend fun getFavoriteItems(limit: Int = 20): List<BaseItemDto> {
         requireLoggedIn()
         return EmbyApi.getFavoriteItems(
             context,
             session.serverUrl!!,
             session.apiKey!!,
             session.deviceId,
-            session.userId!!
+            session.userId!!,
+            limit
         )
     }
 

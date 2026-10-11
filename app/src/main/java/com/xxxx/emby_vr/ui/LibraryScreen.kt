@@ -48,6 +48,11 @@ fun LibraryScreen(
     title: String,
     type: String,
     libraryViewModel: LibraryViewModel,
+    /*
+     * 特殊来源（父亲 2026-10-11）：首页「继续观看 / 收藏」行的标题点进来复用本页。
+     * "" = 普通媒体库（按 parentId 取）；"resume" = 继续观看；"favorites" = 收藏。
+     */
+    special: String = "",
     onNavigateToSeries: (String) -> Unit,
     // 直播频道（TvChannel）点击直接播（父亲 2026-10-02：电视直播库点进去就是频道）
     onNavigateToPlayer: (String) -> Unit = {},
@@ -57,6 +62,11 @@ fun LibraryScreen(
      * 所以页面是空白的。合集的孩子是影片，用本页的网格列出来最省事。
      */
     onOpenBoxSet: (String, String) -> Unit = { _, _ -> },
+    /*
+     * 继续观看列表页专用（父亲 2026-10-11）：点一条**直接续播**，不再进详情页
+     * —— 与首页「继续观看」那一排的行为一致。
+     */
+    onResumePlay: ((BaseItemDto) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val firstItemFocusRequester = remember { FocusRequester() }
@@ -86,8 +96,8 @@ fun LibraryScreen(
     )
     val sortIcon = if (currentSortOrder == "Ascending") Icons.Default.ArrowUpward else Icons.Default.ArrowDownward
 
-    LaunchedEffect(parentId, type) {
-        libraryViewModel.loadItems(parentId, type)
+    LaunchedEffect(parentId, type, special) {
+        libraryViewModel.loadItems(parentId, type, special)
     }
 
     LaunchedEffect(libraryItems) {
@@ -322,6 +332,9 @@ fun LibraryScreen(
                                     returnFocusIndex = index
                                     shouldFocusOnReturn = true
                                     when {
+                                        // 继续观看列表：点一条直接续播（父亲 2026-10-11）
+                                        special == "resume" && onResumePlay != null ->
+                                            onResumePlay.invoke(item)
                                         item.type.equals("TvChannel", ignoreCase = true) ->
                                             onNavigateToPlayer(id)
                                         // 合集 → 打开它自己的子项网格（影片/剧集都能列）

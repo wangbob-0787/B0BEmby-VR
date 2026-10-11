@@ -23,6 +23,7 @@ import androidx.compose.ui.res.stringResource
 import com.xxxx.emby_vr.R
 import com.xxxx.emby_vr.data.repository.EmbyRepository
 import com.xxxx.emby_vr.panel.vrClickBlocker
+import com.xxxx.emby_vr.panel.vrClickTarget
 import com.xxxx.emby_vr.ui.FocusMemory
 import com.xxxx.emby_vr.ui.components.BuildItem
 import com.xxxx.emby_vr.ui.components.HomeHeroCarousel
@@ -316,40 +317,66 @@ fun HomeScreen(
                 // 电视直播（简单版：频道列表，选中直接播；父亲 2026-10-02 定）
                 if (liveRow.isNotEmpty()) {
                     item {
+                        val liveTitle = stringResource(R.string.live_tv)
                         LiveTvRow(
-                            title = stringResource(R.string.live_tv),
+                            title = liveTitle,
                             channels = liveRow,
                             serverUrl = serverUrl,
                             onChannelClick = { item -> goPlay(item) },
+                            // 标题可点 → 进直播列表页（父亲 2026-10-11 定）
+                            onTitleClick = {
+                                val id = liveTvView?.id
+                                if (id != null) {
+                                    FocusMemory.lastItemId = null
+                                    navController.navigate(
+                                        "library/$id?libraryName=${android.net.Uri.encode(liveTitle)}" +
+                                            "&type=TvChannel"
+                                    )
+                                }
+                            },
                             pendingFocusId = restoreId
                         )
                     }
                 }
 
-                // 继续观看
+                // 继续观看（标题可点 → 继续观看列表页；父亲 2026-10-11 定）
                 if (resumeRow.isNotEmpty()) {
                     item {
+                        val resumeTitle = stringResource(R.string.continue_watching)
                         MediaSection(
-                            title = stringResource(R.string.continue_watching),
+                            title = resumeTitle,
                             items = resumeRow,
                             isShowImg17 = true,
                             isContinueWatching = true,
                             serverUrl = serverUrl,
                             onItemSelected = { item -> goPlay(item) },
+                            onTitleClick = {
+                                FocusMemory.lastItemId = null
+                                navController.navigate(
+                                    "list/resume?title=${android.net.Uri.encode(resumeTitle)}"
+                                )
+                            },
                             focusTarget = restoreId
                         )
                     }
                 }
 
-                // 收藏
+                // 收藏（标题可点 → 收藏列表页；父亲 2026-10-11 定）
                 if (favRow.isNotEmpty()) {
                     item {
+                        val favTitle = stringResource(R.string.favorite)
                         MediaSection(
-                            title = stringResource(R.string.favorite),
+                            title = favTitle,
                             items = favRow,
                             isShowImg17 = true,
                             serverUrl = serverUrl,
                             onItemSelected = { item -> openDetail(item) },
+                            onTitleClick = {
+                                FocusMemory.lastItemId = null
+                                navController.navigate(
+                                    "list/favorites?title=${android.net.Uri.encode(favTitle)}"
+                                )
+                            },
                             focusTarget = restoreId
                         )
                     }
@@ -361,11 +388,23 @@ fun HomeScreen(
                     libLatestRows,
                     key = { _, library -> library.id ?: library.hashCode() }
                 ) { _, library ->
+                    val libTitle = library.name ?: ""
                     MediaSection(
-                        title = library.name ?: "",
+                        title = libTitle,
                         items = library.latestItems ?: emptyList(),
                         serverUrl = serverUrl,
                         onItemSelected = { item -> openDetail(item) },
+                        // 标题可点 → 进这个库的列表页（父亲 2026-10-11 定）
+                        onTitleClick = {
+                            val id = library.id
+                            if (id != null) {
+                                FocusMemory.lastItemId = null
+                                val t = library.latestItems?.firstOrNull()?.type ?: ""
+                                navController.navigate(
+                                    "library/$id?libraryName=${android.net.Uri.encode(libTitle)}&type=$t"
+                                )
+                            }
+                        },
                         focusTarget = restoreId
                     )
                 }
@@ -400,6 +439,12 @@ private fun MediaSection(
     isContinueWatching: Boolean = false,
     serverUrl: String,
     onItemSelected: (BaseItemDto) -> Unit,
+    /*
+     * 行标题点击（父亲 2026-10-11）：点标题进这一行对应的列表页。
+     * 为 null 时标题不可点（例如「我的媒体库」那一行 —— 它本身就是库入口集合，
+     * 标题没有唯一对应的库，父亲明确不做）。
+     */
+    onTitleClick: (() -> Unit)? = null,
     // 从详情页返回时要恢复焦点到的那一条（父亲 2026-10-02）
     focusTarget: String? = null,
     // 变成非空时把这一行滚回行首（用于"首项是异步插入"的场景）
@@ -432,7 +477,23 @@ private fun MediaSection(
             // 与首页大片头的剧名字号保持一致（父亲 2026-09-30：我的媒体库/继续观看等标题同大片头剧集名）
             fontSize = 21.sp,
             fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(start = 32.dp, top = 20.dp, bottom = 16.dp)
+            /*
+             * 可点时把点击登记在**留白外层**，让整块标题（文字 + 上下留白）都能点。
+             *
+             * 留白由 20/16 调成 24/12（合计仍 36dp，视觉位置一点不变）：点击区高度从
+             * "只有文字 38 像素"变成"文字 + 36dp"，好瞄得多；标题下沿到海报行还剩
+             * 12dp（面板 1dp = 1.5 像素 → 18 像素），仍大于光柱判定容差 16 像素，
+             * 不会点标题点到海报（父亲 2026-10-11 要求先核对间距）。
+             */
+            modifier = Modifier
+                .then(
+                    if (onTitleClick != null) {
+                        Modifier.vrClickTarget(key = "row-title:$title", onActivate = onTitleClick)
+                    } else {
+                        Modifier
+                    }
+                )
+                .padding(start = 32.dp, top = 24.dp, bottom = 12.dp)
         )
 
         if (items.isEmpty()) {

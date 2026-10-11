@@ -57,6 +57,8 @@ fun LiveTvRow(
     channels: List<BaseItemDto>,
     serverUrl: String,
     onChannelClick: (BaseItemDto) -> Unit,
+    /** 标题点击（父亲 2026-10-11）：进直播列表页；null = 标题不可点 */
+    onTitleClick: (() -> Unit)? = null,
     pendingFocusId: String? = null,
     modifier: Modifier = Modifier,
 ) {
@@ -76,7 +78,17 @@ fun LiveTvRow(
             color = Color.White,
             fontSize = 21.sp,
             fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(start = 32.dp, top = 20.dp, bottom = 16.dp)
+            // 与首页内容行同一套（父亲 2026-10-11）：点击登记在留白外层，整块标题都能点；
+            // 留白 20/16 → 24/12，视觉位置不变，点击区变大，离下面的频道卡还剩 12dp（18 像素）
+            modifier = Modifier
+                .then(
+                    if (onTitleClick != null) {
+                        Modifier.vrClickTarget(key = "row-title:$title", onActivate = onTitleClick)
+                    } else {
+                        Modifier
+                    }
+                )
+                .padding(start = 32.dp, top = 24.dp, bottom = 12.dp)
         )
 
         LazyRow(

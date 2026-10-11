@@ -264,13 +264,18 @@ object EmbyApi {
         apiKey: String,
         deviceId: String,
         userId: String,
-        seriesId: String = ""
+        seriesId: String = "",
+        /**
+         * 要多少条。0 = 老行为（首页用 15，单剧续播用 1）。
+         * 继续观看**列表页**要整页铺开，所以显式传一个较大的值（父亲 2026-10-11）。
+         */
+        limit: Int = 0,
     ): List<BaseItemDto> {
-        val limit = if (seriesId.isEmpty()) 15 else 1
+        val lim = if (limit > 0) limit else if (seriesId.isEmpty()) 15 else 1
         // Fields 必须显式要：Resume 接口默认只回基础字段。
         // 首页大片头要显示的 评分/类型/分级/简介、以及横版剧照(Backdrop) 都得在这里点出来，
         // 否则海报上只剩一个年份（父亲 2026-09-30 实测发现"元数据缺内容"）
-        val url = "/Users/$userId/Items/Resume?Limit=$limit&MediaTypes=Video&ParentId=$seriesId" +
+        val url = "/Users/$userId/Items/Resume?Limit=$lim&MediaTypes=Video&ParentId=$seriesId" +
                 "&Fields=PrimaryImageAspectRatio,ProductionYear,CommunityRating,OfficialRating,Genres,Overview," +
                 "BackdropImageTags,ParentBackdropImageTags,ParentBackdropItemId,SeriesId,SeriesName" +
                 "&X-Emby-Token=$apiKey"
@@ -869,12 +874,14 @@ object EmbyApi {
         serverUrl: String,
         apiKey: String,
         deviceId: String,
-        userId: String
+        userId: String,
+        /** 要多少条（收藏**列表页**要整页铺开，父亲 2026-10-11） */
+        limit: Int = 20,
     ): List<BaseItemDto> {
         val url = "/Users/$userId/Items?SortBy=SeriesSortName,ParentIndexNumber,IndexNumber,SortName" +
                 "&SortOrder=Ascending&Filters=IsFavorite" +
                 "&Fields=BasicSyncInfo,CanDelete,CanDownload,PrimaryImageAspectRatio,ProductionYear" +
-                "&ImageTypeLimit=1&EnableImageTypes=Primary,Backdrop,Thumb&Recursive=true&Limit=20" +
+                "&ImageTypeLimit=1&EnableImageTypes=Primary,Backdrop,Thumb&Recursive=true&Limit=$limit" +
                 "&X-Emby-Token=$apiKey"
         return httpAsBaseItemDtoList(context, serverUrl, apiKey, deviceId, url)
     }

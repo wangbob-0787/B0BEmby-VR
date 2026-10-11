@@ -71,18 +71,28 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         private set
     var currentType by mutableStateOf("")
         private set
+    /*
+     * 特殊来源（父亲 2026-10-11）：首页「继续观看 / 收藏」两行的标题点进来要一个列表页，
+     * 而这两样在 Emby 那边**不是媒体库** —— 没有库编号，是用户维度的接口。
+     * "" = 普通媒体库（按 parentId 取）；"resume" = 继续观看；"favorites" = 收藏。
+     */
+    var currentSpecial by mutableStateOf("")
+        private set
 
     var currentSortBy by mutableStateOf(prefsManager.librarySortBy)
     var currentSortOrder by mutableStateOf(prefsManager.librarySortOrder)
     var currentFilter by mutableStateOf<String?>(null)
 
-    fun loadItems(parentId: String, type: String) {
-        if (parentId == currentParentId && type == currentType && libraryItems != null) {
+    fun loadItems(parentId: String, type: String, special: String = "") {
+        if (parentId == currentParentId && type == currentType &&
+            special == currentSpecial && libraryItems != null
+        ) {
             return
         }
 
         currentParentId = parentId
         currentType = type
+        currentSpecial = special
         currentPage = 0
         hasMoreData = true
 
@@ -109,15 +119,24 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
 
             try {
                 val (items, total) = withContext(Dispatchers.IO) {
-                    repository.getLibraryList(
-                        currentParentId, currentType, 0, PAGE_SIZE,
-                        currentSortBy, currentSortOrder, currentFilter
-                    )
+                    when (currentSpecial) {
+                        /*
+                         * 继续观看 / 收藏：走用户维度的接口，一次要够整页（不分页）。
+                         * 300 条对家庭库足够，且这两个接口本身也不支持 startIndex 翻页。
+                         */
+                        "resume" -> repository.getResumeItems(limit = 300).let { it to it.size }
+                        "favorites" -> repository.getFavoriteItems(limit = 300).let { it to it.size }
+                        else -> repository.getLibraryList(
+                            currentParentId, currentType, 0, PAGE_SIZE,
+                            currentSortBy, currentSortOrder, currentFilter
+                        )
+                    }
                 }
                 libraryItems = items
                 totalCount = total
                 currentPage = 1
-                hasMoreData = items.size < total
+                // 特殊来源一次取完，不再翻页
+                hasMoreData = currentSpecial.isEmpty() && items.size < total
 
                 ErrorHandler.logDebug(TAG, "加载完成: ${items.size}/$total 条数据")
             } catch (e: Exception) {
@@ -132,6 +151,8 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun loadMore() {
+        // 继续观看 / 收藏一次取完，不翻页
+        if (currentSpecial.isNotEmpty()) return
         if (isLoadingMore || !hasMoreData || isLoading) {
             return
         }
@@ -169,15 +190,18 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
     fun refresh() {
         val parentId = currentParentId
         val type = currentType
+        val special = currentSpecial
         currentParentId = ""
         currentType = ""
-        loadItems(parentId, type)
+        currentSpecial = ""
+        loadItems(parentId, type, special)
     }
 
     fun clear() {
         libraryItems = null
         currentParentId = ""
         currentType = ""
+        currentSpecial = ""
         currentPage = 0
         totalCount = 0
         hasMoreData = true

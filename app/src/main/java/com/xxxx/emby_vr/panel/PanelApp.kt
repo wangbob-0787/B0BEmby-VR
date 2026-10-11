@@ -293,6 +293,53 @@ fun PanelApp(onPlayRequested: (mediaId: String, positionTicks: Long) -> Unit) {
                         )
                     }
 
+                    /*
+                     * 「继续观看 / 收藏」列表页（父亲 2026-10-11）。
+                     *
+                     * 这两样在 Emby 那边**不是媒体库**（没有库编号），所以复用库页并把
+                     * 来源告诉它，由它去调对应的用户接口。
+                     */
+                    composable(
+                        "list/{kind}?title={title}",
+                        arguments = listOf(
+                            navArgument("kind") { type = NavType.StringType },
+                            navArgument("title") {
+                                type = NavType.StringType
+                                defaultValue = ""
+                            },
+                        ),
+                    ) { backStackEntry ->
+                        val kind = backStackEntry.arguments?.getString("kind") ?: ""
+                        val listTitle = backStackEntry.arguments?.getString("title") ?: ""
+                        val libraryViewModel: LibraryViewModel = viewModel()
+                        LibraryScreen(
+                            parentId = "",
+                            title = listTitle,
+                            type = "",
+                            libraryViewModel = libraryViewModel,
+                            special = kind,
+                            onNavigateToSeries = { seriesId ->
+                                navController.navigate("series/$seriesId")
+                            },
+                            onNavigateToPlayer = { channelId ->
+                                onPlayRequested(channelId, 0L)
+                            },
+                            onOpenBoxSet = { boxSetId, boxSetName ->
+                                navController.navigate(
+                                    "library/$boxSetId?libraryName=$boxSetName" +
+                                        "&type=Movie,Series,Video"
+                                )
+                            },
+                            // 继续观看列表：点一条接着上次的位置播（父亲 2026-10-11）
+                            onResumePlay = { item ->
+                                onPlayRequested(
+                                    item.id ?: "",
+                                    item.userData?.playbackPositionTicks ?: 0L,
+                                )
+                            },
+                        )
+                    }
+
                     composable(
                         "series/{seriesId}",
                         arguments = listOf(navArgument("seriesId") { type = NavType.StringType }),
