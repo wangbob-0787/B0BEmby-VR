@@ -462,6 +462,27 @@ class MpvBackend(private val context: Context) {
     }
 
     /**
+     * 让内核直接加载一条字幕地址（Emby 转出的那一条）。
+     *
+     * 为什么内核路径不能再按"第几条"选轨（2026-10-11 父亲实测《蜘蛛侠：崭新之日》）：
+     * 内核手里是**原文件**，那部片内封字幕有 38 条（英/保加利亚/捷克/…/中文繁简），
+     * 而 Emby 只索引出其中 1 条，菜单里另外 3 条是父亲自己下载的外挂 SRT。
+     * 两边清单根本对不上号 —— 选"第一条外挂"落到内核第 2 条（英文），
+     * 选第三条落到内核第 4 条（捷克语），父亲看到的就是"英文"和"乱字符"。
+     * 走这条地址加载，内核拿到的就是 Emby 那一条，内容与菜单一一对应。
+     */
+    fun addSubtitleUrl(url: String): Boolean {
+        return try {
+            MPVLib.command(arrayOf("sub-add", url, "select"))
+            Log.i(TAG, "内核加载字幕地址：${url.take(140)}")
+            true
+        } catch (t: Throwable) {
+            Log.w(TAG, "内核加载字幕地址失败: ${t.message}")
+            false
+        }
+    }
+
+    /**
      * 按序号选字幕（内核自渲染）。
      *
      * ordinal = 在 Emby 字幕清单（已排除弹幕轨）里的下标；null 或越界 = 关字幕。

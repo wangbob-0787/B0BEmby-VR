@@ -1854,26 +1854,21 @@ class MainActivity : ComponentActivity() {
                         val sel = selectedSubtitleIndex
                         if (sel != null) {
                             var waited = 0
+                            /*
+                             * 等内核把文件打开、报出轨道之后再选（按地址加载也要文件已就绪）。
+                             * 等待期间用户又改了选择（或停了播放）→ 放弃这次恢复。
+                             */
                             while (waited < 20000 && m.subtitleTrackIds().isEmpty()) {
                                 kotlinx.coroutines.delay(1000)
                                 waited += 1000
-                                // 等待期间用户又改了选择（或停了播放）→ 放弃这次恢复
                                 if (selectedSubtitleIndex != sel) return@launch
                             }
-                            val ids = m.subtitleTrackIds()
-                            val ord = ordinalOfSubtitleStream(sel)
-                            if (ord != null && ord < ids.size) {
-                                Log.i(
-                                    TAG,
-                                    "内核模式：恢复字幕 $sel → 序号 $ord（等了 ${waited}ms，" +
-                                        "内核共 ${ids.size} 条）结果=${m.setSubtitleByOrdinal(ord)}",
-                                )
-                            } else {
-                                Log.w(
-                                    TAG,
-                                    "内核模式：恢复字幕 $sel 没选上（序号=$ord，内核 ${ids.size} 条）",
-                                )
-                            }
+                            Log.i(
+                                TAG,
+                                "内核模式：恢复字幕 $sel（等了 ${waited}ms，内核共 " +
+                                    "${m.subtitleTrackIds().size} 条）",
+                            )
+                            applyKernelSubtitle(sel)
                         }
                     }
                 }
@@ -2523,19 +2518,10 @@ class MainActivity : ComponentActivity() {
                      * 而内核手里就握着文件，内封字幕轨它自己读得到，还自带 libass 排版
                      * （`{\an8}` 这类 ASS 标记它认识，不会画成乱字符）。
                      *
-                     * 序号映射：Emby 字幕清单（buildSubtitleRows 已排除弹幕轨）里的第几个
-                     * → 内核侧第几条（两边都按文件内顺序）。
+                     * 选轨方式见 applyKernelSubtitle：文字字幕按**地址**加载 Emby 那一条，
+                     * 不再按序号挑（两边清单对不上号，见那个函数的注释）。
                      */
-                    val ordinal = selectedSubtitleIndex?.let { ordinalOfSubtitleStream(it) }
-                    val pick = ordinal?.takeIf { it >= 0 }
-                    Log.i(TAG, "内核模式：字幕 ${selectedSubtitleIndex ?: "关闭"} → 序号 $pick（失败会重试）")
-                    retryKernelTrackSwitch("字幕", selectedSubtitleIndex) {
-                        val m = mpvBackend
-                        if (m == null) false
-                        else m.setSubtitleByOrdinal(
-                            selectedSubtitleIndex?.let { ordinalOfSubtitleStream(it) }
-                        )
-                    }
+                    applyKernelSubtitle(selectedSubtitleIndex)
                     /* 自绘那套在内核路径不再使用，清掉免得留旧文本 */
                     subtitleCues = emptyList()
                     subtitleCueStream = null
@@ -2950,9 +2936,56 @@ class MainActivity : ComponentActivity() {
      * 菜单没开过就可能还是上一部片或空的 —— 拿它去映射会得到错的序号（甚至 -1）。
      * 这里每次从 currentStreams 现算，是权威值。
      */
+    /**
+     * 内核路径选字幕（2026-10-11 重写）。
+     *
+     * 旧做法把 Emby 菜单里的"第几条"直接当成内核侧"第几条" —— 错。
+     * 内核手里是原文件，它的字幕轨比 Emby 索引出来的多得多（实测《蜘蛛侠：崭新之日》
+     * 文件里 38 条内封、Emby 只报 1 条），序号必然错位：父亲选第一条外挂 SRT 出来英文、
+     * 选另外两条出来"乱字符"（其实是保加利亚语、捷克语）。
+     *
+     * 新做法：文字字幕一律让内核按**地址**加载 Emby 那一条（`sub-add`），内容与菜单
+     * 一一对应；地址加载不出去时才退回按序号选（序号只数内封轨）。
+     * 图形字幕（PGS/VobSub）仍走序号 —— 那是图片，Emby 转不成文字，内核自己读文件才对。
+     */
+    private fun applyKernelSubtitle(index: Int?) {
+        val m = mpvBackend ?: return
+        if (index == null) {
+            m.setSubtitleByOrdinal(null)
+            return
+        }
+        val stream = currentStreams.firstOrNull { it.index == index }
+        val image = stream != null && isImageSubtitle(stream)
+        val mediaId = currentMediaId
+        if (!image && mediaId.isNotBlank()) {
+            val sourceId = (pendingMediaSourceId ?: reportedMediaSourceId)
+                ?.takeIf { it.endsWith(mediaId) }
+                ?: "mediasource_$mediaId"
+            val url = "${userServer()}/emby/Videos/$mediaId/$sourceId/Subtitles/$index" +
+                "/Stream.srt?api_key=${userToken()}"
+            if (m.addSubtitleUrl(url)) {
+                Log.i(TAG, "内核模式：字幕 $index 按地址加载（不再按序号挑轨）")
+                return
+            }
+            Log.w(TAG, "内核模式：字幕 $index 地址加载没成功 → 退回按序号选")
+        }
+        val ord = ordinalOfSubtitleStream(index)
+        Log.i(TAG, "内核模式：字幕 $index → 序号 $ord（失败会重试）")
+        retryKernelTrackSwitch("字幕", index) {
+            mpvBackend?.setSubtitleByOrdinal(ordinalOfSubtitleStream(index))
+        }
+    }
+
     private fun ordinalOfSubtitleStream(streamIndex: Int): Int? {
+        /*
+         * 只数**内封**轨（2026-10-11）：外挂字幕不在内核手里的那个文件里，
+         * 把它算进序号会让后面每一条都错位（详见 applyKernelSubtitle 的注释）。
+         */
         val subs = currentStreams
-            .filter { it.type.equals("Subtitle", ignoreCase = true) && !isDanmakuStream(it) }
+            .filter {
+                it.type.equals("Subtitle", ignoreCase = true) &&
+                    !isDanmakuStream(it) && it.isExternal != true
+            }
             .sortedBy { it.index ?: 0 }
         val ord = subs.indexOfFirst { it.index == streamIndex }
         return if (ord >= 0) ord else null
