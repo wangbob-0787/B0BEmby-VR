@@ -78,7 +78,17 @@ class PlaybackControl {
      * 进度条上那一段浅色不至于空着。
      */
     fun bufferedMs(): Long {
-        mpvProvider()?.let { return positionMs() }
+        mpvProvider()?.let { m ->
+            /*
+             * 内核路径：缓冲点 = mpv 缓存到的时间轴位置（父亲 2026-10-11）。
+             *
+             * 原来这里直接 return positionMs()，等于"缓冲条永远等于播放进度"——
+             * 父亲在进度条上看不到任何缓冲段，改缓冲档位也看不出变化。
+             * 现在问 mpv 的 `demuxer-cache-time`；读不到就退回当前位置。
+             */
+            val cached = m.cachedTimeSec()
+            return if (cached > 0.0) (cached * 1000.0).toLong() else positionMs()
+        }
         return exoProvider()?.bufferedPosition ?: 0L
     }
 

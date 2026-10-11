@@ -335,6 +335,18 @@ class MpvBackend(private val context: Context) {
     /** 总时长（秒） */
     fun durationSec(): Double = try { MPVLib.getPropertyDouble("duration") ?: 0.0 } catch (_: Throwable) { 0.0 }
 
+    /**
+     * 内核已经缓存到的时间轴位置（秒）—— 进度条上那段"比播放进度更长"的缓冲靠它。
+     *
+     * mpv 的 `demuxer-cache-time` 就是解复用器当前缓存到哪一秒；读不到（本地文件很快、
+     * 或还没开始缓存）返回 0，调用方退回"当前位置"。
+     *
+     * 起因：父亲 2026-10-11 报内核这条路进度条上看不到任何缓冲、改档位也没变化 ——
+     * 原来是 PlaybackControl.bufferedMs() 在内核路径直接返回了当前位置。
+     */
+    fun cachedTimeSec(): Double =
+        try { MPVLib.getPropertyDouble("demuxer-cache-time") ?: 0.0 } catch (_: Throwable) { 0.0 }
+
     fun seekToSec(sec: Double) {
         try { MPVLib.command(arrayOf("seek", sec.toString(), "absolute")) } catch (_: Throwable) {}
     }
