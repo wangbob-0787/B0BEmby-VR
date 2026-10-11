@@ -1862,6 +1862,22 @@ class MainActivity : ComponentActivity() {
                     m.setSurfaceSize(vw, vh)
                     m.play(directUrl, startMs / 1000.0)
                     /*
+                     * 起播时把用户选的缓冲档位下给 mpv（父亲 2026-10-11 问内核这边缓冲起没起作用）。
+                     *
+                     * 原来只有手动改档位那一刻才下发（applyBuffer），起播时用的是 mpv 默认缓存 ——
+                     * 之前设过的大缓存 / 小缓存，新起播都不生效。这里补一次。
+                     * 用 m 而不是 mpvBackend：外层那次赋值要等 also 跑完才发生。
+                     */
+                    val bp = com.xxxx.emby_vr.panel.BUFFER_PRESETS[bufferPresetIndex]
+                    m.applyBufferPreset(
+                        seconds = (bp.third / 1000).coerceAtLeast(15),
+                        maxBytesMb = when (bufferPresetIndex) {
+                            0 -> 256
+                            1 -> 512
+                            else -> 1024
+                        },
+                    )
+                    /*
                      * 起播后把内核侧轨道清单打进日志（父亲 2026-10-08）。
                      * 切音轨是按顺序映射的，清单里能看到内核认出的音轨 id 与语言，
                      * 万一映射对不上，一眼就能看出来。
