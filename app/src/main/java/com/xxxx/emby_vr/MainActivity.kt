@@ -2203,7 +2203,18 @@ class MainActivity : ComponentActivity() {
                  */
                 val st = currentStreams.firstOrNull { it.index == idx }
                 val embeddedText = st != null && st.isExternal != true && !isImageSubtitle(st)
-                if (embeddedText && lastPlayMethod != "Transcode") {
+                if (lastPlayMethod == "Transcode") {
+                    /*
+                     * 转码：**让服务端推字幕**（父亲 2026-10-11 定）。
+                     *
+                     * 转码时画面本身与进度条有几秒的、忽早忽晚的偏差（服务端切片所致），
+                     * 而自绘字幕是跟着进度条走的 → 必然与画面错开。服务端推的字幕与画面
+                     * 是同一路流出来的，天然同步。
+                     */
+                    subtitleCues = emptyList()
+                    subtitleCueStream = null
+                    selectServerSubtitleTrack(idx)
+                } else if (embeddedText) {
                     selectEmbeddedTextTrack(idx)
                 } else {
                     Log.i(TAG, "字幕 $idx → 走服务端转 SRT 自绘（播放方式=$lastPlayMethod）")
@@ -2568,13 +2579,15 @@ class MainActivity : ComponentActivity() {
                         embeddedText -> {
                             subtitleCues = emptyList()
                             subtitleCueStream = null
-                            /*
-                             * 转码的流里播放器报不出内封文字轨（实测）→ 直接请服务端转 SRT 自绘，
-                             * 别让它在那儿白等 24 秒（父亲 2026-10-10：切到 1080p 后中文字幕没了）。
-                             */
                             if (lastPlayMethod == "Transcode") {
-                                Log.i(TAG, "转码流：内封文字轨改走服务端转 SRT 自绘")
-                                loadSubtitleTrack(selectedSubtitleIndex!!)
+                                /*
+                                 * 转码：换字幕要**重新出流**（父亲 2026-10-11 定）。
+                                 *
+                                 * 服务端一次只推请求里那一条字幕轨，所以换轨必须重新请求播放地址；
+                                 * 重起播位置接着走，出流后由起播路径选中新那条服务端字幕轨。
+                                 */
+                                Log.i(TAG, "转码流：换服务端字幕轨 ${selectedSubtitleIndex} → 重新出流")
+                                replayKeepingPosition()
                             } else {
                                 selectEmbeddedTextTrack(selectedSubtitleIndex!!)
                             }
@@ -3752,6 +3765,12 @@ class MainActivity : ComponentActivity() {
     private fun syncSelectedSubtitleFromPlayer() {
         val p = player ?: return
         if (ctl.kernelActive) return
+        /*
+         * 转码时服务端只推**请求里那一条**字幕轨（父亲 2026-10-11），播放器选中的必然是
+         * 用户要的那条；这里再按语言回填会串到同语言的另一条（简/繁都是 chi）→ 菜单勾选
+         * 自己跳走。所以转码且有用户选择时，菜单以用户选择为准，不回填。
+         */
+        if (lastPlayMethod == "Transcode" && selectedSubtitleIndex != null) return
 
         var ordinal = -1
         var lang = ""
@@ -3787,6 +3806,63 @@ class MainActivity : ComponentActivity() {
             Log.i(TAG, "播放器自动选中的字幕 = 流 $idx（语言=$lang）→ 回填菜单勾选")
             selectedSubtitleIndex = idx
             refreshMenuRows(com.xxxx.emby_vr.panel.MenuKind.SUBTITLE)
+        }
+    }
+
+    /**
+     * 转码路径：显示**服务端推来的那条字幕轨**（父亲 2026-10-11 定）。
+     *
+     * 为什么不用自绘：转码时画面本身与进度条有几秒的、忽早忽晚的偏差（服务端切片所致），
+     * 自绘字幕跟着进度条走 → 必然与画面错开。服务端推的字幕与画面是同一路流出来的，
+     * 天然同步。
+     *
+     * 转码会话一次只推一条字幕轨（就是请求里 SubtitleStreamIndex 那条），所以这里直接
+     * 把它选上；轨还没报出来就轮询等（与内封轨同样的等待策略），等不到才退回自绘。
+     */
+    private fun selectServerSubtitleTrack(streamIndex: Int, attempt: Int = 0) {
+        val p = player ?: return
+        if (lastPlayMethod != "Transcode") {
+            selectEmbeddedTextTrack(streamIndex, attempt)
+            return
+        }
+        val groups = p.currentTracks.groups.filter {
+            it.type == androidx.media3.common.C.TRACK_TYPE_TEXT
+        }
+        if (groups.isEmpty()) {
+            if (attempt < kSubtitleTrackWaitAttempts) {
+                Log.i(TAG, "服务端字幕轨 $streamIndex：还没报出来（第 ${attempt + 1} 次）→ 1.2 秒后再试")
+                handler.postDelayed({
+                    if (currentMediaId.isNotBlank() && selectedSubtitleIndex == streamIndex) {
+                        selectServerSubtitleTrack(streamIndex, attempt + 1)
+                    }
+                }, 1200L)
+            } else {
+                Log.w(TAG, "服务端字幕轨 $streamIndex 等不到 → 退回服务端转 SRT 自绘")
+                loadSubtitleTrack(streamIndex)
+            }
+            return
+        }
+        /*
+         * 优先按标题配（服务端给的轨名就是那条字幕的显示名），配不上取第一条 ——
+         * 转码会话只推这一条。
+         */
+        val want = currentStreams.firstOrNull { it.index == streamIndex }?.displayTitle.orEmpty()
+        var hit: Pair<androidx.media3.common.TrackGroup, Int>? = null
+        outer@ for (g in groups) {
+            for (ti in 0 until g.length) {
+                if (hit == null) hit = g.mediaTrackGroup to ti
+                val lbl = g.mediaTrackGroup.getFormat(ti).label.orEmpty()
+                if (want.isNotBlank() && lbl.isNotBlank() &&
+                    (lbl.contains(want.take(12), true) || want.contains(lbl.take(12), true))
+                ) {
+                    hit = g.mediaTrackGroup to ti
+                    break@outer
+                }
+            }
+        }
+        hit?.let { (grp, ti) ->
+            applyTextOverride(p, grp, ti)
+            Log.i(TAG, "服务端字幕轨 $streamIndex → 选中播放器文字轨（与画面同源）")
         }
     }
 
