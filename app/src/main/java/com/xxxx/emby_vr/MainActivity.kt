@@ -1732,15 +1732,30 @@ class MainActivity : ComponentActivity() {
                  *
                  * 服务端硬解杜比会把色彩解丢 → 推过来的流是**偏色**的，而客户端看不出来
                  * （画面有、声音也有，只是颜色不对 —— 机器没法判断"正确颜色"长什么样）。
-                 * 所以从源头堵：认出是杜比片就把转码地址换回直连地址。
-                 * 真需要转码才播得了的片，会在起播看门狗里改走自带内核（内核拉原文件）。
+                 * 所以从源头堵。
+                 *
+                 * 但不是无脑换直连 —— 先看服务端**为什么**转（父亲 2026-10-11 问
+                 * 「你会去看为什么转码吗」）。转码地址自己就写着视频要不要重编码：
+                 * `VideoCodec=copy` = 视频原样、只转音频或换封装 → 无害，保持转码；
+                 * 视频要重编码（URL 里是 h264/hevc 之类）→ 有偏色风险，换直连。
+                 * 真需要转码才播得了的片，由起播看门狗改走自带内核（内核拉原文件）。
                  */
                 val dvSource = com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource
                 val path0 = when {
                     dvSource && method != "DirectPlay" -> {
-                        Log.i(TAG, "杜比视界片：不用服务端转码（$method）→ 换直连，避免偏色")
-                        lastPlayMethod = "DirectPlay"
-                        source?.directStreamUrl ?: source?.transcodingUrl
+                        val tc = source?.transcodingUrl.orEmpty()
+                        val videoCopied = Regex("[?&]VideoCodec=copy", RegexOption.IGNORE_CASE)
+                            .containsMatchIn(tc)
+                        val vcodec = Regex("[?&]VideoCodec=([^&]+)", RegexOption.IGNORE_CASE)
+                            .find(tc)?.groupValues?.getOrNull(1) ?: "?"
+                        if (videoCopied) {
+                            Log.i(TAG, "杜比视界片：服务端只转音频/换封装（VideoCodec=$vcodec）→ 保持转码")
+                            source?.transcodingUrl ?: source?.directStreamUrl
+                        } else {
+                            Log.i(TAG, "杜比视界片：服务端要重编码视频（$method，VideoCodec=$vcodec）→ 换直连，避免偏色")
+                            lastPlayMethod = "DirectPlay"
+                            source?.directStreamUrl ?: source?.transcodingUrl
+                        }
                     }
                     method == "DirectPlay" -> source?.directStreamUrl
                     else -> source?.transcodingUrl ?: source?.directStreamUrl
