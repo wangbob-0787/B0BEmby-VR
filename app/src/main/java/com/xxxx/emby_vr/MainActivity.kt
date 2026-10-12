@@ -272,6 +272,23 @@ class MainActivity : ComponentActivity() {
     @Volatile
     private var posBaseAtMs = 0L
 
+    /*
+     * 弹幕时钟（父亲 2026-10-13 凌晨：内核路径弹幕「一跳一跳」）。
+     *
+     * 病根：播放器每秒只报几次位置（内核那条路报得更粗），而弹幕每秒画 90 帧 ——
+     * 每报一次就把时钟"拽"到播放器的值，画面上就是每 250ms 抖一下。
+     *
+     * 改法：时钟自己按墙钟往前走，播放器的值只用来**慢慢纠偏**（slew）：
+     *   · **绝不后退**：往回拽是最扎眼的抖动，宁可原地等；
+     *   · 落后时每拍最多追 [kDanmakuSlewMs]，差得离谱（换集 / seek）才直接对齐。
+     * 结果：位置连续、单调，抖动被摊平成看不出来的微调。
+     */
+    @Volatile
+    private var smoothPosMs = 0.0
+
+    @Volatile
+    private var smoothAtMs = 0L
+
     /** 位置刷新定时器（独立于控制条：控制条收起时也要继续跑） */
     private val posTicker = object : Runnable {
         override fun run() {
@@ -290,18 +307,45 @@ class MainActivity : ComponentActivity() {
         handler.removeCallbacks(posTicker)
     }
 
-    /** 主线程调：刷新播放位置基准（每 250ms 一次） */
+    /**
+     * 主线程调：采一次播放器位置，并**平滑纠偏**弹幕时钟（每 250ms 一次）。
+     *
+     * 纠偏规则见 [smoothPosMs] 的注释：对齐大跳变、慢慢追落后、绝不后退。
+     */
     private fun refreshPosBase() {
-        posBaseMs = currentPositionMs()
-        posBaseAtMs = android.os.SystemClock.elapsedRealtime()
+        val now = android.os.SystemClock.elapsedRealtime()
+        val target = currentPositionMs()
+        if (smoothAtMs == 0L) {
+            smoothPosMs = target.toDouble()
+            smoothAtMs = now
+            posBaseMs = target
+            posBaseAtMs = now
+            return
+        }
+        var est = smoothPosMs + (now - smoothAtMs)
+        val err = target - est
+        est += when {
+            // 换集 / 拖动进度 / 起播：差得离谱就认播放器的值
+            kotlin.math.abs(err) > kDanmakuRealignMs -> err
+            // 落后：每拍最多追这么多，几拍内悄悄跟上
+            err > 0.0 -> kotlin.math.min(err, kDanmakuSlewMs)
+            // 超前（缓冲卡住等）：原地等播放器追上来，绝不往回跳
+            else -> 0.0
+        }
+        smoothPosMs = est
+        smoothAtMs = now
+        // 旧字段留着给"没有平滑时钟"的兜底路径读，保持单调
+        posBaseMs = est.toLong()
+        posBaseAtMs = now
     }
 
-    /** 任何线程可调：按基准推算当前播放位置 */
+    /** 任何线程可调：按平滑时钟推算当前播放位置（连续、单调，不抖） */
     private fun playbackPosEstimate(): Long {
-        val base = posBaseAtMs
-        if (base == 0L) return 0L
-        val delta = android.os.SystemClock.elapsedRealtime() - base
-        return posBaseMs + delta.coerceAtLeast(0L)
+        val at = smoothAtMs
+        if (at == 0L) return 0L
+        return (smoothPosMs + (android.os.SystemClock.elapsedRealtime() - at))
+            .toLong()
+            .coerceAtLeast(0L)
     }
 
     /**
@@ -4155,6 +4199,11 @@ class MainActivity : ComponentActivity() {
         danmakuView?.setSubtitle("")
         danmakuTrack = null
         danmakuView?.setTrack(null)
+        // 平滑时钟一起清零：下一集从头对齐，免得拿上一集的位置去纠偏
+        smoothAtMs = 0L
+        smoothPosMs = 0.0
+        posBaseAtMs = 0L
+        posBaseMs = 0L
         logoUrl.value = null
         /*
          * 这里**不再**做两件事（父亲 2026-10-07）：
@@ -5300,6 +5349,15 @@ class MainActivity : ComponentActivity() {
     companion object {
         const val TAG = "B0BEmbyVR"
 
+        /**
+         * 弹幕时钟纠偏参数（父亲 2026-10-13 凌晨定）。
+         *
+         * 采样每 250ms 一次：落后时每拍最多追 [kDanmakuSlewMs]（≈100ms/s，眼睛看不出来），
+         * 差值超过 [kDanmakuRealignMs] 判定为换集/seek/起播，直接对齐。
+         * 超前一律原地等，绝不后退（后退就是最扎眼的抖动）。
+         */
+        private const val kDanmakuSlewMs = 25.0
+        private const val kDanmakuRealignMs = 800.0
     }
 }
 
