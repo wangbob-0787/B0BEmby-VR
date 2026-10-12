@@ -44,12 +44,22 @@ fun VrKeyboard(
     onSearch: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    /*
+     * 键面（父亲 2026-10-12：加数字和英文符号）。
+     *
+     * 数字行本来就有；缺的是符号 —— 服务器地址要打 `:` 和 `.`、账号可能要打 `@`、
+     * 密码什么符号都可能有，以前只有字母数字，这些字符根本敲不出来。
+     * 符号行紧挨数字行放在第二行：打 `192.168.150.15:6908` 这种串时不用来回翻。
+     */
     val rows = listOf(
         "1234567890",
+        "/ : . @ - _ + = ? &",
         "qwertyuiop",
         "asdfghjkl",
         "zxcvbnm",
     )
+    // 中间那行（asdfghjkl）左右各留半格，看起来像真正的键盘
+    val insetRowIndex = rows.indexOf("asdfghjkl")
 
     Column(
         modifier = modifier,
@@ -60,8 +70,7 @@ fun VrKeyboard(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                // 第二、三行左侧留半格，看起来像真正的键盘
-                if (rowIndex == 2) Spacer(modifier = Modifier.weight(0.5f))
+                if (rowIndex == insetRowIndex) Spacer(modifier = Modifier.weight(0.5f))
                 row.forEach { c ->
                     Key(
                         label = c.toString(),
@@ -71,7 +80,7 @@ fun VrKeyboard(
                         onClick = { onChar(c) },
                     )
                 }
-                if (rowIndex == 2) Spacer(modifier = Modifier.weight(0.5f))
+                if (rowIndex == insetRowIndex) Spacer(modifier = Modifier.weight(0.5f))
             }
         }
 

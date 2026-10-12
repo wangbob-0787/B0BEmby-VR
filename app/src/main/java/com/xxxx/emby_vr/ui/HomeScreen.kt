@@ -250,8 +250,14 @@ fun HomeScreen(
             newVersion = mainViewModel.newVersion,
             needUpdate = mainViewModel.needUpdate,
             userInfo = userInfo,
-            // 放大镜挪到左上角（原菜单按钮的位置）：点开搜索浮层（父亲 2026-10-10）
-            onLeadingSearchClick = { showSearch = true },
+            /*
+             * 放大镜放**右边、头像的左边**（父亲 2026-10-12：原来在左上角，
+             * 现在挪到右侧跟头像并排）。左侧腾出来的位置由版本号顶上 ——
+             * 所以这里不再传 onLeadingSearchClick（左组只剩版本号和更新提示，
+             * 自然贴到最左，也就是原来放大镜那个位置）。
+             */
+            showSearchButton = true,
+            onSearchClick = { showSearch = true },
             onUserInfoClick = {
                 navController.navigate("account")
             }

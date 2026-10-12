@@ -922,15 +922,6 @@ object EmbyApi {
 
     // ==================== HTTP 辅助方法 ====================
 
-    private fun proxyHintException(context: Context, e: Exception): Exception {
-        val prefs = com.xxxx.emby_vr.data.local.PreferencesManager(context)
-        return if (prefs.proxyEnabled) {
-            Exception(context.getString(R.string.error_proxy_connection), e)
-        } else {
-            Exception(context.getString(R.string.error_server_unreachable), e)
-        }
-    }
-
     private fun isConnectionError(e: Throwable): Boolean {
         return e is ConnectException || e is UnknownHostException ||
                 e is java.net.SocketException ||
@@ -996,9 +987,7 @@ object EmbyApi {
                 val networkDuration = responseTime - startTime
 
                 if (!response.isSuccessful) {
-                    if (response.code == 407) {
-                        throw Exception(context.getString(R.string.error_proxy_connection))
-                    }
+                    // 代理设置已删除（父亲 2026-10-12）：407「需要代理认证」那条分支一并去掉
                     throw Exception("HTTP Error: ${response.code}")
                 }
 
@@ -1024,18 +1013,13 @@ object EmbyApi {
             }
         } catch (e: Throwable) {
             Log.e(TAG, "网络请求失败: $url", e)
-            val prefs = com.xxxx.emby_vr.data.local.PreferencesManager(context)
-            val proxyOn = prefs.proxyEnabled && prefs.proxyHost.isNotEmpty()
+            /*
+             * 代理设置已整体删除（父亲 2026-10-12）：原来这里还有几条「代理开着的话
+             * 提示去检查代理」的分支，跟着一起去掉 —— 现在连不上就是连不上。
+             */
             when {
-                e.message?.contains(context.getString(R.string.error_proxy_connection)) == true -> {
-                    throw e as Exception
-                }
                 isConnectionError(e) || isConnectionError(e.cause ?: Exception()) -> {
-                    throw proxyHintException(context, e as Exception)
-                }
-                proxyOn && (e is SocketTimeoutException || e.cause is SocketTimeoutException ||
-                    e.message?.contains("timeout", ignoreCase = true) == true) -> {
-                    throw proxyHintException(context, e as Exception)
+                    throw Exception(context.getString(R.string.error_server_unreachable), e as Exception)
                 }
                 e is SocketTimeoutException || e.cause is SocketTimeoutException ||
                 e.message?.contains("timeout", ignoreCase = true) == true -> {
@@ -1043,9 +1027,6 @@ object EmbyApi {
                 }
                 e.message?.contains("HTTP Error") == true -> {
                     throw e as Exception
-                }
-                proxyOn -> {
-                    throw proxyHintException(context, e as Exception)
                 }
                 else -> {
                     /*

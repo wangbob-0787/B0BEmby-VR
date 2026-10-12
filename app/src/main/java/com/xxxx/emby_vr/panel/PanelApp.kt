@@ -41,7 +41,6 @@ import com.xxxx.emby_vr.ui.HomeScreen
 import com.xxxx.emby_vr.ui.LibraryScreen
 import com.xxxx.emby_vr.ui.LoginScreen
 import com.xxxx.emby_vr.ui.MediaDetailScreen
-import com.xxxx.emby_vr.ui.ProxySettingsScreen
 import com.xxxx.emby_vr.ui.SearchScreen
 import com.xxxx.emby_vr.ui.components.BuildGradientBackground
 import com.xxxx.emby_vr.ui.components.Loading
@@ -137,12 +136,31 @@ fun PanelApp(onPlayRequested: (mediaId: String, positionTicks: Long) -> Unit) {
                         Loading()
                     }
 
-                    composable("login") {
+                    /*
+                     * 添加服务器和「改已有服务器的参数」走同一个页面（父亲 2026-10-12）。
+                     * 带 accountId 进来 = 改这台，输入框预填它自己的地址/账号/密码；
+                     * 不带 = 新添一台。
+                     */
+                    composable(
+                        route = "login?accountId={accountId}",
+                        arguments = listOf(
+                            navArgument("accountId") {
+                                type = NavType.StringType
+                                nullable = true
+                                defaultValue = null
+                            }
+                        ),
+                    ) { entry ->
                         val loginViewModel: LoginViewModel = viewModel()
+                        val editing = entry.arguments?.getString("accountId")
+                            ?.let { id -> loginViewModel.savedAccounts.firstOrNull { it.id == id } }
                         LoginScreen(
                             loginViewModel = loginViewModel,
                             mainViewModel = mainViewModel,
                             navController = navController,
+                            prefillServerUrl = editing?.serverUrl,
+                            prefillUsername = editing?.username,
+                            prefillPassword = editing?.password,
                         )
                     }
 
@@ -178,28 +196,17 @@ fun PanelApp(onPlayRequested: (mediaId: String, positionTicks: Long) -> Unit) {
                             mainViewModel = mainViewModel,
                             savedAccounts = loginViewModel.savedAccounts,
                             currentAccountId = loginViewModel.currentAccountId,
-                            onSwitchAccount = { accountId ->
-                                loginViewModel.switchAccount(
-                                    accountId = accountId,
-                                    onSuccess = {
-                                        navController.navigate("home") {
-                                            popUpTo(0) { inclusive = true }
-                                        }
-                                    },
-                                    onError = { },
+                            onEditAccount = { account ->
+                                // 进输入页改这台服务器的参数（改完点登录就切过去了）。
+                                // 账号 id 里带 hashCode 可能为负，稳妥起见转义一次再拼进路由。
+                                navController.navigate(
+                                    "login?accountId=" + android.net.Uri.encode(account.id)
                                 )
                             },
                             onDeleteAccount = { accountId ->
                                 loginViewModel.removeAccount(accountId)
                             },
-                            onAddAccount = { mainViewModel.logout() },
-                        )
-                    }
-
-                    composable("proxy_settings") {
-                        ProxySettingsScreen(
-                            mainViewModel = mainViewModel,
-                            onBack = { navController.popBackStack() },
+                            onAddAccount = { navController.navigate("login") },
                         )
                     }
 

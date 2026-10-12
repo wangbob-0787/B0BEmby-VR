@@ -77,15 +77,9 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
                     isLoading = false
-                    val prefs = PreferencesManager(getApplication())
-                    val msg = e.message ?: getApplication<Application>().getString(R.string.error_network_error)
-                    errorMessage = if (prefs.proxyEnabled && !msg.contains(
-                            getApplication<Application>().getString(R.string.error_proxy_connection)
-                    )) {
-                        "${msg} (${getApplication<Application>().getString(R.string.error_proxy_connection)})"
-                    } else {
-                        msg
-                    }
+                    // 代理设置已删除（父亲 2026-10-12）：不再往错误消息后面追加"检查代理"的提示
+                    errorMessage = e.message
+                        ?: getApplication<Application>().getString(R.string.error_network_error)
                     onError(errorMessage!!)
                 }
             }

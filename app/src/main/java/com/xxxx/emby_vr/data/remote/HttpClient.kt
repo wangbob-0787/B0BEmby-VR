@@ -26,9 +26,6 @@ object HttpClient {
     private var client: OkHttpClient? = null
 
     @Volatile
-    private var proxyConfig: ProxyConfig? = null
-
-    @Volatile
     private var cache: Cache? = null
 
     private fun getCache(context: Context): Cache {
@@ -37,38 +34,20 @@ object HttpClient {
         }
     }
 
+    /*
+     * 代理设置已整体删除（父亲 2026-10-12）：以前这里按偏好里的代理配置建客户端、
+     * 挂 ProxySelector，现在只留"建一次就缓存住"。
+     */
     fun getClient(context: Context): OkHttpClient {
-        val currentConfig = loadProxyConfig(context)
-        if (client != null && proxyConfig == currentConfig) {
-            return client!!
-        }
+        client?.let { return it }
         synchronized(this) {
-            if (client != null && proxyConfig == currentConfig) {
-                return client!!
-            }
-            proxyConfig = currentConfig
-            client = createClient(context, currentConfig)
+            client?.let { return it }
+            client = createClient(context)
             return client!!
         }
     }
 
-    private fun loadProxyConfig(context: Context): ProxyConfig {
-        val prefs = PreferencesManager(context)
-        return if (prefs.proxyEnabled && prefs.proxyHost.isNotEmpty()) {
-            ProxyConfig(
-                enabled = true,
-                type = prefs.proxyType,
-                host = prefs.proxyHost,
-                port = prefs.proxyPort,
-                username = prefs.proxyUsername,
-                password = prefs.proxyPassword
-            )
-        } else {
-            ProxyConfig()
-        }
-    }
-
-    private fun createClient(context: Context, config: ProxyConfig): OkHttpClient {
+    private fun createClient(context: Context): OkHttpClient {
         val builder = OkHttpClient.Builder()
             .cache(getCache(context))
             .dispatcher(Dispatcher().apply {
@@ -84,67 +63,7 @@ object HttpClient {
             .callTimeout(60, TimeUnit.SECONDS)
             .retryOnConnectionFailure(true)
 
-        if (config.enabled && config.host.isNotEmpty()) {
-            val proxy = if (config.type == "socks5") {
-                Proxy(Proxy.Type.SOCKS, InetSocketAddress.createUnresolved(config.host, config.port))
-            } else {
-                Proxy(Proxy.Type.HTTP, InetSocketAddress.createUnresolved(config.host, config.port))
-            }
-
-            val embyHost = extractEmbyHost(context)
-
-            builder.proxySelector(object : ProxySelector() {
-                override fun select(uri: URI): List<Proxy> {
-                    return try {
-                        val host = uri.host ?: return listOf(Proxy.NO_PROXY)
-                        if (host == "127.0.0.1" || host == "localhost" || host == "::1") {
-                            return listOf(Proxy.NO_PROXY)
-                        }
-                        if (embyHost.isNotEmpty() && host.equals(embyHost, ignoreCase = true)) {
-                            return listOf(proxy)
-                        }
-                        listOf(Proxy.NO_PROXY)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "ProxySelector.select error", e)
-                        listOf(Proxy.NO_PROXY)
-                    }
-                }
-
-                override fun connectFailed(uri: URI?, sa: SocketAddress?, ioe: java.io.IOException?) {
-                    Log.e(TAG, "Proxy connectFailed: $uri", ioe)
-                }
-            })
-
-            if (config.username.isNotEmpty()) {
-                val credential = Credentials.basic(config.username, config.password)
-                builder.proxyAuthenticator(object : Authenticator {
-                    override fun authenticate(route: Route?, response: okhttp3.Response): okhttp3.Request? {
-                        if (response.request.header("Proxy-Authorization") != null) {
-                            return null
-                        }
-                        return response.request.newBuilder()
-                            .header("Proxy-Authorization", credential)
-                            .build()
-                    }
-                })
-            }
-
-            Log.i(TAG, "代理已启用: ${config.type}://${config.host}:${config.port}")
-        }
-
         return builder.build()
-    }
-
-    private fun extractEmbyHost(context: Context): String {
-        return try {
-            val prefs = context.getSharedPreferences("emby_tv", Context.MODE_PRIVATE)
-            val serverUrl = prefs.getString("serverUrl", "") ?: ""
-            if (serverUrl.isNotEmpty()) {
-                URL(serverUrl).host ?: ""
-            } else ""
-        } catch (e: Exception) {
-            ""
-        }
     }
 
     fun rebuildClient(context: Context) {
@@ -152,7 +71,6 @@ object HttpClient {
             synchronized(this) {
                 val oldClient = client
                 client = null
-                proxyConfig = null
                 oldClient?.dispatcher?.cancelAll()
             }
             getClient(context)
@@ -161,17 +79,7 @@ object HttpClient {
             Log.e(TAG, "重建 HttpClient 失败", e)
             synchronized(this) {
                 client = null
-                proxyConfig = null
             }
         }
     }
-
-    private data class ProxyConfig(
-        val enabled: Boolean = false,
-        val type: String = "http",
-        val host: String = "",
-        val port: Int = 1080,
-        val username: String = "",
-        val password: String = ""
-    )
 }

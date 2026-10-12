@@ -1,5 +1,6 @@
 package com.xxxx.emby_vr.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -26,11 +27,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.tv.material3.*
 import com.xxxx.emby_vr.R
 import com.xxxx.emby_vr.data.session.AccountInfo
+import com.xxxx.emby_vr.panel.ClickTargets
+import com.xxxx.emby_vr.panel.vrClickBlocker
+import com.xxxx.emby_vr.panel.vrClickTarget
 import com.xxxx.emby_vr.ui.viewmodel.MainViewModel
 
 @OptIn(ExperimentalTvMaterial3Api::class)
@@ -39,7 +41,12 @@ fun AccountScreen(
     mainViewModel: MainViewModel,
     savedAccounts: List<AccountInfo>,
     currentAccountId: String?,
-    onSwitchAccount: (String) -> Unit,
+    /*
+     * 点一台已存在的服务器 = 打开添加服务器那个输入页、把它自己的参数带进去改
+     * （父亲 2026-10-12）。以前点一下是「切换账号」，现在改成「进输入页」——
+     * 改完点登录本来就会切到这台服务器，所以切换这个动作没有丢。
+     */
+    onEditAccount: (AccountInfo) -> Unit,
     onDeleteAccount: (String) -> Unit,
     onAddAccount: () -> Unit
 ) {
@@ -127,11 +134,7 @@ fun AccountScreen(
                                 isCurrentAccount = isCurrentAccount,
                                 isFirst = index == 0,
                                 firstItemFocusRequester = firstItemFocusRequester,
-                                onSelect = {
-                                    if (!isCurrentAccount) {
-                                        onSwitchAccount(account.id)
-                                    }
-                                },
+                                onSelect = { onEditAccount(account) },
                                 onDelete = {
                                     accountToDelete = account
                                     showDeleteDialog = true
@@ -156,6 +159,11 @@ fun AccountScreen(
                             .then(
                                 if (savedAccounts.isEmpty()) Modifier.focusRequester(firstItemFocusRequester)
                                 else Modifier
+                            )
+                            .vrClickTarget(
+                                key = "acct:add",
+                                focusRequester = null,
+                                onActivate = onAddAccount,
                             ),
                         onClick = onAddAccount,
                         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(12.dp)),
@@ -220,7 +228,17 @@ private fun AccountListItem(
             modifier = Modifier
                 .weight(1f)
                 .height(72.dp)
-                .then(if (isFirst) Modifier.focusRequester(firstItemFocusRequester) else Modifier),
+                .then(if (isFirst) Modifier.focusRequester(firstItemFocusRequester) else Modifier)
+                /*
+                 * 登记控件坐标（父亲 2026-10-12：账号页的删除和添加点不动）。
+                 * 这个页面以前一个控件都没登记过，光标扫上去查不到落点，
+                 * 输入层就回退成 OK 键，点哪儿都没反应 —— 跟登录页当年同一个坑。
+                 */
+                .vrClickTarget(
+                    key = "acct:item",
+                    focusRequester = if (isFirst) firstItemFocusRequester else null,
+                    onActivate = onSelect,
+                ),
             shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(12.dp)),
             scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
             border = ClickableSurfaceDefaults.border(
@@ -300,7 +318,13 @@ private fun AccountListItem(
         // 删除按钮（独立可聚焦）
         Surface(
             onClick = onDelete,
-            modifier = Modifier.size(72.dp),
+            modifier = Modifier
+                .size(72.dp)
+                .vrClickTarget(
+                    key = "acct:del",
+                    focusRequester = null,
+                    onActivate = onDelete,
+                ),
             shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(12.dp)),
             scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
             border = ClickableSurfaceDefaults.border(
@@ -335,15 +359,27 @@ private fun DeleteConfirmDialog(
     onDismiss: () -> Unit
 ) {
     val cancelFocusRequester = remember { FocusRequester() }
+    val group = remember { Any() }
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+    DisposableEffect(group) {
+        ClickTargets.setModalGroup(group)
+        onDispose { ClickTargets.clearModalGroup(group) }
+    }
+    BackHandler(enabled = true) { onDismiss() }
+
+    /*
+     * 原来是真正的 Dialog（会新建一个窗口），这种窗口落不到 VR 面板上 ——
+     * 跟输入框浮层记过的坑是同一个（Compose Dialog = 新窗口，面板上不显示也点不动）。
+     * 父亲 2026-10-12 实测「删除点不动」就是它。改成面板内的浮层：
+     * 全屏压暗 + 卡片 + 模态点击分组 + 全屏兜底，跟输入浮层同一套做法。
+     */
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.6f))
+            .vrClickBlocker(key = "acct:del:bg", group = group),
+        contentAlignment = Alignment.Center
     ) {
-        Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center
-        ) {
             Surface(
                 modifier = Modifier
                     .width(420.dp)
@@ -402,7 +438,13 @@ private fun DeleteConfirmDialog(
                             modifier = Modifier
                                 .weight(1f)
                                 .height(46.dp)
-                                .focusRequester(cancelFocusRequester),
+                                .focusRequester(cancelFocusRequester)
+                                .vrClickTarget(
+                                    key = "acct:del:cancel",
+                                    focusRequester = cancelFocusRequester,
+                                    group = group,
+                                    onActivate = onDismiss,
+                                ),
                             shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
                             colors = ClickableSurfaceDefaults.colors(
                                 containerColor = Color.White.copy(alpha = 0.1f),
@@ -429,7 +471,13 @@ private fun DeleteConfirmDialog(
                             onClick = onConfirm,
                             modifier = Modifier
                                 .weight(1f)
-                                .height(46.dp),
+                                .height(46.dp)
+                                .vrClickTarget(
+                                    key = "acct:del:ok",
+                                    focusRequester = null,
+                                    group = group,
+                                    onActivate = onConfirm,
+                                ),
                             shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
                             colors = ClickableSurfaceDefaults.colors(
                                 containerColor = Color(0xFFEF5350).copy(alpha = 0.7f),
@@ -453,7 +501,6 @@ private fun DeleteConfirmDialog(
                     }
                 }
             }
-        }
     }
 
     LaunchedEffect(Unit) {

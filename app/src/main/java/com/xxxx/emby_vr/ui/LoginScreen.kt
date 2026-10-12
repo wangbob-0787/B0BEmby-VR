@@ -52,6 +52,13 @@ fun LoginScreen(
     loginViewModel: LoginViewModel,
     mainViewModel: MainViewModel,
     navController: NavController,
+    /*
+     * 带了这三个 = 正在改一台已有服务器的参数（父亲 2026-10-12：账号页点一下
+     * 已存在的服务器，重新打开这个页面改它的参数）。不带 = 新添服务器。
+     */
+    prefillServerUrl: String? = null,
+    prefillUsername: String? = null,
+    prefillPassword: String? = null,
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -72,15 +79,17 @@ fun LoginScreen(
         }
     }
 
-    // 在初始化时就解析 savedServerUrl
-    val initialParsed = remember { parseServerUrl(loginViewModel.savedServerUrl ?: "") }
+    // 在初始化时就解析服务器地址：改已有服务器时用它自己的，否则用当前会话的
+    val initialParsed = remember {
+        parseServerUrl(prefillServerUrl ?: loginViewModel.savedServerUrl ?: "")
+    }
 
-    // 从 ViewModel 获取保存的值
+    // 从 ViewModel 获取保存的值（改已有服务器时优先用传进来的那台）
     var protocol by remember { mutableStateOf(initialParsed.first) }
     var host by remember { mutableStateOf(initialParsed.second) }
     var port by remember { mutableStateOf(initialParsed.third) }
-    var username by remember { mutableStateOf(loginViewModel.savedUsername) }
-    var password by remember { mutableStateOf(loginViewModel.savedPassword) }
+    var username by remember { mutableStateOf(prefillUsername ?: loginViewModel.savedUsername) }
+    var password by remember { mutableStateOf(prefillPassword ?: loginViewModel.savedPassword) }
 
     // Server & QR Code State
     var qrCodeBitmap by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
@@ -272,6 +281,7 @@ fun LoginScreen(
                         label = stringResource(R.string.host),
                         onClick = { showHostDialog = true },
                         showMenu = { showMenu = true },
+                        vrKey = "login:host",
                         modifier = Modifier
                             .weight(1f)
                             .focusRequester(hostFocusRequester)
@@ -281,6 +291,7 @@ fun LoginScreen(
                         label = stringResource(R.string.port),
                         onClick = { showPortDialog = true },
                         showMenu = { showMenu = true },
+                        vrKey = "login:port",
                         modifier = Modifier.width(80.dp)
                     )
                 }
@@ -292,6 +303,7 @@ fun LoginScreen(
                     value = username,
                     label = stringResource(R.string.username),
                     showMenu = { showMenu = true },
+                    vrKey = "login:user",
                     onClick = { showUsernameDialog = true }
                 )
 
@@ -303,6 +315,7 @@ fun LoginScreen(
                     label = stringResource(R.string.password),
                     visualTransformation = PasswordVisualTransformation(),
                     showMenu = { showMenu = true },
+                    vrKey = "login:pass",
                     onClick = { showPasswordDialog = true }
                 )
 
@@ -382,29 +395,6 @@ fun LoginScreen(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
-
-                Surface(
-                    onClick = { navController.navigate("proxy_settings") },
-                    shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(100)),
-                    colors = ClickableSurfaceDefaults.colors(
-                        containerColor = Color.Transparent,
-                        contentColor = Color.White.copy(alpha = 0.5f),
-                focusedContainerColor = VrHoverBg,
-                focusedContentColor = Color.White.copy(alpha = 0.5f),
-            ),
-                    modifier = Modifier.fillMaxWidth(0.8f)
-                ) {
-                    Box(
-                        modifier = Modifier.fillMaxWidth().height(40.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = stringResource(R.string.proxy_settings),
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    }
-                }
             }
         }
     }
@@ -424,10 +414,6 @@ fun LoginScreen(
             },
             onThemeChange = { themeColor ->
                 mainViewModel.saveThemeId(themeColor.id)
-            },
-            onProxySettings = {
-                showMenu = false
-                navController.navigate("proxy_settings")
             },
             isShowLogout = false
         )
@@ -492,6 +478,7 @@ fun TvInputButton(
     showMenu: () -> Unit,
     visualTransformation: VisualTransformation = VisualTransformation.None,
     @SuppressLint("ModifierParameter") modifier: Modifier = Modifier,
+    vrKey: String = "login:input",
     onClick: () -> Unit,
 ) {
     Surface(
@@ -514,6 +501,23 @@ fun TvInputButton(
         modifier = modifier
             .fillMaxWidth(0.8f)
             .height(64.dp)
+            /*
+             * 登记进控件坐标表（父亲 2026-10-12 实测：添加服务器页的用户名、密码框
+             * 用光标点不进去）。原因和当年登录按钮那次一模一样 —— 组件没登记，
+             * 落点查不到控件，输入层就回退成 OK 键，点上去什么也不发生。
+             * 四个输入框和左边的协议按钮以前全都没登记，只有登录按钮登记过。
+             */
+            .vrClickTarget(
+                key = vrKey,
+                /*
+                 * 这里**不传** FocusRequester：地址框自己带了一把（登录页 101 行
+                 * 直接 requestFocus，没包 runCatching），再套一把会把原来那把顶掉，
+                 * 一请求就抛「未初始化」崩掉。点一下能打开输入框就够了，
+                 * 亮不亮是光柱那边管的（VrHover），跟焦点无关。
+                 */
+                focusRequester = null,
+                onActivate = onClick,
+            )
             .onKeyEvent { keyEvent ->
                 if (keyEvent.type == KeyEventType.KeyDown) {
                     when (keyEvent.key) {
@@ -573,7 +577,17 @@ fun ProtocolButton(
                 focusedContainerColor = VrHoverBg,
                 focusedContentColor = MaterialTheme.colorScheme.onSurface,
             ),
-        modifier = modifier.height(64.dp)
+        modifier = modifier
+            .height(64.dp)
+            /*
+             * 登记进控件坐标表（父亲 2026-10-12：添加服务器页的输入框点不进去）。
+             * 协议按钮跟那几个输入框是同一排，同样从来没登记过。
+             */
+            .vrClickTarget(
+                key = "login:protocol",
+                focusRequester = null,
+                onActivate = onClick,
+            )
     ) {
         Box(
             modifier = Modifier.fillMaxSize(),

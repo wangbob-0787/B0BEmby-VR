@@ -47,32 +47,6 @@ class PreferencesManager(context: Context) {
         get() = prefs.getString(KEY_SEARCH_CHANNEL, SEARCH_CHANNEL_NAME) ?: SEARCH_CHANNEL_NAME
         set(value) = prefs.edit().putString(KEY_SEARCH_CHANNEL, value).apply()
 
-    // === 代理设置 ===
-
-    var proxyEnabled: Boolean
-        get() = prefs.getBoolean(KEY_PROXY_ENABLED, false)
-        set(value) = prefs.edit().putBoolean(KEY_PROXY_ENABLED, value).apply()
-
-    var proxyType: String
-        get() = prefs.getString(KEY_PROXY_TYPE, DEFAULT_PROXY_TYPE) ?: DEFAULT_PROXY_TYPE
-        set(value) = prefs.edit().putString(KEY_PROXY_TYPE, value).apply()
-
-    var proxyHost: String
-        get() = prefs.getString(KEY_PROXY_HOST, "") ?: ""
-        set(value) = prefs.edit().putString(KEY_PROXY_HOST, value).apply()
-
-    var proxyPort: Int
-        get() = prefs.getInt(KEY_PROXY_PORT, DEFAULT_PROXY_PORT)
-        set(value) = prefs.edit().putInt(KEY_PROXY_PORT, value).apply()
-
-    var proxyUsername: String
-        get() = prefs.getString(KEY_PROXY_USERNAME, "") ?: ""
-        set(value) = prefs.edit().putString(KEY_PROXY_USERNAME, value).apply()
-
-    var proxyPassword: String
-        get() = prefs.getString(KEY_PROXY_PASSWORD, "") ?: ""
-        set(value) = prefs.edit().putString(KEY_PROXY_PASSWORD, value).apply()
-
     // === 片头跳过设置 ===
 
     var autoSkipIntro: Boolean
@@ -200,16 +174,7 @@ class PreferencesManager(context: Context) {
         private const val KEY_PLAYBACK_SPEED = "playback_speed"
         private const val KEY_SUBTITLE_BOTTOM_PADDING = "subtitle_bottom_padding"
 
-        private const val KEY_PROXY_ENABLED = "proxy_enabled"
-        private const val KEY_PROXY_TYPE = "proxy_type"
-        private const val KEY_PROXY_HOST = "proxy_host"
-        private const val KEY_PROXY_PORT = "proxy_port"
-        private const val KEY_PROXY_USERNAME = "proxy_username"
-        private const val KEY_PROXY_PASSWORD = "proxy_password"
-
         private const val DEFAULT_THEME_ID = "dark"
-        const val DEFAULT_PROXY_TYPE = "http"
-        const val DEFAULT_PROXY_PORT = 1080
 
         private const val KEY_MIN_BUFFER_MS = "min_buffer_ms"
         private const val KEY_MAX_BUFFER_MS = "max_buffer_ms"

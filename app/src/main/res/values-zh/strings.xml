@@ -159,7 +159,6 @@
     <string name="error_ssl_failed">安全连接失败</string>
     <string name="error_network_error">网络错误，请重试</string>
     <string name="error_unknown">未知错误</string>
-    <string name="error_proxy_connection">代理连接失败，请检查代理信息是否正确</string>
     <string name="audio_output_degraded">电视音频服务异常，本次播放暂无声音</string>
 
     <!-- Intro Skip -->
@@ -223,7 +222,6 @@
     <string name="mega_bytes">%1$dMB</string>
 
     <!-- 代理设置 -->
-    <string name="proxy_settings">代理设置</string>
     <string name="proxy_enable">启用代理</string>
     <string name="proxy_disable">关闭代理</string>
     <string name="proxy_type">代理类型</string>

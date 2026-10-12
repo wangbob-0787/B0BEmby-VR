@@ -49,7 +49,6 @@ fun MenuDialog(
     onThemeChange: (ThemeColor) -> Unit,
     onSwitchAccount: (() -> Unit)? = null,
     onSearch: (() -> Unit)? = null,
-    onProxySettings: (() -> Unit)? = null,
     isShowLogout: Boolean = true
 ) {
     val showThemeSelection = remember { mutableStateOf(false) }
@@ -182,19 +181,6 @@ fun MenuDialog(
                                 onClick = { showThemeSelection.value = true },
                                 primaryColor = currentPrimaryColor
                             )
-                        }
-
-                        // 代理设置项
-                        if (onProxySettings != null) {
-                            menuItems.add {
-                                MenuListItem(
-                                    vrKey = "menu:proxy",
-                                    text = stringResource(R.string.proxy_settings),
-                                    icon = Icons.Filled.Settings,
-                                    onClick = { onProxySettings(); onDismiss() },
-                                    primaryColor = currentPrimaryColor
-                                )
-                            }
                         }
 
                         // 更新项
