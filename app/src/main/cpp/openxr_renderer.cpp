@@ -1080,7 +1080,15 @@ std::atomic<float> gViewerX{0.f};        // 平滑后的相对左右位移（相
 std::atomic<float> gViewerZ{0.f};        // 平滑后的相对前后位移（相对起点）
 std::atomic<float> gScenePush{0.f};      // 防穿越：场景整体往远处推多少米
 std::atomic<float> gMinScreenGap{1.0f};  // 最近允许走到离银幕多远
-std::atomic<int> gFollowViewer{1};       // 控制条/菜单/海报墙是否跟随观影位（运行时可关）
+/*
+ * 控制条/菜单/海报墙是否跟随观影位（1 = 跟，0 = 固定在世界里）。
+ *
+ * 2026-10-12 父亲明确：**默认必须是 0（固定不动）**。
+ * 原话「我原来就叫你改过一次嘛…你怎么又给我打开了」—— 上一次只写了设备上的
+ * vr-tuning.txt，这里的默认值一直是 1，重装或清数据就会弹回跟随，等于白改。
+ * 现在默认 0；vr-tuning.txt 的 follow_viewer 仍可现场临时打开做对照。
+ */
+std::atomic<int> gFollowViewer{0};
 std::atomic<float> gViewerOriginX{0.f};
 std::atomic<float> gViewerOriginZ{0.f};
 std::atomic<bool> gViewerOriginSet{false};
