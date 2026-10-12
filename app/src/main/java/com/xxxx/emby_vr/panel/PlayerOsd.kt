@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.ViewList
 import androidx.compose.material3.Icon
@@ -68,6 +69,10 @@ import androidx.compose.ui.unit.sp
  *  - 中组：快退 10 · 播放/暂停 · 快进 10
  *  - 右组（贴右）：播放速度 · 选集 · 选片 · 信息 · 演职人员 · 更多 · 退出
  *
+ * 2026-10-12 父亲加第 13 颗：**「跳过片头」**，条件显示 —— 只在片头范围内出现
+ * （挨着倍速，顶在右组最左），片头一过就消失，控制条回到上面那一版。
+ * 它在场时两处组间缝从 75px 收到 40px（面板宽按 12 颗算死，塞不下第 13 颗的 164px）。
+ *
  * 观感（父亲 2026-10-06 晚：要做得酷一点）：
  *  - 条身是玻璃质感：上亮下暗的渐变 + 一圈细高光描边；
  *  - 播放/暂停是**主按钮**：白色实心圆 + 深色图标，一眼能找到；
@@ -86,6 +91,12 @@ enum class OsdButton(val label: String, val icon: ImageVector) {
     SEEK_FWD("快进10", Icons.Filled.Forward10),
 
     // ── 右组 ──
+    /*
+     * 「跳过片头」（父亲 2026-10-12）。**条件按钮**：只在片头范围内出现
+     * （片头结束自动收起），所以它不在常驻的 OSD_RIGHT_GROUP 里，
+     * 而是由启动时的 OSD_RIGHT_GROUP_SKIP 顶在右组最左、紧邻倍速。
+     */
+    SKIP_INTRO("跳过片头", Icons.Filled.SkipNext),
     SPEED("播放速度", Icons.Filled.Speed),
     EPISODES("选集", Icons.Filled.ViewList),
     PICK("选片", Icons.Filled.MovieCreation),
@@ -123,6 +134,14 @@ val OSD_RIGHT_GROUP = listOf(
 )
 
 /**
+ * 片头出现时的右组：最左边多一颗「跳过片头」（父亲 2026-10-12：挨着倍速）。
+ *
+ * 只多这一颗按钮、不动常驻的 12 颗，是刻意的 —— 片头一过它就消失，
+ * 控制条回到父亲 2026-10-06 定稿的那一版。
+ */
+val OSD_RIGHT_GROUP_SKIP = listOf(OsdButton.SKIP_INTRO) + OSD_RIGHT_GROUP
+
+/**
  * 间距（父亲 2026-10-06 晚按图定稿，全部用像素算）：
  *
  *  · 按钮框之间的缝 5px（框是 159 的正方形，图标 87 居中，所以图标到图标的
@@ -135,6 +154,19 @@ val OSD_RIGHT_GROUP = listOf(
 private const val BUTTON_GAP_PX = 5f
 private const val GROUP_GAP_PX = 75f
 private const val BUTTON_ROW_SIDE_PX = 114f
+
+/**
+ * 「跳过片头」在场时用的组间缝（父亲 2026-10-12）。
+ *
+ * 面板宽 2331 是**按 12 颗按钮算死的**（内容正好 2103 = 2331 − 114×2），
+ * 一行里塞第 13 颗按钮会多出 164px：EXIT 会被顶出面板右边缘，
+ * 而面板宽与原生 kOsdPxW、银幕几何绑在一起，不能为这个动。
+ * 所以第 13 颗出现时把两处组间缝从 75 收到 40（共省 70px），
+ * 行内容 2197px、右边缘落在 2311（面板 2331），13 颗全在面板内、右侧仍留 20px；
+ * 组与组之间仍有 40px 的缝（组内缝是 5px），三组的结构看得出来。
+ * 片头一过按钮消失，缝回到 75。
+ */
+private const val GROUP_GAP_SKIP_PX = 40f
 
 /** 面板上下边距（像素，父亲 2026-10-06 晚定） */
 private const val PANEL_PAD_Y_PX = 75f
@@ -153,6 +185,15 @@ private const val PX_PER_DP = 1.5f
 
 /** 按钮里的图标边长（像素）：58dp */
 private const val ICON_PX = 87f
+
+/**
+ * 「跳过片头」图标的颜色（父亲 2026-10-12）。
+ *
+ * 它旁边就是「快进10」，两颗都是"往前跳"的箭形图标 —— 白色图标容易被当成快进。
+ * 用菜单里已经在用的那个浅蓝（PlayerMenuPanel 的 0xFF4FC3F7，那里表示"当前这一项"），
+ * 不引新色相；与白色普通按钮、青绿选中态都区分得开，暗底上对比度约 11:1。
+ */
+private val SKIP_INTRO_TINT = Color(0xFF4FC3F7)
 
 /** px 转 dp（Compose 只收 dp） */
 private fun px(v: Float) = (v / PX_PER_DP).dp
@@ -192,6 +233,15 @@ class OsdState {
     /** 已缓冲到的位置（进度条上那段浅色，照电视版） */
     var bufferedMs by mutableStateOf(0L)
     var speed by mutableStateOf(1f)
+
+    /**
+     * 「跳过片头」这颗**条件按钮**显不显示（父亲 2026-10-12）。
+     *
+     * 主线程按播放位置写：位置落进片头范围 → true；片头结束 / 停止播放 / 换片 → false。
+     * 界面只在 true 时把它排进右组（它一出现，整行按钮会重排一次，
+     * 组间缝同时从 75px 收到 40px，见 GROUP_GAP_SKIP_PX）。
+     */
+    var showSkipIntroButton by mutableStateOf(false)
 
     /** 播放/暂停按钮显示的图标：跟真实播放态走 */
     val playIcon: ImageVector get() = if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow
@@ -259,6 +309,13 @@ fun PlayerOsdBar(state: OsdState) {
      * 按钮行的纵向范围要用它归一化。
      */
     val panelHpx = LocalWindowInfo.current.containerSize.height
+    /*
+     * 片头按钮（条件按钮）在场时：右组多一颗、两处组间缝一起收紧。
+     * 两者必须成对改 —— 只加按钮不收缝，EXIT 会被顶出面板右边缘（见 GROUP_GAP_SKIP_PX）。
+     */
+    val showSkipIntro = state.showSkipIntroButton
+    val rightGroup = if (showSkipIntro) OSD_RIGHT_GROUP_SKIP else OSD_RIGHT_GROUP
+    val groupGap = px(if (showSkipIntro) GROUP_GAP_SKIP_PX else GROUP_GAP_PX)
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -395,19 +452,19 @@ fun PlayerOsdBar(state: OsdState) {
             ) {
                 OSD_LEFT_GROUP.forEach { OsdButtonView(it, state, panelWpx) }
             }
-            Spacer(modifier = Modifier.width(px(GROUP_GAP_PX)))
+            Spacer(modifier = Modifier.width(groupGap))
             Row(
                 horizontalArrangement = Arrangement.spacedBy(px(BUTTON_GAP_PX)),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 OSD_CENTER_GROUP.forEach { OsdButtonView(it, state, panelWpx) }
             }
-            Spacer(modifier = Modifier.width(px(GROUP_GAP_PX)))
+            Spacer(modifier = Modifier.width(groupGap))
             Row(
                 horizontalArrangement = Arrangement.spacedBy(px(BUTTON_GAP_PX)),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                OSD_RIGHT_GROUP.forEach { OsdButtonView(it, state, panelWpx) }
+                rightGroup.forEach { OsdButtonView(it, state, panelWpx) }
             }
         }
     }
@@ -500,6 +557,11 @@ private fun OsdProgress(state: OsdState, modifier: Modifier = Modifier) {
 
 @Composable
 private fun OsdButtonView(button: OsdButton, state: OsdState, panelWpx: Int) {
+    /*
+     * 「跳过片头」是条件按钮（父亲 2026-10-12）：片头不在范围里就整颗不画。
+     * 右组列表已经按这个状态换过了，这一条是双保险 —— 别处误排进来也不会显示。
+     */
+    if (button == OsdButton.SKIP_INTRO && !state.showSkipIntroButton) return
     val selected = state.activeMenuButton == button
     val range = state.buttonRange[button]
     /*
@@ -525,6 +587,8 @@ private fun OsdButtonView(button: OsdButton, state: OsdState, panelWpx: Int) {
     }
     val tint = when {
         !enabled -> Color(0x59FFFFFF)          // 35% 白：看得见，但明显弱于可用态
+        // 跳过片头：暖色，跟旁边的「快进10」分开（父亲 2026-10-12）
+        button == OsdButton.SKIP_INTRO -> SKIP_INTRO_TINT
         selected -> Color(0xFFFFFFFF)
         hovered -> Color.White
         else -> Color(0xFFFFFFFF)

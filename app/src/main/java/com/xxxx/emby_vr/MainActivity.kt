@@ -71,6 +71,30 @@ class MainActivity : ComponentActivity() {
     private var osdVisible = false
     private var osdJob: kotlinx.coroutines.Job? = null
 
+    // ── 片头跳过（父亲 2026-10-12）──────────────────────────────────────────
+    /**
+     * 片头范围，毫秒（与 `ctl.positionMs()` 同一口径）。
+     *
+     * 数据来源：Emby 章节里的 **IntroStart / IntroEnd 标记**（IntroSkipHelper 认这两个
+     * markerType）。剧集要服务端刮削出这两条标记才有；没有标记时整条功能静默不出现
+     * （控制条上不会多出那颗按钮），不影响播放。
+     * 起播时立（playMedia 取回播放信息那一刻），停止播放 / 换片时作废。
+     */
+    private var introStartMs: Long? = null
+    private var introEndMs: Long? = null
+
+    /** 自动跳过这一部只做一次；手动点过「跳过片头」也算做过，起播 / 换片时复位 */
+    private var hasAutoSkippedIntro = false
+
+    /** 片头守望协程：250ms 看一眼播放位置，播放停下来自己退 */
+    private var introJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * 界面设置（「自动跳过片头」这类开关存在这里）。
+     * 与电视版同一个 SharedPreferences（emby_tv），以后在设置页加开关也能共用。
+     */
+    private val uiPrefs by lazy { com.xxxx.emby_vr.data.local.PreferencesManager(this) }
+
     /**
      * 播放接口统一层（父亲 2026-10-08）。
      *
@@ -1500,6 +1524,97 @@ class MainActivity : ComponentActivity() {
             }
             osdState.playing = false
         }
+        // 片头守望跟控制条一起起步（它只在有片头标记时干活）
+        startIntroWatch()
+    }
+
+    // ── 片头跳过（父亲 2026-10-12）──────────────────────────────────────────
+    /**
+     * 片头守望：250ms 看一眼播放位置，决定「跳过片头」按钮显不显示、要不要自动跳。
+     *
+     * 为什么单独一条协程、而不是搭在控制条那一拍（1 秒）上：
+     * 控制条每秒刷一次就够（进度条走得动），但按钮**出现 / 收起**的时机是这个功能的
+     * 全部体验 —— 1 秒一拍意味着片头已经播过去了、按钮还挂在条上最多 1 秒，
+     * 看着像"按钮坏了"。250ms 与银幕字幕那一拍同频（startPosTicker），
+     * 开销可以忽略（只读一次 SharedPreferences 内存值 + 一次位置读取）。
+     *
+     * 生命周期的判据跟 startOsdTicker 完全一致（renderer.videoActive || picking），
+     * 播放停下来自己退，退出前把按钮收掉 —— 不留一颗点到没反应的按钮在条上。
+     */
+    private fun startIntroWatch() {
+        introJob?.cancel()
+        introJob = scope.launch {
+            while (renderer.videoActive || picking) {
+                refreshSkipIntro()
+                kotlinx.coroutines.delay(250L)
+            }
+            osdState.showSkipIntroButton = false
+        }
+    }
+
+    /** 片头守望的每一拍：落进片头范围就亮按钮（开了自动跳过则直接跳过去） */
+    private fun refreshSkipIntro() {
+        val start = introStartMs
+        val end = introEndMs
+        if (start == null || end == null) {
+            if (osdState.showSkipIntroButton) osdState.showSkipIntroButton = false
+            return
+        }
+        /*
+         * 暂停时**不改显示**（父亲 2026-10-12）：在片头里暂停，那颗按钮照旧留着 ——
+         * 一暂停按钮就消失，用户回来还得等它再出现一次。自动跳过同样等恢复播放再做。
+         */
+        if (!ctl.isPlaying()) return
+        /*
+         * 画面还没出来（起播等待期，网盘冷启动最长能等十几秒）也**不改显示**：
+         * 那时候银幕上是黑幕 /「即将播放」，控制条上多出一颗灰按钮 + 整行重排
+         * 只会看着像界面出毛病；等第一帧到了再亮（hasPlayback 就是那个信号）。
+         * 自动跳过也一起等 —— 内核（mpv）在文件还没打开时下 seek 可能被丢掉。
+         */
+        if (!osdState.hasPlayback) return
+        val pos = ctl.positionMs()
+        when {
+            pos < start -> if (osdState.showSkipIntroButton) osdState.showSkipIntroButton = false
+            pos < end -> {
+                if (uiPrefs.autoSkipIntro) {
+                    // 自动跳过：一部片只做一次（手动点过也算做过）
+                    if (!hasAutoSkippedIntro) {
+                        hasAutoSkippedIntro = true
+                        osdState.showSkipIntroButton = false
+                        skipIntroTo(end, "片头自动跳过（起点 ${start / 1000}s，位置 ${pos / 1000}s）")
+                    }
+                } else {
+                    osdState.showSkipIntroButton = true
+                }
+            }
+            // 片头结束（含用户手动拖过去）：按钮收起
+            else -> if (osdState.showSkipIntroButton) osdState.showSkipIntroButton = false
+        }
+    }
+
+    /**
+     * 跳到片头结束位置 —— 自动跳过与按钮**共用**这一条。
+     *
+     * 冻结弹幕位置、立刻写控制条位置，都与手工快进（seekBy）同一套：
+     * 不冻结的话弹幕会按跳变后的进度自己往前窜一下；不写位置的话
+     * 进度条要等下一拍（最多 1 秒）才跟过去。
+     */
+    private fun skipIntroTo(endMs: Long, why: String) {
+        if (!ctl.hasEngine()) return
+        freezeDanmakuForSeek()
+        ctl.seekTo(endMs)
+        osdState.positionMs = endMs
+        if (seekHudShown) danmakuView?.setSeekHud(true, endMs, ctl.durationMs(), ctl.bufferedMs())
+        Log.i(TAG, "$why → ${endMs / 1000} 秒")
+    }
+
+    /** 点「跳过片头」：跳到片头结束，并记成"已跳过"（自动那条不再触发） */
+    private fun skipIntroManual() {
+        val end = introEndMs ?: return
+        if (!ctl.hasEngine()) return
+        hasAutoSkippedIntro = true
+        osdState.showSkipIntroButton = false
+        skipIntroTo(end, "手动跳过片头")
     }
 
     /** 面板此刻能不能接输入：界面就绪、没在播放 */
@@ -1730,6 +1845,28 @@ class MainActivity : ComponentActivity() {
                 pendingPlaySessionId = media.playSessionId
                 pendingMediaSourceId = source?.id
                 pendingRunTimeTicks = source?.runTimeTicks ?: 0L
+                /*
+                 * 片头范围（父亲 2026-10-12）：从章节标记里认 IntroStart / IntroEnd。
+                 *
+                 * 在这一步立，是因为**这里是 source 唯一的出处** —— 后面 startPlayer 只管
+                 * 起播、拿不到章节；而且这条路（含"默认音轨解不了再要一次地址"那次重取）
+                 * 跑完 source 才是最终那份。
+                 * 换片 / 换轨都会重新走这里，范围永远跟当前这部片一致。
+                 */
+                val intro = com.xxxx.emby_vr.util.IntroSkipHelper.detectIntroRange(source?.chapters)
+                introStartMs = intro?.first
+                introEndMs = intro?.second
+                hasAutoSkippedIntro = false
+                osdState.showSkipIntroButton = false
+                if (intro != null) {
+                    Log.i(
+                        TAG,
+                        "片头标记：${intro.first / 1000}s → ${intro.second / 1000}s" +
+                            "（自动跳过=${uiPrefs.autoSkipIntro}）",
+                    )
+                } else {
+                    Log.i(TAG, "这一部没有片头标记（章节里没有 IntroStart / IntroEnd）")
+                }
                 // 字幕 / 音轨菜单要用它列选项（切轨靠 Emby 重新出流）
                 currentStreams = source?.mediaStreams ?: emptyList()
                 /*
@@ -2402,6 +2539,8 @@ class MainActivity : ComponentActivity() {
             com.xxxx.emby_vr.panel.OsdButton.SEEK_BACK -> if (ctl.hasEngine()) seekBy(-10_000)
             com.xxxx.emby_vr.panel.OsdButton.PLAY_PAUSE -> togglePlayPause()
             com.xxxx.emby_vr.panel.OsdButton.SEEK_FWD -> if (ctl.hasEngine()) seekBy(+10_000)
+            // 片头跳过（父亲 2026-10-12）：这颗按钮只在片头范围内存在
+            com.xxxx.emby_vr.panel.OsdButton.SKIP_INTRO -> skipIntroManual()
             com.xxxx.emby_vr.panel.OsdButton.SPEED ->
                 toggleMenu(com.xxxx.emby_vr.panel.MenuKind.SPEED, button)
             com.xxxx.emby_vr.panel.OsdButton.EPISODES ->
@@ -3953,6 +4092,10 @@ class MainActivity : ComponentActivity() {
         picking = false
         osdJob?.cancel()
         osdJob = null
+        // 片头守望一起收，按钮收掉（父亲 2026-10-12）—— 不留一颗点了没反应的按钮在条上
+        introJob?.cancel()
+        introJob = null
+        osdState.showSkipIntroButton = false
         stopPosTicker()
         if (!keepUi) {
             setOsdVisible(false)
@@ -4403,6 +4546,14 @@ class MainActivity : ComponentActivity() {
         osdState.title = ""
         osdState.durationMs = 0L
         osdState.positionMs = 0L
+        /*
+         * 片头标记作废（父亲 2026-10-12）：新片的范围等取播放信息那一步再立。
+         * 不清的话，新片还没拿到章节之前，「跳过片头」会拿着**上一部片**的时间轴站着。
+         */
+        introStartMs = null
+        introEndMs = null
+        hasAutoSkippedIntro = false
+        osdState.showSkipIntroButton = false
         // 收黑幕的与门也要复位，等这一部自己的两个信号（父亲 2026-10-07）
         playerFrameSeen = false
         nativeFrameSeen = false
@@ -4749,7 +4900,7 @@ class MainActivity : ComponentActivity() {
          * 没存过 → 0（影厅全黑，只剩画面自己发光）；存过 → 用上次那一档。
          */
         runCatching {
-            val saved = placePrefs.getFloat(PREF_CINEMA_BRIGHT, 0f).coerceIn(0f, 1f)
+            val saved = placePrefs.getFloat(PREF_CINEMA_BRIGHT, 0.01f).coerceIn(0f, 1f)
             menuState.cinemaBright = saved
             com.xxxx.emby_vr.vr.VrNative.setTuning(
                 com.xxxx.emby_vr.vr.VrTuning.KEY_CINEMA_BRIGHT, saved,
