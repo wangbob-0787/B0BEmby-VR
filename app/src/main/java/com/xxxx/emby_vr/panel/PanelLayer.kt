@@ -82,6 +82,20 @@ class PanelLayer(
      * 「按钮看得到、扣扳机点不动」。开这个开关就跳过查表，直接派发鼠标式点击。
      */
     private val directClick: Boolean = false,
+    /**
+     * 这一层是否认「轮播滚动区」（2026-10-12 父亲报的串台 bug）。
+     *
+     * 滚动区（[com.xxxx.emby_vr.panel.ClickTargets.Zone]，首页大海报那块）登记在
+     * **全局单例**里，矩形是**首页面板的坐标**（1920x1080）。而菜单层是另一块画布
+     * （2560x760），它派发滚轮时也去查同一张表 —— 于是菜单里的落点一旦撞进
+     * 首页那块轮播矩形，摇杆就被当成"翻轮播"处理：菜单不滚，首页反而翻页。
+     * 父亲实测：「海报墙和菜单选项会一起滚」，而且只有把光柱指到菜单最右边
+     * （落在那个矩形之外）才滚得动 —— 某些片子背景图的比例让那块矩形更大，
+     * 撞上的概率就更高，看起来像"某部片子专属的毛病"。
+     *
+     * 只有主面板（电视版界面）该认这张表；控制条 / 菜单 / logo 一律 false。
+     */
+    private val usesScrollZones: Boolean = false,
     /*
      * 内容必须放在**最后一个参数**：Kotlin 的尾随 lambda 只绑最后一个参数，
      * 放到中间会让 `PanelLayer(this) { … }` 这种写法去匹配别的参数（run 112 编译失败）。
@@ -276,7 +290,11 @@ class PanelLayer(
          * 这里分流：横向拨动且锚点落在轮播区里 → 直接调它的「上一张 / 下一张」。
          */
         if (horizontal && dx != 0f) {
-            val zone = ClickTargets.zoneAt(ax, ay)
+            /*
+             * 只查本层认的滚动区（2026-10-12）：菜单层是另一块画布，绝不能拿
+             * 首页的轮播矩形来判它 —— 那正是"海报墙和菜单一起滚"的根因。
+             */
+            val zone = if (usesScrollZones) ClickTargets.zoneAt(ax, ay) else null
             if (zone != null) {
                 /*
                  * 惯性滑行不翻页（父亲 2026-10-07：一扳一松只该跳一张）。

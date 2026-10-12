@@ -4710,7 +4710,15 @@ class MainActivity : ComponentActivity() {
          * VrNative.TextureSink），这里负责把 SurfaceTexture 交给 PanelLayer
          * （它内部切主线程建虚拟显示器与 Presentation）。
          */
-        panel = PanelLayer(this) {
+        panel = PanelLayer(
+            this,
+            /*
+             * 只有电视版主面板认「轮播滚动区」（父亲 2026-10-12）：
+             * 那张表是全局的、矩形按首页面板的坐标登记，菜单/控制条是另外的画布，
+             * 拿它判落点会串台（菜单里推摇杆变成翻首页轮播，菜单自己不滚）。
+             */
+            usesScrollZones = true,
+        ) {
             // 面板里放的就是电视版的界面：PanelApp 是它的导航装配（见 panel/PanelApp.kt）
             PanelApp(onPlayRequested = { mediaId, positionTicks ->
                 onPanelPlayRequested(mediaId, positionTicks)
