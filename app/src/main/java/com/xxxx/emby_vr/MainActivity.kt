@@ -3145,7 +3145,28 @@ class MainActivity : ComponentActivity() {
             com.xxxx.emby_vr.panel.MenuKind.EPISODES -> loadEpisodes()
             com.xxxx.emby_vr.panel.MenuKind.INFO, com.xxxx.emby_vr.panel.MenuKind.CAST ->
                 loadItemDetail()
-            com.xxxx.emby_vr.panel.MenuKind.MORE -> Unit
+            /*
+             * 「更多」一级菜单的行尾自带当前值（音频选择/视频质量/播放模式/缓冲设置
+             * 四行），但它以前是空实现 —— 只有点进对应子菜单才会把那项数据填进
+             * menuState，所以第一次打开「更多」时缓冲那行是空白，点进缓冲设置再返回
+             * 才显示出当前值（父亲 2026-10-12 实测反馈）。
+             *
+             * 改法：把这四行行尾要用到的数据在这里一并填好，用的跟子菜单是同一份来源
+             * （bufferPresetIndex / qualityIndex / playModeIndex / buildAudioRows()），
+             * 所以不会出现"一级菜单显示的值和子菜单勾的不是一回事"。
+             */
+            com.xxxx.emby_vr.panel.MenuKind.MORE -> {
+                menuState.quality = qualityIndex
+                menuState.playMode = playModeIndex
+                menuState.audioTracks = buildAudioRows()
+                menuState.buffer = com.xxxx.emby_vr.panel.BufferView(
+                    presetIndex = bufferPresetIndex,
+                    minBufferMs = bufferMinMs(),
+                    maxBufferMs = bufferMaxMs(),
+                    playbackBufferMs = 0,
+                    rebufferMs = 0,
+                )
+            }
         }
     }
 
