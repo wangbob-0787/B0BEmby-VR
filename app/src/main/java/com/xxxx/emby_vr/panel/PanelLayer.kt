@@ -24,6 +24,15 @@ import androidx.activity.OnBackPressedDispatcherOwner
 import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.activity.setViewTreeOnBackPressedDispatcherOwner
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color as UiColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.gestures.BringIntoViewSpec
 import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
 import androidx.compose.runtime.Composable
@@ -461,6 +470,14 @@ class PanelLayer(
      * 保证滚的永远是菜单自己的列表。为 null = 不限制，行为与以前一致。
      */
     var scrollClampRect: androidx.compose.ui.geometry.Rect? = null
+
+    /**
+     * 人是否站在这一层的**背面**（原生 onPanelBackMask 推过来，2026-10-12）。
+     *
+     * 置位时内容左右镜像 + 盖一层半透明：走到背面看到的是"真背面"（左右反、
+     * 像隔着毛玻璃从正面透过来），而不是把正面原样再摆一遍。
+     */
+    var backView by mutableStateOf(false)
 
     /**
      * 本层命中区的归属（父亲 2026-10-12）。
@@ -1399,7 +1416,23 @@ private class PanelPresentation(
                     ) = 0f
                 },
             ) {
-                content()
+                /*
+                 * 背面视图（父亲 2026-10-12）：人绕到面板背面时，原生把面片翻过来朝人
+                 * （否则 quad 只画正面，背面一片空白），这里再把内容左右镜像 + 蒙一层，
+                 * 于是看到的是"真背面"：字反过来、像隔着毛玻璃从前面透过来。
+                 */
+                Box(Modifier.fillMaxSize()) {
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .graphicsLayer { scaleX = if (backView) -1f else 1f },
+                    ) {
+                        content()
+                    }
+                    if (backView) {
+                        Box(Modifier.fillMaxSize().background(UiColor(0x8C8E969E)))
+                    }
+                }
             }
         }
         setContentView(cv)

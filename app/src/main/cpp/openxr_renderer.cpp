@@ -1138,6 +1138,69 @@ float viewerOffsetZ() {
     return gFollowViewer.load() != 0 ? gViewerZ.load() : 0.f;
 }
 
+/*
+ * =========== 面片朝向：人绕到面板背面也能看见（父亲 2026-10-12） ===========
+ *
+ * 父亲原话：「我在虚拟影院走动，走到海报墙和控制条后面去，还能看到它们的背面？」
+ * 现状看不到 —— quad 图层只画正面，人一到背面整块消失。
+ *
+ * 做法：**不新增图层**（PICO 对同帧合成层数有上限），按人头位置翻面片朝向：
+ * 人绕到背面时把这张面片整体转 180°，它就一直朝着人。转的是**面片自身 Y 轴**，
+ * 所以面板所在平面、画面上下方向都不变。
+ *
+ * 注意：翻过来看到的是"正面像"（不是镜像）。父亲要的是**真背面**（镜像 + 蒙层），
+ * 那部分在界面层做（面板内容镜像 + 盖一层半透明），原生这里只负责"看得见"。
+ */
+std::chrono::steady_clock::time_point gLastFlipLog{};
+/** 判定阈值（米）：越过面板平面这么多才算"到背面"，避免站在平面上来回抖 */
+constexpr float kBackFaceBias = 0.02f;
+
+/** 观影位是否已经绕到该面板的背面 */
+bool viewerBehindPanel(float yawDeg, float pitchDeg, float cx, float cy, float cz) {
+    const float yawRad = yawDeg * 3.14159265358979f / 180.f;
+    const float pitchRad = pitchDeg * 3.14159265358979f / 180.f;
+    /* 正面法线（落地到世界系）= R*(0,0,1) */
+    const float nx = sinf(yawRad) * cosf(pitchRad);
+    const float ny = -sinf(pitchRad);
+    const float nz = cosf(yawRad) * cosf(pitchRad);
+    /*
+     * 观影位取走动量 gViewerX/Z（与面板摆位同一套坐标假设：起点在原点）。
+     * 不能用 viewerOffsetX() —— 那是"跟随开关"的输出，固定摆位时恒为 0。
+     */
+    const float vx = gViewerX.load() - cx;
+    const float vy = -cy;
+    const float vz = gViewerZ.load() - cz;
+    return (nx * vx + ny * vy + nz * vz) < -kBackFaceBias;
+}
+
+/** 生成面片朝向：默认正面朝人，人在背面时翻 180° */
+void quadOrientation(float yawDeg, float pitchDeg, float cx, float cy, float cz,
+                     XrQuaternionf *out) {
+    const float hy = yawDeg * 3.14159265358979f / 360.f;
+    const float hp = pitchDeg * 3.14159265358979f / 360.f;
+    const float sy = sinf(hy), cyw = cosf(hy);
+    const float sp = sinf(hp), cp = cosf(hp);
+    if (viewerBehindPanel(yawDeg, pitchDeg, cx, cy, cz)) {
+        /* 背面：绕面片自身 Y 轴再转 180°（q ⊗ qY180） */
+        out->x = sy * sp;
+        out->y = cyw * cp;
+        out->z = cyw * sp;
+        out->w = -sy * cp;
+        const auto now = std::chrono::steady_clock::now();
+        if (now - gLastFlipLog > std::chrono::seconds(1)) {
+            gLastFlipLog = now;
+            LOGI("面片翻到背面朝人：中心 (%.2f, %.2f, %.2f) 观影位 x=%+.2f z=%+.2f",
+                 (double) cx, (double) cy, (double) cz, (double) gViewerX.load(),
+                 (double) gViewerZ.load());
+        }
+        return;
+    }
+    out->x = cyw * sp;
+    out->y = sy * cp;
+    out->z = -sy * sp;
+    out->w = cyw * cp;
+}
+
 /**
  * 画面尺寸：永远塞进影厅自带那块幕的矩形里（保住片子比例）。
  *
@@ -1287,6 +1350,8 @@ struct VrContext {
     jmethodID sinkMenuClick = nullptr;   // 展开菜单上的点击
     jmethodID sinkToggleOsd = nullptr;  // 播放中扣扳机 = 开关控制条
     jmethodID sinkPanelFocus = nullptr; // 光柱是否落在海报墙上（决定 B 键给谁）
+    jmethodID sinkPanelBack = nullptr;  // 哪些面板"人在背面"（bit 掩码，界面层做镜像+蒙层）
+    int sinkPanelBackMask = -1;         // 上一次回推的掩码（-1 = 还没推过）
     jmethodID sinkVideoFrame = nullptr; // 视频画面首次到纹理层（换片黑幕收起用）
     bool sinkPointerValid = false;      // 上一次回推的指针位置（只在明显移动时回推）
     float sinkPointerX = 0.f;
@@ -4870,6 +4935,8 @@ void frameLoop(VrContext &c) {
          * 视频层没有内容（没开播、还没出帧、或运行时拒绝）时只提交界面层。
          */
         uint32_t layerCount = 0;
+        /* 哪些面板"人在背面"（bit0 海报墙 / bit1 控制条 / bit2 菜单）：回推给界面层做镜像+蒙层 */
+        int backMask = 0;
         /*
          * 影厅第一个提交 = 最底下那层（OpenXR 按数组顺序合成，先提交的在下）。
          * 上面才是视频、弹幕、海报墙、控制条、菜单，最后是画光柱的那层投影层。
@@ -4954,12 +5021,10 @@ void frameLoop(VrContext &c) {
         /* 海报墙压在视频与弹幕之上（见上方注释），只让投影层的光柱盖过它 */
         if (rendered && c.panelLayer.submitted) {
             const ScreenPlacement sp = panelPlacement(c);
-            const float hy = sp.yawDeg * 3.14159265358979f / 360.f;
-            const float hp = sp.pitchDeg * 3.14159265358979f / 360.f;
-            const float sy2 = sinf(hy), cy2 = cosf(hy);
-            const float sp2 = sinf(hp), cp2 = cosf(hp);
             panelQuad.pose.position = {sp.cx, sp.cy, sp.cz};
-            panelQuad.pose.orientation = {cy2 * sp2, sy2 * cp2, -sy2 * sp2, cy2 * cp2};
+            quadOrientation(sp.yawDeg, sp.pitchDeg, sp.cx, sp.cy, sp.cz,
+                            &panelQuad.pose.orientation);
+            if (viewerBehindPanel(sp.yawDeg, sp.pitchDeg, sp.cx, sp.cy, sp.cz)) backMask |= 1;
             panelQuad.size = {sp.width, sp.width / fmaxf(0.1f, sp.aspect)};
             panelQuad.subImage.swapchain = c.panelLayer.handle;
             panelQuad.subImage.imageRect.offset = {0, 0};
@@ -4976,11 +5041,13 @@ void frameLoop(VrContext &c) {
          * 光柱在投影层、始终最上，扣扳机点按钮才不会失灵。
          */
         if (rendered && c.osdLayer.submitted) {
-            const float th = kOsdTiltDeg * 3.14159265358979f / 180.f;
-            /* 控制条跟随观影位（父亲 2026-10-10：走近银幕时控制条留在伸手可及处） */
-            osdQuad.pose.position = {viewerOffsetX(), kOsdCenterY,
-                                     -kOsdDistance + viewerOffsetZ()};
-            osdQuad.pose.orientation = {sinf(th * 0.5f), 0.f, 0.f, cosf(th * 0.5f)};
+            /* 位置恒固定（父亲 2026-10-12：控制条不许跟着走动变位置） */
+            const float ocx = viewerOffsetX();
+            const float ocy = kOsdCenterY;
+            const float ocz = -kOsdDistance + viewerOffsetZ();
+            osdQuad.pose.position = {ocx, ocy, ocz};
+            quadOrientation(0.f, kOsdTiltDeg, ocx, ocy, ocz, &osdQuad.pose.orientation);
+            if (viewerBehindPanel(0.f, kOsdTiltDeg, ocx, ocy, ocz)) backMask |= 2;
             osdQuad.size = {kOsdWidth, kOsdHeight};
             osdQuad.subImage.swapchain = c.osdLayer.handle;
             osdQuad.subImage.imageRect.offset = {0, 0};
@@ -4990,12 +5057,12 @@ void frameLoop(VrContext &c) {
                     reinterpret_cast<const XrCompositionLayerBaseHeader *>(&osdQuad);
         }
         if (rendered && c.menuLayer.submitted) {
-            const float mth = kMenuTiltDeg * 3.14159265358979f / 180.f;
             float mcx, mcy, mcz, mnx, mny, mnz, mux, muy, muz, mvx, mvy, mvz;
             menuBasis(&mcx, &mcy, &mcz, &mnx, &mny, &mnz, &mux, &muy, &muz, &mvx, &mvy, &mvz);
-            /* 菜单跟随观影位：位置改在 menuBasis 里统一做，这里原样提交即可 */
+            /* 位置在 menuBasis 里统一算，这里只摆位（恒固定，不跟走动） */
             menuQuad.pose.position = {mcx, mcy, mcz};
-            menuQuad.pose.orientation = {sinf(mth * 0.5f), 0.f, 0.f, cosf(mth * 0.5f)};
+            quadOrientation(0.f, kMenuTiltDeg, mcx, mcy, mcz, &menuQuad.pose.orientation);
+            if (viewerBehindPanel(0.f, kMenuTiltDeg, mcx, mcy, mcz)) backMask |= 4;
             menuQuad.size = {kMenuWidth, kMenuHeight};
             menuQuad.subImage.swapchain = c.menuLayer.handle;
             menuQuad.subImage.imageRect.offset = {0, 0};
@@ -5003,6 +5070,15 @@ void frameLoop(VrContext &c) {
             menuQuad.subImage.imageArrayIndex = 0;
             layerPtrs[layerCount++] =
                     reinterpret_cast<const XrCompositionLayerBaseHeader *>(&menuQuad);
+        }
+        /* 背面状态回推（只在变化时调一次）：界面层据此把面板内容镜像 + 盖蒙层，
+         * 走到背面看到的就是"真正的背面"（左右反，像隔着毛玻璃从前面透过来）。 */
+        if (backMask != c.sinkPanelBackMask) {
+            c.sinkPanelBackMask = backMask;
+            if (c.sinkPanelBack != nullptr) {
+                env->CallVoidMethod(c.inputSink, c.sinkPanelBack, (jint) backMask);
+                clearJavaException(env, "输入回调 onPanelBackMask");
+            }
         }
         /* 投影层可关（2026-10-09 诊断开关）：验证"黑纹是否必须有投影层参与"。
          * 关掉后只剩 quad 层 —— 注意此时光柱/光标也会一起消失，属预期。 */
@@ -5845,8 +5921,14 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             break;
         case 19:
             /* 控制条/菜单/海报墙是否跟随观影位（1 = 跟，0 = 固定在世界里） */
-            gFollowViewer.store(value >= 0.5f ? 1 : 0);
-            LOGI("调参 → 控制条跟随观影位 %s", gFollowViewer.load() != 0 ? "开" : "关");
+            /*
+             * 恒关（父亲 2026-10-12）：控制条/海报墙**不许**跟着走动改变位置。
+             * 参数保留但不再生效 —— 之前它能在设备上把跟随打开，父亲一走动就撞上
+             * "面板跟着走"，这次直接从源头掐掉：谁来都打不开。
+             */
+            gFollowViewer.store(0);
+            (void) value;
+            LOGI("调参 → 控制条跟随观影位 恒关（父亲 2026-10-12：位置不许随走动变）");
             break;
         default:
             LOGI("调参 → 未知参数 key=%d（忽略）", (int) key);
@@ -5976,6 +6058,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachInputSink(JNIEnv *env, jobject /*
     g.sinkTriggerState = env->GetMethodID(cls, "onTriggerState", "(Z)V");
     g.sinkBack = env->GetMethodID(cls, "onBack", "()V");
     g.sinkPanelFocus = env->GetMethodID(cls, "onPanelFocus", "(Z)V");
+    g.sinkPanelBack = env->GetMethodID(cls, "onPanelBackMask", "(I)V");
     // 视频画面首次到纹理层（换片等待期的黑幕 / 转圈等这个信号才收）
     g.sinkVideoFrame = env->GetMethodID(cls, "onVideoFrameReady", "()V");
     env->DeleteLocalRef(cls);

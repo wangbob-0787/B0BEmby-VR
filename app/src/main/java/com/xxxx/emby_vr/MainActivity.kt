@@ -412,6 +412,18 @@ class MainActivity : ComponentActivity() {
             runOnUiThread { if (panelInputReady()) panel.vrPointer(px, py) }
         }
 
+        override fun onPanelBackMask(mask: Int) {
+            /*
+             * 原生只在变化时推：哪些面板"人在背面"（父亲 2026-10-12）。
+             * 置位的那层 → 内容左右镜像 + 盖半透明蒙层（见 PanelLayer.backView）。
+             */
+            runOnUiThread {
+                if (::panel.isInitialized) panel.backView = (mask and 1) != 0
+                if (::osd.isInitialized) osd.backView = (mask and 2) != 0
+                if (::menu.isInitialized) menu.backView = (mask and 4) != 0
+            }
+        }
+
         override fun onPanelFocus(onPanel: Boolean) {
             // 原生只在变化时推：光柱是否落在海报墙上
             runOnUiThread {
