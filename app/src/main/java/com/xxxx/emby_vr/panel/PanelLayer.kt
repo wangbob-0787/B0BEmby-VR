@@ -655,7 +655,7 @@ class PanelLayer(
 
             val owner = backOwner ?: PanelBackOwner(activity).also { backOwner = it }
             val p = PanelPresentation(
-                activity, vd.display, activity, content, owner,
+                activity, vd.display, activity, content, clickOwner, owner,
                 !activatesVrPanel,
             ) { view ->
                 decor = view
@@ -1296,6 +1296,8 @@ private class PanelPresentation(
     display: Display,
     private val activity: ComponentActivity,
     private val content: @Composable () -> Unit,
+    /** 本层命中区归属，随内容一起提供给 Compose（父亲 2026-10-12） */
+    private val clickOwner: Any?,
     private val backOwner: PanelBackOwner,
     /**
      * 控制条专用：窗口自己不能有黑底。
