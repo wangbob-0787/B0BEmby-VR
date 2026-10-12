@@ -92,39 +92,42 @@
             </intent-filter>
 
             <!--
-              VR 应用声明（2026-10-05 重新加回）。
+              ============ 对照实验：暂时删掉 VR 应用声明（2026-10-12）============
 
-              历史：build-6/build-7 加过它 → 全黑。当时的原因是**没有接 VR 运行时**：
-             PICO 按 VR 应用合成后，应用必须自己通过 OpenXR 提交立体帧，
-             而那时我们还是单眼普通投影，所以什么都没提交 → 黑屏。
+              目的：查清「未知来源」分类的判据。
 
-              现在已接入官方 OpenXR（app/src/main/cpp/openxr_renderer.cpp），
-              由原生线程提交立体帧，因此按 VR 应用走才是对的：
-              这样才能拿原始手柄输入（⭕/A/B 键、摇杆轴值），
-              也才能把视频/字幕/弹幕/控制条画成各自独立的 VR 图层。
-            -->
-            <meta-data
-                android:name="pvr.app.type"
-                android:value="vr" />
+              已查到的证据：
+                · 资源库（com.pvr.appmanager，/system/priv-app/AppManager）的
+                  dex 里有判定常量 FILTER_IS_VR / TAB_APP / TAB_UNKNOWN 和
+                  资源名 main_menu_unknown_source（=「未知来源」）；
+                  它读的字段就是 `pvr.app.type`。
+                · 官方文档（developer-cn.picoxr.com/document/unity/
+                  installed-app-not-showing/）：未上架 PICO 商店的应用会显示在
+                  「未知来源」条目下；已上架的才显示在对应分类下。
+                · 但设备上同为侧载的「沙发管家」（com.shafa.market，
+                  installer 同为 com.android.packageinstaller，清单里**无任何
+                  VR 声明**）却在「应用」分类下 —— 说明判据不是安装来源，
+                  而是「是不是 VR 应用」。
 
-            <!--
-              关于 `pvr.app.type=vr`（2026-10-03 实机结论，重要）：
+              本实验：只删这一条 `pvr.app.type`（VR 分类 category 保留），
+              其它一律不动，单独验证它是不是分类开关。
 
-              build-6/build-7 声明了它，结果 PICO 按 **VR 应用**合成 ——
-              画面直出到 4320x2160 面板，不走「2D 面板虚拟显示器」路径，
-              而我们的渲染是单眼 + 普通透视投影，与 VR 合成器要求不匹配，
-              表现为**全黑**（实测截图中心像素 RGB 全 0）。
+              预期与风险：
+                · 若分类变到「应用」→ 判据坐实。但要同时确认画面是否还正常，
+                  因为 PICO 可能因此按 2D 应用合成（build-6/7 当年就是加它导致
+                  全黑，那时没接 OpenXR；现在已接，去掉它是否还能出画面未知）。
+                · 若画面变黑 → 立刻把 run-464 的包重装回去（同包名同签名，
+                  `-r` 覆盖，账号数据不丢），并在台账记录本实验失败。
 
-              「最小可用平面虚拟屏」阶段的目标是：头显里看到一块平面屏、
-              手柄能操作。这用 **PICO 的 2D 面板模式**即可达成：
-              PICO 会为 2D 应用建一个名为 `NS_APP[<包名>]` 的虚拟显示器
-              （`dumpsys display` 可见，哔哩哔哩 HD 就是这个形态），
-              应用照常在面板分辨率上输出，系统负责贴成空间面板。
-
-              因此当前**不加** pvr.app.type，先走 2D 面板；
-              等做真双目立体渲染（接 OpenXR runtime）时再加回来。
-              对照：设备上的 4XVR Player 是原生 VR 播放器，
-              它的 manifest 里 pvr.app.type 挂在 activity 上。
+              历史对照（pvr.app.type 的来龙去脉，别丢）：
+                · build-6/build-7 声明它 → 全黑。当时原因是**没接 VR 运行时**：
+                  PICO 按 VR 应用合成后应用必须自己通过 OpenXR 提交立体帧，
+                  而那时是单眼普通投影，什么都没提交 → 黑屏。
+                · 45de711（10-03 21:35）删掉它 + 删掉 VR category → 走 2D 面板
+                  （PICO 会为 2D 应用建 `NS_APP[<包名>]` 虚拟显示器，
+                  `dumpsys display` 可见，哔哩哔哩 HD 就是这个形态）。
+                · 788718b（10-05）接了官方 OpenXR（app/src/main/cpp/
+                  openxr_renderer.cpp）后加回它，由原生线程提交立体帧。
             -->
 
         </activity>
