@@ -2824,33 +2824,13 @@ void pushInput(VrContext &c) {
             }
 
             /*
-             * 菜单开着、但光柱不在菜单上（父亲 2026-10-12：「海报墙和菜单会一起滚」）。
-             *
-             * 滚轮是按坐标派发的，落点就是光柱位置 —— 光柱在海报墙上时，落点落在
-             * 菜单外面，菜单自己的列表滚不动，反而可能把海报墙滚了。
-             * 所以这里把摇杆仍然交给菜单，坐标用「菜单里最后一次的落点」
-             * （还没有就用菜单面板中心），并且下面海报墙分支的摇杆通道被掐掉
-             * （见 ④ 的 !menuVisible 条件）—— 菜单开着时摇杆只滚菜单，谁也不许抢。
+             * 光柱不在菜单上时**什么都不推**（父亲 2026-10-12 晚立的规矩）：
+             * 「必须激光指到菜单面板上，摇杆才能滚菜单」。
+             * 曾经在这里兜过一手（拿菜单里最后一次落点继续滚菜单），
+             * 父亲实测报「激光指到菜单以外，演职人员列表也能滚」—— 撤销。
+             * 海报墙那一侧的摇杆通道同样被掐掉（见 ④ 的 !menuVisible 条件），
+             * 于是菜单开着时：指着菜单 = 滚菜单，指着别处 = 不动。
              */
-            const float offX = c.sinkMenuPointerValid ? c.sinkMenuPointerX : kMenuPxW * 0.5f;
-            const float offY = c.sinkMenuPointerValid ? c.sinkMenuPointerY : kMenuPxH * 0.5f;
-            const float offSx = c.thumbstick[h].x;
-            const float offSy = c.thumbstick[h].y;
-            if (fabsf(offSx) > kStickDeadzone || fabsf(offSy) > kStickDeadzone) {
-                if (t - c.sinkStickAt[h] >= kStickStateMs) {
-                    c.sinkStickAt[h] = t;
-                    c.sinkStickPushed[h] = true;
-                    if (c.sinkStick != nullptr) {
-                        env->CallVoidMethod(c.inputSink, c.sinkStick, offX, offY, offSx, offSy);
-                        clearJavaException(env, "输入回调 onStick（菜单开着·光柱在别处）");
-                    }
-                }
-            } else if (c.sinkStickPushed[h] && c.sinkStick != nullptr) {
-                c.sinkStickPushed[h] = false;
-                c.sinkStickAt[h] = 0.0;
-                env->CallVoidMethod(c.inputSink, c.sinkStick, offX, offY, 0.f, 0.f);
-                clearJavaException(env, "输入回调 onStick（菜单开着·回中）");
-            }
         }
 
         /*
@@ -3156,10 +3136,15 @@ void pushInput(VrContext &c) {
          * 这一段的位置天然是"既不在菜单、也不在海报墙"，正好补上这一路。
          * 坐标传 0：播放页只用摇杆量；面板滚动在 Java 侧另有 panelPointerOnPanel 把关。
          */
-        if (c.videoActive.load()) {
+        if (c.videoActive.load() && !c.menuVisible.load()) {
             /*
              * 只在播放中补这一路：未播放时（看海报墙/首页）指着屏幕推摇杆，
              * 不该跑去滚面板 —— 那时的摇杆仍走"指着海报墙"那条既有通道。
+             *
+             * 菜单开着时整条掐掉（父亲 2026-10-12 晚立的规矩）：**光柱要指在菜单
+             * 面板上，摇杆才滚菜单**，指别处一律不动。原来这一路会把摇杆推给界面层，
+             * 界面层见"菜单开着"就当滚菜单 —— 于是光柱在银幕上也能把演职人员列表
+             * 滚起来，正是父亲报的现象。
              */
             const float sxScreen = c.thumbstick[h].x;
             const float syScreen = c.thumbstick[h].y;
