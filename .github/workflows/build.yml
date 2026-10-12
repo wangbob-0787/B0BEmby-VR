@@ -61,7 +61,15 @@ jobs:
           echo "local.properties 已写入（Key 长度 ${#EMBY_API_KEY}）"
 
       # 装机一律用 release：TV 版实测 debug 包每帧 650ms、release 32ms（debug 不跑 AOT）
+      #
+      # BUILD_NUMBER 必须传（2026-10-12 补）：app/build.gradle.kts:90 用它算
+      # versionCode/versionName，缺省值 1。这条 env 一直漏着，导致从 build-1 到
+      # build-461 每个包的 versionCode 都是 1、versionName 都是 0.1.1 ——
+      # 桌面按版本号判断"是不是新包"，版本号不变就一直用缓存里的旧图标，
+      # 父亲看到的"图标没换成最新的"根源就在这里（覆盖安装多少次都没用）。
       - name: 编译 APK（debug + release）
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
         run: |
           chmod +x gradlew
           ./gradlew :app:assembleDebug :app:assembleRelease --no-daemon --stacktrace --build-cache
