@@ -217,8 +217,10 @@ class MainActivity : ComponentActivity() {
     /** 海报墙摆放的本地存档（下次打开 APP 还原） */
     private val placePrefs by lazy { getSharedPreferences("b0bemby_vr", MODE_PRIVATE) }
 
-    /** 影厅亮度记忆键（父亲 2026-10-10：默认 0 = 全黑，之后记住上次选的） */
+    /** 影厅亮度记忆键（父亲 2026-10-10：默认 0 = 全黑，之后记住上次选的；2026-10-12 默认改 1%） */
     private val PREF_CINEMA_BRIGHT = "cinema_bright"
+    /** 亮度默认值一次性迁移标记（父亲 2026-10-12）——见 restorePlacePrefs 里的用法 */
+    private val PREF_BRIGHT_RESET_V2 = "cinema_bright_reset_v2"
     /** 座椅调节记忆键（米） */
     private val PREF_SEAT_UP = "seat_up"
     private val PREF_SEAT_FWD = "seat_fwd"
@@ -4897,9 +4899,21 @@ class MainActivity : ComponentActivity() {
 
         /*
          * 影厅亮度记住上次（父亲 2026-10-10：「默认设为 0，或者记住我上次选的亮度」）：
-         * 没存过 → 0（影厅全黑，只剩画面自己发光）；存过 → 用上次那一档。
+         * 没存过 → 1%（父亲 2026-10-12 改的默认值）；存过 → 用上次那一档。
+         *
+         * 一次性迁移（2026-10-12）：默认值从 0 改成 1% 时，老机器上早就存着一个 0
+         * （老默认就是 0，只要动过摇杆就被记下来），会把新默认值顶掉 —— 父亲装完新版
+         * 一打开看到的还是 0%，日志里正是"影厅亮度恢复：0%"。所以升级后第一次启动
+         * 强制回到 1%，之后照旧记住他调的那一档。
          */
         runCatching {
+            if (!placePrefs.getBoolean(PREF_BRIGHT_RESET_V2, false)) {
+                placePrefs.edit()
+                    .putFloat(PREF_CINEMA_BRIGHT, 0.01f)
+                    .putBoolean(PREF_BRIGHT_RESET_V2, true)
+                    .apply()
+                Log.i(TAG, "影厅亮度默认值迁移：旧存值重置为 1%")
+            }
             val saved = placePrefs.getFloat(PREF_CINEMA_BRIGHT, 0.01f).coerceIn(0f, 1f)
             menuState.cinemaBright = saved
             com.xxxx.emby_vr.vr.VrNative.setTuning(
