@@ -463,6 +463,15 @@ class PanelLayer(
     var scrollClampRect: androidx.compose.ui.geometry.Rect? = null
 
     /**
+     * 本层命中区的归属（父亲 2026-10-12）。
+     *
+     * 每块面板是独立画布 + 独立坐标空间，但命中区表是全局单例。不给命中区标归属，
+     * 「点这一层的东西」就可能命中另一层里更小的矩形 —— 父亲实测：剧集详情页
+     * 点某一集，弹出的是演员头像卡（控制条那层的按钮矩形抢中了）。
+     */
+    private val clickOwner = Any()
+
+    /**
      * 滚动驱动：**跟着渲染帧走**（父亲 2026-10-05 定案）。
      *
      * 为什么不用定时器：定时器（原来 60ms，约 30 次/秒）和面板刷新率对不上，
@@ -865,7 +874,7 @@ class PanelLayer(
          *   · VrPointer —— 原始坐标（节流发布），给没进表的控件（播放菜单的行）自己判断。
          * 两边同一套坐标，所以"看到亮的"和"点下去中的"是同一个控件。
          */
-        if (!directClick) VrHover.update(ClickTargets.findHoverAt(px, py)?.key)
+        if (!directClick) VrHover.update(ClickTargets.findHoverAt(px, py, clickOwner)?.key)
         VrPointer.publish(px, py)
     }
 
@@ -1204,7 +1213,7 @@ class PanelLayer(
                     return
                 }
 
-                val target = ClickTargets.findAt(px, py)
+                val target = ClickTargets.findAt(px, py, clickOwner)
                 if (target != null) {
                     fireTarget(target)
                     return
@@ -1372,6 +1381,8 @@ private class PanelPresentation(
             @OptIn(ExperimentalFoundationApi::class)
             CompositionLocalProvider(
                 LocalOnBackPressedDispatcherOwner provides backOwner,
+                /* 命中区归属：这一层画的控件只归这一层（父亲 2026-10-12） */
+                com.xxxx.emby_vr.panel.LocalClickTargetOwner provides clickOwner,
                 /*
                  * 父亲 2026-10-06：「扣扳机点继续播放列时，列会左右滚」。
                  * 那是 Compose 的焦点自动滚动 —— 控件一拿到焦点就被滚进视野中央。

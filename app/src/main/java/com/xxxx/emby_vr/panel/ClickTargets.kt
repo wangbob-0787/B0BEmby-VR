@@ -1,6 +1,7 @@
 package com.xxxx.emby_vr.panel
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -68,6 +69,17 @@ object ClickTargets {
          * 全部登记成同一个组，同时把该组设为**模态组** —— 查表只在这个组里找。
          */
         val group: Any? = null,
+        /**
+         * 这块命中区**属于哪一层**（父亲 2026-10-12）。
+         *
+         * 各面板层是**互相独立的画布**（主面板 1920x1080、控制条 2331x474、
+         * 菜单 2560x760），但命中区表是全局单例 —— 查表只看矩形、不看画布，
+         * 于是「剧集详情页点某一集」的落点可能先命中控制条/菜单层里某个更小的
+         * 矩形（比如控制条上的「演员」按钮，它的坐标在另一套空间里），
+         * 表现就是父亲报的「点某一集，把演员头像卡点出来了」。
+         * 归属一标，`findAt` 就只在本层里找，跨层串台直接断掉。
+         */
+        val owner: Any? = null,
     ) {
         val area: Float get() = (right - left) * (bottom - top)
 
@@ -165,10 +177,11 @@ object ClickTargets {
         activate: () -> Unit,
         group: Any? = null,
         hoverable: Boolean = true,
+        owner: Any? = null,
     ) {
         synchronized(targets) {
             targets[key] =
-                Target(key, label, left, top, right, bottom, focus, activate, hoverable, group)
+                Target(key, label, left, top, right, bottom, focus, activate, hoverable, group, owner)
             putCount++
             // 头 15 条 + 每 50 条打一行：既能核对坐标，又不会把日志刷爆
             if (putCount <= 15 || putCount % 50 == 0) {
@@ -207,13 +220,14 @@ object ClickTargets {
      *
      * 有模态组时**只在模态组里找**（浮层开着 → 只认浮层自己的控件）。
      */
-    fun findAt(x: Float, y: Float): Target? = synchronized(targets) {
+    fun findAt(x: Float, y: Float, owner: Any? = null): Target? = synchronized(targets) {
         val g = modalGroup
         // 单趟扫描、不建中间列表：这个方法现在**每帧**都会被调用（光柱扫到谁 = 高亮谁），
         // 原来的 filter+filter+minByOrNull 每帧要分配两三个 List，72Hz 下就是垃圾回收压力。
         var best: Target? = null
         var bestArea = Float.MAX_VALUE
         for (t in targets.values) {
+            if (t.owner !== owner) continue
             if (g != null && t.group !== g) continue
             if (!t.contains(x, y)) continue
             val a = t.area
@@ -232,11 +246,12 @@ object ClickTargets {
      * 跳过 hoverable=false 的控件（全屏遮罩、与别的控件重叠的辅助点击区）。
      * 于是「点下去中的」和「看到亮的」仍是同一套命中逻辑，只是看得见的那些才亮。
      */
-    fun findHoverAt(x: Float, y: Float): Target? = synchronized(targets) {
+    fun findHoverAt(x: Float, y: Float, owner: Any? = null): Target? = synchronized(targets) {
         val g = modalGroup
         var best: Target? = null
         var bestArea = Float.MAX_VALUE
         for (t in targets.values) {
+            if (t.owner !== owner) continue
             if (!t.hoverable) continue
             if (g != null && t.group !== g) continue
             if (!t.contains(x, y)) continue
@@ -314,6 +329,15 @@ fun Modifier.vrScrollZone(key: Any, onStep: (Int) -> Unit): Modifier {
  *
  * 生命周期：控件离开组合（列表回收、切屏）时自动摘除，不会留下幽灵条目。
  */
+/**
+ * 当前这块内容属于哪一层画布（父亲 2026-10-12）。
+ *
+ * 由 [com.xxxx.emby_vr.panel.PanelLayer] 在挂内容时提供；每个面板层一个独立对象。
+ * [Modifier.vrClickTarget] 登记时把这个归属一起写进表里，查表时按归属过滤 ——
+ * 从根上断掉"这一层点到另一层控件"的串台。
+ */
+val LocalClickTargetOwner = compositionLocalOf<Any?> { null }
+
 @Composable
 fun Modifier.vrClickTarget(
     key: Any,
@@ -331,6 +355,8 @@ fun Modifier.vrClickTarget(
     hoverRadius: Dp = 12.dp,
     onActivate: () -> Unit,
 ): Modifier {
+    // 本层归属：登记时一并写入，查表时按它过滤（父亲 2026-10-12）
+    val owner = LocalClickTargetOwner.current
     // 用 rememberUpdatedState 拿最新的闭包/请求器，避免登记的是上一帧的旧值
     val activate by rememberUpdatedState(onActivate)
     val requester by rememberUpdatedState(focusRequester)
@@ -364,6 +390,7 @@ fun Modifier.vrClickTarget(
             activate = { activate() },
             group = group,
             hoverable = hover,
+            owner = owner,
         )
     }.then(
         /*
