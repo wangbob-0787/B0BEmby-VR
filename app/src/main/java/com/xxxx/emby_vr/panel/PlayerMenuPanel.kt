@@ -996,11 +996,20 @@ private fun CastMenu(menu: MenuState) {
                     }
                 }
                 Spacer(modifier = Modifier.height(10.dp))
+                /*
+                 * 演员名（父亲 2026-10-12：长名字被截掉一截，字体小一号）。
+                 *
+                 * 原来 24sp + maxLines=1 + 默认 Clip：卡片宽 150dp（盒子 140dp），
+                 * 中文名 4~5 个字就顶满，"朱丽安·摩尔"这类会被硬切掉后半截
+                 * （Clip 是直接裁，连省略号都没有，看着就是"文字缺一块"）。
+                 * 现在 20sp 并允许两行，两行还放不下才出省略号。
+                 */
                 Text(
                     text = person.name,
                     color = Color.White,
-                    fontSize = 24.sp,
-                    maxLines = 1,
+                    fontSize = 20.sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 if (person.role.isNotBlank()) {
                     Text(
