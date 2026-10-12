@@ -672,8 +672,10 @@ class PanelLayer(
 
             val owner = backOwner ?: PanelBackOwner(activity).also { backOwner = it }
             val p = PanelPresentation(
-                activity, vd.display, activity, content, clickOwner, owner,
-                !activatesVrPanel,
+                activity, vd.display, activity, content, clickOwner,
+                /* 背面视图状态（父亲 2026-10-12）：人在背面 → 内容镜像 + 蒙层 */
+                { backView },
+                owner, !activatesVrPanel,
             ) { view ->
                 decor = view
                 ready = true
@@ -1315,6 +1317,12 @@ private class PanelPresentation(
     private val content: @Composable () -> Unit,
     /** 本层命中区归属，随内容一起提供给 Compose（父亲 2026-10-12） */
     private val clickOwner: Any?,
+    /**
+     * 人是否站在本层背面（读的是 PanelLayer.backView 这个 Compose 状态，
+     * 所以随它变化自动重组）。用 lambda 而不是布尔值传进来：
+     * 这个类看不到 PanelLayer 的字段（父亲 2026-10-12 那次的教训）。
+     */
+    private val backView: () -> Boolean,
     private val backOwner: PanelBackOwner,
     /**
      * 控制条专用：窗口自己不能有黑底。
@@ -1425,11 +1433,11 @@ private class PanelPresentation(
                     Box(
                         Modifier
                             .fillMaxSize()
-                            .graphicsLayer { scaleX = if (backView) -1f else 1f },
+                            .graphicsLayer { scaleX = if (backView()) -1f else 1f },
                     ) {
                         content()
                     }
-                    if (backView) {
+                    if (backView()) {
                         Box(Modifier.fillMaxSize().background(UiColor(0x8C8E969E)))
                     }
                 }

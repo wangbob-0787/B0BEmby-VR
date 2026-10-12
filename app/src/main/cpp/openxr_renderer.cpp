@@ -1152,6 +1152,14 @@ float viewerOffsetZ() {
  * 那部分在界面层做（面板内容镜像 + 盖一层半透明），原生这里只负责"看得见"。
  */
 std::chrono::steady_clock::time_point gLastFlipLog{};
+/*
+ * 人在哪些面板的背面（bit0 海报墙 / bit1 控制条 / bit2 菜单）。
+ *
+ * 由**渲染帧**（frameLoop 组图层时）算出，由**输入帧**（pushInput）回推给 Java ——
+ * 因为 pushInput 手里才有 JNIEnv，frameLoop 里没有。差一帧无所谓。
+ * 初值 -1 = 还没算过，什么都不推。
+ */
+std::atomic<int> gPanelBackMask{-1};
 /** 判定阈值（米）：越过面板平面这么多才算"到背面"，避免站在平面上来回抖 */
 constexpr float kBackFaceBias = 0.02f;
 
@@ -2800,6 +2808,19 @@ void pushInput(VrContext &c) {
     if (c.jvm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6) != JNI_OK ||
         env == nullptr) {
         return;
+    }
+
+    /*
+     * 背面状态回推（只在变化时调一次）：界面层据此把面板内容左右镜像 + 盖蒙层，
+     * 走到背面看到的就是"真正的背面"（左右反，像隔着毛玻璃从前面透过来）。
+     */
+    const int backMask = gPanelBackMask.load();
+    if (backMask >= 0 && backMask != c.sinkPanelBackMask) {
+        c.sinkPanelBackMask = backMask;
+        if (c.sinkPanelBack != nullptr) {
+            env->CallVoidMethod(c.inputSink, c.sinkPanelBack, (jint) backMask);
+            clearJavaException(env, "输入回调 onPanelBackMask");
+        }
     }
 
     const double t = nowMs();
@@ -5071,15 +5092,8 @@ void frameLoop(VrContext &c) {
             layerPtrs[layerCount++] =
                     reinterpret_cast<const XrCompositionLayerBaseHeader *>(&menuQuad);
         }
-        /* 背面状态回推（只在变化时调一次）：界面层据此把面板内容镜像 + 盖蒙层，
-         * 走到背面看到的就是"真正的背面"（左右反，像隔着毛玻璃从前面透过来）。 */
-        if (backMask != c.sinkPanelBackMask) {
-            c.sinkPanelBackMask = backMask;
-            if (c.sinkPanelBack != nullptr) {
-                env->CallVoidMethod(c.inputSink, c.sinkPanelBack, (jint) backMask);
-                clearJavaException(env, "输入回调 onPanelBackMask");
-            }
-        }
+        /* 背面状态记下来，由 pushInput 回推给界面层（那里有 JNIEnv）。 */
+        gPanelBackMask.store(backMask);
         /* 投影层可关（2026-10-09 诊断开关）：验证"黑纹是否必须有投影层参与"。
          * 关掉后只剩 quad 层 —— 注意此时光柱/光标也会一起消失，属预期。 */
         if (rendered && gHideProjection.load() == 0) {
