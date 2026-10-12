@@ -125,7 +125,18 @@ object EmbyApi {
         filters: String? = null
     ): Pair<List<BaseItemDto>, Int> {
         val url = "/Users/$userId/Items?IncludeItemTypes=$type" +
-                "&Fields=BasicSyncInfo,PrimaryImageAspectRatio,ProductionYear,Status,EndDate" +
+                /*
+                 * CurrentProgram（2026-10-12 父亲提）：直播库详情页每张频道卡下面要显示
+                 * "当前正在播的节目名"，与首页「电视直播」那行一致。
+                 *
+                 * 实测（2026-10-12 直接打 .15 的接口）：
+                 *   /Users/<uid>/Items?ParentId=<直播库>&IncludeItemTypes=TvChannel
+                 *     &Fields=CurrentProgram  → 71 条，每条都带 CurrentProgram.Name
+                 *     （CCTV1 → 自然中国-探秘长白山-火山密码）
+                 * 首页那行走的是 /LiveTv/Channels?Fields=CurrentProgram，两个接口都支持。
+                 * 非频道条目请求这个字段不产生额外解析（Emby 只对 TvChannel 解析节目）。
+                 */
+                "&Fields=BasicSyncInfo,PrimaryImageAspectRatio,ProductionYear,Status,EndDate,CurrentProgram" +
                 "&StartIndex=$startIndex&SortBy=$sortBy&SortOrder=$sortOrder&ParentId=$parentId" +
                 (filters?.let { "&Filters=$it" } ?: "") +
                 "&EnableImageTypes=Primary,Backdrop,Thumb&ImageTypeLimit=1&Recursive=true&Limit=$limit" +

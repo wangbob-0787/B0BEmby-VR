@@ -97,6 +97,15 @@ fun BuildItem(
      * 浮层里的海报卡要把浮层那个组传进来。
      */
     clickGroup: Any? = null,
+    /*
+     * 卡片副标题的直接覆盖值（2026-10-12 父亲）。
+     *
+     * 直播库详情页要跟首页「电视直播」那行一样，在频道卡下面显示"当前正在播的节目名"。
+     * 走到这里有两个坎：① 详情页的卡是 isMyLibrary=true，下面的副标题整个不画；
+     * ② 常规副标题是"分级 + 年份"，对频道没有意义。
+     * 所以单独给一个口子：传了它就在标题下面画一行（非空才画），与 isMyLibrary 无关。
+     */
+    subtitleOverride: String? = null,
 ) {
     val myFocusRequester = remember { FocusRequester() }
     val focusAnchor = focusRequester ?: myFocusRequester
@@ -338,6 +347,22 @@ fun BuildItem(
                     overflow = TextOverflow.Ellipsis,
                     textAlign = TextAlign.Center
                 )
+
+                /*
+                 * 副标题覆盖值（2026-10-12）：直播频道卡显示"当前正在播的节目名"。
+                 * 画在标题正下方，样式与首页「电视直播」那行一致（白 60% / 12sp）。
+                 */
+                if (!subtitleOverride.isNullOrBlank()) {
+                    Text(
+                        text = subtitleOverride,
+                        color = Color.White.copy(alpha = 0.6f),
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
 
                 if (!isMyLibrary) {
                     val subTitle = if (item.parentIndexNumber != null) {

@@ -70,14 +70,13 @@ android {
 
     defaultConfig {
         /*
-         * 2026-10-12 对照实验专用包名。
+         * 2026-10-12：实验结束，包名改回正式版。
          *
-         * 父亲的要求：实验版要装成**另一个应用**，不能动现有的 B0BEmby VR。
-         * applicationId 改成 .exp 后与正式版并存互不干扰；namespace 不变，
-         * 代码里的包引用不受影响（只影响安装身份）。见同批次 AndroidManifest
-         * 里「对照实验」注释。实验结束后改回 "com.xxxx.emby_vr"。
+         * 实验结论（见 AndroidManifest.xml 里的完整记录）：去掉 `pvr.app.type`
+         * 之后，同一个应用在 PICO 资源库里就从「未知来源」变成「应用」——
+         * 分类开关就是这一条，与包名无关（实验版用的是 .exp 包名，同样进「应用」）。
          */
-        applicationId = "com.xxxx.emby_vr.exp"
+        applicationId = "com.xxxx.emby_vr"
         // PICO 4 = Android 10 / API 29；PICO 官方上传要求 minSdk 29
         minSdk = 29
         targetSdk = 33          // PICO OS 5.x 兼容；Google Play 上架线是 33，低于它 lint 会拦构建

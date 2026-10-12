@@ -92,32 +92,38 @@
             </intent-filter>
 
             <!--
-              ============ 对照实验：暂时删掉 VR 应用声明（2026-10-12）============
+              ============ 「未知来源」分类的判据已定案（2026-10-12 对照实验）============
 
-              目的：查清「未知来源」分类的判据。
+              父亲的诉求：PICO 资源库把我们这个自用客户端一直归到「未知来源」。
 
-              已查到的证据：
-                · 资源库（com.pvr.appmanager，/system/priv-app/AppManager）的
-                  dex 里有判定常量 FILTER_IS_VR / TAB_APP / TAB_UNKNOWN 和
-                  资源名 main_menu_unknown_source（=「未知来源」）；
-                  它读的字段就是 `pvr.app.type`。
-                · 官方文档（developer-cn.picoxr.com/document/unity/
-                  installed-app-not-showing/）：未上架 PICO 商店的应用会显示在
-                  「未知来源」条目下；已上架的才显示在对应分类下。
-                · 但设备上同为侧载的「沙发管家」（com.shafa.market，
-                  installer 同为 com.android.packageinstaller，清单里**无任何
-                  VR 声明**）却在「应用」分类下 —— 说明判据不是安装来源，
-                  而是「是不是 VR 应用」。
+              逐步排除（每条都是实测，别再重走）：
+                · 不是安装来源 ——「沙发管家」（com.shafa.market）的 installer 与我们
+                  同为 com.android.packageinstaller，它却不在「未知来源」。
+                · 不是包名 —— 实验版换成 com.xxxx.emby_vr.exp 依旧被正确识别。
+                · 不是 PICO 商店清单 —— 父亲在头显商店里搜「沙发管家」搜不到。
+                · 不是缺 LAUNCHER 标签 —— 我们一直有 LAUNCHER + LEANBACK_LAUNCHER。
+                · 不是版本号缓存 —— 修好版本号（run 464）后分类没变。
 
-              本实验：只删这一条 `pvr.app.type`（VR 分类 category 保留），
-              其它一律不动，单独验证它是不是分类开关。
+              判定性实验：把 `pvr.app.type` 这一条**只删这一条**、其余不动，
+              用独立包名（com.xxxx.emby_vr.exp）编了一版装上去 ——
+              结果它出现在资源库的「应用」分类里，且能正常显示登录页。
+              → **分类开关就是 `pvr.app.type=vr`**：声明了它，PICO 认为这是
+              「VR 应用」，而 VR 应用没有商店记录就一律进「未知来源」；不声明则
+              按普通 2D 应用对待，进「应用」。
 
-              预期与风险：
-                · 若分类变到「应用」→ 判据坐实。但要同时确认画面是否还正常，
-                  因为 PICO 可能因此按 2D 应用合成（build-6/7 当年就是加它导致
-                  全黑，那时没接 OpenXR；现在已接，去掉它是否还能出画面未知）。
-                · 若画面变黑 → 立刻把 run-464 的包重装回去（同包名同签名，
-                  `-r` 覆盖，账号数据不丢），并在台账记录本实验失败。
+              佐证（从设备里挖出来的，不是猜的）：
+                · 资源库 com.pvr.appmanager（/system/priv-app/AppManager）的 dex 里有
+                  FILTER_IS_VR / TAB_APP / TAB_GAME / TAB_UNKNOWN 常量、资源名
+                  main_menu_unknown_source，并且**读的就是 `pvr.app.type`**。
+                · 该系统提示原文：「您正在尝试运行的应用属于未知来源应用。请登录
+                  开发者账号进行对应操作。」—— 未知来源这套是给开发者调试用的。
+                · 官方文档 developer-cn.picoxr.com/document/unity/
+                  installed-app-not-showing/：未上架 PICO 商店的应用显示在
+                  「未知来源」条目下，已上架的才显示在对应分类下。
+
+              ⚠️ 取舍：不声明 `pvr.app.type=vr` 的代价要盯着看 —— 它原本意味着
+              PICO 按 VR 应用合成。实验版能出登录页，但输入通道（射线/按键是否还
+              走原始手柄数据）、立体渲染与画质是否与声明时一致，需要父亲实测确认。
 
               历史对照（pvr.app.type 的来龙去脉，别丢）：
                 · build-6/build-7 声明它 → 全黑。当时原因是**没接 VR 运行时**：

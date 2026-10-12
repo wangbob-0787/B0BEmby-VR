@@ -340,6 +340,13 @@ fun LibraryScreen(
                                 modifier = itemModifier,
                                 // 频道卡当"图块"渲染：不画下面的年份/分级占位("--")、不画播放进度条
                                 isMyLibrary = isLiveTv,
+                                /*
+                                 * 频道卡下面显示"当前正在播的节目名"（父亲 2026-10-12）。
+                                 * 首页「电视直播」那行一直有，这里以前没有：
+                                 * 详情页卡走的是 isMyLibrary=true 分支，副标题整个不画。
+                                 * 数据靠 EmbyApi.getLibraryList 的 Fields=CurrentProgram 带回来。
+                                 */
+                                subtitleOverride = if (isLiveTv) item.currentProgram?.name else null,
                                 imageScale = if (isLiveTv) ContentScale.Fit else ContentScale.Crop,
                                 serverUrl = serverUrl,
                                 onItemClick = {
