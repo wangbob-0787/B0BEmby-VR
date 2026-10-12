@@ -434,6 +434,17 @@ class PanelLayer(
     private var scrollAnchorY = -1f
 
     /**
+     * 滚轮派发点的收拢矩形（面板像素，父亲 2026-10-12）。
+     *
+     * 「按坐标派发滚轮」有个前提：光柱得指在可滚容器上。菜单开着的时候光柱常常在
+     * 海报墙那一侧，于是滚轮落到菜单窗口里不对的位置 —— 表现是「海报墙和菜单一起滚」
+     * 或者「怎么推都不滚」。宿主（MainActivity）在菜单开着时把当前菜单卡片
+     * （演职人员面板则用那一排）的矩形塞进来，[scrollAnchorPoint] 会把落点收进去，
+     * 保证滚的永远是菜单自己的列表。为 null = 不限制，行为与以前一致。
+     */
+    var scrollClampRect: androidx.compose.ui.geometry.Rect? = null
+
+    /**
      * 滚动驱动：**跟着渲染帧走**（父亲 2026-10-05 定案）。
      *
      * 为什么不用定时器：定时器（原来 60ms，约 30 次/秒）和面板刷新率对不上，
@@ -523,6 +534,22 @@ class PanelLayer(
         var y = if (scrollAnchorY >= 0f) scrollAnchorY else downPy
         if (w > 0f) x = x.coerceIn(w * 0.10f, w * 0.90f)
         if (h > 0f) y = y.coerceIn(h * 0.20f, h * 0.80f)
+        /*
+         * 菜单开着时把落点收进菜单卡片/那一排的矩形（父亲 2026-10-12）。
+         * 收拢而不是替换成长按点：光柱已经指在卡片里时不动它，手感不变；
+         * 指在卡片外（海报墙上）才被拉回卡片内，滚的仍然是菜单。
+         */
+        scrollClampRect?.let { r ->
+            if (r.width > 4f && r.height > 4f) {
+                val cx = x.coerceIn(r.left + 2f, r.right - 2f)
+                val cy = y.coerceIn(r.top + 2f, r.bottom - 2f)
+                if (cx != x || cy != y) {
+                    Log.i(TAG, "滚轮落点收进菜单：(${x.toInt()},${y.toInt()}) → (${cx.toInt()},${cy.toInt()})")
+                    x = cx
+                    y = cy
+                }
+            }
+        }
         return x to y
     }
 

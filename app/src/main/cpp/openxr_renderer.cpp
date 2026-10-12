@@ -2822,6 +2822,35 @@ void pushInput(VrContext &c) {
 
                 continue;
             }
+
+            /*
+             * 菜单开着、但光柱不在菜单上（父亲 2026-10-12：「海报墙和菜单会一起滚」）。
+             *
+             * 滚轮是按坐标派发的，落点就是光柱位置 —— 光柱在海报墙上时，落点落在
+             * 菜单外面，菜单自己的列表滚不动，反而可能把海报墙滚了。
+             * 所以这里把摇杆仍然交给菜单，坐标用「菜单里最后一次的落点」
+             * （还没有就用菜单面板中心），并且下面海报墙分支的摇杆通道被掐掉
+             * （见 ④ 的 !menuVisible 条件）—— 菜单开着时摇杆只滚菜单，谁也不许抢。
+             */
+            const float offX = c.sinkMenuPointerValid ? c.sinkMenuPointerX : kMenuPxW * 0.5f;
+            const float offY = c.sinkMenuPointerValid ? c.sinkMenuPointerY : kMenuPxH * 0.5f;
+            const float offSx = c.thumbstick[h].x;
+            const float offSy = c.thumbstick[h].y;
+            if (fabsf(offSx) > kStickDeadzone || fabsf(offSy) > kStickDeadzone) {
+                if (t - c.sinkStickAt[h] >= kStickStateMs) {
+                    c.sinkStickAt[h] = t;
+                    c.sinkStickPushed[h] = true;
+                    if (c.sinkStick != nullptr) {
+                        env->CallVoidMethod(c.inputSink, c.sinkStick, offX, offY, offSx, offSy);
+                        clearJavaException(env, "输入回调 onStick（菜单开着·光柱在别处）");
+                    }
+                }
+            } else if (c.sinkStickPushed[h] && c.sinkStick != nullptr) {
+                c.sinkStickPushed[h] = false;
+                c.sinkStickAt[h] = 0.0;
+                env->CallVoidMethod(c.inputSink, c.sinkStick, offX, offY, 0.f, 0.f);
+                clearJavaException(env, "输入回调 onStick（菜单开着·回中）");
+            }
         }
 
         /*
@@ -3048,7 +3077,12 @@ void pushInput(VrContext &c) {
              */
             const bool triggerJustPressed =
                     c.triggerDown[h] && (t - c.triggerDownAtMs[h] < 250.0);
-            if (!c.squeezeDown[h] && !triggerJustPressed) {
+            /*
+             * 菜单开着时海报墙这一侧不收摇杆（父亲 2026-10-12）：
+             * 滚轮按坐标派发，光柱在海报墙上时会把海报墙一起滚 ——
+             * 菜单开着的时候摇杆只滚菜单（由上面的菜单分支负责）。
+             */
+            if (!c.squeezeDown[h] && !triggerJustPressed && !c.menuVisible.load()) {
                 const float sx = c.thumbstick[h].x;
                 const float sy = c.thumbstick[h].y;
                 /*

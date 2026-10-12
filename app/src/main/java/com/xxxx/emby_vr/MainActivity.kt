@@ -560,6 +560,20 @@ class MainActivity : ComponentActivity() {
                      * 所以日志里"滚了"和"没滚"都看不出来。这次直接走面板的通道。
                      */
                     Log.i(TAG, "摇杆滚菜单：kind=${menuState.kind} sx=$sx sy=$sy → menu.vrStick")
+                    /*
+                     * 落点收进菜单自己的矩形（父亲 2026-10-12）。
+                     *
+                     * 滚轮是按坐标派发的，光柱指在海报墙上时落点落在菜单外面 ——
+                     * 父亲实测：「海报墙和菜单选项会一起滚」，而且指在卡片中间时
+                     * 演职人员那一排根本滚不动（只有指到最右边才行）。
+                     * 演职人员面板收进那一排的矩形，其余菜单收进卡片矩形。
+                     */
+                    menu.scrollClampRect =
+                        if (menuState.kind == com.xxxx.emby_vr.panel.MenuKind.CAST) {
+                            menuState.castRowRect ?: menuState.cardRect
+                        } else {
+                            menuState.cardRect
+                        }
                     menu.vrStick(px, py, sx, sy)
                     return@runOnUiThread
                 }

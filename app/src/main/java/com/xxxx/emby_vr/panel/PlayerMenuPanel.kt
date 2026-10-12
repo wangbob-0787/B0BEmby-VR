@@ -190,6 +190,24 @@ class MenuState {
     var brightBar by mutableStateOf<androidx.compose.ui.geometry.Rect?>(null)
 
     /**
+     * 菜单卡片在窗口里的矩形（面板像素）。
+     *
+     * 父亲 2026-10-12：「不限制光点位置的话，海报墙和菜单选项会一起滚」。
+     * 摇杆滚菜单走的是「按坐标派发鼠标滚轮」，落点就是光柱位置 —— 光柱在海报墙上时
+     * 滚轮会落到菜单里不对的地方（或者干脆落到空处）。所以菜单开着时把派发点**收进
+     * 这块卡片矩形**（见 PanelLayer.scrollClampRect），滚的必然是菜单自己的列表。
+     */
+    var cardRect by mutableStateOf<androidx.compose.ui.geometry.Rect?>(null)
+
+    /**
+     * 演职人员那一排在窗口里的矩形（面板像素，父亲 2026-10-12）。
+     *
+     * 那一排是横向 LazyRow，位置比卡片小一圈；只收进卡片还不够，得收进这一排本身，
+     * 滚轮才有可滚容器接住（原来的毛病：指在卡片中间滚不动，只有指到最右边才行）。
+     */
+    var castRowRect by mutableStateOf<androidx.compose.ui.geometry.Rect?>(null)
+
+    /**
      * 座椅调节（父亲 2026-10-10：「点进去两个调节，低<->高、前<->后」，位置要记住）。
      * seatUp：正 = 椅子相对人抬高（米）；seatFwd：正 = 人往椅子前部坐（米）。
      */
@@ -355,6 +373,8 @@ fun PlayerMenuPanel(menu: MenuState, osd: OsdState) {
                     val y = coords.positionInRoot().y
                     val w = coords.size.width.toFloat()
                     val h = coords.size.height.toFloat()
+                    /* 摇杆滚菜单的派发点要收进这块矩形（父亲 2026-10-12） */
+                    menu.cardRect = androidx.compose.ui.geometry.Rect(x, y, x + w, y + h)
                     com.xxxx.emby_vr.vr.VrNative.setMenuHitRect(
                         (x / windowW).coerceIn(0f, 1f),
                         (y / windowH).coerceIn(0f, 1f),
@@ -964,7 +984,15 @@ private fun CastMenu(menu: MenuState) {
             rowState.scrollBy(dy)
         }
     }
-    LazyRow(state = rowState, contentPadding = PaddingValues(vertical = 6.dp)) {
+    LazyRow(
+        state = rowState,
+        /*
+         * 把自己占的矩形报给界面层（父亲 2026-10-12）：摇杆滚菜单时滚轮要落进这一排，
+         * 否则指在卡片中间推摇杆滚不动（只有指到最右边才行的老毛病）。
+         */
+        modifier = Modifier.onGloballyPositioned { menu.castRowRect = it.boundsInWindow() },
+        contentPadding = PaddingValues(vertical = 6.dp),
+    ) {
         items(menu.people) { person ->
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
