@@ -444,6 +444,12 @@ class MainActivity : ComponentActivity() {
      */
     private var vrInputLive = false
 
+    /**
+     * 网页银幕（父亲 2026-10-13）：把 B站 / 腾讯 / 爱奇艺 的网页版放到影院的银幕上。
+     * 非空 = 当前正处在网页模式（银幕上显示的是网页，不是影片）。
+     */
+    private var webScreen: com.xxxx.emby_vr.web.WebScreen? = null
+
     /** 光柱输入 → 面板（坐标已是面板像素，与 PanelLayer 的 1920×1080 同一套） */
     private val vrInput = object : com.xxxx.emby_vr.vr.VrNative.InputSink {
         override fun onPointer(px: Float, py: Float) {
@@ -521,6 +527,12 @@ class MainActivity : ComponentActivity() {
             vrInputLive = true
             lastPanelClickAt = android.os.SystemClock.uptimeMillis()
             runOnUiThread {
+                /* 网页模式下点击直接派发给网页（自己视图树内的事件，不需要任何权限） */
+                if (webScreen?.active == true) {
+                    Log.i(TAG, "光柱点击 (${px.toInt()}, ${py.toInt()}) → 交给网页")
+                    webScreen?.tap(px, py)
+                    return@runOnUiThread
+                }
                 if (panelInputReady()) {
                     Log.i(TAG, "光柱点击 (${px.toInt()}, ${py.toInt()}) → 交给面板")
                     panel.vrClick(px, py)
@@ -545,6 +557,11 @@ class MainActivity : ComponentActivity() {
                 Log.i(TAG, "收到摇杆 px=$px py=$py sx=$sx sy=$sy 菜单=${menuState.kind}")
             }
             runOnUiThread {
+                /* 网页模式：摇杆上下 = 网页滚动（父亲 2026-10-13） */
+                if (webScreen?.active == true) {
+                    webScreen?.scroll(sy)
+                    return@runOnUiThread
+                }
                 /*
                  * 光柱指着**画面**时，摇杆左右 = 快退 / 快进（父亲 2026-10-06）。
                  *
@@ -2028,6 +2045,8 @@ class MainActivity : ComponentActivity() {
             return
         }
         val useVrScreen = vrSurface != null
+        /* 起播影片前先把网页银幕收掉（银幕只有一个生产者） */
+        if (webScreen != null) closeWebScreen()
         try {
             stopPlaybackInternal(keepUi = replaying)
             /*
@@ -2673,6 +2692,73 @@ class MainActivity : ComponentActivity() {
         android.os.Process.killProcess(android.os.Process.myPid())
     }
 
+    /**
+     * 打开网页银幕（父亲 2026-10-13）：银幕从"放影片"切成"放网页"。
+     *
+     * 银幕上显示的画面来自原生渲染线程建的那张纹理（renderer.vrVideoSurface）——
+     * 这里在**同一张 Surface** 上开一块虚拟屏、把 WebView 放进那块屏的窗口里
+     * （VirtualDisplay + Presentation，与面板同一套公开 API），原生照旧采样这张纹理，
+     * 渲染管线一行都不用改。切过去之前先让播放器把这张画面让出来，
+     * 免得播放器和虚拟屏两个生产者抢同一张缓冲。
+     *
+     * 全屏（父亲 2026-10-13 明确"点全屏就铺满银幕"）：网页请求全屏时由 WebScreen
+     * 接住那块视图铺满画布，这里把银幕画面按 16:9 摆正，网页自带的边栏工具栏一并收掉。
+     */
+    private fun openWebScreen(site: Int) {
+        val url = when (site) {
+            0 -> "https://www.bilibili.com/"
+            1 -> "https://v.qq.com/"
+            else -> "https://www.iqiyi.com/"
+        }
+        val surface = renderer.vrVideoSurface
+        if (surface == null) {
+            hud("银幕画面还没就绪，稍后再试")
+            return
+        }
+        closeWebScreen()
+        runCatching { player?.setVideoSurface(null) }
+        runCatching { player?.stop() }
+        runCatching { mpvBackend?.stop() }
+        val ws = com.xxxx.emby_vr.web.WebScreen(
+            activity = this,
+            surface = surface,
+            onEvent = { msg -> Log.i(TAG, "网页银幕：$msg") },
+            onFullscreen = { on ->
+                runOnUiThread {
+                    if (on) {
+                        com.xxxx.emby_vr.vr.VrNative.setVideoSize(
+                            com.xxxx.emby_vr.web.WebScreen.W,
+                            com.xxxx.emby_vr.web.WebScreen.H,
+                        )
+                        com.xxxx.emby_vr.vr.VrNative.setVideoAspect(16f / 9f)
+                    }
+                }
+            },
+        )
+        webScreen = ws
+        menuState.webSite = site
+        ws.start(url)
+        /* 银幕切成网页画面：打开视频层并声明尺寸（虚拟屏 1920×1080） */
+        com.xxxx.emby_vr.vr.VrNative.setVideoSize(
+            com.xxxx.emby_vr.web.WebScreen.W,
+            com.xxxx.emby_vr.web.WebScreen.H,
+        )
+        com.xxxx.emby_vr.vr.VrNative.setVideoAspect(16f / 9f)
+        com.xxxx.emby_vr.vr.VrNative.setVideoActive(true)
+        closeMenu()
+        hud("银幕已切到网页：${when (site) { 0 -> "B站" ; 1 -> "腾讯视频" ; else -> "爱奇艺" }}")
+        Log.i(TAG, "网页银幕打开：$url")
+    }
+
+    /** 关掉网页银幕，银幕还给影片 */
+    private fun closeWebScreen() {
+        val ws = webScreen ?: return
+        ws.stop()
+        webScreen = null
+        com.xxxx.emby_vr.vr.VrNative.setVideoActive(false)
+        Log.i(TAG, "网页银幕已关闭")
+    }
+
     /** 菜单里某一项被点了 */
     private fun onMenuSelect(kind: com.xxxx.emby_vr.panel.MenuKind, index: Int) {
         Log.i(TAG, "菜单选择：${kind.title} #$index")
@@ -2707,6 +2793,11 @@ class MainActivity : ComponentActivity() {
                  */
                 if (index == 6) {
                     openMenu(com.xxxx.emby_vr.panel.MenuKind.SEAT_ADJUST, com.xxxx.emby_vr.panel.OsdButton.MORE)
+                    return
+                }
+                /* 「网页」（父亲 2026-10-13）：二级菜单，进去是 B站 / 腾讯视频 / 爱奇艺 */
+                if (index == 7) {
+                    openMenu(com.xxxx.emby_vr.panel.MenuKind.WEB, com.xxxx.emby_vr.panel.OsdButton.MORE)
                     return
                 }
                 /*
@@ -3212,6 +3303,7 @@ class MainActivity : ComponentActivity() {
             }
             com.xxxx.emby_vr.panel.MenuKind.AUDIO -> menuState.audioTracks = buildAudioRows()
             com.xxxx.emby_vr.panel.MenuKind.SUBTITLE -> menuState.subtitleTracks = buildSubtitleRows()
+            com.xxxx.emby_vr.panel.MenuKind.WEB -> openWebScreen(index)
             com.xxxx.emby_vr.panel.MenuKind.EPISODES -> loadEpisodes()
             com.xxxx.emby_vr.panel.MenuKind.INFO, com.xxxx.emby_vr.panel.MenuKind.CAST ->
                 loadItemDetail()
@@ -5147,6 +5239,7 @@ class MainActivity : ComponentActivity() {
         if (::panel.isInitialized) panel.release()
         renderer.releaseVideoPipeline()
         scope.cancel()
+        runCatching { closeWebScreen() }
         vrSession.stop()
         super.onDestroy()
     }
@@ -5159,6 +5252,16 @@ class MainActivity : ComponentActivity() {
          *
          * 光点在海报墙上时，往下走面板导航栈（下面那段），与是否正在播放无关。
          */
+        /*
+         * 网页模式（父亲 2026-10-13）：全屏时先退全屏，没全屏就退出网页、银幕还给影片。
+         * 这一段必须在"光点在画面上不响应 BACK"那条之前 —— 否则网页里按 B 键没反应。
+         */
+        if (keyCode == KeyEvent.KEYCODE_BACK && webScreen?.active == true) {
+            if (webScreen?.onBack() == true) return true
+            closeWebScreen()
+            hud("已退出网页，银幕还给影片")
+            return true
+        }
         if (keyCode == KeyEvent.KEYCODE_BACK && renderer.videoActive && !panelPointerOnPanel) {
             Log.i(TAG, "BACK 忽略：光点在播放画面上（播放页操作走控制条）")
             return true

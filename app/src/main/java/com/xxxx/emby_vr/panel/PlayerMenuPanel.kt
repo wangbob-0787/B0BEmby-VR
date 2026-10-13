@@ -84,6 +84,8 @@ enum class MenuKind(val title: String) {
     EPISODES("选集"),
     INFO("信息"),
     CAST("演职人员"),
+    /* 网页（父亲 2026-10-13）：B站 / 腾讯 / 爱奇艺 的网页版放上银幕 */
+    WEB("网页"),
 }
 
 /**
@@ -94,7 +96,7 @@ enum class MenuKind(val title: String) {
 val MenuKind.isSubMenu: Boolean
     get() = this == MenuKind.AUDIO || this == MenuKind.QUALITY ||
         this == MenuKind.MODE || this == MenuKind.BUFFER || this == MenuKind.CINEMA_LIGHT ||
-        this == MenuKind.SEAT_ADJUST
+        this == MenuKind.SEAT_ADJUST || this == MenuKind.WEB
 
 /** 菜单里的一行（轨道 / 集数这类：显示名 + 是否当前选中） */
 data class MenuRowItem(val label: String, val selected: Boolean, val payload: Int = -1)
@@ -179,6 +181,12 @@ class MenuState {
 
     /** 影厅亮度档（0 暗 / 1 标准 / 2 亮）：只影响影厅环境光，不影响银幕画面 */
     var cinemaBright by mutableStateOf(0.45f)
+
+    /**
+     * 「更多 → 网页」当前选的是哪一家（0 B站 / 1 腾讯视频 / 2 爱奇艺）。
+     * 只用来在二级菜单里打勾，真正加载哪个网址由 MainActivity 决定。
+     */
+    var webSite by mutableStateOf(-1)
 
     /**
      * 「影厅亮度条」在窗口里的矩形（面板像素）。
@@ -433,6 +441,7 @@ fun PlayerMenuPanel(menu: MenuState, osd: OsdState) {
                 MenuKind.EPISODES -> EpisodeMenu(menu)
                 MenuKind.INFO -> InfoMenu(menu)
                 MenuKind.CAST -> CastMenu(menu)
+                MenuKind.WEB -> WebMenu(menu)
             }
         }
     }
@@ -510,6 +519,18 @@ private fun MoreMenu(menu: MenuState, playing: Boolean) {
          * 与上面四条一样是二级菜单（右箭头箭头表示还能进去），行号固定 = 5。
          * 管的是影厅的环境光线（影院 HDRI 环境光 + 底光），不是影片画面亮度。
          */
+        /*
+         * 「网页」（父亲 2026-10-13）：点进去是二级菜单 —— B站 / 腾讯视频 / 爱奇艺。
+         * 选一个就把银幕换成那个站的网页版（网页在我们自己的进程里渲染，用父亲自己的账号登录）。
+         * 行号固定 = 7。
+         */
+        MenuRow(
+            label = "网页",
+            value = "",
+            selected = false,
+            hasSub = true,
+            onClick = { menu.onSelect?.invoke(MenuKind.MORE, 7) },
+        )
         MenuRow(
             label = "影厅亮度",
             value = "${(menu.cinemaBright * 100).toInt()}%",
@@ -517,6 +538,27 @@ private fun MoreMenu(menu: MenuState, playing: Boolean) {
             hasSub = true,
             onClick = { menu.onSelect?.invoke(MenuKind.MORE, 5) },
         )
+    }
+}
+
+/**
+ * 网页二级菜单（父亲 2026-10-13）：B站 / 腾讯视频 / 爱奇艺。
+ *
+ * 选中即生效（菜单随后由调用方关掉），银幕切到该站的网页版。
+ */
+@Composable
+private fun WebMenu(menu: MenuState) {
+    val sites = listOf("哔哩哔哩", "腾讯视频", "爱奇艺")
+    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+        sites.forEachIndexed { i, label ->
+            MenuRow(
+                label = label,
+                value = "",
+                selected = menu.webSite == i,
+                hasSub = false,
+                onClick = { menu.onSelect?.invoke(MenuKind.WEB, i) },
+            )
+        }
     }
 }
 
