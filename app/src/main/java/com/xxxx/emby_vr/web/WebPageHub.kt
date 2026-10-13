@@ -31,6 +31,13 @@ object WebPageHub {
      */
     var scrollHandler: ((Float, Float, Float) -> Unit)? = null
 
+    /**
+     * 网页页登记：网页内返回（B 键）。
+     * 返回 true = 真的退回了上一页；false = 已经在网页首页（父亲 2026-10-13 定：
+     * 网页里 B 键只在网页不同页面之间返回，不返回 Emby 片库、也不回海报墙首页）。
+     */
+    var backHandler: (() -> Boolean)? = null
+
     /** 当前是否有网页页在用交互 */
     val active: Boolean
         get() = tapHandler != null
@@ -44,8 +51,11 @@ object WebPageHub {
         scrollHandler?.invoke(px, py, sy)
     }
 
+    fun back(): Boolean = backHandler?.invoke() ?: false
+
     fun clear() {
         tapHandler = null
         scrollHandler = null
+        backHandler = null
     }
 }

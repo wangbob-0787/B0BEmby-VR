@@ -291,6 +291,16 @@ fun WebLibraryScreen(
          * 落点在哪一块就滚哪一块，网页自己会把它滚起来）。
          * 滚轮量吃掉了就不管；万一没吃掉（网页没接），再用 scrollBy 兜一下。
          */
+        /* 网页内返回（B 键）：只在网页的历史里退，退不动就什么都不做 */
+        WebPageHub.backHandler = {
+            val wv = webRef
+            if (wv != null && wv.canGoBack()) {
+                runCatching { wv.goBack() }
+                true
+            } else {
+                false
+            }
+        }
         WebPageHub.scrollHandler = { px, py, sy ->
             val wv = webRef
             val r = webRect
@@ -361,52 +371,55 @@ private fun TopBarButton(label: String, onClick: () -> Unit) {
     }
 }
 
-/** 网页媒体库那一排（首页用） */
+
+/**
+ * 网络视频详情页（父亲 2026-10-13 定）。
+ *
+ * 从海报墙「我的媒体库」那一行的「网络视频」卡片点进来：里面是三个方形图标
+ * （哔哩哔哩 / 腾讯视频 / 爱奇艺），点一个就进那个网站的网页版 ——
+ * 和进一个普通 Emby 媒体库、再挑片子是同一个感觉。
+ */
 @Composable
-fun WebLibraryRow(onOpen: (Int) -> Unit) {
-    /* 图标是父亲 2026-10-13 发来的各家官方标志，已放进资源里（web_*_icon / web_*_logo） */
+fun WebSiteDetailScreen(onOpen: (Int) -> Unit, onBack: () -> Unit) {
     val sites = listOf(
         Triple("哔哩哔哩", R.drawable.web_bilibili_icon, Color(0xFFFB7299)),
         Triple("腾讯视频", R.drawable.web_tencent_icon, Color(0xFF2CA2F5)),
         Triple("爱奇艺", R.drawable.web_iqiyi_icon, Color(0xFF19B36B)),
     )
-    Column(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
-        Text(
-            text = "网络媒体库",
-            color = Color(0xFFE8EDF2),
-            fontSize = 26.sp,
-            fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.padding(start = 48.dp, bottom = 10.dp),
-        )
-        Row(
-            modifier = Modifier.padding(start = 48.dp),
-            horizontalArrangement = Arrangement.spacedBy(20.dp),
-        ) {
-            sites.forEachIndexed { i, (name, icon, accent) ->
-                Box(
-                    modifier = Modifier
-                        .width(300.dp)
-                        .height(170.dp)
-                        .clip(RoundedCornerShape(18.dp))
-                        .background(
-                            Brush.linearGradient(
-                                listOf(accent.copy(alpha = 0.85f), Color(0xFF14161B))
-                            )
-                        )
-                        .vrClickTarget(key = "weblib:card$i", onActivate = { onOpen(i) }),
-                    contentAlignment = Alignment.Center,
-                ) {
+    Box(modifier = Modifier.fillMaxSize().background(Color(0xFF0B0C0F))) {
+        Column(modifier = Modifier.fillMaxSize().padding(48.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TopBarButton(label = "← 返回海报墙", onClick = onBack)
+                Spacer(modifier = Modifier.width(24.dp))
+                Text(
+                    text = "网络视频",
+                    color = Color(0xFFE8EDF2),
+                    fontSize = 34.sp,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+            Spacer(modifier = Modifier.height(48.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(40.dp)) {
+                sites.forEachIndexed { i, (name, icon, accent) ->
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(22.dp))
+                            .background(
+                                Brush.linearGradient(
+                                    listOf(accent.copy(alpha = 0.85f), Color(0xFF14161B))
+                                )
+                            )
+                            .vrClickTarget(key = "netvideo:$i", onActivate = { onOpen(i) })
+                            .padding(horizontal = 28.dp, vertical = 24.dp),
                     ) {
                         Image(
                             painter = painterResource(icon),
                             contentDescription = name,
                             contentScale = ContentScale.Fit,
-                            modifier = Modifier.size(96.dp),
+                            modifier = Modifier.size(150.dp),
                         )
-                        Spacer(modifier = Modifier.height(12.dp))
+                        Spacer(modifier = Modifier.height(16.dp))
                         Text(
                             text = name,
                             color = Color.White,
@@ -416,6 +429,46 @@ fun WebLibraryRow(onOpen: (Int) -> Unit) {
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * 「网络视频」卡片（父亲 2026-10-13 定）：放在海报墙首页「我的媒体库」那一行里，
+ * 和普通媒体库并排；图用腾讯视频的横幅。点它进网络视频详情页（三个方形图标）。
+ */
+@Composable
+fun NetVideoCard(onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .width(260.dp)
+            .height(146.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color(0xFF101216))
+            .vrClickTarget(key = "netvideo:card", onActivate = onClick),
+    ) {
+        Image(
+            painter = painterResource(R.drawable.web_tencent_logo),
+            contentDescription = "网络视频",
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize(),
+        )
+        /* 底部压一条暗色，让「网络视频」四个字在任何图上都看得清 */
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(44.dp)
+                .align(Alignment.BottomStart)
+                .background(Color(0xCC000000)),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            Text(
+                text = "网络视频",
+                color = Color.White,
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(start = 14.dp),
+            )
         }
     }
 }

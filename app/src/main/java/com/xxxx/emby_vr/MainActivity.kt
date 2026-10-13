@@ -5184,6 +5184,16 @@ class MainActivity : ComponentActivity() {
          *
          * 光点在海报墙上时，往下走面板导航栈（下面那段），与是否正在播放无关。
          */
+        /*
+         * 网页页里 B 键只在网页不同页面之间返回（父亲 2026-10-13 定）：
+         * 不返回 Emby 片库、也不回海报墙首页 —— 回首页走网页页左上角那个按钮。
+         * 网页没有上一页时也照样吃掉这一下（什么都不发生）。
+         */
+        if (keyCode == KeyEvent.KEYCODE_BACK && com.xxxx.emby_vr.web.WebPageHub.active) {
+            val went = com.xxxx.emby_vr.web.WebPageHub.back()
+            Log.i(TAG, if (went) "BACK：网页退回上一页" else "BACK：网页已在首页，不动")
+            return true
+        }
         if (keyCode == KeyEvent.KEYCODE_BACK && renderer.videoActive && !panelPointerOnPanel) {
             Log.i(TAG, "BACK 忽略：光点在播放画面上（播放页操作走控制条）")
             return true

@@ -191,6 +191,17 @@ fun PanelApp(onPlayRequested: (mediaId: String, positionTicks: Long) -> Unit) {
                     }
 
                     /*
+                     * 网络视频详情页（父亲 2026-10-13）：三个方形图标，
+                     * 点一个进那个网站的网页版（下面的 weblib 路由）。
+                     */
+                    composable("netvideo") {
+                        com.xxxx.emby_vr.ui.WebSiteDetailScreen(
+                            onOpen = { site -> navController.navigate("weblib/$site") },
+                            onBack = { navController.popBackStack("home", inclusive = false) },
+                        )
+                    }
+
+                    /*
                      * 网页媒体库（父亲 2026-10-13）：B站(0) / 腾讯视频(1) / 爱奇艺(2)。
                      * 面板整块换成该网站的网页版，返回键回海报墙。
                      */
@@ -201,7 +212,9 @@ fun PanelApp(onPlayRequested: (mediaId: String, positionTicks: Long) -> Unit) {
                         val site = entry.arguments?.getInt("site") ?: 0
                         com.xxxx.emby_vr.ui.WebLibraryScreen(
                             site = site,
-                            onBack = { navController.popBackStack() },
+                            /* 左上角按钮 = 直接回海报墙首页（父亲 2026-10-13 定）；
+                               网页里的 B 键只做网页内返回，不走这里 */
+                            onBack = { navController.popBackStack("home", inclusive = false) },
                         )
                     }
 

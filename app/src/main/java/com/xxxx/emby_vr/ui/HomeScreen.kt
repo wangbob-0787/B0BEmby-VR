@@ -316,16 +316,12 @@ fun HomeScreen(
                         },
                         // 「电视直播」图块是网络返回后才插到第一位；LazyRow 默认保持"原第一张"的位置，
                         // 新图块会被挤到屏幕左边外（父亲 2026-10-02 报"图标跑到左侧外面"）→ 出现后滚回行首
-                        scrollToStartSignal = liveTvView?.id
+                        scrollToStartSignal = liveTvView?.id,
+                        // 「网络视频」（父亲 2026-10-13）：插在这一行最前面，点它进网络视频详情页
+                        leadingCard = {
+                            NetVideoCard(onClick = { navController.navigate("netvideo") })
+                        }
                     )
-                }
-
-                /*
-                 * 网络媒体库（父亲 2026-10-13）：B站 / 腾讯视频 / 爱奇艺 三张媒体库海报。
-                 * 点进去和进普通 Emby 媒体库是同一个位置 —— 只是详情页的内容换成了该网站的网页版。
-                 */
-                item {
-                    WebLibraryRow(onOpen = { site -> navController.navigate("weblib/$site") })
                 }
 
                 // 电视直播（简单版：频道列表，选中直接播；父亲 2026-10-02 定）
@@ -463,6 +459,11 @@ private fun MediaSection(
     focusTarget: String? = null,
     // 变成非空时把这一行滚回行首（用于"首项是异步插入"的场景）
     scrollToStartSignal: Any? = null,
+    /*
+     * 插在这一行最前面的自定义卡片（父亲 2026-10-13）：
+     * 「我的媒体库」那一行要塞一张「网络视频」卡，它不是 Emby 的库、没有 BaseItemDto。
+     */
+    leadingCard: (@Composable () -> Unit)? = null,
 ) {
     val maxLength = when {
         isMyLibrary -> 260.dp   // P1：库入口按官方做成宽银幕大图块
@@ -537,6 +538,9 @@ private fun MediaSection(
                 contentPadding = PaddingValues(horizontal = 24.dp),
                 horizontalArrangement = Arrangement.spacedBy(20.dp)
             ) {
+                if (leadingCard != null) {
+                    item(key = "leading-card") { leadingCard() }
+                }
                 itemsIndexed(
                     items,
                     key = { _, item -> item.id ?: item.hashCode() }
