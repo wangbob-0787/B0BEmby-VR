@@ -134,7 +134,7 @@ private const val HIDE_APP_BANNER_JS = """
  * 移动类事件走 dispatchGenericMotionEvent，按下/抬起走 dispatchTouchEvent。
  */
 private fun dispatchMouse(
-    wv: android.webkit.WebView,
+    wv: android.view.View,
     action: Int,
     x: Float,
     y: Float,
