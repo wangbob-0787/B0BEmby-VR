@@ -221,6 +221,15 @@ fun LibraryScreen(
             Surface(
                 onClick = { showSortDialog = true },
                 shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(50)),
+                /*
+                 * 关掉 TV 自带的焦点放大（父亲 2026-10-04：VR 里不要电视版那套放大）。
+                 *
+                 * 默认焦点放大只作用在 Surface **自己画的背景**上，而"被光柱扫到"的白层画在外层
+                 * modifier 的 draw 作用域里、不跟着放大 —— 于是"选中（且持焦点）的绿块"比"扫过
+                 * 的白块"大一圈（宽高都大，父亲 2026-10-13 连测两次：只钉行高修不掉）。
+                 * 关掉之后两块的矩形都等于控件自身 bounds，必然同尺寸。
+                 */
+                scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
                 colors = ClickableSurfaceDefaults.colors(
                     containerColor = Color.White.copy(alpha = 0.15f),
                     contentColor = Color.White,
@@ -273,6 +282,8 @@ fun LibraryScreen(
                         .padding(horizontal = 4.dp)
                         .vrClickTarget(key = "lib:filter:$filterValue", hoverRadius = 24.dp, onActivate = doFilter),
                     shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(50)),
+                    // 同上方排序按钮：关掉 TV 焦点放大，否则选中的绿胶囊比扫过的白层大一圈
+                    scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
                     colors = ClickableSurfaceDefaults.colors(
                         /*
                          * 选中态统一用绿 24%（父亲 2026-10-13：全站"选中"只留一种样子）。
@@ -578,6 +589,17 @@ private fun SortDialog(
                                         onActivate = doSort,
                                     ),
                                 shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(8.dp)),
+                                /*
+                                 * 关掉 TV 自带的焦点放大 —— 排序面板"绿块比白块大"的真正原因。
+                                 *
+                                 * 实测（父亲 2026-10-13 两次、r498/r499 截图）：绿块 135px、白块 120px，
+                                 * 比值 1.125 ≈ TV Surface 默认焦点放大 1.1。绿块是**选中且持有焦点**的
+                                 * 那一行，Surface 把它自己画的背景放大 1.1 倍；白块是 vrClickTarget 画在
+                                 * 外层 draw 作用域里的悬停层，不跟着放大 → 宽高都比绿块小一圈。
+                                 * 只钉行高（52dp）修不掉，因为放大作用在绘制阶段。
+                                 * 关掉后：绿底与白层都是控件自身 bounds（同矩形、同 8dp 圆角）= 必然同尺寸。
+                                 */
+                                scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
                                 colors = ClickableSurfaceDefaults.colors(
                                     // 选中态统一用绿 24%（父亲 2026-10-13）
                                     containerColor = if (isSelected) VrSelectedBg else Color.Transparent,
