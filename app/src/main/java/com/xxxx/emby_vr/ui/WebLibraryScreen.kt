@@ -79,14 +79,18 @@ fun WebLibraryScreen(
     }
 
     var webRef by remember { mutableStateOf<WebView?>(null) }
+    /* 网页要"全屏"时，它把自己的播放视图塞进这个容器里（腾讯的「全屏」按钮走这条路） */
+    var fullscreen by remember { mutableStateOf(false) }
+    var customContainer by remember { mutableStateOf<android.widget.FrameLayout?>(null) }
+    var customViewCallback by remember { mutableStateOf<android.webkit.WebChromeClient.CustomViewCallback?>(null) }
     /* 网页这块矩形在面板画布里的位置（面板像素），用来换算光柱落点 */
     var webRect by remember { mutableStateOf<Rect?>(null) }
     var loading by remember { mutableStateOf(true) }
 
     Box(modifier = Modifier.fillMaxSize().background(Color(0xFF0B0C0F))) {
         Column(modifier = Modifier.fillMaxSize()) {
-            /* 一条自己的顶栏：网页里没有"回海报墙"的路，这里给一个 */
-            Row(
+            /* 一条自己的顶栏：网页里没有"回海报墙"的路，这里给一个（网页全屏时收起来） */
+            if (!fullscreen) Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(64.dp)
@@ -163,6 +167,47 @@ fun WebLibraryScreen(
                             }
                         }
                         webChromeClient = object : WebChromeClient() {
+                            /*
+                             * 网页要全屏（父亲 2026-10-13：腾讯有两个全屏，「网页全屏」有效、
+                             * 「全屏」点了没反应）—— 没接这条通道，点了当然没反应。
+                             * 接法：把网页塞过来的播放视图挂到我们自己的容器上，顶栏收起来，
+                             * 让它铺满整块面板；退出全屏再把视图还回去。
+                             */
+                            override fun onShowCustomView(
+                                view: android.view.View,
+                                callback: CustomViewCallback,
+                            ) {
+                                val box = customContainer ?: run { callback.onCustomViewHidden(); return }
+                                if (customViewCallback != null) {
+                                    callback.onCustomViewHidden()
+                                    return
+                                }
+                                customViewCallback = callback
+                                (view.parent as? android.view.ViewGroup)?.removeView(view)
+                                box.addView(
+                                    view,
+                                    android.widget.FrameLayout.LayoutParams(
+                                        android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                                        android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                                    ),
+                                )
+                                box.visibility = android.view.View.VISIBLE
+                                fullscreen = true
+                                android.util.Log.i("WebLib", "网页全屏：已接管播放视图")
+                            }
+
+                            override fun onHideCustomView() {
+                                val box = customContainer
+                                if (box != null) {
+                                    box.removeAllViews()
+                                    box.visibility = android.view.View.GONE
+                                }
+                                customViewCallback?.onCustomViewHidden()
+                                customViewCallback = null
+                                fullscreen = false
+                                android.util.Log.i("WebLib", "网页全屏：已退出")
+                            }
+
                             override fun onConsoleMessage(m: android.webkit.ConsoleMessage): Boolean {
                                 android.util.Log.i("WebLib", "控制台 ${m.message()} @${m.lineNumber()}")
                                 return true
@@ -174,6 +219,19 @@ fun WebLibraryScreen(
                 update = { webRef = it },
             )
         }
+        /*
+         * 网页全屏用的容器：平时藏着，网页要全屏时把它的播放视图挂进来铺满整块面板。
+         * 它排在 Column 之后 = 画在最上层，顶栏和网页都被它盖住。
+         */
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { ctx ->
+                android.widget.FrameLayout(ctx).apply {
+                    visibility = android.view.View.GONE
+                    customContainer = this
+                }
+            },
+        )
     }
 
     LaunchedEffect(site) { loading = true }
