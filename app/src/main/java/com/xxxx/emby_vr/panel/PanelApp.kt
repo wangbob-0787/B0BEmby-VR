@@ -190,6 +190,21 @@ fun PanelApp(onPlayRequested: (mediaId: String, positionTicks: Long) -> Unit) {
                         }
                     }
 
+                    /*
+                     * 网页媒体库（父亲 2026-10-13）：B站(0) / 腾讯视频(1) / 爱奇艺(2)。
+                     * 面板整块换成该网站的网页版，返回键回海报墙。
+                     */
+                    composable(
+                        "weblib/{site}",
+                        arguments = listOf(navArgument("site") { type = NavType.IntType }),
+                    ) { entry ->
+                        val site = entry.arguments?.getInt("site") ?: 0
+                        com.xxxx.emby_vr.ui.WebLibraryScreen(
+                            site = site,
+                            onBack = { navController.popBackStack() },
+                        )
+                    }
+
                     composable("account") {
                         val loginViewModel: LoginViewModel = viewModel()
                         AccountScreen(

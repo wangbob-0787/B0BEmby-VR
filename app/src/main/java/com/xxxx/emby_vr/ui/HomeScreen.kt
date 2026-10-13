@@ -320,6 +320,14 @@ fun HomeScreen(
                     )
                 }
 
+                /*
+                 * 网络媒体库（父亲 2026-10-13）：B站 / 腾讯视频 / 爱奇艺 三张媒体库海报。
+                 * 点进去和进普通 Emby 媒体库是同一个位置 —— 只是详情页的内容换成了该网站的网页版。
+                 */
+                item {
+                    WebLibraryRow(onOpen = { site -> navController.navigate("weblib/$site") })
+                }
+
                 // 电视直播（简单版：频道列表，选中直接播；父亲 2026-10-02 定）
                 if (liveRow.isNotEmpty()) {
                     item {
