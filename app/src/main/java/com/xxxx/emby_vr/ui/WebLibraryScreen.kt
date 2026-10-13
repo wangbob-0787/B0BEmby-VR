@@ -435,7 +435,8 @@ fun WebSiteDetailScreen(onOpen: (Int) -> Unit, onBack: () -> Unit) {
 
 /**
  * 「网络视频」卡片（父亲 2026-10-13 定）：放在海报墙首页「我的媒体库」那一行里，
- * 和普通媒体库并排；图用腾讯视频的横幅。点它进网络视频详情页（三个方形图标）。
+ * 和普通媒体库并排；图用父亲发来的那张网络视频图标拼图（web_netvideo_card）。
+ * 点它进网络视频详情页（三个方形图标）。
  */
 @Composable
 fun NetVideoCard(onClick: () -> Unit) {
@@ -448,7 +449,7 @@ fun NetVideoCard(onClick: () -> Unit) {
             .vrClickTarget(key = "netvideo:card", onActivate = onClick),
     ) {
         Image(
-            painter = painterResource(R.drawable.web_tencent_logo),
+            painter = painterResource(R.drawable.web_netvideo_card),
             contentDescription = "网络视频",
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize(),
