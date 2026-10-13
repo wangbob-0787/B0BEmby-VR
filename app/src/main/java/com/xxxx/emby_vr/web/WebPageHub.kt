@@ -51,6 +51,16 @@ object WebPageHub {
         scrollHandler?.invoke(px, py, sy)
     }
 
+    /**
+     * 网页全屏开关通知（父亲 2026-10-13）：true = 网页全屏了，把画面投到影院大银幕；
+     * false = 退出全屏，银幕还给影片。真正的动作在主界面（它拿得到渲染器）。
+     */
+    var fullscreenHandler: ((Boolean) -> Unit)? = null
+
+    fun setFullscreen(on: Boolean) {
+        fullscreenHandler?.invoke(on)
+    }
+
     fun back(): Boolean = backHandler?.invoke() ?: false
 
     fun clear() {

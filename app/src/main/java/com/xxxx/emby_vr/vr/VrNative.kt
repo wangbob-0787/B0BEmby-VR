@@ -418,6 +418,18 @@ object VrNative {
 
     private external fun nativeAttachInputSink(sink: InputSink)
 
+    /**
+     * 银幕画面来源（父亲 2026-10-13）：true = 银幕显示面板那块画面（网页全屏时用），
+     * false = 显示影片画面。网页全屏时面板上就是视频本身，所以银幕照搬面板纹理即可。
+     */
+    fun setScreenPanel(on: Boolean) {
+        if (!loaded) return
+        runCatching { nativeSetScreenPanel(on) }
+            .onFailure { Log.w(TAG, "银幕画面来源切换失败: ${it.message}") }
+    }
+
+    private external fun nativeSetScreenPanel(on: Boolean)
+
     private external fun nativeSetVideoActive(active: Boolean)
     private external fun nativeSetSpinnerWanted(wanted: Boolean)
 

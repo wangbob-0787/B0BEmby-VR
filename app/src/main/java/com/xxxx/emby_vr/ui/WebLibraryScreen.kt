@@ -227,6 +227,8 @@ fun WebLibraryScreen(
                                 )
                                 box.visibility = android.view.View.VISIBLE
                                 fullscreen = true
+                                /* 告诉主界面：把画面投到影院大银幕（父亲 2026-10-13） */
+                                WebPageHub.setFullscreen(true)
                                 android.util.Log.i("WebLib", "网页全屏：已接管播放视图")
                             }
 
@@ -239,6 +241,7 @@ fun WebLibraryScreen(
                                 customViewCallback?.onCustomViewHidden()
                                 customViewCallback = null
                                 fullscreen = false
+                                WebPageHub.setFullscreen(false)
                                 android.util.Log.i("WebLib", "网页全屏：已退出")
                             }
 
@@ -356,6 +359,8 @@ fun WebLibraryScreen(
             }
         }
         onDispose {
+            /* 离开网页页一定要收回全屏状态，否则银幕会一直贴着面板纹理 */
+            WebPageHub.setFullscreen(false)
             WebPageHub.clear()
             webRef?.let { wv ->
                 runCatching { wv.stopLoading() }

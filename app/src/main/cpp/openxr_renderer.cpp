@@ -1505,6 +1505,14 @@ struct VrContext {
     std::atomic<bool> videoActive{false};
     std::atomic<bool> videoHasFrame{false};   // 见 panelHasFrame 的注释
     /*
+     * 银幕改显示"面板那块画面"（父亲 2026-10-13：网页全屏投到大银幕）。
+     *
+     * 网页在我们自己的面板里渲染，网页全屏时面板上就是视频本身，
+     * 所以银幕只要照搬面板纹理即可 —— 不用再开一路播放器，
+     * 也就不会出现"海报墙和银幕各放各的、进度不同步"。
+     */
+    std::atomic<bool> screenShowsPanel{false};
+    /*
      * 上一次见到的视频帧时间戳 —— 换片时用来识别"残留的旧帧"（父亲 2026-10-07）。
      *
      * ExoPlayer 释放旧片后，Surface 里还留着上一部的最后一帧，它的 getTimestamp
@@ -3739,7 +3747,12 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
              * （父亲实测：控制条菜单被黑屏遮挡，就是这个原因）。
              * 独立层没建起来（blankLayer 失败）时仍走老路，银幕不会整个消失。
              */
-            drawScreen(frontScreen(c), videoReady ? c.videoTex : 0, true);
+            /* 网页全屏时银幕显示面板纹理（同独立层那一路的判断） */
+            const bool panelOnScreen2 = c.screenShowsPanel.load() && c.panelActive.load() &&
+                                        c.panelHasFrame.load() && c.panelTex != 0;
+            const GLuint screenTex =
+                panelOnScreen2 ? c.panelTex : (videoReady ? c.videoTex : 0);
+            drawScreen(frontScreen(c), screenTex, true);
         }
 
         /*
@@ -4700,10 +4713,22 @@ void frameLoop(VrContext &c) {
          * （日志里 `视频层=0`），于是投影层盖在弹幕层之上 —— 弹幕和片名 logo
          * 全被压到画面背后。清屏另想办法，这一段的路径保持原样。
          */
+        /*
+         * 银幕的画面来源：默认是影片纹理；网页全屏时改成面板纹理（父亲 2026-10-13）。
+         * 面板固定 1920×1080（与 PanelLayer 的常量一致），尺寸也按面板来 ——
+         * 不能沿用 texelX/texelY，那是上一部影片的尺寸，会串味。
+         */
+        const bool panelOnScreen = c.screenShowsPanel.load() && c.panelActive.load() &&
+                                   c.panelHasFrame.load() && c.panelTex != 0;
+        const bool videoFrameReady = c.videoHasFrame.load() && c.videoTex != 0;
         if ((gLayerMask.load() & 1) != 0 && c.videoLayerOk && c.videoActive.load() &&
-            c.videoHasFrame.load() && c.videoTex != 0) {
-            int32_t vw = (int32_t) lroundf(1.f / fmaxf(1e-6f, c.texelX.load()));
-            int32_t vh = (int32_t) lroundf(1.f / fmaxf(1e-6f, c.texelY.load()));
+            (panelOnScreen || videoFrameReady)) {
+            int32_t vw = panelOnScreen
+                             ? (int32_t) kPanelPxW
+                             : (int32_t) lroundf(1.f / fmaxf(1e-6f, c.texelX.load()));
+            int32_t vh = panelOnScreen
+                             ? (int32_t) kPanelPxH
+                             : (int32_t) lroundf(1.f / fmaxf(1e-6f, c.texelY.load()));
             constexpr int32_t kMaxVideoW = 3840;
             constexpr int32_t kMaxVideoH = 2160;
             int32_t capW = kMaxVideoW;
@@ -4718,7 +4743,8 @@ void frameLoop(VrContext &c) {
                 vh = (int32_t) ((float) vh * k);
             }
             if (vw >= 64 && vh >= 64 && buildQuadLayer(c, c.videoLayer, vw, vh, "视频层")) {
-                c.videoLayer.submitted = renderQuadLayer(c, c.videoLayer, c.videoTex, true);
+                c.videoLayer.submitted = renderQuadLayer(
+                    c, c.videoLayer, panelOnScreen ? c.panelTex : c.videoTex, true);
             }
         }
 
@@ -5537,6 +5563,18 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetPanelActive(JNIEnv *env, jobject /* 
                                                        jboolean active) {
     g.panelActive = (active == JNI_TRUE);
     LOGI("面板激活状态 → %s", g.panelActive.load() ? "true" : "false");
+}
+
+
+/**
+ * 银幕画面来源（父亲 2026-10-13）：true = 显示面板那块画面（网页全屏时用），
+ * false = 显示影片画面。面板纹理由界面层持续更新，这里只切换取样对象。
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetScreenPanel(JNIEnv *env, jobject /* this */,
+                                                       jboolean on) {
+    g.screenShowsPanel = (on == JNI_TRUE);
+    LOGI("银幕画面来源 → %s", on == JNI_TRUE ? "面板（网页全屏）" : "影片");
 }
 
 

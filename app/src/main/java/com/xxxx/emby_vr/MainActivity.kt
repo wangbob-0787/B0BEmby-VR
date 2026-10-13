@@ -4863,6 +4863,29 @@ class MainActivity : ComponentActivity() {
          * 片名 logo（2026-10-06）：银幕左上角的小透明面板。
          * 位置与尺寸由原生按电视版比例钉在银幕左上角，这里只管画那张图。
          */
+        /*
+         * 网页全屏 → 投到影院大银幕（父亲 2026-10-13）。
+         *
+         * 网页在我们自己的面板里渲染，网页全屏时面板上就是视频本身，
+         * 所以银幕只要改显示"面板那块画面"即可：不用再开一路播放器，
+         * 也不会出现"海报墙和银幕各放各的、进度不同步"。
+         * 退出全屏把银幕还给影片（网页模式下本来也没在放影片，等于清空）。
+         */
+        com.xxxx.emby_vr.web.WebPageHub.fullscreenHandler = { on ->
+            runOnUiThread {
+                if (on) {
+                    com.xxxx.emby_vr.vr.VrNative.setScreenPanel(true)
+                    com.xxxx.emby_vr.vr.VrNative.setVideoSize(1920, 1080)
+                    com.xxxx.emby_vr.vr.VrNative.setVideoAspect(16f / 9f)
+                    com.xxxx.emby_vr.vr.VrNative.setVideoActive(true)
+                    hud("网页全屏 → 画面已投到大银幕")
+                } else {
+                    com.xxxx.emby_vr.vr.VrNative.setScreenPanel(false)
+                    com.xxxx.emby_vr.vr.VrNative.setVideoActive(false)
+                }
+            }
+        }
+
         logo = PanelLayer(
             this,
             content = {
