@@ -65,6 +65,38 @@ import com.xxxx.emby_vr.web.WebPageHub
  * 而网页必须知道点在哪 —— 所以这里把"面板像素 → 网页像素"的派发登记到 [WebPageHub]，
  * 主界面收到光柱点击时直接交给这里（落点先按本页在面板里的矩形换算，再发给网页）。
  */
+/**
+ * 让网页按"手机宽度"排版（父亲 2026-10-13：能打开，但和真手机打开的不一样）。
+ *
+ * 面板画布 1920 像素宽、密度 200 → 网页的 CSS 视口宽 = 1920 / (200/160) = 1536，
+ * 而手机只有 360~430，所以站点给的是平板/桌面排版（字小、一屏塞很多）。
+ * 把 WebView 所在上下文的密度改成 1920 / 420 ≈ 731dpi，CSS 视口宽就变成 ≈420，
+ * 站点立刻按手机版排版；同时因为像素密度高，文字和图片在这块面板上是清晰渲染的。
+ */
+private fun phoneWidthContext(
+    base: android.content.Context,
+    panelPxWidth: Int,
+    targetCssWidth: Int,
+): android.content.Context {
+    return object : android.content.ContextWrapper(base) {
+        private var res: android.content.res.Resources? = null
+
+        override fun getResources(): android.content.res.Resources {
+            res?.let { return it }
+            val cfg = android.content.res.Configuration(base.resources.configuration)
+            cfg.densityDpi = (160f * panelPxWidth / targetCssWidth).toInt()
+            @Suppress("DEPRECATION")
+            val r = android.content.res.Resources(
+                base.assets,
+                base.resources.displayMetrics,
+                cfg,
+            )
+            res = r
+            return r
+        }
+    }
+}
+
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun WebLibraryScreen(
@@ -164,14 +196,21 @@ fun WebLibraryScreen(
                         )
                     },
                 factory = { ctx ->
-                    WebView(ctx).apply {
+                    /* 手机宽度上下文：CSS 视口宽 ≈420（真手机那种），排版才和手机一致 */
+                    WebView(phoneWidthContext(ctx, 1920, 420)).apply {
                         setBackgroundColor(AndroidColor.BLACK)
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
                         /* 网页播放器默认要"用户手势"才播，这里放开（父亲 2026-10-13） */
                         settings.mediaPlaybackRequiresUserGesture = false
-                        settings.useWideViewPort = !mobile
-                        settings.loadWithOverviewMode = !mobile
+                        /*
+                         * 手机版：让站点自己的 viewport（width=device-width）生效 ——
+                         * 配合上面的手机宽度上下文，device-width 就是 420，站点按手机排版。
+                         */
+                        settings.useWideViewPort = true
+                        settings.loadWithOverviewMode = true
+                        settings.setSupportZoom(false)
+                        settings.builtInZoomControls = false
                         settings.userAgentString = if (mobile) mobileUa else desktopUa
                         webViewClient = object : WebViewClient() {
                             override fun onPageFinished(view: WebView, u: String) {
