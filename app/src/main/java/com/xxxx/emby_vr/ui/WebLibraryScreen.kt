@@ -72,10 +72,24 @@ fun WebLibraryScreen(
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
+    /*
+     * 网址与浏览器标识按站分开（父亲 2026-10-13：爱奇艺"打开不对头"）。
+     *
+     * 爱奇艺的桌面版网页会不停去连"爱奇艺客户端"的本地服务（127.0.0.1:16422/16423），
+     * 连不上就一直重试、内容区全黑（日志里每 10 秒一轮 ERR_CONNECTION_REFUSED）。
+     * 手机版网页不依赖那个本地服务，所以爱奇艺走手机版 + 手机标识，其余两家桌面版照旧。
+     */
+    val desktopUa =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    val mobileUa =
+        "Mozilla/5.0 (Linux; Android 10; PICO A8110) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+    val mobile = site == 2
     val url = when (site) {
         0 -> "https://www.bilibili.com/"
         1 -> "https://v.qq.com/"
-        else -> "https://www.iqiyi.com/"
+        else -> "https://m.iqiyi.com/"
     }
     val title = when (site) {
         0 -> "哔哩哔哩"
@@ -151,12 +165,9 @@ fun WebLibraryScreen(
                         settings.domStorageEnabled = true
                         /* 网页播放器默认要"用户手势"才播，这里放开（父亲 2026-10-13） */
                         settings.mediaPlaybackRequiresUserGesture = false
-                        settings.useWideViewPort = true
-                        settings.loadWithOverviewMode = true
-                        /* 桌面版 UA：B站 / 腾讯 / 爱奇艺 的完整播放器只在桌面 UA 下给 */
-                        settings.userAgentString =
-                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-                                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                        settings.useWideViewPort = !mobile
+                        settings.loadWithOverviewMode = !mobile
+                        settings.userAgentString = if (mobile) mobileUa else desktopUa
                         webViewClient = object : WebViewClient() {
                             override fun onPageFinished(view: WebView, u: String) {
                                 loading = false
@@ -405,11 +416,7 @@ fun WebSiteDetailScreen(onOpen: (Int) -> Unit, onBack: () -> Unit) {
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier
                             .clip(RoundedCornerShape(22.dp))
-                            .background(
-                                Brush.linearGradient(
-                                    listOf(accent.copy(alpha = 0.85f), Color(0xFF14161B))
-                                )
-                            )
+                            .background(Color(0xFFF3F5F8))
                             .vrClickTarget(key = "netvideo:$i", onActivate = { onOpen(i) })
                             .padding(horizontal = 28.dp, vertical = 24.dp),
                     ) {
@@ -422,7 +429,7 @@ fun WebSiteDetailScreen(onOpen: (Int) -> Unit, onBack: () -> Unit) {
                         Spacer(modifier = Modifier.height(16.dp))
                         Text(
                             text = name,
-                            color = Color.White,
+                            color = accent,
                             fontSize = 28.sp,
                             fontWeight = FontWeight.Bold,
                         )
