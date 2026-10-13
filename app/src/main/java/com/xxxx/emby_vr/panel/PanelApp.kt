@@ -70,7 +70,11 @@ import com.xxxx.emby_vr.ui.viewmodel.SearchViewModel
  * 因此这里不重写任何一屏，只负责把电视版的屏组装起来。
  */
 @Composable
-fun PanelApp(onPlayRequested: (mediaId: String, positionTicks: Long) -> Unit) {
+fun PanelApp(
+    onPlayRequested: (mediaId: String, positionTicks: Long) -> Unit,
+    /* 点网络视频的站点图标 = 把那个网站的网页整块放到大银幕上（父亲 2026-10-13） */
+    onOpenWeb: (site: Int) -> Unit = {},
+) {
     val navController = rememberNavController()
     val mainViewModel: MainViewModel = viewModel()
 
@@ -191,29 +195,13 @@ fun PanelApp(onPlayRequested: (mediaId: String, positionTicks: Long) -> Unit) {
                     }
 
                     /*
-                     * 网络视频详情页（父亲 2026-10-13）：三个方形图标，
-                     * 点一个进那个网站的网页版（下面的 weblib 路由）。
+                     * 网络视频详情页（父亲 2026-10-13）：三个方形图标。
+                     * 点一个 = 那个网站的网页版**整块上大银幕**（海报墙留在这个详情页不动），
+                     * 由宿主 MainActivity 建网页面，所以这里只把编号交出去。
                      */
                     composable("netvideo") {
                         com.xxxx.emby_vr.ui.WebSiteDetailScreen(
-                            onOpen = { site -> navController.navigate("weblib/$site") },
-                            onBack = { navController.popBackStack("home", inclusive = false) },
-                        )
-                    }
-
-                    /*
-                     * 网页媒体库（父亲 2026-10-13）：B站(0) / 腾讯视频(1) / 爱奇艺(2)。
-                     * 面板整块换成该网站的网页版，返回键回海报墙。
-                     */
-                    composable(
-                        "weblib/{site}",
-                        arguments = listOf(navArgument("site") { type = NavType.IntType }),
-                    ) { entry ->
-                        val site = entry.arguments?.getInt("site") ?: 0
-                        com.xxxx.emby_vr.ui.WebLibraryScreen(
-                            site = site,
-                            /* 左上角按钮 = 直接回海报墙首页（父亲 2026-10-13 定）；
-                               网页里的 B 键只做网页内返回，不走这里 */
+                            onOpen = { site -> onOpenWeb(site) },
                             onBack = { navController.popBackStack("home", inclusive = false) },
                         )
                     }

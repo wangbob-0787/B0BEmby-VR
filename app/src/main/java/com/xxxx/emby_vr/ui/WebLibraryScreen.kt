@@ -126,7 +126,6 @@ private const val HIDE_APP_BANNER_JS = """
 @Composable
 fun WebLibraryScreen(
     site: Int,
-    onBack: () -> Unit,
 ) {
     val context = LocalContext.current
     /*
@@ -167,46 +166,7 @@ fun WebLibraryScreen(
     var loading by remember { mutableStateOf(true) }
 
     Box(modifier = Modifier.fillMaxSize().background(Color(0xFF0B0C0F))) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            /* 一条自己的顶栏：网页里没有"回海报墙"的路，这里给一个（网页全屏时收起来） */
-            if (!fullscreen) Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(64.dp)
-                    .background(Color(0xFF16181D))
-                    .padding(horizontal = 24.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                TopBarButton(label = "← 返回海报墙", onClick = onBack)
-                Spacer(modifier = Modifier.width(24.dp))
-                Image(
-                    painter = painterResource(
-                        when (site) {
-                            0 -> R.drawable.web_bilibili_logo
-                            1 -> R.drawable.web_tencent_logo
-                            else -> R.drawable.web_iqiyi_logo
-                        }
-                    ),
-                    contentDescription = title,
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.height(40.dp),
-                )
-                Spacer(modifier = Modifier.width(16.dp))
-                Text(
-                    text = title,
-                    color = Color(0xFFE8EDF2),
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Spacer(modifier = Modifier.weight(1f))
-                if (loading) {
-                    Text(text = "正在打开网页…", color = Color(0xFF8C97A3), fontSize = 20.sp)
-                }
-                Spacer(modifier = Modifier.width(24.dp))
-                TopBarButton(label = "刷新", onClick = { webRef?.reload() })
-            }
-
-            AndroidView(
+        AndroidView(
                 modifier = Modifier
                     .fillMaxSize()
                     .onGloballyPositioned { coords ->
@@ -358,15 +318,14 @@ fun WebLibraryScreen(
                                 return true
                             }
                         }
-                        loadUrl(url)
+                        /* 加载放到 LaunchedEffect(site) 里做，换站点时能重新加载 */
                     }
                 },
                 update = { webRef = it },
             )
-        }
         /*
-         * 网页全屏用的容器：平时藏着，网页要全屏时把它的播放视图挂进来铺满整块面板。
-         * 它排在 Column 之后 = 画在最上层，顶栏和网页都被它盖住。
+         * 网页全屏用的容器：平时藏着，网页要全屏时把它的播放视图挂进来铺满整块画面。
+         * 它排在网页之后 = 画在最上层。
          */
         AndroidView(
             modifier = Modifier.fillMaxSize(),
@@ -379,7 +338,11 @@ fun WebLibraryScreen(
         )
     }
 
-    LaunchedEffect(site) { loading = true }
+    /* 打开（或换）站点：网页整块在大银幕上，加载哪个站由这里决定 */
+    LaunchedEffect(site) {
+        loading = true
+        webRef?.loadUrl(url)
+    }
 
     /*
      * 登记交互：光柱点击 / 摇杆滚动都派发给网页。

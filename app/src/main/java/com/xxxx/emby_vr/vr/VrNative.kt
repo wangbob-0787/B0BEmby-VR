@@ -96,6 +96,9 @@ object VrNative {
     const val TEXTURE_DANMAKU = 4
     const val TEXTURE_LOGO = 5
 
+    /** 网页面（父亲 2026-10-13）：网页在自己的离屏画面上渲染，银幕取样它 */
+    const val TEXTURE_WEB = 6
+
     interface TextureSink {
         /**
          * 原生建好一块画面纹理就回调一次。
@@ -429,6 +432,21 @@ object VrNative {
     }
 
     private external fun nativeSetScreenPanel(on: Boolean)
+
+    /**
+     * 银幕放网页（父亲 2026-10-13 定）。
+     *
+     * true = 银幕取样"网页面"那块离屏画面（网页整块上大银幕，可点可滚），
+     * 海报墙不受影响、照常浏览；false = 网页面关掉（被一部 Emby 片子顶掉时销毁）。
+     * 注意：这里**不**把应用切进播放态，否则点击/摇杆会被播放器语义吃掉。
+     */
+    fun setScreenWeb(on: Boolean) {
+        if (!loaded) return
+        runCatching { nativeSetScreenWeb(on) }
+            .onFailure { Log.w(TAG, "银幕切网页失败: ${it.message}") }
+    }
+
+    private external fun nativeSetScreenWeb(on: Boolean)
 
     private external fun nativeSetVideoActive(active: Boolean)
     private external fun nativeSetSpinnerWanted(wanted: Boolean)

@@ -1513,6 +1513,12 @@ struct VrContext {
      */
     std::atomic<bool> screenShowsPanel{false};
     /*
+     * 银幕放网页（父亲 2026-10-13 定）：true 时银幕取样"网页面"那块纹理，
+     * 网页在大银幕上照常可点可滚；海报墙不受影响，照常浏览。
+     * 它和 screenShowsPanel 互斥，网页优先。
+     */
+    std::atomic<bool> screenShowsWeb{false};
+    /*
      * 上一次见到的视频帧时间戳 —— 换片时用来识别"残留的旧帧"（父亲 2026-10-07）。
      *
      * ExoPlayer 释放旧片后，Surface 里还留着上一部的最后一帧，它的 getTimestamp
@@ -1581,6 +1587,16 @@ struct VrContext {
     std::atomic<bool> logoHasFrame{false};
 
     /*
+     * 网页面（父亲 2026-10-13 定：网页整块上大银幕，海报墙照常能浏览别的页面）。
+     *
+     * 网页在**自己的一块离屏画面**上渲染（不出现在世界里任何位置），银幕取样它：
+     * 海报墙显示详情页/别的页面，银幕上就是纯网页，互不干扰。
+     * 银幕这一路只画网页本身 —— 转圈、片名 logo、弹幕都不往它上面画。
+     */
+    GLuint webTex = 0;
+    std::atomic<bool> webHasFrame{false};
+
+    /*
      * ---- 纹理的创建者：VR 渲染线程自己（2026-10-05 晚修）----
      *
      * 前面三块屏互相串画面的真正根因：纹理是在 Java 那条 GL 线程的上下文里
@@ -1599,6 +1615,7 @@ struct VrContext {
     jobject menuSt = nullptr;
     jobject danmakuSt = nullptr;
     jobject logoSt = nullptr;
+    jobject webSt = nullptr;
     jobject textureSink = nullptr;
     /*
      * 画面纹理回调（2026-10-06 晚改）：原来六块画面各有一个方法，实测弹幕与
@@ -1744,6 +1761,7 @@ std::function<void()> gOsdUpdate;     // 控制条取帧（同上）
 std::function<void()> gMenuUpdate;    // 展开菜单取帧（同上）
 std::function<void()> gDanmakuUpdate; // 弹幕层取帧
 std::function<void()> gLogoUpdate;    // 片名 logo 取帧
+std::function<void()> gWebUpdate;     // 网页面取帧
 std::atomic<bool> gRunning{false};
 std::atomic<bool> gRequestStop{false};
 
@@ -3200,22 +3218,35 @@ void pushInput(VrContext &c) {
         }
 
         /*
-         * ③ 光柱指着银幕 + 扣扳机 = 开关控制条。
+         * ③ 光柱指着银幕。父亲 2026-10-13 定的三条：
          *
-         * 父亲 2026-10-07：**没在播放时也要能唤出** —— 刚打开 app、屏幕上没有影片时，
-         * 指着空屏扣扳机，控制条就该出来（从那里可以进「选片」）。
-         * 所以这里不再要求 videoActive（原来它把整段都跳过了，扣扳机毫无反应）。
-         * 光柱落在海报墙上时前面已经 continue 掉，不会和"点海报"打架。
+         *  · 银幕上放网页时，扣扳机 = **点网页**（落点换算成网页像素交给界面层），
+         *    摇杆 = 滚网页（见下面 ⑤）；
+         *  · 控制条开关（不分银幕上是网页还是 Emby 片子）= **按住侧握键 + 扣扳机**；
+         *  · 单扣扳机不再切控制条 —— 原来会切，与"点网页里的链接"是同一个动作，冲突。
+         *
+         * 光柱落在海报墙上时前面已经 continue 掉，不会和"点海报"打架；
+         * 侧握键在银幕这一侧本来是空的（抓海报墙只在光柱落在海报墙上时才发生）。
          */
         {
             float vT = 0.f, vu = 0.f, vv = 0.f, vwx = 0.f, vwy = 0.f, vwz = 0.f;
             const bool onScreen = rayHitsPlacement(c.aimPose[h], frontScreen(c), &vT, &vu, &vv,
                                                    &vwx, &vwy, &vwz);
             const double nowToggle = nowMs();
-            if (onScreen && c.triggerDown[h] && !c.sinkLastTrigger[h] &&
-                c.sinkToggleOsd != nullptr && nowToggle - c.sinkLastToggleMs > 300.0) {
+            const bool triggerJust = c.triggerDown[h] && !c.sinkLastTrigger[h];
+            const bool webOnScreen = onScreen && c.screenShowsWeb.load();
+            if (webOnScreen && triggerJust && !c.squeezeDown[h] && c.sinkClick != nullptr) {
+                /* 落点 → 网页像素（网页面固定 1920×1080，与 PanelLayer 常量一致） */
+                const ScreenPlacement &sp = frontScreen(c);
+                const float px = (vu / sp.width + 0.5f) * kPanelPxW;
+                const float py = (0.5f - vv / (sp.width * 9.f / 16.f)) * kPanelPxH;
+                LOGI("VR 输入：%s 扳机 → 网页点击 (%d, %d)", handName[h], (int) px, (int) py);
+                env->CallVoidMethod(c.inputSink, c.sinkClick, px, py);
+                clearJavaException(env, "输入回调 onClick（网页）");
+            } else if (onScreen && triggerJust && c.squeezeDown[h] &&
+                       c.sinkToggleOsd != nullptr && nowToggle - c.sinkLastToggleMs > 300.0) {
                 c.sinkLastToggleMs = nowToggle;
-                LOGI("VR 输入：%s 扳机 → 控制条开关（指着银幕）", handName[h]);
+                LOGI("VR 输入：%s 侧握+扳机 → 控制条开关（指着银幕）", handName[h]);
                 env->CallVoidMethod(c.inputSink, c.sinkToggleOsd);
                 clearJavaException(env, "输入回调 onToggleOsd");
             }
@@ -3230,34 +3261,45 @@ void pushInput(VrContext &c) {
          * 这一段的位置天然是"既不在菜单、也不在海报墙"，正好补上这一路。
          * 坐标传 0：播放页只用摇杆量；面板滚动在 Java 侧另有 panelPointerOnPanel 把关。
          */
-        if (c.videoActive.load() && !c.menuVisible.load()) {
-            /*
-             * 只在播放中补这一路：未播放时（看海报墙/首页）指着屏幕推摇杆，
-             * 不该跑去滚面板 —— 那时的摇杆仍走"指着海报墙"那条既有通道。
-             *
-             * 菜单开着时整条掐掉（父亲 2026-10-12 晚立的规矩）：**光柱要指在菜单
-             * 面板上，摇杆才滚菜单**，指别处一律不动。原来这一路会把摇杆推给界面层，
-             * 界面层见"菜单开着"就当滚菜单 —— 于是光柱在银幕上也能把演职人员列表
-             * 滚起来，正是父亲报的现象。
-             */
-            const float sxScreen = c.thumbstick[h].x;
-            const float syScreen = c.thumbstick[h].y;
-            if (fabsf(sxScreen) > kStickDeadzone || fabsf(syScreen) > kStickDeadzone) {
-                if (t - c.sinkStickAt[h] >= kStickStateMs) {
-                    c.sinkStickAt[h] = t;
-                    c.sinkStickPushed[h] = true;
-                    if (c.sinkStick != nullptr) {
-                        env->CallVoidMethod(c.inputSink, c.sinkStick, 0.f, 0.f,
-                                            sxScreen, syScreen);
-                        clearJavaException(env, "输入回调 onStick（画面分支）");
-                    }
+        /*
+         * ⑤ 摇杆 → 界面层。
+         *
+         * 两种情形走这一路：
+         *  · 播放中（Emby 片子）：坐标传 0，播放页只用摇杆量（左右快进快退）；
+         *  · 银幕上放网页（父亲 2026-10-13）：坐标传**网页像素落点**，
+         *    界面层据此滚网页（WebPageHub.scroll 要坐标才认）。
+         */
+        {
+            float sT = 0.f, su = 0.f, sv = 0.f, swx = 0.f, swy = 0.f, swz = 0.f;
+            const bool onScreenStick = rayHitsPlacement(c.aimPose[h], frontScreen(c), &sT, &su,
+                                                        &sv, &swx, &swy, &swz);
+            const bool webScroll = onScreenStick && c.screenShowsWeb.load();
+            if ((c.videoActive.load() || webScroll) && !c.menuVisible.load()) {
+                float pxStick = 0.f, pyStick = 0.f;
+                if (webScroll) {
+                    const ScreenPlacement &sp = frontScreen(c);
+                    pxStick = (su / sp.width + 0.5f) * kPanelPxW;
+                    pyStick = (0.5f - sv / (sp.width * 9.f / 16.f)) * kPanelPxH;
                 }
-            } else if (c.sinkStickPushed[h] && c.sinkStick != nullptr) {
-                // 回中补一帧零值：界面侧据此清"已触发"状态（快进快退要回中才能再触发）
-                c.sinkStickPushed[h] = false;
-                c.sinkStickAt[h] = 0.0;
-                env->CallVoidMethod(c.inputSink, c.sinkStick, 0.f, 0.f, 0.f, 0.f);
-                clearJavaException(env, "输入回调 onStick（画面分支 · 回中）");
+                const float sxScreen = c.thumbstick[h].x;
+                const float syScreen = c.thumbstick[h].y;
+                if (fabsf(sxScreen) > kStickDeadzone || fabsf(syScreen) > kStickDeadzone) {
+                    if (t - c.sinkStickAt[h] >= kStickStateMs) {
+                        c.sinkStickAt[h] = t;
+                        c.sinkStickPushed[h] = true;
+                        if (c.sinkStick != nullptr) {
+                            env->CallVoidMethod(c.inputSink, c.sinkStick, pxStick, pyStick,
+                                                sxScreen, syScreen);
+                            clearJavaException(env, "输入回调 onStick（画面分支）");
+                        }
+                    }
+                } else if (c.sinkStickPushed[h] && c.sinkStick != nullptr) {
+                    // 回中补一帧零值：界面侧据此清"已触发"状态（快进快退要回中才能再触发）
+                    c.sinkStickPushed[h] = false;
+                    c.sinkStickAt[h] = 0.0;
+                    env->CallVoidMethod(c.inputSink, c.sinkStick, pxStick, pyStick, 0.f, 0.f);
+                    clearJavaException(env, "输入回调 onStick（画面分支 · 回中）");
+                }
             }
         }
     }
@@ -3747,11 +3789,14 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
              * （父亲实测：控制条菜单被黑屏遮挡，就是这个原因）。
              * 独立层没建起来（blankLayer 失败）时仍走老路，银幕不会整个消失。
              */
-            /* 网页全屏时银幕显示面板纹理（同独立层那一路的判断） */
+            /* 网页在大银幕上时显示网页面纹理；其次才是"网页全屏时的面板"；最后是影片 */
             const bool panelOnScreen2 = c.screenShowsPanel.load() && c.panelActive.load() &&
                                         c.panelHasFrame.load() && c.panelTex != 0;
+            const bool webOnScreen2 = c.screenShowsWeb.load() && c.webTex != 0 &&
+                                      c.webHasFrame.load();
             const GLuint screenTex =
-                panelOnScreen2 ? c.panelTex : (videoReady ? c.videoTex : 0);
+                webOnScreen2 ? c.webTex
+                             : (panelOnScreen2 ? c.panelTex : (videoReady ? c.videoTex : 0));
             drawScreen(frontScreen(c), screenTex, true);
         }
 
@@ -4691,6 +4736,14 @@ void frameLoop(VrContext &c) {
             gPanelUpdate();
         }
 
+        /*
+         * 网页面取帧（父亲 2026-10-13）：银幕在放网页时，网页面这块离屏画面
+         * 每帧都要取新帧，否则银幕上是定格的第一帧。
+         */
+        if (c.screenShowsWeb.load() && gWebUpdate != nullptr) {
+            gWebUpdate();
+        }
+
         // 播放画面：同样必须在渲染线程取帧（与视频纹理同一个 GL 上下文）
         if (c.videoActive.load() && gVideoUpdate != nullptr) {
             /*
@@ -4720,13 +4773,22 @@ void frameLoop(VrContext &c) {
          */
         const bool panelOnScreen = c.screenShowsPanel.load() && c.panelActive.load() &&
                                    c.panelHasFrame.load() && c.panelTex != 0;
+        /*
+         * 银幕放网页（父亲 2026-10-13）：网页面固定 1920×1080（与 PanelLayer 常量一致），
+         * 尺寸按它来，不能沿用上一部影片的 texelX/texelY。
+         * 注意这里**不设 videoActive**：网页在大银幕上时应用不是"播放中"状态，
+         * 否则点击/摇杆全被播放器语义吃掉，网页就操作不了了（父亲报的第 1 个问题）。
+         */
+        const bool webOnScreen = c.screenShowsWeb.load() && c.webTex != 0 &&
+                                 c.webHasFrame.load();
         const bool videoFrameReady = c.videoHasFrame.load() && c.videoTex != 0;
-        if ((gLayerMask.load() & 1) != 0 && c.videoLayerOk && c.videoActive.load() &&
-            (panelOnScreen || videoFrameReady)) {
-            int32_t vw = panelOnScreen
+        const bool screenSourced = webOnScreen || panelOnScreen || videoFrameReady;
+        if ((gLayerMask.load() & 1) != 0 && c.videoLayerOk &&
+            (c.videoActive.load() || webOnScreen) && screenSourced) {
+            int32_t vw = (webOnScreen || panelOnScreen)
                              ? (int32_t) kPanelPxW
                              : (int32_t) lroundf(1.f / fmaxf(1e-6f, c.texelX.load()));
-            int32_t vh = panelOnScreen
+            int32_t vh = (webOnScreen || panelOnScreen)
                              ? (int32_t) kPanelPxH
                              : (int32_t) lroundf(1.f / fmaxf(1e-6f, c.texelY.load()));
             constexpr int32_t kMaxVideoW = 3840;
@@ -4743,8 +4805,10 @@ void frameLoop(VrContext &c) {
                 vh = (int32_t) ((float) vh * k);
             }
             if (vw >= 64 && vh >= 64 && buildQuadLayer(c, c.videoLayer, vw, vh, "视频层")) {
-                c.videoLayer.submitted = renderQuadLayer(
-                    c, c.videoLayer, panelOnScreen ? c.panelTex : c.videoTex, true);
+                const GLuint screenSrc = webOnScreen
+                                             ? c.webTex
+                                             : (panelOnScreen ? c.panelTex : c.videoTex);
+                c.videoLayer.submitted = renderQuadLayer(c, c.videoLayer, screenSrc, true);
             }
         }
 
@@ -5470,6 +5534,7 @@ void pushTexturesToJava(VrContext &c, JNIEnv *env) {
         {c.menuSt, 3, "展开菜单"},
         {c.danmakuSt, 4, "弹幕层"},
         {c.logoSt, 5, "片名 logo"},
+        {c.webSt, 6, "网页面"},
     };
     int pushed = 0;
     for (const Item &it : items) {
@@ -5506,10 +5571,11 @@ bool createOesSources(VrContext &c) {
     c.menuTex = genOesTexture();
     c.danmakuTex = genOesTexture();
     c.logoTex = genOesTexture();
+    c.webTex = genOesTexture();
     if (c.panelTex == 0 || c.videoTex == 0 || c.osdTex == 0 || c.menuTex == 0 ||
-        c.danmakuTex == 0 || c.logoTex == 0) {
-        LOGE("建画面纹理失败：panel=%u video=%u osd=%u menu=%u danmaku=%u logo=%u",
-             c.panelTex, c.videoTex, c.osdTex, c.menuTex, c.danmakuTex, c.logoTex);
+        c.danmakuTex == 0 || c.logoTex == 0 || c.webTex == 0) {
+        LOGE("建画面纹理失败：panel=%u video=%u osd=%u menu=%u danmaku=%u logo=%u web=%u",
+             c.panelTex, c.videoTex, c.osdTex, c.menuTex, c.danmakuTex, c.logoTex, c.webTex);
         return false;
     }
 
@@ -5519,8 +5585,10 @@ bool createOesSources(VrContext &c) {
     c.menuSt = makeOesSurface(env, c.menuTex, gMenuUpdate, c.menuHasFrame, "展开菜单");
     c.danmakuSt = makeOesSurface(env, c.danmakuTex, gDanmakuUpdate, c.danmakuHasFrame, "弹幕");
     c.logoSt = makeOesSurface(env, c.logoTex, gLogoUpdate, c.logoHasFrame, "片名 logo");
+    c.webSt = makeOesSurface(env, c.webTex, gWebUpdate, c.webHasFrame, "网页面");
     if (c.panelSt == nullptr || c.videoSt == nullptr || c.osdSt == nullptr ||
-        c.menuSt == nullptr || c.danmakuSt == nullptr || c.logoSt == nullptr) {
+        c.menuSt == nullptr || c.danmakuSt == nullptr || c.logoSt == nullptr ||
+        c.webSt == nullptr) {
         LOGE("画面纹理不完整，VR 贴图不可用");
         return false;
     }
@@ -5575,6 +5643,22 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetScreenPanel(JNIEnv *env, jobject /* 
                                                        jboolean on) {
     g.screenShowsPanel = (on == JNI_TRUE);
     LOGI("银幕画面来源 → %s", on == JNI_TRUE ? "面板（网页全屏）" : "影片");
+}
+
+
+/**
+ * 银幕放网页（父亲 2026-10-13 定）。
+ *
+ * true = 银幕取样"网页面"那块离屏纹理，网页在大银幕上照常可点可滚；
+ * false = 网页面关掉（网页被一部 Emby 片子顶掉时直接销毁，不留后台）。
+ * 它优先于 screenShowsPanel：两者同时为真时按网页算。
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetScreenWeb(JNIEnv *env, jobject /* this */,
+                                                     jboolean on) {
+    g.screenShowsWeb = (on == JNI_TRUE);
+    if (!g.screenShowsWeb.load()) g.webHasFrame = false;   // 关掉后不留旧帧
+    LOGI("银幕画面来源 → %s", on == JNI_TRUE ? "网页" : "（网页面已关）");
 }
 
 

@@ -151,6 +151,23 @@ class MainActivity : ComponentActivity() {
     private val logoUrl = androidx.compose.runtime.mutableStateOf<String?>(null)
 
     /*
+     * 网页面（父亲 2026-10-13 定）：网页整块放到大银幕上。
+     *
+     * 网页在**自己的一块离屏画面**上渲染（1920×1080，不在世界里任何位置），
+     * 银幕取样它 —— 所以海报墙还能照常浏览别的页面，两者互不干扰。
+     * 它是按需建、按需销毁的：点站点图标建起来，点一部 Emby 片子就整个销毁
+     * （父亲定：不留后台，免得两个声音一起响）。
+     */
+    private var web: PanelLayer? = null
+    private var pendingWebSt: android.graphics.SurfaceTexture? = null
+
+    /** 网页面当前加载哪个站（null = 网页面空着）；改它会触发重画与重新加载 */
+    private val webSiteState = androidx.compose.runtime.mutableStateOf<Int?>(null)
+
+    /** 银幕上现在是不是在放网页（原生侧银幕取样网页面纹理） */
+    private var webOnScreen = false
+
+    /*
      * 片名 logo 的位图（父亲 2026-10-06 晚：logo 一直没画出来）。
      *
      * 原来走 Coil 加载，日志里只停在 Loading、永远不结束，也拿不到失败原因。
@@ -1564,18 +1581,46 @@ class MainActivity : ComponentActivity() {
     /** 控制条显隐（VR 侧画不画那块面板） */
     private fun setOsdVisible(visible: Boolean) {
         /*
-         * 网页模式（父亲 2026-10-13）：播放 B站 / 腾讯 / 爱奇艺 的网页视频时，
-         * 我们自己的控制条不许出来 —— 控制用网页自己的按钮，点大屏幕也不切换。
+         * 控制条不禁用（父亲 2026-10-13 定）：银幕上放网页时控制条照样能出来 ——
+         * 开关的手势改成了「光柱指大银幕 + 按住侧握键 + 扣扳机」（原生侧判定），
+         * 所以这里不再按"网页模式"把控制条挡掉。
          */
-        if (com.xxxx.emby_vr.web.WebPageHub.active && visible) {
-            Log.i(TAG, "网页模式下控制条不显示（控制走网页自己的按钮）")
-            return
-        }
         osdVisible = visible
         com.xxxx.emby_vr.vr.VrNative.setOsdVisible(visible)
         // 控制条收起来时菜单一起收（父亲 2026-10-06：菜单挂在控制条上）
         if (!visible) closeMenu()
         Log.i(TAG, if (visible) "控制条显示" else "控制条隐藏")
+    }
+
+    /**
+     * 点网络视频的站点图标 = 把那个网站的网页整块放到大银幕上（父亲 2026-10-13 定）。
+     *
+     * 海报墙不动、留在网络视频详情页；网页在"网页面"那块离屏画面上渲染，银幕取样它。
+     * 这里**不**把应用切进播放态 —— 切进去的话点击和摇杆会被播放器语义吃掉，
+     * 网页在大银幕上就操作不了了（父亲报的"投射后手柄无法操作网页"）。
+     */
+    private fun openWeb(site: Int) {
+        runOnUiThread {
+            webSiteState.value = site
+            webOnScreen = true
+            com.xxxx.emby_vr.vr.VrNative.setScreenWeb(true)
+            Log.i(TAG, "网页面 → 大银幕（站点 $site）")
+        }
+    }
+
+    /**
+     * 网页面收摊：被一部 Emby 片子顶掉时整个销毁。
+     *
+     * 父亲 2026-10-13 定：不留后台、也不暂停在后台，直接退出 —— 免得两个声音一起响。
+     */
+    private fun closeWeb() {
+        if (!webOnScreen && webSiteState.value == null) return
+        runOnUiThread {
+            webSiteState.value = null
+            webOnScreen = false
+            com.xxxx.emby_vr.vr.VrNative.setScreenWeb(false)
+            Log.i(TAG, "网页面已关闭（大银幕交回影片）")
+        }
     }
 
     /**
@@ -2498,6 +2543,11 @@ class MainActivity : ComponentActivity() {
                 startKernelFallbackWatchdog()
             }
             renderer.videoActive = true
+            /*
+             * 大银幕这一路同时只能有一个来源（父亲 2026-10-13 定）：
+             * 起播一部 Emby 片子 = 网页面直接退出（不留后台），银幕换成影片。
+             */
+            closeWeb()
             /*
              * 系统播放器路径 GPU 只要 1.8~2.4ms，视频层可以放开到 1920（2026-10-09）：
              * 只有内核那条（杜比视界 Profile 5）才需要压到 1280 换稳定。
@@ -4806,9 +4856,13 @@ class MainActivity : ComponentActivity() {
             usesScrollZones = true,
         ) {
             // 面板里放的就是电视版的界面：PanelApp 是它的导航装配（见 panel/PanelApp.kt）
-            PanelApp(onPlayRequested = { mediaId, positionTicks ->
-                onPanelPlayRequested(mediaId, positionTicks)
-            })
+            PanelApp(
+                onPlayRequested = { mediaId, positionTicks ->
+                    onPanelPlayRequested(mediaId, positionTicks)
+                },
+                /* 点站点图标 = 那个网站的网页整块上大银幕（父亲 2026-10-13） */
+                onOpenWeb = { site -> openWeb(site) },
+            )
         }
 
         /*
@@ -4864,26 +4918,37 @@ class MainActivity : ComponentActivity() {
          * 位置与尺寸由原生按电视版比例钉在银幕左上角，这里只管画那张图。
          */
         /*
-         * 网页全屏 → 投到影院大银幕（父亲 2026-10-13）。
+         * 网页自己点"全屏"（父亲 2026-10-13）：什么都不用做。
          *
-         * 网页在我们自己的面板里渲染，网页全屏时面板上就是视频本身，
-         * 所以银幕只要改显示"面板那块画面"即可：不用再开一路播放器，
-         * 也不会出现"海报墙和银幕各放各的、进度不同步"。
-         * 退出全屏把银幕还给影片（网页模式下本来也没在放影片，等于清空）。
+         * 网页现在整块就在大银幕上，网页里的"全屏"只是它自己把播放器铺满页面，
+         * 我们照样只把这块画面贴到银幕上；退出全屏同理。所以这里只留日志。
+         * 银幕上只放网页本身 —— 转圈、片名 logo、弹幕都不往上画。
          */
         com.xxxx.emby_vr.web.WebPageHub.fullscreenHandler = { on ->
-            runOnUiThread {
-                if (on) {
-                    com.xxxx.emby_vr.vr.VrNative.setScreenPanel(true)
-                    com.xxxx.emby_vr.vr.VrNative.setVideoSize(1920, 1080)
-                    com.xxxx.emby_vr.vr.VrNative.setVideoAspect(16f / 9f)
-                    com.xxxx.emby_vr.vr.VrNative.setVideoActive(true)
-                    hud("网页全屏 → 画面已投到大银幕")
-                } else {
-                    com.xxxx.emby_vr.vr.VrNative.setScreenPanel(false)
-                    com.xxxx.emby_vr.vr.VrNative.setVideoActive(false)
+            Log.i(TAG, if (on) "网页自己进入全屏（画面仍在大银幕上）" else "网页自己退出全屏")
+        }
+
+        /*
+         * 网页面（父亲 2026-10-13）：1920×1080，与银幕同一尺寸；不在世界里出现，
+         * 只作为银幕的画面来源。按需建（点站点图标才建），之后一直留着复用。
+         */
+        web = PanelLayer(
+            this,
+            content = {
+                val s = webSiteState.value
+                if (s != null) {
+                    com.xxxx.emby_vr.ui.WebLibraryScreen(site = s)
                 }
-            }
+            },
+            panelW = 1920,
+            panelH = 1080,
+            name = "b0bemby-web",
+            activatesVrPanel = false,
+        )
+        val wSt = pendingWebSt
+        if (wSt != null) {
+            Log.i(TAG, "网页面建好，补挂纹理")
+            web?.attach(wSt)
         }
 
         logo = PanelLayer(
@@ -4940,6 +5005,11 @@ class MainActivity : ComponentActivity() {
                             Log.i(TAG, "收到片名 logo 纹理（面板已建=${::logo.isInitialized}）")
                             pendingLogoSt = st
                             if (::logo.isInitialized) logo.attach(st)
+                        }
+                        com.xxxx.emby_vr.vr.VrNative.TEXTURE_WEB -> {
+                            Log.i(TAG, "收到网页面纹理（已建=${web != null}）")
+                            pendingWebSt = st
+                            web?.attach(st)
                         }
                     }
                 }
@@ -5208,13 +5278,12 @@ class MainActivity : ComponentActivity() {
          * 光点在海报墙上时，往下走面板导航栈（下面那段），与是否正在播放无关。
          */
         /*
-         * 网页页里 B 键只在网页不同页面之间返回（父亲 2026-10-13 定）：
-         * 不返回 Emby 片库、也不回海报墙首页 —— 回首页走网页页左上角那个按钮。
-         * 网页没有上一页时也照样吃掉这一下（什么都不发生）。
+         * 银幕上放网页时 B 键不响应（父亲 2026-10-13 定）：退出网页这件事取消了 ——
+         * 想换内容就在海报墙点别的片子，网页会被那部片子顶掉。
+         * 光柱指海报墙时照旧走下面的面板导航栈（详情页按 B 回上一页）。
          */
-        if (keyCode == KeyEvent.KEYCODE_BACK && com.xxxx.emby_vr.web.WebPageHub.active) {
-            val went = com.xxxx.emby_vr.web.WebPageHub.back()
-            Log.i(TAG, if (went) "BACK：网页退回上一页" else "BACK：网页已在首页，不动")
+        if (keyCode == KeyEvent.KEYCODE_BACK && webOnScreen && !panelPointerOnPanel) {
+            Log.i(TAG, "BACK 忽略：光柱指着大银幕（网页）")
             return true
         }
         if (keyCode == KeyEvent.KEYCODE_BACK && renderer.videoActive && !panelPointerOnPanel) {
