@@ -349,6 +349,17 @@ object VrNative {
         fun onClick(px: Float, py: Float)
 
         /**
+         * 大银幕上的网页点击 / 滚动（父亲 2026-10-13）。
+         *
+         * 海报墙和网页面是两套独立的坐标空间（都是 1920×1080），光柱落点换算出的
+         * 像素值会撞在一起 —— 所以原生按"光柱落在哪块面上"分开回调：
+         * 落在海报墙上走 [onClick]/[onStick]，落在大银幕上走这两个。
+         */
+        fun onWebClick(px: Float, py: Float)
+
+        fun onWebStick(px: Float, py: Float, sx: Float, sy: Float)
+
+        /**
          * 光柱是否落在海报墙上（2026-10-06 加）。
          *
          * 只在状态变化时回推。界面层用它决定两件事：播放期间面板接不接输入、

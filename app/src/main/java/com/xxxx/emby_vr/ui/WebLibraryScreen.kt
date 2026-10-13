@@ -122,6 +122,48 @@ private const val HIDE_APP_BANNER_JS = """
 })()
 """
 
+/**
+ * 按"鼠标"身份给网页派发一个事件（父亲 2026-10-13）。
+ *
+ * 用 SOURCE_MOUSE 而不是默认的触摸：网页播放器的控制条是"鼠标一活动才浮出来"的，
+ * 光柱停着不动时它一直藏着 —— 表现就是"网页全屏后点不到控制按钮"。
+ * 移动类事件走 dispatchGenericMotionEvent，按下/抬起走 dispatchTouchEvent。
+ */
+private fun dispatchMouse(
+    wv: android.webkit.WebView,
+    action: Int,
+    x: Float,
+    y: Float,
+    whenMs: Long,
+) {
+    val props = arrayOf(
+        MotionEvent.PointerProperties().apply {
+            id = 0
+            toolType = MotionEvent.TOOL_TYPE_MOUSE
+        },
+    )
+    val coords = arrayOf(
+        MotionEvent.PointerCoords().apply {
+            this.x = x
+            this.y = y
+            pressure = if (action == MotionEvent.ACTION_DOWN) 1f else 0f
+            size = 1f
+        },
+    )
+    val ev = MotionEvent.obtain(
+        whenMs, whenMs, action, 1, props, coords,
+        0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_MOUSE, 0,
+    )
+    runCatching {
+        if (action == MotionEvent.ACTION_HOVER_MOVE) {
+            wv.dispatchGenericMotionEvent(ev)
+        } else {
+            wv.dispatchTouchEvent(ev)
+        }
+    }
+    ev.recycle()
+}
+
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun WebLibraryScreen(
@@ -361,12 +403,15 @@ fun WebLibraryScreen(
                     val y = (v * wv.height).coerceIn(0f, (wv.height - 1).toFloat())
                     val now = SystemClock.uptimeMillis()
                     runCatching {
-                        wv.dispatchTouchEvent(
-                            MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, x, y, 0)
-                        )
-                        wv.dispatchTouchEvent(
-                            MotionEvent.obtain(now, now + 40, MotionEvent.ACTION_UP, x, y, 0)
-                        )
+                        /*
+                         * 先来两下"鼠标移动"（父亲 2026-10-13 报"网页全屏后点不了控制按钮"）：
+                         * 网页播放器的控制条是**鼠标一活动才浮出来**的，光柱停着不动时
+                         * 它一直藏着 —— 看着就是"按钮点不到"。先晃两下再点。
+                         */
+                        dispatchMouse(wv, MotionEvent.ACTION_HOVER_MOVE, x, y, now)
+                        dispatchMouse(wv, MotionEvent.ACTION_HOVER_MOVE, x + 2f, y + 1f, now + 16)
+                        dispatchMouse(wv, MotionEvent.ACTION_DOWN, x, y, now + 32)
+                        dispatchMouse(wv, MotionEvent.ACTION_UP, x, y, now + 72)
                     }
                     return@handler true
                 }

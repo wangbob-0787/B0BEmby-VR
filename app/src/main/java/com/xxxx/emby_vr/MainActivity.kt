@@ -540,16 +540,10 @@ class MainActivity : ComponentActivity() {
             lastPanelClickAt = android.os.SystemClock.uptimeMillis()
             runOnUiThread {
                 /*
-                 * 网页页在用的时候，点击直接按坐标派发给网页（父亲 2026-10-13）。
-                 * 面板的常规点击走"查控件坐标表 → 无参动作"，拿不到坐标，
-                 * 而网页必须知道点在哪 —— 所以这一路优先。
+                 * 这一路只服务海报墙（父亲 2026-10-13 修）：大银幕上的网页走
+                 * onWebClick 那条独立通道 —— 两套坐标空间都是 1920×1080，
+                 * 混在一起时点海报墙会被当成"点在网页上"吃掉，海报墙就点不动了。
                  */
-                if (com.xxxx.emby_vr.web.WebPageHub.active) {
-                    if (com.xxxx.emby_vr.web.WebPageHub.tap(px, py)) {
-                        Log.i(TAG, "光柱点击 (${px.toInt()}, ${py.toInt()}) → 交给网页")
-                        return@runOnUiThread
-                    }
-                }
                 if (panelInputReady()) {
                     Log.i(TAG, "光柱点击 (${px.toInt()}, ${py.toInt()}) → 交给面板")
                     panel.vrClick(px, py)
@@ -557,6 +551,20 @@ class MainActivity : ComponentActivity() {
                     Log.w(TAG, "光柱点击被丢弃：面板未就绪（已激活=${com.xxxx.emby_vr.vr.VrNative.panelActive}）")
                 }
             }
+        }
+
+        /** 大银幕上的网页：点击 / 滚动（坐标由原生按银幕落点换算好） */
+        override fun onWebClick(px: Float, py: Float) {
+            vrInputLive = true
+            runOnUiThread {
+                Log.i(TAG, "光柱点击 (${px.toInt()}, ${py.toInt()}) → 交给网页")
+                com.xxxx.emby_vr.web.WebPageHub.tap(px, py)
+            }
+        }
+
+        override fun onWebStick(px: Float, py: Float, sx: Float, sy: Float) {
+            vrInputLive = true
+            runOnUiThread { com.xxxx.emby_vr.web.WebPageHub.scroll(px, py, sy) }
         }
 
         override fun onStick(px: Float, py: Float, sx: Float, sy: Float) {
@@ -574,11 +582,11 @@ class MainActivity : ComponentActivity() {
                 Log.i(TAG, "收到摇杆 px=$px py=$py sx=$sx sy=$sy 菜单=${menuState.kind}")
             }
             runOnUiThread {
-                /* 网页页在用：摇杆上下 = 滚动网页（父亲 2026-10-13） */
-                if (com.xxxx.emby_vr.web.WebPageHub.active) {
-                    com.xxxx.emby_vr.web.WebPageHub.scroll(px, py, sy)
-                    return@runOnUiThread
-                }
+                /*
+                 * 这一路只服务海报墙/播放画面（父亲 2026-10-13 修）：
+                 * 大银幕上的网页走 onWebStick 那条独立通道，否则菜单开着时
+                 * 摇杆会被网页抢去滚，菜单自己滚不动。
+                 */
                 /*
                  * 光柱指着**画面**时，摇杆左右 = 快退 / 快进（父亲 2026-10-06）。
                  *
@@ -1601,6 +1609,15 @@ class MainActivity : ComponentActivity() {
      */
     private fun openWeb(site: Int) {
         runOnUiThread {
+            /*
+             * 大银幕这一路同时只能有一个来源（父亲 2026-10-13 实测报的）：
+             * 先在放 Emby 片子、再点站点图标时，片子必须**停掉** —— 否则它还在后台
+             * 出声，网页和片子两个声音一起响。停之前照常上报进度（服务端记住看到哪儿）。
+             */
+            if (renderer.videoActive) {
+                Log.i(TAG, "开网页：先把正在播的片子停掉")
+                stopPlayback()
+            }
             webSiteState.value = site
             webOnScreen = true
             com.xxxx.emby_vr.vr.VrNative.setScreenWeb(true)

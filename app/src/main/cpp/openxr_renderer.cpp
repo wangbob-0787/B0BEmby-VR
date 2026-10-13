@@ -1351,6 +1351,16 @@ struct VrContext {
     jmethodID sinkPointer = nullptr;
     jmethodID sinkClick = nullptr;
     jmethodID sinkStick = nullptr;
+    /*
+     * 大银幕上的网页专用通道（父亲 2026-10-13）。
+     *
+     * 为什么不能复用 onClick/onStick：海报墙和网页面是**两套独立的坐标空间**
+     * （都是 1920×1080），光柱落点换算出来的像素值会撞在一起 —— 点海报墙时
+     * 界面层会当成"点在网页上"吃掉，于是海报墙点不动、摇杆也被网页抢去滚。
+     * 分开两条回调，界面层就不必猜落点在哪块面上。
+     */
+    jmethodID sinkWebClick = nullptr;
+    jmethodID sinkWebStick = nullptr;
     jmethodID sinkBack = nullptr;
     jmethodID sinkOsdPointer = nullptr; // 控制条上的指针
     jmethodID sinkOsdClick = nullptr;   // 控制条上的点击
@@ -3235,14 +3245,14 @@ void pushInput(VrContext &c) {
             const double nowToggle = nowMs();
             const bool triggerJust = c.triggerDown[h] && !c.sinkLastTrigger[h];
             const bool webOnScreen = onScreen && c.screenShowsWeb.load();
-            if (webOnScreen && triggerJust && !c.squeezeDown[h] && c.sinkClick != nullptr) {
+            if (webOnScreen && triggerJust && !c.squeezeDown[h] && c.sinkWebClick != nullptr) {
                 /* 落点 → 网页像素（网页面固定 1920×1080，与 PanelLayer 常量一致） */
                 const ScreenPlacement &sp = frontScreen(c);
                 const float px = (vu / sp.width + 0.5f) * kPanelPxW;
                 const float py = (0.5f - vv / (sp.width * 9.f / 16.f)) * kPanelPxH;
                 LOGI("VR 输入：%s 扳机 → 网页点击 (%d, %d)", handName[h], (int) px, (int) py);
-                env->CallVoidMethod(c.inputSink, c.sinkClick, px, py);
-                clearJavaException(env, "输入回调 onClick（网页）");
+                env->CallVoidMethod(c.inputSink, c.sinkWebClick, px, py);
+                clearJavaException(env, "输入回调 onWebClick（网页）");
             } else if (onScreen && triggerJust && c.squeezeDown[h] &&
                        c.sinkToggleOsd != nullptr && nowToggle - c.sinkLastToggleMs > 300.0) {
                 c.sinkLastToggleMs = nowToggle;
@@ -3287,18 +3297,28 @@ void pushInput(VrContext &c) {
                     if (t - c.sinkStickAt[h] >= kStickStateMs) {
                         c.sinkStickAt[h] = t;
                         c.sinkStickPushed[h] = true;
-                        if (c.sinkStick != nullptr) {
+                        if (webScroll && c.sinkWebStick != nullptr) {
+                            env->CallVoidMethod(c.inputSink, c.sinkWebStick, pxStick, pyStick,
+                                                sxScreen, syScreen);
+                            clearJavaException(env, "输入回调 onWebStick（网页）");
+                        } else if (c.sinkStick != nullptr) {
                             env->CallVoidMethod(c.inputSink, c.sinkStick, pxStick, pyStick,
                                                 sxScreen, syScreen);
                             clearJavaException(env, "输入回调 onStick（画面分支）");
                         }
                     }
-                } else if (c.sinkStickPushed[h] && c.sinkStick != nullptr) {
+                } else if (c.sinkStickPushed[h]) {
                     // 回中补一帧零值：界面侧据此清"已触发"状态（快进快退要回中才能再触发）
                     c.sinkStickPushed[h] = false;
                     c.sinkStickAt[h] = 0.0;
-                    env->CallVoidMethod(c.inputSink, c.sinkStick, pxStick, pyStick, 0.f, 0.f);
-                    clearJavaException(env, "输入回调 onStick（画面分支 · 回中）");
+                    if (webScroll && c.sinkWebStick != nullptr) {
+                        env->CallVoidMethod(c.inputSink, c.sinkWebStick, pxStick, pyStick,
+                                            0.f, 0.f);
+                        clearJavaException(env, "输入回调 onWebStick（回中）");
+                    } else if (c.sinkStick != nullptr) {
+                        env->CallVoidMethod(c.inputSink, c.sinkStick, pxStick, pyStick, 0.f, 0.f);
+                        clearJavaException(env, "输入回调 onStick（画面分支 · 回中）");
+                    }
                 }
             }
         }
@@ -4060,7 +4080,7 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
             const Mat4 rayModel = poseScaleModel(c.aimPose[h], rayThick, rayThick, rayLength);
             drawMesh(c, c.rayVbo, c.rayVertexCount,
                      multiply(multiply(proj, view4), rayModel),
-                     1.f, 1.f, 1.f, false);   // 白光（父亲 2026-10-09：绿光改白）
+                     0.25f, 1.f, 0.35f, false);   // 绿光柱（父亲 2026-10-13：白色在网页上不明显，改绿）
 
             /*
              * 光点：贴在命中点上，朝眼睛方向抬几毫米（避免和面抢像素）。
@@ -4112,7 +4132,7 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
                 const Mat4 dotModel = poseScaleModel(dotPose, kDotSize * dotScale,
                                                      kDotSize * dotScale, 1.f);
                 drawMesh(c, c.vbo, 6, multiply(multiply(proj, view4), dotModel),
-                         1.f, 1.f, 1.f, true);   // 白点（大小不变，父亲 2026-10-09）
+                         0.25f, 1.f, 0.35f, true);   // 绿光点（父亲 2026-10-13：白色在网页上不明显）
             }
 
         }
@@ -6186,6 +6206,8 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachInputSink(JNIEnv *env, jobject /*
     g.sinkPointer = env->GetMethodID(cls, "onPointer", "(FF)V");
     g.sinkClick = env->GetMethodID(cls, "onClick", "(FF)V");
     g.sinkStick = env->GetMethodID(cls, "onStick", "(FFFF)V");
+    g.sinkWebClick = env->GetMethodID(cls, "onWebClick", "(FF)V");
+    g.sinkWebStick = env->GetMethodID(cls, "onWebStick", "(FFFF)V");
     g.sinkOsdPointer = env->GetMethodID(cls, "onOsdPointer", "(FFZ)V");
     g.sinkOsdClick = env->GetMethodID(cls, "onOsdClick", "(FF)V");
     g.sinkToggleOsd = env->GetMethodID(cls, "onToggleOsd", "()V");
