@@ -15,16 +15,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -38,7 +34,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -46,6 +41,8 @@ import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -215,7 +212,17 @@ fun WebLibraryScreen(
     var customView by remember { mutableStateOf<android.view.View?>(null) }
     /* 网页这块矩形在面板画布里的位置（面板像素），用来换算光柱落点 */
     var webRect by remember { mutableStateOf<Rect?>(null) }
+    /*
+     * 加载态与失败态（父亲 2026-10-13：网页打开过程中「可以有个正在加载」，
+     * 加载不出来要提示「请检查网络连接」）。
+     *
+     * 这两个状态只驱动面板正中一行提示字：不加底色、不登记点击
+     * （登记了就会在光柱那张坐标表里跟网页抢同一块矩形），
+     * 也不是"贴一层盖住网页"的蒙版 —— 网页照常铺满整块面板，
+     * 加载完（或重新开始加载）提示立刻从界面上撤掉。
+     */
     var loading by remember { mutableStateOf(true) }
+    var loadFailed by remember { mutableStateOf(false) }
 
     Box(modifier = Modifier.fillMaxSize().background(Color(0xFF0B0C0F))) {
         AndroidView(
@@ -277,6 +284,16 @@ fun WebLibraryScreen(
                                 return true
                             }
 
+                            /*
+                             * 每开始一次加载就把状态复位回「正在加载」（父亲 2026-10-13）。
+                             * 失败后用户点别的站点、或在网页里点链接进下一页，都从这里回到加载态，
+                             * 不会把上一次的「请检查网络连接」留在画面上。
+                             */
+                            override fun onPageStarted(view: WebView, u: String, favicon: android.graphics.Bitmap?) {
+                                loading = true
+                                loadFailed = false
+                            }
+
                             override fun onPageFinished(view: WebView, u: String) {
                                 loading = false
                                 /*
@@ -298,6 +315,16 @@ fun WebLibraryScreen(
                                 )
                             }
 
+                            /*
+                             * 打不开就提示「请检查网络连接」（父亲 2026-10-13 定）。
+                             *
+                             * 只认**主文档**的失败：图片、埋点、广告这些子请求天天有失败的
+                             * （这些站点的请求被拦是常态），拿它们当"网页打不开"会误报 ——
+                             * 页面明明好好地在那儿，正中却挂着一行"请检查网络连接"。
+                             *
+                             * ERROR_UNKNOWN 也放过：这一档多半是"我们自己中断或重定向"
+                             * （换站点时 stopLoading、点链接跳转），不是网络不通。
+                             */
                             override fun onReceivedError(
                                 view: WebView,
                                 request: android.webkit.WebResourceRequest,
@@ -307,6 +334,24 @@ fun WebLibraryScreen(
                                     "WebLib",
                                     "加载失败 ${request.url} : ${error.errorCode} ${error.description}",
                                 )
+                                if (request.isForMainFrame &&
+                                    error.errorCode != WebViewClient.ERROR_UNKNOWN
+                                ) {
+                                    loadFailed = true
+                                }
+                            }
+
+                            /* HTTP 4xx / 5xx（页面在、但服务器回绝）：同样是主文档才算整页打不开 */
+                            override fun onReceivedHttpError(
+                                view: WebView,
+                                request: android.webkit.WebResourceRequest,
+                                errorResponse: android.webkit.WebResourceResponse,
+                            ) {
+                                android.util.Log.w(
+                                    "WebLib",
+                                    "HTTP ${errorResponse.statusCode} ${request.url}",
+                                )
+                                if (request.isForMainFrame) loadFailed = true
                             }
                         }
                         webChromeClient = object : WebChromeClient() {
@@ -390,11 +435,32 @@ fun WebLibraryScreen(
                 }
             },
         )
+        /*
+         * 面板正中的加载 / 失败提示（父亲 2026-10-13）。
+         *
+         * 排在两个网页容器之后 = 画在它们上面，但只在"还没加载完"或"没加载出来"时存在：
+         * 加载完这个 if 直接为假，整块提示从界面树上撤掉，不存在"压着网页"的可能。
+         * 不铺底色是因为网页自己会画白底页面的加载过程，蒙一层反而看不清它在动。
+         */
+        if (loading || loadFailed) {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = if (loadFailed) "请检查网络连接" else "正在加载…",
+                    color = Color.White.copy(alpha = 0.85f),
+                    fontSize = 16.sp,
+                )
+            }
+        }
     }
 
     /* 打开（或换）站点：网页整块在大银幕上，加载哪个站由这里决定 */
     LaunchedEffect(site) {
+        /* 换站点把提示复位回"正在加载"，别把上一个站点的失败提示带过来 */
         loading = true
+        loadFailed = false
         webRef?.loadUrl(url)
     }
 
@@ -507,166 +573,63 @@ fun WebLibraryScreen(
     }
 }
 
-/** 顶栏上的小按钮（网页页自己用，样式跟面板一致） */
-@Composable
-private fun TopBarButton(label: String, onClick: () -> Unit) {
-    Box(
-        modifier = Modifier
-            .height(44.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(
-                Brush.verticalGradient(
-                    listOf(Color(0xFF2A2F38), Color(0xFF1D2128))
-                )
-            )
-            .vrClickTarget(key = "weblib:$label", onActivate = onClick)
-            .padding(horizontal = 18.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(text = label, color = Color(0xFFE8EDF2), fontSize = 20.sp)
-    }
-}
-
+/*
+ * 这一页原来还有一个私有 composable `TopBarButton`（顶栏「返回海报墙」小按钮）。
+ * 顶栏那份「返回海报墙」按钮随详情页改版一起去掉了 —— 电影 / 剧集详情页也没有它，
+ * 返回统一靠 B 键，于是它成了没人调用的死代码，父亲 2026-10-13 要求不留未使用的私有函数，删掉。
+ */
 
 /**
- * 网络视频详情页（父亲 2026-10-13 定：**做成和电影 / 电视剧详情页一样**）。
+ * 网络视频详情页（父亲 2026-10-13 定：**做成媒体库页的样子**）。
  *
- * 结构照搬 MediaDetailScreen：底色渐变 → 下半屏压暗 → 头部（左：标题 / 两行元数据 /
- * 简介 / 动作按钮；右：网络视频那张拼图，位置与剧集详情页右侧的剧名 logo 同义）
- * → 下面一行站点卡片（相当于剧集页的「第 N 季」那一行）。
+ * 父亲这一页要的东西只有两样：左上角一个标题「网络视频」，标题下面三张站点卡。
+ * 原来那版是照电影详情页拼的（渐变底 + 下半屏压暗 + 元数据行 + 站点名行 + 简介 +
+ * 三颗小按钮 + 右侧大图 + 「站点」分区标题），可这一页背后没有"一部片子"可介绍 ——
+ * 它就是三个站点入口，堆上去的字都是废话，还把三张卡挤到下半屏。
+ * 现在砍到只剩标题 + 三张卡，卡片的规格与首页「我的媒体库」那一行的库卡一致
+ * （260 宽、图区 16:9、图区圆角 12dp、图下 4dp 居中标题），
+ * 观感上就是"进了又一个媒体库"。
  *
- * 顶栏不再有「返回海报墙」按钮 —— 电影详情页也没有，返回统一靠 B 键（光柱指着海报墙时）。
+ * 顶栏仍然没有「返回海报墙」按钮：媒体库页也没有，返回统一靠 B 键。
  */
 @Composable
 fun WebSiteDetailScreen(onOpen: (Int) -> Unit, onBack: () -> Unit) {
     val sites = listOf(
-        Triple("哔哩哔哩", R.drawable.web_bilibili_icon, Color(0xFFFB7299)),
-        Triple("腾讯视频", R.drawable.web_tencent_icon, Color(0xFF2CA2F5)),
-        Triple("爱奇艺", R.drawable.web_iqiyi_icon, Color(0xFF19B36B)),
+        "哔哩哔哩" to R.drawable.web_bilibili_icon,
+        "腾讯视频" to R.drawable.web_tencent_icon,
+        "爱奇艺" to R.drawable.web_iqiyi_icon,
     )
+    /* 底色用全站暗色体系的底（0xFF0B0C0F），不再走原来那条"详情页专用"的渐变 */
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Brush.verticalGradient(listOf(Color(0xFF23272E), Color(0xFF0E1013)))),
+            .background(Color(0xFF0B0C0F)),
     ) {
-        /* 下半屏压暗，和电影 / 剧集详情页同一套（顶部保持透明） */
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomStart)
-                .fillMaxWidth()
-                .fillMaxHeight(0.65f)
-                .background(
-                    Brush.verticalGradient(
-                        listOf(
-                            Color.Transparent,
-                            Color.Black.copy(alpha = 0.6f),
-                            Color.Black.copy(alpha = 0.9f),
-                            Color.Black,
-                        )
-                    )
-                ),
-        )
         Column(
+            /* 页边距 40dp，与媒体库页 / 详情页一致（父亲 2026-10-13） */
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(vertical = 32.dp),
+                .padding(40.dp),
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 40.dp),
-                horizontalArrangement = Arrangement.spacedBy(32.dp),
-                verticalAlignment = Alignment.Top,
-            ) {
-                Column(
-                    modifier = Modifier.weight(1f).padding(top = 140.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp),
-                ) {
-                    Text(
-                        text = "网络视频",
-                        style = MaterialTheme.typography.displaySmall.copy(
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White,
-                        ),
-                    )
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text(
-                            text = "3 个站点    网页版    不用装 App",
-                            color = Color.White.copy(alpha = 0.92f),
-                            fontSize = 15.sp,
-                        )
-                        Text(
-                            text = "哔哩哔哩 · 腾讯视频 · 爱奇艺",
-                            color = Color.White.copy(alpha = 0.72f),
-                            fontSize = 15.sp,
-                        )
-                    }
-                    Text(
-                        text = "三个网站的电脑版网页直接开在大银幕上，浏览、搜索、播放都在网页里。" +
-                            "网页就当一部片子看待：想换内容，在海报墙点别的片子，网页会被那部片子顶掉。",
-                        color = Color.White.copy(alpha = 0.9f),
-                        fontSize = 17.sp,
-                        lineHeight = 26.sp,
-                    )
-                    /* 动作按钮：三个站点，形态与电影详情页的「播放 / 重播」一致 */
-                    Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-                        sites.forEachIndexed { i, (name, icon, _) ->
-                            WebSiteActionTile(
-                                icon = painterResource(icon),
-                                label = name,
-                                key = "netvideo:$i",
-                                onActivate = { onOpen(i) },
-                            )
-                        }
-                    }
-                }
-                /* 右侧：网络视频那张拼图（相当于剧集详情页右侧的剧名 logo） */
-                Image(
-                    painter = painterResource(R.drawable.web_netvideo_card),
-                    contentDescription = "网络视频",
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .width(360.dp)
-                        .height(202.dp)
-                        .clip(RoundedCornerShape(12.dp)),
-                )
-            }
-            Spacer(modifier = Modifier.height(40.dp))
             Text(
-                text = "站点",
+                text = "网络视频",
+                style = MaterialTheme.typography.headlineSmall,
                 color = Color.White,
-                fontSize = 21.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(horizontal = 40.dp),
             )
-            Spacer(modifier = Modifier.height(16.dp))
-            /* 站点卡片那一行：位置与剧集详情页的「第 N 季」胶囊行同义 */
+            /* 标题到卡片行的间距：媒体库页是"标题 → 排序行 → 网格"，这里没有排序行，留一段呼吸 */
+            Spacer(modifier = Modifier.height(24.dp))
             Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 40.dp),
-                horizontalArrangement = Arrangement.spacedBy(28.dp),
+                modifier = Modifier.fillMaxWidth(),
+                /* 卡片间距 20dp：与首页「我的媒体库」那一行一致 */
+                horizontalArrangement = Arrangement.spacedBy(20.dp),
             ) {
-                sites.forEachIndexed { i, (name, icon, accent) ->
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(18.dp))
-                            .background(Color(0xFFF3F5F8))
-                            .vrClickTarget(key = "netvideo:big:$i", onActivate = { onOpen(i) })
-                            .padding(horizontal = 24.dp, vertical = 20.dp),
-                    ) {
-                        Image(
-                            painter = painterResource(icon),
-                            contentDescription = name,
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier.size(120.dp),
-                        )
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text(
-                            text = name,
-                            color = accent,
-                            fontSize = 24.sp,
-                            fontWeight = FontWeight.Bold,
-                        )
-                    }
+                sites.forEachIndexed { i, (name, icon) ->
+                    NetVideoSiteCard(
+                        name = name,
+                        icon = icon,
+                        key = "netvideo:big:$i",
+                        onActivate = { onOpen(i) },
+                    )
                 }
             }
         }
@@ -674,73 +637,116 @@ fun WebSiteDetailScreen(onOpen: (Int) -> Unit, onBack: () -> Unit) {
 }
 
 /**
- * 网络视频详情页的动作按钮：形态照电影详情页的 ActionTile（108×44、暗底、图标 + 文字横排），
- * 图标换成站点 logo（父亲 2026-10-13）。
+ * 站点卡（父亲 2026-10-13 定：规格与首页「我的媒体库」的库卡一字不差）。
+ *
+ * 结构照 `ui/components/BuildItem.kt` 的库卡：Column = 图区 Box + 文字区 Column(padding 4dp, 居中)。
+ * 卡片名字写白色而不是各站品牌色 —— 原来压在近白底上用品牌色，黄绿两家的对比度都不够，
+ * 现在底是 0xFF101216 的暗块，白字才清楚（父亲要求 ≥3:1）。
+ *
+ * 站点 logo 是方形图标（447/225/216 见方），放在 16:9 的图区里用 Fit 保住整枚图标，
+ * 用 Crop 会把上下切掉半个（爸爸要的是"图标"不是"截图"）。
  */
 @Composable
-private fun WebSiteActionTile(
-    icon: androidx.compose.ui.graphics.painter.Painter,
-    label: String,
+private fun NetVideoSiteCard(
+    name: String,
+    icon: Int,
     key: String,
     onActivate: () -> Unit,
 ) {
-    Row(
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
-            .width(108.dp)
-            .height(44.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(Color(0xFF3A3A3A))
-            .vrClickTarget(key = key, onActivate = onActivate),
-        horizontalArrangement = Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically,
+            .width(260.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color(0xFF101216))
+            /* 圆角 12dp，与卡面一致：白块的圆角跟控件对不上时四个角会露出来（父亲 2026-10-13 实测） */
+            .vrClickTarget(key = key, hoverRadius = 12.dp, onActivate = onActivate),
     ) {
-        Image(
-            painter = icon,
-            contentDescription = label,
-            contentScale = ContentScale.Fit,
-            modifier = Modifier.size(20.dp),
-        )
-        Spacer(modifier = Modifier.width(8.dp))
-        Text(text = label, color = Color.White, fontSize = 15.sp, maxLines = 1)
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(146.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(Color(0xFF101216)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Image(
+                painter = painterResource(icon),
+                contentDescription = name,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+        Column(
+            modifier = Modifier
+                .padding(4.dp)
+                .fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                text = name,
+                color = Color.White,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+            )
+        }
     }
 }
 
 /**
  * 「网络视频」卡片（父亲 2026-10-13 定）：放在海报墙首页「我的媒体库」那一行里，
  * 和普通媒体库并排；图用父亲发来的那张网络视频图标拼图（web_netvideo_card）。
- * 点它进网络视频详情页（三个方形图标）。
+ * 点它进网络视频详情页（三个站点卡）。
+ *
+ * 父亲原话：「网络视频库卡的说明文字和其他库卡说明文字的大小和位置都不一样」——
+ * 原来这里把「网络视频」压在图上（左下角、22sp、底下垫一条 44dp 黑条），
+ * 而同一行其他库卡的名字都在**图下面的居中位置**（16sp 粗体）。
+ * 现在照 `ui/components/BuildItem.kt` 的库卡结构来：Column = 图区 Box + 文字区
+ * Column(padding 4dp, 居中)；圆角也从 14dp 收到 12dp（全站圆角只有 8/12/16/28 四档）。
  */
 @Composable
 fun NetVideoCard(onClick: () -> Unit) {
-    Box(
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
             .width(260.dp)
-            .height(146.dp)
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(12.dp))
             .background(Color(0xFF101216))
-            .vrClickTarget(key = "netvideo:card", onActivate = onClick),
+            .vrClickTarget(key = "netvideo:card", hoverRadius = 12.dp, onActivate = onClick),
     ) {
-        Image(
-            painter = painterResource(R.drawable.web_netvideo_card),
-            contentDescription = "网络视频",
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize(),
-        )
-        /* 底部压一条暗色，让「网络视频」四个字在任何图上都看得清 */
+        /* 图区 260×146 = 16:9，与「我的媒体库」那一行的库卡图区一样大 */
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(44.dp)
-                .align(Alignment.BottomStart)
-                .background(Color(0xCC000000)),
-            contentAlignment = Alignment.CenterStart,
+                .height(146.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(Color(0xFF101216)),
+        ) {
+            Image(
+                painter = painterResource(R.drawable.web_netvideo_card),
+                contentDescription = "网络视频",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+        /* 文字区：图下留 4dp，白字 16sp 粗体居中一行（与同排库卡的标题同规格） */
+        Column(
+            modifier = Modifier
+                .padding(4.dp)
+                .fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
                 text = "网络视频",
                 color = Color.White,
-                fontSize = 22.sp,
+                fontSize = 16.sp,
                 fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(start = 14.dp),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
             )
         }
     }

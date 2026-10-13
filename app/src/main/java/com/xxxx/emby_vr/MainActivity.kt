@@ -71,6 +71,14 @@ class MainActivity : ComponentActivity() {
     private var osdVisible = false
     private var osdJob: kotlinx.coroutines.Job? = null
 
+    /**
+     * 三个网络视频站点的名字（父亲 2026-10-13）。
+     *
+     * 下标与 `ui/WebLibraryScreen.kt` 里的站点顺序一致（0 = 哔哩哔哩）。
+     * 银幕在放网页时，控制条标题行用它显示「正在播放：哔哩哔哩」。
+     */
+    private val WEB_SITE_NAMES = arrayOf("哔哩哔哩", "腾讯视频", "爱奇艺")
+
     // ── 片头跳过（父亲 2026-10-12）──────────────────────────────────────────
     /**
      * 片头范围，毫秒（与 `ctl.positionMs()` 同一口径）。
@@ -1627,6 +1635,13 @@ class MainActivity : ComponentActivity() {
             }
             webSiteState.value = site
             webOnScreen = true
+            /*
+             * 控制条标题行显示「正在播放：哔哩哔哩」（父亲 2026-10-13）。
+             *
+             * 网页不是 Emby 片源，hasPlayback 是 false，所以以前控制条在这时候写的是空的，
+             * 看着像"什么都没在播"，而声音明明是网页在放。
+             */
+            osdState.webSiteName = WEB_SITE_NAMES.getOrElse(site) { "网页" }
             com.xxxx.emby_vr.vr.VrNative.setScreenWeb(true)
             Log.i(TAG, "网页面 → 大银幕（站点 $site）")
         }
@@ -1642,6 +1657,7 @@ class MainActivity : ComponentActivity() {
         runOnUiThread {
             webSiteState.value = null
             webOnScreen = false
+            osdState.webSiteName = ""
             com.xxxx.emby_vr.vr.VrNative.setScreenWeb(false)
             Log.i(TAG, "网页面已关闭（大银幕交回影片）")
         }

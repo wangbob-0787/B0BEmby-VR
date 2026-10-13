@@ -559,7 +559,9 @@ private fun CinemaLightMenu(menu: MenuState) {
                     .fillMaxHeight()
                     .fillMaxWidth(menu.cinemaBright.coerceIn(0f, 1f))
                     .clip(RoundedCornerShape(13.dp))
-                    .background(Color(0xFF4FC3F7)),
+                    // 强调色统一成一个绿（父亲 2026-10-13：全站"活动/进度"只用 #2FD57C，
+                    // 原来这两条滑杆填充用的是浅蓝 #4FC3F7）
+                    .background(Color(0xFF2FD57C)),
             )
         }
         Spacer(modifier = Modifier.height(8.dp))
@@ -642,7 +644,9 @@ private fun AdjustBar(
                     .fillMaxHeight()
                     .fillMaxWidth(fraction)
                     .clip(RoundedCornerShape(13.dp))
-                    .background(Color(0xFF4FC3F7)),
+                    // 强调色统一成一个绿（父亲 2026-10-13：全站"活动/进度"只用 #2FD57C，
+                    // 原来这两条滑杆填充用的是浅蓝 #4FC3F7）
+                    .background(Color(0xFF2FD57C)),
             )
         }
     }

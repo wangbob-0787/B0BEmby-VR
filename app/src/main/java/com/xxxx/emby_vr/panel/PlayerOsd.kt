@@ -243,6 +243,19 @@ class OsdState {
      */
     var showSkipIntroButton by mutableStateOf(false)
 
+    /**
+     * 银幕上正在放网页时，那个站点的名字（父亲 2026-10-13）。
+     *
+     * 网页不是 Emby 的"片源"，所以它不进 hasPlayback —— 于是银幕在放 B 站时，
+     * 控制条原来显示「什么都没在播」，而声音明明是网页在放。
+     * 现在 openWeb 时写站点名（如"哔哩哔哩"），关掉网页清空，
+     * 标题行就显示「正在播放：哔哩哔哩」。
+     */
+    var webSiteName by mutableStateOf("")
+
+    /** 是否正在拖进度条（父亲 2026-10-13）：拖动中条与左侧时间跟手，松手回到播放位置 */
+    var seekDragging by mutableStateOf(false)
+
     /** 播放/暂停按钮显示的图标：跟真实播放态走 */
     val playIcon: ImageVector get() = if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow
 
@@ -315,7 +328,22 @@ fun PlayerOsdBar(state: OsdState) {
      */
     val showSkipIntro = state.showSkipIntroButton
     val rightGroup = if (showSkipIntro) OSD_RIGHT_GROUP_SKIP else OSD_RIGHT_GROUP
-    val groupGap = px(if (showSkipIntro) GROUP_GAP_SKIP_PX else GROUP_GAP_PX)
+    val groupGapPx = if (showSkipIntro) GROUP_GAP_SKIP_PX else GROUP_GAP_PX
+    val groupGap = px(groupGapPx)
+    /*
+     * 按钮行的左右边距**按内容居中算**（父亲 2026-10-13 修）。
+     *
+     * 原来写死 114：12 颗时内容 2103px，两侧正好各 114；第 13 颗在场时内容涨到 2192px，
+     * 左仍 114、右只剩 20 —— 父亲看到的就是「左边 114、右边只剩 20」的不对称。
+     * 现在按「(面板宽 − 内容宽) / 2」算，12 颗时算出来仍是 114（和原来一模一样），
+     * 13 颗时两侧各 69.5px，居中不再偏。
+     */
+    val buttonCount = OSD_LEFT_GROUP.size + OSD_CENTER_GROUP.size + rightGroup.size
+    val innerGapCount = (OSD_LEFT_GROUP.size - 1) + (OSD_CENTER_GROUP.size - 1) + (rightGroup.size - 1)
+    val buttonRowSide = px(
+        ((OSD_PANEL_W - (buttonCount * BUTTON_BOX_PX + innerGapCount * BUTTON_GAP_PX + 2 * groupGapPx)) / 2f)
+            .coerceAtLeast(0f)
+    )
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -350,12 +378,24 @@ fun PlayerOsdBar(state: OsdState) {
         ) {
             Text(
                 /*
-                 * 只有真的有片子在播时才显示这行（父亲 2026-10-07）：
-                 * 未播放时留空 —— 停止播放 / 切片起步阶段都是这个状态。
+                 * 标题行三种状态（父亲 2026-10-13）：
+                 *  · 银幕在放网页 → 「正在播放：哔哩哔哩」（网页不是 Emby 片源，hasPlayback 是 false，
+                 *    以前这里就空着，看着像"什么都没在播"）；
+                 *  · 真的有片子在播 → 片名；
+                 *  · 什么都没播 → 「未在播放」（原来留一整行空白，不是说明性空态）。
                  * 右侧时间不受影响，照常显示。
                  */
-                text = if (state.hasPlayback) state.title else "",
-                color = Color(0xFFFFFFFF),
+                text = when {
+                    state.webSiteName.isNotEmpty() -> "正在播放：${state.webSiteName}"
+                    state.hasPlayback -> state.title
+                    else -> "未在播放"
+                },
+                color = if (state.hasPlayback || state.webSiteName.isNotEmpty()) {
+                    Color(0xFFFFFFFF)
+                } else {
+                    // 未播放时压暗一档，别和真在播的标题一个分量
+                    Color(0xFF9E9E9E)
+                },
                 fontSize = 24.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -438,7 +478,7 @@ fun PlayerOsdBar(state: OsdState) {
                                 .coerceIn(0f, 1f)
                     }
                 }
-                .padding(horizontal = px(BUTTON_ROW_SIDE_PX)),
+                .padding(horizontal = buttonRowSide),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             /*
@@ -479,7 +519,16 @@ fun PlayerOsdBar(state: OsdState) {
 @Composable
 private fun OsdProgress(state: OsdState, modifier: Modifier = Modifier) {
     val duration = state.durationMs
-    val frac = if (duration > 0L) {
+    /*
+     * 拖动中进度条与左侧时间要**跟手**（父亲 2026-10-13）。
+     *
+     * 原来 seekFrac 只写不读：拖的时候条和游标仍按播放位置 positionMs 画，
+     * 手指移了、条不动（注释里写的"跟手"其实没生效）。
+     * 现在拖动中用 seekFrac，松手立刻回到播放位置。
+     */
+    val frac = if (state.seekDragging) {
+        state.seekFrac.coerceIn(0f, 1f)
+    } else if (duration > 0L) {
         (state.positionMs.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
     } else {
         0f
@@ -506,8 +555,15 @@ private fun OsdProgress(state: OsdState, modifier: Modifier = Modifier) {
             }
             .pointerInput(Unit) {
                 detectHorizontalDragGestures(
-                    onDragEnd = { state.onSeekCommit?.invoke(state.seekFrac) },
-                    onDragCancel = { state.onSeekCommit?.invoke(state.seekFrac) },
+                    onDragStart = { state.seekDragging = true },
+                    onDragEnd = {
+                        state.onSeekCommit?.invoke(state.seekFrac)
+                        state.seekDragging = false
+                    },
+                    onDragCancel = {
+                        state.onSeekCommit?.invoke(state.seekFrac)
+                        state.seekDragging = false
+                    },
                 ) { change, _ ->
                     change.consume()
                     val f = (change.position.x / size.width.toFloat()).coerceIn(0f, 1f)

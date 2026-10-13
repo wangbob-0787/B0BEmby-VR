@@ -43,7 +43,6 @@ import kotlinx.coroutines.delay
 import com.xxxx.emby_vr.panel.vrClickTarget
 import com.xxxx.emby_vr.ui.FocusMemory
 import com.xxxx.emby_vr.util.DiagLog
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.Modifier
 import androidx.compose.material3.Icon
 import androidx.compose.ui.input.key.Key
@@ -52,8 +51,8 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 
-import com.xxxx.emby_vr.R
 import com.xxxx.emby_vr.Utils
 import com.xxxx.emby_vr.data.model.BaseItemDto
 
@@ -69,7 +68,6 @@ fun BuildItem(
     isShowOverview: Boolean = false,
     serverUrl: String, // 直接接受 serverUrl 而不是 AppModel
     accountName: String? = null,
-    isPlaying: Boolean = false,
     onItemClick: () -> Unit,
     onMenuClick: (() -> Unit)? = null,
     // 返回上一页时把焦点送回这一张（父亲 2026-10-02）；由宿主页面按 FocusMemory 里的 id 置 true
@@ -106,6 +104,15 @@ fun BuildItem(
      * 所以单独给一个口子：传了它就在标题下面画一行（非空才画），与 isMyLibrary 无关。
      */
     subtitleOverride: String? = null,
+    /*
+     * 两行字的字号（父亲 2026-10-13：全站字号收成 5 档 12/14/16/21/28）。
+     *
+     * 默认值就是全站口径（标题 16 粗体 / 副标题 14），只有**搜索结果小卡**要降档：
+     * 那个网格的卡只有 118dp 宽，16sp 标题 + 14sp 副标题会挤成一团，
+     * 所以宿主显式传 14/12。卡片宽度、间距、悬停层都不由这两个参数管。
+     */
+    titleFontSize: TextUnit = 16.sp,
+    subtitleFontSize: TextUnit = 14.sp,
 ) {
     val myFocusRequester = remember { FocusRequester() }
     val focusAnchor = focusRequester ?: myFocusRequester
@@ -255,26 +262,18 @@ fun BuildItem(
                     }
                 }
 
-                if (isPlaying) {
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(4.dp)
-                            .background(primaryColor, RoundedCornerShape(4.dp))
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
-                    ) {
-                        Text(
-                            text = stringResource(R.string.playing),
-                            color = Color.White,
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                fontWeight = FontWeight.Bold
-                            )
-                        )
-                    }
-                }
-
-                // 播放标记
-                if (isSeries || isPlayed) {
+                /*
+                 * 播放标记（右上角）：
+                 *   · 已看完 → 绿圆 + 对勾
+                 *   · 有未看集数 → 绿圆 + 数字
+                 *
+                 * 「播放中」徽标已删（父亲 2026-10-13：不需要，全项目没人传 true）。
+                 *
+                 * 未看集数徽标只在**真的有计数**时才画（父亲 2026-10-13）：
+                 * 原来计数空着也照画圆，文字是空串，看到的就成了"一个空圆圈"。
+                 */
+                val unplayedCount = userData?.unplayedItemCount?.toString()
+                if (isPlayed || (isSeries && !unplayedCount.isNullOrEmpty())) {
                     Box(
                         modifier = Modifier
                             .padding(4.dp)
@@ -295,7 +294,7 @@ fun BuildItem(
                         }
                         else {
                             Text(
-                            text = userData?.unplayedItemCount?.toString() ?: "",
+                                text = unplayedCount.orEmpty(),
                                 color = Color.White,
                                 fontSize = 13.sp,
                                 textAlign = TextAlign.Center,
@@ -338,10 +337,11 @@ fun BuildItem(
                 } ?: "Unknown"
 
                 Text(
+                    // 卡片标题：16sp 粗体居中一行（父亲 2026-10-13 定的字号档）
                     text = title,
                     style = MaterialTheme.typography.labelLarge.copy(
                         fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp
+                        fontSize = titleFontSize
                     ),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -350,13 +350,13 @@ fun BuildItem(
 
                 /*
                  * 副标题覆盖值（2026-10-12）：直播频道卡显示"当前正在播的节目名"。
-                 * 画在标题正下方，样式与首页「电视直播」那行一致（白 60% / 12sp）。
+                 * 画在标题正下方，样式与首页「电视直播」那行一致（白 60%）。
                  */
                 if (!subtitleOverride.isNullOrBlank()) {
                     Text(
                         text = subtitleOverride,
                         color = Color.White.copy(alpha = 0.6f),
-                        fontSize = 12.sp,
+                        fontSize = subtitleFontSize,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         textAlign = TextAlign.Center,
@@ -375,8 +375,9 @@ fun BuildItem(
                             .joinToString("  ").ifEmpty { "--" }
                     }
                     Text(
+                        // 副标题/元数据：14sp（父亲 2026-10-13 定的字号档；原先是 bodySmall 的 12sp）
                         text = subTitle,
-                        style = MaterialTheme.typography.bodySmall,
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = subtitleFontSize),
                         maxLines = 1
                     )
                 }

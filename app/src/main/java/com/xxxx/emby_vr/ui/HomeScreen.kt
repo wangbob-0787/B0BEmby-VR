@@ -125,10 +125,39 @@ fun HomeScreen(
         if (playbackVersion > 0) homeViewModel.refresh()
     }
 
-    LaunchedEffect(errorMessage) {
-        if (errorMessage != null) {
-            android.widget.Toast.makeText(context, errorMessage, android.widget.Toast.LENGTH_LONG).show()
-            homeViewModel.clearError()
+    /*
+     * 首页错误提示只留**屏上那一套**（父亲 2026-10-13 定）：
+     * 原来同一条错误既弹系统 Toast 又在屏上写一行红字 —— 两套信号重复又难看，
+     * 而且 VR 里根本看不见系统 Toast。现在统一走下面的居中提示（正在加载… / 请检查网络连接）。
+     */
+
+    /*
+     * 首页两态（父亲 2026-10-13 定）：
+     *  · 数据还没回来 → 屏上写「正在加载…」（原来 Loading 那段被注释掉了，数据没回来时整页只剩顶栏）；
+     *  · 8 秒还没回来 → 判为网络问题，写「请检查网络连接」，之后每 5 秒自己重试一次，
+     *    网络一恢复页面自己出来（父亲不用去点重试按钮）。
+     * 这里读的是 ViewModel 的**实时**状态（不是组合时的快照），所以循环里能看到数据是否已经回来。
+     */
+    var homeWait by remember { mutableStateOf(HomeWait.Loading) }
+    LaunchedEffect(Unit) {
+        var waited = 0L
+        while (true) {
+            kotlinx.coroutines.delay(500L)
+            waited += 500L
+            val noData = homeViewModel.libraryLatestItems.isNullOrEmpty() &&
+                homeViewModel.resumeItems.isNullOrEmpty()
+            if (!noData) {
+                homeWait = HomeWait.Done
+                waited = 0L
+                continue
+            }
+            homeWait = if (waited < 8_000L && homeViewModel.lastError == null) {
+                HomeWait.Loading
+            } else {
+                HomeWait.NoNetwork
+            }
+            // 判为网络问题之后每 5 秒重试一次（8s、13s、18s…）
+            if (waited >= 8_000L && (waited - 8_000L) % 5_000L == 0L) homeViewModel.refresh()
         }
     }
 
@@ -232,18 +261,6 @@ fun HomeScreen(
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        /*
-         * 首页数据出问题时，把原因写在屏幕最上面（VR 里看不到系统 Toast）。
-         */
-        if (!lastError.isNullOrBlank()) {
-            Text(
-                text = "首页数据异常：$lastError",
-                color = Color(0xFFFF7A7A),
-                fontSize = 18.sp,
-                modifier = Modifier.padding(start = 32.dp, top = 8.dp),
-            )
-        }
-
         // 顶部状态栏
         TopStatusBar(
             currentVersion = mainViewModel.currentVersion,
@@ -265,11 +282,24 @@ fun HomeScreen(
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        // 数据未加载完成时显示 Loading 组件
-//        if(isLoading){
-//            Loading()
-//        }
-        if (libraryLatestItems != null) {
+        /*
+         * 数据没回来时的两态提示（父亲 2026-10-13）：
+         * 以前这里是一段被注释掉的 Loading，数据没回来整页只剩顶栏，看不出是在加载还是卡死。
+         */
+        if (homeWait != HomeWait.Done) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = if (homeWait == HomeWait.Loading) "正在加载…" else "请检查网络连接",
+                    color = Color.White.copy(alpha = 0.85f),
+                    fontSize = 16.sp
+                )
+            }
+        } else if (libraryLatestItems != null) {
             LazyColumn(
                 state = listState,
                 modifier = Modifier.weight(1f),
@@ -489,8 +519,8 @@ private fun MediaSection(
         Text(
             text = title,
             color = Color.White,
-            // 与首页大片头的剧名字号保持一致（父亲 2026-09-30：我的媒体库/继续观看等标题同大片头剧集名）
-            fontSize = 21.sp,
+            // 层级分三档（父亲 2026-10-13）：大片头剧名 28、行标题 18、卡片标题 16
+            fontSize = 18.sp,
             fontWeight = FontWeight.Bold,
             /*
              * 可点时把点击登记在**留白外层**，让整块标题（文字 + 上下留白）都能点。
@@ -571,3 +601,12 @@ private fun MediaSection(
 
     Spacer(modifier = Modifier.height(32.dp))
 }
+
+/**
+ * 首页首屏的等待状态（父亲 2026-10-13 定）。
+ *
+ * [Loading] = 数据还没回来，写「正在加载…」；
+ * [NoNetwork] = 8 秒还没回来或已报错，写「请检查网络连接」（之后每 5 秒自动重试）；
+ * [Done] = 有数据了，正常画首页。
+ */
+private enum class HomeWait { Loading, NoNetwork, Done }

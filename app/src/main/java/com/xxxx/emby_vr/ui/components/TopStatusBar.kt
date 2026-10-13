@@ -1,6 +1,5 @@
 package com.xxxx.emby_vr.ui.components
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -27,6 +26,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.font.FontWeight
 import com.xxxx.emby_vr.panel.vrClickBlocker
 import com.xxxx.emby_vr.panel.vrClickTarget
@@ -79,7 +82,32 @@ fun TopStatusBar(
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.Black.copy(alpha = 0.7f))
+            /*
+             * 黑条下沿做 24dp 渐隐（父亲 2026-10-13：黑条 70% 是硬边，跟下面的片头图直接相接）。
+             *
+             * 为什么画在**条内**、而不是在条下面另加一段：
+             *   顶栏在宿主里是 Column 的第一个孩子（HomeScreen / LoginScreen），
+             *   条下方紧跟的是片头图 —— 画到条外的渐变会被后面画的内容盖掉，
+             *   而"把顶栏加高 24dp"又会把下方内容整体下推。
+             *   所以把黑条的**最后 24dp** 从 70% 黑渐隐到全透明：顶栏占的高度不变，
+             *   边界从一条硬线变成过渡。
+             * drawBehind 放在 padding **之前**，量到的才是含内边距的整条高度。
+             */
+            .drawBehind {
+                val fade = 24.dp.toPx()
+                val solid = (size.height - fade).coerceAtLeast(0f)
+                val barColor = Color.Black.copy(alpha = 0.7f)
+                drawRect(color = barColor, size = Size(size.width, solid))
+                drawRect(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(barColor, Color.Transparent),
+                        startY = solid,
+                        endY = size.height,
+                    ),
+                    topLeft = Offset(0f, solid),
+                    size = Size(size.width, fade),
+                )
+            }
             // 顶栏放大（父亲 2026-10-09：图标与字都太小）：四边留白跟着放大
             .padding(horizontal = 16.dp, vertical = 8.dp)
             /*
@@ -108,6 +136,8 @@ fun TopStatusBar(
                             .vrClickTarget(
                                 key = "top:search",
                                 focusRequester = leadingSearchFocusRequester,
+                                // 圆形控件：高亮白块圆角 = 半径（48/2），否则白块是"圆角方"（全站口径）
+                                hoverRadius = 24.dp,
                                 onActivate = { onLeadingSearchClick?.invoke() },
                             ),
                         shape = ClickableSurfaceDefaults.shape(androidx.compose.foundation.shape.CircleShape),
@@ -142,6 +172,8 @@ fun TopStatusBar(
                             .vrClickTarget(
                                 key = "top:menu",
                                 focusRequester = menuFocusRequester,
+                                // 圆形控件：高亮白块圆角 = 半径（48/2），否则白块是"圆角方"（全站口径）
+                                hoverRadius = 24.dp,
                                 onActivate = { onMenuClick?.invoke() },
                             ),
                         shape = ClickableSurfaceDefaults.shape(androidx.compose.foundation.shape.CircleShape),
@@ -197,6 +229,8 @@ fun TopStatusBar(
                             .vrClickTarget(
                                 key = "top:search",
                                 focusRequester = searchFocusRequester,
+                                // 圆形控件：高亮白块圆角 = 半径（48/2），否则白块是"圆角方"（全站口径）
+                                hoverRadius = 24.dp,
                                 onActivate = { onSearchClick?.invoke() },
                             ),
                         shape = ClickableSurfaceDefaults.shape(androidx.compose.foundation.shape.CircleShape),
@@ -230,10 +264,19 @@ fun TopStatusBar(
                     Surface(
                         onClick = { (onUserInfoClick ?: {}).invoke() },
                         modifier = Modifier
+                            /*
+                             * 头像的点击区/容器跟搜索、菜单统一成 48dp（父亲 2026-10-13）：
+                             * 三个可点目标的命中范围一致，光柱扫到时的白块也一样大。
+                             * 头像图本身仍是 38dp（大小不变，只是外面这层容器变大）。
+                             */
+                            .size(48.dp)
                             .focusRequester(userInfoFocusRequester)
                             .vrClickTarget(
                                 key = "top:user",
                                 focusRequester = userInfoFocusRequester,
+                                // 圆形控件：高亮白块的圆角要等于半径（48/2），
+                                // 否则白块是个"圆角方"，与圆形头像对不上（全站口径）
+                                hoverRadius = 24.dp,
                                 onActivate = { (onUserInfoClick ?: {}).invoke() },
                             ),
                         shape = ClickableSurfaceDefaults.shape(
@@ -246,14 +289,19 @@ fun TopStatusBar(
                             focusedContentColor = Color.White,
                         )
                     ) {
-                        // 头像：用父亲 2026-10-02 给的图（圆形裁剪）
-                        Image(
-                            painter = painterResource(R.drawable.ic_user_avatar),
-                            contentDescription = null,
-                            modifier = Modifier
-                                .size(38.dp)
-                                .clip(androidx.compose.foundation.shape.CircleShape)
-                        )
+                        Box(
+                            modifier = Modifier.fillMaxWidth().fillMaxHeight(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            // 头像：用父亲 2026-10-02 给的图（圆形裁剪）
+                            Image(
+                                painter = painterResource(R.drawable.ic_user_avatar),
+                                contentDescription = null,
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .clip(androidx.compose.foundation.shape.CircleShape)
+                            )
+                        }
                     }
                 }
             }

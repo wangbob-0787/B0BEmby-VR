@@ -256,7 +256,8 @@ fun MediaDetailScreen(
                     .verticalScroll(rememberScrollState())
                     // 外层只留上下；左右不留 —— 行容器左右贴屏幕边，
                     // 内容靠行内 contentPadding 缩进（父亲 2026-10-02 定的结构）
-                    .padding(vertical = 32.dp)
+                    // 上边距 32 → 40（父亲 2026-10-13：各详情页页边距统一，和媒体库页的 40dp 对齐）
+                    .padding(vertical = 40.dp)
             ) {
                 // 顶部焦点锚点：必须放在**滚动内容里**，这样从下面的按钮按 ↑ 回到它时页面才会滚回顶部
                 //（放在滚动区外面的话只能"丢掉焦点"，页面不动；父亲 2026-10-02 实测）
@@ -289,6 +290,9 @@ fun MediaDetailScreen(
                         Text(
                             text = mediaInfo.name ?: "",
                             style = MaterialTheme.typography.displaySmall.copy(
+                                // 层级分三档（父亲 2026-10-13）：大片头/详情页标题 28、行标题 18、卡片标题 16。
+                                // displaySmall 默认 36sp，比大片头剧名还大，压回 28sp。
+                                fontSize = 28.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = Color.White
                             )
@@ -1087,13 +1091,14 @@ private fun EpisodeRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                Text(text = meta, color = Color.Gray, fontSize = 13.sp, maxLines = 1)
+                // 元数据行 13 → 14sp、Color.Gray → 白 70%（父亲 2026-10-13：字号收成 5 档、元数据统一 14sp）
+                Text(text = meta, color = Color.White.copy(alpha = 0.7f), fontSize = 14.sp, maxLines = 1)
                 val overview = episode.overview
                 if (!overview.isNullOrBlank()) {
                     Text(
                         text = overview,
-                        color = Color.Gray,
-                        fontSize = 13.sp,
+                        color = Color.White.copy(alpha = 0.7f),
+                        fontSize = 14.sp,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )

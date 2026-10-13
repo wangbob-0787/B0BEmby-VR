@@ -253,7 +253,8 @@ fun HomeHeroCarousel(
                     Text(
                         text = item.seriesName ?: item.name ?: "",
                         color = Color.White,
-                        fontSize = 21.sp,
+                        // 层级分三档（父亲 2026-10-13）：大片头剧名 28、行标题 18、卡片标题 16
+                        fontSize = 28.sp,
                         fontWeight = FontWeight.Bold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -279,40 +280,40 @@ fun HomeHeroCarousel(
                             Text(
                                 text = "%.1f".format(rating),
                                 color = Color.White,
-                                fontSize = 12.sp,
+                                fontSize = 14.sp,
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
                                 text = "  |  ",
                                 color = Color.White.copy(alpha = 0.55f),
-                                fontSize = 12.sp
+                                fontSize = 14.sp
                             )
                         }
                         if (year != null && year > 0) {
                             Text(
                                 text = year.toString(),
                                 color = Color.White,
-                                fontSize = 12.sp,
+                                fontSize = 14.sp,
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
                                 text = "  |  ",
                                 color = Color.White.copy(alpha = 0.55f),
-                                fontSize = 12.sp
+                                fontSize = 14.sp
                             )
                         }
                         if (!genre.isNullOrBlank()) {
                             Text(
                                 text = genre,
                                 color = Color.White,
-                                fontSize = 12.sp,
+                                fontSize = 14.sp,
                                 fontWeight = FontWeight.Bold
                             )
                             if (!cert.isNullOrBlank()) {
                                 Text(
                                     text = "  |  ",
                                     color = Color.White.copy(alpha = 0.55f),
-                                    fontSize = 12.sp
+                                    fontSize = 14.sp
                                 )
                             }
                         }
@@ -330,7 +331,7 @@ fun HomeHeroCarousel(
                                 Text(
                                     text = cert,
                                     color = Color.White,
-                                    fontSize = 12.sp,
+                                    fontSize = 14.sp,
                                     fontWeight = FontWeight.Bold
                                 )
                             }
@@ -343,7 +344,7 @@ fun HomeHeroCarousel(
                         Text(
                             text = overview,
                             color = Color.White.copy(alpha = 0.92f),
-                            fontSize = 13.sp,
+                            fontSize = 14.sp,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.padding(top = 7.dp)

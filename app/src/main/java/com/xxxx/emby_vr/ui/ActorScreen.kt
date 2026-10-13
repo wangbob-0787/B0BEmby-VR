@@ -58,12 +58,25 @@ fun ActorScreen(
 
     var person by remember { mutableStateOf<BaseItemDto?>(null) }
     var works by remember { mutableStateOf<List<BaseItemDto>?>(null) }
+    /*
+     * 「取演员资料失败」要跟「还在读」分成两个状态（父亲 2026-10-13）。
+     *
+     * 原来失败路径只是记日志、person 留 null，与"正在加载"完全同一个分支，
+     * 于是网络断了页面会永远停在「正在读取演员资料…」。这里单独记一个失败标志，
+     * 界面按它出「请检查网络连接」。
+     */
+    var personFailed by remember { mutableStateOf(false) }
 
     LaunchedEffect(personId) {
         if (personId.isBlank()) return@LaunchedEffect
+        // 换了演员（或重进本页）要把失败标志清掉，否则新演员一进来就显示上一次的错误
+        personFailed = false
         runCatching { repository.getPersonInfo(personId) }
             .onSuccess { person = it }
-            .onFailure { ErrorHandler.logError("ActorScreen", "取演员资料失败", it) }
+            .onFailure {
+                ErrorHandler.logError("ActorScreen", "取演员资料失败", it)
+                personFailed = true
+            }
         runCatching { repository.getWorksByPerson(personId) }
             .onSuccess { works = it }
             .onFailure {
@@ -172,6 +185,8 @@ fun ActorScreen(
                         Spacer(modifier = Modifier.height(10.dp))
                         Text(
                             text = when {
+                                // 失败态优先于加载态：读失败就不再显示「正在读取…」（父亲 2026-10-13）
+                                personFailed -> "请检查网络连接"
                                 overview.isNullOrBlank() && person != null -> "Emby 里没有这位演员的简介"
                                 overview.isNullOrBlank() -> "正在读取演员资料…"
                                 else -> overview

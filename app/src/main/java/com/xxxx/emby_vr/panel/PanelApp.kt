@@ -41,7 +41,6 @@ import com.xxxx.emby_vr.ui.HomeScreen
 import com.xxxx.emby_vr.ui.LibraryScreen
 import com.xxxx.emby_vr.ui.LoginScreen
 import com.xxxx.emby_vr.ui.MediaDetailScreen
-import com.xxxx.emby_vr.ui.SearchScreen
 import com.xxxx.emby_vr.ui.components.BuildGradientBackground
 import com.xxxx.emby_vr.ui.components.Loading
 // 注意：电视版的 Theme.kt 没有 package 声明（顶层在默认包），所以按电视版
@@ -53,7 +52,6 @@ import com.xxxx.emby_vr.ui.viewmodel.HomeViewModel
 import com.xxxx.emby_vr.ui.viewmodel.LibraryViewModel
 import com.xxxx.emby_vr.ui.viewmodel.LoginViewModel
 import com.xxxx.emby_vr.ui.viewmodel.MainViewModel
-import com.xxxx.emby_vr.ui.viewmodel.SearchViewModel
 
 /**
  * 面板层的界面骨架（2026-10-04）。
@@ -226,18 +224,11 @@ fun PanelApp(
                         )
                     }
 
-                    composable("search") {
-                        val searchViewModel: SearchViewModel = viewModel()
-                        val loginViewModel: LoginViewModel = viewModel()
-                        SearchScreen(
-                            searchViewModel = searchViewModel,
-                            loginViewModel = loginViewModel,
-                            mainViewModel = mainViewModel,
-                            onNavigateToSeries = { seriesId ->
-                                navController.navigate("series/$seriesId")
-                            },
-                        )
-                    }
+                    /*
+                     * 这里原来挂着 composable("search") 那一屏（电视版的 SearchScreen 页面，父亲 2026-10-13 删）。
+                     * 全项目没有任何一处 navigate 到 "search" —— 顶栏放大镜打开的是首页里的搜索浮层
+                     * SearchOverlay，不是这一屏，所以它是死代码，连 ui/SearchScreen.kt 一起删掉。
+                     */
 
                     /*
                      * 播放路由（VR 版专用，2026-10-05 补）。

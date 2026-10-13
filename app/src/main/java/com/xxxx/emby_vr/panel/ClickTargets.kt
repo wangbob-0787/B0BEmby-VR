@@ -13,6 +13,7 @@ import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
@@ -351,8 +352,21 @@ fun Modifier.vrClickTarget(
      * 亮起来会糊住后面真正的内容。
      */
     hover: Boolean = true,
-    /** 白层的圆角，跟控件自身的圆角一致 */
+    /**
+     * 白层的圆角，**必须跟控件自身的圆角一致**（父亲 2026-10-13 实测）。
+     *
+     * 之前这里写死 12dp 没人传：排序面板里选中项是 8dp 的绿块、高亮白层是 12dp 的圆角，
+     * 四个角会露出绿色 —— 父亲看到的就是"选中的色块和扫过的高亮块大小不一"。
+     * 所以控件圆角不是 12dp 的（控制条按钮 22、站点卡 18、胶囊 50% 等）一律显式传。
+     */
     hoverRadius: Dp = 12.dp,
+    /**
+     * 「被光柱扫到」时的放大倍数（父亲 2026-10-13：可以加放大，不要描边）。
+     *
+     * 只放大**绘制**，不动布局 —— 放大不会把同排的卡片挤走，也不会改命中矩形
+     * （命中仍用登记时的原始 bounds，所以"看着大了一点"不会让点击偏）。
+     */
+    hoverScale: Float = 1.05f,
     onActivate: () -> Unit,
 ): Modifier {
     // 本层归属：登记时一并写入，查表时按它过滤（父亲 2026-10-12）
@@ -394,20 +408,27 @@ fun Modifier.vrClickTarget(
         )
     }.then(
         /*
-         * 「被光柱扫到」的反馈（父亲 2026-10-10）：
+         * 「被光柱扫到」的反馈（父亲 2026-10-10，2026-10-13 加放大）：
          * 光柱位置由 [VrHover] 每帧写一次（扫到的目标变了才写），这里在 draw 阶段比钥匙 —— 
-         * 命中就盖一层半透明白。放在 draw 阶段读 state，只重绘这一层，不重建组合。
+         * 命中就**原地放大 [hoverScale] 并盖一层半透明白**。放在 draw 阶段读 state，
+         * 只重绘这一层，不重建组合；命中矩形仍用登记时的原始 bounds，所以放大不影响点击精度。
          */
         if (!hover) {
             Modifier
         } else {
             Modifier.drawWithContent {
-                drawContent()
                 if (VrHover.key === instance) {
-                    drawRoundRect(
-                        color = VrHover.overlayColor,
-                        cornerRadius = CornerRadius(hoverRadius.toPx()),
-                    )
+                    withTransform({
+                        scale(scaleX = hoverScale, scaleY = hoverScale, pivot = center)
+                    }) {
+                        drawContent()
+                        drawRoundRect(
+                            color = VrHover.overlayColor,
+                            cornerRadius = CornerRadius(hoverRadius.toPx()),
+                        )
+                    }
+                } else {
+                    drawContent()
                 }
             }
         }

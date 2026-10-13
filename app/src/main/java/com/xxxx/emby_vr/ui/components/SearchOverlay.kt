@@ -364,6 +364,14 @@ fun SearchOverlay(
                                     modifier = Modifier.fillMaxWidth(),
                                     isMyLibrary = false,
                                     serverUrl = serverUrl,
+                                    /*
+                                     * 字号降档（父亲 2026-10-13）：这张卡只有 118dp 宽，
+                                     * 按全站口径的 16/14 两行字会挤在一起、互相压字。
+                                     * 浮层里给 14/12，标题与副标题各一行、超出省略
+                                     * （maxLines/ Ellipsis 在 BuildItem 内部，未改）。
+                                     */
+                                    titleFontSize = 14.sp,
+                                    subtitleFontSize = 12.sp,
                                     autoFocus = index == 0,
                                     focusRequester = if (index == 0) firstResultFocus else null,
                                     // 挂浮层那个组：否则模态查表找不到它（点了不跳详情）

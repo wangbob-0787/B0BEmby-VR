@@ -25,6 +25,7 @@ import com.xxxx.emby_vr.ui.components.VrHoverBg
 import com.xxxx.emby_vr.ui.components.VrSelectedBg
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
@@ -132,6 +133,31 @@ fun LibraryScreen(
     }
 
     /*
+     * 媒体库页等待状态（父亲 2026-10-13 定，与首页同一套）：
+     * 数据没回来写「正在加载…」，8 秒还没回来或已报错写「请检查网络连接」，之后每 5 秒自己重试。
+     * 判据用「libraryItems 是否为 null」——请求回来（哪怕是空库）就不再算等待。
+     */
+    var libWait by remember { mutableStateOf(LibWait.Loading) }
+    LaunchedEffect(parentId, type, special) {
+        var waited = 0L
+        while (true) {
+            kotlinx.coroutines.delay(500L)
+            waited += 500L
+            if (libraryViewModel.libraryItems != null) {
+                libWait = LibWait.Done
+                waited = 0L
+                continue
+            }
+            libWait = if (waited < 8_000L && libraryViewModel.errorMessage == null) {
+                LibWait.Loading
+            } else {
+                LibWait.NoNetwork
+            }
+            if (waited >= 8_000L && (waited - 8_000L) % 5_000L == 0L) libraryViewModel.refresh()
+        }
+    }
+
+    /*
      * 排序面板改**同一棵界面树里的浮层**（父亲 2026-10-10「媒体库所有按钮无法操作」）。
      *
      * 与首页菜单同一个病：`Dialog` 会另开一个窗口，那个窗口不落在 VR 面板那张虚拟屏上，
@@ -164,14 +190,22 @@ fun LibraryScreen(
             Text(
                 text = if (title.isNotEmpty()) title else stringResource(R.string.my_libraries),
                 style = MaterialTheme.typography.headlineSmall,
-                color = Color.White
+                color = Color.White,
+                /*
+                 * 标题右移 16dp（父亲 2026-10-13）：排序按钮保留底色块、按钮里的文字不动，
+                 * 所以要让标题跟**按钮里的文字**左对齐（按钮内有 16dp 水平内边距）。
+                 * 海报网格仍在 40dp 不动 —— 父亲明确「海报仍留在 40 不动」。
+                 */
+                modifier = Modifier.padding(start = 16.dp)
             )
 
             if (libraryItems != null && totalCount > 0) {
                 Text(
-                    text = "${libraryItems.size}/$totalCount",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = Color.White.copy(alpha = 0.7f)
+                    // 原来写「42/3456」，没有标签没有单位，读不出是什么（父亲 2026-10-13）
+                    text = "共 $totalCount 部",
+                    // 原来 bodyMedium（14sp）压 70% 白，父亲说右上角字太小 → 提到 16sp / 85% 白
+                    fontSize = 16.sp,
+                    color = Color.White.copy(alpha = 0.85f)
                 )
             }
         }
@@ -197,7 +231,8 @@ fun LibraryScreen(
                 modifier = Modifier
                     .padding(end = 12.dp)
                     // 排序入口登记进坐标表（父亲 2026-10-10：媒体库按钮点不动）
-                    .vrClickTarget(key = "lib:sort") { showSortDialog = true }
+                    // hoverRadius 跟控件自身的胶囊圆角一致（父亲 2026-10-13：白块不能和控件对不上）
+                    .vrClickTarget(key = "lib:sort", hoverRadius = 24.dp) { showSortDialog = true }
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
@@ -235,29 +270,31 @@ fun LibraryScreen(
                     onClick = doFilter,
                     modifier = Modifier
                         .padding(horizontal = 4.dp)
-                        .vrClickTarget(key = "lib:filter:$filterValue", onActivate = doFilter),
+                        .vrClickTarget(key = "lib:filter:$filterValue", hoverRadius = 24.dp, onActivate = doFilter),
                     shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(50)),
                     colors = ClickableSurfaceDefaults.colors(
-                        containerColor = if (isSelected) {
-                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
-                        } else {
-                            Color.Transparent
-                        },
+                        /*
+                         * 选中态统一用绿 24%（父亲 2026-10-13：全站"选中"只留一种样子）。
+                         * 原来是变暗底 + onSurfaceVariant 灰字，和别处（控制条、菜单）的绿底不一致。
+                         */
+                        containerColor = if (isSelected) VrSelectedBg else Color.Transparent,
                         contentColor = if (isSelected) {
-                            MaterialTheme.colorScheme.onSurfaceVariant
+                            Color.White
                         } else {
                             Color.White.copy(alpha = 0.7f)
                         },
                 focusedContainerColor = if (isSelected) VrSelectedBg else VrHoverBg,
                 focusedContentColor = if (isSelected) {
-                            MaterialTheme.colorScheme.onSurfaceVariant
+                            Color.White
                         } else {
                             Color.White.copy(alpha = 0.7f)
                         },
             ),
                     border = ClickableSurfaceDefaults.border(
+                        // 未选中项的 1dp 描边太暗（30% 白对底色约 2.66:1，低于组件边界 3:1），
+                        // 提到 45% 白（约 3.4:1，父亲 2026-10-13）
                         border = if (!isSelected) Border(
-                            BorderStroke(1.dp, Color.White.copy(alpha = 0.3f))
+                            BorderStroke(1.dp, Color.White.copy(alpha = 0.45f))
                         ) else Border(BorderStroke(0.dp, Color.Transparent)),
                         focusedBorder = androidx.tv.material3.Border(androidx.compose.foundation.BorderStroke(androidx.compose.ui.unit.Dp(0f), androidx.compose.ui.graphics.Color.Transparent)))
                 ) {
@@ -271,7 +308,26 @@ fun LibraryScreen(
             }
         }
 
-        if (libraryItems == null) {
+        /*
+         * 媒体库页两态（父亲 2026-10-13 定，与首页同一套口径）：
+         *  · 数据没回来 → 「正在加载…」（原来只有 Loading 转圈，看不出是在加载还是卡死）；
+         *  · 8 秒还没回来或已报错 → 「请检查网络连接」，之后每 5 秒自己重试一次。
+         * 原来这里既没有错误态也没有重试，请求失败就永远停在转圈或「无数据」上。
+         */
+        if (libWait != LibWait.Done) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = if (libWait == LibWait.Loading) "正在加载…" else "请检查网络连接",
+                    color = Color.White.copy(alpha = 0.85f),
+                    fontSize = 16.sp
+                )
+            }
+        } else if (libraryItems == null) {
             Loading()
         } else if (libraryItems.isEmpty()) {
             NoData()
@@ -430,7 +486,9 @@ private fun SortDialog(
     ) {
             Surface(
                 modifier = Modifier
-                    .width(360.dp)
+                    // 弹窗宽度收到统一档位 420dp（父亲 2026-10-13：全站弹窗只有 420/560/760 三档，
+                    // 原来这里是 360）
+                    .width(420.dp)
                     .heightIn(max = 480.dp),
                 shape = RoundedCornerShape(16.dp),
                 colors = SurfaceDefaults.colors(
@@ -481,15 +539,15 @@ private fun SortDialog(
                                     .vrClickTarget(
                                         key = "sort:$sortByValue",
                                         focusRequester = focusRequesters[index],
+                                        // 选项块自身是 8dp 圆角，高亮白层必须一致 ——
+                                        // 之前白层写死 12dp，四角露出绿色，父亲看成"两块大小不一"（2026-10-13）
+                                        hoverRadius = 8.dp,
                                         onActivate = doSort,
                                     ),
                                 shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(8.dp)),
                                 colors = ClickableSurfaceDefaults.colors(
-                                    containerColor = if (isSelected) {
-                                        MaterialTheme.colorScheme.secondary.copy(alpha = 0.3f)
-                                    } else {
-                                        Color.Transparent
-                                    },
+                                    // 选中态统一用绿 24%（父亲 2026-10-13）
+                                    containerColor = if (isSelected) VrSelectedBg else Color.Transparent,
                                     contentColor = Color.White,
                 focusedContainerColor = if (isSelected) VrSelectedBg else VrHoverBg,
                 focusedContentColor = Color.White,
@@ -532,3 +590,12 @@ private fun SortDialog(
             }
     }
 }
+
+/**
+ * 媒体库页首屏的等待状态（父亲 2026-10-13 定，与首页同一套口径）。
+ *
+ * [Loading] = 数据还没回来，写「正在加载…」；
+ * [NoNetwork] = 8 秒还没回来或已报错，写「请检查网络连接」（之后每 5 秒自动重试）；
+ * [Done] = 请求回来了（含空库），交给下面的转圈/空态/网格去画。
+ */
+private enum class LibWait { Loading, NoNetwork, Done }
