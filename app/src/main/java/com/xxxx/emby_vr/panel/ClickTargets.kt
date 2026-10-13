@@ -421,7 +421,13 @@ fun Modifier.vrClickTarget(
                     withTransform({
                         scale(scaleX = hoverScale, scaleY = hoverScale, pivot = center)
                     }) {
-                        drawContent()
+                        /*
+                         * withTransform 的接收者是 DrawTransform，把外层的 ContentDrawScope 遮住了，
+                         * 所以这里必须写显式接收者 this@drawWithContent 才能调 drawContent()
+                         * （r496 编译报 "'fun drawContent(): Unit' cannot be called in this context
+                         * with an implicit receiver"）。
+                         */
+                        this@drawWithContent.drawContent()
                         drawRoundRect(
                             color = VrHover.overlayColor,
                             cornerRadius = CornerRadius(hoverRadius.toPx()),
