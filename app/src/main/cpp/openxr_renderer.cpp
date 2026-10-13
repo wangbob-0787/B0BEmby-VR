@@ -1361,6 +1361,14 @@ struct VrContext {
      */
     jmethodID sinkWebClick = nullptr;
     jmethodID sinkWebStick = nullptr;
+    jmethodID sinkWebHover = nullptr; // 光柱在银幕上移动（网页当鼠标用，父亲 2026-10-13）
+    /*
+     * 悬停派发节流（父亲 2026-10-13）：位置每变 4 像素、且距上次至少 60ms 才回推一次。
+     * 每帧都发的话网页要为每个 mousemove 做命中测试与重绘，反而把它拖慢。
+     */
+    double sinkWebHoverAt[2] = {0.0, 0.0};
+    float sinkWebHoverX[2] = {-9999.f, -9999.f};
+    float sinkWebHoverY[2] = {-9999.f, -9999.f};
     jmethodID sinkBack = nullptr;
     jmethodID sinkOsdPointer = nullptr; // 控制条上的指针
     jmethodID sinkOsdClick = nullptr;   // 控制条上的点击
@@ -3261,6 +3269,26 @@ void pushInput(VrContext &c) {
                 clearJavaException(env, "输入回调 onToggleOsd");
             }
             c.sinkLastTrigger[h] = c.triggerDown[h];
+            /*
+             * ⑥ 光柱在大银幕上（网页模式）→ 回推"悬停"坐标（父亲 2026-10-13：手柄当鼠标）。
+             *
+             * 只在这一路发（银幕上放着网页、且光柱落在银幕矩形内），所以天然限制在大屏幕上，
+             * 海报墙与控制条那两路不受影响。网页收到 mousemove 才会像真鼠标那样浮出菜单。
+             */
+            if (onScreen && c.screenShowsWeb.load() && c.sinkWebHover != nullptr) {
+                const ScreenPlacement &spH = frontScreen(c);
+                const float hx = (vu / spH.width + 0.5f) * kPanelPxW;
+                const float hy = (0.5f - vv / (spH.width * 9.f / 16.f)) * kPanelPxH;
+                const bool hoverMoved = fabsf(hx - c.sinkWebHoverX[h]) > 4.f ||
+                                        fabsf(hy - c.sinkWebHoverY[h]) > 4.f;
+                if (hoverMoved && nowToggle - c.sinkWebHoverAt[h] > 60.0) {
+                    c.sinkWebHoverAt[h] = nowToggle;
+                    c.sinkWebHoverX[h] = hx;
+                    c.sinkWebHoverY[h] = hy;
+                    env->CallVoidMethod(c.inputSink, c.sinkWebHover, hx, hy);
+                    clearJavaException(env, "输入回调 onWebHover（网页悬停）");
+                }
+            }
         }
 
         /*
@@ -6208,6 +6236,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachInputSink(JNIEnv *env, jobject /*
     g.sinkStick = env->GetMethodID(cls, "onStick", "(FFFF)V");
     g.sinkWebClick = env->GetMethodID(cls, "onWebClick", "(FF)V");
     g.sinkWebStick = env->GetMethodID(cls, "onWebStick", "(FFFF)V");
+    g.sinkWebHover = env->GetMethodID(cls, "onWebHover", "(FF)V");
     g.sinkOsdPointer = env->GetMethodID(cls, "onOsdPointer", "(FFZ)V");
     g.sinkOsdClick = env->GetMethodID(cls, "onOsdClick", "(FF)V");
     g.sinkToggleOsd = env->GetMethodID(cls, "onToggleOsd", "()V");

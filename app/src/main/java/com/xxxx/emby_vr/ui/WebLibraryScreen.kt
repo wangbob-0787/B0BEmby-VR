@@ -27,6 +27,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -133,11 +134,49 @@ private fun dispatchMouse(
     ev.recycle()
 }
 
+/**
+ * 给网页发一次"左右方向键"（父亲 2026-10-13：网页全屏播放时摇杆左右 = 快退/快进）。
+ *
+ * 三个站的网页播放器都认键盘的 ← →（B站一档 5 秒、腾讯同类），所以不去猜进度条坐标，
+ * 直接按键最稳 —— 网页自己跳、自己更新进度条。
+ */
+private fun dispatchArrowKey(wv: android.view.View, right: Boolean) {
+    val code = if (right) {
+        android.view.KeyEvent.KEYCODE_DPAD_RIGHT
+    } else {
+        android.view.KeyEvent.KEYCODE_DPAD_LEFT
+    }
+    val now = SystemClock.uptimeMillis()
+    runCatching {
+        wv.dispatchKeyEvent(
+            android.view.KeyEvent(now, now, android.view.KeyEvent.ACTION_DOWN, code, 0),
+        )
+        wv.dispatchKeyEvent(
+            android.view.KeyEvent(now + 8, now + 8, android.view.KeyEvent.ACTION_UP, code, 0),
+        )
+    }
+}
+
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun WebLibraryScreen(
     site: Int,
 ) {
+    /*
+     * 换站点 = 整棵网页子树重建（父亲 2026-10-13 报"B站切腾讯打不开，要先去播一部片子才能开"）。
+     *
+     * 原因：建 WebView 的那一步（AndroidView 的 factory）只在**第一次**组合这块内容时跑，
+     * 换站点不会重跑；而清理逻辑在换站时把这个 WebView `destroy()` 掉了 ——
+     * 于是新站点被 loadUrl 到一个已经销毁的窗口上，什么都不会发生，加载提示一直转。
+     * 去播一部 Emby 片子再回来 = 重新进这块内容，factory 重跑、新窗口建起来，所以能开。
+     * 用 key(site) 按站点分组：换站时旧的整棵销毁（连窗口一起）、新的整棵重建。
+     */
+    key(site) { WebPageForSite(site) }
+}
+
+@SuppressLint("SetJavaScriptEnabled")
+@Composable
+private fun WebPageForSite(site: Int) {
     val context = LocalContext.current
     /*
      * 三个站点全部走**电脑版**网页（父亲 2026-10-13 定：腾讯也从手机版改成电脑版）。
@@ -185,6 +224,16 @@ fun WebLibraryScreen(
      */
     var loading by remember { mutableStateOf(true) }
     var loadFailed by remember { mutableStateOf(false) }
+    /*
+     * 悬停与快进的节流器（父亲 2026-10-13）。
+     *
+     * 悬停每帧都发会把网页拖慢（网页要为每个 mousemove 做命中测试与重绘），
+     * 挪动不足 3 像素不发；快进每 250ms 最多一次，避免摇杆一推就跳出去十几分钟。
+     * 用数组装是为了让闭包能改到同一个值（普通 var 会被 lambda 捕获成副本语义更绕）。
+     */
+    val lastHoverX = remember { floatArrayOf(-9999f) }
+    val lastHoverY = remember { floatArrayOf(-9999f) }
+    val lastArrowAt = remember { longArrayOf(0L) }
 
     Box(modifier = Modifier.fillMaxSize().background(Color(0xFF0B0C0F))) {
         AndroidView(
@@ -415,8 +464,8 @@ fun WebLibraryScreen(
         }
     }
 
-    /* 打开（或换）站点：网页整块在大银幕上，加载哪个站由这里决定 */
-    LaunchedEffect(site) {
+    /* 打开（或换）站点：网页整块在大银幕上（换站由外层 key(site) 重建整棵子树，见上） */
+    LaunchedEffect(Unit) {
         /* 换站点把提示复位回"正在加载"，别把上一个站点的失败提示带过来 */
         loading = true
         loadFailed = false
@@ -428,7 +477,7 @@ fun WebLibraryScreen(
      * 落点先按"网页在面板里的矩形"换算成网页自己的像素 ——
      * 落在矩形外（比如点在顶栏上）就不处理，交给原来的查表逻辑。
      */
-    DisposableEffect(site) {
+    DisposableEffect(Unit) {
         WebPageHub.tapHandler = handler@{ px, py ->
             val r = webRect
             /*
@@ -463,6 +512,40 @@ fun WebLibraryScreen(
             false
         }
         /*
+         * 光柱在银幕上移动 = 给网页发鼠标悬停（父亲 2026-10-13：手柄当鼠标用）。
+         *
+         * 只由原生"银幕上放着网页"那一路推过来（onWebHover），所以自带"限制在大屏幕上"。
+         * 发的是 HOVER_MOVE（SOURCE_MOUSE）—— 网页据此更新 :hover / 触发 mouseenter，
+         * 停在一些按钮上（比如 B站头像）就会像真鼠标那样浮出菜单。
+         */
+        WebPageHub.hoverHandler = hover@{ px, py ->
+            val r = webRect ?: return@hover
+            val wv = customView ?: webRef ?: return@hover
+            if (r.width <= 0f || r.height <= 0f) return@hover
+            val u = (px - r.left) / r.width
+            val v = (py - r.top) / r.height
+            if (u !in 0f..1f || v !in 0f..1f) return@hover
+            val x = (u * wv.width).coerceIn(0f, (wv.width - 1).toFloat())
+            val y = (v * wv.height).coerceIn(0f, (wv.height - 1).toFloat())
+            /* 挪动不足 3 像素不发（网页每个 mousemove 都要做命中测试，太密会拖慢） */
+            if (kotlin.math.abs(x - lastHoverX[0]) < 3f &&
+                kotlin.math.abs(y - lastHoverY[0]) < 3f
+            ) {
+                return@hover
+            }
+            lastHoverX[0] = x
+            lastHoverY[0] = y
+            runCatching {
+                dispatchMouse(
+                    wv,
+                    MotionEvent.ACTION_HOVER_MOVE,
+                    x,
+                    y,
+                    SystemClock.uptimeMillis(),
+                )
+            }
+        }
+        /*
          * 滚动：派发"滚轮事件"，和面板滚菜单用的是同一条路（父亲 2026-10-13 实测：
          * 之前用 scrollBy 三个网站都滚不动 —— 网页的滚动容器不是文档本身，
          * scrollBy 滚的是文档，所以没反应；滚轮事件按坐标做命中测试，
@@ -479,10 +562,27 @@ fun WebLibraryScreen(
                 false
             }
         }
-        WebPageHub.scrollHandler = { px, py, sy ->
+        WebPageHub.scrollHandler = scroll@{ px, py, sx, sy ->
             /* 同上：全屏时滚的是那个播放视图 */
             val wv = customView ?: webRef
             val r = webRect
+            /*
+             * 摇杆左右 = 网页里快退 / 快进（父亲 2026-10-13 定）。
+             *
+             * 只在**网页全屏播放**时生效（那时我们接管了网页塞过来的播放视图）——
+             * 全屏时上下滚动已经没有意义，左右正好空出来；没全屏时左右不动作，
+             * 免得在列表页里被当成翻页之类。发方向键，网页播放器自己跳。
+             */
+            if (wv != null && customView != null &&
+                kotlin.math.abs(sx) > 0.35f && kotlin.math.abs(sx) >= kotlin.math.abs(sy)
+            ) {
+                val nowMs = SystemClock.uptimeMillis()
+                if (nowMs - lastArrowAt[0] > 250L) {
+                    lastArrowAt[0] = nowMs
+                    dispatchArrowKey(wv, sx > 0f)
+                }
+                return@scroll
+            }
             if (wv != null && r != null && r.width > 0f && r.height > 0f &&
                 kotlin.math.abs(sy) > 0.2f
             ) {

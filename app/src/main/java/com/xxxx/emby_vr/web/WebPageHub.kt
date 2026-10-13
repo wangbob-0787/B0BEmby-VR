@@ -25,11 +25,19 @@ object WebPageHub {
     var tapHandler: ((Float, Float) -> Boolean)? = null
 
     /**
-     * 网页页登记：摇杆上下滚动网页。
-     * 参数 = 光柱落点(px,py，面板像素) + 摇杆纵向值 sy。
+     * 网页页登记：摇杆。
+     * 参数 = 光柱落点(px,py，面板像素) + 摇杆横向 sx + 纵向 sy。
      * 带落点是必须的 —— 滚动事件按坐标做命中测试，落点在哪就滚哪一块。
+     * 横向量给界面层判"网页全屏播放时的快退/快进"（父亲 2026-10-13）。
      */
-    var scrollHandler: ((Float, Float, Float) -> Unit)? = null
+    var scrollHandler: ((Float, Float, Float, Float) -> Unit)? = null
+
+    /**
+     * 网页页登记：光柱在银幕上移动 = 鼠标悬停（父亲 2026-10-13：手柄当鼠标）。
+     *
+     * 只由"银幕上放着网页"这一路推过来（原生的 onWebHover），所以天然限制在大银幕内。
+     */
+    var hoverHandler: ((Float, Float) -> Unit)? = null
 
     /**
      * 网页页登记：网页内返回（B 键）。
@@ -47,8 +55,12 @@ object WebPageHub {
         return h(px, py)
     }
 
-    fun scroll(px: Float, py: Float, sy: Float) {
-        scrollHandler?.invoke(px, py, sy)
+    fun scroll(px: Float, py: Float, sx: Float, sy: Float) {
+        scrollHandler?.invoke(px, py, sx, sy)
+    }
+
+    fun hover(px: Float, py: Float) {
+        hoverHandler?.invoke(px, py)
     }
 
     /**
@@ -66,6 +78,7 @@ object WebPageHub {
     fun clear() {
         tapHandler = null
         scrollHandler = null
+        hoverHandler = null
         backHandler = null
     }
 }

@@ -570,9 +570,15 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        /** 大银幕上的网页：光柱移动 = 鼠标悬停（父亲 2026-10-13：手柄当鼠标） */
+        override fun onWebHover(px: Float, py: Float) {
+            vrInputLive = true
+            runOnUiThread { com.xxxx.emby_vr.web.WebPageHub.hover(px, py) }
+        }
+
         override fun onWebStick(px: Float, py: Float, sx: Float, sy: Float) {
             vrInputLive = true
-            runOnUiThread { com.xxxx.emby_vr.web.WebPageHub.scroll(px, py, sy) }
+            runOnUiThread { com.xxxx.emby_vr.web.WebPageHub.scroll(px, py, sx, sy) }
         }
 
         override fun onStick(px: Float, py: Float, sx: Float, sy: Float) {
