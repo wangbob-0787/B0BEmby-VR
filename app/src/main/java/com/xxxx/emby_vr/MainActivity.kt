@@ -3028,6 +3028,8 @@ class MainActivity : ComponentActivity() {
                     replayKeepingPosition()
                 }
             }
+            /* 网页（父亲 2026-10-13）：B站 / 腾讯视频 / 爱奇艺，选中即把银幕切成网页 */
+            com.xxxx.emby_vr.panel.MenuKind.WEB -> openWebScreen(index)
             com.xxxx.emby_vr.panel.MenuKind.EPISODES -> {
                 val id = episodeIds.getOrNull(index)
                 val resume = episodePositions.getOrNull(index) ?: 0L
@@ -3303,7 +3305,6 @@ class MainActivity : ComponentActivity() {
             }
             com.xxxx.emby_vr.panel.MenuKind.AUDIO -> menuState.audioTracks = buildAudioRows()
             com.xxxx.emby_vr.panel.MenuKind.SUBTITLE -> menuState.subtitleTracks = buildSubtitleRows()
-            com.xxxx.emby_vr.panel.MenuKind.WEB -> openWebScreen(index)
             com.xxxx.emby_vr.panel.MenuKind.EPISODES -> loadEpisodes()
             com.xxxx.emby_vr.panel.MenuKind.INFO, com.xxxx.emby_vr.panel.MenuKind.CAST ->
                 loadItemDetail()
