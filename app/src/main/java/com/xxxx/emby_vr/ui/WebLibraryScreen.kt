@@ -8,6 +8,7 @@ import android.view.MotionEvent
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -34,13 +36,16 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.xxxx.emby_vr.R
 import com.xxxx.emby_vr.panel.vrClickTarget
 import com.xxxx.emby_vr.web.WebPageHub
 
@@ -100,6 +105,19 @@ fun WebLibraryScreen(
             ) {
                 TopBarButton(label = "← 返回海报墙", onClick = onBack)
                 Spacer(modifier = Modifier.width(24.dp))
+                Image(
+                    painter = painterResource(
+                        when (site) {
+                            0 -> R.drawable.web_bilibili_logo
+                            1 -> R.drawable.web_tencent_logo
+                            else -> R.drawable.web_iqiyi_logo
+                        }
+                    ),
+                    contentDescription = title,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.height(40.dp),
+                )
+                Spacer(modifier = Modifier.width(16.dp))
                 Text(
                     text = title,
                     color = Color(0xFFE8EDF2),
@@ -346,10 +364,11 @@ private fun TopBarButton(label: String, onClick: () -> Unit) {
 /** 网页媒体库那一排（首页用） */
 @Composable
 fun WebLibraryRow(onOpen: (Int) -> Unit) {
+    /* 图标是父亲 2026-10-13 发来的各家官方标志，已放进资源里（web_*_icon / web_*_logo） */
     val sites = listOf(
-        Triple("哔哩哔哩", "B站网页版", Color(0xFFFB7299)),
-        Triple("腾讯视频", "v.qq.com", Color(0xFF2CA2F5)),
-        Triple("爱奇艺", "iqiyi.com", Color(0xFF19B36B)),
+        Triple("哔哩哔哩", R.drawable.web_bilibili_icon, Color(0xFFFB7299)),
+        Triple("腾讯视频", R.drawable.web_tencent_icon, Color(0xFF2CA2F5)),
+        Triple("爱奇艺", R.drawable.web_iqiyi_icon, Color(0xFF19B36B)),
     )
     Column(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
         Text(
@@ -363,7 +382,7 @@ fun WebLibraryRow(onOpen: (Int) -> Unit) {
             modifier = Modifier.padding(start = 48.dp),
             horizontalArrangement = Arrangement.spacedBy(20.dp),
         ) {
-            sites.forEachIndexed { i, (name, sub, accent) ->
+            sites.forEachIndexed { i, (name, icon, accent) ->
                 Box(
                     modifier = Modifier
                         .width(300.dp)
@@ -375,16 +394,25 @@ fun WebLibraryRow(onOpen: (Int) -> Unit) {
                             )
                         )
                         .vrClickTarget(key = "weblib:card$i", onActivate = { onOpen(i) }),
-                    contentAlignment = Alignment.BottomStart,
+                    contentAlignment = Alignment.Center,
                 ) {
-                    Column(modifier = Modifier.padding(20.dp)) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                    ) {
+                        Image(
+                            painter = painterResource(icon),
+                            contentDescription = name,
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier.size(96.dp),
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
                         Text(
                             text = name,
                             color = Color.White,
-                            fontSize = 30.sp,
+                            fontSize = 28.sp,
                             fontWeight = FontWeight.Bold,
                         )
-                        Text(text = sub, color = Color(0xCCFFFFFF), fontSize = 18.sp)
                     }
                 }
             }
