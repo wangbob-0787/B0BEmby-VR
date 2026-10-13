@@ -38,6 +38,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.tv.material3.*
 import com.xxxx.emby_vr.R
 import com.xxxx.emby_vr.data.repository.EmbyRepository
+import com.xxxx.emby_vr.panel.ClickTargets
 import com.xxxx.emby_vr.panel.vrClickTarget
 import com.xxxx.emby_vr.ui.components.Loading
 import com.xxxx.emby_vr.ui.components.NoData
@@ -477,11 +478,28 @@ private fun SortDialog(
      * 光点命中判定必然对不上（父亲 2026-10-10「媒体库所有按钮无法操作」）。
      */
     androidx.activity.compose.BackHandler(enabled = true) { onDismiss() }
+    /*
+     * 排序面板是一层**模态组**（父亲 2026-10-13：点在面板外不该激活背后的海报）。
+     *
+     * 以前没带组：光柱落在面板外时坐标表按"面积最小优先"命中 —— 铺满整页的遮罩面积
+     * 比背后的海报卡大得多，永远排在海报后面，于是点在面板外把海报激活了。
+     * 带上组之后，组开着时坐标表只认同组控件（这层遮罩 + 下面每一个排序选项），
+     * 海报墙一律不参与命中；遮罩自己仍然负责"点面板外关掉面板"。
+     */
+    val group = remember { Any() }
+    DisposableEffect(group) {
+        ClickTargets.setModalGroup(group)
+        onDispose { ClickTargets.clearModalGroup(group) }
+    }
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black.copy(alpha = 0.55f))
-            .vrClickTarget(key = "sort:scrim", hover = false) { onDismiss() },
+            .vrClickTarget(
+                key = "sort:scrim",
+                group = group,
+                hover = false,
+            ) { onDismiss() },
         contentAlignment = Alignment.Center
     ) {
             Surface(
@@ -535,6 +553,14 @@ private fun SortDialog(
                                 onClick = doSort,
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    /*
+                                     * 行高钉在 48dp（父亲 2026-10-13：选中的绿块和扫过的白块要一样大）。
+                                     *
+                                     * 点击类控件有 48dp 的"最小触控高度"：内容不够高时外层节点会被撑到
+                                     * 48dp，而绿块（选项自己的底色）与白块（扫过时的高亮）取值来源不同，
+                                     * 看着就一大一小。行高显式钉死后两者必然同尺寸。
+                                     */
+                                    .heightIn(min = 48.dp)
                                     .focusRequester(focusRequesters[index])
                                     .vrClickTarget(
                                         key = "sort:$sortByValue",
@@ -542,6 +568,12 @@ private fun SortDialog(
                                         // 选项块自身是 8dp 圆角，高亮白层必须一致 ——
                                         // 之前白层写死 12dp，四角露出绿色，父亲看成"两块大小不一"（2026-10-13）
                                         hoverRadius = 8.dp,
+                                        /*
+                                         * 面板里的选项**不做放大**（父亲 2026-10-13：白块要和绿块一样大）：
+                                         * 全局默认扫到会放大 5%，越出绿块边界，看着就是两块不一样大。
+                                         */
+                                        hoverScale = 1f,
+                                        group = group,
                                         onActivate = doSort,
                                     ),
                                 shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(8.dp)),

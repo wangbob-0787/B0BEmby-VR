@@ -1622,6 +1622,31 @@ class MainActivity : ComponentActivity() {
      * 这里**不**把应用切进播放态 —— 切进去的话点击和摇杆会被播放器语义吃掉，
      * 网页在大银幕上就操作不了了（父亲报的"投射后手柄无法操作网页"）。
      */
+    /**
+     * 清掉控制条上属于「上一部影片」的信息（父亲 2026-10-13 报的"该清掉的没清掉"）。
+     *
+     * 为什么必须单独清一次：`stopPlaybackInternal` 有意**不**动控制条数据
+     * （切集 / 换音轨都要靠它保持按钮可用，2026-10-07 定的），只有 `clearForNewMedia`
+     * （换一部新片起播）才清。打开网页这条路既不换片、也不再起播，于是控制条留着
+     * 上一部片的已播时间、总时长、进度条位置、按钮亮灭 —— 片名虽然被
+     * 「正在播放：哔哩哔哩」顶掉了，可那一行之外的东西全是上一部片的。
+     * 音轨 / 字幕清单同理（那是上一部片的轨，网页模式下点了也没用）。
+     */
+    private fun clearFilmInfoFromOsd() {
+        osdState.hasPlayback = false
+        osdState.title = ""
+        osdState.durationMs = 0L
+        osdState.positionMs = 0L
+        osdState.bufferedMs = 0L
+        osdState.showSkipIntroButton = false
+        currentStreams = emptyList()
+        audioStreamIndices = emptyList()
+        subtitleStreamIndices = emptyList()
+        introStartMs = null
+        introEndMs = null
+        hasAutoSkippedIntro = false
+    }
+
     private fun openWeb(site: Int) {
         runOnUiThread {
             /*
@@ -1633,6 +1658,20 @@ class MainActivity : ComponentActivity() {
                 Log.i(TAG, "开网页：先把正在播的片子停掉")
                 stopPlayback()
             }
+            /* 控制条上属于影片的信息全部清掉（父亲 2026-10-13）——见上面的函数注释 */
+            clearFilmInfoFromOsd()
+            /*
+             * 银幕比例复位成它自己的形状 16:9（父亲 2026-10-13 定：
+             * 网页投上大银幕要按大银幕的高宽比，不跟上一部影片走）。
+             *
+             * 银幕的高度是按 videoAspect 算的（宽 / 比例），播片时会被改成片子真实比例
+             * （2.39:1 宽银幕、4:3 老片）。复位这一步原来只在"换片"那条路
+             * （clearForNewMedia）里有，打开网页这条路漏了 —— 于是先看了一部宽银幕的片子
+             * 再开 B 站，银幕还是 2.39:1 的形状，16:9 的网页画面贴上去被横向拉扁。
+             * 网页面画布固定 1920×1080，银幕固有形状也是 16:9，两边一致。
+             */
+            com.xxxx.emby_vr.vr.VrNative.setVideoAspect(16f / 9f)
+            applyDanmakuCanvas(16f / 9f)
             webSiteState.value = site
             webOnScreen = true
             /*

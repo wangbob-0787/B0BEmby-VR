@@ -67,38 +67,6 @@ import com.xxxx.emby_vr.web.WebPageHub
  * 主界面收到光柱点击时直接交给这里（落点先按本页在面板里的矩形换算，再发给网页）。
  */
 /**
- * 让网页按"手机宽度"排版（父亲 2026-10-13：能打开，但和真手机打开的不一样）。
- *
- * 面板画布 1920 像素宽、密度 200 → 网页的 CSS 视口宽 = 1920 / (200/160) = 1536，
- * 而手机只有 360~430，所以站点给的是平板/桌面排版（字小、一屏塞很多）。
- * 把 WebView 所在上下文的密度改成 1920 / 420 ≈ 731dpi，CSS 视口宽就变成 ≈420，
- * 站点立刻按手机版排版；同时因为像素密度高，文字和图片在这块面板上是清晰渲染的。
- */
-private fun phoneWidthContext(
-    base: android.content.Context,
-    panelPxWidth: Int,
-    targetCssWidth: Int,
-): android.content.Context {
-    return object : android.content.ContextWrapper(base) {
-        private var res: android.content.res.Resources? = null
-
-        override fun getResources(): android.content.res.Resources {
-            res?.let { return it }
-            val cfg = android.content.res.Configuration(base.resources.configuration)
-            cfg.densityDpi = (160f * panelPxWidth / targetCssWidth).toInt()
-            @Suppress("DEPRECATION")
-            val r = android.content.res.Resources(
-                base.assets,
-                base.resources.displayMetrics,
-                cfg,
-            )
-            res = r
-            return r
-        }
-    }
-}
-
-/**
  * 藏掉"打开APP / 下载客户端"这类浮层（父亲 2026-10-13：爱奇艺一直有个横幅提示打开app）。
  *
  * 只动"固定定位 + 文字命中关键词 + 面积不大"的元素，避免误伤正文。
@@ -172,25 +140,19 @@ fun WebLibraryScreen(
 ) {
     val context = LocalContext.current
     /*
-     * 网址与浏览器标识按站分开（父亲 2026-10-13 定：B站和爱奇艺走电脑版网页）。
+     * 三个站点全部走**电脑版**网页（父亲 2026-10-13 定：腾讯也从手机版改成电脑版）。
      *
-     * 实测口径：腾讯手机版能正常播放（连网页全屏都对），保持手机版不动；
-     * B站/爱奇艺手机版点进视频放不出来，换回电脑版网页 + 电脑浏览器标识。
+     * 之前腾讯走 m.v.qq.com + 手机浏览器标识（实测能播），现在换成电脑版
+     * v.qq.com + 电脑浏览器标识，与 B站 / 爱奇艺同一套口径。
+     * 手机宽度那套上下文（phoneWidthContext）随之没有调用方，按父亲"不留死代码"
+     * 的要求一并删掉。
      */
     val desktopUa =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    val mobileUa =
-        "Mozilla/5.0 (Linux; Android 10; PICO A8110) AppleWebKit/537.36 " +
-            "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
-    /*
-     * 只有腾讯走手机版（父亲 2026-10-13 实测：腾讯 m 站播放正常）。
-     * B站/爱奇艺走电脑版 —— 手机版点进视频放不出来。
-     */
-    val mobile = site == 1
     val url = when (site) {
         0 -> "https://www.bilibili.com/"
-        1 -> "https://m.v.qq.com/"
+        1 -> "https://v.qq.com/"
         else -> "https://www.iqiyi.com/"
     }
     val title = when (site) {
@@ -238,11 +200,8 @@ fun WebLibraryScreen(
                         )
                     },
                 factory = { ctx ->
-                    /*
-                     * 手机版才换"手机宽度上下文"：CSS 视口宽 ≈420，站点按手机排版；
-                     * 电脑版用原上下文，站点给的就是电脑排版（父亲 2026-10-13 要的）。
-                     */
-                    WebView(if (mobile) phoneWidthContext(ctx, 1920, 420) else ctx).apply {
+                    /* 三站都是电脑版：用原上下文，站点给的就是电脑排版（父亲 2026-10-13 要的） */
+                    WebView(ctx).apply {
                         setBackgroundColor(AndroidColor.BLACK)
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
@@ -267,7 +226,7 @@ fun WebLibraryScreen(
                          */
                         settings.javaScriptCanOpenWindowsAutomatically = false
                         settings.setSupportMultipleWindows(false)
-                        settings.userAgentString = if (mobile) mobileUa else desktopUa
+                        settings.userAgentString = desktopUa
                         webViewClient = object : WebViewClient() {
                             /*
                              * 拦掉"打开APP"这类跳转（父亲 2026-10-13）：
