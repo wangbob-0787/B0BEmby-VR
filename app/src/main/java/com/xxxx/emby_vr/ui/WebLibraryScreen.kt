@@ -76,8 +76,8 @@ fun WebLibraryScreen(
      * 网址与浏览器标识按站分开（父亲 2026-10-13：爱奇艺"打开不对头"）。
      *
      * 爱奇艺的桌面版网页会不停去连"爱奇艺客户端"的本地服务（127.0.0.1:16422/16423），
-     * 连不上就一直重试、内容区全黑（日志里每 10 秒一轮 ERR_CONNECTION_REFUSED）。
-     * 手机版网页不依赖那个本地服务，所以爱奇艺走手机版 + 手机标识，其余两家桌面版照旧。
+     * 连不上就一直重试、内容区全黑（日志里每 10 秒一轮 ERR_CONNECTION_REFUSED）；
+     * 手机版网页不依赖那个本地服务。三家现在统一走手机版 + 手机标识。
      */
     val desktopUa =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
@@ -85,10 +85,15 @@ fun WebLibraryScreen(
     val mobileUa =
         "Mozilla/5.0 (Linux; Android 10; PICO A8110) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
-    val mobile = site == 2
+    /*
+     * 三家都走手机版网页（父亲 2026-10-13 定）：桌面版问题多 ——
+     * 爱奇艺桌面版依赖"客户端本地服务"（连不上就内容全黑），
+     * B站/腾讯桌面版页面重、在头显的老内核上又慢又难滚。手机版轻、不依赖客户端。
+     */
+    val mobile = true
     val url = when (site) {
-        0 -> "https://www.bilibili.com/"
-        1 -> "https://v.qq.com/"
+        0 -> "https://m.bilibili.com/"
+        1 -> "https://m.v.qq.com/"
         else -> "https://m.iqiyi.com/"
     }
     val title = when (site) {
