@@ -97,6 +97,31 @@ private fun phoneWidthContext(
     }
 }
 
+/**
+ * 藏掉"打开APP / 下载客户端"这类浮层（父亲 2026-10-13：爱奇艺一直有个横幅提示打开app）。
+ *
+ * 只动"固定定位 + 文字命中关键词 + 面积不大"的元素，避免误伤正文。
+ */
+private const val HIDE_APP_BANNER_JS = """
+(function(){
+  try{
+    var kw=['打开APP','打开 APP','立即打开','下载APP','下载客户端','打开客户端','去APP看','打开看看'];
+    var all=document.querySelectorAll('div,a,section,header,span,p');
+    for(var i=0;i<all.length;i++){
+      var e=all[i];
+      var t=(e.innerText||'').trim();
+      if(!t||t.length>40){continue;}
+      var hit=false;
+      for(var k=0;k<kw.length;k++){ if(t.indexOf(kw[k])>=0){hit=true;break;} }
+      if(!hit){continue;}
+      var st=window.getComputedStyle(e);
+      if(st.position!=='fixed'&&st.position!=='sticky'){continue;}
+      e.style.display='none';
+    }
+  }catch(err){}
+})()
+"""
+
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun WebLibraryScreen(
@@ -105,11 +130,10 @@ fun WebLibraryScreen(
 ) {
     val context = LocalContext.current
     /*
-     * 网址与浏览器标识按站分开（父亲 2026-10-13：爱奇艺"打开不对头"）。
+     * 网址与浏览器标识按站分开（父亲 2026-10-13 定：B站和爱奇艺走电脑版网页）。
      *
-     * 爱奇艺的桌面版网页会不停去连"爱奇艺客户端"的本地服务（127.0.0.1:16422/16423），
-     * 连不上就一直重试、内容区全黑（日志里每 10 秒一轮 ERR_CONNECTION_REFUSED）；
-     * 手机版网页不依赖那个本地服务。三家现在统一走手机版 + 手机标识。
+     * 实测口径：腾讯手机版能正常播放（连网页全屏都对），保持手机版不动；
+     * B站/爱奇艺手机版点进视频放不出来，换回电脑版网页 + 电脑浏览器标识。
      */
     val desktopUa =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
@@ -118,15 +142,14 @@ fun WebLibraryScreen(
         "Mozilla/5.0 (Linux; Android 10; PICO A8110) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
     /*
-     * 三家都走手机版网页（父亲 2026-10-13 定）：桌面版问题多 ——
-     * 爱奇艺桌面版依赖"客户端本地服务"（连不上就内容全黑），
-     * B站/腾讯桌面版页面重、在头显的老内核上又慢又难滚。手机版轻、不依赖客户端。
+     * 只有腾讯走手机版（父亲 2026-10-13 实测：腾讯 m 站播放正常）。
+     * B站/爱奇艺走电脑版 —— 手机版点进视频放不出来。
      */
-    val mobile = true
+    val mobile = site == 1
     val url = when (site) {
-        0 -> "https://m.bilibili.com/"
+        0 -> "https://www.bilibili.com/"
         1 -> "https://m.v.qq.com/"
-        else -> "https://m.iqiyi.com/"
+        else -> "https://www.iqiyi.com/"
     }
     val title = when (site) {
         0 -> "哔哩哔哩"
@@ -196,23 +219,52 @@ fun WebLibraryScreen(
                         )
                     },
                 factory = { ctx ->
-                    /* 手机宽度上下文：CSS 视口宽 ≈420（真手机那种），排版才和手机一致 */
-                    WebView(phoneWidthContext(ctx, 1920, 420)).apply {
+                    /*
+                     * 手机版才换"手机宽度上下文"：CSS 视口宽 ≈420，站点按手机排版；
+                     * 电脑版用原上下文，站点给的就是电脑排版（父亲 2026-10-13 要的）。
+                     */
+                    WebView(if (mobile) phoneWidthContext(ctx, 1920, 420) else ctx).apply {
                         setBackgroundColor(AndroidColor.BLACK)
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
                         /* 网页播放器默认要"用户手势"才播，这里放开（父亲 2026-10-13） */
                         settings.mediaPlaybackRequiresUserGesture = false
                         /*
-                         * 手机版：让站点自己的 viewport（width=device-width）生效 ——
-                         * 配合上面的手机宽度上下文，device-width 就是 420，站点按手机排版。
+                         * http 资源放行（2026-10-13 实测抓到）：这些站点的封面/接口还有走 http 的，
+                         * 默认策略全拦掉（日志里一片"图片加载失败"），页面就残了。
+                         */
+                        settings.mixedContentMode =
+                            android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                        /*
+                         * 让站点自己的 viewport 生效；页面比屏幕宽时整体缩到屏幕宽度（看得全）。
                          */
                         settings.useWideViewPort = true
                         settings.loadWithOverviewMode = true
                         settings.setSupportZoom(false)
                         settings.builtInZoomControls = false
+                        /*
+                         * 不许网页自己弹新窗口（弹出来就是个空白窗，画面留在原地不动）。
+                         * 配合下面的 onCreateWindow 一起挡。
+                         */
+                        settings.javaScriptCanOpenWindowsAutomatically = false
+                        settings.setSupportMultipleWindows(false)
                         settings.userAgentString = if (mobile) mobileUa else desktopUa
                         webViewClient = object : WebViewClient() {
+                            /*
+                             * 拦掉"打开APP"这类跳转（父亲 2026-10-13）：
+                             * 页面点视频或横幅时会甩出 bilibili:// iqiyi:// qiyi-iphone:// 这些自家协议，
+                             * 我们没装那些 App，系统接不住，页面就卡在原地不动 —— 直接吃掉。
+                             */
+                            override fun shouldOverrideUrlLoading(
+                                view: WebView,
+                                request: android.webkit.WebResourceRequest,
+                            ): Boolean {
+                                val u = request.url.toString()
+                                if (u.startsWith("http://") || u.startsWith("https://")) return false
+                                android.util.Log.i("WebLib", "拦下 App 跳转 $u")
+                                return true
+                            }
+
                             override fun onPageFinished(view: WebView, u: String) {
                                 loading = false
                                 /*
@@ -226,6 +278,12 @@ fun WebLibraryScreen(
                                         "d.scrollWidth,d.scrollHeight," +
                                         "document.body?document.body.scrollWidth:0].join(',');})()"
                                 ) { r -> android.util.Log.i("WebLib", "页面尺寸 $u → $r") }
+                                /* "打开APP/下载客户端"横幅飘在页面上挡内容，按文案找出来藏掉 */
+                                view.evaluateJavascript(HIDE_APP_BANNER_JS, null)
+                                view.postDelayed(
+                                    { view.evaluateJavascript(HIDE_APP_BANNER_JS, null) },
+                                    1500,
+                                )
                             }
 
                             override fun onReceivedError(
@@ -240,6 +298,17 @@ fun WebLibraryScreen(
                             }
                         }
                         webChromeClient = object : WebChromeClient() {
+                            /* 网页想开新窗口（target=_blank / window.open）一律拒掉，留在当前页面播 */
+                            override fun onCreateWindow(
+                                view: WebView,
+                                isDialog: Boolean,
+                                isUserGesture: Boolean,
+                                resultMsg: android.os.Message,
+                            ): Boolean {
+                                android.util.Log.i("WebLib", "拦下网页新窗口")
+                                return false
+                            }
+
                             /*
                              * 网页要全屏（父亲 2026-10-13：腾讯有两个全屏，「网页全屏」有效、
                              * 「全屏」点了没反应）—— 没接这条通道，点了当然没反应。
