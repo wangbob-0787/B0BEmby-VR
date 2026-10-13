@@ -857,6 +857,13 @@ class MainActivity : ComponentActivity() {
                 if (menuState.kind != null) {
                     Log.i(TAG, "光柱 B 键 → 菜单返回上一级")
                     menuBack()
+                } else if (webOnScreen && !panelPointerOnPanel) {
+                    /*
+                     * 父亲 2026-10-13 实测：光柱指着大银幕按 B，海报墙反而退回上一屏。
+                     * 手柄 B 键走的是这条路（不是 onKeyDown），这里原来只挡了"播放画面"，
+                     * 没挡"银幕上是网页" —— 补上，语义与 onKeyDown 那条一致。
+                     */
+                    Log.i(TAG, "光柱 B 键忽略：光柱指着大银幕（网页）")
                 } else if (renderer.videoActive && !panelPointerOnPanel) {
                     Log.i(TAG, "光柱 B 键忽略：光点在播放画面上（播放页操作走控制条）")
                 } else if (panelInputReady()) {
@@ -2284,6 +2291,12 @@ class MainActivity : ComponentActivity() {
                  * 片名由定时刷新里的 osdTitleText() 取。
                  */
                 renderer.videoActive = true
+                /*
+                 * 内核（mpv）这条路也要把网页面收掉（父亲 2026-10-13 实测：
+                 * 银幕上放着网页 / 网页视频时，切一部走内核解码的片子，网页退不出去）。
+                 * 系统播放器那条路早就有这一句，mpv 分支提前 return，整段被跳过。
+                 */
+                closeWeb()
                 picking = false
                 reportedItemId = pendingItemId
                 reportedPlaySessionId = pendingPlaySessionId

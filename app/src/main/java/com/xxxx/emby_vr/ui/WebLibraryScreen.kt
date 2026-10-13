@@ -15,13 +15,17 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -203,6 +207,12 @@ fun WebLibraryScreen(
     var fullscreen by remember { mutableStateOf(false) }
     var customContainer by remember { mutableStateOf<android.widget.FrameLayout?>(null) }
     var customViewCallback by remember { mutableStateOf<android.webkit.WebChromeClient.CustomViewCallback?>(null) }
+    /*
+     * 全屏时网页塞过来的那个播放视图（父亲 2026-10-13 实测：全屏后点不到东西）。
+     * 它被我们从 WebView 里摘出来挂到自己的容器上 —— 事件必须发给它，
+     * 发给 WebView 等于发给一块不再显示内容的控件，点了什么都不会发生。
+     */
+    var customView by remember { mutableStateOf<android.view.View?>(null) }
     /* 网页这块矩形在面板画布里的位置（面板像素），用来换算光柱落点 */
     var webRect by remember { mutableStateOf<Rect?>(null) }
     var loading by remember { mutableStateOf(true) }
@@ -328,6 +338,7 @@ fun WebLibraryScreen(
                                 }
                                 customViewCallback = callback
                                 (view.parent as? android.view.ViewGroup)?.removeView(view)
+                                customView = view
                                 box.addView(
                                     view,
                                     android.widget.FrameLayout.LayoutParams(
@@ -350,6 +361,7 @@ fun WebLibraryScreen(
                                 }
                                 customViewCallback?.onCustomViewHidden()
                                 customViewCallback = null
+                                customView = null
                                 fullscreen = false
                                 WebPageHub.setFullscreen(false)
                                 android.util.Log.i("WebLib", "网页全屏：已退出")
@@ -394,7 +406,13 @@ fun WebLibraryScreen(
     DisposableEffect(site) {
         WebPageHub.tapHandler = handler@{ px, py ->
             val r = webRect
-            val wv = webRef
+            /*
+             * 全屏时事件发给**网页塞过来的那个播放视图**，不是 WebView
+             * （父亲 2026-10-13 实测：网页全屏播放后光标点不动大银幕）——
+             * 那个视图已经从 WebView 里摘出来挂到我们自己的容器上了，
+             * 发给 WebView 等于发给一块不再显示内容的控件，什么都不会发生。
+             */
+            val wv = customView ?: webRef
             if (r != null && wv != null && r.width > 0f && r.height > 0f) {
                 val u = (px - r.left) / r.width
                 val v = (py - r.top) / r.height
@@ -437,7 +455,8 @@ fun WebLibraryScreen(
             }
         }
         WebPageHub.scrollHandler = { px, py, sy ->
-            val wv = webRef
+            /* 同上：全屏时滚的是那个播放视图 */
+            val wv = customView ?: webRef
             val r = webRect
             if (wv != null && r != null && r.width > 0f && r.height > 0f &&
                 kotlin.math.abs(sy) > 0.2f
@@ -510,11 +529,13 @@ private fun TopBarButton(label: String, onClick: () -> Unit) {
 
 
 /**
- * 网络视频详情页（父亲 2026-10-13 定）。
+ * 网络视频详情页（父亲 2026-10-13 定：**做成和电影 / 电视剧详情页一样**）。
  *
- * 从海报墙「我的媒体库」那一行的「网络视频」卡片点进来：里面是三个方形图标
- * （哔哩哔哩 / 腾讯视频 / 爱奇艺），点一个就进那个网站的网页版 ——
- * 和进一个普通 Emby 媒体库、再挑片子是同一个感觉。
+ * 结构照搬 MediaDetailScreen：底色渐变 → 下半屏压暗 → 头部（左：标题 / 两行元数据 /
+ * 简介 / 动作按钮；右：网络视频那张拼图，位置与剧集详情页右侧的剧名 logo 同义）
+ * → 下面一行站点卡片（相当于剧集页的「第 N 季」那一行）。
+ *
+ * 顶栏不再有「返回海报墙」按钮 —— 电影详情页也没有，返回统一靠 B 键（光柱指着海报墙时）。
  */
 @Composable
 fun WebSiteDetailScreen(onOpen: (Int) -> Unit, onBack: () -> Unit) {
@@ -523,46 +544,164 @@ fun WebSiteDetailScreen(onOpen: (Int) -> Unit, onBack: () -> Unit) {
         Triple("腾讯视频", R.drawable.web_tencent_icon, Color(0xFF2CA2F5)),
         Triple("爱奇艺", R.drawable.web_iqiyi_icon, Color(0xFF19B36B)),
     )
-    Box(modifier = Modifier.fillMaxSize().background(Color(0xFF0B0C0F))) {
-        Column(modifier = Modifier.fillMaxSize().padding(48.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TopBarButton(label = "← 返回海报墙", onClick = onBack)
-                Spacer(modifier = Modifier.width(24.dp))
-                Text(
-                    text = "网络视频",
-                    color = Color(0xFFE8EDF2),
-                    fontSize = 34.sp,
-                    fontWeight = FontWeight.Bold,
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Brush.verticalGradient(listOf(Color(0xFF23272E), Color(0xFF0E1013)))),
+    ) {
+        /* 下半屏压暗，和电影 / 剧集详情页同一套（顶部保持透明） */
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .fillMaxWidth()
+                .fillMaxHeight(0.65f)
+                .background(
+                    Brush.verticalGradient(
+                        listOf(
+                            Color.Transparent,
+                            Color.Black.copy(alpha = 0.6f),
+                            Color.Black.copy(alpha = 0.9f),
+                            Color.Black,
+                        )
+                    )
+                ),
+        )
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(vertical = 32.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 40.dp),
+                horizontalArrangement = Arrangement.spacedBy(32.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f).padding(top = 140.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    Text(
+                        text = "网络视频",
+                        style = MaterialTheme.typography.displaySmall.copy(
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White,
+                        ),
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "3 个站点    网页版    不用装 App",
+                            color = Color.White.copy(alpha = 0.92f),
+                            fontSize = 15.sp,
+                        )
+                        Text(
+                            text = "哔哩哔哩 · 腾讯视频 · 爱奇艺",
+                            color = Color.White.copy(alpha = 0.72f),
+                            fontSize = 15.sp,
+                        )
+                    }
+                    Text(
+                        text = "三个网站的电脑版网页直接开在大银幕上，浏览、搜索、播放都在网页里。" +
+                            "网页就当一部片子看待：想换内容，在海报墙点别的片子，网页会被那部片子顶掉。",
+                        color = Color.White.copy(alpha = 0.9f),
+                        fontSize = 17.sp,
+                        lineHeight = 26.sp,
+                    )
+                    /* 动作按钮：三个站点，形态与电影详情页的「播放 / 重播」一致 */
+                    Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+                        sites.forEachIndexed { i, (name, icon, _) ->
+                            WebSiteActionTile(
+                                icon = painterResource(icon),
+                                label = name,
+                                key = "netvideo:$i",
+                                onActivate = { onOpen(i) },
+                            )
+                        }
+                    }
+                }
+                /* 右侧：网络视频那张拼图（相当于剧集详情页右侧的剧名 logo） */
+                Image(
+                    painter = painterResource(R.drawable.web_netvideo_card),
+                    contentDescription = "网络视频",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .width(360.dp)
+                        .height(202.dp)
+                        .clip(RoundedCornerShape(12.dp)),
                 )
             }
-            Spacer(modifier = Modifier.height(48.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(40.dp)) {
+            Spacer(modifier = Modifier.height(40.dp))
+            Text(
+                text = "站点",
+                color = Color.White,
+                fontSize = 21.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(horizontal = 40.dp),
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+            /* 站点卡片那一行：位置与剧集详情页的「第 N 季」胶囊行同义 */
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 40.dp),
+                horizontalArrangement = Arrangement.spacedBy(28.dp),
+            ) {
                 sites.forEachIndexed { i, (name, icon, accent) ->
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier
-                            .clip(RoundedCornerShape(22.dp))
+                            .clip(RoundedCornerShape(18.dp))
                             .background(Color(0xFFF3F5F8))
-                            .vrClickTarget(key = "netvideo:$i", onActivate = { onOpen(i) })
-                            .padding(horizontal = 28.dp, vertical = 24.dp),
+                            .vrClickTarget(key = "netvideo:big:$i", onActivate = { onOpen(i) })
+                            .padding(horizontal = 24.dp, vertical = 20.dp),
                     ) {
                         Image(
                             painter = painterResource(icon),
                             contentDescription = name,
                             contentScale = ContentScale.Fit,
-                            modifier = Modifier.size(150.dp),
+                            modifier = Modifier.size(120.dp),
                         )
-                        Spacer(modifier = Modifier.height(16.dp))
+                        Spacer(modifier = Modifier.height(12.dp))
                         Text(
                             text = name,
                             color = accent,
-                            fontSize = 28.sp,
+                            fontSize = 24.sp,
                             fontWeight = FontWeight.Bold,
                         )
                     }
                 }
             }
         }
+    }
+}
+
+/**
+ * 网络视频详情页的动作按钮：形态照电影详情页的 ActionTile（108×44、暗底、图标 + 文字横排），
+ * 图标换成站点 logo（父亲 2026-10-13）。
+ */
+@Composable
+private fun WebSiteActionTile(
+    icon: androidx.compose.ui.graphics.painter.Painter,
+    label: String,
+    key: String,
+    onActivate: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .width(108.dp)
+            .height(44.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(Color(0xFF3A3A3A))
+            .vrClickTarget(key = key, onActivate = onActivate),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Image(
+            painter = icon,
+            contentDescription = label,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.size(20.dp),
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(text = label, color = Color.White, fontSize = 15.sp, maxLines = 1)
     }
 }
 
