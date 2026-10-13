@@ -24,8 +24,12 @@ object WebPageHub {
      */
     var tapHandler: ((Float, Float) -> Boolean)? = null
 
-    /** 网页页登记：摇杆上下滚动网页（dy 为摇杆纵向位移） */
-    var scrollHandler: ((Float) -> Unit)? = null
+    /**
+     * 网页页登记：摇杆上下滚动网页。
+     * 参数 = 光柱落点(px,py，面板像素) + 摇杆纵向值 sy。
+     * 带落点是必须的 —— 滚动事件按坐标做命中测试，落点在哪就滚哪一块。
+     */
+    var scrollHandler: ((Float, Float, Float) -> Unit)? = null
 
     /** 当前是否有网页页在用交互 */
     val active: Boolean
@@ -36,8 +40,8 @@ object WebPageHub {
         return h(px, py)
     }
 
-    fun scroll(dy: Float) {
-        scrollHandler?.invoke(dy)
+    fun scroll(px: Float, py: Float, sy: Float) {
+        scrollHandler?.invoke(px, py, sy)
     }
 
     fun clear() {

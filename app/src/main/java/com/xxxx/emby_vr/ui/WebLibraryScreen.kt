@@ -3,6 +3,7 @@ package com.xxxx.emby_vr.ui
 import android.annotation.SuppressLint
 import android.graphics.Color as AndroidColor
 import android.os.SystemClock
+import android.view.InputDevice
 import android.view.MotionEvent
 import android.webkit.WebChromeClient
 import android.webkit.WebView
@@ -137,9 +138,36 @@ fun WebLibraryScreen(
                         webViewClient = object : WebViewClient() {
                             override fun onPageFinished(view: WebView, u: String) {
                                 loading = false
+                                /*
+                                 * 打完页面把布局尺寸打进日志（父亲 2026-10-13：
+                                 * 爱奇艺"菜单在、内容看不见"）—— 用来看是不是
+                                 * 页面比可视区宽/高得多，内容跑到画面外面去了。
+                                 */
+                                view.evaluateJavascript(
+                                    "(function(){var d=document.documentElement;" +
+                                        "return [window.innerWidth,window.innerHeight," +
+                                        "d.scrollWidth,d.scrollHeight," +
+                                        "document.body?document.body.scrollWidth:0].join(',');})()"
+                                ) { r -> android.util.Log.i("WebLib", "页面尺寸 $u → $r") }
+                            }
+
+                            override fun onReceivedError(
+                                view: WebView,
+                                request: android.webkit.WebResourceRequest,
+                                error: android.webkit.WebResourceError,
+                            ) {
+                                android.util.Log.w(
+                                    "WebLib",
+                                    "加载失败 ${request.url} : ${error.errorCode} ${error.description}",
+                                )
                             }
                         }
-                        webChromeClient = object : WebChromeClient() {}
+                        webChromeClient = object : WebChromeClient() {
+                            override fun onConsoleMessage(m: android.webkit.ConsoleMessage): Boolean {
+                                android.util.Log.i("WebLib", "控制台 ${m.message()} @${m.lineNumber()}")
+                                return true
+                            }
+                        }
                         loadUrl(url)
                     }
                 },
@@ -180,10 +208,49 @@ fun WebLibraryScreen(
             /* 落在网页外面（顶栏等）：交回常规查表 */
             false
         }
-        WebPageHub.scrollHandler = { dy ->
-            webRef?.let { wv ->
-                val step = (dy * 120f).toInt()
-                if (step != 0) runCatching { wv.scrollBy(0, step) }
+        /*
+         * 滚动：派发"滚轮事件"，和面板滚菜单用的是同一条路（父亲 2026-10-13 实测：
+         * 之前用 scrollBy 三个网站都滚不动 —— 网页的滚动容器不是文档本身，
+         * scrollBy 滚的是文档，所以没反应；滚轮事件按坐标做命中测试，
+         * 落点在哪一块就滚哪一块，网页自己会把它滚起来）。
+         * 滚轮量吃掉了就不管；万一没吃掉（网页没接），再用 scrollBy 兜一下。
+         */
+        WebPageHub.scrollHandler = { px, py, sy ->
+            val wv = webRef
+            val r = webRect
+            if (wv != null && r != null && r.width > 0f && r.height > 0f &&
+                kotlin.math.abs(sy) > 0.2f
+            ) {
+                val u = ((px - r.left) / r.width).coerceIn(0.05f, 0.95f)
+                val v = ((py - r.top) / r.height).coerceIn(0.05f, 0.95f)
+                val x = u * wv.width
+                val y = v * wv.height
+                /* 方向跟面板一致：摇杆往上推 = 往回滚（滚轮往上），往下推 = 往下滚 */
+                val notch = if (sy > 0f) 0.5f else -0.5f
+                val props = arrayOf(
+                    MotionEvent.PointerProperties().apply {
+                        id = 0
+                        toolType = MotionEvent.TOOL_TYPE_MOUSE
+                    },
+                )
+                val coords = arrayOf(
+                    MotionEvent.PointerCoords().apply {
+                        this.x = x
+                        this.y = y
+                        pressure = 1f
+                        size = 1f
+                        setAxisValue(MotionEvent.AXIS_VSCROLL, notch)
+                    },
+                )
+                val now = SystemClock.uptimeMillis()
+                @Suppress("DEPRECATION")
+                val ev = MotionEvent.obtain(
+                    now, now, MotionEvent.ACTION_SCROLL, 1, props, coords,
+                    0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_MOUSE, 0,
+                )
+                val eaten = runCatching { wv.dispatchGenericMotionEvent(ev) }.getOrDefault(false)
+                ev.recycle()
+                if (!eaten) runCatching { wv.scrollBy(0, if (sy > 0f) -60 else 60) }
             }
         }
         onDispose {

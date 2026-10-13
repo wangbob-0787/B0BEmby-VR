@@ -559,7 +559,7 @@ class MainActivity : ComponentActivity() {
             runOnUiThread {
                 /* 网页页在用：摇杆上下 = 滚动网页（父亲 2026-10-13） */
                 if (com.xxxx.emby_vr.web.WebPageHub.active) {
-                    com.xxxx.emby_vr.web.WebPageHub.scroll(sy)
+                    com.xxxx.emby_vr.web.WebPageHub.scroll(px, py, sy)
                     return@runOnUiThread
                 }
                 /*
