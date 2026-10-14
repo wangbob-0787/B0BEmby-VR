@@ -229,6 +229,12 @@ private fun GeckoWebView(
             view
         },
         update = { v ->
+            /* 键盘（网页播放器认的左右键）要能进来：给它焦点；鼠标事件是直接派发的，不依赖焦点 */
+            if (!v.isFocusable) {
+                v.isFocusable = true
+                v.isFocusableInTouchMode = true
+            }
+            if (!v.hasFocus()) v.requestFocus()
             (v.tag as? org.mozilla.geckoview.GeckoSession)?.let { onReady(v, it) }
         },
     )
@@ -263,6 +269,18 @@ private fun WebPageForSite(site: Int) {
     /* 火狐内核那两个（2026-10-14）：view 用来发事件，session 用来加载与前进后退 */
     var geckoRef by remember { mutableStateOf<org.mozilla.geckoview.GeckoView?>(null) }
     var geckoSessionRef by remember { mutableStateOf<org.mozilla.geckoview.GeckoSession?>(null) }
+    /*
+     * 网页内核做成可实时切换（2026-10-14）：VrTuning 不是 Compose 状态，
+     * 直接读它切不动 —— 这里每秒对一次，文件里改了，网页块立刻按新引擎重建。
+     */
+    var webEngine by remember { mutableStateOf(com.xxxx.emby_vr.vr.VrTuning.webEngine) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            val e = com.xxxx.emby_vr.vr.VrTuning.webEngine
+            if (e != webEngine) webEngine = e
+            kotlinx.coroutines.delay(1000L)
+        }
+    }
     /* 网页要"全屏"时，它把自己的播放视图塞进这个容器里（腾讯的「全屏」按钮走这条路） */
     var fullscreen by remember { mutableStateOf(false) }
     var customContainer by remember { mutableStateOf<android.widget.FrameLayout?>(null) }
@@ -306,7 +324,6 @@ private fun WebPageForSite(site: Int) {
          * 运行时可切：改 <files/vr-tuning.txt> 的 web_engine（0=系统，1=火狐），
          * 下一秒整块网页按新引擎重建，不用重装、不用重起播。
          */
-        val webEngine = com.xxxx.emby_vr.vr.VrTuning.webEngine
         if (webEngine == 1) {
             GeckoWebView(
                 url = url,
@@ -571,7 +588,8 @@ private fun WebPageForSite(site: Int) {
              * 那个视图已经从 WebView 里摘出来挂到我们自己的容器上了，
              * 发给 WebView 等于发给一块不再显示内容的控件，什么都不会发生。
              */
-            val wv = customView ?: webRef
+            /* 火狐内核那条路也要能点：geckoRef 插在中间（2026-10-14） */
+            val wv: android.view.View? = customView ?: geckoRef ?: webRef
             if (r != null && wv != null && r.width > 0f && r.height > 0f) {
                 val u = (px - r.left) / r.width
                 val v = (py - r.top) / r.height
@@ -605,7 +623,7 @@ private fun WebPageForSite(site: Int) {
          */
         WebPageHub.hoverHandler = hover@{ px, py ->
             val r = webRect ?: return@hover
-            val wv = customView ?: webRef ?: return@hover
+            val wv = customView ?: geckoRef ?: webRef ?: return@hover
             if (r.width <= 0f || r.height <= 0f) return@hover
             val u = (px - r.left) / r.width
             val v = (py - r.top) / r.height
@@ -638,7 +656,15 @@ private fun WebPageForSite(site: Int) {
          * 滚轮量吃掉了就不管；万一没吃掉（网页没接），再用 scrollBy 兜一下。
          */
         /* 网页内返回（B 键）：只在网页的历史里退，退不动就什么都不做 */
-        WebPageHub.backHandler = {
+        WebPageHub.backHandler = back@{
+            /*
+             * 火狐内核那条路：直接让它的会话后退（它没有同步的 canGoBack 可问，
+             * 退不动时就是什么都不发生，与原来"退不动返回 false"的观感一致）。
+             */
+            geckoSessionRef?.let { s ->
+                runCatching { s.goBack() }
+                return@back true
+            }
             val wv = webRef
             if (wv != null && wv.canGoBack()) {
                 runCatching { wv.goBack() }
@@ -649,7 +675,7 @@ private fun WebPageForSite(site: Int) {
         }
         WebPageHub.scrollHandler = scroll@{ px, py, sx, sy ->
             /* 同上：全屏时滚的是那个播放视图 */
-            val wv = customView ?: webRef
+            val wv: android.view.View? = customView ?: geckoRef ?: webRef
             val r = webRect
             /*
              * 摇杆左右 = 网页里快退 / 快进（父亲 2026-10-13 定）。
@@ -713,6 +739,13 @@ private fun WebPageForSite(site: Int) {
                 runCatching { wv.destroy() }
             }
             webRef = null
+            /* 火狐内核：停会话、放引用（视图本身随 Compose 一起销毁） */
+            geckoSessionRef?.let { s ->
+                runCatching { s.stop() }
+                runCatching { s.close() }
+            }
+            geckoSessionRef = null
+            geckoRef = null
         }
     }
 }
