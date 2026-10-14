@@ -114,12 +114,48 @@ private fun dispatchMouse(
     eventMs: Long,
 ) {
     /*
-     * 悬停一律走鼠标语义（网页播放器的控制条靠它浮出来），按下/抬起按 <web_click> 选：
-     * 0 = 鼠标、1 = 触摸。2026-10-14 实测：火狐内核认触摸那种（父亲点搜索有反应），
-     * 鼠标那种不发火（另一个原因见下面的 BUTTON_PRIMARY 修正）。
+     * 两种发法，按 <web_click> 选：
+     *   2（默认）= 鼠标按键式：按下/抬起发成"鼠标左键按下/抬起"，走**悬停同一条通道**
+     *              （dispatchGenericMotionEvent + SOURCE_MOUSE）。
+     *              父亲 2026-10-14 实测：光柱移到海报上网页有焦点反应，说明这条通道是通的；
+     *              而原来那种触摸式按下它不认。
+     *   1 = 触摸式：ACTION_DOWN/UP + SOURCE_TOUCHSCREEN。
+     *   0 = 鼠标触摸式：ACTION_DOWN/UP + SOURCE_MOUSE。
      */
+    val mode = com.xxxx.emby_vr.vr.VrTuning.webClickMode
     val hover = action == MotionEvent.ACTION_HOVER_MOVE
-    val touchMode = !hover && com.xxxx.emby_vr.vr.VrTuning.webClickMode == 1
+    if (mode == 2 && !hover) {
+        /* 「鼠标左键按下 / 抬起」在 Android 里是通用运动事件，不是触摸的 DOWN / UP */
+        val btnAction = when (action) {
+            MotionEvent.ACTION_DOWN -> MotionEvent.ACTION_BUTTON_PRESS
+            MotionEvent.ACTION_UP -> MotionEvent.ACTION_BUTTON_RELEASE
+            else -> return /* MOVE 不重复发，否则等于点了两下 */
+        }
+        val props = arrayOf(
+            MotionEvent.PointerProperties().apply {
+                id = 0
+                toolType = MotionEvent.TOOL_TYPE_MOUSE
+            },
+        )
+        val coords = arrayOf(
+            MotionEvent.PointerCoords().apply {
+                this.x = x
+                this.y = y
+                pressure = if (action == MotionEvent.ACTION_DOWN) 1f else 0f
+                size = 1f
+            },
+        )
+        val ev = MotionEvent.obtain(
+            downTime, eventMs, btnAction, 1, props, coords,
+            0,
+            if (action == MotionEvent.ACTION_DOWN) MotionEvent.BUTTON_PRIMARY else 0,
+            1f, 1f, 0, 0, InputDevice.SOURCE_MOUSE, 0,
+        )
+        runCatching { wv.dispatchGenericMotionEvent(ev) }
+        ev.recycle()
+        return
+    }
+    val touchMode = !hover && mode == 1
     val props = arrayOf(
         MotionEvent.PointerProperties().apply {
             id = 0
