@@ -690,13 +690,14 @@ private fun WebPageForSite(site: Int) {
             val wv: android.view.View? = customView ?: geckoRef ?: webRef
             val r = webRect
             /*
-             * 摇杆左右 = 网页里快退 / 快进（父亲 2026-10-13 定）。
+             * 摇杆左右 = 网页里快退 / 快进（父亲 2026-10-13 定，2026-10-14 放宽）。
              *
-             * 只在**网页全屏播放**时生效（那时我们接管了网页塞过来的播放视图）——
-             * 全屏时上下滚动已经没有意义，左右正好空出来；没全屏时左右不动作，
-             * 免得在列表页里被当成翻页之类。发方向键，网页播放器自己跳。
+             * 原条件要求「网页自己触发了全屏播放」（customView 非空）。实测（父亲 2026-10-14）：
+             * B站 网页播放器在页面内播放时根本不走那条路，customView 一直是空的 ——
+             * 快进快退于是永远不生效。现在改成「银幕上有网页就认」：三个站的播放器都吃键盘
+             * ← →，发方向键最稳（网页自己跳、自己更新进度条）；列表页的左右键网页本来也无害。
              */
-            if (wv != null && customView != null &&
+            if (wv != null &&
                 kotlin.math.abs(sx) > 0.35f && kotlin.math.abs(sx) >= kotlin.math.abs(sy)
             ) {
                 val nowMs = SystemClock.uptimeMillis()

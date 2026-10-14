@@ -5407,7 +5407,15 @@ class MainActivity : ComponentActivity() {
          * 光柱指海报墙时照旧走下面的面板导航栈（详情页按 B 回上一页）。
          */
         if (keyCode == KeyEvent.KEYCODE_BACK && webOnScreen && !panelPointerOnPanel) {
-            Log.i(TAG, "BACK 忽略：光柱指着大银幕（网页）")
+            /*
+             * 先让网页自己返回（父亲 2026-10-14 实测报障：B站 网页里按 B 键完全没反应）。
+             *
+             * WebPageHub.back() 早就定义好了，但**没有任何地方调用它** ——
+             * 网页页内部的返回因此从来没生效过。这里接上：网页有上一页就退回去，
+             * 已经在首页就保持原样（不退出网页页，按 2026-10-13 定的语义）。
+             */
+            val wentBack = com.xxxx.emby_vr.web.WebPageHub.back()
+            Log.i(TAG, if (wentBack) "BACK 交给网页：退回上一页" else "BACK 忽略：网页已无上一页")
             return true
         }
         if (keyCode == KeyEvent.KEYCODE_BACK && renderer.videoActive && !panelPointerOnPanel) {
