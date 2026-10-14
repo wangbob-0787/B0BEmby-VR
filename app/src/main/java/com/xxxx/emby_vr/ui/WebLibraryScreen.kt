@@ -202,7 +202,19 @@ private fun GeckoWebView(
         factory = { ctx ->
             val runtime = org.mozilla.geckoview.GeckoRuntime.getDefault(ctx)
             val session = org.mozilla.geckoview.GeckoSession()
-            /* 三站都要电脑版排版：UA 覆盖成桌面版（与系统网页视图那条路同一套口径） */
+            /*
+             * 三站一律按电脑版走（父亲 2026-10-14 定：腾讯、爱奇艺也要电脑版）。
+             *
+             * 火狐内核这里光换 UA 不够 —— 它有两个独立的"模式"开关，默认都是手机档，
+             * 页面照样按移动端排版：
+             *   userAgentMode = DESKTOP   告诉页面"我是电脑"
+             *   viewportMode  = DESKTOP   让页面按电脑宽度排版（网页宽度撑满大银幕靠这个）
+             * UA 再覆盖成与系统网页视图那条路完全相同的一串，两边口径一致。
+             */
+            session.settings.userAgentMode =
+                org.mozilla.geckoview.GeckoSessionSettings.USER_AGENT_MODE_DESKTOP
+            session.settings.viewportMode =
+                org.mozilla.geckoview.GeckoSessionSettings.VIEWPORT_MODE_DESKTOP
             session.settings.userAgentOverride = desktopUa
             session.open(runtime)
             /*
