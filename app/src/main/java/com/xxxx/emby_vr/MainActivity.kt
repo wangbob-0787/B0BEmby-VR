@@ -890,7 +890,17 @@ class MainActivity : ComponentActivity() {
                      * 手柄 B 键走的是这条路（不是 onKeyDown），这里原来只挡了"播放画面"，
                      * 没挡"银幕上是网页" —— 补上，语义与 onKeyDown 那条一致。
                      */
-                    Log.i(TAG, "光柱 B 键忽略：光柱指着大银幕（网页）")
+                    /*
+                     * 2026-10-14：再往前一步 —— 光柱指着网页时，B 键先交给网页自己
+                     * （退回网页的上一页）。WebPageHub.back() 早就定义好了却**没有任何地方
+                     * 调用它**，网页内的返回因此从来没生效过；已经在首页就保持原样，
+                     * 不退出网页页（语义按 2026-10-13 定的）。
+                     */
+                    val wentBack = com.xxxx.emby_vr.web.WebPageHub.back()
+                    Log.i(
+                        TAG,
+                        if (wentBack) "光柱 B 键 → 网页退回上一页" else "光柱 B 键忽略：网页已无上一页",
+                    )
                 } else if (renderer.videoActive && !panelPointerOnPanel) {
                     Log.i(TAG, "光柱 B 键忽略：光点在播放画面上（播放页操作走控制条）")
                 } else if (panelInputReady()) {

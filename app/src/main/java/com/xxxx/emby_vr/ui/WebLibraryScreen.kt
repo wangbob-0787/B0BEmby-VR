@@ -252,6 +252,31 @@ private fun GeckoWebView(
     )
 }
 
+/**
+ * 让网页自己点一下（火狐内核专用，2026-10-14）。
+ *
+ * 实测：火狐内核不处理程序合成的触摸/鼠标事件 —— dispatchTouchEvent 送进去毫无反应
+ * （日志证明事件确实到了它手里）。改成把**相对位置**（0~1）交给网页脚本，由它按自己的
+ * 视口换算成坐标、派发一套鼠标事件：先 mousemove（网页播放器的控制条是鼠标一动才浮出来的），
+ * 再 mousedown / mouseup / click。用相对坐标是为了绕开像素与缩放的差异。
+ */
+private fun clickViaScript(session: org.mozilla.geckoview.GeckoSession, u: Float, v: Float) {
+    val js = """
+        (function(u, v) {
+          var x = Math.round(u * window.innerWidth), y = Math.round(v * window.innerHeight);
+          var el = document.elementFromPoint(x, y);
+          if (!el) { return 'none'; }
+          var o = {bubbles: true, cancelable: true, clientX: x, clientY: y, view: window};
+          el.dispatchEvent(new MouseEvent('mousemove', o));
+          el.dispatchEvent(new MouseEvent('mousedown', o));
+          el.dispatchEvent(new MouseEvent('mouseup', o));
+          el.dispatchEvent(new MouseEvent('click', o));
+          return el.tagName;
+        })($u, $v)
+    """.trimIndent()
+    runCatching { session.evaluateJS(js) }
+}
+
 @Composable
 private fun WebPageForSite(site: Int) {
     val context = LocalContext.current
@@ -606,6 +631,16 @@ private fun WebPageForSite(site: Int) {
                 val u = (px - r.left) / r.width
                 val v = (py - r.top) / r.height
                 if (u in 0f..1f && v in 0f..1f) {
+                    /*
+                     * 火狐内核不认程序合成的触摸/鼠标事件（2026-10-14 实测：日志显示点击
+                     * 确实送到了它手里，网页一点反应没有）—— 改成把相对位置交给网页脚本，
+                     * 让它自己派发一套鼠标事件。系统网页视图那条路保持原来的合成事件。
+                     */
+                    val gs = geckoSessionRef
+                    if (gs != null && customView == null) {
+                        clickViaScript(gs, u, v)
+                        return@handler true
+                    }
                     val x = (u * wv.width).coerceIn(0f, (wv.width - 1).toFloat())
                     val y = (v * wv.height).coerceIn(0f, (wv.height - 1).toFloat())
                     val now = SystemClock.uptimeMillis()
