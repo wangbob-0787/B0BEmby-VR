@@ -164,6 +164,20 @@ android {
     }
 }
 
+/*
+ * 火狐内核（GeckoView）依赖 kotlin-stdlib 2.3.20，而本项目的 Kotlin 编译器是 2.0.21 ——
+ * 不锁回来的话 Gradle 会挑 2.3.20，编译期直接报
+ * 「Module was compiled with an incompatible version of Kotlin（metadata 2.3.0 > 2.0.0）」（run 505 实测）。
+ * 内核那边用到的标准库接口都是老 API，锁到项目版本即可。
+ */
+configurations.all {
+    resolutionStrategy {
+        force("org.jetbrains.kotlin:kotlin-stdlib:2.0.21")
+        force("org.jetbrains.kotlin:kotlin-stdlib-jdk7:2.0.21")
+        force("org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.0.21")
+    }
+}
+
 dependencies {
     implementation(libs.openxr.loader)
     implementation(libs.androidx.core.ktx)
