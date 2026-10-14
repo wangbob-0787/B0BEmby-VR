@@ -289,6 +289,11 @@ private fun GeckoWebView(
             val runtime = org.mozilla.geckoview.GeckoRuntime.getDefault(ctx)
             /* 面板上正在显示的窗口；开新窗口时要更新它（事件必须发给正在显示的那个） */
             var panelView: org.mozilla.geckoview.GeckoView? = null
+            /*
+             * 最近一个"自己起了加载"的窗口。
+             * 新窗口到底由内核加载、还是要我们兜底载入，看这个就够（见 onNewSession 里的说明）。
+             */
+            var loadingSession: org.mozilla.geckoview.GeckoSession? = null
 
             /*
              * 造一个网页窗口：设置全按电脑版来，接上「新窗口」与「加载进度」两个回调。
@@ -343,11 +348,27 @@ private fun GeckoWebView(
                          * 重复设置不该让整个界面崩掉。
                          */
                         android.os.Handler(android.os.Looper.getMainLooper()).post {
-                            val v = panelView
-                            runCatching { v?.setSession(next) }
-                            runCatching { v?.tag = next }
+                            val v = panelView ?: return@post
+                            runCatching { v.setSession(next) }
+                            runCatching { v.tag = next }
+                            /*
+                             * 外层（B 键返回、摇杆滚动、离开时的收尾）认的是 onReady 送出去的引用 ——
+                             * 换了新窗口却不更新它，代价是 run 523 实测的两处回归：
+                             *   B 键退回的是已经不显示的旧窗口（看着"返回不管用"）、
+                             *   离开网页页时关掉的也是旧窗口 → 新窗口的 B站视频在 Emby 播放时还在响。
+                             */
+                            runCatching { onReady(v, next) }
                             if (!uri.startsWith("about:")) {
-                                runCatching { next.loadUri(uri) }
+                                /*
+                                 * 兜底：内核若没自己起加载，1.2 秒后替它加载一次。
+                                 * **不无条件抢着加载** —— 内核与我们的两次载入撞在一起，
+                                 * 正是"页面只开一半""腾讯播放页视频不出来"和误报"请检查网络连接"的来源。
+                                 */
+                                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                    if (loadingSession !== next) {
+                                        runCatching { next.loadUri(uri) }
+                                    }
+                                }, 1200L)
                             }
                         }
                         return org.mozilla.geckoview.GeckoResult.fromValue(next)
@@ -361,6 +382,11 @@ private fun GeckoWebView(
                  * 「正在加载」在发起加载时由外层置位，这里只负责收尾（成功=撤提示，失败=换提示）。
                  */
                 s.progressDelegate = object : org.mozilla.geckoview.GeckoSession.ProgressDelegate {
+                    /* 记下"谁起了加载"：新窗口的兜底载入靠它判断（见 onNewSession） */
+                    override fun onPageStart(ss: org.mozilla.geckoview.GeckoSession, url: String) {
+                        loadingSession = ss
+                    }
+
                     override fun onPageStop(ss: org.mozilla.geckoview.GeckoSession, success: Boolean) {
                         /*
                          * 只有"当前显示的那个窗口"的收尾才动提示。
