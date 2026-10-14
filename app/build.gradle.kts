@@ -188,11 +188,17 @@ dependencies {
      * 火狐内核（2026-10-14 父亲定）。
      *
      * 头显系统自带的网页视图是 Chromium 90，B站这类重页面在它上面很慢；
-     * GeckoView 作为依赖打进应用，内核版本不受系统限制（当前 158）。
+     * GeckoView 作为依赖打进应用，内核版本不受系统限制。
+     *
+     * 版本选择：最新那版（158）要求 compileSdk 37，而 Google 的 SDK 仓库里
+     * platforms 最高只到 android-36（2026-10-14 实测 repository2-3.xml，
+     * build-tools 有 37.0.0 但平台没有）—— 用不了。退到 150（2026-04），
+     * 比系统那个 Chromium 90 仍然新出 60 个版本。
+     *
      * 只留 arm64 那套原生库（abiFilters 已限 arm64-v8a），体积可控。
      * 运行时可切：<files/vr-tuning.txt> 的 web_engine=1 启用，=0 回到系统网页视图。
      */
-    implementation("org.mozilla.geckoview:geckoview:158.0.20261007201254")
+    implementation("org.mozilla.geckoview:geckoview:150.0.20260415192539")
 
     implementation(libs.media3.exoplayer)
     // HLS 模块（2026-10-05 父亲实测：电视直播、部分转码片源"起播失败"，
