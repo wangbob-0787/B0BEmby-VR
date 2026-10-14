@@ -281,27 +281,12 @@ private fun GeckoWebView(
             },
         factory = { ctx ->
             /*
-             * 让网站把我们当**电脑**（父亲 2026-10-14）：换 UA 还不够 —— 头显本身带触摸屏，
-             * 网站一探到"这设备有多点触摸"就把我们归成平板，推平板版页面（腾讯、爱奇艺实测
-             * 就是这样）。关掉触摸事件这一条，网页读到的触摸点数就是 0。
-             * 我们点网页用的是鼠标方式，不受影响。
-             * 注意 create 只能调一次（第二次会抛），所以失败就退回 getDefault 取已建好的那个。
+             * 2026-10-14：这里曾试过给内核加启动参数
+             * （--setpref=dom.w3c_touch_events.enabled=0，想关掉触摸事件、让网站把我们当电脑），
+             * 父亲实测那一版包有问题 —— 撤掉，不动内核启动参数。
+             * "装成电脑"这条路只保留下面的 UA + 视口两处设置。
              */
-            val runtime = runCatching {
-                org.mozilla.geckoview.GeckoRuntime.create(
-                    ctx,
-                    org.mozilla.geckoview.GeckoRuntimeSettings.Builder()
-                        /*
-                         * 设置项得走启动参数（构建器上没有"设 pref"这个方法，run 518 编译报
-                         * Unresolved reference 'preferences'）。官方文档给的写法就是这个：
-                         * --setpref="名字=值"。
-                         */
-                        .arguments(
-                            arrayOf("--setpref=dom.w3c_touch_events.enabled=0"),
-                        )
-                        .build(),
-                )
-            }.getOrElse { org.mozilla.geckoview.GeckoRuntime.getDefault(ctx) }
+            val runtime = org.mozilla.geckoview.GeckoRuntime.getDefault(ctx)
             val session = org.mozilla.geckoview.GeckoSession()
             /*
              * 三站一律按电脑版走（父亲 2026-10-14 定：腾讯、爱奇艺也要电脑版）。
