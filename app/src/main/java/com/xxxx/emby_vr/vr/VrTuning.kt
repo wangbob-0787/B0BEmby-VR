@@ -98,12 +98,12 @@ object VrTuning {
     var webEngine: Int = 0
 
     /**
-     * 网页点击用哪种语义（2026-10-14）：0 = 鼠标（默认）、1 = 触摸。
+     * 网页点击用哪种语义：0 = 鼠标、1 = 触摸（**默认 1**）。
      *
-     * 火狐内核对程序合成的点击反应不一样，戴着切一下就知道它认哪种 ——
-     * 不用为了这个反复重装（写 `web_click=1` 即切触摸）。
+     * 2026-10-14 实测：火狐内核认"触摸"那一种 —— 切成 1 之后点搜索立刻有反应；
+     * 鼠标那一种不发火。戴着改 `web_click` 即可切换，不用重装。
      */
-    var webClickMode: Int = 0
+    var webClickMode: Int = 1
 
     /** 与原生 `nativeSetTuning` 的 key 一一对应 */
     const val KEY_SUPER_SAMPLE = 1

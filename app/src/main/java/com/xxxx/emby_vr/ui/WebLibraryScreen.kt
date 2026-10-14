@@ -113,9 +113,13 @@ private fun dispatchMouse(
     downTime: Long,
     eventMs: Long,
 ) {
-    val touchMode = com.xxxx.emby_vr.vr.VrTuning.webClickMode == 1
-    /* 触摸语义里没有"悬停"这回事，跳过（否则会被当成乱点的触摸） */
-    if (touchMode && action == MotionEvent.ACTION_HOVER_MOVE) return
+    /*
+     * 悬停一律走鼠标语义（网页播放器的控制条靠它浮出来），按下/抬起按 <web_click> 选：
+     * 0 = 鼠标、1 = 触摸。2026-10-14 实测：火狐内核认触摸那种（父亲点搜索有反应），
+     * 鼠标那种不发火（另一个原因见下面的 BUTTON_PRIMARY 修正）。
+     */
+    val hover = action == MotionEvent.ACTION_HOVER_MOVE
+    val touchMode = !hover && com.xxxx.emby_vr.vr.VrTuning.webClickMode == 1
     val props = arrayOf(
         MotionEvent.PointerProperties().apply {
             id = 0
@@ -130,9 +134,18 @@ private fun dispatchMouse(
             size = 1f
         },
     )
+    /*
+     * 鼠标左键必须显式带上 BUTTON_PRIMARY：按下时置位、抬起时清零。
+     * 原来这里一律传 0，等于告诉网页"没有任何按键按下" —— 光有坐标没有左键，
+     * 点击自然没反应（2026-10-14 复查事件构造时发现）。
+     */
+    val buttonState = when (action) {
+        MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> MotionEvent.BUTTON_PRIMARY
+        else -> 0
+    }
     val ev = MotionEvent.obtain(
         downTime, eventMs, action, 1, props, coords,
-        0, 0, 1f, 1f, 0, 0,
+        0, buttonState, 1f, 1f, 0, 0,
         if (touchMode) InputDevice.SOURCE_TOUCHSCREEN else InputDevice.SOURCE_MOUSE,
         0,
     )
