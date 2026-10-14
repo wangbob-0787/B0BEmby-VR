@@ -327,20 +327,29 @@ private fun GeckoWebView(
                         session: org.mozilla.geckoview.GeckoSession,
                         uri: String,
                     ): org.mozilla.geckoview.GeckoResult<org.mozilla.geckoview.GeckoSession>? {
-                        android.util.Log.i("B0BEmbyVR", "网页开新窗口，交给内核：$uri")
+                        android.util.Log.i("B0BEmbyVR", "网页开新窗口：$uri")
                         val next = newBrowserSession()
                         /*
-                         * 兜底：内核应当自己打开并加载这个新窗口；这里稍后补一次载入与引用更新，
-                         * 重复载入同一地址是幂等的（页面刷新一次），换来的是"万一内核没接"也不至于白屏。
-                         * 事件派发看 view.tag —— 不更新的话，光柱点击还会打给已经不显示的那个旧窗口。
+                         * 新窗口必须**由我们自己摆到面板上**。
+                         * run 523 实测：只把新窗口交回内核、自己不显示 → 三家站点点海报全部报
+                         * "请检查网络连接" —— 新窗口没人显示，它的加载自然以失败收场。
+                         *
+                         * 顺带补两件事：
+                         *   - view.tag 是事件派发认的"当前窗口"，不更新的话光柱点击还会打给已经不显示的旧窗口；
+                         *   - 只有真实地址才替它载入；about:blank 是页面先开空窗口、再由脚本往里面写地址，
+                         *     抢先载入空地址会把脚本随后要写的内容顶掉。
+                         *
+                         * setSession 用 runCatching 兜住：内核也可能已经接管并打开这个新窗口，
+                         * 重复设置不该让整个界面崩掉。
                          */
-                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                            runCatching { next.loadUri(uri) }
+                        android.os.Handler(android.os.Looper.getMainLooper()).post {
                             val v = panelView
-                            if (v != null && v.tag !== next) {
-                                runCatching { v.tag = next }
+                            runCatching { v?.setSession(next) }
+                            runCatching { v?.tag = next }
+                            if (!uri.startsWith("about:")) {
+                                runCatching { next.loadUri(uri) }
                             }
-                        }, 400L)
+                        }
                         return org.mozilla.geckoview.GeckoResult.fromValue(next)
                     }
                 }
@@ -353,6 +362,12 @@ private fun GeckoWebView(
                  */
                 s.progressDelegate = object : org.mozilla.geckoview.GeckoSession.ProgressDelegate {
                     override fun onPageStop(ss: org.mozilla.geckoview.GeckoSession, success: Boolean) {
+                        /*
+                         * 只有"当前显示的那个窗口"的收尾才动提示。
+                         * 被新窗口顶掉的旧窗口也会收尾（success=false，其实是加载被中止），
+                         * 不挡住的话，新页面明明是好的，面板上却挂着"请检查网络连接"。
+                         */
+                        if (panelView?.tag !== ss) return
                         onLoading(false)
                         onFailed(!success)
                     }
