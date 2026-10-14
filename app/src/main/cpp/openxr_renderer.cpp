@@ -53,6 +53,12 @@
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 
+/*
+ * PICO 专有扩展（2026-10-14）：合成层增强 / 固定注视点渲染 / 自适应分辨率。
+ * 定义逐字抄在 pico_ext.h 里（PICO Native XR SDK 3.0.0，见该文件头注释）。
+ */
+#include "pico_ext.h"
+
 #define TAG "B0BEmbyVR-Native"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
@@ -100,7 +106,20 @@ struct XrApi {
     PFN_xrEndFrame EndFrame = nullptr;
     PFN_xrLocateViews LocateViews = nullptr;
     PFN_xrGetOpenGLESGraphicsRequirementsKHR GetOpenGLESGraphicsRequirementsKHR = nullptr;
+    /* PICO 专有扩展（2026-10-14）：取不到只降级对应特性，不影响画面 */
+    PFN_xrCreateFoveationProfileFB CreateFoveationProfileFB = nullptr;
+    PFN_xrDestroyFoveationProfileFB DestroyFoveationProfileFB = nullptr;
+    PFN_xrUpdateSwapchainFB UpdateSwapchainFB = nullptr;
+    PFN_xrUpdateAdaptiveResolutionPICO UpdateAdaptiveResolutionPICO = nullptr;
 };
+
+/*
+ * 扩展可用性（createInstance 阶段探测填值，0 = 运行时没有这个扩展）：
+ * 全部只影响对应的新特性，任一为 0 都不影响原有画面。
+ */
+std::atomic<int> gExtLayerSettings{0};
+std::atomic<int> gExtFoveation{0};
+std::atomic<int> gExtAdaptiveRes{0};
 
 XrApi api;
 
@@ -114,6 +133,32 @@ bool fetch(XrInstance instance, const char *name, T &out) {
     }
     out = reinterpret_cast<T>(fn);
     return true;
+}
+
+/*
+ * PICO 专有扩展的函数入口（2026-10-14）。
+ *
+ * 取不到只是对应特性不生效（日志留痕），不影响画面 —— 和手柄输入那套同样的处理。
+ * 扩展是否已启用由 createInstance 阶段的探测决定，这里只在已启用时才去取。
+ */
+void fetchPicoExtras(XrInstance instance) {
+    if (gExtFoveation.load() != 0) {
+        const bool ok =
+                fetch(instance, "xrCreateFoveationProfileFB", api.CreateFoveationProfileFB) &&
+                fetch(instance, "xrUpdateSwapchainFB", api.UpdateSwapchainFB);
+        fetch(instance, "xrDestroyFoveationProfileFB", api.DestroyFoveationProfileFB);
+        if (!ok) {
+            gExtFoveation.store(0);
+            LOGW("注视点渲染不可用：扩展函数取不到，已关闭");
+        }
+    }
+    if (gExtAdaptiveRes.load() != 0) {
+        if (!fetch(instance, "xrUpdateAdaptiveResolutionPICO",
+                   api.UpdateAdaptiveResolutionPICO)) {
+            gExtAdaptiveRes.store(0);
+            LOGW("自适应分辨率不可用：扩展函数取不到，已关闭");
+        }
+    }
 }
 
 bool fetchAll(XrInstance instance) {
@@ -1695,6 +1740,36 @@ double gSwapWaitMs = 0.0;
  * 界面层每秒读一次，变化就调这里的接口。戴着调参比反复编译划算得多。
  */
 std::atomic<float> gSuperSample{1.25f};      // 双眼渲染超采样倍数（下次起播生效）
+/*
+ * PICO 官方合成层能力（父亲 2026-10-14：「1、2、3 都做」）。
+ *
+ * 背景：我们之前靠"把眼缓冲渲染分辨率乘 1.25 倍"提清晰度，像素一多 GPU 就吃紧，
+ * 而 GPU 吃紧正是黑纹（重投影）的根因。官方这三个能力都跑在合成器里，代价固定。
+ * 三个都能在 vr-tuning.txt 里改（layer_boost / foveation / adaptive_res）。
+ */
+std::atomic<int> gLayerBoost{7};      // 视频层增强：0关 1超采样 2超采样高 3锐化 4锐化高 5自适应锐化 6自适应锐化高 7超分辨率
+std::atomic<int> gFoveationLevel{2};  // 固定注视点渲染：0关 1低 2中 3高
+std::atomic<int> gAdaptiveRes{2};     // 自适应分辨率：0关 1高画质 2平衡 3省电
+XrFoveationProfileFB gFoveationProfile = XR_NULL_HANDLE;
+std::atomic<int> gAdaptiveLastW{0};   // 运行时回的建议分辨率（日志用）
+std::atomic<int> gAdaptiveLastH{0};
+
+/*
+ * 配置值 → 合成层增强位（0 = 不挂结构体，等于关）。
+ * 官方约束：同一个合成层只能开启其中一种，所以这里是单选不是叠加。
+ */
+XrLayerSettingsFlagsPICO layerBoostFlags(int mode) {
+    switch (mode) {
+        case 1: return XR_LAYER_SETTINGS_FIXED_FOVEATED_NORMAL_SUPER_SAMPLING_BIT_PICO;
+        case 2: return XR_LAYER_SETTINGS_FIXED_FOVEATED_QUALITY_SUPER_SAMPLING_BIT_PICO;
+        case 3: return XR_LAYER_SETTINGS_FIXED_FOVEATED_NORMAL_SHARPENING_BIT_PICO;
+        case 4: return XR_LAYER_SETTINGS_FIXED_FOVEATED_QUALITY_SHARPENING_BIT_PICO;
+        case 5: return XR_LAYER_SETTINGS_SELF_ADAPTIVE_NORMAL_SHARPENING_BIT_PICO;
+        case 6: return XR_LAYER_SETTINGS_SELF_ADAPTIVE_QUALITY_SHARPENING_BIT_PICO;
+        case 7: return XR_LAYER_SETTINGS_SUPER_RESOLUTION_BIT_PICO;
+        default: return 0;
+    }
+}
 std::atomic<int> gSwapWaitTimeoutMs{4};      // 等交换链图像超时（毫秒，可运行时调）
 std::atomic<int> gLayerMask{0x3F};            // bit0 视频 bit1 弹幕 bit2 logo bit3 海报墙 bit4 控制条 bit5 菜单
 /*
@@ -1914,16 +1989,63 @@ bool createInstance(VrContext &c) {
     androidInfo.applicationVM = c.jvm;
     androidInfo.applicationActivity = c.activity;
 
-    const char *exts[] = {
+    /*
+     * 先问运行时有哪些扩展，再决定要哪些（父亲 2026-10-14）。
+     * xrCreateInstance 只要有一个扩展名不被支持就整体失败，所以必须"先问再要"。
+     * 顺手把清单打进日志，实机核对用。
+     */
+    uint32_t extCount = 0;
+    std::vector<XrExtensionProperties> available;
+    if (XR_SUCCEEDED(xrEnumerateInstanceExtensionProperties(nullptr, 0, &extCount, nullptr)) &&
+        extCount > 0) {
+        available.resize(extCount, {XR_TYPE_EXTENSION_PROPERTIES});
+        if (XR_FAILED(xrEnumerateInstanceExtensionProperties(nullptr, extCount, &extCount,
+                                                             available.data()))) {
+            available.clear();
+        }
+    }
+    auto hasExt = [&available](const char *name) {
+        for (const auto &p : available) {
+            if (strcmp(p.extensionName, name) == 0) return true;
+        }
+        return false;
+    };
+    LOGI("运行时扩展：枚举到 %u 个%s", (unsigned) available.size(),
+         available.empty() ? "（枚举失败，新特性一律按不可用处理）" : "");
+
+    std::vector<const char *> exts = {
             XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME,
             XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME,
-            XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME,
     };
+    if (hasExt(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME)) {
+        exts.push_back(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME);
+    }
+
+    /* 合成层增强：超采样 / 锐化 / 超分辨率 */
+    gExtLayerSettings.store(hasExt(XR_PICO_LAYER_SETTINGS_EXTENSION_NAME) ? 1 : 0);
+    /* 固定注视点渲染：profile 扩展 + 等级配置 + 运行期改交换链状态，三个都得有 */
+    gExtFoveation.store((hasExt(XR_FB_FOVEATION_EXTENSION_NAME) &&
+                         hasExt(XR_FB_FOVEATION_CONFIGURATION_EXTENSION_NAME) &&
+                         hasExt(XR_FB_SWAPCHAIN_UPDATE_STATE_EXTENSION_NAME)) ? 1 : 0);
+    gExtAdaptiveRes.store(hasExt(XR_PICO_ADAPTIVE_RESOLUTION_EXTENSION_NAME) ? 1 : 0);
+
+    if (gExtLayerSettings.load()) exts.push_back(XR_PICO_LAYER_SETTINGS_EXTENSION_NAME);
+    if (gExtFoveation.load()) {
+        exts.push_back(XR_FB_FOVEATION_EXTENSION_NAME);
+        exts.push_back(XR_FB_FOVEATION_CONFIGURATION_EXTENSION_NAME);
+        exts.push_back(XR_FB_SWAPCHAIN_UPDATE_STATE_EXTENSION_NAME);
+    }
+    if (gExtAdaptiveRes.load()) exts.push_back(XR_PICO_ADAPTIVE_RESOLUTION_EXTENSION_NAME);
+
+    LOGI("PICO 能力探测：合成层增强 %s · 固定注视点 %s · 自适应分辨率 %s",
+         gExtLayerSettings.load() ? "有" : "无",
+         gExtFoveation.load() ? "有" : "无",
+         gExtAdaptiveRes.load() ? "有" : "无");
 
     XrInstanceCreateInfo ci{XR_TYPE_INSTANCE_CREATE_INFO};
     ci.next = &androidInfo;
-    ci.enabledExtensionCount = sizeof(exts) / sizeof(exts[0]);
-    ci.enabledExtensionNames = exts;
+    ci.enabledExtensionCount = (uint32_t) exts.size();
+    ci.enabledExtensionNames = exts.data();
     ci.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
     snprintf(ci.applicationInfo.applicationName, XR_MAX_APPLICATION_NAME_SIZE, "B0BEmby VR");
     snprintf(ci.applicationInfo.engineName, XR_MAX_ENGINE_NAME_SIZE, "B0BEmby");
@@ -1937,6 +2059,9 @@ bool createInstance(VrContext &c) {
          XR_VERSION_MAJOR(XR_CURRENT_API_VERSION),
          XR_VERSION_MINOR(XR_CURRENT_API_VERSION),
          XR_VERSION_PATCH(XR_CURRENT_API_VERSION));
+
+    /* 探测通过后再取函数入口（取不到就关掉对应特性） */
+    fetchPicoExtras(c.instance);
 
     /*
      * 取刷新率切换函数（父亲 2026-10-06：学 PICO 自带播放器，播放时把刷新率降到 72Hz）。
@@ -2098,6 +2223,60 @@ bool createSwapchains(VrContext &c) {
         LOGI("眼 %zu：swapchain %dx%d，%u 张图", i, eye.width, eye.height, imgCount);
     }
     return true;
+}
+
+/*
+ * 固定注视点渲染（2026-10-14）：视野中心全分辨率、边缘降采样，省 GPU。
+ *
+ * PICO 4 没有眼动追踪，走固定注视点（dynamic = 等级随负载自动调）。
+ * 失败不影响画面：日志留痕、特性自动关闭。
+ * 只在渲染线程（帧循环内）调用 —— 和其他 XR/GL 调用同线程才安全。
+ */
+void setupFoveation(VrContext &c) {
+    if (gExtFoveation.load() == 0 || api.CreateFoveationProfileFB == nullptr ||
+        api.UpdateSwapchainFB == nullptr) {
+        return;
+    }
+    const int lvl = gFoveationLevel.load();
+    if (lvl <= 0) {
+        LOGI("注视点渲染：配置为关，跳过");
+        return;
+    }
+    /*
+     * 旧 profile 不销毁：交换链可能还引用它，运行中销毁有踩空风险。
+     * profile 是个极小的对象，重复建几个的代价可以忽略。
+     */
+    XrFoveationLevelProfileCreateInfoFB lci{XR_TYPE_FOVEATION_LEVEL_PROFILE_CREATE_INFO_FB};
+    lci.level = (lvl >= 3) ? XR_FOVEATION_LEVEL_HIGH_FB
+                           : ((lvl == 2) ? XR_FOVEATION_LEVEL_MEDIUM_FB
+                                         : XR_FOVEATION_LEVEL_LOW_FB);
+    lci.verticalOffset = 0.f;
+    lci.dynamic = XR_FOVEATION_DYNAMIC_LEVEL_ENABLED_FB;
+
+    XrFoveationProfileCreateInfoFB pci{XR_TYPE_FOVEATION_PROFILE_CREATE_INFO_FB};
+    pci.next = &lci;
+    XrFoveationProfileFB profile = XR_NULL_HANDLE;
+    XrResult r = api.CreateFoveationProfileFB(c.session, &pci, &profile);
+    if (XR_FAILED(r)) {
+        LOGE("注视点渲染：建 profile 失败（xrResult=%d），特性关闭", (int) r);
+        gExtFoveation.store(0);
+        return;
+    }
+    gFoveationProfile = profile;
+    int applied = 0;
+    for (auto &eye : c.eyes) {
+        XrSwapchainStateFoveationFB st{XR_TYPE_SWAPCHAIN_STATE_FOVEATION_FB};
+        st.flags = 0;
+        st.profile = profile;
+        const XrResult sr = api.UpdateSwapchainFB(
+                eye.handle, reinterpret_cast<const XrSwapchainStateBaseHeaderFB *>(&st));
+        if (XR_SUCCEEDED(sr)) {
+            applied++;
+        } else {
+            LOGE("注视点渲染：应用到眼交换链失败（xrResult=%d）", (int) sr);
+        }
+    }
+    LOGI("注视点渲染：等级 %d，已应用到 %d/%zu 只眼", lvl, applied, c.eyes.size());
 }
 
 bool createSession(VrContext &c) {
@@ -4651,6 +4830,16 @@ void frameLoop(VrContext &c) {
     videoQuad.space = c.localSpace;
     videoQuad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
     videoQuad.layerFlags = 0;
+    /*
+     * 视频层增强（2026-10-14）：超采样 / 锐化 / 超分辨率交给系统合成器做。
+     * 必须和 videoQuad 同生命周期（都建在循环外），每帧只改 flags —— 建在循环里
+     * 会让 next 指向已经出栈的结构体，运行时读到脏内存。
+     * 视频层的交换链是视频原分辨率（我们只处理到 1280 宽），却被放大到几米宽的
+     * 银幕上显示，放大这一步正是超分辨率最有价值的地方。
+     */
+    XrLayerSettingsPICO videoLayerSettings{XR_TYPE_LAYER_SETTINGS_PICO};
+    videoLayerSettings.next = nullptr;
+    videoLayerSettings.layerFlags = 0;
 
     /*
      * 弹幕独立合成层（父亲 2026-10-06 晚定）：摆在银幕前方一点点，与视频层
@@ -4699,6 +4888,9 @@ void frameLoop(VrContext &c) {
                                                         nullptr, nullptr, nullptr};
 
     int loggedFrames = 0;
+    /* 自适应分辨率上报节流（每 90 帧一次）与注视点等级变更检测 */
+    int adaptiveFrameCounter = 0;
+    int foveationAppliedLevel = -1;
     /*
      * 帧时间统计（父亲 2026-10-08：「头一转动场景就抖」）。
      *
@@ -5121,6 +5313,14 @@ void frameLoop(VrContext &c) {
             videoQuad.subImage.imageRect.offset = {0, 0};
             videoQuad.subImage.imageRect.extent = {c.videoLayer.width, c.videoLayer.height};
             videoQuad.subImage.imageArrayIndex = 0;
+            /* 每帧按配置刷新视频层增强模式（同一层只能开一种，见 pico_ext.h 头注释） */
+            const XrLayerSettingsFlagsPICO boost = layerBoostFlags(gLayerBoost.load());
+            if (gExtLayerSettings.load() != 0 && boost != 0) {
+                videoLayerSettings.layerFlags = boost;
+                videoQuad.next = &videoLayerSettings;
+            } else {
+                videoQuad.next = nullptr;
+            }
             layerPtrs[layerCount++] =
                     reinterpret_cast<const XrCompositionLayerBaseHeader *>(&videoQuad);
         }
@@ -5242,6 +5442,44 @@ void frameLoop(VrContext &c) {
         fei.layerCount = layerCount;
         fei.layers = layerCount > 0 ? layerPtrs : nullptr;
         const XrResult endRes = api.EndFrame(c.session, &fei);
+
+        /*
+         * 自适应分辨率（2026-10-14）：把当前渲染分辨率与偏好交给运行时，运行时回一份
+         * 建议值。这一版只上报 + 记录（建议值变化才打日志）—— 按建议值动态重建交换链
+         * 要连带重建 FBO 与深度附件，风险高，等看到实机建议值再决定要不要做。
+         */
+        if (gExtAdaptiveRes.load() != 0 && api.UpdateAdaptiveResolutionPICO != nullptr &&
+            !c.eyes.empty()) {
+            adaptiveFrameCounter++;
+            if ((adaptiveFrameCounter % 90) == 1) {
+                XrExtent2Di cur{c.eyes[0].width, c.eyes[0].height};
+                XrExtent2Di last{0, 0};
+                const int mode = gAdaptiveRes.load();
+                const XrAdaptiveResolutionSettingPICO setting =
+                        (mode >= 3) ? XR_ADAPTIVE_RESOLUTION_SETTING_POWER_SAVING_PICO
+                                    : ((mode == 2) ? XR_ADAPTIVE_RESOLUTION_SETTING_BALANCED_PICO
+                                                   : XR_ADAPTIVE_RESOLUTION_SETTING_HIGH_QUALITY_PICO);
+                const XrResult ar =
+                        api.UpdateAdaptiveResolutionPICO(c.session, setting, cur, &last);
+                if (XR_SUCCEEDED(ar)) {
+                    if (last.width != gAdaptiveLastW.load() ||
+                        last.height != gAdaptiveLastH.load()) {
+                        LOGI("自适应分辨率：档 %d，当前 %dx%d，运行时建议 %dx%d",
+                             mode, cur.width, cur.height, last.width, last.height);
+                        gAdaptiveLastW.store(last.width);
+                        gAdaptiveLastH.store(last.height);
+                    }
+                } else {
+                    LOGW("自适应分辨率：调用失败（xrResult=%d）", (int) ar);
+                }
+            }
+        }
+
+        /* 注视点等级戴着改了 → 重建 profile 并重新应用（渲染线程内，安全） */
+        if (gExtFoveation.load() != 0 && gFoveationLevel.load() != foveationAppliedLevel) {
+            foveationAppliedLevel = gFoveationLevel.load();
+            setupFoveation(c);
+        }
 
         /* 帧时间统计（见循环上方的注释） */
         {
@@ -5412,6 +5650,7 @@ void renderThreadMain() {
         if (!createSession(c)) break;
         if (!setupInput(c)) LOGW("手柄输入不可用，继续渲染（诊断阶段先保画面）");
         if (!createSwapchains(c)) break;
+        setupFoveation(c);
 
         /*
          * 三张画面纹理：**必须在 EGL 上下文就绪之后、本线程里建**（2026-10-05 晚修）。
@@ -5908,6 +6147,26 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
                                                    jint key, jfloat value) {
     (void) env;
     switch (key) {
+        /* PICO 官方合成层能力（2026-10-14 父亲定：1、2、3 都做） */
+        case 29:
+            if (value >= 0.f && value <= 7.f) {
+                gLayerBoost.store((int) value);
+                LOGI("调参 → 视频层增强 %d（0关 1超采样 2超采样高 3锐化 4锐化高 5自适应锐化 "
+                     "6自适应锐化高 7超分辨率）", (int) value);
+            }
+            break;
+        case 30:
+            if (value >= 0.f && value <= 3.f) {
+                gFoveationLevel.store((int) value);
+                LOGI("调参 → 固定注视点渲染 等级 %d（0关 1低 2中 3高，下帧生效）", (int) value);
+            }
+            break;
+        case 31:
+            if (value >= 0.f && value <= 3.f) {
+                gAdaptiveRes.store((int) value);
+                LOGI("调参 → 自适应分辨率 档 %d（0关 1高画质 2平衡 3省电）", (int) value);
+            }
+            break;
         case 1:
             if (value >= 0.6f && value <= 2.0f) {
                 gSuperSample.store(value);

@@ -43,6 +43,9 @@ import java.io.File
  * | `min_screen_gap` | 最近允许走到离银幕多少米（再走近场景整体后推，不许穿过；0.3~5.0） | 1.0 |
  * | `follow_viewer` | 控制条/菜单/海报墙是否跟随观影位（1=跟，0=固定；2026-10-10） | 1 |
  * | `ray_scale` | 光柱粗细倍率（1.0 = 银幕 3.2 米时代的角粗细） | 0.35 |
+ * | `layer_boost` | 视频层增强（PICO 合成器）：0=关 1=超采样 2=超采样高 3=锐化 4=锐化高 5=自适应锐化 6=自适应锐化高 7=超分辨率（同一层只能开一种） | 7 |
+ * | `foveation` | 固定注视点渲染：0=关 1=低 2=中 3=高（边缘降精度换 GPU） | 2 |
+ * | `adaptive_res` | 自适应分辨率：0=关 1=高画质 2=平衡 3=省电（这版只上报与记录建议值） | 2 |
  * | `mpv_<属性>` | 透传给内核的同名属性，例如 `mpv_tone-mapping=spline` | — |
  * | `cmd` | 直接执行一条内核命令，例如 `cmd=screenshot-to-file <路径> video`（导出渲染画面，校色用） | — |
  *
@@ -121,6 +124,12 @@ object VrTuning {
     const val KEY_SEAT_UP = 27
     /** 座椅前后（米，2026-10-10：正 = 人往椅子前部坐） */
     const val KEY_SEAT_FWD = 28
+    /** 视频层增强（2026-10-14）：交给 PICO 合成器做超采样/锐化/超分辨率 */
+    const val KEY_LAYER_BOOST = 29
+    /** 固定注视点渲染（2026-10-14）：视野中心不动，边缘降精度换 GPU */
+    const val KEY_FOVEATION = 30
+    /** 自适应分辨率（2026-10-14）：档位越高越省 GPU */
+    const val KEY_ADAPTIVE_RES = 31
 
     /** 上次应用的配置原文，只有变化才动手（避免每秒重复设置） */
     private var lastRaw: Map<String, String> = emptyMap()
@@ -235,6 +244,18 @@ object VrTuning {
         raw["refresh_hz"]?.toFloatOrNull()?.let {
             VrNative.setTuning(KEY_REFRESH_HZ, it)
             applied += if (it <= 0f) "刷新率档 自动" else "刷新率档 ${it.toInt()}Hz"
+        }
+        raw["layer_boost"]?.toFloatOrNull()?.let {
+            VrNative.setTuning(KEY_LAYER_BOOST, it)
+            applied += "视频层增强 ${it.toInt()}"
+        }
+        raw["foveation"]?.toFloatOrNull()?.let {
+            VrNative.setTuning(KEY_FOVEATION, it)
+            applied += "注视点等级 ${it.toInt()}"
+        }
+        raw["adaptive_res"]?.toFloatOrNull()?.let {
+            VrNative.setTuning(KEY_ADAPTIVE_RES, it)
+            applied += "自适应分辨率 ${it.toInt()}"
         }
         raw["sync_mode"]?.toFloatOrNull()?.let {
             VrNative.setTuning(KEY_SYNC_MODE, it)
