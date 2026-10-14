@@ -340,13 +340,18 @@ private fun GeckoWebView(
                 ): org.mozilla.geckoview.GeckoResult<org.mozilla.geckoview.GeckoSession>? {
                     android.util.Log.i("B0BEmbyVR", "网页要开新窗口，就地打开：$uri")
                     /*
-                     * 返回"当前这个会话"，等于告诉内核：新窗口就用它，导航由内核自己做。
-                     *
-                     * 原来这里是"我自己 loadUri 之后返回 null" —— 返回空等于"忽略这次新窗口
-                     * 请求"，内核随后还会按自己的流程收尾，两下撞在一起就是"页面只开了一半"
-                     * （父亲 2026-10-14 实测：腾讯跳过去不加载内容）。交给内核就没有这个冲突。
+                     * 这里只能回答两种话："给一个新会话"（必须是**没打开过**的会话）或"不提供"。
+                     * run 519 试过把当前这个已打开的会话还回去，内核立刻断言崩溃：
+                     *   AssertionError: Must use an unopened GeckoSession instance
+                     *   （父亲实测：点 B站/腾讯 海报闪退）
+                     * 所以答案只能是"不提供"，再自己把地址接到当前页面上。
+                     * 导航要回主线程发（这个回调不在主线程），否则会被新窗口的收尾打断 ——
+                     * 父亲 2026-10-14 遇到的"跳过去只开了一半"就是这个。
                      */
-                    return org.mozilla.geckoview.GeckoResult.fromValue(session)
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        runCatching { session.loadUri(uri) }
+                    }
+                    return null
                 }
             }
             session.progressDelegate = object : org.mozilla.geckoview.GeckoSession.ProgressDelegate {
