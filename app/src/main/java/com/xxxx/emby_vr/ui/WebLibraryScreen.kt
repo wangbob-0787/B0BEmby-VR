@@ -291,7 +291,14 @@ private fun GeckoWebView(
                 org.mozilla.geckoview.GeckoRuntime.create(
                     ctx,
                     org.mozilla.geckoview.GeckoRuntimeSettings.Builder()
-                        .preferences(mapOf("dom.w3c_touch_events.enabled" to 0))
+                        /*
+                         * 设置项得走启动参数（构建器上没有"设 pref"这个方法，run 518 编译报
+                         * Unresolved reference 'preferences'）。官方文档给的写法就是这个：
+                         * --setpref="名字=值"。
+                         */
+                        .arguments(
+                            arrayOf("--setpref=dom.w3c_touch_events.enabled=0"),
+                        )
                         .build(),
                 )
             }.getOrElse { org.mozilla.geckoview.GeckoRuntime.getDefault(ctx) }
