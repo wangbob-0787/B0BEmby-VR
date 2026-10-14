@@ -287,64 +287,81 @@ private fun GeckoWebView(
              * "装成电脑"这条路只保留下面的 UA + 视口两处设置。
              */
             val runtime = org.mozilla.geckoview.GeckoRuntime.getDefault(ctx)
-            val session = org.mozilla.geckoview.GeckoSession()
+            /* 面板上正在显示的窗口；开新窗口时要更新它（事件必须发给正在显示的那个） */
+            var panelView: org.mozilla.geckoview.GeckoView? = null
+
             /*
-             * 三站一律按电脑版走（父亲 2026-10-14 定：腾讯、爱奇艺也要电脑版）。
-             *
-             * 火狐内核这里光换 UA 不够 —— 它有两个独立的"模式"开关，默认都是手机档，
-             * 页面照样按移动端排版：
-             *   userAgentMode = DESKTOP   告诉页面"我是电脑"
-             *   viewportMode  = DESKTOP   让页面按电脑宽度排版（网页宽度撑满大银幕靠这个）
-             * UA 再覆盖成与系统网页视图那条路完全相同的一串，两边口径一致。
+             * 造一个网页窗口：设置全按电脑版来，接上「新窗口」与「加载进度」两个回调。
+             * 递归调用 —— 新窗口里再点开新窗口时，仍旧走同一套设置。
              */
-            session.settings.userAgentMode =
-                org.mozilla.geckoview.GeckoSessionSettings.USER_AGENT_MODE_DESKTOP
-            session.settings.viewportMode =
-                org.mozilla.geckoview.GeckoSessionSettings.VIEWPORT_MODE_DESKTOP
-            session.settings.userAgentOverride = desktopUa
-            session.open(runtime)
-            /*
-             * 进度回调只接「加载结束」这一个。
-             *
-             * run 507 实测：onPageStart 的 URL 参数在接口里是非空 String，写成 String?
-             * 会被判「overrides nothing」；而它的默认实现本来就够用 ——
-             * 「正在加载」在发起加载时由外层置位，这里只负责收尾（成功=撤提示，失败=换提示）。
-             */
-            /*
-             * 新窗口就地打开（父亲 2026-10-14 实测：按钮能点、摇杆能滚，只有海报点不动）。
-             *
-             * 海报卡片这类链接大多是"在新窗口打开"（target=_blank）。火狐内核遇到这种会
-             * 找宿主程序要一个新会话，我们没接 —— 点击就石沉大海，看着就是"点不动"。
-             * 就地打开：仍用当前这一个会话，页面直接过去。
-             */
-            session.navigationDelegate = object :
-                org.mozilla.geckoview.GeckoSession.NavigationDelegate {
-                override fun onNewSession(
-                    session: org.mozilla.geckoview.GeckoSession,
-                    uri: String,
-                ): org.mozilla.geckoview.GeckoResult<org.mozilla.geckoview.GeckoSession>? {
-                    android.util.Log.i("B0BEmbyVR", "网页要开新窗口，就地打开：$uri")
+            fun newBrowserSession(): org.mozilla.geckoview.GeckoSession {
+                val s = org.mozilla.geckoview.GeckoSession()
+                /*
+                 * 三站一律按电脑版走（父亲 2026-10-14 定：腾讯、爱奇艺也要电脑版）。
+                 *
+                 * 火狐内核这里光换 UA 不够 —— 它有两个独立的"模式"开关，默认都是手机档，
+                 * 页面照样按移动端排版：
+                 *   userAgentMode = DESKTOP   告诉页面"我是电脑"
+                 *   viewportMode  = DESKTOP   让页面按电脑宽度排版（网页宽度撑满大银幕靠这个）
+                 * UA 再覆盖成与系统网页视图那条路完全相同的一串，两边口径一致。
+                 */
+                s.settings.userAgentMode =
+                    org.mozilla.geckoview.GeckoSessionSettings.USER_AGENT_MODE_DESKTOP
+                s.settings.viewportMode =
+                    org.mozilla.geckoview.GeckoSessionSettings.VIEWPORT_MODE_DESKTOP
+                s.settings.userAgentOverride = desktopUa
+                s.navigationDelegate = object :
+                    org.mozilla.geckoview.GeckoSession.NavigationDelegate {
                     /*
-                     * 这里只能回答两种话："给一个新会话"（必须是**没打开过**的会话）或"不提供"。
-                     * run 519 试过把当前这个已打开的会话还回去，内核立刻断言崩溃：
-                     *   AssertionError: Must use an unopened GeckoSession instance
-                     *   （父亲实测：点 B站/腾讯 海报闪退）
-                     * 所以答案只能是"不提供"，再自己把地址接到当前页面上。
-                     * 导航要回主线程发（这个回调不在主线程），否则会被新窗口的收尾打断 ——
-                     * 父亲 2026-10-14 遇到的"跳过去只开了一半"就是这个。
+                     * 「在新窗口打开」= 交一个**全新的、还没打开过**的窗口给内核，由内核接过去显示。
+                     *
+                     * 前两次的教训（2026-10-14）：
+                     *   run 519：把当前这个已经打开过的窗口交回去 → 内核断言崩溃
+                     *            （父亲实测：点 B站/腾讯 海报闪退）；
+                     *   run 517/521：回答「不提供」再自己把地址接到当前页面上 → 内核的收尾与我们
+                     *            的发起的载入撞车，页面只开了一半（父亲实测：腾讯跳过去不加载内容；
+                     *            B站 / 爱奇艺 不受影响 —— 它们的海报是原页跳转，根本不走这条路）。
+                     * 「给内核一个新的未打开窗口」这条是官方示例的写法，前两次都没试到。
                      */
-                    android.os.Handler(android.os.Looper.getMainLooper()).post {
-                        runCatching { session.loadUri(uri) }
+                    override fun onNewSession(
+                        session: org.mozilla.geckoview.GeckoSession,
+                        uri: String,
+                    ): org.mozilla.geckoview.GeckoResult<org.mozilla.geckoview.GeckoSession>? {
+                        android.util.Log.i("B0BEmbyVR", "网页开新窗口，交给内核：$uri")
+                        val next = newBrowserSession()
+                        /*
+                         * 兜底：内核应当自己打开并加载这个新窗口；这里稍后补一次载入与引用更新，
+                         * 重复载入同一地址是幂等的（页面刷新一次），换来的是"万一内核没接"也不至于白屏。
+                         * 事件派发看 view.tag —— 不更新的话，光柱点击还会打给已经不显示的那个旧窗口。
+                         */
+                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                            runCatching { next.loadUri(uri) }
+                            val v = panelView
+                            if (v != null && v.tag !== next) {
+                                runCatching { v.tag = next }
+                            }
+                        }, 400L)
+                        return org.mozilla.geckoview.GeckoResult.fromValue(next)
                     }
-                    return null
                 }
-            }
-            session.progressDelegate = object : org.mozilla.geckoview.GeckoSession.ProgressDelegate {
-                override fun onPageStop(s: org.mozilla.geckoview.GeckoSession, success: Boolean) {
-                    onLoading(false)
-                    onFailed(!success)
+                /*
+                 * 进度回调只接「加载结束」这一个。
+                 *
+                 * run 507 实测：onPageStart 的 URL 参数在接口里是非空 String，写成 String?
+                 * 会被判「overrides nothing」；而它的默认实现本来就够用 ——
+                 * 「正在加载」在发起加载时由外层置位，这里只负责收尾（成功=撤提示，失败=换提示）。
+                 */
+                s.progressDelegate = object : org.mozilla.geckoview.GeckoSession.ProgressDelegate {
+                    override fun onPageStop(ss: org.mozilla.geckoview.GeckoSession, success: Boolean) {
+                        onLoading(false)
+                        onFailed(!success)
+                    }
                 }
+                return s
             }
+
+            val session = newBrowserSession()
+            session.open(runtime)
             val view = org.mozilla.geckoview.GeckoView(ctx)
             view.setSession(session)
             /*
@@ -352,6 +369,7 @@ private fun GeckoWebView(
              * 会在组合期改状态（轻则警告重则崩），所以引用交给 update 再回调。
              */
             view.tag = session
+            panelView = view
             session.loadUri(url)
             view
         },
