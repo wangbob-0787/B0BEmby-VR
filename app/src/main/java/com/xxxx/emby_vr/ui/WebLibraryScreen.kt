@@ -280,7 +280,21 @@ private fun GeckoWebView(
                 onRect(Rect(p.x, p.y, p.x + coords.size.width, p.y + coords.size.height))
             },
         factory = { ctx ->
-            val runtime = org.mozilla.geckoview.GeckoRuntime.getDefault(ctx)
+            /*
+             * 让网站把我们当**电脑**（父亲 2026-10-14）：换 UA 还不够 —— 头显本身带触摸屏，
+             * 网站一探到"这设备有多点触摸"就把我们归成平板，推平板版页面（腾讯、爱奇艺实测
+             * 就是这样）。关掉触摸事件这一条，网页读到的触摸点数就是 0。
+             * 我们点网页用的是鼠标方式，不受影响。
+             * 注意 create 只能调一次（第二次会抛），所以失败就退回 getDefault 取已建好的那个。
+             */
+            val runtime = runCatching {
+                org.mozilla.geckoview.GeckoRuntime.create(
+                    ctx,
+                    org.mozilla.geckoview.GeckoRuntimeSettings.Builder()
+                        .preferences(mapOf("dom.w3c_touch_events.enabled" to 0))
+                        .build(),
+                )
+            }.getOrElse { org.mozilla.geckoview.GeckoRuntime.getDefault(ctx) }
             val session = org.mozilla.geckoview.GeckoSession()
             /*
              * 三站一律按电脑版走（父亲 2026-10-14 定：腾讯、爱奇艺也要电脑版）。
@@ -318,8 +332,14 @@ private fun GeckoWebView(
                     uri: String,
                 ): org.mozilla.geckoview.GeckoResult<org.mozilla.geckoview.GeckoSession>? {
                     android.util.Log.i("B0BEmbyVR", "网页要开新窗口，就地打开：$uri")
-                    runCatching { session.loadUri(uri) }
-                    return null
+                    /*
+                     * 返回"当前这个会话"，等于告诉内核：新窗口就用它，导航由内核自己做。
+                     *
+                     * 原来这里是"我自己 loadUri 之后返回 null" —— 返回空等于"忽略这次新窗口
+                     * 请求"，内核随后还会按自己的流程收尾，两下撞在一起就是"页面只开了一半"
+                     * （父亲 2026-10-14 实测：腾讯跳过去不加载内容）。交给内核就没有这个冲突。
+                     */
+                    return org.mozilla.geckoview.GeckoResult.fromValue(session)
                 }
             }
             session.progressDelegate = object : org.mozilla.geckoview.GeckoSession.ProgressDelegate {
