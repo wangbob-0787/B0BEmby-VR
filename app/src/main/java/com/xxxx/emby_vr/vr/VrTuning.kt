@@ -89,6 +89,14 @@ object VrTuning {
      */
     var danmakuCanvasW: Int = 1920
 
+    /**
+     * 网页内核选择（2026-10-14 父亲定）：0 = 系统自带网页视图（Chromium 90，B站慢），
+     * 1 = 打进应用里的火狐内核（GeckoView 158）。
+     *
+     * 运行时切换：改了这一个数，网页那一块下一秒按新引擎整块重建，不用重装。
+     */
+    var webEngine: Int = 0
+
     /** 与原生 `nativeSetTuning` 的 key 一一对应 */
     const val KEY_SUPER_SAMPLE = 1
     const val KEY_SWAP_WAIT_MS = 2
@@ -321,6 +329,10 @@ object VrTuning {
         raw["danmaku_w"]?.toIntOrNull()?.let {
             danmakuCanvasW = it.coerceIn(960, 3840)
             applied += "弹幕画布宽度 $danmakuCanvasW"
+        }
+        raw["web_engine"]?.toIntOrNull()?.let {
+            webEngine = if (it == 1) 1 else 0
+            applied += "网页内核 ${if (webEngine == 1) "火狐" else "系统"}"
         }
         flag("finish_before_texupdate", KEY_FINISH_BEFORE_TEXUPDATE, "取帧前先 glFinish")
         raw["screen_width"]?.toFloatOrNull()?.let {

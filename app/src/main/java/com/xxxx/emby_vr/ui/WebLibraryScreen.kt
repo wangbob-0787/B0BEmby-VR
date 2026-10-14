@@ -175,6 +175,62 @@ fun WebLibraryScreen(
 }
 
 @SuppressLint("SetJavaScriptEnabled")
+/**
+ * 火狐内核的网页块（2026-10-14 父亲定）。
+ *
+ * 为什么要它：头显系统自带的网页视图停在 Chromium 90，B站这类重页面渲染慢；
+ * GeckoView 是把火狐的内核当依赖打进应用，内核版本跟着 Mozilla 走，不受系统限制。
+ *
+ * 这一版只负责「把页面显示出来 + 报告加载状态」，点击/悬停/滚动在下一版接上。
+ */
+@Composable
+private fun GeckoWebView(
+    url: String,
+    desktopUa: String,
+    onRect: (Rect) -> Unit,
+    onReady: (org.mozilla.geckoview.GeckoView, org.mozilla.geckoview.GeckoSession) -> Unit,
+    onLoading: (Boolean) -> Unit,
+    onFailed: (Boolean) -> Unit,
+) {
+    AndroidView(
+        modifier = Modifier
+            .fillMaxSize()
+            .onGloballyPositioned { coords ->
+                val p = coords.positionInRoot()
+                onRect(Rect(p.x, p.y, p.x + coords.size.width, p.y + coords.size.height))
+            },
+        factory = { ctx ->
+            val runtime = org.mozilla.geckoview.GeckoRuntime.getDefault(ctx)
+            val session = org.mozilla.geckoview.GeckoSession()
+            /* 三站都要电脑版排版：UA 覆盖成桌面版（与系统网页视图那条路同一套口径） */
+            session.settings.userAgentOverride = desktopUa
+            session.open(runtime)
+            session.progressDelegate = object : org.mozilla.geckoview.ProgressDelegate {
+                override fun onPageStart(s: org.mozilla.geckoview.GeckoSession, u: String?) {
+                    onLoading(true)
+                }
+
+                override fun onPageStop(s: org.mozilla.geckoview.GeckoSession, success: Boolean) {
+                    onLoading(false)
+                    onFailed(!success)
+                }
+            }
+            val view = org.mozilla.geckoview.GeckoView(ctx)
+            view.setSession(session)
+            /*
+             * session 借 view.tag 带出去：factory 跑在布局阶段，在那里改 Compose 状态
+             * 会在组合期改状态（轻则警告重则崩），所以引用交给 update 再回调。
+             */
+            view.tag = session
+            session.loadUri(url)
+            view
+        },
+        update = { v ->
+            (v.tag as? org.mozilla.geckoview.GeckoSession)?.let { onReady(v, it) }
+        },
+    )
+}
+
 @Composable
 private fun WebPageForSite(site: Int) {
     val context = LocalContext.current
@@ -201,6 +257,9 @@ private fun WebPageForSite(site: Int) {
     }
 
     var webRef by remember { mutableStateOf<WebView?>(null) }
+    /* 火狐内核那两个（2026-10-14）：view 用来发事件，session 用来加载与前进后退 */
+    var geckoRef by remember { mutableStateOf<org.mozilla.geckoview.GeckoView?>(null) }
+    var geckoSessionRef by remember { mutableStateOf<org.mozilla.geckoview.GeckoSession?>(null) }
     /* 网页要"全屏"时，它把自己的播放视图塞进这个容器里（腾讯的「全屏」按钮走这条路） */
     var fullscreen by remember { mutableStateOf(false) }
     var customContainer by remember { mutableStateOf<android.widget.FrameLayout?>(null) }
@@ -236,6 +295,28 @@ private fun WebPageForSite(site: Int) {
     val lastArrowAt = remember { longArrayOf(0L) }
 
     Box(modifier = Modifier.fillMaxSize().background(Color(0xFF0B0C0F))) {
+        /*
+         * 两套网页内核（2026-10-14 父亲定）。
+         *
+         * 系统自带的网页视图停在 Chromium 90，B站这类重页面在它上面渲染慢；
+         * 火狐内核（GeckoView）作为依赖打进本应用，版本不受系统限制。
+         * 运行时可切：改 <files/vr-tuning.txt> 的 web_engine（0=系统，1=火狐），
+         * 下一秒整块网页按新引擎重建，不用重装、不用重起播。
+         */
+        val webEngine = com.xxxx.emby_vr.vr.VrTuning.webEngine
+        if (webEngine == 1) {
+            GeckoWebView(
+                url = url,
+                desktopUa = desktopUa,
+                onRect = { webRect = it },
+                onReady = { v, s ->
+                    geckoRef = v
+                    geckoSessionRef = s
+                },
+                onLoading = { loading = it },
+                onFailed = { loadFailed = it },
+            )
+        } else {
         AndroidView(
                 modifier = Modifier
                     .fillMaxSize()
@@ -430,6 +511,7 @@ private fun WebPageForSite(site: Int) {
                 },
                 update = { webRef = it },
             )
+        }   /* 结束「系统网页视图」分支；火狐分支见上方 if（2026-10-14） */
         /*
          * 网页全屏用的容器：平时藏着，网页要全屏时把它的播放视图挂进来铺满整块画面。
          * 它排在网页之后 = 画在最上层。

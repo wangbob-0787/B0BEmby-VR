@@ -184,6 +184,16 @@ dependencies {
     implementation(libs.zxing.core)
     implementation(libs.nanohttpd)
 
+    /*
+     * 火狐内核（2026-10-14 父亲定）。
+     *
+     * 头显系统自带的网页视图是 Chromium 90，B站这类重页面在它上面很慢；
+     * GeckoView 作为依赖打进应用，内核版本不受系统限制（当前 158）。
+     * 只留 arm64 那套原生库（abiFilters 已限 arm64-v8a），体积可控。
+     * 运行时可切：<files/vr-tuning.txt> 的 web_engine=1 启用，=0 回到系统网页视图。
+     */
+    implementation("org.mozilla.geckoview:geckoview:158.0.20261007201254")
+
     implementation(libs.media3.exoplayer)
     // HLS 模块（2026-10-05 父亲实测：电视直播、部分转码片源"起播失败"，
     // 日志 ClassNotFoundException: media3.exoplayer.hls.HlsMediaSource$Factory
