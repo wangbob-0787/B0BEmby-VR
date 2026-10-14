@@ -5172,12 +5172,15 @@ void frameLoop(VrContext &c) {
             c.panelShown.load() && c.panelHasFrame.load() && c.panelTex != 0) {
             if (buildQuadLayer(c, c.panelLayer, 1920, 1080, "海报墙")) {
                 /*
-                 * 内容没换新帧就不重画（2026-10-14 父亲定）：海报墙挂在墙上不动时，
-                 * 每帧重画整张 1920×1080 是白花的 GPU —— 沿用交换链里已有的内容即可。
+                 * 2026-10-14 **撤销**"内容没变就跳过重画"：父亲装上实测——海报墙会抖动。
+                 *
+                 * 原因：交换链是多张图轮转的，跳过绘制后 acquire 到的那张内容与上一帧
+                 * 提交的并非同一张，各图之间内容有差异时，肉眼就是抖动。
+                 * 相关零件（gPanelFrameChanged / skipDrawIfWritten / writtenIdx）保留备用，
+                 * 这里不再启用 —— 要重返这条优化，得先做"一次写满所有交换链图"的预填。
                  */
-                const bool panelChanged = gPanelFrameChanged.exchange(false);
-                c.panelLayer.submitted = renderQuadLayer(c, c.panelLayer, c.panelTex,
-                                                        false, !panelChanged);
+                gPanelFrameChanged.store(false);
+                c.panelLayer.submitted = renderQuadLayer(c, c.panelLayer, c.panelTex, false);
             }
         }
 

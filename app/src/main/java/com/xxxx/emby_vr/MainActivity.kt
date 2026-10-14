@@ -148,7 +148,7 @@ class MainActivity : ComponentActivity() {
      * 弹幕画布高度（父亲 2026-10-07）：宽度固定 2560，高度随影片比例。
      * 起播拿到真实比例后由 [applyDanmakuCanvas] 改写。
      */
-    private var danmakuCanvasH = 1440
+    private var danmakuCanvasH = 1080
 
     /** 已应用的弹幕画布宽度（0=还没应用过）；与开关值不同就重建画布 */
     private var danmakuCanvasW = 0
@@ -1348,10 +1348,25 @@ class MainActivity : ComponentActivity() {
         runOnUiThread {
             runCatching {
                 danmakuPainter?.stop()
+                /*
+                 * 画布尺寸以运行时开关为准（2026-10-14）。
+                 *
+                 * 这里必须同时把尺寸推给原生：弹幕层的交换链是按原生那个值建的，
+                 * 画笔与它不一致就会被拉伸。原来画笔写死 2560、原生层也 2560，
+                 * 但银幕本身才 1920 —— 白多三分之一像素。现在两边都用开关值。
+                 */
+                val wantW = com.xxxx.emby_vr.vr.VrTuning.danmakuCanvasW
+                val wantH = Math.round(wantW.toFloat() / lastDanmakuAspect).coerceIn(600, 3200)
+                if (wantW != danmakuCanvasW || wantH != danmakuCanvasH) {
+                    danmakuCanvasW = wantW
+                    danmakuCanvasH = wantH
+                    com.xxxx.emby_vr.vr.VrNative.setDanmakuCanvas(wantW, wantH)
+                    Log.i(TAG, "弹幕画布尺寸校准 → ${wantW}x$wantH（开关 $wantW）")
+                }
                 val painter = com.xxxx.emby_vr.danmaku.DanmakuSurfacePainter(
                     context = this,
                     surfaceTexture = st,
-                    widthPx = 2560,
+                    widthPx = danmakuCanvasW,
                     heightPx = danmakuCanvasH,
                     positionProvider = { danmakuPosForPainter() },
                     scale = danmakuScale,
