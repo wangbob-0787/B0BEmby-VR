@@ -304,6 +304,24 @@ private fun GeckoWebView(
              * 会被判「overrides nothing」；而它的默认实现本来就够用 ——
              * 「正在加载」在发起加载时由外层置位，这里只负责收尾（成功=撤提示，失败=换提示）。
              */
+            /*
+             * 新窗口就地打开（父亲 2026-10-14 实测：按钮能点、摇杆能滚，只有海报点不动）。
+             *
+             * 海报卡片这类链接大多是"在新窗口打开"（target=_blank）。火狐内核遇到这种会
+             * 找宿主程序要一个新会话，我们没接 —— 点击就石沉大海，看着就是"点不动"。
+             * 就地打开：仍用当前这一个会话，页面直接过去。
+             */
+            session.navigationDelegate = object :
+                org.mozilla.geckoview.GeckoSession.NavigationDelegate {
+                override fun onNewSession(
+                    session: org.mozilla.geckoview.GeckoSession,
+                    uri: String,
+                ): org.mozilla.geckoview.GeckoResult<org.mozilla.geckoview.GeckoSession>? {
+                    android.util.Log.i("B0BEmbyVR", "网页要开新窗口，就地打开：$uri")
+                    runCatching { session.loadUri(uri) }
+                    return null
+                }
+            }
             session.progressDelegate = object : org.mozilla.geckoview.GeckoSession.ProgressDelegate {
                 override fun onPageStop(s: org.mozilla.geckoview.GeckoSession, success: Boolean) {
                     onLoading(false)
