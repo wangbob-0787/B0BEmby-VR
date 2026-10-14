@@ -205,12 +205,14 @@ private fun GeckoWebView(
             /* 三站都要电脑版排版：UA 覆盖成桌面版（与系统网页视图那条路同一套口径） */
             session.settings.userAgentOverride = desktopUa
             session.open(runtime)
-            /* 进度回调挂在 GeckoSession 的嵌套接口上（run 506 实测：写成包级接口解析不到） */
+            /*
+             * 进度回调只接「加载结束」这一个。
+             *
+             * run 507 实测：onPageStart 的 URL 参数在接口里是非空 String，写成 String?
+             * 会被判「overrides nothing」；而它的默认实现本来就够用 ——
+             * 「正在加载」在发起加载时由外层置位，这里只负责收尾（成功=撤提示，失败=换提示）。
+             */
             session.progressDelegate = object : org.mozilla.geckoview.GeckoSession.ProgressDelegate {
-                override fun onPageStart(s: org.mozilla.geckoview.GeckoSession, u: String?) {
-                    onLoading(true)
-                }
-
                 override fun onPageStop(s: org.mozilla.geckoview.GeckoSession, success: Boolean) {
                     onLoading(false)
                     onFailed(!success)
