@@ -205,7 +205,8 @@ private fun GeckoWebView(
             /* 三站都要电脑版排版：UA 覆盖成桌面版（与系统网页视图那条路同一套口径） */
             session.settings.userAgentOverride = desktopUa
             session.open(runtime)
-            session.progressDelegate = object : org.mozilla.geckoview.ProgressDelegate {
+            /* 进度回调挂在 GeckoSession 的嵌套接口上（run 506 实测：写成包级接口解析不到） */
+            session.progressDelegate = object : org.mozilla.geckoview.GeckoSession.ProgressDelegate {
                 override fun onPageStart(s: org.mozilla.geckoview.GeckoSession, u: String?) {
                     onLoading(true)
                 }
