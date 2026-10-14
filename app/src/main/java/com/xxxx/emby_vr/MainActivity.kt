@@ -149,6 +149,12 @@ class MainActivity : ComponentActivity() {
      * 起播拿到真实比例后由 [applyDanmakuCanvas] 改写。
      */
     private var danmakuCanvasH = 1440
+
+    /** 已应用的弹幕画布宽度（0=还没应用过）；与开关值不同就重建画布 */
+    private var danmakuCanvasW = 0
+
+    /** 上次用的画面比例：运行时改画布宽度时按它重算高度 */
+    private var lastDanmakuAspect = 16f / 9f
     private var danmakuView: com.xxxx.emby_vr.danmaku.DanmakuView? = null
 
     /** 当前这一集解析好的弹幕（菜单里把弹幕关掉时先留着，开回来直接用） */
@@ -319,6 +325,13 @@ class MainActivity : ComponentActivity() {
         override fun run() {
             refreshPosBase()
             updateDrawnSubtitle()
+            /*
+             * 弹幕画布宽度是运行时开关（2026-10-14 父亲定）：文件里改了立刻重建画布，
+             * 不用重起播。比的是"已应用值"，没变就什么都不做。
+             */
+            if (com.xxxx.emby_vr.vr.VrTuning.danmakuCanvasW != danmakuCanvasW) {
+                applyDanmakuCanvas(lastDanmakuAspect)
+            }
             handler.postDelayed(this, 250L)
         }
     }
@@ -945,14 +958,19 @@ class MainActivity : ComponentActivity() {
     /**
      * 弹幕画布比例跟影片走（父亲 2026-10-07 定的第二条方案）。
      *
-     * 宽度钉死 2560，高度 = 2560 ÷ 画面比例：画布比例与银幕完全一致，
-     * 弹幕、片名 logo、字幕、快进快退进度条都不再被拉伸，也不会跑到画面外。
+     * 宽度取运行时开关 [com.xxxx.emby_vr.vr.VrTuning.danmakuCanvasW]：默认 **1920**，
+     * 与银幕本身的 1920 宽对齐（2026-10-14 父亲定：原来钉死 2560，比银幕还大三分之一，
+     * 多出来的像素在 VR 里看不见，却每帧都要整张拷进图层）。
+     * 高度 = 宽度 ÷ 画面比例：画布比例与银幕完全一致，弹幕、片名 logo、字幕、
+     * 快进快退进度条都不再被拉伸，也不会跑到画面外。
      */
     private fun applyDanmakuCanvas(aspect: Float) {
         if (aspect <= 0.2f || aspect > 6f) return
-        val w = 2560
-        val h = Math.round(w / aspect).coerceIn(600, 3200)
-        if (h == danmakuCanvasH) return
+        lastDanmakuAspect = aspect
+        val w = com.xxxx.emby_vr.vr.VrTuning.danmakuCanvasW
+        val h = Math.round(w.toFloat() / aspect).coerceIn(600, 3200)
+        if (w == danmakuCanvasW && h == danmakuCanvasH) return
+        danmakuCanvasW = w
         danmakuCanvasH = h
         com.xxxx.emby_vr.vr.VrNative.setDanmakuCanvas(w, h)
         danmakuPainter?.resizeTo(w, h)
@@ -1353,7 +1371,7 @@ class MainActivity : ComponentActivity() {
                 painter.view.setSubtitle(subtitleNow)
                 painter.start()
                 danmakuPainter = painter
-                Log.i(TAG, "弹幕画笔已启动（2560x$danmakuCanvasH，开关=${if (danmakuOn) "开" else "关"}）")
+                Log.i(TAG, "弹幕画笔已启动（${danmakuCanvasW}x$danmakuCanvasH，开关=${if (danmakuOn) "开" else "关"}）")
             }.onFailure { t ->
                 Log.e(TAG, "弹幕画笔启动失败: ${t.javaClass.simpleName}: ${t.message}")
             }

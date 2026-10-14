@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <chrono>
 #include <functional>
+#include <memory>
 #include <cstring>
 #include <string>
 #include <cstring>
@@ -1054,6 +1055,13 @@ struct VideoLayerBuf {
     int32_t width = 0, height = 0;   // 缓冲尺寸 = 视频分辨率（上限 3840×2160）
     std::vector<XrSwapchainImageOpenGLESKHR> images;
     std::vector<GLuint> fbos;
+    /**
+     * 每张交换链图**是否写过内容**（2026-10-14 海报墙省 GPU 用）。
+     *
+     * 内容没换新帧时会跳过重画，但交换链是多张轮转的：acquire 到一张
+     * 从没写过的图，跳过就等于显示空白。所以跳之前先查这张写没写过。
+     */
+    std::vector<char> writtenIdx;
     uint32_t index = 0;              // 本帧写好待提交的那张
 };
 
@@ -1471,8 +1479,10 @@ struct VrContext {
      * 反过来锁死 16:9 又会让弹幕跑出画面。现在画布比例 = 影片比例，
      * 层尺寸仍跟银幕（等宽），两边一致 → 不变形也不出画面。
      */
-    std::atomic<int32_t> danmakuPxW{2560};
-    std::atomic<int32_t> danmakuPxH{1440};
+    // 弹幕画布默认尺寸（2026-10-14 父亲定）：1920 与银幕对齐（原 2560 比银幕还大三分之一，
+    // 多出来的像素在 VR 里看不见、却每帧要整张拷进图层）。Java 侧起播时按影片比例推真实值覆盖。
+    std::atomic<int32_t> danmakuPxW{1920};
+    std::atomic<int32_t> danmakuPxH{1080};
     /**
      * 画面亮度/对比度/饱和度（父亲 2026-10-06：「调图像的功能都加上」）。
      */
@@ -1729,6 +1739,14 @@ std::thread gThread;
  */
 std::function<void()> gPanelUpdate;
 std::function<void()> gVideoUpdate;
+/**
+ * 海报墙内容是否换了新帧（2026-10-14）。
+ *
+ * Java 侧面板是「Compose → 虚拟显示器 → SurfaceTexture」，内容不变时不来新帧；
+ * 取帧回调每次比对 SurfaceTexture 的 timestamp，变了才置位。渲染循环用它决定
+ * 要不要把整张 1920×1080 重画进图层（静止时省掉这一趟）。
+ */
+std::atomic<bool> gPanelFrameChanged{true};
 
 /** 统计周期内所有交换链等待（双眼/视频层/弹幕层）累计毫秒，读后清零 */
 double gSwapWaitMs = 0.0;
@@ -4474,6 +4492,7 @@ bool buildQuadLayer(VrContext &c, VideoLayerBuf &L, int32_t w, int32_t h,
         return false;
     }
     L.fbos.assign(imgCount, 0);
+    L.writtenIdx.assign(imgCount, 0);   // 一张都没写过
     for (uint32_t k = 0; k < imgCount; k++) {
         glGenFramebuffers(1, &L.fbos[k]);
         glBindFramebuffer(GL_FRAMEBUFFER, L.fbos[k]);
@@ -4614,13 +4633,28 @@ bool acquireWritableImage(VrContext &c, VideoLayerBuf &L, uint32_t *outIdx,
 }
 
 bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
-                     bool videoLayerPass) {
+                     bool videoLayerPass, bool skipDrawIfWritten = false) {
     // 视频层铺满整块、不透明；弹幕层是一层透明浮层，清屏必须透明，
     // 否则它会变成一块黑板把视频整个盖住（父亲 2026-10-06 晚实测现象）。
     if (!L.built || tex == 0 || c.program == 0) return false;
 
     uint32_t idx = 0;
     if (!acquireWritableImage(c, L, &idx, videoLayerPass)) return false;
+
+    /*
+     * 内容没换新帧就跳过重画（2026-10-14 父亲定：海报墙挂在墙上不动也在每帧重画）。
+     *
+     * 这一帧仍然 acquire 一张图并交回运行时（合规），该张图**上一次写的内容**原样留下 ——
+     * 内容本来就没变，视觉完全一致；省掉的是 clear + 整张 blit 那段 GPU 工作。
+     * 从没写过内容的图不能跳（会显示空白），所以先查 writtenIdx。
+     */
+    if (skipDrawIfWritten && idx < L.writtenIdx.size() && L.writtenIdx[idx]) {
+        XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+        if (XR_FAILED(api.ReleaseSwapchainImage(L.handle, &ri))) return false;
+        L.index = idx;
+        return true;
+    }
+    if (idx < L.writtenIdx.size()) L.writtenIdx[idx] = 1;
 
     ensureVideoLayerQuad(c);
 
@@ -5137,7 +5171,13 @@ void frameLoop(VrContext &c) {
         if (c.panelLayerOk && (gLayerMask.load() & 8) != 0 && c.panelActive.load() &&
             c.panelShown.load() && c.panelHasFrame.load() && c.panelTex != 0) {
             if (buildQuadLayer(c, c.panelLayer, 1920, 1080, "海报墙")) {
-                c.panelLayer.submitted = renderQuadLayer(c, c.panelLayer, c.panelTex, false);
+                /*
+                 * 内容没换新帧就不重画（2026-10-14 父亲定）：海报墙挂在墙上不动时，
+                 * 每帧重画整张 1920×1080 是白花的 GPU —— 沿用交换链里已有的内容即可。
+                 */
+                const bool panelChanged = gPanelFrameChanged.exchange(false);
+                c.panelLayer.submitted = renderQuadLayer(c, c.panelLayer, c.panelTex,
+                                                        false, !panelChanged);
             }
         }
 
@@ -5739,7 +5779,8 @@ GLuint genOesTexture() {
  */
 jobject makeOesSurface(JNIEnv *env, GLuint tex, std::function<void()> &out,
                        std::atomic<bool> &hasFrame, const char *what,
-                       bool notifyFirstFrame = false) {
+                       bool notifyFirstFrame = false,
+                       std::atomic<bool> *outChanged = nullptr) {
     jclass stClass = env->FindClass("android/graphics/SurfaceTexture");
     if (stClass == nullptr) {
         LOGE("%s：找不到 SurfaceTexture 类", what);
@@ -5761,7 +5802,9 @@ jobject makeOesSurface(JNIEnv *env, GLuint tex, std::function<void()> &out,
     hasFrame = false;
     auto *globalRef = env->NewGlobalRef(local);
     env->DeleteLocalRef(local);   // 原生线程的局部引用不会自动回收，自己删掉
-    out = [globalRef, updateTexImage, getTimestamp, &hasFrame, what, notifyFirstFrame]() {
+    auto lastTs = std::make_shared<jlong>(-1);
+    out = [globalRef, updateTexImage, getTimestamp, &hasFrame, what, notifyFirstFrame,
+           outChanged, lastTs]() {
         JNIEnv *e = nullptr;
         if (g.jvm == nullptr) return;
         if (g.jvm->GetEnv(reinterpret_cast<void **>(&e), JNI_VERSION_1_6) != JNI_OK ||
@@ -5770,6 +5813,19 @@ jobject makeOesSurface(JNIEnv *env, GLuint tex, std::function<void()> &out,
         }
         e->CallVoidMethod(globalRef, updateTexImage);
         clearJavaException(e, what);
+        /*
+         * 面板内容换没换新帧（2026-10-14）：SurfaceTexture 的 timestamp 只在真来了
+         * 新帧时才变，没新帧时重复查拿到的是同一个值 —— 拿它当"内容变了"的判据，
+         * 静止挂在墙上的海报墙就不必每帧重画整张图。
+         */
+        if (outChanged != nullptr && getTimestamp != nullptr) {
+            const jlong tsNow = e->CallLongMethod(globalRef, getTimestamp);
+            clearJavaException(e, "getTimestamp(换帧检测)");
+            if (tsNow != *lastTs) {
+                *lastTs = tsNow;
+                outChanged->store(true);
+            }
+        }
         if (!hasFrame.load() && getTimestamp != nullptr) {
             const jlong ts = e->CallLongMethod(globalRef, getTimestamp);
             clearJavaException(e, "getTimestamp");
@@ -5866,7 +5922,8 @@ bool createOesSources(VrContext &c) {
         return false;
     }
 
-    c.panelSt = makeOesSurface(env, c.panelTex, gPanelUpdate, c.panelHasFrame, "面板");
+    c.panelSt = makeOesSurface(env, c.panelTex, gPanelUpdate, c.panelHasFrame, "面板",
+                               false, &gPanelFrameChanged);
     c.videoSt = makeOesSurface(env, c.videoTex, gVideoUpdate, c.videoHasFrame, "播放画面", true);
     c.osdSt = makeOesSurface(env, c.osdTex, gOsdUpdate, c.osdHasFrame, "控制条");
     c.menuSt = makeOesSurface(env, c.menuTex, gMenuUpdate, c.menuHasFrame, "展开菜单");

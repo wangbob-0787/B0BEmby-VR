@@ -80,6 +80,15 @@ object VrTuning {
     @Volatile
     var videoSurfaceMaxW: Int = 1280
 
+    /**
+     * 弹幕画布宽度（2026-10-14 父亲定）：默认 **1920**，与银幕本身的 1920 宽对齐。
+     *
+     * 原来写死 2560 —— 比银幕还大三分之一，多出来的像素在 VR 里根本看不见，
+     * 却要在每帧被整张拷进图层。降到 1920 后画布像素少四成四，弹幕清晰度不变。
+     * 改这一个数不用重起播，播放中每秒轮询一次、立刻重建画布。
+     */
+    var danmakuCanvasW: Int = 1920
+
     /** 与原生 `nativeSetTuning` 的 key 一一对应 */
     const val KEY_SUPER_SAMPLE = 1
     const val KEY_SWAP_WAIT_MS = 2
@@ -308,6 +317,10 @@ object VrTuning {
         raw["video_surface_w"]?.toIntOrNull()?.let {
             videoSurfaceMaxW = it
             applied += "视频处理宽度上限 $it（0=1920）"
+        }
+        raw["danmaku_w"]?.toIntOrNull()?.let {
+            danmakuCanvasW = it.coerceIn(960, 3840)
+            applied += "弹幕画布宽度 $danmakuCanvasW"
         }
         flag("finish_before_texupdate", KEY_FINISH_BEFORE_TEXUPDATE, "取帧前先 glFinish")
         raw["screen_width"]?.toFloatOrNull()?.let {
