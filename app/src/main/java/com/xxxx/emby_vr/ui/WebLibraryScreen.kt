@@ -98,18 +98,28 @@ private const val HIDE_APP_BANNER_JS = """
  * 用 SOURCE_MOUSE 而不是默认的触摸：网页播放器的控制条是"鼠标一活动才浮出来"的，
  * 光柱停着不动时它一直藏着 —— 表现就是"网页全屏后点不到控制按钮"。
  * 移动类事件走 dispatchGenericMotionEvent，按下/抬起走 dispatchTouchEvent。
+ *
+ * 【2026-10-14 修正】原来每次事件都拿"自己的时间"同时当按下时间和事件时间，
+ * 一次点击的 DOWN 与 UP 于是按下时间不同 —— 网页那边把它当成两个不相干的手势，
+ * 点击就丢了。现在按下时间统一（DOWN / MOVE / UP 共用一个），只在事件时间上递增，
+ * 并在抬起前补一次 MOVE（真实点击就是这个序列）。
+ * 另加运行时开关 <web_click>：0 = 鼠标语义、1 = 触摸语义，戴着切一下就知道哪种认。
  */
 private fun dispatchMouse(
     wv: android.view.View,
     action: Int,
     x: Float,
     y: Float,
-    whenMs: Long,
+    downTime: Long,
+    eventMs: Long,
 ) {
+    val touchMode = com.xxxx.emby_vr.vr.VrTuning.webClickMode == 1
+    /* 触摸语义里没有"悬停"这回事，跳过（否则会被当成乱点的触摸） */
+    if (touchMode && action == MotionEvent.ACTION_HOVER_MOVE) return
     val props = arrayOf(
         MotionEvent.PointerProperties().apply {
             id = 0
-            toolType = MotionEvent.TOOL_TYPE_MOUSE
+            toolType = if (touchMode) MotionEvent.TOOL_TYPE_FINGER else MotionEvent.TOOL_TYPE_MOUSE
         },
     )
     val coords = arrayOf(
@@ -121,8 +131,10 @@ private fun dispatchMouse(
         },
     )
     val ev = MotionEvent.obtain(
-        whenMs, whenMs, action, 1, props, coords,
-        0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_MOUSE, 0,
+        downTime, eventMs, action, 1, props, coords,
+        0, 0, 1f, 1f, 0, 0,
+        if (touchMode) InputDevice.SOURCE_TOUCHSCREEN else InputDevice.SOURCE_MOUSE,
+        0,
     )
     runCatching {
         if (action == MotionEvent.ACTION_HOVER_MOVE) {
@@ -250,31 +262,6 @@ private fun GeckoWebView(
             (v.tag as? org.mozilla.geckoview.GeckoSession)?.let { onReady(v, it) }
         },
     )
-}
-
-/**
- * 让网页自己点一下（火狐内核专用，2026-10-14）。
- *
- * 实测：火狐内核不处理程序合成的触摸/鼠标事件 —— dispatchTouchEvent 送进去毫无反应
- * （日志证明事件确实到了它手里）。改成把**相对位置**（0~1）交给网页脚本，由它按自己的
- * 视口换算成坐标、派发一套鼠标事件：先 mousemove（网页播放器的控制条是鼠标一动才浮出来的），
- * 再 mousedown / mouseup / click。用相对坐标是为了绕开像素与缩放的差异。
- */
-private fun clickViaScript(session: org.mozilla.geckoview.GeckoSession, u: Float, v: Float) {
-    val js = """
-        (function(u, v) {
-          var x = Math.round(u * window.innerWidth), y = Math.round(v * window.innerHeight);
-          var el = document.elementFromPoint(x, y);
-          if (!el) { return 'none'; }
-          var o = {bubbles: true, cancelable: true, clientX: x, clientY: y, view: window};
-          el.dispatchEvent(new MouseEvent('mousemove', o));
-          el.dispatchEvent(new MouseEvent('mousedown', o));
-          el.dispatchEvent(new MouseEvent('mouseup', o));
-          el.dispatchEvent(new MouseEvent('click', o));
-          return el.tagName;
-        })($u, $v)
-    """.trimIndent()
-    runCatching { session.evaluateJS(js) }
 }
 
 @Composable
@@ -631,16 +618,6 @@ private fun WebPageForSite(site: Int) {
                 val u = (px - r.left) / r.width
                 val v = (py - r.top) / r.height
                 if (u in 0f..1f && v in 0f..1f) {
-                    /*
-                     * 火狐内核不认程序合成的触摸/鼠标事件（2026-10-14 实测：日志显示点击
-                     * 确实送到了它手里，网页一点反应没有）—— 改成把相对位置交给网页脚本，
-                     * 让它自己派发一套鼠标事件。系统网页视图那条路保持原来的合成事件。
-                     */
-                    val gs = geckoSessionRef
-                    if (gs != null && customView == null) {
-                        clickViaScript(gs, u, v)
-                        return@handler true
-                    }
                     val x = (u * wv.width).coerceIn(0f, (wv.width - 1).toFloat())
                     val y = (v * wv.height).coerceIn(0f, (wv.height - 1).toFloat())
                     val now = SystemClock.uptimeMillis()
@@ -650,10 +627,11 @@ private fun WebPageForSite(site: Int) {
                          * 网页播放器的控制条是**鼠标一活动才浮出来**的，光柱停着不动时
                          * 它一直藏着 —— 看着就是"按钮点不到"。先晃两下再点。
                          */
-                        dispatchMouse(wv, MotionEvent.ACTION_HOVER_MOVE, x, y, now)
-                        dispatchMouse(wv, MotionEvent.ACTION_HOVER_MOVE, x + 2f, y + 1f, now + 16)
-                        dispatchMouse(wv, MotionEvent.ACTION_DOWN, x, y, now + 32)
-                        dispatchMouse(wv, MotionEvent.ACTION_UP, x, y, now + 72)
+                        dispatchMouse(wv, MotionEvent.ACTION_HOVER_MOVE, x, y, now, now)
+                        dispatchMouse(wv, MotionEvent.ACTION_HOVER_MOVE, x + 2f, y + 1f, now, now + 16)
+                        dispatchMouse(wv, MotionEvent.ACTION_DOWN, x, y, now + 32, now + 32)
+                        dispatchMouse(wv, MotionEvent.ACTION_MOVE, x, y, now + 32, now + 48)
+                        dispatchMouse(wv, MotionEvent.ACTION_UP, x, y, now + 32, now + 72)
                     }
                     return@handler true
                 }
@@ -686,12 +664,14 @@ private fun WebPageForSite(site: Int) {
             lastHoverX[0] = x
             lastHoverY[0] = y
             runCatching {
+                val hoverNow = SystemClock.uptimeMillis()
                 dispatchMouse(
                     wv,
                     MotionEvent.ACTION_HOVER_MOVE,
                     x,
                     y,
-                    SystemClock.uptimeMillis(),
+                    hoverNow,
+                    hoverNow,
                 )
             }
         }

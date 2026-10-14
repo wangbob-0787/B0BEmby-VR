@@ -97,6 +97,14 @@ object VrTuning {
      */
     var webEngine: Int = 0
 
+    /**
+     * 网页点击用哪种语义（2026-10-14）：0 = 鼠标（默认）、1 = 触摸。
+     *
+     * 火狐内核对程序合成的点击反应不一样，戴着切一下就知道它认哪种 ——
+     * 不用为了这个反复重装（写 `web_click=1` 即切触摸）。
+     */
+    var webClickMode: Int = 0
+
     /** 与原生 `nativeSetTuning` 的 key 一一对应 */
     const val KEY_SUPER_SAMPLE = 1
     const val KEY_SWAP_WAIT_MS = 2
@@ -333,6 +341,10 @@ object VrTuning {
         raw["web_engine"]?.toIntOrNull()?.let {
             webEngine = if (it == 1) 1 else 0
             applied += "网页内核 ${if (webEngine == 1) "火狐" else "系统"}"
+        }
+        raw["web_click"]?.toIntOrNull()?.let {
+            webClickMode = if (it == 1) 1 else 0
+            applied += "网页点击语义 ${if (webClickMode == 1) "触摸" else "鼠标"}"
         }
         flag("finish_before_texupdate", KEY_FINISH_BEFORE_TEXUPDATE, "取帧前先 glFinish")
         raw["screen_width"]?.toFloatOrNull()?.let {

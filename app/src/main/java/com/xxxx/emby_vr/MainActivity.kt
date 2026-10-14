@@ -252,6 +252,11 @@ class MainActivity : ComponentActivity() {
     private val PREF_CINEMA_BRIGHT = "cinema_bright"
     /** 亮度默认值一次性迁移标记（父亲 2026-10-12）——见 restorePlacePrefs 里的用法 */
     private val PREF_BRIGHT_RESET_V2 = "cinema_bright_reset_v2"
+    /**
+     * 第二轮迁移标记（父亲 2026-10-14：影厅亮度 3%、座椅高 0.11、前后 -0.32）。
+     * 与 V2 同一个道理 —— 老机器上旧存档会把新默认值顶掉，升级后第一次启动强写一遍。
+     */
+    private val PREF_CINEMA_RESET_V3 = "cinema_reset_v3"
     /** 座椅调节记忆键（米） */
     private val PREF_SEAT_UP = "seat_up"
     private val PREF_SEAT_FWD = "seat_fwd"
@@ -5270,7 +5275,21 @@ class MainActivity : ComponentActivity() {
                     .apply()
                 Log.i(TAG, "影厅亮度默认值迁移：旧存值重置为 1%")
             }
-            val saved = placePrefs.getFloat(PREF_CINEMA_BRIGHT, 0.01f).coerceIn(0f, 1f)
+            /*
+             * 第二轮默认值迁移（父亲 2026-10-14 定：影厅亮度 3%、座椅高 0.11、前后 -0.32）。
+             * 老机器上这三个值早就存着旧数（亮度 1%、座椅 0.23 / 0），只改代码里的默认值
+             * 会被旧存档顶掉 —— 所以升级后第一次启动强制写一遍，之后照旧记住他调过的档。
+             */
+            if (!placePrefs.getBoolean(PREF_CINEMA_RESET_V3, false)) {
+                placePrefs.edit()
+                    .putFloat(PREF_CINEMA_BRIGHT, 0.03f)
+                    .putFloat(PREF_SEAT_UP, 0.11f)
+                    .putFloat(PREF_SEAT_FWD, -0.32f)
+                    .putBoolean(PREF_CINEMA_RESET_V3, true)
+                    .apply()
+                Log.i(TAG, "影厅默认值迁移 V3：亮度 3%、座椅高 0.11、前后 -0.32")
+            }
+            val saved = placePrefs.getFloat(PREF_CINEMA_BRIGHT, 0.03f).coerceIn(0f, 1f)
             menuState.cinemaBright = saved
             com.xxxx.emby_vr.vr.VrNative.setTuning(
                 com.xxxx.emby_vr.vr.VrTuning.KEY_CINEMA_BRIGHT, saved,
@@ -5278,9 +5297,9 @@ class MainActivity : ComponentActivity() {
             Log.i(TAG, "影厅亮度恢复：${(saved * 100).toInt()}%")
 
             /* 座椅调节也恢复上次的位置（父亲 2026-10-10 22:56：调好一次就别再动） */
-            val up = placePrefs.getFloat(PREF_SEAT_UP, 0.23f)
+            val up = placePrefs.getFloat(PREF_SEAT_UP, 0.11f)
                 .coerceIn(-com.xxxx.emby_vr.panel.SEAT_UP_RANGE, com.xxxx.emby_vr.panel.SEAT_UP_RANGE)
-            val fwd = placePrefs.getFloat(PREF_SEAT_FWD, 0f)
+            val fwd = placePrefs.getFloat(PREF_SEAT_FWD, -0.32f)
                 .coerceIn(-com.xxxx.emby_vr.panel.SEAT_FWD_RANGE, com.xxxx.emby_vr.panel.SEAT_FWD_RANGE)
             menuState.seatUp = up
             menuState.seatFwd = fwd
