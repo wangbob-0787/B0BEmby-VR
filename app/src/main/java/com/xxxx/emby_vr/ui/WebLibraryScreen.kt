@@ -151,7 +151,13 @@ private fun dispatchMouse(
             if (action == MotionEvent.ACTION_DOWN) MotionEvent.BUTTON_PRIMARY else 0,
             1f, 1f, 0, 0, InputDevice.SOURCE_MOUSE, 0,
         )
-        runCatching { wv.dispatchGenericMotionEvent(ev) }
+        val taken = runCatching { wv.dispatchGenericMotionEvent(ev) }.getOrDefault(false)
+        android.util.Log.i(
+            "B0BEmbyVR",
+            "网页点击派发（鼠标按键式）：$btnAction 被接住=$taken 坐标=$x,$y " +
+                "视图=${wv.javaClass.simpleName} ${wv.width}x${wv.height} " +
+                "有焦点=${wv.hasFocus()} 窗口焦点=${wv.hasWindowFocus()}",
+        )
         ev.recycle()
         return
     }
@@ -185,12 +191,25 @@ private fun dispatchMouse(
         if (touchMode) InputDevice.SOURCE_TOUCHSCREEN else InputDevice.SOURCE_MOUSE,
         0,
     )
-    runCatching {
+    val taken = runCatching {
         if (action == MotionEvent.ACTION_HOVER_MOVE) {
             wv.dispatchGenericMotionEvent(ev)
         } else {
             wv.dispatchTouchEvent(ev)
         }
+    }.getOrDefault(false)
+    /*
+     * 只有"按下 / 抬起"记日志（悬停太频繁，不记）。
+     * 这一行是排查用的关键证据：被接住=false 说明内核根本没处理这个事件；
+     * =true 却点不动，说明事件收下了但网页那边没用它 —— 两条路要查的东西完全不同。
+     */
+    if (action != MotionEvent.ACTION_HOVER_MOVE) {
+        android.util.Log.i(
+            "B0BEmbyVR",
+            "网页点击派发（方式 $mode）：$action 被接住=$taken 坐标=$x,$y " +
+                "视图=${wv.javaClass.simpleName} ${wv.width}x${wv.height} " +
+                "有焦点=${wv.hasFocus()} 窗口焦点=${wv.hasWindowFocus()}",
+        )
     }
     ev.recycle()
 }
@@ -672,15 +691,15 @@ private fun WebPageForSite(site: Int) {
                     val now = SystemClock.uptimeMillis()
                     runCatching {
                         /*
-                         * 先来两下"鼠标移动"（父亲 2026-10-13 报"网页全屏后点不了控制按钮"）：
-                         * 网页播放器的控制条是**鼠标一活动才浮出来**的，光柱停着不动时
-                         * 它一直藏着 —— 看着就是"按钮点不到"。先晃两下再点。
+                         * 只发"按下 → 抬起"，干净的一次点击。
+                         *
+                         * 原来在按下前还补两条"鼠标移动"（想让网页控制条浮出来），但光柱本来
+                         * 就一直在发悬停，那两条是重复的，还会让网页先看到"鼠标"、再看到
+                         * "触摸/别的设备"，设备语义来回切 —— 2026-10-14 实测这种夹着移动的序列
+                         * 点不动海报。控制条浮出交给光柱的悬停就够了。
                          */
-                        dispatchMouse(wv, MotionEvent.ACTION_HOVER_MOVE, x, y, now, now)
-                        dispatchMouse(wv, MotionEvent.ACTION_HOVER_MOVE, x + 2f, y + 1f, now, now + 16)
-                        dispatchMouse(wv, MotionEvent.ACTION_DOWN, x, y, now + 32, now + 32)
-                        dispatchMouse(wv, MotionEvent.ACTION_MOVE, x, y, now + 32, now + 48)
-                        dispatchMouse(wv, MotionEvent.ACTION_UP, x, y, now + 32, now + 72)
+                        dispatchMouse(wv, MotionEvent.ACTION_DOWN, x, y, now, now)
+                        dispatchMouse(wv, MotionEvent.ACTION_UP, x, y, now, now + 40)
                     }
                     return@handler true
                 }
