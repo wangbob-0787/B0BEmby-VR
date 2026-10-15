@@ -307,8 +307,14 @@ private object WebRuntime {
         return fallback
     }
 
-    /** 本次进程是否已经清过腾讯站的网页数据（避免每开一次网页就清一遍，把登录态反复清掉）。 */
-    private var wipedTencent = false
+    /**
+     * 上次清腾讯站数据的时刻（毫秒）。
+     *
+     * 这里**不能**做成"进程内只清一次"：run 535 清完当次是好的，但父亲重新访问腾讯时又黑了
+     * （2026-10-15 13:57 实测：SW 报错 50 条、预检 100 条）—— 腾讯页面**每次访问都会重新注册**
+     * 那个 Service Worker，所以每次进网页栏都得清一遍。时间戳只为挡 Compose 的重复重组。
+     */
+    private var lastWipeMs = 0L
 
     /**
      * 清掉腾讯站的网页数据（2026-10-15）。
@@ -324,9 +330,10 @@ private object WebRuntime {
      * 由 `<web_wipe>=1` 触发，清一次即在本进程内失效。
      */
     fun wipeTencentOnce(ctx: android.content.Context, runtime: org.mozilla.geckoview.GeckoRuntime) {
-        if (wipedTencent) return
         if (!com.xxxx.emby_vr.vr.VrTuning.webWipeNow(ctx)) return
-        wipedTencent = true
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastWipeMs < 5000L) return
+        lastWipeMs = now
         runCatching {
             runtime.storageController.clearDataFromHost(
                 "v.qq.com",
