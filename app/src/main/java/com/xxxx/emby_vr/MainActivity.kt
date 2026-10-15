@@ -5343,6 +5343,20 @@ class MainActivity : ComponentActivity() {
             }
         }.onFailure { Log.w(TAG, "影厅资源准备失败：${it.message}") }
 
+        /*
+         * 座位表（激光选座，父亲 2026-10-15）：影厅里 271 把椅子的位置。
+         * 与影厅几何同一时机交给原生；缺了只是选座退回旧三档，不影响渲染。
+         */
+        runCatching {
+            val seats = copyAssetIfNeeded("seats.b0bseat")
+            if (seats != null) {
+                com.xxxx.emby_vr.vr.VrNative.setSeatsPath(seats)
+                Log.i(TAG, "座位表就绪：$seats")
+            } else {
+                Log.w(TAG, "座位表缺失，激光选座退回三档换排")
+            }
+        }.onFailure { Log.w(TAG, "座位表准备失败：${it.message}") }
+
         val vrOk = com.xxxx.emby_vr.vr.VrNative.startVr(this)
         Log.i(TAG, "OpenXR 会话启动: $vrOk")
         // 光柱输入回推（VR 模式下唯一的输入源：指向 / 扳机 / 摇杆 / B 键）

@@ -65,6 +65,20 @@ object VrNative {
         }
     }
 
+    /**
+     * 座位表路径（激光选座，父亲 2026-10-15）：assets/seats.b0bseat 由 Java 侧拷到应用目录，
+     * 原生在渲染线程启动时读它。必须在 [startVr] 之前调。
+     */
+    private external fun nativeSetSeatsPath(seatPath: String)
+
+    fun setSeatsPath(seatPath: String) {
+        try {
+            if (loaded) nativeSetSeatsPath(seatPath)
+        } catch (t: Throwable) {
+            Log.e(TAG, "设置座位表路径失败：${t.message}")
+        }
+    }
+
     /** 换排（控制条上的「选座」） */
     fun setSeat(seat: Int) {
         try {

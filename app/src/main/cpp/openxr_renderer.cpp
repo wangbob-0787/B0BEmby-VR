@@ -635,6 +635,49 @@ std::atomic<int> gCinemaLayerMode{1};
  */
 std::atomic<float> gCinemaEyeHeight{1.65f};
 
+/*
+ * ==================== 激光选座（父亲 2026-10-15） ====================
+ *
+ * 父亲原话：「我们的虚拟影院能不能用激光去选座位」「全部座位可选」「指着座位时激光是弯的，
+ * 对着大屏幕、海报和控制条时是直的」。
+ *
+ * 影厅里那 271 把椅子本来就是模型几何，客户端原先只认「近/中/远三档」（整厅平移）。
+ * 现在从模型里量出一张**座位表**（tools/extract_seats.py → assets/seats.b0bseat），
+ * 摆位就由"选中哪一把椅子"算出来：
+ *   gSeatShiftX 横向平移（让那把椅子正对观影位）
+ *   gSeatDy     上下平移（该排眼高相对基准排第 6 排的差）
+ *   gSeatDz     前后平移（该排离幕距离相对基准排的差）
+ *
+ * 座位表加载完只读；渲染线程每帧只读，加载发生在渲染线程启动时，不需要锁。
+ */
+struct SeatRow {
+    float dz;                 // 该排前后平移量（米，与旧 kCinemaSeats 的 dz 同一口径）
+    float eyeY;               // 该排眼睛高度（模型坐标，米）
+    std::vector<float> xs;    // 该排每把椅子的横坐标（app 米，厅中线为 0，左负右正）
+};
+std::vector<SeatRow> gSeatRows;
+std::atomic<bool> gSeatRowsReady{false};
+
+/** 座位表里第 6 排的下标（0 基）—— 旧的默认观影位就在这一排 */
+constexpr int kSeatDefaultRow = 5;
+/**
+ * 横向偏差补偿（米）：座位表里的椅子横坐标是用"座椅四件子网格的包围盒中心"量的，
+ * 比当年手量的座垫中心偏 0.099 米。补回来，默认座位与父亲已经调舒服的位置**完全重合**
+ * （旧常量 kCinemaShiftX = 0.34）。父亲现场若觉得还偏，vr-tuning 的 seat_x_bias 可调。
+ */
+constexpr float kSeatXBiasDefault = -0.099f;
+
+std::atomic<float> gSeatShiftX{0.34f};   // 影厅横向平移
+std::atomic<float> gSeatDy{0.f};         // 影厅上下平移
+std::atomic<float> gSeatDz{0.f};         // 影厅前后平移
+std::atomic<int> gSeatRowIdx{kSeatDefaultRow};
+std::atomic<int> gSeatColIdx{-1};        // -1 = 该排最靠厅中线的那把
+std::atomic<int> gSeatSelRow{-1};        // 激光正指着哪把椅子（-1 = 没指着）
+std::atomic<int> gSeatSelCol{-1};
+std::atomic<float> gSeatXBias{kSeatXBiasDefault};
+/** 基准排到幕面的距离（米）—— 换排后的离幕距离 = 它 − 该排 dz */
+constexpr float kSeatRefDistance = 12.18f;
+
 // ------------------------------------------------- 影厅环境（父亲 2026-10-10）
 /*
  * 影厅几何 assets/cinema.b0bcin —— 由 tools/build_cinema_asset.py 生成。
@@ -758,6 +801,8 @@ std::atomic<float> gEnvStrength{2.6f};
  * 在渲染线程、EGL 上下文就绪之后，GL 对象才建得对。
  */
 std::string gCinemaAssetPath;
+/** 座位表路径（激光选座用，父亲 2026-10-15）—— 与影厅几何一起由 Java 侧塞进来 */
+std::string gSeatAssetPath;
 std::string gEnvAssetPath;
 GLuint gCinemaVbo = 0;
 GLuint gCinemaIbo = 0;
@@ -810,6 +855,55 @@ GLuint buildCinemaProgram() {
     glDeleteShader(vs);
     glDeleteShader(fs);
     return p;
+}
+
+/**
+ * 读座位表 assets/seats.b0bseat（格式见 tools/extract_seats.py 头注释）。
+ *
+ * 激光选座（父亲 2026-10-15）：表里是影厅 271 把椅子的位置 —— 每排的
+ * dz（前后平移量）、eyeY（眼高）、以及该排每把椅子的横坐标。
+ * 读失败只是"选座用不了"（退回旧的三档换排），不影响影厅渲染，所以不报错退出。
+ */
+bool loadSeatTableAsset(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (f == nullptr) {
+        LOGI("座位表读不到（%s）—— 选座退回三档换排", path);
+        return false;
+    }
+    char magic[4] = {0};
+    uint32_t version = 0, rows = 0;
+    const bool headOk = fread(magic, 1, 4, f) == 4 && memcmp(magic, "B0BS", 4) == 0 &&
+                        fread(&version, 4, 1, f) == 1 && fread(&rows, 4, 1, f) == 1;
+    if (!headOk || rows == 0) {
+        LOGI("座位表头不对（%s）—— 选座退回三档换排", path);
+        fclose(f);
+        return false;
+    }
+    std::vector<SeatRow> table;
+    table.reserve(rows);
+    for (uint32_t i = 0; i < rows; i++) {
+        int32_t rowNo = 0;
+        float dz = 0.f, eyeY = 0.f;
+        uint32_t cols = 0;
+        if (fread(&rowNo, 4, 1, f) != 1 || fread(&dz, 4, 1, f) != 1 ||
+            fread(&eyeY, 4, 1, f) != 1 || fread(&cols, 4, 1, f) != 1) {
+            break;
+        }
+        std::vector<float> xs(cols, 0.f);
+        if (cols > 0 && fread(xs.data(), 4, cols, f) != cols) break;
+        table.push_back(SeatRow{dz, eyeY, xs});
+    }
+    fclose(f);
+    if (table.empty()) {
+        LOGI("座位表是空的（%s）—— 选座退回三档换排", path);
+        return false;
+    }
+    int total = 0;
+    for (const SeatRow &r : table) total += (int) r.xs.size();
+    gSeatRows = std::move(table);
+    gSeatRowsReady.store(true);
+    LOGI("座位表就绪：%zu 排 %d 座（%s）", gSeatRows.size(), total, path);
+    return true;
 }
 
 /** 读 cinema.b0bcin（格式见文件头注释），上传顶点/索引缓冲 */
@@ -943,20 +1037,21 @@ void uploadSeatTexture() {
 /** 画影厅：模型矩阵 = 换排平移；光源就是银幕 */
 void drawCinema(const Mat4 &proj, const Mat4 &view, const XrVector3f &eyePos) {
     if (!gCinemaReady.load() || gCinemaOn.load() == 0 || gCinemaProgram == 0) return;
-    const int seat = gSeat.load();
-    const CinemaSeat &s = kCinemaSeats[seat];
-
+    /*
+     * 影厅摆位（2026-10-15 起由"选中哪把椅子"决定）：横向 / 上下 / 前后三个平移量，
+     * 换排与激光选座都只改这三个量（applySeat / applySeatAt）。
+     */
     Mat4 model = identity();
-    model.m[12] = kCinemaShiftX;                              // 横向：让座位中心正对观影位
-    model.m[13] = s.dy + (1.65f - gCinemaEyeHeight.load()) + gSeatUp.load();
-    model.m[14] = s.dz - gSeatFwd.load();                     // 前/后：正数 = 人往椅子前部坐
+    model.m[12] = gSeatShiftX.load();                         // 横向：让选中那把椅子正对观影位
+    model.m[13] = gSeatDy.load() + (1.65f - gCinemaEyeHeight.load()) + gSeatUp.load();
+    model.m[14] = gSeatDz.load() - gSeatFwd.load();           // 前/后：正数 = 人往椅子前部坐
     const Mat4 mvp = multiply(multiply(proj, view), model);
 
     glUseProgram(gCinemaProgram);
     glUniformMatrix4fv(gCinemaMvpLoc, 1, GL_FALSE, mvp.m);
     glUniformMatrix4fv(gCinemaModelLoc, 1, GL_FALSE, model.m);
     /* 银幕中心：世界坐标里就在观影位正前方 distance 米处（影厅平移也跟着走） */
-    glUniform3f(gCinemaScreenPosLoc, 0.f, 0.55f, -s.distance);
+    glUniform3f(gCinemaScreenPosLoc, 0.f, 0.55f, -(kSeatRefDistance - gSeatDz.load()));
     glUniform3f(gCinemaTintLoc, gScreenTintR.load(), gScreenTintG.load(),
                 gScreenTintB.load());
     /* 画面照亮影厅的那份也乘亮度条（0 = 全黑），并按父亲 2026-10-11 的要求砍半 */
@@ -1281,9 +1376,7 @@ float hallScreenFitWidth(float aspect) {
  * 所以 app_y = (kHallScreenModelY - 1.15) + 影厅纵向平移量。
  */
 float hallScreenCenterY() {
-    const int seat = gSeat.load();
-    const CinemaSeat &s = kCinemaSeats[seat];
-    return (kHallScreenModelY - kHallRefEyeY) + s.dy + (1.65f - gCinemaEyeHeight.load()) +
+    return (kHallScreenModelY - kHallRefEyeY) + gSeatDy.load() + (1.65f - gCinemaEyeHeight.load()) +
            gScreenUp.load();
 }
 
@@ -1295,24 +1388,91 @@ float hallScreenCenterY() {
  * 宽银幕片矮一些，上面留出的那截墙已经涂黑，看不出来）。
  */
 float hallScreenBottomY() {
-    const int seat = gSeat.load();
-    const CinemaSeat &s = kCinemaSeats[seat];
-    return (kHallScreenBottomY - kHallRefEyeY) + s.dy + (1.65f - gCinemaEyeHeight.load()) +
+    return (kHallScreenBottomY - kHallRefEyeY) + gSeatDy.load() + (1.65f - gCinemaEyeHeight.load()) +
            gScreenUp.load();
 }
 
-/** 换排：整间影厅平移 + 银幕距离跟着变（父亲戴着时靠这行日志确认换到哪排） */
+/** 该排最靠厅中线的那把椅子（横向基准列）；表没加载好返回 -1 */
+int seatCenterCol(int row) {
+    if (row < 0 || row >= (int) gSeatRows.size()) return -1;
+    const std::vector<float> &xs = gSeatRows[row].xs;
+    if (xs.empty()) return -1;
+    int best = 0;
+    float bd = fabsf(xs[0]);
+    for (int i = 1; i < (int) xs.size(); i++) {
+        const float d = fabsf(xs[i]);
+        if (d < bd) {
+            bd = d;
+            best = i;
+        }
+    }
+    return best;
+}
+
+/**
+ * 坐到第 row 排第 col 列（0 基；col < 0 = 该排最靠厅中线那把）。
+ *
+ * 三个平移量就这么来：横向让这把椅子正对观影位，上下按该排眼高，前后按该排离幕距离。
+ * 父亲戴着时靠这行日志确认"到底坐进哪把椅子了"。
+ */
+void applySeatAt(int row, int col) {
+    if (!gSeatRowsReady.load() || gSeatRows.empty()) return;
+    if (row < 0) row = 0;
+    if (row >= (int) gSeatRows.size()) row = (int) gSeatRows.size() - 1;
+    const SeatRow &r = gSeatRows[row];
+    if (col < 0 || col >= (int) r.xs.size()) col = seatCenterCol(row);
+    if (col < 0) return;
+    const float x = r.xs[col];
+    gSeatRowIdx.store(row);
+    gSeatColIdx.store(col);
+    gSeatShiftX.store(-x + gSeatXBias.load());
+    gSeatDy.store(-(r.eyeY - kHallRefEyeY));
+    gSeatDz.store(r.dz);
+    gScreenDistance.store(fmaxf(1.f, kSeatRefDistance - r.dz));
+    gScreenWidth.store(kHallScreenW);
+    LOGI("选座 → 第 %d 排第 %d 列（共 %d 座）：椅子 x=%+.2f 厅横移 %+.2f · 眼高 %.2f 米 · "
+         "离幕 %.2f 米（水平视角 %.1f°）",
+         row + 1, col + 1, (int) r.xs.size(), (double) x, (double) gSeatShiftX.load(),
+         (double) r.eyeY, (double) gScreenDistance.load(),
+         (double) (2.0 * atan((kHallScreenW * 0.5) / gScreenDistance.load()) * 180.0 /
+                   3.14159265358979));
+}
+
+/**
+ * 某把椅子在**世界坐标**里的位置（当前影厅摆位下）。
+ *
+ * 用途：激光命中判定与高亮标记。y 取坐垫略上一点（比眼睛低 0.45 米），
+ * 这样标记看着是"落在那把椅子上"，而不是浮在半空。
+ */
+void seatWorldPos(int row, int col, float *wx, float *wy, float *wz) {
+    const SeatRow &r = gSeatRows[row];
+    const float yShift = gSeatDy.load() + (1.65f - gCinemaEyeHeight.load()) + gSeatUp.load();
+    *wx = r.xs[col] + gSeatShiftX.load();
+    *wy = (r.eyeY - kHallRefEyeY) + yShift - 0.45f;
+    *wz = -r.dz + gSeatDz.load();
+}
+
+/** 换排（旧接口，仍是"近/中/远"三个入口）：映射到座位表的第 4/6/9 排，列取厅中线那把 */
 void applySeat(int seat) {
     if (seat < 0) seat = 0;
     if (seat > 2) seat = 2;
     gSeat.store(seat);
     gScreenWidth.store(kHallScreenW);
+    if (gSeatRowsReady.load() && !gSeatRows.empty()) {
+        static const int kRows[3] = {3, 5, 8};   // 第 4 / 6 / 9 排（座位表 0 基）
+        int row = kRows[seat];
+        if (row >= (int) gSeatRows.size()) row = (int) gSeatRows.size() - 1;
+        applySeatAt(row, -1);
+        return;
+    }
+    /* 座位表没加载好：退回旧的写死三档 */
     gScreenDistance.store(kCinemaSeats[seat].distance);
-    LOGI("选座 → %s：屏幕距离 %.2f 米 · 影厅平移 dy=%.2f dz=%.2f（水平视角 %.1f°）",
+    gSeatDy.store(kCinemaSeats[seat].dy);
+    gSeatDz.store(kCinemaSeats[seat].dz);
+    gSeatShiftX.store(0.34f);
+    LOGI("选座 → %s（座位表缺失，用旧三档）：屏幕距离 %.2f 米 · 影厅平移 dy=%.2f dz=%.2f",
          kCinemaSeats[seat].name, (double) kCinemaSeats[seat].distance,
-         (double) kCinemaSeats[seat].dy, (double) kCinemaSeats[seat].dz,
-         (double) (2.0 * atan((kHallScreenW * 0.5) / kCinemaSeats[seat].distance) *
-                   180.0 / 3.14159265358979));
+         (double) kCinemaSeats[seat].dy, (double) kCinemaSeats[seat].dz);
 }
 /**
  * 海报墙的**初始**摆位：左前方、斜着正对观影者。
@@ -1951,6 +2111,33 @@ void makeRayBuffer(VrContext &c) {
     glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr) (verts.size() * sizeof(float)), verts.data(),
                  GL_STATIC_DRAW);
     c.rayVertexCount = (int) (verts.size() / 5);
+}
+
+/**
+ * 让"沿局部 -Z 的单位网格"指向给定方向的四元数（2026-10-15，弯激光分段用）。
+ *
+ * 光柱网格（makeRayBuffer）是沿局部 -Z 从 0 伸到 -1 的一根锥，所以把一段的方向
+ * 转成四元数就能直接拿去 poseScaleModel。方向不必归一化。
+ */
+XrQuaternionf dirQuat(float vx, float vy, float vz) {
+    XrQuaternionf q{0.f, 0.f, 0.f, 1.f};
+    const float len = sqrtf(vx * vx + vy * vy + vz * vz);
+    if (len < 1e-6f) return q;
+    const float ux = vx / len, uy = vy / len, uz = vz / len;
+    const float c = -uz;                     // (0,0,-1) · v
+    const float ax = uy, ay = -ux;           // (0,0,-1) × v（z 分量恒为 0）
+    const float s = sqrtf(ax * ax + ay * ay);
+    if (s < 1e-6f) {
+        if (c > 0.f) return q;               // 已经同向
+        return XrQuaternionf{1.f, 0.f, 0.f, 0.f};   // 完全反向：绕 X 轴 180°
+    }
+    const float half = atan2f(s, c) * 0.5f;
+    const float sn = sinf(half) / s;
+    q.x = ax * sn;
+    q.y = ay * sn;
+    q.z = 0.f;
+    q.w = cosf(half);
+    return q;
 }
 
 /** 用当前 program 画一个网格：纯色 / 圆点两种（都走同一个 VBO 布局：pos(3) + uv(2)） */
@@ -2686,7 +2873,7 @@ ScreenPlacement frontScreen(const VrContext &c) {
         p.cy = hallScreenBottomY() + h * 0.5f;
         p.cz -= gSeatFwd.load();
         /* 横向取影厅前墙/银幕的位置（他比厅中线偏 0.12 米，画面跟着墙走） */
-        p.cx = -(kHallScreenModelX - kAssetOriginModelX) + kCinemaShiftX;
+        p.cx = -(kHallScreenModelX - kAssetOriginModelX) + gSeatShiftX.load();
     }
     return p;
 }
@@ -2747,6 +2934,77 @@ bool rayHitsPlacement(const XrPosef &aim, const ScreenPlacement &p, float *outT,
     *outWx = wx;
     *outWy = wy;
     *outWz = wz;
+    return true;
+}
+
+/**
+ * 手柄射线 × 影厅里的椅子 —— 激光选座的命中判定（父亲 2026-10-15）。
+ *
+ * 每把椅子当成一个小盒子（半尺寸 0.34 × 0.45 × 0.34 米，中心在坐垫略上），
+ * 逐个做射线-盒子相交（slab 法），取最近的一把。271 把椅子一次全测，
+ * 每帧两次（左右手）也只是几百次乘加，可忽略。
+ *
+ * 两条纪律：
+ *   ① 贴着身子的椅子不算（交点距离 < 0.8 米）—— 否则手一放下来激光就在旁边椅子上跳；
+ *   ② 座位表没加载好就返回 false（等于没有选座功能，其它一切照旧）。
+ *
+ * 输出：命中的排/列（0 基）、距离 t、世界命中点。
+ */
+bool rayHitsSeat(const XrPosef &aim, int *outRow, int *outCol, float *outT, float *outWx,
+                 float *outWy, float *outWz) {
+    if (!gSeatRowsReady.load() || gSeatRows.empty()) return false;
+    /* 影厅关掉（黑背景）时椅子根本不在场景里，选座一并不生效 */
+    if (gCinemaOn.load() == 0 || !gCinemaReady.load()) return false;
+    float dx = 0.f, dy = 0.f, dz = 0.f;
+    aimDirection(aim, &dx, &dy, &dz);
+    const float kHalfX = 0.34f, kHalfY = 0.45f, kHalfZ = 0.34f;
+    const float kMinDist = 0.80f;
+    const float d3[3] = {dx, dy, dz};
+    const float h[3] = {kHalfX, kHalfY, kHalfZ};
+    float bestT = 0.f;
+    int bestRow = -1, bestCol = -1;
+    for (int row = 0; row < (int) gSeatRows.size(); row++) {
+        const SeatRow &r = gSeatRows[row];
+        for (int col = 0; col < (int) r.xs.size(); col++) {
+            float cx = 0.f, cy = 0.f, cz = 0.f;
+            seatWorldPos(row, col, &cx, &cy, &cz);
+            const float o[3] = {aim.position.x - cx, aim.position.y - cy, aim.position.z - cz};
+            /* slab 法：x/y/z 三个方向各求进出参数，取交集 */
+            float t0 = 0.f, t1 = 1e9f;
+            bool miss = false;
+            for (int a = 0; a < 3 && !miss; a++) {
+                if (fabsf(d3[a]) < 1e-6f) {
+                    if (fabsf(o[a]) > h[a]) miss = true;
+                    continue;
+                }
+                float ta = (-h[a] - o[a]) / d3[a];
+                float tb = (h[a] - o[a]) / d3[a];
+                if (ta > tb) {
+                    const float tmp = ta;
+                    ta = tb;
+                    tb = tmp;
+                }
+                if (ta > t0) t0 = ta;
+                if (tb < t1) t1 = tb;
+                if (t0 > t1) miss = true;
+            }
+            if (miss || t1 <= 0.f) continue;
+            const float t = t0 > 0.f ? t0 : t1;
+            if (t < kMinDist) continue;
+            if (bestRow < 0 || t < bestT) {
+                bestT = t;
+                bestRow = row;
+                bestCol = col;
+            }
+        }
+    }
+    if (bestRow < 0) return false;
+    *outRow = bestRow;
+    *outCol = bestCol;
+    *outT = bestT;
+    *outWx = aim.position.x + dx * bestT;
+    *outWy = aim.position.y + dy * bestT;
+    *outWz = aim.position.z + dz * bestT;
     return true;
 }
 
@@ -3095,6 +3353,24 @@ void pushInput(VrContext &c) {
         }
 
         if (!c.aimValid[h]) continue;
+
+        /*
+         * ★ 激光选座（父亲 2026-10-15）：激光正指着某把椅子、这时扣下扳机 → 坐过去。
+         *
+         * 这一路**优先级最高**：座位不是界面，指椅子时不会同时指着菜单/控制条/海报墙
+         * （上面那几处的判定都要求指到它们本体），但"播放中扣扳机 = 开关控制条"那一路
+         * 不看指向，所以这里处理完直接 continue，把这次扳机吃掉，免得选个座顺手把
+         * 控制条也开了。
+         */
+        if (c.triggerDown[h] && !c.sinkLastTrigger[h]) {
+            const int selRow = gSeatSelRow.load();
+            const int selCol = gSeatSelCol.load();
+            if (selRow >= 0 && selCol >= 0) {
+                applySeatAt(selRow, selCol);
+                c.sinkLastTrigger[h] = true;
+                continue;
+            }
+        }
 
         /*
          * ⓪ 展开菜单最优先（2026-10-06）：它架在控制条正上方，指着它时指针与点击都归菜单。
@@ -4251,6 +4527,9 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
         const float kRayNear = 0.001f;    // 近端半径 1mm（官方 handScale 的 x/y 分量）
         const float kNoHitDistance = 100.f;
         const float kDotSize = 0.011f;    // 光点直径 1.1cm（父亲 2026-10-06：再小一半）
+        /* 这一帧先把"激光指着哪把椅子"清掉，下面哪只手打中椅子就写进去（激光选座 2026-10-15） */
+        gSeatSelRow.store(-1);
+        gSeatSelCol.store(-1);
 
         for (int h = 0; h < 2; h++) {
             if (!c.aimValid[h]) continue;
@@ -4303,6 +4582,25 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
                     rayLength = t; dotT = t; dotKind = 3;
                 }
             }
+            /*
+             * ⑤ 影厅里的椅子（激光选座，父亲 2026-10-15）。
+             *
+             * **只在没打中前三块面的时候才认椅子** —— 父亲要的是"指着银幕、海报墙、
+             * 控制条的时候激光是直的"，这三处是操作面，优先级必须高于椅子：
+             * 指到它们时，就算射线顺路穿过椅子也不参与选座。
+             */
+            int seatRow = -1, seatCol = -1;
+            if (dotKind == 0) {
+                float t = 0.f, hx = 0.f, hy = 0.f, hz = 0.f;
+                if (rayHitsSeat(c.aimPose[h], &seatRow, &seatCol, &t, &hx, &hy, &hz) && t > 0.f) {
+                    rayLength = t;
+                    dotT = t;
+                    gSeatSelRow.store(seatRow);
+                    gSeatSelCol.store(seatCol);
+                } else {
+                    seatRow = -1;
+                }
+            }
 
             // 光线：从手柄沿指向射出
             /*
@@ -4318,9 +4616,59 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
             const float rayThick = kRayNear * gRayScale.load() *
                 fmaxf(0.5f, gScreenDistance.load() / kRayRefDistance);
             const Mat4 rayModel = poseScaleModel(c.aimPose[h], rayThick, rayThick, rayLength);
-            drawMesh(c, c.rayVbo, c.rayVertexCount,
-                     multiply(multiply(proj, view4), rayModel),
-                     0.25f, 1.f, 0.35f, false);   // 绿光柱（父亲 2026-10-13：白色在网页上不明显，改绿）
+            if (seatRow < 0) {
+                drawMesh(c, c.rayVbo, c.rayVertexCount,
+                         multiply(multiply(proj, view4), rayModel),
+                         0.25f, 1.f, 0.35f, false);   // 绿光柱（父亲 2026-10-13：白色在网页上不明显，改绿）
+            } else {
+                /*
+                 * 指着椅子：这道激光**弯**（父亲 2026-10-15）。
+                 *
+                 * 做法：拆成 12 段短柱，位置沿一条弧线摆 —— 起点仍是手柄、终点仍是那把椅子
+                 * （命中点不因为弯而改变，所以"指哪坐哪"照样准）。弯的方向取世界上方，
+                 * 幅度 = min(0.35 × 长度, 0.9 米)：近处轻轻弯、远处明显弯，像一根弯的光纤。
+                 */
+                const int kSeg = 12;
+                float ddx = 0.f, ddy = 0.f, ddz = 0.f;
+                aimDirection(c.aimPose[h], &ddx, &ddy, &ddz);
+                const float bend = fminf(0.35f * rayLength, 0.9f);
+                const float ox = c.aimPose[h].position.x;
+                const float oy = c.aimPose[h].position.y;
+                const float oz = c.aimPose[h].position.z;
+                float qx = ox, qy = oy, qz = oz;
+                for (int s = 0; s < kSeg; s++) {
+                    const float t1 = (float) (s + 1) / (float) kSeg;
+                    const float nxp = ox + ddx * rayLength * t1;
+                    const float nyp = oy + ddy * rayLength * t1 + bend * sinf(3.14159265358979f * t1);
+                    const float nzp = oz + ddz * rayLength * t1;
+                    const float ex = nxp - qx, ey = nyp - qy, ez = nzp - qz;
+                    const float segLen = sqrtf(ex * ex + ey * ey + ez * ez);
+                    if (segLen > 1e-5f) {
+                        XrPosef seg{};
+                        seg.position = {qx, qy, qz};
+                        seg.orientation = dirQuat(ex, ey, ez);
+                        const Mat4 segModel = poseScaleModel(seg, rayThick, rayThick, segLen);
+                        drawMesh(c, c.rayVbo, c.rayVertexCount,
+                                 multiply(multiply(proj, view4), segModel),
+                                 0.25f, 1.f, 0.35f, false);
+                    }
+                    qx = nxp;
+                    qy = nyp;
+                    qz = nzp;
+                }
+                /* 选中那把椅子：坐垫上落一个青绿亮点，明确"要坐的是这一把"（父亲 2026-10-15） */
+                if (c.vbo != 0) {
+                    float sx2 = 0.f, sy2 = 0.f, sz2 = 0.f;
+                    seatWorldPos(seatRow, seatCol, &sx2, &sy2, &sz2);
+                    const float yaw = atan2f(ox - sx2, oz - sz2);
+                    XrPosef mark{};
+                    mark.position = {sx2, sy2, sz2};
+                    mark.orientation = {0.f, sinf(yaw * 0.5f), 0.f, cosf(yaw * 0.5f)};
+                    const Mat4 markModel = poseScaleModel(mark, 0.45f, 0.45f, 1.f);
+                    drawMesh(c, c.vbo, 6, multiply(multiply(proj, view4), markModel),
+                             0.35f, 1.f, 0.55f, true);
+                }
+            }
 
             /*
              * 光点：贴在命中点上，朝眼睛方向抬几毫米（避免和面抢像素）。
@@ -5737,9 +6085,14 @@ void renderThreadMain() {
         gCinemaSeatTexOnLoc = glGetUniformLocation(gCinemaProgram, "uSeatTexOn");
         gCinemaSeatBandZLoc = glGetUniformLocation(gCinemaProgram, "uSeatBandZ");
         uploadSeatTexture();
-        applySeat(gSeat.load());
         /* 影厅几何 + 环境光贴图：路径由 Java 侧给（assets 已拷到应用目录） */
         if (!gEnvAssetPath.empty()) loadEnvAsset(gEnvAssetPath.c_str());
+        /*
+         * 座位表必须先读进来再 applySeat（激光选座 2026-10-15）：
+         * 影厅摆位现在是"按选中哪把椅子"算出来的，表没读到时 applySeat 才会退回旧三档。
+         */
+        if (!gSeatAssetPath.empty()) loadSeatTableAsset(gSeatAssetPath.c_str());
+        applySeat(gSeat.load());
         if (!gCinemaAssetPath.empty() && loadCinemaAsset(gCinemaAssetPath.c_str())) {
             /*
              * 影厅单独占一层（0.75 倍分辨率：暗场细节看不太出来，省下的 GPU 给正片）。
@@ -6477,6 +6830,22 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetAssetPaths(JNIEnv *env, jobject /* t
         }
     }
     LOGI("影厅资源路径：几何=%s 环境光=%s", gCinemaAssetPath.c_str(), gEnvAssetPath.c_str());
+}
+
+/**
+ * 座位表路径（激光选座，父亲 2026-10-15）：Java 侧把 assets/seats.b0bseat 拷到私有目录，
+ * 再把路径塞进来；真正的读盘在渲染线程里做（与影厅几何同一时机、同一套 GL 上下文）。
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetSeatsPath(JNIEnv *env, jobject /* this */,
+                                                      jstring seatPath) {
+    if (seatPath == nullptr) return;
+    const char *p = env->GetStringUTFChars(seatPath, nullptr);
+    if (p != nullptr) {
+        gSeatAssetPath = p;
+        env->ReleaseStringUTFChars(seatPath, p);
+    }
+    LOGI("座位表路径：%s", gSeatAssetPath.c_str());
 }
 
 /**
