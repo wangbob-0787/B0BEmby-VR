@@ -732,24 +732,12 @@ private fun WebPageForSite(site: Int) {
         while (true) {
             val js = VIDEO_RECT_JS
             if (com.xxxx.emby_vr.vr.VrTuning.webEngine == 1) {
-                val s = geckoSessionRef
-                if (s == null) {
-                    pushVideoRect(null)
-                } else {
-                    runCatching {
-                        val res = s.evaluateJS(js)
-                        res.accept(
-                            org.mozilla.geckoview.GeckoResult.OnValueListener { v ->
-                                pushVideoRect(parseVideoRect(v?.toString()))
-                            },
-                        )
-                        res.accept(
-                            org.mozilla.geckoview.GeckoResult.OnExceptionListener { _ ->
-                                pushVideoRect(null)
-                            },
-                        )
-                    }.onFailure { pushVideoRect(null) }
-                }
+                /*
+                 * 火狐内核这条路暂时读不到（2026-10-15 编译报错定案）：GeckoView 早就把
+                 * "在页面里直接跑 JS" 的接口删了，现在只剩"装一个扩展"的绕法，成本高。
+                 * 先按"读不到"处理 —— 银幕退回整张画布，画面正常，只是黑边还在。
+                 */
+                pushVideoRect(null)
             } else {
                 val w = webRef
                 if (w == null) {
