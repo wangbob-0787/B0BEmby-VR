@@ -93,6 +93,72 @@ private const val HIDE_APP_BANNER_JS = """
 """
 
 /**
+ * 读出"网页里正在播的那块视频画面"占视口哪一块（父亲 2026-10-15）。
+ *
+ * 为什么要它：三站的网页播放器都按视频原始比例居中显示，比例不是 16:9 时四周留黑边；
+ * 大银幕以前固定按 16:9 贴整张画布，于是黑边一起被贴上去、画面也用不足墙宽。
+ * 把这块矩形交给原生后，银幕按视频比例变宽、并且只采这一块 —— 视频正好铺满墙宽。
+ *
+ * 取面积最大的那个可见 video：contain（默认）按视频比例居中算画面块；
+ * cover / fill 时元素矩形本身就是画面（cover 是裁掉边缘、fill 是拉伸）。
+ * 读不到就返回 'null'，原生照旧按整张画布来。
+ *
+ * 返回 "x,y,w,h,aspect"（前四个归一化到视口，aspect 是真实像素比）。
+ */
+private const val VIDEO_RECT_JS = """
+(function(){
+  try{
+    var vs=document.querySelectorAll('video'),best=null,area0=0;
+    for(var i=0;i<vs.length;i++){
+      var v=vs[i];
+      var vw=v.videoWidth||0,vh=v.videoHeight||0;
+      if(!vw||!vh||v.readyState<2){continue;}
+      var r=v.getBoundingClientRect();
+      if(r.width<40||r.height<40){continue;}
+      var st=window.getComputedStyle(v);
+      if(st.display==='none'||st.visibility==='hidden'){continue;}
+      if(parseFloat(st.opacity||'1')<0.05){continue;}
+      var area=r.width*r.height;
+      if(area<=area0){continue;}
+      var cw=r.width,ch=r.height,fit=(st.objectFit||'contain');
+      if(fit!=='cover'&&fit!=='fill'){
+        var ar=vw/vh,er=cw/ch;
+        if(ar>er){ ch=cw/ar; } else { cw=ch*ar; }
+      }
+      area0=area;
+      best={x:r.left+(r.width-cw)/2,y:r.top+(r.height-ch)/2,w:cw,h:ch};
+    }
+    if(!best){return 'null';}
+    var iw=window.innerWidth||1,ih=window.innerHeight||1;
+    return [best.x/iw,best.y/ih,best.w/iw,best.h/ih,(best.w*iw)/(best.h*ih)].join(',');
+  }catch(err){ return 'null'; }
+})()
+"""
+
+/** 把 [VIDEO_RECT_JS] 的返回值解析成 x/y/w/h/aspect；读不到返回 null */
+private fun parseVideoRect(raw: String?): FloatArray? {
+    val s = raw?.trim()?.trim('"') ?: return null
+    if (s.isEmpty() || s == "null") return null
+    val p = s.split(",")
+    if (p.size < 5) return null
+    val f = FloatArray(5)
+    for (i in 0 until 5) {
+        f[i] = p[i].trim().toFloatOrNull() ?: return null
+    }
+    if (f[2] <= 0.02f || f[3] <= 0.02f || f[4] <= 0.1f) return null
+    return f
+}
+
+/** 把探测结果报给原生（null = 没在播/读不到 → 原生按整张画布走） */
+private fun pushVideoRect(f: FloatArray?) {
+    if (f == null) {
+        com.xxxx.emby_vr.vr.VrNative.setWebVideoRect(0f, 0f, 1f, 1f, 0f)
+    } else {
+        com.xxxx.emby_vr.vr.VrNative.setWebVideoRect(f[0], f[1], f[2], f[3], f[4])
+    }
+}
+
+/**
  * 按"鼠标"身份给网页派发一个事件（父亲 2026-10-13）。
  *
  * 用 SOURCE_MOUSE 而不是默认的触摸：网页播放器的控制条是"鼠标一活动才浮出来"的，
@@ -655,6 +721,46 @@ private fun WebPageForSite(site: Int) {
             kotlinx.coroutines.delay(1000L)
         }
     }
+
+    /*
+     * 每 250ms 问一次"网页里那块视频画面在哪、宽高多少"，报给原生（父亲 2026-10-15）。
+     *
+     * 银幕据此按视频真实比例变宽、并且只采那块画面 —— 网页视频也能像 Emby 播片那样用足墙宽。
+     * 没在播、页面还没好、读失败，一律报"没有"，原生退回整张画布 + 原比例的老路。
+     */
+    LaunchedEffect(Unit) {
+        while (true) {
+            val js = VIDEO_RECT_JS
+            if (com.xxxx.emby_vr.vr.VrTuning.webEngine == 1) {
+                val s = geckoSessionRef
+                if (s == null) {
+                    pushVideoRect(null)
+                } else {
+                    runCatching {
+                        val res = s.evaluateJS(js)
+                        res.accept(
+                            org.mozilla.geckoview.GeckoResult.OnValueListener { v ->
+                                pushVideoRect(parseVideoRect(v?.toString()))
+                            },
+                        )
+                        res.accept(
+                            org.mozilla.geckoview.GeckoResult.OnExceptionListener { _ ->
+                                pushVideoRect(null)
+                            },
+                        )
+                    }.onFailure { pushVideoRect(null) }
+                }
+            } else {
+                val w = webRef
+                if (w == null) {
+                    pushVideoRect(null)
+                } else {
+                    w.evaluateJavascript(js) { r -> pushVideoRect(parseVideoRect(r)) }
+                }
+            }
+            kotlinx.coroutines.delay(250L)
+        }
+    }
     /* 网页要"全屏"时，它把自己的播放视图塞进这个容器里（腾讯的「全屏」按钮走这条路） */
     var fullscreen by remember { mutableStateOf(false) }
     var customContainer by remember { mutableStateOf<android.widget.FrameLayout?>(null) }
@@ -1172,6 +1278,8 @@ private fun WebPageForSite(site: Int) {
             /* 离开网页页一定要收回全屏状态，否则银幕会一直贴着面板纹理 */
             WebPageHub.setFullscreen(false)
             WebPageHub.clear()
+            /* 网页层收摊：把"视频画面"清掉，免得银幕还按上一块画面裁（父亲 2026-10-15） */
+            pushVideoRect(null)
             webRef?.let { wv ->
                 runCatching { wv.stopLoading() }
                 runCatching { wv.loadUrl("about:blank") }

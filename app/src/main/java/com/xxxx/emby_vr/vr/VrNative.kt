@@ -65,6 +65,28 @@ object VrNative {
         }
     }
 
+    /**
+     * 网页里那块视频画面（父亲 2026-10-15：网页视频也要跟 Emby 播片一样自动调高宽、用足墙宽）。
+     *
+     * x/y/w/h 是这块画面在网页视口里的位置与大小（0~1），aspect 是视频真实比例；
+     * 没在播或读不到时 aspect 传 0（原生会退回"整张画布 + 原比例"）。
+     */
+    private external fun nativeSetWebVideoRect(
+        x: Float,
+        y: Float,
+        w: Float,
+        h: Float,
+        aspect: Float,
+    )
+
+    fun setWebVideoRect(x: Float, y: Float, w: Float, h: Float, aspect: Float) {
+        try {
+            if (loaded) nativeSetWebVideoRect(x, y, w, h, aspect)
+        } catch (t: Throwable) {
+            Log.e(TAG, "设置网页视频画面失败：${t.message}")
+        }
+    }
+
     /** 换排（控制条上的「选座」） */
     fun setSeat(seat: Int) {
         try {

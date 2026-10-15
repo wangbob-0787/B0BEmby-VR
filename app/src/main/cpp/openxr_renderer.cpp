@@ -355,6 +355,13 @@ uniform int uDownsample;      // 1 = 视频降采样（4×4 盒式平均）
 uniform float uJitter;        // 每帧变的抖动种子（打散 8 位量化的色带）
 uniform int uTestPattern;     // 1 = 用固定测试图替代视频纹理（黑纹诊断，2026-10-09）
 uniform samplerExternalOES uTexture;
+/*
+ * 纹理采样窗口（父亲 2026-10-15：网页视频铺满墙宽）。
+ * 默认 (1,1)/(0,0) = 整张纹理；网页在大银幕上时设成"视频画面"那一块，
+ * 于是黑边不会被贴上银幕。除银幕以外的所有绘制都显式设回默认值。
+ */
+uniform vec2 uUvScale;
+uniform vec2 uUvBias;
 out vec4 fragColor;
 
 /* 抖动用的哈希（打散 8 位量化色带）*/
@@ -366,6 +373,8 @@ float hash21(vec2 p) {
 
 void main() {
     vec4 outColor;
+    /* 纹理采样窗口（网页视频那块画面）；测试图与圆点仍用原始 vUv，不受影响 */
+    vec2 uvT = vUv * uUvScale + uUvBias;
     if (uTestPattern == 1) {
         /*
          * 固定测试图（2026-10-09 黑纹诊断）：完全不依赖视频输入链路。
@@ -422,12 +431,12 @@ void main() {
             for (int i = 0; i < 4; i++) {
                 for (int j = 0; j < 4; j++) {
                     vec2 o = (vec2(float(i), float(j)) - vec2(1.5)) * 0.5 * uScreenStep;
-                    acc += texture(uTexture, vUv + o).rgb * w[i * 4 + j];
+                    acc += texture(uTexture, uvT + o).rgb * w[i * 4 + j];
                 }
             }
             c = vec4(acc / 36.0, 1.0);
         } else {
-            c = texture(uTexture, vUv);
+            c = texture(uTexture, uvT);
         }
         if (uExpandRange == 1) {
             /*
@@ -466,10 +475,10 @@ void main() {
          * 锐化：中心与四邻域均值之差加回去（近似 unsharp mask）。
          * 只在视频上做 —— 面板/控制条是文字界面，锐化只会生出毛边。
          */
-        vec3 nb = texture(uTexture, vUv + vec2(uTexel.x, 0.0)).rgb
-                + texture(uTexture, vUv - vec2(uTexel.x, 0.0)).rgb
-                + texture(uTexture, vUv + vec2(0.0, uTexel.y)).rgb
-                + texture(uTexture, vUv - vec2(0.0, uTexel.y)).rgb;
+        vec3 nb = texture(uTexture, uvT + vec2(uTexel.x, 0.0)).rgb
+                + texture(uTexture, uvT - vec2(uTexel.x, 0.0)).rgb
+                + texture(uTexture, uvT + vec2(0.0, uTexel.y)).rgb
+                + texture(uTexture, uvT - vec2(0.0, uTexel.y)).rgb;
         outColor.rgb += (outColor.rgb - nb * 0.25) * uSharpen;
     }
     outColor.rgb = clamp(outColor.rgb, 0.0, 1.0);
@@ -1113,6 +1122,24 @@ std::atomic<float> gRayScale{0.35f};
 std::atomic<float> gScreenWidth{26.f};
 std::atomic<float> gScreenDistance{15.f};
 
+/*
+ * 网页里"那块视频画面"在画布上的位置与大小（父亲 2026-10-15 要求：网页视频也跟 Emby 播片一样
+ * 自动调高宽、把墙宽用足）。
+ *
+ * 背景：三站的网页播放器都按视频原始比例居中显示，比例不是 16:9 时四周留黑边；我们这块银幕
+ * 以前固定按 16:9 贴整张画布，于是黑边被一起贴上去、画面显得小一圈。
+ *
+ * Java 侧每 250ms 从网页里读一次这块画面（归一化到视口的 0~1 矩形）连同视频真实比例报上来：
+ *   · 银幕比例改用视频比例（宽银幕就能像播片那样顶满墙宽）
+ *   · 纹理只采这一块（黑边不带上银幕）
+ * gWebAspect = 0 表示"没读到"（没在播、页面还没好）→ 按整张纹理、用原来的比例走。
+ */
+std::atomic<float> gWebUvX{0.f};
+std::atomic<float> gWebUvY{0.f};
+std::atomic<float> gWebUvW{1.f};
+std::atomic<float> gWebUvH{1.f};
+std::atomic<float> gWebAspect{0.f};
+
 
 
 /*
@@ -1374,6 +1401,9 @@ struct VrContext {
     GLint colorLoc = -1;
     GLint useTexLoc = -1;
     GLint texLoc = -1;
+    /* 纹理采样窗口（网页视频铺满墙宽，2026-10-15）：默认整张，银幕那一路按视频画面裁 */
+    GLint uvScaleLoc = -1;
+    GLint uvBiasLoc = -1;
     GLint circleLoc = -1;          // uCircle：纯色画成圆点还是方块
     GLint expandLoc = -1;          // uExpandRange：视频有限范围 → 全范围
     GLint brightLoc = -1;          // uBrightness：画面亮度（控制条上可调）
@@ -1959,6 +1989,9 @@ void drawMesh(VrContext &c, GLuint vbo, int vertexCount, const Mat4 &mvp, float 
     glUseProgram(c.program);
     glUniformMatrix4fv(c.mvpLoc, 1, GL_FALSE, mvp.m);
     glUniform1i(c.useTexLoc, 0);
+    /* 除银幕以外的绘制一律采整张纹理（银幕那一路在 drawScreen 里自己设窗口） */
+    if (c.uvScaleLoc >= 0) glUniform2f(c.uvScaleLoc, 1.f, 1.f);
+    if (c.uvBiasLoc >= 0) glUniform2f(c.uvBiasLoc, 0.f, 0.f);
     glUniform4f(c.colorLoc, r, g, b, 1.f);
     if (c.circleLoc >= 0) glUniform1i(c.circleLoc, circle ? 1 : 0);
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
@@ -2670,7 +2703,12 @@ ScreenPlacement frontScreen(const VrContext &c) {
     // 防穿越推量（2026-10-10）：走近银幕到墙根时场景整体后推，见 updateViewerAnchor
     p.cz = -gScreenDistance.load() - gScenePush.load();
     p.width = gScreenWidth.load();      // 尺寸可运行时调
-    p.aspect = c.videoAspect.load();
+    /*
+     * 网页在大银幕上、并且读到了那块视频画面 → 银幕形状按**视频**比例（父亲 2026-10-15：
+     * 网页视频要跟 Emby 播片一样自动调高宽、把墙宽用足）。读不到就退回原来的比例。
+     */
+    const float webAspect = gWebAspect.load();
+    p.aspect = (c.screenShowsWeb.load() && webAspect > 0.01f) ? webAspect : c.videoAspect.load();
     /*
      * 影厅开着的时候，画面必须钉在影厅前墙那块银幕开口上（跟着换排一起挪），
      * 而不是钉在眼睛高度 —— 否则换一排除屏与墙的关系就变（父亲 2026-10-10 实测）。
@@ -3934,9 +3972,22 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
          * 播放画面与海报墙走同一条绘制路径，只有摆位不同 —— 2026-10-05 父亲要求
          * 「海报墙与播放屏分开」：以前是同一块屏来回换贴图，播放一开海报墙就被顶掉。
          */
-        auto drawScreen = [&](const ScreenPlacement &place, unsigned tex, bool isVideo = false) {
+        auto drawScreen = [&](const ScreenPlacement &place, unsigned tex, bool isVideo = false,
+                              bool webCrop = false) {
             const Mat4 mvp = multiply(multiply(proj, view4), placementModel(place));
             glUseProgram(c.program);
+            /*
+             * 采样窗口：网页在大银幕上（webCrop）时只采"视频画面"那一块 —— 网页播放器留的
+             * 黑边不带上银幕，视频正好铺满（父亲 2026-10-15）。其余情况采整张。
+             */
+            if (c.uvScaleLoc >= 0) {
+                glUniform2f(c.uvScaleLoc, webCrop ? gWebUvW.load() : 1.f,
+                            webCrop ? gWebUvH.load() : 1.f);
+            }
+            if (c.uvBiasLoc >= 0) {
+                glUniform2f(c.uvBiasLoc, webCrop ? gWebUvX.load() : 0.f,
+                            webCrop ? gWebUvY.load() : 0.f);
+            }
             /* 这一路永远不用测试图（2026-10-09 诊断开关，只在视频独立层开） */
             if (c.testPatternLoc >= 0) glUniform1i(c.testPatternLoc, 0);
             if (gNoPostfx.load() != 0) {
@@ -4057,7 +4108,7 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
             const GLuint screenTex =
                 webOnScreen2 ? c.webTex
                              : (panelOnScreen2 ? c.panelTex : (videoReady ? c.videoTex : 0));
-            drawScreen(frontScreen(c), screenTex, true);
+            drawScreen(frontScreen(c), screenTex, true, webOnScreen2);
         }
 
         /*
@@ -5751,6 +5802,10 @@ void renderThreadMain() {
         c.colorLoc = glGetUniformLocation(c.program, "uColor");
         c.useTexLoc = glGetUniformLocation(c.program, "uUseTexture");
         c.texLoc = glGetUniformLocation(c.program, "uTexture");
+        c.uvScaleLoc = glGetUniformLocation(c.program, "uUvScale");
+        c.uvBiasLoc = glGetUniformLocation(c.program, "uUvBias");
+        if (c.uvScaleLoc >= 0) glUniform2f(c.uvScaleLoc, 1.f, 1.f);
+        if (c.uvBiasLoc >= 0) glUniform2f(c.uvBiasLoc, 0.f, 0.f);
         c.circleLoc = glGetUniformLocation(c.program, "uCircle");
         c.expandLoc = glGetUniformLocation(c.program, "uExpandRange");
         c.brightLoc = glGetUniformLocation(c.program, "uBrightness");
@@ -6170,6 +6225,44 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetVideoAspect(JNIEnv *env, jobject /* 
     if (aspect > 0.2f && aspect < 6.f) {
         g.videoAspect = aspect;
         LOGI("视频比例 → %.3f", (double) aspect);
+    }
+}
+
+/**
+ * 网页里那块视频画面（父亲 2026-10-15）。
+ *
+ * Java 侧每 250ms 从网页读一次"正在播的视频画面在视口里占哪一块"（x/y/w/h 归一化 0~1）
+ * 和视频的真实比例报过来；没在播或读不到时 aspect 传 0。
+ *
+ * 原生这边：网页在大银幕上时，银幕按这个比例变宽（宽银幕就能像播片一样顶满墙宽）、
+ * 并且只采纹理里这一块（网页播放器留的黑边不带上银幕）。aspect = 0 时全部退回老路。
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetWebVideoRect(JNIEnv *env, jobject /* this */,
+                                                         jfloat x, jfloat y, jfloat w, jfloat h,
+                                                         jfloat aspect) {
+    if (aspect <= 0.01f) {
+        gWebUvX.store(0.f);
+        gWebUvY.store(0.f);
+        gWebUvW.store(1.f);
+        gWebUvH.store(1.f);
+        if (gWebAspect.exchange(0.f) != 0.f) LOGI("网页视频画面 → 没了，银幕回到整张");
+        return;
+    }
+    /* 兜一下：矩形必须落在画布内、且不能是空块（网页读数偶尔会给出 0 宽） */
+    const float cx = fminf(fmaxf(x, 0.f), 0.999f);
+    const float cy = fminf(fmaxf(y, 0.f), 0.999f);
+    const float cw = fminf(fmaxf(w, 0.02f), 1.f - cx);
+    const float ch = fminf(fmaxf(h, 0.02f), 1.f - cy);
+    gWebUvX.store(cx);
+    gWebUvY.store(cy);
+    gWebUvW.store(cw);
+    gWebUvH.store(ch);
+    const float old = gWebAspect.exchange(aspect);
+    /* 只在明显变化时打日志，免得每 250ms 刷屏 */
+    if (fabsf(old - aspect) > 0.02f) {
+        LOGI("网页视频画面：比例 %.3f · 画面块 x=%.3f y=%.3f w=%.3f h=%.3f", (double) aspect,
+             (double) cx, (double) cy, (double) cw, (double) ch);
     }
 }
 
