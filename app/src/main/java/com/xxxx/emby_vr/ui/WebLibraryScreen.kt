@@ -398,7 +398,12 @@ private fun GeckoWebView(
                          * 并把载入**推迟到内核收尾之后**再做 —— 单窗口，历史连着，也没有两次载入互撞。
                          */
                         if (!uri.startsWith("about:")) {
-                            val from = runCatching { session.currentUri }.getOrNull()
+                            /*
+                             * run 530 编译失败：GeckoSession 这一版没有 currentUri（Unresolved reference）。
+                             * 本次只为验证「带来源页」这一条假设，且腾讯首页固定是 v.qq.com ——
+                             * 先用固定值，假设成立再改成从 onPageStart 记录的真实地址。
+                             */
+                            val from = "https://v.qq.com/"
                             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                                 runCatching {
                                     /*
@@ -414,7 +419,7 @@ private fun GeckoWebView(
                                         session.load(
                                             org.mozilla.geckoview.GeckoSession.Loader()
                                                 .uri(uri)
-                                                .referrer(from ?: "https://v.qq.com/"),
+                                                .referrer(from),
                                         )
                                     } else {
                                         session.loadUri(uri)
