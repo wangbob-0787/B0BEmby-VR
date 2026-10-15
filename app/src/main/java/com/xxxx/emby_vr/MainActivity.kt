@@ -5152,7 +5152,11 @@ class MainActivity : ComponentActivity() {
                 if (s != null) {
                     com.xxxx.emby_vr.ui.WebLibraryScreen(
                         site = s,
-                        onWebStream = { playWebStream(it) },
+                        /*
+                         * 回调来自火狐内核自己的线程，而播放链路（建 mpv、挂 surface、改界面状态）
+                         * 必须在主线程 —— 先切回主线程再动（2026-10-16 自审补的，避免装机即崩）。
+                         */
+                        onWebStream = { obj -> runOnUiThread { playWebStream(obj) } },
                     )
                 }
             },
