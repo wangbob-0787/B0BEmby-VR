@@ -18,6 +18,7 @@
   var saidHello = false;
   var lastKey = '';
   var lastSent = 0;
+  var lastGood = null;
 
   function note(u) {
     if (!u || typeof u !== 'string') return;
@@ -61,7 +62,12 @@
 
   function scan() {
     var best = null, bestArea = 0;
-    var vs = document.querySelectorAll('video');
+    /*
+     * 只在"播放页"上认画面（父亲 2026-10-16：还没播、只是在首页点个「历史播放」，
+     * 银幕比例也跟着变）—— 非播放页上的自动预览视频一律不算。
+     */
+    var onPlayPage = /\/(video|bangumi\/play|cheese\/play|medialist)\//.test(location.href);
+    var vs = onPlayPage ? document.querySelectorAll('video') : [];
     for (var i = 0; i < vs.length; i++) {
       var v = vs[i];
       var vw = v.videoWidth || 0, vh = v.videoHeight || 0;
@@ -77,6 +83,11 @@
        * 不筛的话每次扫描挑中的对象会来回换，银幕比例跟着跳。
        */
       if (v.paused) continue;
+      /*
+       * 太小的预览窗不算（父亲 2026-10-16：浏览页面时点个「历史播放」按钮，比例也在变）。
+       * 正片在播放页上占视口宽度六成左右（实测 668/1100），缩略预览远小于此。
+       */
+      if (r.width < (window.innerWidth || 1) * 0.4) continue;
       var area = r.width * r.height;
       if (area <= bestArea) continue;
       var cw = r.width, ch = r.height;
@@ -108,6 +119,7 @@
         x: best.x / iw, y: best.y / ih, w: best.w / iw, h: best.h / ih,
         ar: best.ar, area: best.area, url: best.url
       };
+      lastGood = { t: Date.now(), rect: msg.rect };
       note(best.url);
       if (!saidHello) {
         saidHello = true;
@@ -115,6 +127,11 @@
           Math.round(ch) + ' @ ' + Math.round(best.x) + ',' + Math.round(best.y) +
           ' 视口 ' + iw + 'x' + ih);
       }
+    } else if (lastGood && Date.now() - lastGood.t < 10000) {
+      /*
+       * 缓冲/暂停的瞬间别当成"没画面"（那会让银幕缩一下再弹回来）——沿用 10 秒内的上一份。
+       */
+      msg.rect = lastGood.rect;
     }
     if (urls.length) msg.urls = urls.slice(-10);
     /*

@@ -523,7 +523,13 @@ private object WebRuntime {
                         bridgeCandidate = target
                         bridgeHits = 1
                     }
-                    if (bridgeHits >= 3) {
+                    /*
+                     * 进入（开始放片）确认 3 次够快（1.5 秒）；退出（画面消失）要等 16 次（8 秒）——
+                     * 浏览页面、切集、缓冲时页面上的视频元素会消失又出现，
+                     * 退出太快银幕就会跟着缩来缩去（父亲 2026-10-16 实测）。
+                     */
+                    val need = if (target > 0.1f) 3 else 16
+                    if (bridgeHits >= need) {
                         bridgeHits = 0
                         bridgeApplied = target
                         if (b != null && b[4] > 0.1f) {
