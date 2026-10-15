@@ -345,6 +345,43 @@ private object WebRuntime {
             android.util.Log.w("B0BEmbyVR", "清 v.qq.com 站点数据失败：${it.message}")
         }
     }
+
+    /**
+     * 打开腾讯页**之前**清一遍它的站点数据（2026-10-15）。
+     *
+     * 为什么必须挂在导航上：腾讯页面每次访问都会重新注册那个 Service Worker，
+     * 所以"进网页栏时清一次"只保一次 —— run 536 实测**第一次正常、第二次黑**。
+     * 挂钩到 onLoadRequest 才能保证每次打开腾讯页面都是干净状态。
+     *
+     * 清数据是异步的，这里返回一个 GeckoResult 把导航**挂住**，清完再放行
+     * （onLoadRequest 允许异步决定）；不在腾讯域上、或刚清过（8 秒内）则返回 null = 不干预。
+     */
+    fun wipeBeforeTencent(
+        ctx: android.content.Context,
+        runtime: org.mozilla.geckoview.GeckoRuntime,
+        uri: String,
+    ): org.mozilla.geckoview.GeckoResult<org.mozilla.geckoview.AllowOrDeny>? {
+        if (!com.xxxx.emby_vr.vr.VrTuning.webWipeNow(ctx)) return null
+        if (!uri.contains("v.qq.com")) return null
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastWipeMs < 8000L) return null
+        lastWipeMs = now
+        android.util.Log.i("B0BEmbyVR", "打开腾讯页面前清站点数据：$uri")
+        val out = org.mozilla.geckoview.GeckoResult<org.mozilla.geckoview.AllowOrDeny>()
+        runCatching {
+            runtime.storageController.clearDataFromHost(
+                "v.qq.com",
+                org.mozilla.geckoview.StorageController.ClearFlags.SITE_DATA,
+            ).accept(
+                { out.complete(org.mozilla.geckoview.AllowOrDeny.ALLOW) },
+                { out.complete(org.mozilla.geckoview.AllowOrDeny.ALLOW) },
+            )
+        }.onFailure {
+            android.util.Log.w("B0BEmbyVR", "清站点数据失败，直接放行：${it.message}")
+            out.complete(org.mozilla.geckoview.AllowOrDeny.ALLOW)
+        }
+        return out
+    }
 }
 
 @SuppressLint("SetJavaScriptEnabled")
@@ -414,6 +451,17 @@ private fun GeckoWebView(
                 s.settings.userAgentOverride = desktopUa
                 s.navigationDelegate = object :
                     org.mozilla.geckoview.GeckoSession.NavigationDelegate {
+                    /*
+                     * 每次要打开腾讯的页面之前先清一遍腾讯站数据（2026-10-15）。
+                     * 见 WebRuntime.wipeBeforeTencent 的注释 —— run 536 实测"第一次正常、
+                     * 第二次黑"，因为清一次只保一次，必须挂在导航上。
+                     */
+                    override fun onLoadRequest(
+                        session: org.mozilla.geckoview.GeckoSession,
+                        request: org.mozilla.geckoview.GeckoSession.NavigationDelegate.LoadRequest,
+                    ): org.mozilla.geckoview.GeckoResult<org.mozilla.geckoview.AllowOrDeny>? =
+                        WebRuntime.wipeBeforeTencent(ctx, runtime, request.uri)
+
                     /*
                      * 「在新窗口打开」= 交一个**全新的、还没打开过**的窗口给内核，由内核接过去显示。
                      *
