@@ -183,6 +183,18 @@ object VrTuning {
             .split(';').map { it.trim() }.filter { it.contains('=') }
     }
 
+    /**
+     * `<web_wipe>=1` 时清一次腾讯站的网页数据（2026-10-15）。
+     *
+     * 存在的理由：腾讯页面注册的 Service Worker 会持久化在 profile 里，即使内核已禁用 SW 能力，
+     * 这份残留注册仍在拦截脚本请求（run 534 实证）。清站点数据是去掉它的唯一途径。
+     * 清完请把这项改回 0，否则每次启动都会再清一遍、腾讯登录态反复丢。
+     */
+    fun webWipeNow(context: Context): Boolean {
+        val raw = read(context) ?: return false
+        return raw["web_wipe"]?.trim() == "1"
+    }
+
     /** 与原生 `nativeSetTuning` 的 key 一一对应 */
     const val KEY_SUPER_SAMPLE = 1
     const val KEY_SWAP_WAIT_MS = 2

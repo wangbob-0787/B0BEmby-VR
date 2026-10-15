@@ -306,6 +306,38 @@ private object WebRuntime {
         cached = fallback
         return fallback
     }
+
+    /** 本次进程是否已经清过腾讯站的网页数据（避免每开一次网页就清一遍，把登录态反复清掉）。 */
+    private var wipedTencent = false
+
+    /**
+     * 清掉腾讯站的网页数据（2026-10-15）。
+     *
+     * 为什么需要：腾讯页面注册的 Service Worker 会**持久化在 profile 里**。即使内核已经禁用
+     * SW 能力（run 534 实测探针 `navigator.serviceWorker` 已消失为 undefined），这份**残留注册
+     * 仍在拦截脚本请求** —— 日志里 SW 报错与脚本加载失败一条没少（各 10 条）。
+     * 清掉站点数据即可去掉这份注册。
+     *
+     * 用 `clearDataFromHost` 只清 v.qq.com 一个域，不动 B站 / 爱奇艺；
+     * 代价是腾讯网页的登录态会一起清掉（清完需要重新登录腾讯）。
+     *
+     * 由 `<web_wipe>=1` 触发，清一次即在本进程内失效。
+     */
+    fun wipeTencentOnce(ctx: android.content.Context, runtime: org.mozilla.geckoview.GeckoRuntime) {
+        if (wipedTencent) return
+        if (!com.xxxx.emby_vr.vr.VrTuning.webWipeNow(ctx)) return
+        wipedTencent = true
+        runCatching {
+            runtime.storageController.clearDataFromHost(
+                "v.qq.com",
+                org.mozilla.geckoview.StorageController.ClearFlags.SITE_DATA,
+            )
+        }.onSuccess {
+            android.util.Log.i("B0BEmbyVR", "已清 v.qq.com 站点数据（去掉残留的后台服务注册）")
+        }.onFailure {
+            android.util.Log.w("B0BEmbyVR", "清 v.qq.com 站点数据失败：${it.message}")
+        }
+    }
 }
 
 @SuppressLint("SetJavaScriptEnabled")
@@ -348,6 +380,8 @@ private fun GeckoWebView(
             val keepTouch = com.xxxx.emby_vr.vr.VrTuning.webTouchKept == 1
             val runtime = WebRuntime.get(ctx, keepTouch, com.xxxx.emby_vr.vr.VrTuning.webPrefsNow(ctx))
             android.util.Log.i("B0BEmbyVR", "网页内核就绪：触摸事件${if (keepTouch) "保留" else "已关掉"}")
+            /* 一次性清腾讯站数据（<web_wipe>=1 时才做）：去掉残留的后台服务注册，见该函数注释。 */
+            WebRuntime.wipeTencentOnce(ctx, runtime)
             /* 面板上正在显示的窗口；开新窗口时要更新它（事件必须发给正在显示的那个） */
             var panelView: org.mozilla.geckoview.GeckoView? = null
 
