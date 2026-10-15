@@ -603,12 +603,25 @@ private fun WebPageForSite(site: Int) {
      * 手机宽度那套上下文（phoneWidthContext）随之没有调用方，按父亲"不留死代码"
      * 的要求一并删掉。
      */
-    val desktopUa = if (com.xxxx.emby_vr.vr.VrTuning.webUaMode == 1) {
-        /* 与真实内核一致的身份：火狐 131 / Windows。切 <web_ua> 后重启应用生效。 */
+    /*
+     * 按站点给身份（2026-10-15 父亲实测）。
+     *
+     * 两家要求正好相反，一个全局身份必然得罪其中一家：
+     *  · 腾讯：内核是火狐，若对外自称 Chrome，它的接口看到"自称 Chrome 却没有
+     *    Chrome 的客户端提示头"就不返回数据 → 播放页只剩框架和灰条。所以腾讯必须
+     *    自称火狐（与真实内核一致）。
+     *  · 爱奇艺：直接要求 Chrome，自称火狐会被提示换浏览器。
+     * B站不挑，跟随 <web_ua> 那个开关（切完重启应用生效）。
+     */
+    val firefoxUa =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0"
-    } else {
+    val chromeUa =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    val desktopUa = when (site) {
+        1 -> firefoxUa                       // 腾讯
+        2 -> chromeUa                        // 爱奇艺
+        else -> if (com.xxxx.emby_vr.vr.VrTuning.webUaMode == 1) firefoxUa else chromeUa
     }
     /*
      * 诊断用（2026-10-15）：调参文件里给了 <web_url> 就加载它（本地测试页），
