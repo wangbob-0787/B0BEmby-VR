@@ -20,6 +20,10 @@
   var lastSent = 0;
   var lastGood = null;
 
+  /** 播放接口解析出来的可播地址（多档清晰度），客户端据此用自己的播放器播 */
+  var playable = null;
+  var lastPlaySig = '';
+
   function note(u) {
     if (!u || typeof u !== 'string') return;
     if (!/\.(m3u8|mpd|mp4|m4s|flv)(\?|#|$)/i.test(u)) return;
@@ -31,12 +35,87 @@
     if (urls.length > 30) urls.shift();
   }
 
+  /*
+   * 播放接口的返回是"金矿"（2026-10-16）：B站 的 dash 音视频地址、清晰度、时长都在里面。
+   * 本机实测（yt-dlp 取真实流 + mpv 播）：**只要 Referer + User-Agent 两样**，
+   * mpv 用「视频流 + --audio-file 音频流」就能直接播，不需要网页播放器。
+   * 会员片才额外需要 Cookie（SESSDATA），那一条由客户端从网页里取。
+   */
+  function parsePlayurl(text) {
+    try {
+      var j = JSON.parse(text);
+      var d = j && j.data;
+      if (!d) return;
+      var streams = [];
+      var durSec = 0;
+      if (d.dash) {
+        durSec = Math.round(d.dash.duration || 0);
+        var auds = (d.dash.audio || []).slice().sort(function (a, b) {
+          return (b.bandwidth || 0) - (a.bandwidth || 0);
+        });
+        var audioUrl = auds.length ? (auds[0].baseUrl || auds[0].base_url || '') : '';
+        var vids = (d.dash.video || []).slice().sort(function (a, b) {
+          return (b.height || 0) - (a.height || 0);
+        });
+        for (var i = 0; i < vids.length; i++) {
+          var v = vids[i];
+          var u = v.baseUrl || v.base_url || '';
+          if (!u) continue;
+          streams.push({
+            id: v.id || 0, height: v.height || 0, width: v.width || 0,
+            bw: v.bandwidth || 0, vcodec: v.codecs || '',
+            video: u, audio: audioUrl
+          });
+        }
+      }
+      if (!streams.length && d.durl && d.durl.length) {
+        durSec = Math.round((d.timelength || 0) / 1000);
+        for (var k = 0; k < d.durl.length; k++) {
+          streams.push({
+            id: d.quality || 0, height: 0, width: 0, bw: 0, vcodec: '',
+            video: d.durl[k].url || '', audio: ''
+          });
+        }
+      }
+      if (!streams.length) return;
+      /* 同一份播放接口不重复上报（URL 很长，没变化就不发） */
+      var sig = streams.length + '|' + String(streams[0].video).slice(-70);
+      if (sig === lastPlaySig) return;
+      lastPlaySig = sig;
+      playable = {
+        kind: 'play', t: Date.now(), frame: location.href,
+        durSec: durSec, quality: d.quality || 0, streams: streams.slice(0, 10)
+      };
+      console.log('[b0b] 拿到播放接口：' + streams.length + ' 档，时长 ' + durSec +
+        's，最高 ' + (streams[0].height || '?') + 'p');
+      try { window.postMessage({ __b0b: 1, payload: playable }, '*'); } catch (e) {}
+    } catch (e) {}
+  }
+
+  function isPlayApi(u) {
+    return !!u && u.indexOf('playurl') >= 0;
+  }
+
   try {
     var origFetch = window.fetch;
     if (origFetch) {
       window.fetch = function (input, init) {
-        try { note(typeof input === 'string' ? input : (input && input.url)); } catch (e) {}
-        return origFetch.apply(this, arguments);
+        var u = '';
+        try {
+          u = (typeof input === 'string') ? input : ((input && input.url) || '');
+          note(u);
+        } catch (e) {}
+        var p = origFetch.apply(this, arguments);
+        try {
+          if (isPlayApi(u) && p && p.then) {
+            p.then(function (res) {
+              try {
+                res.clone().text().then(parsePlayurl).catch(function () {});
+              } catch (e) {}
+            }).catch(function () {});
+          }
+        } catch (e) {}
+        return p;
       };
     }
   } catch (e) {}
@@ -44,7 +123,14 @@
   try {
     var origOpen = XMLHttpRequest.prototype.open;
     XMLHttpRequest.prototype.open = function (m, u) {
-      try { note(u); } catch (e) {}
+      try {
+        note(u);
+        if (isPlayApi(u)) {
+          this.addEventListener('load', function () {
+            try { parsePlayurl(this.responseText); } catch (e) {}
+          });
+        }
+      } catch (e) {}
       return origOpen.apply(this, arguments);
     };
   } catch (e) {}

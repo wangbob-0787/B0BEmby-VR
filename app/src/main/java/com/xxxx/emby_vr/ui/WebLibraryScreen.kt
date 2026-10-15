@@ -312,6 +312,13 @@ private fun dispatchArrowKey(wv: android.view.View, right: Boolean) {
 @Composable
 fun WebLibraryScreen(
     site: Int,
+    /**
+     * 抓到"可播地址"时的回调（2026-10-16）。
+     *
+     * 由 MainActivity 接过去，用我们自己的播放器播 —— 这样网页只当选片器，
+     * 比例、弹幕、控制条都不再受网页排版摆布（父亲 02:05 定的方向）。
+     */
+    onWebStream: (org.json.JSONObject) -> Unit = {},
 ) {
     /*
      * 换站点 = 整棵网页子树重建（父亲 2026-10-13 报"B站切腾讯打不开，要先去播一部片子才能开"）。
@@ -409,6 +416,15 @@ private object WebRuntime {
     private var bridgeCandidate = 0f
     private var bridgeHits = 0
 
+    /** 上次记录的"可播地址"指纹（同一份不重复打日志） */
+    private var bridgeLastPlaySig = ""
+
+    /** 最近一次拿到的可播地址（网页播放接口的完整返回），供"用自己的播放器播"用 */
+    private var bridgePlayable: org.json.JSONObject? = null
+
+    /** 内容脚本随消息附上的本站 cookie（会员片要拿它才换得到高清地址） */
+    private var bridgeCookie = ""
+
     /** 装扩展 + 接上消息通道；一个进程只做一次 */
     fun ensureBridge(runtime: org.mozilla.geckoview.GeckoRuntime) {
         if (bridgeInstalled) return
@@ -462,10 +478,61 @@ private object WebRuntime {
         startBridgeTicker()
     }
 
+    /**
+     * 网页播放接口解析出来的可播地址（2026-10-16）。
+     *
+     * 这一段是"网页只选片、播放交给我们自己的播放器"的原料：B站 的 dash 音视频地址、
+     * 每一档清晰度、时长都在里面。本机实测（yt-dlp 取真实流 + mpv 播）：只要
+     * Referer + User-Agent 两样就能直接播（会员片才额外需要 Cookie，由客户端从网页里取）。
+     *
+     * 父亲 02:10 定：**不做清晰度菜单，固定用最高那档**（streams[0] 就是最高，
+     * 扩展已按高度降序排好）。列表留着，将来想要菜单不用再改抓取。
+     */
+    private fun onBridgePlayable(obj: org.json.JSONObject) {
+        val streams = obj.optJSONArray("streams") ?: return
+        val lines = StringBuilder()
+        for (i in 0 until streams.length()) {
+            val s = streams.optJSONObject(i) ?: continue
+            if (lines.isNotEmpty()) lines.append(" / ")
+            lines.append(s.optInt("height", 0)).append("p@")
+                .append(s.optInt("bw", 0) / 1000).append("k")
+        }
+        val dur = obj.optInt("durSec", 0)
+        val ck = if (bridgeCookie.isNotBlank()) "有" else "无"
+        val sig = "$dur|$lines|$ck"
+        if (sig == bridgeLastPlaySig) return
+        bridgeLastPlaySig = sig
+        bridgePlayable = obj
+        android.util.Log.i(
+            "B0BEmbyVR",
+            "网页可播地址就绪：" + streams.length() + " 档（" + lines + "），时长 " + dur +
+                "s，登录票 " + ck + "，页面 " + obj.optString("frame").take(60),
+        )
+        /*
+         * 自动接管（2026-10-16，父亲定的方向）：抓到地址就交给我们自己的播放器。
+         * 同一次播放只交一次 —— sig 变了才走到这里，页面反复请求 playurl 不会反复切。
+         * cookie 一并交给客户端（会员片要拿它才播得动高清流）。
+         */
+        if (bridgeCookie.isNotBlank()) {
+            try {
+                obj.put("cookie", bridgeCookie)
+            } catch (e: Exception) {
+            }
+        }
+        onWebStream(obj)
+    }
+
     /** 扩展报上来的数据；页面里有几个框架就报几份，谁的面积大由 ticker 挑 */
     private fun onBridgeMessage(message: Any?) {
         val obj = message as? org.json.JSONObject ?: return
+        if (obj.optString("kind") == "play") {
+            onBridgePlayable(obj)
+            return
+        }
         if (obj.optString("kind") != "rect") return
+        /* 内容脚本随每条消息附上的本站 cookie（会员片要拿它才换得到高清地址） */
+        val ck = obj.optString("cookie")
+        if (ck.isNotBlank()) bridgeCookie = ck
         val frame = obj.optString("frame")
         val rect = obj.optJSONObject("rect")
         if (rect != null) {

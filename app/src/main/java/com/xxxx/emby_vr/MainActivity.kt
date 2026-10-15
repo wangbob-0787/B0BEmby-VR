@@ -2218,7 +2218,49 @@ class MainActivity : ComponentActivity() {
     }
 
     /** 起播 */
-    private fun startPlayer(url: String, title: String, startMs: Long) {
+    /**
+     * 用我们自己的播放器播"网页抓来的流"（2026-10-16，父亲定的方向：网页只当选片器）。
+     *
+     * 网页此时已经在播同一个片子 —— 直接切过去会两个声音一起响，所以先 closeWeb()
+     * 把网页面收摊（与"Emby 片子顶掉网页"同一套处理）。
+     *
+     * 凭证：请求头带 Referer（页面地址，站点用它校验来路）+ 浏览器的 User-Agent；
+     * 会员片再加网页里取到的 Cookie（父亲的会员身份就在这一条里）。
+     *
+     * 兜底：8 秒后内核还没出画面，说明这条流播不动（地址过期 / 缺凭证 / 编码不支持），
+     * 打一条日志并提示，父亲不会停在黑屏上猜。
+     */
+    private fun playWebStream(obj: org.json.JSONObject) {
+        val s = obj.optJSONArray("streams")?.optJSONObject(0) ?: return
+        if (s.optString("video").isBlank()) return
+        val site = webSiteState.value
+        val hasCookie = obj.optString("cookie").isNotBlank()
+        Log.i(
+            TAG,
+            "网页流 → 自己的播放器：最高 ${s.optInt("height", 0)}p，" +
+                "音轨=${s.optString("audio").isNotBlank()}，会员票=$hasCookie，站点 $site",
+        )
+        closeWeb()
+        startPlayer(url = "", title = "网页", startMs = 0L, webStream = obj)
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            val m = mpvBackend
+            if (m != null && !m.videoReady()) {
+                Log.w(TAG, "网页流 8 秒内没出画面（站点 $site）")
+                hud("这条流没能播起来（可能是会员票或地址问题）")
+            }
+        }, 8000L)
+    }
+
+    private fun startPlayer(
+        url: String,
+        title: String,
+        startMs: Long,
+        /**
+         * 网页抓来的可播地址（2026-10-16）：非空时绕过 Emby 走内核直连 ——
+         * 视频流、外部音轨、请求头都从这一份里取。为空时行为与以前完全一致。
+         */
+        webStream: org.json.JSONObject? = null,
+    ) {
         /*
          * 播放画面走哪条线（2026-10-05）：
          *   VR 模式 → VR 上下文里建的那张纹理（原生播放屏，贴到 VR 里那块平面上）
@@ -2241,7 +2283,7 @@ class MainActivity : ComponentActivity() {
              * unknown error (-21) 一万条后直接失败）。所以自己解 —— 和 PICO 上
              * 能正常播的 4XVR 一个路子。标记由取播放信息那一步立起来。
              */
-            if (com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder) {
+            if (webStream != null || com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder) {
                 Log.i(TAG, "起播走 mpv 内核（杜比视界 Profile 5 或选了图形字幕，片源 ${com.xxxx.emby_vr.player.PlaybackFlags.videoDescriptor}，" +
                     "版本 ${com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionProfile ?: "未探到"}）")
                 mpvBackend?.stop()
@@ -2257,7 +2299,11 @@ class MainActivity : ComponentActivity() {
                  * （Static=true 就是原样直出，不转码不换封装）。
                  */
                 val srcId = pendingMediaSourceId
-                val directUrl = buildString {
+                /* 网页流：地址直接用抓来的那一路（其余流程与内核播 Emby 片源一致） */
+                val webFirst = webStream?.optJSONArray("streams")?.optJSONObject(0)
+                val directUrl = if (webFirst != null) {
+                    webFirst.optString("video")
+                } else buildString {
                     append(userServer())
                     append("/emby/videos/")
                     append(pendingItemId ?: "")
@@ -2280,8 +2326,11 @@ class MainActivity : ComponentActivity() {
                  * 帧率在 12~24 之间跳、整个 VR 场景跟着抖。银幕在头显里根本用不到 4K，
                  * 宽度上限压到 1920（高度按片源比例算），像素量降到四分之一。
                  */
-                val srcW = com.xxxx.emby_vr.player.PlaybackFlags.videoWidth.takeIf { it > 0 } ?: 1920
-                val srcH = com.xxxx.emby_vr.player.PlaybackFlags.videoHeight.takeIf { it > 0 } ?: 1080
+                /* 网页流：画布按抓到的这一档分辨率算；Emby 片源仍按播放信息里的值（父亲 2026-10-16） */
+                val srcW = webFirst?.optInt("width", 0)?.takeIf { it > 0 }
+                    ?: com.xxxx.emby_vr.player.PlaybackFlags.videoWidth.takeIf { it > 0 } ?: 1920
+                val srcH = webFirst?.optInt("height", 0)?.takeIf { it > 0 }
+                    ?: com.xxxx.emby_vr.player.PlaybackFlags.videoHeight.takeIf { it > 0 } ?: 1080
                 /*
                  * 2026-10-09：上限可运行时调（vr-tuning 的 `video_surface_w`）。
                  * 实测杜比还原每帧吃约 15ms GPU，开销与像素量成正比，
@@ -2294,7 +2343,32 @@ class MainActivity : ComponentActivity() {
                 mpvBackend = com.xxxx.emby_vr.player.MpvBackend(this).also { m ->
                     m.attachSurface(surface)
                     m.setSurfaceSize(vw, vh)
-                    m.play(directUrl, startMs / 1000.0)
+                    if (webFirst != null) {
+                        /*
+                         * 网页流：请求头 = 页面地址（Referer）+ 浏览器身份（UA），
+                         * 会员片再加 Cookie（父亲的会员身份）。音频是分开的一路，用 mpv 的外部音轨挂上。
+                         */
+                        val hd = mutableMapOf(
+                            "Referer" to webStream?.optString("frame").orEmpty(),
+                            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+                                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        )
+                        val ck = webStream?.optString("cookie").orEmpty()
+                        if (ck.isNotBlank()) hd["Cookie"] = ck
+                        m.playStream(
+                            directUrl,
+                            webFirst.optString("audio").takeIf { it.isNotBlank() },
+                            hd,
+                            startMs / 1000.0,
+                        )
+                        Log.i(
+                            TAG,
+                            "网页流送进内核：${webFirst.optInt("height", 0)}p，外部音轨=" +
+                                webFirst.optString("audio").isNotBlank() + "，会员票=" + ck.isNotBlank(),
+                        )
+                    } else {
+                        m.play(directUrl, startMs / 1000.0)
+                    }
                     /*
                      * 起播时把用户选的缓冲档位下给 mpv（父亲 2026-10-11 问内核这边缓冲起没起作用）。
                      *
@@ -5076,7 +5150,10 @@ class MainActivity : ComponentActivity() {
             content = {
                 val s = webSiteState.value
                 if (s != null) {
-                    com.xxxx.emby_vr.ui.WebLibraryScreen(site = s)
+                    com.xxxx.emby_vr.ui.WebLibraryScreen(
+                        site = s,
+                        onWebStream = { playWebStream(it) },
+                    )
                 }
             },
             panelW = 1920,

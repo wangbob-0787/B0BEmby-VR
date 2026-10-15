@@ -463,6 +463,42 @@ class MpvBackend(private val context: Context) {
         }
     }
 
+    /**
+     * 播"从网页抓来的流"（2026-10-16，父亲定：直接用自己的播放器播）。
+     *
+     * 与 [play] 的两点差别：
+     *   1. 先设 `http-header-fields` —— 站点要 Referer + User-Agent 才给数据
+     *      （会员片还要 Cookie）。本机实测（yt-dlp 取真实流 + mpv 播 B站）：这两样就够。
+     *   2. 音视频分离的流（B站 的 dash）：音频走 mpv 的 `audio-file`。
+     *
+     * 这两个都是"对下一个加载的文件生效"的选项，必须排在 loadfile 之前 ——
+     * 顺序由单线程队列保证（和 play 里的 start 同一个道理）。
+     */
+    fun playStream(
+        videoUrl: String,
+        audioUrl: String?,
+        headers: Map<String, String>,
+        startSec: Double = 0.0,
+    ) {
+        if (videoUrl.isBlank()) return
+        post {
+            try {
+                MPVLib.setOptionString(
+                    "http-header-fields",
+                    headers.entries.joinToString(",") { "${it.key}: ${it.value}" },
+                )
+            } catch (t: Throwable) {
+                Log.e(TAG, "设请求头失败: ${t.message}")
+            }
+            try {
+                MPVLib.setOptionString("audio-file", audioUrl ?: "")
+            } catch (t: Throwable) {
+                Log.e(TAG, "设外部音轨失败: ${t.message}")
+            }
+        }
+        play(videoUrl, startSec)
+    }
+
     fun setPaused(paused: Boolean) {
         // 顺手更新缓存：界面按了暂停键立刻读 isPaused() 也要拿到新值，别等下一轮轮询
         cPaused = paused
