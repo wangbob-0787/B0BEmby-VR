@@ -281,12 +281,32 @@ private fun GeckoWebView(
             },
         factory = { ctx ->
             /*
-             * 2026-10-14：这里曾试过给内核加启动参数
-             * （--setpref=dom.w3c_touch_events.enabled=0，想关掉触摸事件、让网站把我们当电脑），
-             * 父亲实测那一版包有问题 —— 撤掉，不动内核启动参数。
-             * "装成电脑"这条路只保留下面的 UA + 视口两处设置。
+             * 2026-10-15：**把"关掉触摸事件"这条加回来**。
+             *
+             * 昨晚唯一一次腾讯播放页正常（r519）就带着这条设置；它被撤掉的理由是"父亲实测那一版
+             * 包有问题"，而当时的症状始终没问清（那时还有"包损坏"这档事搅在一起），于是白撤了。
+             * 之后 r521→r525 一路改"开新窗口的方式"，腾讯一直黑 —— 改错了地方。
+             *
+             * 只在启动参数里写这一条（builder 上设偏好项的方法不存在），失败就退回默认内核。
+             * 运行时开关 <web_touch>：0 = 关（默认，本次要验证的就是这一档）、1 = 保留触摸。
+             * 内核只建一次，切换后要重启应用。
              */
-            val runtime = org.mozilla.geckoview.GeckoRuntime.getDefault(ctx)
+            val keepTouch = com.xxxx.emby_vr.vr.VrTuning.webTouchKept == 1
+            val runtime = if (keepTouch) {
+                org.mozilla.geckoview.GeckoRuntime.getDefault(ctx)
+            } else {
+                runCatching {
+                    org.mozilla.geckoview.GeckoRuntime.create(
+                        ctx,
+                        org.mozilla.geckoview.GeckoRuntimeSettings.Builder()
+                            .arguments(
+                                arrayOf("--setpref=dom.w3c_touch_events.enabled=0"),
+                            )
+                            .build(),
+                    )
+                }.getOrElse { org.mozilla.geckoview.GeckoRuntime.getDefault(ctx) }
+            }
+            android.util.Log.i("B0BEmbyVR", "网页内核就绪：触摸事件${if (keepTouch) "保留" else "已关掉"}")
             /* 面板上正在显示的窗口；开新窗口时要更新它（事件必须发给正在显示的那个） */
             var panelView: org.mozilla.geckoview.GeckoView? = null
 

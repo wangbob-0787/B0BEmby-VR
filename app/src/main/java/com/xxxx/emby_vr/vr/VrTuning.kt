@@ -109,6 +109,20 @@ object VrTuning {
      */
     var webClickMode: Int = 0
 
+    /**
+     * 火狐内核要不要**保留触摸事件**：0 = 关掉（默认）、1 = 保留。
+     *
+     * 2026-10-15 定：腾讯网页播放页会看"这台设备有没有触摸屏"来挑播放器。头显本身有触摸屏、
+     * 网页又被我们装成电脑（桌面 UA + 桌面视口），两边对不上，播放器初始化不了 ——
+     * 现象就是播放页只出顶部框架、播放器一片黑、侧栏一直灰色占位。
+     * 昨晚唯一一次腾讯正常（r519）就带着"关触摸"，后来因为"包有问题"被误撤，一直黑到现在。
+     *
+     * 关触摸的做法只能走内核启动参数 `--setpref=dom.w3c_touch_events.enabled=0`
+     * （GeckoRuntimeSettings.Builder 没有设置偏好项的方法，r518 编译报过 Unresolved reference）。
+     * 内核只建一次，所以改这一项**要重启应用**才生效，改完不用重装。
+     */
+    var webTouchKept: Int = 0
+
     /** 与原生 `nativeSetTuning` 的 key 一一对应 */
     const val KEY_SUPER_SAMPLE = 1
     const val KEY_SWAP_WAIT_MS = 2
@@ -349,6 +363,10 @@ object VrTuning {
         raw["web_click"]?.toIntOrNull()?.let {
             webClickMode = if (it == 1) 1 else 0
             applied += "网页点击语义 ${if (webClickMode == 1) "触摸" else "鼠标"}"
+        }
+        raw["web_touch"]?.toIntOrNull()?.let {
+            webTouchKept = if (it == 1) 1 else 0
+            applied += "网页触摸事件 ${if (webTouchKept == 1) "保留" else "关掉（改完要重启应用）"}"
         }
         flag("finish_before_texupdate", KEY_FINISH_BEFORE_TEXUPDATE, "取帧前先 glFinish")
         raw["screen_width"]?.toFloatOrNull()?.let {
