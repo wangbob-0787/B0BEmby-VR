@@ -329,6 +329,8 @@ fun WebLibraryScreen(
      * 去播一部 Emby 片子再回来 = 重新进这块内容，factory 重跑、新窗口建起来，所以能开。
      * 用 key(site) 按站点分组：换站时旧的整棵销毁（连窗口一起）、新的整棵重建。
      */
+    /* 抓到可播地址的出口（onBridgePlayable 住在 WebRuntime 里，够不到这里的参数） */
+    WebRuntime.setStreamSink(onWebStream)
     key(site) { WebPageForSite(site) }
 }
 
@@ -345,6 +347,18 @@ fun WebLibraryScreen(
  */
 private object WebRuntime {
     private var cached: org.mozilla.geckoview.GeckoRuntime? = null
+
+    /**
+     * 网页抓到可播地址之后交给谁（2026-10-16）。
+     *
+     * onBridgePlayable 住在 WebRuntime 里，够不到 WebLibraryScreen 的 Composable 参数，
+     * 所以界面进来时把去向登记在这儿；为 null 时只打日志、不做切换。
+     */
+    private var streamSink: ((org.json.JSONObject) -> Unit)? = null
+
+    fun setStreamSink(f: ((org.json.JSONObject) -> Unit)?) {
+        streamSink = f
+    }
 
     fun get(
         ctx: android.content.Context,
@@ -519,7 +533,7 @@ private object WebRuntime {
             } catch (e: Exception) {
             }
         }
-        onWebStream(obj)
+        streamSink?.invoke(obj)
     }
 
     /** 扩展报上来的数据；页面里有几个框架就报几份，谁的面积大由 ticker 挑 */
