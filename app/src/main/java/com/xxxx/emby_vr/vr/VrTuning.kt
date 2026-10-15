@@ -153,6 +153,23 @@ object VrTuning {
      */
     var webUrl: String = ""
 
+    /**
+     * 额外的内核参数（2026-10-15）：分号分隔的 `键=值`，逐条作为 `--setpref=` 传给火狐内核。
+     *
+     * 为什么需要它：GeckoView 的 pref 只能在**内核创建时**设一次，照老办法每调一个 pref
+     * 就得重编一次 APK。有了这个开关，以后调 pref 只改设备上的 vr-tuning.txt + 重启应用。
+     *
+     * 本次要用的那条是 `dom.serviceWorkers.enabled=false`：
+     * 腾讯播放页注册的 Service Worker 会拦截所有跨域脚本请求再转发，转发在内核里失败，
+     * 导致整页脚本加载不上（2026-10-15 日志实证：`A ServiceWorker passed a promise to
+     * FetchEvent.respondWith()` 连续被拒 + 每个脚本 `Failed to load`）。关掉它让请求直发。
+     */
+    var webPrefs: String = ""
+
+    /** 把 [webPrefs] 拆成参数表；不含等号的段一律丢掉（防止写出非法参数把内核创建搞挂）。 */
+    val webPrefsList: List<String>
+        get() = webPrefs.split(';').map { it.trim() }.filter { it.contains('=') }
+
     /** 与原生 `nativeSetTuning` 的 key 一一对应 */
     const val KEY_SUPER_SAMPLE = 1
     const val KEY_SWAP_WAIT_MS = 2
@@ -409,6 +426,10 @@ object VrTuning {
         raw["web_url"]?.trim()?.takeIf { it.isNotEmpty() }?.let {
             webUrl = it
             applied += "网页首页改成 $it（改完要重启应用）"
+        }
+        raw["web_pref"]?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            webPrefs = it
+            applied += "网页内核参数 $it（改完要重启应用）"
         }
         flag("finish_before_texupdate", KEY_FINISH_BEFORE_TEXUPDATE, "取帧前先 glFinish")
         raw["screen_width"]?.toFloatOrNull()?.let {
