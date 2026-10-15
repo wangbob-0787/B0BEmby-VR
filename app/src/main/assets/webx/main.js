@@ -23,6 +23,8 @@
     if (!u || typeof u !== 'string') return;
     if (!/\.(m3u8|mpd|mp4|m4s|flv)(\?|#|$)/i.test(u)) return;
     if (u.indexOf('data:') === 0) return;
+    /* 埋点上报不算播放地址（r551 实测：26 条里绝大多数是 data.bilibili.com/log/web 的埋点） */
+    if (u.indexOf('data.bilibili.com') >= 0 || u.indexOf('/log/') >= 0) return;
     if (urls.indexOf(u) >= 0) return;
     urls.push(u);
     if (urls.length > 30) urls.shift();
@@ -83,7 +85,12 @@
         y: r.top + (r.height - ch) / 2,
         w: cw,
         h: ch,
-        ar: (cw * (window.innerWidth || 1)) / (ch * (window.innerHeight || 1)),
+        /*
+         * 银幕要用的比例 = 视频自己的比例（vw/vh）。
+         * 【2026-10-16 修正】原来写的是 (cw*innerWidth)/(ch*innerHeight)，把视口尺寸乘进去，
+         * 实测打出 4.242 这种荒唐值（4096x1716 的片子应是 2.387）→ 银幕会按错比例变宽。
+         */
+        ar: vw / vh,
         area: Math.round(cw * ch),
         url: v.currentSrc || v.src || ''
       };
