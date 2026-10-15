@@ -44,9 +44,7 @@ android {
      * 拷贝时也不用现解压（8.5 MB 几何本来就不该再压）。
      */
     androidResources {
-        /* b0bseat = 座位表（激光选座用，父亲 2026-10-15）：同样不能压缩，
-         * 否则 AssetManager.openFd() 抛异常 —— 与上面 b0bcin 是同一个坑。 */
-        noCompress += listOf("b0bcin", "b0benv", "b0bseat")
+        noCompress += listOf("b0bcin", "b0benv")
     }
 
     buildFeatures {
