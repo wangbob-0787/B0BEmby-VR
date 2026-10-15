@@ -370,12 +370,141 @@ private object WebRuntime {
         }
         made.getOrNull()?.let {
             cached = it
+            ensureBridge(it)
             return it
         }
         android.util.Log.i("B0BEmbyVR", "内核参数没生效，退回默认内核：${made.exceptionOrNull()?.message}")
         val fallback = org.mozilla.geckoview.GeckoRuntime.getDefault(ctx)
         cached = fallback
+        ensureBridge(fallback)
         return fallback
+    }
+
+    /*
+     * ============ 内置扩展：把页面里的数据交回客户端（父亲 2026-10-15） ============
+     *
+     * 背景：火狐内核（GeckoView）早已删掉"在页面里直接跑 JS"的接口 —— 150 的 GeckoSession
+     * 里 evaluate / runJavaScript 一个都没有。唯一正规通道是内置一个扩展，由它的内容脚本
+     * 把数据用 nativeMessaging 发回来。扩展资源在 <assets/webx/>：
+     *   isolated.js（隔离世界）负责注入 + 转发；main.js（页面世界）负责量画面、抓播放地址。
+     *
+     * 两条用途：
+     *   1) 视频画面矩形 → 银幕按视频比例变宽、只采那一块（网页视频铺满墙宽）；
+     *   2) 播放地址候选 → 为"网页只选片、播放交给客户端"铺路。
+     */
+    private const val BRIDGE_URI = "resource://android/assets/webx/"
+    private const val BRIDGE_ID = "b0b-bridge@local"
+    private const val BRIDGE_APP = "b0b"
+
+    /** 各框架最近报上来的视频画面：frame → [x, y, w, h, 比例, 像素面积, 时刻] */
+    private val bridgeRects = java.util.concurrent.ConcurrentHashMap<String, FloatArray>()
+    private val bridgeLoggedUrls = java.util.Collections.synchronizedSet(HashSet<String>())
+    private var bridgeTicker: android.os.Handler? = null
+    private var bridgeInstalled = false
+
+    /** 装扩展 + 接上消息通道；一个进程只做一次 */
+    fun ensureBridge(runtime: org.mozilla.geckoview.GeckoRuntime) {
+        if (bridgeInstalled) return
+        bridgeInstalled = true
+        runCatching {
+            val listener = org.mozilla.geckoview.GeckoResult.OnValueListener<org.mozilla.geckoview.WebExtension> { ext ->
+                if (ext == null) {
+                    android.util.Log.w("B0BEmbyVR", "网页扩展没装上（内核返回空）")
+                } else {
+                    ext.setMessageDelegate(
+                        object : org.mozilla.geckoview.WebExtension.MessageDelegate {
+                            override fun onConnect(port: org.mozilla.geckoview.WebExtension.Port) {
+                                port.setDelegate(
+                                    object : org.mozilla.geckoview.WebExtension.PortDelegate {
+                                        override fun onPortMessage(
+                                            message: Any,
+                                            p: org.mozilla.geckoview.WebExtension.Port,
+                                        ) {
+                                            onBridgeMessage(message)
+                                        }
+
+                                        override fun onDisconnect(
+                                            p: org.mozilla.geckoview.WebExtension.Port,
+                                        ) {}
+                                    },
+                                )
+                            }
+                        },
+                        BRIDGE_APP,
+                    )
+                    android.util.Log.i("B0BEmbyVR", "网页扩展已装上：$BRIDGE_ID")
+                }
+            }
+            runtime.webExtensionController.ensureBuiltIn(BRIDGE_URI, BRIDGE_ID).accept(listener)
+        }.onFailure {
+            android.util.Log.w("B0BEmbyVR", "网页扩展安装失败：${it.message}")
+        }
+        startBridgeTicker()
+    }
+
+    /** 扩展报上来的数据；页面里有几个框架就报几份，谁的面积大由 ticker 挑 */
+    private fun onBridgeMessage(message: Any?) {
+        val obj = message as? org.json.JSONObject ?: return
+        if (obj.optString("kind") != "rect") return
+        val frame = obj.optString("frame")
+        val rect = obj.optJSONObject("rect")
+        if (rect != null) {
+            bridgeRects[frame] = floatArrayOf(
+                rect.optDouble("x", 0.0).toFloat(),
+                rect.optDouble("y", 0.0).toFloat(),
+                rect.optDouble("w", 1.0).toFloat(),
+                rect.optDouble("h", 1.0).toFloat(),
+                rect.optDouble("ar", 0.0).toFloat(),
+                rect.optDouble("area", 0.0).toFloat(),
+                android.os.SystemClock.uptimeMillis().toFloat(),
+            )
+        } else {
+            bridgeRects.remove(frame)
+        }
+        val urls = obj.optJSONArray("urls") ?: return
+        for (i in 0 until urls.length()) {
+            val u = urls.optString(i)
+            if (u.isNotEmpty() && bridgeLoggedUrls.add(u)) {
+                android.util.Log.i("B0BEmbyVR", "网页播放地址候选：$u")
+            }
+        }
+    }
+
+    /** 每 500ms 挑一份"最新鲜且面积最大"的画面报给原生；都没有就报"按整张来" */
+    private fun startBridgeTicker() {
+        if (bridgeTicker != null) return
+        val h = android.os.Handler(android.os.Looper.getMainLooper())
+        bridgeTicker = h
+        val run = object : Runnable {
+            override fun run() {
+                val now = android.os.SystemClock.uptimeMillis()
+                var best: FloatArray? = null
+                for ((frame, v) in bridgeRects) {
+                    if (now - v[6].toLong() > 1500L) {
+                        bridgeRects.remove(frame)
+                        continue
+                    }
+                    if (best == null || v[5] > best!![5]) best = v
+                }
+                val b = best
+                if (b != null && b[4] > 0.1f) {
+                    com.xxxx.emby_vr.vr.VrNative.setWebVideoRect(b[0], b[1], b[2], b[3], b[4])
+                } else {
+                    com.xxxx.emby_vr.vr.VrNative.setWebVideoRect(0f, 0f, 1f, 1f, 0f)
+                }
+                h.postDelayed(this, 500L)
+            }
+        }
+        h.postDelayed(run, 500L)
+    }
+
+    /** 网页层收摊：停掉上报，并把"画面"清回整张 */
+    fun stopBridge() {
+        bridgeRects.clear()
+        bridgeTicker?.removeCallbacksAndMessages(null)
+        bridgeTicker = null
+        bridgeInstalled = false
+        com.xxxx.emby_vr.vr.VrNative.setWebVideoRect(0f, 0f, 1f, 1f, 0f)
     }
 
     /**
@@ -733,11 +862,9 @@ private fun WebPageForSite(site: Int) {
             val js = VIDEO_RECT_JS
             if (com.xxxx.emby_vr.vr.VrTuning.webEngine == 1) {
                 /*
-                 * 火狐内核这条路暂时读不到（2026-10-15 编译报错定案）：GeckoView 早就把
-                 * "在页面里直接跑 JS" 的接口删了，现在只剩"装一个扩展"的绕法，成本高。
-                 * 先按"读不到"处理 —— 银幕退回整张画布，画面正常，只是黑边还在。
+                 * 火狐内核：画面数据由内置扩展交上来（WebRuntime.ensureBridge + 它的 ticker），
+                 * 这里**什么都不做** —— 否则这个循环每 250ms 报一次"没有"，会把扩展的数据顶掉。
                  */
-                pushVideoRect(null)
             } else {
                 val w = webRef
                 if (w == null) {
@@ -1268,6 +1395,7 @@ private fun WebPageForSite(site: Int) {
             WebPageHub.clear()
             /* 网页层收摊：把"视频画面"清掉，免得银幕还按上一块画面裁（父亲 2026-10-15） */
             pushVideoRect(null)
+            WebRuntime.stopBridge()
             webRef?.let { wv ->
                 runCatching { wv.stopLoading() }
                 runCatching { wv.loadUrl("about:blank") }
