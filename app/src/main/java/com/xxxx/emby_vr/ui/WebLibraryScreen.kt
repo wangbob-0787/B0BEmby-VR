@@ -1004,11 +1004,28 @@ private fun WebPageForSite(site: Int) {
                 if (lastHoverX[0] > -9000f) {
                     val nowExit = SystemClock.uptimeMillis()
                     runCatching {
+                        /*
+                         * 先补一条"挪到画面中心"，再发"移出"（父亲 2026-10-15 实测）。
+                         *
+                         * 从左右移开控制条会收起、从下边移开不收起 —— 腾讯是看"鼠标最后
+                         * 停在哪"决定收不收，最后停在画面底部它就以为你要用控制条。
+                         * 先把指针挪到画面中心（那儿不会唤出控制条），再撤走。
+                         */
+                        val midX = wv.width / 2f
+                        val midY = wv.height / 2f
+                        dispatchMouse(
+                            wv,
+                            MotionEvent.ACTION_HOVER_MOVE,
+                            midX,
+                            midY,
+                            nowExit,
+                            nowExit,
+                        )
                         dispatchMouse(
                             wv,
                             MotionEvent.ACTION_HOVER_EXIT,
-                            lastHoverX[0],
-                            lastHoverY[0],
+                            midX,
+                            midY,
                             nowExit,
                             nowExit,
                         )
