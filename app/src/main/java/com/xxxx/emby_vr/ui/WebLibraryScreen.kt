@@ -407,34 +407,35 @@ private object WebRuntime {
         if (bridgeInstalled) return
         bridgeInstalled = true
         runCatching {
-            val listener = org.mozilla.geckoview.GeckoResult.OnValueListener<org.mozilla.geckoview.WebExtension> { ext ->
-                if (ext == null) {
-                    android.util.Log.w("B0BEmbyVR", "网页扩展没装上（内核返回空）")
-                } else {
-                    ext.setMessageDelegate(
-                        object : org.mozilla.geckoview.WebExtension.MessageDelegate {
-                            override fun onConnect(port: org.mozilla.geckoview.WebExtension.Port) {
-                                port.setDelegate(
-                                    object : org.mozilla.geckoview.WebExtension.PortDelegate {
-                                        override fun onPortMessage(
-                                            message: Any,
-                                            p: org.mozilla.geckoview.WebExtension.Port,
-                                        ) {
-                                            onBridgeMessage(message)
-                                        }
+            val listener =
+                org.mozilla.geckoview.GeckoResult.Consumer<org.mozilla.geckoview.WebExtension> { ext ->
+                    if (ext == null) {
+                        android.util.Log.w("B0BEmbyVR", "网页扩展没装上（内核返回空）")
+                    } else {
+                        ext.setMessageDelegate(
+                            object : org.mozilla.geckoview.WebExtension.MessageDelegate {
+                                override fun onConnect(port: org.mozilla.geckoview.WebExtension.Port) {
+                                    port.setDelegate(
+                                        object : org.mozilla.geckoview.WebExtension.PortDelegate {
+                                            override fun onPortMessage(
+                                                message: Any,
+                                                p: org.mozilla.geckoview.WebExtension.Port,
+                                            ) {
+                                                onBridgeMessage(message)
+                                            }
 
-                                        override fun onDisconnect(
-                                            p: org.mozilla.geckoview.WebExtension.Port,
-                                        ) {}
-                                    },
-                                )
-                            }
-                        },
-                        BRIDGE_APP,
-                    )
-                    android.util.Log.i("B0BEmbyVR", "网页扩展已装上：$BRIDGE_ID")
+                                            override fun onDisconnect(
+                                                p: org.mozilla.geckoview.WebExtension.Port,
+                                            ) {}
+                                        },
+                                    )
+                                }
+                            },
+                            BRIDGE_APP,
+                        )
+                        android.util.Log.i("B0BEmbyVR", "网页扩展已装上：$BRIDGE_ID")
+                    }
                 }
-            }
             runtime.webExtensionController.ensureBuiltIn(BRIDGE_URI, BRIDGE_ID).accept(listener)
         }.onFailure {
             android.util.Log.w("B0BEmbyVR", "网页扩展安装失败：${it.message}")
