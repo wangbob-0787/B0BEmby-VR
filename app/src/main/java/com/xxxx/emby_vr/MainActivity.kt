@@ -2283,7 +2283,8 @@ class MainActivity : ComponentActivity() {
              * unknown error (-21) 一万条后直接失败）。所以自己解 —— 和 PICO 上
              * 能正常播的 4XVR 一个路子。标记由取播放信息那一步立起来。
              */
-            if (webStream != null || com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder) {
+            val isWeb = webStream != null
+            if (isWeb || com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder) {
                 Log.i(TAG, "起播走 mpv 内核（杜比视界 Profile 5 或选了图形字幕，片源 ${com.xxxx.emby_vr.player.PlaybackFlags.videoDescriptor}，" +
                     "版本 ${com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionProfile ?: "未探到"}）")
                 mpvBackend?.stop()
@@ -2485,15 +2486,23 @@ class MainActivity : ComponentActivity() {
                 reportedPlaySessionId = pendingPlaySessionId
                 reportedMediaSourceId = pendingMediaSourceId
                 reportedRunTimeTicks = pendingRunTimeTicks
-                osdState.durationMs = pendingRunTimeTicks / 10_000
+                /* 网页流：时长用抓来的那一份（Emby 那套身份是上一部片子的，不能拿来算） */
+                osdState.durationMs = if (isWeb) {
+                    webStream?.optInt("durSec", 0)?.toLong()?.times(1000L) ?: 0L
+                } else {
+                    pendingRunTimeTicks / 10_000
+                }
                 osdState.positionMs = 0L
                 osdState.speed = playSpeed
                 applyPlayMode(playModeIndex)
                 startOsdTicker()
                 startPosTicker()
                 // 弹幕与片名 logo：起播后就去拉，任何一步失败都不影响播放
-                loadDanmaku()
-                loadItemDetail()
+                // 网页流不是 Emby 片源，这两样没有可拉的（弹幕将来从网页那一路单独抓）
+                if (!isWeb) {
+                    loadDanmaku()
+                    loadItemDetail()
+                }
                 /*
                  * 内嵌字幕由我们自己画（2026-10-09 父亲实测「字幕还是出不来」）。
                  *
@@ -2536,7 +2545,8 @@ class MainActivity : ComponentActivity() {
                 com.xxxx.emby_vr.vr.VrNative.setVideoLayerMaxW(
                     if (com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource) 1280 else 1920,
                 )
-                startPlaybackReporting()
+                /* 网页流不向 Emby 报进度（它不属于 Emby 库；报了会把上一部片子的身份写进去） */
+                if (!isWeb) startPlaybackReporting()
                 Log.i(TAG, "开始播放（内核）: $title url=${url.take(160)}")
                 return
             }
