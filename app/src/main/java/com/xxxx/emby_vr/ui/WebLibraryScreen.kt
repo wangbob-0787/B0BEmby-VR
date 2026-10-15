@@ -398,8 +398,28 @@ private fun GeckoWebView(
                          * 并把载入**推迟到内核收尾之后**再做 —— 单窗口，历史连着，也没有两次载入互撞。
                          */
                         if (!uri.startsWith("about:")) {
+                            val from = runCatching { session.currentUri }.getOrNull()
                             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                                runCatching { session.loadUri(uri) }
+                                runCatching {
+                                    /*
+                                     * <web_ref> 开关（2026-10-15）：再打开时带不带「来源页」。
+                                     *
+                                     * 差异起点：正常浏览器是从首页**点进去**的，页面拿得到来源页；
+                                     * 我们是从代码里直接 loadUri，来源页为空 —— 页面可能因此走了另一条
+                                     * 加载路径（run 528/529 日志：173 条跨域预检被腾讯 CDN 拒 400/403/405，
+                                     * 播放器与页面主脚本一个都没进来；电脑上同一页面这些脚本全是 200）。
+                                     * 用 Loader 把来源页显式设上，别的一律不动。
+                                     */
+                                    if (com.xxxx.emby_vr.vr.VrTuning.webRefOn == 1) {
+                                        session.load(
+                                            org.mozilla.geckoview.GeckoSession.Loader()
+                                                .uri(uri)
+                                                .referrer(from ?: "https://v.qq.com/"),
+                                        )
+                                    } else {
+                                        session.loadUri(uri)
+                                    }
+                                }
                             }, 500L)
                         }
                         return null

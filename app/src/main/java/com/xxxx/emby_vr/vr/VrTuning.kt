@@ -134,6 +134,17 @@ object VrTuning {
      */
     var webUaMode: Int = 0
 
+    /**
+     * 腾讯播放页诊断用（2026-10-15）：再打开新窗口时**带不带来源页**。
+     * 0 = 不带（现状，用 loadUri）；1 = 带上当前页地址（用 Loader 显式设 Referer）。
+     *
+     * 差异起点：正常浏览器是从首页**点进去**的，页面拿得到来源页；我们是从代码里直接
+     * loadUri，来源页为空。run 528/529 的日志里，播放页那批脚本全被跨域预检拦掉
+     * （400/403/405，173 条），而电脑上同一个页面这些脚本都是 200。
+     * 这一项做零成本对照：改完重启应用即可，不用重装。
+     */
+    var webRefOn: Int = 0
+
     /** 与原生 `nativeSetTuning` 的 key 一一对应 */
     const val KEY_SUPER_SAMPLE = 1
     const val KEY_SWAP_WAIT_MS = 2
@@ -382,6 +393,10 @@ object VrTuning {
         raw["web_ua"]?.toIntOrNull()?.let {
             webUaMode = if (it == 1) 1 else 0
             applied += "网页身份 ${if (webUaMode == 1) "火狐" else "Chrome"}（改完要重启应用）"
+        }
+        raw["web_ref"]?.toIntOrNull()?.let {
+            webRefOn = if (it == 1) 1 else 0
+            applied += "网页来源页 ${if (webRefOn == 1) "带上" else "不带"}（改完要重启应用）"
         }
         flag("finish_before_texupdate", KEY_FINISH_BEFORE_TEXUPDATE, "取帧前先 glFinish")
         raw["screen_width"]?.toFloatOrNull()?.let {
