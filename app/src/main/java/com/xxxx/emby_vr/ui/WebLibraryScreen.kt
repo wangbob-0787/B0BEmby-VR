@@ -304,7 +304,10 @@ private fun GeckoWebView(
                             )
                             .build(),
                     )
-                }.getOrElse { org.mozilla.geckoview.GeckoRuntime.getDefault(ctx) }
+                }.getOrElse {
+                    android.util.Log.i("B0BEmbyVR", "内核参数没生效，退回默认内核：${it.message}")
+                    org.mozilla.geckoview.GeckoRuntime.getDefault(ctx)
+                }
             }
             android.util.Log.i("B0BEmbyVR", "网页内核就绪：触摸事件${if (keepTouch) "保留" else "已关掉"}")
             /* 面板上正在显示的窗口；开新窗口时要更新它（事件必须发给正在显示的那个） */
@@ -376,6 +379,11 @@ private fun GeckoWebView(
                  * 「正在加载」在发起加载时由外层置位，这里只负责收尾（成功=撤提示，失败=换提示）。
                  */
                 s.progressDelegate = object : org.mozilla.geckoview.GeckoSession.ProgressDelegate {
+                    /* 诊断用（2026-10-15）：确认腾讯到底把哪个地址载进来了 */
+                    override fun onPageStart(ss: org.mozilla.geckoview.GeckoSession, url: String) {
+                        android.util.Log.i("B0BEmbyVR", "网页开始载入：$url")
+                    }
+
                     override fun onPageStop(ss: org.mozilla.geckoview.GeckoSession, success: Boolean) {
                         /*
                          * 只有"当前显示的那个窗口"的收尾才动提示。
@@ -385,6 +393,23 @@ private fun GeckoWebView(
                         if (panelView?.tag !== ss) return
                         onLoading(false)
                         onFailed(!success)
+                    }
+                }
+                /*
+                 * 诊断用（2026-10-15）：把网页自己的控制台消息落到日志。
+                 * 腾讯播放页"只出框架、播放器黑、侧栏一直灰色占位条"= 页面脚本在初始化时走不下去了，
+                 * 原因只会出现在它自己的报错里（缺少某个浏览器能力、某个接口被拒、取证失败等）。
+                 * 这一条只读日志、不改行为，先拿到证据再动手。
+                 */
+                s.contentDelegate = object : org.mozilla.geckoview.GeckoSession.ContentDelegate {
+                    override fun onConsoleMessage(
+                        session: org.mozilla.geckoview.GeckoSession,
+                        message: org.mozilla.geckoview.GeckoSession.ConsoleMessage,
+                    ) {
+                        android.util.Log.i(
+                            "B0BEmbyVR",
+                            "网页控制台[${message.level}] ${message.message}",
+                        )
                     }
                 }
                 return s
@@ -426,9 +451,13 @@ private fun WebPageForSite(site: Int) {
      * 手机宽度那套上下文（phoneWidthContext）随之没有调用方，按父亲"不留死代码"
      * 的要求一并删掉。
      */
-    val desktopUa =
+    val desktopUa = if (com.xxxx.emby_vr.vr.VrTuning.webUaMode == 1) {
+        /* 与真实内核一致的身份：火狐 131 / Windows。切 <web_ua> 后重启应用生效。 */
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0"
+    } else {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
     val url = when (site) {
         0 -> "https://www.bilibili.com/"
         1 -> "https://v.qq.com/"

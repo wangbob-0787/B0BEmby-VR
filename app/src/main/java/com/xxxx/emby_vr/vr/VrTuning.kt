@@ -123,6 +123,17 @@ object VrTuning {
      */
     var webTouchKept: Int = 0
 
+    /**
+     * 腾讯播放页诊断用（2026-10-15）：网页自称的身份 0 = 电脑 Chrome（一直用的那串）、
+     * 1 = 电脑 Firefox（与真实内核一致）。
+     *
+     * 疑点：内核是火狐，却对外自称 Chrome 120；Chrome 那一套还会带「客户端提示」头
+     * （Sec-CH-UA 系列），火狐不发。若腾讯的接口按这套头判断，就会看到"自称 Chrome
+     * 却没有 Chrome 的证据"，接口不返回 → 播放页只剩框架和灰色占位条。
+     * 切这一项**要重启应用**才生效，不用重装（UA 只在网页块建立时读一次）。
+     */
+    var webUaMode: Int = 0
+
     /** 与原生 `nativeSetTuning` 的 key 一一对应 */
     const val KEY_SUPER_SAMPLE = 1
     const val KEY_SWAP_WAIT_MS = 2
@@ -367,6 +378,10 @@ object VrTuning {
         raw["web_touch"]?.toIntOrNull()?.let {
             webTouchKept = if (it == 1) 1 else 0
             applied += "网页触摸事件 ${if (webTouchKept == 1) "保留" else "关掉（改完要重启应用）"}"
+        }
+        raw["web_ua"]?.toIntOrNull()?.let {
+            webUaMode = if (it == 1) 1 else 0
+            applied += "网页身份 ${if (webUaMode == 1) "火狐" else "Chrome"}（改完要重启应用）"
         }
         flag("finish_before_texupdate", KEY_FINISH_BEFORE_TEXUPDATE, "取帧前先 glFinish")
         raw["screen_width"]?.toFloatOrNull()?.let {
