@@ -1,8 +1,8 @@
 /*
  * 页面世界的探子（父亲 2026-10-15）。
  *
- * 由 isolated.js 用 <script src=...> 注入到页面自己的世界 —— 只有在这里才能
- * 动页面的 fetch / XHR（隔离世界改了页面也看不见），才抓得到播放地址。
+ * 由 manifest 声明为 world:MAIN 的内容脚本，直接跑在页面自己的世界里 —— 只有在这里
+ * 才动得了页面的 fetch / XHR，才抓得到播放地址，也才绕得过页面 CSP。
  *
  * 每 400ms 上报两样东西（用 window.postMessage 交给 isolated.js 转发给客户端）：
  *   rect：正在播的那块视频画面在视口里占哪一块（归一化）+ 视频真实比例 + 绝对像素面积
@@ -15,6 +15,7 @@
   window.__b0bScan = true;
 
   var urls = [];
+  var saidHello = false;
 
   function note(u) {
     if (!u || typeof u !== 'string') return;
@@ -93,11 +94,18 @@
         ar: best.ar, area: best.area, url: best.url
       };
       note(best.url);
+      if (!saidHello) {
+        saidHello = true;
+        console.log('[b0b] 看到视频 ' + vw + 'x' + vh + ' 画面块 ' + Math.round(cw) + 'x' +
+          Math.round(ch) + ' @ ' + Math.round(best.x) + ',' + Math.round(best.y) +
+          ' 视口 ' + iw + 'x' + ih);
+      }
     }
     if (urls.length) msg.urls = urls.slice(-10);
     try { window.postMessage({ __b0b: 1, payload: msg }, '*'); } catch (e) {}
   }
 
+  console.log('[b0b] 页面探子就绪 ' + location.href);
   setInterval(scan, 400);
   scan();
 })();
