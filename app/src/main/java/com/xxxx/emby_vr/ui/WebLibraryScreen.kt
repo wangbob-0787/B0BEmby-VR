@@ -296,14 +296,21 @@ private fun GeckoWebView(
                 org.mozilla.geckoview.GeckoRuntime.getDefault(ctx)
             } else {
                 runCatching {
-                    org.mozilla.geckoview.GeckoRuntime.create(
-                        ctx,
-                        org.mozilla.geckoview.GeckoRuntimeSettings.Builder()
-                            .arguments(
-                                arrayOf("--setpref=dom.w3c_touch_events.enabled=0"),
-                            )
-                            .build(),
-                    )
+                    val b = org.mozilla.geckoview.GeckoRuntimeSettings.Builder()
+                        .arguments(
+                            arrayOf("--setpref=dom.w3c_touch_events.enabled=0"),
+                        )
+                    /*
+                     * 诊断（2026-10-15）：让页面自己的控制台消息进日志。
+                     * run 527 用 ContentDelegate.onConsoleMessage 编译不过（该版本里没这个方法，
+                     * 报 overrides nothing）—— 改用设置项，并且用反射叫，叫不动就跳过：
+                     * 诊断项绝不能把编译或启动搞挂。
+                     */
+                    runCatching {
+                        b.javaClass.getMethod("consoleOutput", java.lang.Boolean.TYPE)
+                            .invoke(b, true)
+                    }
+                    org.mozilla.geckoview.GeckoRuntime.create(ctx, b.build())
                 }.getOrElse {
                     android.util.Log.i("B0BEmbyVR", "内核参数没生效，退回默认内核：${it.message}")
                     org.mozilla.geckoview.GeckoRuntime.getDefault(ctx)
@@ -393,23 +400,6 @@ private fun GeckoWebView(
                         if (panelView?.tag !== ss) return
                         onLoading(false)
                         onFailed(!success)
-                    }
-                }
-                /*
-                 * 诊断用（2026-10-15）：把网页自己的控制台消息落到日志。
-                 * 腾讯播放页"只出框架、播放器黑、侧栏一直灰色占位条"= 页面脚本在初始化时走不下去了，
-                 * 原因只会出现在它自己的报错里（缺少某个浏览器能力、某个接口被拒、取证失败等）。
-                 * 这一条只读日志、不改行为，先拿到证据再动手。
-                 */
-                s.contentDelegate = object : org.mozilla.geckoview.GeckoSession.ContentDelegate {
-                    override fun onConsoleMessage(
-                        session: org.mozilla.geckoview.GeckoSession,
-                        message: org.mozilla.geckoview.GeckoSession.ConsoleMessage,
-                    ) {
-                        android.util.Log.i(
-                            "B0BEmbyVR",
-                            "网页控制台[${message.level}] ${message.message}",
-                        )
                     }
                 }
                 return s
