@@ -402,8 +402,12 @@ private object WebRuntime {
     private var bridgeTicker: android.os.Handler? = null
     private var bridgeInstalled = false
 
-    /** 上次报上去的视频比例；只在明显变化时打日志（免得 500ms 刷一条） */
-    private var bridgeLastAspect = -1f
+    /** 已生效的视频比例（0 = 按整张来） */
+    private var bridgeApplied = 0f
+
+    /** 待确认的新比例 + 连续命中次数（稳定三次才采用，见 ticker 注释） */
+    private var bridgeCandidate = 0f
+    private var bridgeHits = 0
 
     /** 装扩展 + 接上消息通道；一个进程只做一次 */
     fun ensureBridge(runtime: org.mozilla.geckoview.GeckoRuntime) {
@@ -503,23 +507,38 @@ private object WebRuntime {
                     if (best == null || v[5] > best!![5]) best = v
                 }
                 val b = best
-                if (b != null && b[4] > 0.1f) {
-                    if (kotlin.math.abs(b[4] - bridgeLastAspect) > 0.02f) {
-                        bridgeLastAspect = b[4]
-                        android.util.Log.i(
-                            "B0BEmbyVR",
-                            "网页视频画面：比例 " + "%.3f".format(b[4]) +
-                                "，画面块 " + "%.3f".format(b[2]) + "x" + "%.3f".format(b[3]) +
-                                "，位置 " + "%.3f".format(b[0]) + "," + "%.3f".format(b[1]),
-                        )
-                    }
-                    com.xxxx.emby_vr.vr.VrNative.setWebVideoRect(b[0], b[1], b[2], b[3], b[4])
+                val target = if (b != null && b[4] > 0.1f) b[4] else 0f
+                /*
+                 * 稳定闸（2026-10-16 父亲实测：长宽比一直不停变）。
+                 * 页面上同时有好几个视频元素（正片 / 推荐位预览 / 广告），扫描每次挑中的对象可能
+                 * 来回换；主视频切清晰度时 videoWidth 也会变。所以新比例必须连续三次（1.5 秒）
+                 * 一致才采用，否则继续用上一次的 —— 肉眼看到的就是"稳"。
+                 */
+                if (kotlin.math.abs(target - bridgeApplied) <= 0.05f) {
+                    bridgeHits = 0
                 } else {
-                    if (bridgeLastAspect > 0f) {
-                        bridgeLastAspect = -1f
-                        android.util.Log.i("B0BEmbyVR", "网页视频画面：没有了，银幕按整张来")
+                    if (kotlin.math.abs(target - bridgeCandidate) <= 0.05f) {
+                        bridgeHits++
+                    } else {
+                        bridgeCandidate = target
+                        bridgeHits = 1
                     }
-                    com.xxxx.emby_vr.vr.VrNative.setWebVideoRect(0f, 0f, 1f, 1f, 0f)
+                    if (bridgeHits >= 3) {
+                        bridgeHits = 0
+                        bridgeApplied = target
+                        if (b != null && b[4] > 0.1f) {
+                            android.util.Log.i(
+                                "B0BEmbyVR",
+                                "网页视频画面：比例 " + "%.3f".format(b[4]) +
+                                    "，画面块 " + "%.3f".format(b[2]) + "x" + "%.3f".format(b[3]) +
+                                    "，位置 " + "%.3f".format(b[0]) + "," + "%.3f".format(b[1]),
+                            )
+                            com.xxxx.emby_vr.vr.VrNative.setWebVideoRect(b[0], b[1], b[2], b[3], b[4])
+                        } else {
+                            android.util.Log.i("B0BEmbyVR", "网页视频画面：没有了，银幕按整张来")
+                            com.xxxx.emby_vr.vr.VrNative.setWebVideoRect(0f, 0f, 1f, 1f, 0f)
+                        }
+                    }
                 }
                 h.postDelayed(this, 500L)
             }

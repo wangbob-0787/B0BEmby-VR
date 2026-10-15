@@ -71,6 +71,12 @@
       var st = window.getComputedStyle(v);
       if (!st || st.display === 'none' || st.visibility === 'hidden') continue;
       if (parseFloat(st.opacity || '1') < 0.05) continue;
+      /*
+       * 只认"正在播"的那个（2026-10-16 父亲实测：比例一直不停变）。
+       * B站 页面上除了正片，还有推荐位/预览/广告的小视频，它们 paused=true；
+       * 不筛的话每次扫描挑中的对象会来回换，银幕比例跟着跳。
+       */
+      if (v.paused) continue;
       var area = r.width * r.height;
       if (area <= bestArea) continue;
       var cw = r.width, ch = r.height;
