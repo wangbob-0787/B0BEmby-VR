@@ -254,6 +254,56 @@ fun WebLibraryScreen(
     key(site) { WebPageForSite(site) }
 }
 
+/*
+ * 火狐内核的运行环境是**进程级单例**，只能有一个。
+ *
+ * run 528 实测崩溃（父亲：从腾讯切到 B站 直接闪退）：
+ *   java.lang.IllegalStateException: Only one GeckoRuntime instance is allowed
+ *     at GeckoRuntime.getDefault(GeckoRuntime.java:241)
+ * 切站点会重建网页块 → 再进一次 factory → 第二次 create 抛「只允许一个」，
+ * 连兜底的 getDefault 也抛同一个异常 → 整个应用退出。
+ * 修法：拿到就留着复用，第二次直接用旧的；参数只在第一次生效
+ * （所以改 <web_touch> 要重启应用）。
+ */
+private object WebRuntime {
+    private var cached: org.mozilla.geckoview.GeckoRuntime? = null
+
+    fun get(
+        ctx: android.content.Context,
+        keepTouch: Boolean,
+    ): org.mozilla.geckoview.GeckoRuntime {
+        cached?.let { return it }
+        val made = runCatching {
+            if (keepTouch) {
+                org.mozilla.geckoview.GeckoRuntime.getDefault(ctx)
+            } else {
+                val b = org.mozilla.geckoview.GeckoRuntimeSettings.Builder()
+                    .arguments(
+                        arrayOf("--setpref=dom.w3c_touch_events.enabled=0"),
+                    )
+                /*
+                 * 诊断（2026-10-15）：让页面自己的控制台消息进日志。
+                 * run 527 用 ContentDelegate.onConsoleMessage 编译不过（该版本没这个方法），
+                 * 改用设置项并用反射叫 —— 诊断项绝不能把编译或启动搞挂。
+                 */
+                runCatching {
+                    b.javaClass.getMethod("consoleOutput", java.lang.Boolean.TYPE)
+                        .invoke(b, true)
+                }
+                org.mozilla.geckoview.GeckoRuntime.create(ctx, b.build())
+            }
+        }
+        made.getOrNull()?.let {
+            cached = it
+            return it
+        }
+        android.util.Log.i("B0BEmbyVR", "内核参数没生效，退回默认内核：${made.exceptionOrNull()?.message}")
+        val fallback = org.mozilla.geckoview.GeckoRuntime.getDefault(ctx)
+        cached = fallback
+        return fallback
+    }
+}
+
 @SuppressLint("SetJavaScriptEnabled")
 /**
  * 火狐内核的网页块（2026-10-14 父亲定）。
@@ -292,30 +342,7 @@ private fun GeckoWebView(
              * 内核只建一次，切换后要重启应用。
              */
             val keepTouch = com.xxxx.emby_vr.vr.VrTuning.webTouchKept == 1
-            val runtime = if (keepTouch) {
-                org.mozilla.geckoview.GeckoRuntime.getDefault(ctx)
-            } else {
-                runCatching {
-                    val b = org.mozilla.geckoview.GeckoRuntimeSettings.Builder()
-                        .arguments(
-                            arrayOf("--setpref=dom.w3c_touch_events.enabled=0"),
-                        )
-                    /*
-                     * 诊断（2026-10-15）：让页面自己的控制台消息进日志。
-                     * run 527 用 ContentDelegate.onConsoleMessage 编译不过（该版本里没这个方法，
-                     * 报 overrides nothing）—— 改用设置项，并且用反射叫，叫不动就跳过：
-                     * 诊断项绝不能把编译或启动搞挂。
-                     */
-                    runCatching {
-                        b.javaClass.getMethod("consoleOutput", java.lang.Boolean.TYPE)
-                            .invoke(b, true)
-                    }
-                    org.mozilla.geckoview.GeckoRuntime.create(ctx, b.build())
-                }.getOrElse {
-                    android.util.Log.i("B0BEmbyVR", "内核参数没生效，退回默认内核：${it.message}")
-                    org.mozilla.geckoview.GeckoRuntime.getDefault(ctx)
-                }
-            }
+            val runtime = WebRuntime.get(ctx, keepTouch)
             android.util.Log.i("B0BEmbyVR", "网页内核就绪：触摸事件${if (keepTouch) "保留" else "已关掉"}")
             /* 面板上正在显示的窗口；开新窗口时要更新它（事件必须发给正在显示的那个） */
             var panelView: org.mozilla.geckoview.GeckoView? = null
