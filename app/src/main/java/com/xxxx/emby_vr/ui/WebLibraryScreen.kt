@@ -672,6 +672,13 @@ private fun WebPageForSite(site: Int) {
      * 挪动不足 3 像素不发；快进每 250ms 最多一次，避免摇杆一推就跳出去十几分钟。
      * 用数组装是为了让闭包能改到同一个值（普通 var 会被 lambda 捕获成副本语义更绕）。
      */
+    /*
+     * 光柱当前是否悬在大银幕（网页）上（2026-10-15 父亲提）。
+     *
+     * 只在 hoverHandler 被原生推坐标时置真、推来"离开"哨兵时置假。
+     * B 键据此判断"算不算网页内返回" —— 光柱飘在别处时不该让网页后退。
+     */
+    val hoverOnScreen = remember { booleanArrayOf(false) }
     val lastHoverX = remember { floatArrayOf(-9999f) }
     val lastHoverY = remember { floatArrayOf(-9999f) }
     val lastArrowAt = remember { longArrayOf(0L) }
@@ -993,6 +1000,7 @@ private fun WebPageForSite(site: Int) {
              * 用最后那个有效坐标发（越界坐标会被内核丢掉）。
              */
             if (px < 0f || py < 0f) {
+                hoverOnScreen[0] = false
                 if (lastHoverX[0] > -9000f) {
                     val nowExit = SystemClock.uptimeMillis()
                     runCatching {
@@ -1012,7 +1020,11 @@ private fun WebPageForSite(site: Int) {
             }
             val u = (px - r.left) / r.width
             val v = (py - r.top) / r.height
-            if (u !in 0f..1f || v !in 0f..1f) return@hover
+            if (u !in 0f..1f || v !in 0f..1f) {
+                hoverOnScreen[0] = false
+                return@hover
+            }
+            hoverOnScreen[0] = true
             val x = (u * wv.width).coerceIn(0f, (wv.width - 1).toFloat())
             val y = (v * wv.height).coerceIn(0f, (wv.height - 1).toFloat())
             /* 挪动不足 3 像素不发（网页每个 mousemove 都要做命中测试，太密会拖慢） */
@@ -1044,6 +1056,15 @@ private fun WebPageForSite(site: Int) {
          */
         /* 网页内返回（B 键）：只在网页的历史里退，退不动就什么都不做 */
         WebPageHub.backHandler = back@{
+            /*
+             * 光柱不在银幕上时，B 键不算"网页内返回"（2026-10-15 父亲提）。
+             *
+             * 主界面那条路给过来的条件是"银幕上放着网页 且 光柱不在面板上"，
+             * 光柱飘在空中、指着别处也满足 —— 于是网页无条件后退。
+             * 这里再收一道：只有光柱确实落在银幕矩形内，才让网页自己退。
+             * 返回 false 时主界面会照旧走"面板返回上一级"。
+             */
+            if (!hoverOnScreen[0]) return@back false
             /*
              * 火狐内核那条路：直接让它的会话后退（它没有同步的 canGoBack 可问，
              * 退不动时就是什么都不发生，与原来"退不动返回 false"的观感一致）。
