@@ -500,11 +500,16 @@ private fun WebPageForSite(site: Int) {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
-    val url = when (site) {
-        0 -> "https://www.bilibili.com/"
-        1 -> "https://v.qq.com/"
-        else -> "https://www.iqiyi.com/"
-    }
+    /*
+     * 诊断用（2026-10-15）：调参文件里给了 <web_url> 就加载它（本地测试页），
+     * 否则用三个站点的默认电脑版首页。换试验页面不必重编 APK。
+     */
+    val url = com.xxxx.emby_vr.vr.VrTuning.webUrl.takeIf { it.isNotEmpty() }
+        ?: when (site) {
+            0 -> "https://www.bilibili.com/"
+            1 -> "https://v.qq.com/"
+            else -> "https://www.iqiyi.com/"
+        }
     val title = when (site) {
         0 -> "哔哩哔哩"
         1 -> "腾讯视频"

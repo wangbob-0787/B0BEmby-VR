@@ -145,6 +145,14 @@ object VrTuning {
      */
     var webRefOn: Int = 0
 
+    /**
+     * 网页块首页地址覆盖（2026-10-15，诊断用）：非空时网页块加载它，替代默认的三个站点首页。
+     * 用途：让火狐内核加载本地测试页（`file:///sdcard/preflight-test.html`）做最小复现 ——
+     * 换一个试验页面不必重编一次 APK。空串 = 用默认站点首页。
+     * 测试页见 `docs/diagnostics/preflight-test.html`。
+     */
+    var webUrl: String = ""
+
     /** 与原生 `nativeSetTuning` 的 key 一一对应 */
     const val KEY_SUPER_SAMPLE = 1
     const val KEY_SWAP_WAIT_MS = 2
@@ -397,6 +405,10 @@ object VrTuning {
         raw["web_ref"]?.toIntOrNull()?.let {
             webRefOn = if (it == 1) 1 else 0
             applied += "网页来源页 ${if (webRefOn == 1) "带上" else "不带"}（改完要重启应用）"
+        }
+        raw["web_url"]?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            webUrl = it
+            applied += "网页首页改成 $it（改完要重启应用）"
         }
         flag("finish_before_texupdate", KEY_FINISH_BEFORE_TEXUPDATE, "取帧前先 glFinish")
         raw["screen_width"]?.toFloatOrNull()?.let {
