@@ -314,6 +314,18 @@ private object WebRuntime {
      * （2026-10-15 13:57 实测：SW 报错 50 条、预检 100 条）—— 腾讯页面**每次访问都会重新注册**
      * 那个 Service Worker，所以每次进网页栏都得清一遍。时间戳只为挡 Compose 的重复重组。
      */
+    /**
+     * 清腾讯站数据时用的范围：**SITE_DATA 去掉 COOKIES**（2026-10-15）。
+     *
+     * 用完整 SITE_DATA 会把腾讯的登录状态一起清掉，页面于是永远是未登录 ——
+     * 而腾讯对未登录用户最高只给 1080p（父亲 14:31 实测提出）。
+     * 把 COOKIES 位取反后与 SITE_DATA 相与 = "除了 cookie，其余站点数据全清"，
+     * 既保住登录态，又保留清掉 Service Worker 注册的能力。
+     */
+    private val wipeFlags: Long =
+        org.mozilla.geckoview.StorageController.ClearFlags.SITE_DATA and
+            org.mozilla.geckoview.StorageController.ClearFlags.COOKIES.inv()
+
     private var lastWipeMs = 0L
 
     /**
@@ -337,7 +349,7 @@ private object WebRuntime {
         runCatching {
             runtime.storageController.clearDataFromHost(
                 "v.qq.com",
-                org.mozilla.geckoview.StorageController.ClearFlags.SITE_DATA,
+                wipeFlags,
             )
         }.onSuccess {
             android.util.Log.i("B0BEmbyVR", "已清 v.qq.com 站点数据（去掉残留的后台服务注册）")
@@ -371,7 +383,7 @@ private object WebRuntime {
         runCatching {
             runtime.storageController.clearDataFromHost(
                 "v.qq.com",
-                org.mozilla.geckoview.StorageController.ClearFlags.SITE_DATA,
+                wipeFlags,
             ).accept(
                 { out.complete(org.mozilla.geckoview.AllowOrDeny.ALLOW) },
                 { out.complete(org.mozilla.geckoview.AllowOrDeny.ALLOW) },
