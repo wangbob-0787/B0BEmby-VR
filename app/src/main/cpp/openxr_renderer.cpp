@@ -1421,6 +1421,9 @@ struct VrContext {
      */
     double sinkWebHoverAt[2] = {0.0, 0.0};
     float sinkWebHoverX[2] = {-9999.f, -9999.f};
+    /* 光柱当前是否"正悬在银幕上"（2026-10-15）：用来在它离开时补发一条移出信号，
+     * 否则网页一直以为鼠标停在画面上，播放器控制条不会自动收起。 */
+    bool sinkWebHoverOn[2] = {false, false};
     float sinkWebHoverY[2] = {-9999.f, -9999.f};
     jmethodID sinkBack = nullptr;
     jmethodID sinkOsdPointer = nullptr; // 控制条上的指针
@@ -3478,6 +3481,7 @@ void pushInput(VrContext &c) {
                 const float hy = (0.5f - vv / (spH.width * 9.f / 16.f)) * kPanelPxH;
                 const bool hoverMoved = fabsf(hx - c.sinkWebHoverX[h]) > 4.f ||
                                         fabsf(hy - c.sinkWebHoverY[h]) > 4.f;
+                c.sinkWebHoverOn[h] = true;
                 if (hoverMoved && nowToggle - c.sinkWebHoverAt[h] > 60.0) {
                     c.sinkWebHoverAt[h] = nowToggle;
                     c.sinkWebHoverX[h] = hx;
@@ -3485,6 +3489,17 @@ void pushInput(VrContext &c) {
                     env->CallVoidMethod(c.inputSink, c.sinkWebHover, hx, hy);
                     clearJavaException(env, "输入回调 onWebHover（网页悬停）");
                 }
+            } else if (c.sinkWebHoverOn[h] && c.sinkWebHover != nullptr) {
+                /*
+                 * ⑦ 光柱离开大银幕（2026-10-15 父亲提：网页播放时控制条不收起来）。
+                 *
+                 * 原来只在上面的分支里发悬停坐标，光柱一旦移开就什么都不发 ——
+                 * 网页那边以为鼠标还停在画面上，播放器控制条一直挂着。
+                 * 这里补一条"移出"：用负坐标当哨兵，界面侧据此发 ACTION_HOVER_EXIT。
+                 */
+                c.sinkWebHoverOn[h] = false;
+                env->CallVoidMethod(c.inputSink, c.sinkWebHover, -1.f, -1.f);
+                clearJavaException(env, "输入回调 onWebHover（离开银幕）");
             }
         }
 

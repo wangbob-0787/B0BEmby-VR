@@ -123,7 +123,10 @@ private fun dispatchMouse(
      *   0 = 鼠标触摸式：ACTION_DOWN/UP + SOURCE_MOUSE。
      */
     val mode = com.xxxx.emby_vr.vr.VrTuning.webClickMode
-    val hover = action == MotionEvent.ACTION_HOVER_MOVE
+    /* HOVER_EXIT 也必须按"悬停类"处理（2026-10-15）：它是"鼠标移出"，走的是
+     * 通用运动事件那条路，若按触摸发，网页根本收不到。 */
+    val hover = action == MotionEvent.ACTION_HOVER_MOVE ||
+        action == MotionEvent.ACTION_HOVER_EXIT
     if (mode == 2 && !hover) {
         /* 「鼠标左键按下 / 抬起」在 Android 里是通用运动事件，不是触摸的 DOWN / UP */
         val btnAction = when (action) {
@@ -192,7 +195,9 @@ private fun dispatchMouse(
         0,
     )
     val taken = runCatching {
-        if (action == MotionEvent.ACTION_HOVER_MOVE) {
+        if (action == MotionEvent.ACTION_HOVER_MOVE ||
+            action == MotionEvent.ACTION_HOVER_EXIT
+        ) {
             wv.dispatchGenericMotionEvent(ev)
         } else {
             wv.dispatchTouchEvent(ev)
@@ -982,6 +987,29 @@ private fun WebPageForSite(site: Int) {
             val r = webRect ?: return@hover
             val wv = customView ?: geckoRef ?: webRef ?: return@hover
             if (r.width <= 0f || r.height <= 0f) return@hover
+            /*
+             * 负坐标 = 光柱离开银幕（原生推来的哨兵，2026-10-15 父亲提）：
+             * 给网页补一条"鼠标移出"，它才会把播放器控制条收起来。
+             * 用最后那个有效坐标发（越界坐标会被内核丢掉）。
+             */
+            if (px < 0f || py < 0f) {
+                if (lastHoverX[0] > -9000f) {
+                    val nowExit = SystemClock.uptimeMillis()
+                    runCatching {
+                        dispatchMouse(
+                            wv,
+                            MotionEvent.ACTION_HOVER_EXIT,
+                            lastHoverX[0],
+                            lastHoverY[0],
+                            nowExit,
+                            nowExit,
+                        )
+                    }
+                    lastHoverX[0] = -9999f
+                    lastHoverY[0] = -9999f
+                }
+                return@hover
+            }
             val u = (px - r.left) / r.width
             val v = (py - r.top) / r.height
             if (u !in 0f..1f || v !in 0f..1f) return@hover
