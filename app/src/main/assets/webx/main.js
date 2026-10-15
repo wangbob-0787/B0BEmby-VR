@@ -16,6 +16,8 @@
 
   var urls = [];
   var saidHello = false;
+  var lastKey = '';
+  var lastSent = 0;
 
   function note(u) {
     if (!u || typeof u !== 'string') return;
@@ -102,6 +104,17 @@
       }
     }
     if (urls.length) msg.urls = urls.slice(-10);
+    /*
+     * 节流：画面没变就最多每 3 秒报一次（客户端本来就是 500ms 挑一次），变了立刻报 ——
+     * 免得每 400ms 给客户端塞一条，框架一多就成灾。
+     */
+    var key = msg.rect
+      ? [Math.round(msg.rect.x * 100), Math.round(msg.rect.y * 100),
+         Math.round(msg.rect.w * 100), Math.round(msg.rect.h * 100), urls.length].join(',')
+      : 'none';
+    if (key === lastKey && Date.now() - lastSent < 3000) return;
+    lastKey = key;
+    lastSent = Date.now();
     try { window.postMessage({ __b0b: 1, payload: msg }, '*'); } catch (e) {}
   }
 
