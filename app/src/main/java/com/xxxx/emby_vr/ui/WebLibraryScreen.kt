@@ -402,6 +402,9 @@ private object WebRuntime {
     private var bridgeTicker: android.os.Handler? = null
     private var bridgeInstalled = false
 
+    /** 上次报上去的视频比例；只在明显变化时打日志（免得 500ms 刷一条） */
+    private var bridgeLastAspect = -1f
+
     /** 装扩展 + 接上消息通道；一个进程只做一次 */
     fun ensureBridge(runtime: org.mozilla.geckoview.GeckoRuntime) {
         if (bridgeInstalled) return
@@ -414,7 +417,19 @@ private object WebRuntime {
                     } else {
                         ext.setMessageDelegate(
                             object : org.mozilla.geckoview.WebExtension.MessageDelegate {
+                                /** 一次性消息这条路（后台页里 sendNativeMessage 用的） */
+                                override fun onMessage(
+                                    nativeApp: String,
+                                    message: Any,
+                                    sender: org.mozilla.geckoview.WebExtension.MessageSender,
+                                ): org.mozilla.geckoview.GeckoResult<Any>? {
+                                    android.util.Log.i("B0BEmbyVR", "扩展来消息（一次性）")
+                                    onBridgeMessage(message)
+                                    return null
+                                }
+
                                 override fun onConnect(port: org.mozilla.geckoview.WebExtension.Port) {
+                                    android.util.Log.i("B0BEmbyVR", "扩展已连上客户端（port）")
                                     port.setDelegate(
                                         object : org.mozilla.geckoview.WebExtension.PortDelegate {
                                             override fun onPortMessage(
@@ -489,8 +504,21 @@ private object WebRuntime {
                 }
                 val b = best
                 if (b != null && b[4] > 0.1f) {
+                    if (kotlin.math.abs(b[4] - bridgeLastAspect) > 0.02f) {
+                        bridgeLastAspect = b[4]
+                        android.util.Log.i(
+                            "B0BEmbyVR",
+                            "网页视频画面：比例 " + "%.3f".format(b[4]) +
+                                "，画面块 " + "%.3f".format(b[2]) + "x" + "%.3f".format(b[3]) +
+                                "，位置 " + "%.3f".format(b[0]) + "," + "%.3f".format(b[1]),
+                        )
+                    }
                     com.xxxx.emby_vr.vr.VrNative.setWebVideoRect(b[0], b[1], b[2], b[3], b[4])
                 } else {
+                    if (bridgeLastAspect > 0f) {
+                        bridgeLastAspect = -1f
+                        android.util.Log.i("B0BEmbyVR", "网页视频画面：没有了，银幕按整张来")
+                    }
                     com.xxxx.emby_vr.vr.VrNative.setWebVideoRect(0f, 0f, 1f, 1f, 0f)
                 }
                 h.postDelayed(this, 500L)

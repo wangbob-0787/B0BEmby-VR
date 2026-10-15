@@ -12,6 +12,12 @@
   "permissions": [
     "nativeMessaging"
   ],
+  "background": {
+    "scripts": [
+      "background.js"
+    ],
+    "persistent": true
+  },
   "content_scripts": [
     {
       "matches": [
