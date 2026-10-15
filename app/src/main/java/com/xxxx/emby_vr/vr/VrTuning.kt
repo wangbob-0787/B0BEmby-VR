@@ -170,6 +170,19 @@ object VrTuning {
     val webPrefsList: List<String>
         get() = webPrefs.split(';').map { it.trim() }.filter { it.contains('=') }
 
+    /**
+     * 现读现用的 [webPrefs]（2026-10-15 加）。
+     *
+     * 为什么不能直接用字段：字段是靠**每秒轮询**赋值的，而内核只在创建那一刻接受 pref。
+     * 用户点"网页"栏可能早于第一次轮询，那时字段还是空 —— run 533 就是这个原因，
+     * 设了 `dom.serviceWorkers.enabled=false` 却完全没传进内核（日志里没有那行参数）。
+     */
+    fun webPrefsNow(context: Context): List<String> {
+        val raw = read(context) ?: return emptyList()
+        return raw["web_pref"]?.trim().orEmpty()
+            .split(';').map { it.trim() }.filter { it.contains('=') }
+    }
+
     /** 与原生 `nativeSetTuning` 的 key 一一对应 */
     const val KEY_SUPER_SAMPLE = 1
     const val KEY_SWAP_WAIT_MS = 2

@@ -275,14 +275,17 @@ private object WebRuntime {
     ): org.mozilla.geckoview.GeckoRuntime {
         cached?.let { return it }
         val made = runCatching {
-            if (keepTouch) {
-                org.mozilla.geckoview.GeckoRuntime.getDefault(ctx)
-            } else {
-                val args = mutableListOf("--setpref=dom.w3c_touch_events.enabled=0")
-                /* 调参文件里给的额外 pref（2026-10-15）：见 VrTuning.webPrefs 的注释。 */
-                extraPrefs.forEach { args += "--setpref=$it" }
-                val b = org.mozilla.geckoview.GeckoRuntimeSettings.Builder()
-                    .arguments(args.toTypedArray())
+            /*
+             * 2026-10-15 修正：以前 keepTouch 为真时直接 getDefault()，等于**一个参数都不传**，
+             * 调参文件里的 pref 全被丢掉。现在统一走 Builder，触摸那条只是"加不加"的区别。
+             * 参数先在日志里打出来，免得以后再靠猜判断有没有生效。
+             */
+            val args = mutableListOf<String>()
+            if (!keepTouch) args += "--setpref=dom.w3c_touch_events.enabled=0"
+            extraPrefs.forEach { args += "--setpref=$it" }
+            android.util.Log.i("B0BEmbyVR", "网页内核参数：${args.joinToString("；")}")
+            val b = org.mozilla.geckoview.GeckoRuntimeSettings.Builder()
+                .arguments(args.toTypedArray())
                 /*
                  * 诊断（2026-10-15）：让页面自己的控制台消息进日志。
                  * run 527 用 ContentDelegate.onConsoleMessage 编译不过（该版本没这个方法），
@@ -292,8 +295,7 @@ private object WebRuntime {
                     b.javaClass.getMethod("consoleOutput", java.lang.Boolean.TYPE)
                         .invoke(b, true)
                 }
-                org.mozilla.geckoview.GeckoRuntime.create(ctx, b.build())
-            }
+            org.mozilla.geckoview.GeckoRuntime.create(ctx, b.build())
         }
         made.getOrNull()?.let {
             cached = it
@@ -344,7 +346,7 @@ private fun GeckoWebView(
              * 内核只建一次，切换后要重启应用。
              */
             val keepTouch = com.xxxx.emby_vr.vr.VrTuning.webTouchKept == 1
-            val runtime = WebRuntime.get(ctx, keepTouch, com.xxxx.emby_vr.vr.VrTuning.webPrefsList)
+            val runtime = WebRuntime.get(ctx, keepTouch, com.xxxx.emby_vr.vr.VrTuning.webPrefsNow(ctx))
             android.util.Log.i("B0BEmbyVR", "网页内核就绪：触摸事件${if (keepTouch) "保留" else "已关掉"}")
             /* 面板上正在显示的窗口；开新窗口时要更新它（事件必须发给正在显示的那个） */
             var panelView: org.mozilla.geckoview.GeckoView? = null
