@@ -2244,7 +2244,15 @@ class MainActivity : ComponentActivity() {
     private fun returnFromStreamToWeb() {
         if (!webHiddenByStream) return
         webHiddenByStream = false
-        stopPlayback()
+        /*
+         * 停播放器但**保留控制条**（父亲 2026-10-16 明确：光标对着银幕按 B 从播放状态
+         * 回网页时，控制条不用收起来）。
+         * 走 keepUi = true 这条：进度上报照旧，只是不收起界面。
+         */
+        reportPlaybackStopped(ctl.positionMs() * 10_000)
+        stopPlaybackInternal(keepUi = true)
+        renderer.videoActive = false
+        renderer.setHudText("")
         webSiteState.value = webSiteBeforeStream
         webOnScreen = true
         com.xxxx.emby_vr.vr.VrNative.setScreenWeb(true)
@@ -2785,6 +2793,17 @@ class MainActivity : ComponentActivity() {
                  * 网页流接管时那个值还是上一部影片留下的，宽银幕内容落到 16:9 的银幕上
                  * 就被纵向拉长（人变高变瘦）。网页流要按它自己那一档的真实宽高铺。
                  */
+                /*
+                 * 【2026-10-16 父亲实测定案：宽银幕片"宽撑满了、高度算矮了"的真 bug】
+                 *
+                 * 原来这里是无条件两句：先按网页流自己的档位设一次比例，紧接着
+                 * **又无条件用 kernelAspect（上一部片子留下的值，兜底 16:9）覆盖掉**。
+                 * 于是网页接管一部 2.39:1 的宽银幕片、而上一部是 16:9 时，
+                 * 银幕最终按 1.778 算高度 = 宽度 / 1.778 → **高度算矮、画面压扁**。
+                 * 只在"上一部刚好同比例"时看不出问题，所以表现为"偶尔算错"。
+                 *
+                 * 现在两条路互斥：网页流用网页流自己的宽高，内核片用内核报的值。
+                 */
                 if (isWeb) {
                     val ww = webStream?.optInt("width", 0) ?: 0
                     val hh = webStream?.optInt("height", 0) ?: 0
@@ -2795,10 +2814,12 @@ class MainActivity : ComponentActivity() {
                         applyDanmakuCanvas(a)
                         com.xxxx.emby_vr.vr.VrNative.setVideoSize(ww, hh)
                     }
+                } else {
+                    val kernelAspect =
+                        com.xxxx.emby_vr.player.PlaybackFlags.videoAspect ?: (16f / 9f)
+                    com.xxxx.emby_vr.vr.VrNative.setVideoAspect(kernelAspect)
+                    applyDanmakuCanvas(kernelAspect)
                 }
-                val kernelAspect = com.xxxx.emby_vr.player.PlaybackFlags.videoAspect ?: (16f / 9f)
-                com.xxxx.emby_vr.vr.VrNative.setVideoAspect(kernelAspect)
-                applyDanmakuCanvas(kernelAspect)
                 /*
                  * 等待态**不再直接放行**（2026-10-09 父亲实测）。
                  *
