@@ -1723,6 +1723,18 @@ class MainActivity : ComponentActivity() {
      * 「正在播放：哔哩哔哩」顶掉了，可那一行之外的东西全是上一部片的。
      * 音轨 / 字幕清单同理（那是上一部片的轨，网页模式下点了也没用）。
      */
+    /**
+     * 网页流接管后往控制条写「站点-片名」（父亲 2026-10-16）。
+     * 片名由扩展从页面标题带过来；站点名按接管来源取（B站 / 腾讯 / 爱奇艺…）。
+     */
+    private fun applyWebStreamTitle(obj: org.json.JSONObject?) {
+        if (obj == null) return
+        val siteName = WEB_SITE_NAMES.getOrElse(webStreamSite ?: -1) { "网页" }
+        val epName = obj.optString("title", "").trim()
+        osdState.webSiteName = if (epName.isEmpty()) siteName else siteName + "-" + epName
+        Log.i(TAG, "控制条标题（网页流）→ ${osdState.webSiteName}")
+    }
+
     private fun clearFilmInfoFromOsd() {
         osdState.hasPlayback = false
         osdState.title = ""
@@ -2328,13 +2340,7 @@ class MainActivity : ComponentActivity() {
              * 原来只在网页还挂在大银幕上时才写站点名，接管播放时网页面被收掉、
              * 标题跟着被清空 —— 于是控制条显示"什么都没在播"，而画面上明明在放。
              */
-            if (isWeb) {
-                val siteName = WEB_SITE_NAMES.getOrElse(webStreamSite ?: -1) { "网页" }
-                val epName = webStream?.optString("title", "")?.trim().orEmpty()
-                osdState.webSiteName =
-                    if (epName.isEmpty()) siteName else siteName + "-" + epName
-                Log.i(TAG, "控制条标题（网页流）→ ${osdState.webSiteName}")
-            }
+
             if (isWeb || com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder) {
                 Log.i(TAG, "起播走 mpv 内核（杜比视界 Profile 5 或选了图形字幕，片源 ${com.xxxx.emby_vr.player.PlaybackFlags.videoDescriptor}，" +
                     "版本 ${com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionProfile ?: "未探到"}）")
@@ -2550,6 +2556,12 @@ class MainActivity : ComponentActivity() {
                  * 系统播放器那条路早就有这一句，mpv 分支提前 return，整段被跳过。
                  */
                 closeWeb()
+                /*
+                 * closeWeb() 顺手把控制条上的影片信息清了（那是给 Emby 片子用的），
+                 * 网页流的标题刚写就被抹掉 —— 父亲 2026-10-16 只看到「哔哩哔哩」。
+                 * 所以标题必须写在这一句**之后**。
+                 */
+                if (isWeb) applyWebStreamTitle(webStream)
                 picking = false
                 reportedItemId = pendingItemId
                 reportedPlaySessionId = pendingPlaySessionId
@@ -4322,6 +4334,12 @@ class MainActivity : ComponentActivity() {
 
     private fun seekBy(deltaMs: Long) {
         if (!ctl.hasEngine()) return
+        /*
+         * 银幕上的进度条在这里统一触发（父亲 2026-10-16：快进快退时银幕上不出进度条）。
+         * 原来只有"长推摇杆"那一路会显示，短推（推一下立刻回中）和控制条上的按键
+         * 都走别处，于是那条进度条在多数情况下根本不出现。
+         */
+        showSeekHud()
         // ExoPlayer 的 seekTo 是异步的：连续快进时上一跳还没落地，
         // currentPosition 仍是旧值，基于它算下一跳会越跳越偏
         // （父亲 2026-10-04 实测：连跳几次落点与预期不符）。
