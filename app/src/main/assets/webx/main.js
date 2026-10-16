@@ -143,6 +143,16 @@
     if (!isPlayPage()) return;
     if (!actedRecently()) return;
     if (!pageIsPlaying()) return;
+    if (!pendingPlay && pendingQq && Date.now() - qqAt < 180000) {
+      /* 腾讯这条路没有播放接口可解析，直接用抓到的那条播放列表 */
+      pendingPlay = {
+        title: '', kind: 'play', t: Date.now(), frame: location.href,
+        durSec: 0, quality: 0, site: 'qq',
+        streams: [{ id: 0, height: 0, width: 0, bw: 0, vcodec: 'h264',
+                    video: pendingQq, audio: '' }]
+      };
+      console.log('[b0b] 腾讯：用抓到的 HLS 播放列表交给内核');
+    }
     var obj = pendingPlay;
     pendingPlay = null;
     /* 标题在交出去这一刻现取（抓取时页面标题可能还没更新） */
@@ -253,6 +263,20 @@
     return true;
   }
 
+  /*
+   * 腾讯视频（v.qq.com）：播放走标准 HLS，`<video>` 的 src 是 blob:，
+   * 看不到真地址；但请求里那条 .m3u8 播放列表就是全部答案 ——
+   * 它自带时效 token，抓到交给内核就能直接播。
+   * 与 B站 不同：腾讯这条路不需要解析播放接口，认出来即可。
+   * （2026-10-16 在电脑浏览器上实测：mpv 带 Referer 能正常出画出声）
+   */
+  var pendingQq = '', qqAt = 0;
+
+  function isQqHls(u) {
+    if (!/\.m3u8(\?|$)/i.test(u)) return false;
+    return /(gtimg\.com|smtcdns\.com|tc\.qq\.com|video\.qq\.com)/i.test(u);
+  }
+
   function noteMedia(u) {
     if (!u || typeof u !== 'string') return;
     if (u.slice(0, 5) === 'blob:') return;
@@ -261,6 +285,10 @@
     if (mediaKeys[key]) return;            // 同一条主干只记一次（分片换参数也算一条）
     mediaKeys[key] = 1;
     mediaHits.push(u);
+    if (isQqHls(u)) {                      /* 腾讯：抓到播放列表就等于拿到了地址 */
+      pendingQq = u; qqAt = Date.now();
+      console.log('[b0b] 腾讯播放列表已记下（长度 ' + u.length + '）');
+    }
     if (mediaHits.length >= 60) flushMedia();
   }
 
@@ -269,7 +297,7 @@
     var list = mediaHits;
     mediaHits = [];
     for (var i = 0; i < list.length; i++) {
-      console.log('[b0b]媒体 ' + String(list[i]).slice(0, 400));
+      console.log('[b0b]媒体 ' + String(list[i]).slice(0, 900));
     }
   }
 
