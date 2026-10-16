@@ -850,9 +850,21 @@
          */
         var nowEp = { ep: biliEp, season: biliSeason, cid: biliCid, winId: poolWin };
         if (sameEpisode(pendingPlay, nowEp)) {
-          console.log('[b0b]③配对跳过：手里那份就是当前这一集（' +
-            (pendingPlay.ep ? 'ep' + pendingPlay.ep : '编号 ' + pendingPlay.cid) + '）');
-          return;
+          /*
+           * 【2026-10-17 04:19】手里那份**只有画面**、而现在成对（画面+声音）了 →
+           * 不能像原来那样直接返回挡掉，必须换新的，否则永远是"有画无声"。
+           */
+          var haveAudioAlready = !!(pendingPlay.streams && pendingPlay.streams[0] && pendingPlay.streams[0].audio);
+          var freshPick = pickCandidates(1);
+          var nowHasAudio = !!(freshPick.length && freshPick[0].audio);
+          if (!haveAudioAlready && nowHasAudio) {
+            console.log('[b0b]③手里那份只有画面，现在声音那条到了 → 换成交配对的那份');
+            pendingPlay = null;
+          } else {
+            console.log('[b0b]③配对跳过：手里那份就是当前这一集（' +
+              (pendingPlay.ep ? 'ep' + pendingPlay.ep : '编号 ' + pendingPlay.cid) + '）');
+            return;
+          }
         }
         console.log('[b0b]③手里那份属于别的集（它记的 ' +
           (pendingPlay.ep ? 'ep' + pendingPlay.ep : '编号 ' + pendingPlay.cid) +
@@ -861,11 +873,30 @@
       }
       var cands = pickCandidates(6);
       if (!cands.length) return;
-      if (cands[0].video === lastPairedVideo) {
+      /*
+       * 【2026-10-17 04:19 父亲报的'没有接管'根因（r622 日志）】
+       *
+       * 池子里刚有**画面那一条**就交出去了（日志 `1)单条`），声音那条晚一秒到，
+       * 结果交出去的还是"有画无声"。所以：B站 这种音视频分轨的站点，
+       * **必须等到画面+声音成对才交**；实在等不到（整片 mp4 / HLS 自带声音 / 等太久）
+       * 才退回"单条"。
+       */
+      var pairSig = String(cands[0].video) + '|' + String(cands[0].audio || '');
+      var isWhole = !!findWholeFile([cands[0].video]) || /\.m3u8/i.test(String(cands[0].video));
+      if (!cands[0].audio && !isWhole) {
+        var waitedMs = liveSince ? (Date.now() - liveSince) : 0;
+        if (waitedMs < 8000) {
+          console.log('[b0b]③先不交：现在只有画面那条，等声音那条（已等 ' +
+            Math.round(waitedMs / 1000) + ' 秒，最多 8 秒）');
+          return;
+        }
+        console.log('[b0b]③等了 ' + Math.round(waitedMs / 1000) + ' 秒还没有声音那条 → 先按单条交（有画无声）');
+      }
+      if (pairSig === lastPairedVideo) {
         console.log('[b0b]③配对跳过：候选与上次完全相同');
         return;
       }
-      lastPairedVideo = cands[0].video;
+      lastPairedVideo = pairSig;
       pendingPlay = {
         subtitle: biliSubUrl,
         cid: biliCid,
