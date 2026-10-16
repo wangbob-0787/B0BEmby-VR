@@ -293,6 +293,7 @@
       if (text.indexOf('"baseUrl"') < 0 && text.indexOf('"base_url"') < 0) return;
       var j = JSON.parse(text);
       takeBiliSubtitle(j);
+      takeBiliCid(j);
       var d = (j && (j.result || j.data || j)) || null;
       if (d && (d.dash || d.durl)) applyPlayinfo(d);
     } catch (e) {}
@@ -311,7 +312,9 @@
       if (!text || text.length > 4000000) return;
       if (text.indexOf('"subtitle"') < 0) return;
       if (text.indexOf('subtitle_url') < 0) return;
-      takeBiliSubtitle(JSON.parse(text));
+      var jj = JSON.parse(text);
+      takeBiliSubtitle(jj);
+      takeBiliCid(jj);
     } catch (e) {}
   }
 
@@ -385,6 +388,21 @@
    */
   var biliSubUrl = '';
   var biliSubLan = '';
+  /*
+   * 弹幕（父亲 2026-10-16）：B站 的滚动评论按"片子编号"分接口拉，
+   * 编号就在同一份播放信息里（data.cid / result.cid）。字幕与弹幕是两个接口，别混。
+   */
+  var biliCid = 0;
+  function takeBiliCid(obj) {
+    try {
+      var d = obj && (obj.data || obj.result);
+      var c = d && d.cid;
+      if (!c) return;
+      if (String(c) === String(biliCid)) return;
+      biliCid = c;
+      console.log('[b0b]⑦ 拿到片子编号 ' + c + '（弹幕按它拉）');
+    } catch (e) {}
+  }
   function takeBiliSubtitle(obj) {
     try {
       var d = obj && (obj.data || obj.result);
@@ -622,6 +640,7 @@
       lastPairedVideo = cands[0].video;
       pendingPlay = {
         subtitle: biliSubUrl,
+        cid: biliCid,
         title: '', kind: 'play', t: Date.now(), frame: location.href,
         durSec: 0, quality: 0, site: '', streams: cands
       };
@@ -820,6 +839,7 @@
               } else if (rt === 'json') {
                 var j = this.response;
                 if (j) takeBiliSubtitle(j);
+                if (j) takeBiliCid(j);
                 if (j) applyPlayinfo(j.result || j.data || j);
               } else if (this.response) {
                 var t2 = new TextDecoder('utf-8').decode(this.response);

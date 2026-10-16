@@ -195,6 +195,8 @@ class MainActivity : ComponentActivity() {
     private var webSiteBeforeStream: Int? = null
     /** 网页流自带的字幕地址（B站 的 subtitle_url，JSON 格式；父亲 2026-10-16） */
     private var webSubtitleUrl: String = ""
+    /** 网页片子自带的"片子编号"，弹幕按它拉（父亲 2026-10-16） */
+    private var webCid: Long = 0L
 
     /*
      * 片名 logo 的位图（父亲 2026-10-06 晚：logo 一直没画出来）。
@@ -1826,7 +1828,17 @@ class MainActivity : ComponentActivity() {
         runOnUiThread {
             webSiteState.value = null
             webOnScreen = false
-            webHiddenByStream = false
+            /*
+             * 【2026-10-16 头显实测定案：这里原来有一句 webHiddenByStream = false，是真凶】
+             *
+             * 接管流程是「先置 webHiddenByStream = true（记下网页是被我们顶掉的），
+             * 紧接着调 closeWeb()」—— 于是这一句立刻把刚置好的标记清成 false，
+             * 按 B 的判断永远为假，一路落到下面 openWeb(站点) 那一支，
+             * 打开的是站点首页。表现出来就是"按 B 回到 B站 首页"（父亲两次实测）。
+             *
+             * 这个标记的生命周期只该由两件事管：接管时置真、回网页时（returnFromStreamToWeb）
+             * 置假。关网页本身不代表用户已经回过网页了。
+             */
             osdState.webSiteName = ""
             com.xxxx.emby_vr.vr.VrNative.setScreenWeb(false)
             Log.i(TAG, "网页面已关闭（大银幕交回影片）")
@@ -2098,6 +2110,76 @@ class MainActivity : ComponentActivity() {
      * **字号、提前/延后**这两个开关天然生效（它们作用在弹幕层上），
      * 字幕菜单里也会多出这一条。
      */
+    /**
+     * 拉 B站 的滚动评论（弹幕），挂到自绘弹幕层（父亲 2026-10-16）。
+     *
+     * 接口：api.bilibili.com/x/v1/dm/list.so?oid=<片子编号>，返回 XML，
+     * 每条形如 <d p="出现秒,模式,字号,颜色,…">文字</d>；
+     * 模式 1/2/3 是从右往左滚，4 是底部固定，5 是顶部固定。
+     *
+     * 走弹幕层而不是播放器字幕：控制条上的字号、提前/延后本来就作用在弹幕层上，
+     * 挂上去这三样天然生效。
+     */
+    private fun loadWebDanmaku(cid: Long) {
+        if (cid <= 0L) return
+        scope.launch {
+            val track = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                try {
+                    val conn = java.net.URL(
+                        "https://api.bilibili.com/x/v1/dm/list.so?oid=" + cid,
+                    ).openConnection()
+                    conn.setRequestProperty("Referer", "https://www.bilibili.com")
+                    conn.setRequestProperty("User-Agent", "Mozilla/5.0")
+                    conn.connectTimeout = 10000
+                    conn.readTimeout = 10000
+                    val raw = conn.inputStream.bufferedReader().readText()
+                    if (raw.isEmpty()) return@withContext null
+                    val re = Regex("<d p=\"([^\"]+)\">([^<]*)</d>")
+                    val items = ArrayList<com.xxxx.emby_vr.danmaku.DanmakuItem>()
+                    for (m in re.findAll(raw)) {
+                        val f = m.groupValues[1].split(',')
+                        if (f.size < 4) continue
+                        val sec = f[0].toDoubleOrNull() ?: continue
+                        val mode = f[1].trim().toIntOrNull() ?: 1
+                        val color = f[3].trim().toLongOrNull() ?: 16777215L
+                        val text = m.groupValues[2].trim()
+                        if (text.isEmpty()) continue
+                        val move = mode in 1..3
+                        items.add(
+                            com.xxxx.emby_vr.danmaku.DanmakuItem(
+                                startMs = (sec * 1000).toLong(),
+                                endMs = (sec * 1000).toLong() + if (move) 8000L else 4000L,
+                                text = text,
+                                isMove = move,
+                                x1 = 1920f, y1 = 60f, x2 = -400f, y2 = 60f,
+                                posX = 960f, posY = if (mode == 4) 1040f else 60f,
+                                style = com.xxxx.emby_vr.danmaku.DanmakuStyle(
+                                    fontSize = 52f,
+                                    primaryColor = (0xFF000000L or (color and 0xFFFFFFL)).toInt(),
+                                    outlineColor = android.graphics.Color.BLACK,
+                                    outline = 3f,
+                                    alignment = 2,
+                                ),
+                            ),
+                        )
+                    }
+                    if (items.isEmpty()) null
+                    else com.xxxx.emby_vr.danmaku.DanmakuTrack(1920f, 1080f, items)
+                } catch (t: Throwable) {
+                    Log.w(TAG, "⑦ 弹幕没拉下来：" + t.message)
+                    null
+                }
+            }
+            if (track == null) {
+                Log.w(TAG, "⑦ 弹幕是空的（这部片子可能没开弹幕，或编号不对）")
+                return@launch
+            }
+            danmakuTrack = track
+            applyDanmakuSetting()
+            Log.i(TAG, "⑦ 弹幕已挂到弹幕层（" + track.items.size + " 条），字号与提前延后跟着生效")
+        }
+    }
+
     private fun loadWebSubtitle(url: String) {
         if (url.isBlank()) return
         val want = url
@@ -2444,6 +2526,7 @@ class MainActivity : ComponentActivity() {
         if (s.optString("video").isBlank()) return
         webCandIdx = idx
         webSubtitleUrl = src.optString("subtitle")
+        webCid = src.optLong("cid", 0L)
         val site = webSiteState.value
         val hasCookie = src.optString("cookie").isNotBlank()
         Log.i(
@@ -2481,6 +2564,7 @@ class MainActivity : ComponentActivity() {
             } else {
                 Log.i(TAG, "⑤ 第 ${idx + 1} 条已出画面，接管成功")
                 /* 画面稳了再去拉字幕，不跟起播抢带宽（父亲 2026-10-16） */
+                loadWebDanmaku(webCid)
                 loadWebSubtitle(webSubtitleUrl)
             }
         }, 8000L)
