@@ -78,7 +78,13 @@
   } catch (e) {}
 
   function actedRecently() {
-    return Date.now() - actedAt < 30000;
+    /*
+     * 原来 30 秒：番剧页要过会员校验再起播，经常超过它，
+     * 于是"点了、页面也确实在播，却被自己的超时挡掉"——
+     * 现象就是"同一部片有时抓得到有时抓不到"（父亲 2026-10-16 报）。
+     * 放宽到 2 分钟；真正的判据交给"页面是否在播"。
+     */
+    return Date.now() - actedAt < 120000;
   }
 
   function isPlayPage() {
