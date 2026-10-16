@@ -514,9 +514,22 @@ class MpvBackend(private val context: Context) {
              * 这里原来用的是 setOptionString —— 那是 **mpv 初始化之前**才能用的接口，
              * 播出过程中调它等于没调，而且不报错（r560 实测：有画无声）。
              */
+            val hdr = headers.entries.joinToString(",") { "${it.key}: ${it.value}" }
+            setOptionRuntime("http-header-fields", hdr)
+            /*
+             * 【2026-10-16 头显实测定案】`http-header-fields` 是**单文件选项**，
+             * 只对 loadfile 那一个文件生效 —— 后挂的 `audio-add` 文件拿到的是默认值（空），
+             * 于是 B站 直接回 400/403，内核报 `audio=eof`，表现就是**有画无声**。
+             *
+             * 本机用同一个音频地址实测过：裸请求 403，带 Referer+UA 就是 200 且完整一条 67 MB
+             * （所以不是"分片格式不认"，是请求头漏了）。
+             *
+             * `stream-lavf-o` 是 ffmpeg 层的选项，**对每一次开流都生效**（含 audio-add），
+             * 把同样的头在这里再设一遍，取声音那条就不会再被拒。
+             */
             setOptionRuntime(
-                "http-header-fields",
-                headers.entries.joinToString(",") { "${it.key}: ${it.value}" },
+                "stream-lavf-o",
+                "headers=" + headers.entries.joinToString("\r\n") { "${it.key}: ${it.value}" } + "\r\n",
             )
         }
         /* 音轨不当 per-file 选项设（r562 实测仍不生效），交给 play 在文件加载后用 audio-add 挂 */
