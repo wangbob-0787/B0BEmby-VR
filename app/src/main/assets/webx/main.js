@@ -231,8 +231,12 @@
   var mediaKeys = {};
 
   function looksMedia(u) {
-    return /\.(m4s|mp4|m3u8|ts|flv|m4a|aac|mp3)(\?|$)/i.test(u) ||
-      /getinfo|playurl|get_play|getplaylist|\/dash|\.json(\?|$)/i.test(u);
+    /* 只挡掉一眼就是静态资源/统计的（图标、字体、埋点），其余都记 ——
+     * 摸新站时宁可多记：腾讯那种接口名事先并不知道，漏一条就等于白跑一趟。
+     * （2026-10-16 第一次雷达就因为只认"媒体后缀 + 已知接口名"，把腾讯整站漏掉了。） */
+    if (/\.(svg|png|jpe?g|webp|gif|ico|woff2?|ttf|otf|css|js|mjs|wasm|map)(\?|$)/i.test(u)) return false;
+    if (/data\.bilibili\.com\/log|hdslb\.com\/bfs|hm\.baidu\.com|sentry|beacon|favicon/i.test(u)) return false;
+    return true;
   }
 
   function noteMedia(u) {
@@ -243,7 +247,7 @@
     if (mediaKeys[key]) return;            // 同一条主干只记一次（分片换参数也算一条）
     mediaKeys[key] = 1;
     mediaHits.push(u);
-    if (mediaHits.length >= 30) flushMedia();
+    if (mediaHits.length >= 60) flushMedia();
   }
 
   function flushMedia() {
