@@ -13,6 +13,7 @@
 (function () {
   var cookieCache = '';
   var cookieAt = 0;
+  var cookiePending = null;
 
   /* 一分钟刷一次就够（cookie 不会秒变），拿不到就先用上一次的 */
   function cookies() {
@@ -29,17 +30,35 @@
     return cookieCache;
   }
 
-  window.addEventListener('message', function (ev) {
-    if (ev.source !== window) return;
-    var d = ev.data;
-    if (!d || d.__b0b !== 1 || !d.payload) return;
+  /*
+   * 播放消息专用：等 cookie 真取回来再发（2026-10-16 r560 实测「登录票 无」）。
+   *
+   * 原来所有消息都不等 —— 取 cookie 是异步的，第一条消息几乎必然在它返回之前发出，
+   * 所以客户端拿到的永远是空票：免费内容不受影响（只认来源与浏览器标识），
+   * 但会员内容换不到高清地址。播放消息本来就不在乎多等几十毫秒，这里等它。
+   */
+  function ensureCookie() {
+    if (cookieCache) return Promise.resolve(cookieCache);
+    if (!cookiePending) {
+      try {
+        cookiePending = browser.cookies.getAll({ domain: 'bilibili.com' }).then(function (list) {
+          var s = (list || []).map(function (c) { return c.name + '=' + c.value; }).join('; ');
+          if (s) cookieCache = s;
+          cookieAt = Date.now();
+          console.log('[b0b] 登录票已取：' + (s ? '有' : '无'));
+          return cookieCache;
+        }).catch(function (e) {
+          console.log('[b0b] 取 cookie 失败：' + e);
+          return '';
+        });
+      } catch (e) {
+        return Promise.resolve('');
+      }
+    }
+    return cookiePending;
+  }
 
-    var payload = d.payload;
-    try {
-      var c = cookies();
-      if (c) payload.cookie = c;
-    } catch (e) {}
-
+  function send(payload) {
     try {
       var p = browser.runtime.sendNativeMessage('b0b', payload);
       if (p && p.catch) {
@@ -48,10 +67,30 @@
     } catch (e) {
       console.log('[b0b] 一次性消息抛错：' + e);
     }
-
     try {
       browser.runtime.sendMessage({ __b0b: 1, payload: payload });
     } catch (e) {}
+  }
+
+  window.addEventListener('message', function (ev) {
+    if (ev.source !== window) return;
+    var d = ev.data;
+    if (!d || d.__b0b !== 1 || !d.payload) return;
+
+    var payload = d.payload;
+    if (payload && payload.kind === 'play') {
+      /* 可播地址这条必须带票（会员片要），等它取回来再发 */
+      ensureCookie().then(function (c) {
+        if (c) payload.cookie = c;
+        send(payload);
+      });
+      return;
+    }
+    try {
+      var c = cookies();
+      if (c) payload.cookie = c;
+    } catch (e) {}
+    send(payload);
   }, false);
 
   console.log('[b0b] 内容脚本就绪 ' + location.href);
