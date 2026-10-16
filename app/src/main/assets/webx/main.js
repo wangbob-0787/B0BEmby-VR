@@ -282,6 +282,20 @@
    * 播放列表一次都没有）。它的地址是随接口响应发下来的，所以不去猜它的结构，
    * 直接在响应文本里找 m3u8 字样。
    */
+  /*
+   * 兜底路：不管这次响应叫什么名字，只要正文里带着 dash 地址就捡出来。
+   * B站 换片/切集时接口名会变，按名字认容易漏（父亲 2026-10-16）。
+   */
+  function scanTextForBiliDash(text) {
+    try {
+      if (!text || text.length > 4000000) return;
+      if (text.indexOf('"baseUrl"') < 0 && text.indexOf('"base_url"') < 0) return;
+      var j = JSON.parse(text);
+      var d = (j && (j.result || j.data || j)) || null;
+      if (d && (d.dash || d.durl)) applyPlayinfo(d);
+    } catch (e) {}
+  }
+
   function scanTextForQqHls(text) {
     try {
       if (!text) return;
@@ -463,7 +477,17 @@
   }
 
   function isPlayApi(u) {
-    return !!u && u.indexOf('playurl') >= 0;
+    /*
+     * 原来只认名字里带 playurl 的请求。B站 在同一个页面里换片、点集数标签切集时
+     * 走的是 x/player/wbi/v2、x/player/v2 这些（名字里没有 playurl），
+     * 于是"进页面第一次能接管、之后换内容就不行"（父亲 2026-10-16 报）。
+     * 凡是 B站 播放相关的接口全接。
+     */
+    if (!u || u.indexOf('bilibili.com') < 0) return false;
+    if (u.indexOf('playurl') >= 0) return true;
+    if (u.indexOf('/x/player/') >= 0) return true;
+    if (u.indexOf('/pgc/player/') >= 0) return true;
+    return false;
   }
 
   try {
@@ -499,6 +523,17 @@
         note(u);
         noteApi(u);
         noteMedia(u);
+        /* B站：不管接口叫什么名字，正文里带 dash 地址就捡（换片/切集兜底） */
+        if (u.indexOf('bilibili.com') >= 0) {
+          this.addEventListener('load', function () {
+            try {
+              var rt0 = this.responseType;
+              if (rt0 === '' || rt0 === 'text') scanTextForBiliDash(this.responseText);
+              else if (rt0 === 'json') scanTextForBiliDash(JSON.stringify(this.response));
+              else if (this.response) scanTextForBiliDash(new TextDecoder('utf-8').decode(this.response));
+            } catch (e) {}
+          });
+        }
         /* 腾讯：地址在这些接口的响应里，读回来扫一遍 */
         if (u.indexOf('qq.com') >= 0) {
           this.addEventListener('load', function () {
