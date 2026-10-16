@@ -224,58 +224,30 @@
     /* 接管门槛仍是九成（父亲 2026-10-17 定的顺序：先抓地址，铺满九成才接管） */
     if (!liveSince) { console.log('[b0b] 没交出去：播放窗口还没铺满九成（地址已经收着了，等放大）'); return; }
     /*
-     * 【2026-10-17 02:56 父亲定的规则：切大屏时用**最新**的小窗地址】
-     *
-     * 原来这里有三个"不交"的硬门（编号对不上/集号对不上/窗口不是同一只）——
-     * 它们把"小窗好不容易抓到的那份、全屏时页面又跳了一下"的情形一律挡掉，
-     * 表现为"有时候就是接管不了"。
-     * 现在改成**挑一份最合适的去交**，挑不到才不交：
-     *   ① 手里那份就是当前这一集 → 用它；
-     *   ② 不是 → 从存档里找当前这一集的；
-     *   ③ 还没有 → 用存档里最新的一份（父亲原话"不管如何，用最新的"），并打日志说清来源。
+     * 【2026-10-17 03:54 简化】只有一个门槛之后，手里的那份必定属于这一次放大，
+     * 所以只做一件事：它是不是当前这一集？是就交，不是就丢掉重新攒。
      */
-    var nowKey = epKeyOf() || (biliEp ? ('ep' + biliEp) : '');
+    var obj = pendingPlay;
     var nowId = { ep: biliEp, season: biliSeason, cid: biliCid };
-    var obj = pendingPlay, objFrom = '手里那份';
     if (obj && !sameEpisode(obj, nowId)) {
-      var r1 = pickRecordFor(nowKey, 0);
-      if (r1 && r1.snap) {
-        console.log('[b0b]③手里那份(' + (obj.ep || obj.cid || '?') + ')不是当前这一集 → 改用存档里的 ' +
-          r1.key + '（' + Math.round((Date.now() - r1.at) / 1000) + ' 秒前存的）');
-        obj = r1.snap;
-        objFrom = '存档 ' + r1.key;
-      } else {
-        console.log('[b0b]③手里那份不是当前这一集，存档里也没有当前这一集的 → 按"用最新那份"继续交');
-        objFrom = '手里那份(集号对不上)';
-      }
+      console.log('[b0b]③手里那份不是当前这一集（它 ' + (obj.ep || obj.cid || '?') +
+        '，现在 ep' + (biliEp || '?') + '）→ 丢掉，重新攒');
+      pendingPlay = null;
+      obj = null;
     }
-    if (!obj) {
-      var r2 = pickRecordFor(nowKey, 0);
-      if (r2 && r2.snap) {
-        obj = r2.snap;
-        objFrom = '存档 ' + r2.key;
-        console.log('[b0b]③手里那份已经交过 → 改用存档里最新的一份：' + r2.key +
-          '（' + Math.round((Date.now() - r2.at) / 1000) + ' 秒前存的）');
-      }
-    }
-    if (!obj) { console.log('[b0b]③不交：手里和存档里都没有可用的地址'); return; }
+    var objFrom = '手里那份';
+
     /*
      * 【2026-10-17 03:22】交过的那份**不再丢掉**：父亲会按 B 回网页、再放大，那时还要用同一份。
      * 只做 3 秒去重，免得每 400ms 重复递一次（客户端本来也有去重，这里少打日志）。
      */
-    var subSig = String((obj.streams && obj.streams[0] && obj.streams[0].video) || '').slice(-60) +
-      '|' + (nowKey || '');
+    var subSig = String((obj.streams && obj.streams[0] && obj.streams[0].video) || '').slice(-60);
     if (subSig === lastSubmitSig && Date.now() - lastSubmitAt < 3000) {
       console.log('[b0b]③刚刚交过同一份（3 秒内），不重复交');
       return;
     }
     lastSubmitSig = subSig;
     lastSubmitAt = Date.now();
-    /* 交出去的这份存进 records：按 B 回网页、再放大时还用它 */
-    try {
-      records.push({ key: nowKey || lastEpKey || '未知', at: Date.now(), snap: obj, pool: [] });
-      if (records.length > 6) records.shift();
-    } catch (e) {}
     /* 标题在交出去这一刻现取（抓取时页面标题可能还没更新） */
     try { obj.title = pageTitle(); } catch (e) {}
     /*
@@ -605,15 +577,10 @@
     if (u.slice(0, 5) === 'blob:') return;
     if (!looksMedia(u)) return;
     /*
-     * 【2026-10-17 03:37：收片段这道闸再放宽一档】
-     *
-     * r619 实测：父亲在小窗等了一会儿再全屏，全屏那一刻池子里是 **0 条**，
-     * 而同一段时间客户端明明收到了成对的分片地址（画面 `_sr1-1-100xxx` + 声音 `-1-30280`）。
-     * 说明"按窗口大小决定收不收"这件事本身就是错的方向 —— 页面在播，它下载的东西我们就该记。
-     * 现在只留一条：**页面确实在播**（不是悬停预览、不是广告位）。
-     * "要不要接管"仍由 90% 那道门单独把关。
+     * 【2026-10-17 03:54】只在"窗口占到九成"之后才收（父亲定的单一门槛）。
+     * 小窗一概不管。所以这里只认 liveSince。
      */
-    if (!pageIsPlaying() && !poolSince && !liveSince) return;
+    if (!liveSince) return;
     var key = u.split('?')[0];
     if (mediaKeys[key]) return;            /* 同一条主干只记一次（分片换参数也算一条） */
     /* 值要存完整地址：分片带时效 token，丢了参数就播不了（2026-10-16） */
@@ -681,51 +648,18 @@
    *
    * 现在：旧的那份**存进 records 留着**（换集时还可能在用），当前这一集开一份新的。
    */
-  /*
-   * 【2026-10-17 03:05 父亲举例定的钥匙】
-   *
-   * 剧集：`/bangumi/play/ep5852931`（每集不同）
-   * 电影：`/bangumi/play/ss307572?theme=movie`（没有集号，只有番剧号）
-   * 两种情况**小窗到网页全屏地址都不变** —— 所以"地址里那一段标识"就是最干净的钥匙。
-   * 原来只认 `ep`，电影会取到空钥匙，多部电影会互相顶替。
-   */
-  function epKeyOf() {
-    /*
-     * 【2026-10-17 03:20 父亲纠正：不要去解析 ep/ss/BV 的含义】
-     *
-     * 父亲原话："我们没有必要去猜 ep…、ss…、video/BV…，我的意思是小窗口和大窗口时，
-     * URL 不会变。" —— 这就是全部判据：**地址不变 = 还是同一份**。
-     * 所以钥匙直接用地址本身（保留路径，丢掉后面那串与内容无关的参数，如 trackid/spm_id）。
-     */
+  /* 单一门槛后只需要"清掉重来"这一个动作（父亲 2026-10-17 03:54） */
+  function resetCollection(why) {
     try {
-      return String(location.origin || '') + String(location.pathname || '');
-    } catch (e) {}
-    return '';
-  }
-  var records = [];        /* 最近几份播放记录：{key, at, snap, pool} */
-  var lastSubmitAt = 0;    /* 上一份交出去的时刻（只做 3 秒去重） */
-  var lastSubmitSig = '';
-  var lastEpKey = '';      /* 上一份记录属于哪一集 */
-  function archiveAndReset(why, newKey) {
-    try {
-      var has = pendingPlay || candPool.length;
-      if (has) {
-        records.push({ key: lastEpKey || '未知', at: Date.now(), snap: pendingPlay, pool: candPool.slice(0) });
-        if (records.length > 6) records.shift();
-        console.log('[b0b]②存档一份（' + why + '）：' + (lastEpKey || '未知集') +
-          '，含待交=' + (pendingPlay ? '有' : '无') + '，池子 ' + candPool.length + ' 条（留着重用，不清）');
-      }
-      /*
-       * 【2026-10-17 03:37】池子与候选**一律不清**。
-       * 父亲的口径是"不要扔"：URL 不变就是同一份，URL 变了也只是换一份新的，旧的留着。
-       * 池子里的条目都带自己的编号（cid），递交时按编号挑，不会串片，
-       * 所以"留着"没有代价，而"清掉"的代价是等到全屏时手上空的 —— 就是今晚这个毛病。
-       */
-      lastEpKey = newKey || '';
+      pendingPlay = null;
+      if (candPool.length) console.log('[b0b]②清掉已收的 ' + candPool.length + ' 条（' + why + '）');
+      candPool = [];
+      candSeen = {};
+      poolKeysLog = {};
+      lastPairedVideo = '';
     } catch (e) {}
   }
-  /* 兼容旧调用名 */
-  function invalidateForNewEpisode(why) { archiveAndReset(why, epKeyOf()); }
+  function invalidateForNewEpisode(why) { resetCollection(why); }
 
   /* 以后备记录里挑一份可用的：当前集的优先，其次最新的一份 */
   function pickRecordFor(nowKey, maxAgeMs) {
@@ -905,11 +839,6 @@
         console.log('[b0b]③手里那份属于别的集（它记的 ' +
           (pendingPlay.ep ? 'ep' + pendingPlay.ep : '编号 ' + pendingPlay.cid) +
           '，现在 ep' + (biliEp || '?') + '）→ 存起来，换新的继续攒');
-        /* 父亲 2026-10-17 03:22：不要扔 —— 存进 records，回那一集还能用 */
-        try {
-          records.push({ key: lastEpKey || '旧', at: Date.now(), snap: pendingPlay, pool: [] });
-          if (records.length > 6) records.shift();
-        } catch (e) {}
         pendingPlay = null;
       }
       var cands = pickCandidates(6);
@@ -1005,12 +934,12 @@
       if (me && me[1] !== biliEp) {
         biliEp = me[1];
         console.log('[b0b]②页面在播的集号变了：ep' + biliEp + '（季 ' + (biliSeason || '?') + '）');
-        archiveAndReset('集号变成 ep' + biliEp, epKeyOf());
+        resetCollection('页面在播的集号变了');
       }
       if (ms && ms[1] !== biliSeason) {
         biliSeason = ms[1];
         console.log('[b0b]②页面在播的季号变了：season ' + biliSeason);
-        archiveAndReset('季号变成 ' + biliSeason, epKeyOf());
+        resetCollection('页面在播的季号变了');
       }
     } catch (e) {}
   }
@@ -1265,57 +1194,61 @@
      * 页面一停就清空已收的（换集时正好靠这一下重来，不会串片）。
      */
     var vpArea = (window.innerWidth || 1) * (window.innerHeight || 1);
+    /*
+     * 【2026-10-17 03:54 父亲定的模型：只有一个门槛】
+     *
+     * 父亲原话："放大到接管之间会有一两秒延迟没关系。关键是又要判断小窗口，又要判断大窗口，
+     * 逻辑复杂了，你的代码容易出错。我记得我们只管小窗口的时候非常稳定。
+     * 现在从非常稳定的只管小窗口，改成大窗口，我觉得还是会稳定。"
+     *
+     * 所以：
+     *   小窗一概不管（不收、也不交）；
+     *   窗口占到九成 → 开始收它正在下载的画面与声音；
+     *   收到画面+声音两条 → 交（客户端接过去播）；
+     *   退回小窗 → 把刚才收的清掉，下次放大重新收。
+     * 只有这一个门槛，没有存档、没有钥匙、没有"留着"。
+     */
+    var bigNow = false;
     if (best) {
       var pctNow = best.area * 100 / vpArea;
-      if (poolSince && poolWin && best.winId !== poolWin) {
-        /*
-         * 【2026-10-17 改】窗口换了一只**不再清池**（父亲 02:56：切大屏时用最新的小窗地址）。
-         * 全屏那一刻页面有可能重建播放器，清池等于把自己刚抓的东西扔掉。
-         * 现在只把"当前窗口"指到新的，已收的留着继续用。
-         */
-        console.log('[b0b]① 在播的窗口换了一只（' + poolWin + ' → ' + best.winId +
-          '），已收的 ' + candPool.length + ' 条留着继续用');
-        poolWin = best.winId;
-        lastSmallLog = '';
-      }
-      if (!poolSince) {
-        poolSince = Date.now();
-        poolWin = best.winId;
-        if (!lastEpKey) lastEpKey = epKeyOf();
-        console.log('[b0b]① 检测到在播窗口 ' + best.winId + '：' + Math.round(best.w) + 'x' +
-          Math.round(best.h) + '，占屏幕 ' + Math.round(pctNow) +
-          '%（收片段门槛两成），开始收它的片段');
-      }
-      /* 九成那个门槛只管"能不能接管"，与收片段无关 */
-      if (pctNow >= 90) {
+      bigNow = (pctNow >= 90);
+      if (bigNow) {
         if (!liveSince) {
           liveSince = Date.now();
+          poolSince = liveSince;
+          poolWin = best.winId;
+          pendingPlay = null;
+          candPool = [];
+          candSeen = {};
+          poolKeysLog = {};
+          candTried = 0;
+          lastPairedVideo = '';
           console.log('[b0b]① 窗口 ' + best.winId + ' 占到九成（' + Math.round(best.w) + 'x' +
-            Math.round(best.h) + '，' + Math.round(pctNow) + '%）→ 允许接管；池子里已有 ' +
-            candPool.length + ' 条，收片段时是 ' + (poolWin || '?') + ' 这个窗口');
+            Math.round(best.h) + '，' + Math.round(pctNow) + '%）→ 开始收它的画面与声音');
         }
-      } else if (liveSince) {
-        /* 从全屏退回小窗（不是关掉）：撤掉接管许可，但**池子留着**，再放大还能接着用 */
-        liveSince = 0;
-        console.log('[b0b]① 窗口退回小窗（' + Math.round(pctNow) + '%）→ 暂停接管，池子留着 ' +
-          candPool.length + ' 条');
       }
-    } else if (poolSince) {
-      /*
-       * 【2026-10-17 改】切全屏的那一瞬间页面可能短暂"没有合格的在播窗口"，
-       * 原来这一刻就把池子清空 —— 等于在最需要它的时刻扔掉（父亲报的"有时候接管不了"）。
-       * 现在给 20 秒宽限：只要 20 秒内又出现播放窗口，池子原样接着用。
-       */
+    }
+    if (bigNow) {
+      poolGoneAt = 0;
+    } else if (liveSince) {
+      /* 退回小窗：给 3 秒宽限（切全屏那一瞬可能量不到九成），超时才清 */
       if (!poolGoneAt) poolGoneAt = Date.now();
-      if (Date.now() - poolGoneAt > 20000) {
+      if (Date.now() - poolGoneAt > 3000) {
+        var hadNow = candPool.length;
+        liveSince = 0;
         poolSince = 0;
         poolWin = '';
         poolGoneAt = 0;
-        liveSince = 0;
-        console.log('[b0b]① 播放停了二十秒以上（已收的 ' + candPool.length + ' 条留着，不清）');
+        pendingPlay = null;
+        candPool = [];
+        candSeen = {};
+        poolKeysLog = {};
+        candTried = 0;
+        lastPairedVideo = '';
+        candTried = 0;
+        console.log('[b0b]① 缩回小窗 → 清掉刚收的 ' + hadNow + ' 条，下次放大重新收');
       }
     }
-    if (best) poolGoneAt = 0;
     /*
      * 【2026-10-17 00:20 观测：小窗里在试播什么，也要打出来】
      *
