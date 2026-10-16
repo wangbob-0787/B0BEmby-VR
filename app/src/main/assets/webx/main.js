@@ -178,16 +178,12 @@
 
   /* 每轮扫描都问一次：条件齐了就交出去（只交一次） */
   function flushPendingPlay() {
-    /* 每道关卡都留下记录：抓不到时能一眼看出卡在哪（父亲 2026-10-16 报"时好时坏"） */
-    if (!pendingPlay) {
-      if (window.__b0bWhy !== 'no-pending') { window.__b0bWhy = 'no-pending'; }
-      return;
-    }
-    if (!isPlayPage()) { console.log('[b0b] 没交出去：当前不是播放页 ' + location.href); return; }
-    if (!actedRecently()) { console.log('[b0b] 没交出去：扣扳机已经超过 30 秒'); return; }
-    if (!pageIsPlaying()) { console.log('[b0b] 没交出去：页面还没在播（缓冲/广告/没开始）'); return; }
+    /*
+     * 腾讯那条兜底必须放在最前面：它本身就是"没有解析到播放接口"时的替代品。
+     * 原来写在"待播为空就返回"的后面，等于永远走不到 ——
+     * 父亲 2026-10-16 现场：播放列表已经识别到，却始终没交出去。
+     */
     if (!pendingPlay && pendingQq && Date.now() - qqAt < 180000) {
-      /* 腾讯这条路没有播放接口可解析，直接用抓到的那条播放列表 */
       pendingPlay = {
         title: '', kind: 'play', t: Date.now(), frame: location.href,
         durSec: 0, quality: 0, site: 'qq',
@@ -196,6 +192,11 @@
       };
       console.log('[b0b] 腾讯：用抓到的 HLS 播放列表交给内核');
     }
+    /* 每道关卡都留下记录：抓不到时能一眼看出卡在哪 */
+    if (!pendingPlay) return;
+    if (!isPlayPage()) { console.log('[b0b] 没交出去：当前不是播放页 ' + location.href); return; }
+    if (!actedRecently()) { console.log('[b0b] 没交出去：扣扳机已经超过 2 分钟'); return; }
+    if (!pageIsPlaying()) { console.log('[b0b] 没交出去：页面还没在播（缓冲/广告/没开始）'); return; }
     var obj = pendingPlay;
     pendingPlay = null;
     /* 标题在交出去这一刻现取（抓取时页面标题可能还没更新） */
