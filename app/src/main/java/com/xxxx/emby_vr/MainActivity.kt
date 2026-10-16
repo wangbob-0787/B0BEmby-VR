@@ -2299,6 +2299,11 @@ class MainActivity : ComponentActivity() {
         )
         closeWeb()
         startPlayer(url = "", title = "网页", startMs = 0L, webStream = obj)
+        /*
+         * 接管之后控制条保持展开（父亲 2026-10-16）：
+         * 抓来的地址播起来时，条上要能看到片名与进度，别一接管就收起来。
+         */
+        setOsdVisible(true)
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
             val m = mpvBackend
             if (m != null && !m.videoReady()) {
