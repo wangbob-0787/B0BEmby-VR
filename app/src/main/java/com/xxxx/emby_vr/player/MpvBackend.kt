@@ -420,6 +420,9 @@ class MpvBackend(private val context: Context) {
     /**
      * 播一个地址。[startSec] 是起播位置（秒）。
      */
+    /** 网页流要挂的外部音轨：playStream 交代，play 在文件加载完成后用 audio-add 挂上去 */
+    @Volatile private var pendingAudioUrl: String? = null
+
     /** 每次 loadfile 的序号：给延迟补跳用，避免上一部片排的回调把新片跳歪 */
     private var loadGen = 0
 
@@ -441,6 +444,29 @@ class MpvBackend(private val context: Context) {
                 post { MPVLib.setPropertyString("start", "+" + startSec.toInt()) }
             }
             post { MPVLib.command(arrayOf("loadfile", url, "replace")) }
+            /*
+             * 外挂音轨（网页流用）：2026-10-16 头显实测 —— 把 audio-file 当"下一个文件的
+             * per-file 选项"设，属性确实设上了（内核日志有 `Set property: audio-file=…`），
+             * 但**没有为这次加载的文件生效**：全程没有一条打开音频文件的记录，
+             * 直接 `audio=eof`（有画无声）。改用运行期的 audio-add：等文件加载完再把
+             * 外挂音轨挂上去，并带 select 让它直接出声。
+             */
+            val au = pendingAudioUrl
+            pendingAudioUrl = null
+            if (au != null) {
+                val genAu = gen
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    if (genAu != loadGen) return@postDelayed   // 已经换片了，别把音轨挂到新片上
+                    post {
+                        try {
+                            MPVLib.command(arrayOf("audio-add", au, "select"))
+                            Log.i(TAG, "外挂音轨已交给内核（audio-add）")
+                        } catch (t: Throwable) {
+                            Log.e(TAG, "外挂音轨挂载失败: ${t.message}")
+                        }
+                    }
+                }, 1500L)
+            }
             if (startSec > 0.5) {
                 val want = startSec
                 android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
@@ -485,17 +511,16 @@ class MpvBackend(private val context: Context) {
             /*
              * 运行期必须用**属性**接口（setOptionRuntime = setPropertyString）。
              *
-             * 2026-10-16 头显实测（r560）：这里原来用的是 setOptionString —— 那是**初始化之前**
-             * 才能用的接口，播出过程中调它等于没调，而且不报错。结果：
-             * 内核日志里只有视频流被打开、外部音轨一条打开记录都没有，
-             * 紧接着就是 `restart complete @ 0.000000, audio=eof, video=playing`（有画无声）。
+             * 这里原来用的是 setOptionString —— 那是 **mpv 初始化之前**才能用的接口，
+             * 播出过程中调它等于没调，而且不报错（r560 实测：有画无声）。
              */
             setOptionRuntime(
                 "http-header-fields",
                 headers.entries.joinToString(",") { "${it.key}: ${it.value}" },
             )
-            if (!audioUrl.isNullOrBlank()) setOptionRuntime("audio-file", audioUrl)
         }
+        /* 音轨不当 per-file 选项设（r562 实测仍不生效），交给 play 在文件加载后用 audio-add 挂 */
+        pendingAudioUrl = audioUrl?.takeIf { it.isNotBlank() }
         play(videoUrl, startSec)
     }
 

@@ -55,6 +55,60 @@
     return 2;
   }
 
+  /*
+   * 抓到可播地址后**先暂存**，等页面确实"是我点开的播放页、画面真的在放"再交出去。
+   *
+   * 2026-10-16 父亲实测：「不等我选片，它就自动选了一部」—— B站 的页面自己会起播
+   * （列表页/详情页的预览），只按 URL 判据不够，必须再看画面是不是真在放。
+   */
+  var pendingPlay = null;
+
+  /*
+   * 必须"扣过扳机"才允许接管（父亲 2026-10-16 实测）：
+   * 「我的光点只要指到网页上一部片子，我还没有扣扳机，它就被选中了」——
+   * B站 的悬停预览自己会播，光看"有画面在放"分不清是他在看还是只是划过。
+   * 这里记下最后一次点击类动作的时间，只有 30 秒内的动作才算数（点完到起播足够）。
+   */
+  var actedAt = 0;
+  try {
+    ['pointerdown', 'mousedown', 'click', 'touchstart', 'keydown'].forEach(function (n) {
+      window.addEventListener(n, function () { actedAt = Date.now(); }, true);
+    });
+  } catch (e) {}
+
+  function actedRecently() {
+    return Date.now() - actedAt < 30000;
+  }
+
+  function isPlayPage() {
+    return /\/(video|bangumi\/play|cheese\/play|medialist)\//.test(location.href);
+  }
+
+  function pageIsPlaying() {
+    var vs = document.querySelectorAll('video');
+    for (var i = 0; i < vs.length; i++) {
+      var v = vs[i];
+      if (!v) continue;
+      if (v.paused) continue;
+      if ((v.currentTime || 0) < 0.3) continue;
+      if (!(v.videoWidth > 0)) continue;
+      return true;
+    }
+    return false;
+  }
+
+  /* 每轮扫描都问一次：条件齐了就交出去（只交一次） */
+  function flushPendingPlay() {
+    if (!pendingPlay) return;
+    if (!isPlayPage()) return;
+    if (!actedRecently()) return;
+    if (!pageIsPlaying()) return;
+    var obj = pendingPlay;
+    pendingPlay = null;
+    console.log('[b0b] 页面已在播放，把抓到的地址交给客户端');
+    try { window.postMessage({ __b0b: 1, payload: obj }, '*'); } catch (e) {}
+  }
+
   /* 播放信息（B站 的 playurl 返回，或页面全局 __playinfo__）→ 可播地址 */
   function applyPlayinfo(d) {
     try {
@@ -103,7 +157,7 @@
       };
       console.log('[b0b] 拿到播放接口：' + streams.length + ' 档，时长 ' + durSec +
         's，最高 ' + (streams[0].height || '?') + 'p');
-      try { window.postMessage({ __b0b: 1, payload: playable }, '*'); } catch (e) {}
+      pendingPlay = playable;
     } catch (e) {}
   }
 
@@ -260,6 +314,7 @@
 
   function scan() {
     readGlobalPlayinfo();
+    flushPendingPlay();
     var best = null, bestArea = 0;
     /*
      * 只在"播放页"上认画面（父亲 2026-10-16：还没播、只是在首页点个「历史播放」，
@@ -348,7 +403,7 @@
             durSec: 0, quality: 0, streams: [pick]
           };
           console.log('[b0b] 兜底配对成功：视频 + ' + (pick.audio ? '音频' : '（无音频）'));
-          try { window.postMessage({ __b0b: 1, payload: playable }, '*'); } catch (e) {}
+          pendingPlay = playable;
         }
       }
     }
