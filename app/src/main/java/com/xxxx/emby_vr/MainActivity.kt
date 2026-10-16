@@ -178,6 +178,12 @@ class MainActivity : ComponentActivity() {
     /** 网页面当前加载哪个站（null = 网页面空着）；改它会触发重画与重新加载 */
     private val webSiteState = androidx.compose.runtime.mutableStateOf<Int?>(null)
 
+    /**
+     * 这一次播放的流是从哪个站点抓来的（父亲 2026-10-16）。
+     * 退出播放时用它回到那个网页（B站 / 腾讯 / 爱奇艺）接着选片；从 Emby 播的片子置空。
+     */
+    private var webStreamSite: Int? = null
+
     /** 银幕上现在是不是在放网页（原生侧银幕取样网页面纹理） */
     private var webOnScreen = false
 
@@ -906,6 +912,17 @@ class MainActivity : ComponentActivity() {
                         TAG,
                         if (wentBack) "光柱 B 键 → 网页退回上一页" else "光柱 B 键忽略：网页已无上一页",
                     )
+                } else if (webStreamSite != null && !panelPointerOnPanel) {
+                    /*
+                     * 这一部是从网页抓来播的（父亲 2026-10-16 要求）：
+                     * 光点对着屏幕按 B 就回到**原来那个站点**的网页，接着选下一部。
+                     * 接管时网页面被收掉了（否则网页和我们的播放器两个声音一起响），
+                     * 这里按记下的站点重新打开 —— 页面会重新加载，登录态在浏览器里，不受影响。
+                     */
+                    val site = webStreamSite ?: 0
+                    webStreamSite = null
+                    Log.i(TAG, "光柱 B 键 → 回网页继续选片（站点 $site）")
+                    openWeb(site)
                 } else if (renderer.videoActive && !panelPointerOnPanel) {
                     Log.i(TAG, "光柱 B 键忽略：光点在播放画面上（播放页操作走控制条）")
                 } else if (panelInputReady()) {
@@ -2284,6 +2301,8 @@ class MainActivity : ComponentActivity() {
              * 能正常播的 4XVR 一个路子。标记由取播放信息那一步立起来。
              */
             val isWeb = webStream != null
+            /* 从 Emby 播的片子：清掉"这一部是从网页抓来的"标记，免得按 B 跳到网页去 */
+            if (!isWeb) webStreamSite = null
             if (isWeb || com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder) {
                 Log.i(TAG, "起播走 mpv 内核（杜比视界 Profile 5 或选了图形字幕，片源 ${com.xxxx.emby_vr.player.PlaybackFlags.videoDescriptor}，" +
                     "版本 ${com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionProfile ?: "未探到"}）")
@@ -5192,8 +5211,14 @@ class MainActivity : ComponentActivity() {
                         /*
                          * 回调来自火狐内核自己的线程，而播放链路（建 mpv、挂 surface、改界面状态）
                          * 必须在主线程 —— 先切回主线程再动（2026-10-16 自审补的，避免装机即崩）。
+                         * 顺手记住站点：按 B 要回到同一个网页继续选片。
                          */
-                        onWebStream = { obj -> runOnUiThread { playWebStream(obj) } },
+                        onWebStream = { obj ->
+                            runOnUiThread {
+                                webStreamSite = s
+                                playWebStream(obj)
+                            }
+                        },
                     )
                 }
             },
