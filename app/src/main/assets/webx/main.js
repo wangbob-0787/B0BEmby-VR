@@ -88,7 +88,16 @@
   }
 
   function isPlayPage() {
-    return /\/(video|bangumi\/play|cheese\/play|medialist)\//.test(location.href);
+    /*
+     * 腾讯的播放页有两种形态：单集页 /x/cover/<cid>/<vid>.html，
+     * 还有剧集页 /x/cover/<cid>.html —— 后者页面里内嵌的播放器照样会播
+     * （父亲 2026-10-16 实测：停在剧集页面上，画面在播）。
+     * 另外 /x/page/<vid>.html 也是它的单集形态。
+     */
+    if (/\/(video|bangumi\/play|cheese\/play|medialist)\//.test(location.href)) return true;
+    if (/v\.qq\.com\/x\/cover\//.test(location.href)) return true;
+    if (/v\.qq\.com\/x\/page\//.test(location.href)) return true;
+    return false;
   }
 
   function pageIsPlaying() {
