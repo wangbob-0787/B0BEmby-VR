@@ -193,6 +193,8 @@ class MainActivity : ComponentActivity() {
      */
     private var webHiddenByStream = false
     private var webSiteBeforeStream: Int? = null
+    /** 网页流自带的字幕地址（B站 的 subtitle_url，JSON 格式；父亲 2026-10-16） */
+    private var webSubtitleUrl: String = ""
 
     /*
      * 片名 logo 的位图（父亲 2026-10-06 晚：logo 一直没画出来）。
@@ -2079,6 +2081,67 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
+     * 把网页片子自带的字幕拉下来，挂到自绘弹幕层（父亲 2026-10-16）。
+     *
+     * 为什么走弹幕层而不是当普通字幕：B站 的字幕是"每句时间 + 文字"的 JSON，
+     * 而弹幕层本来就吃"时间轴 + 文字"这种结构，挂上去之后控制条上的
+     * **字号、提前/延后**这两个开关天然生效（它们作用在弹幕层上），
+     * 字幕菜单里也会多出这一条。
+     */
+    private fun loadWebSubtitle(url: String) {
+        if (url.isBlank()) return
+        val want = url
+        scope.launch {
+            val track = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                try {
+                    val conn = java.net.URL(want).openConnection()
+                    conn.setRequestProperty("Referer", "https://www.bilibili.com")
+                    conn.setRequestProperty("User-Agent", "Mozilla/5.0")
+                    conn.connectTimeout = 8000
+                    conn.readTimeout = 8000
+                    val txt = conn.inputStream.bufferedReader().readText()
+                    val body = org.json.JSONObject(txt).optJSONArray("body")
+                        ?: return@withContext null
+                    val items = ArrayList<com.xxxx.emby_vr.danmaku.DanmakuItem>()
+                    for (i in 0 until body.length()) {
+                        val it = body.optJSONObject(i) ?: continue
+                        val from = it.optDouble("from", -1.0)
+                        val to = it.optDouble("to", -1.0)
+                        val c = it.optString("content").replace("\n", " ").trim()
+                        if (from < 0 || c.isEmpty()) continue
+                        val a = (from * 1000).toLong()
+                        val b = if (to > from) (to * 1000).toLong() else a + 4000
+                        items.add(
+                            com.xxxx.emby_vr.danmaku.DanmakuItem(
+                                startMs = a, endMs = b, text = c,
+                                isMove = false,
+                                x1 = 0f, y1 = 0f, x2 = 0f, y2 = 0f,
+                                posX = 960f, posY = 1000f,
+                                style = com.xxxx.emby_vr.danmaku.DanmakuStyle(
+                                    fontSize = 66f,
+                                    primaryColor = android.graphics.Color.WHITE,
+                                    outlineColor = android.graphics.Color.BLACK,
+                                    outline = 3f,
+                                    alignment = 2,
+                                ),
+                            ),
+                        )
+                    }
+                    if (items.isEmpty()) null
+                    else com.xxxx.emby_vr.danmaku.DanmakuTrack(1920f, 1080f, items)
+                } catch (t: Throwable) {
+                    Log.w(TAG, "⑥ 网页字幕没拉下来：${t.message}")
+                    null
+                }
+            }
+            if (track == null) return@launch
+            danmakuTrack = track
+            applyDanmakuSetting()
+            Log.i(TAG, "⑥ 网页字幕已挂到弹幕层（${track.items.size} 句），字号与提前延后跟着生效")
+        }
+    }
+
+    /**
      * 从"我们自己的播放器"回到网页（父亲 2026-10-16 定的语义）。
      *
      * 网页在接管期间**没有销毁、地址也没动过**，只是从大银幕上收起来了；
@@ -2370,6 +2433,7 @@ class MainActivity : ComponentActivity() {
         val s = streams.optJSONObject(idx) ?: return
         if (s.optString("video").isBlank()) return
         webCandIdx = idx
+        webSubtitleUrl = src.optString("subtitle")
         val site = webSiteState.value
         val hasCookie = src.optString("cookie").isNotBlank()
         Log.i(
@@ -2406,6 +2470,8 @@ class MainActivity : ComponentActivity() {
                 tryWebStreamAt(idx + 1)
             } else {
                 Log.i(TAG, "⑤ 第 ${idx + 1} 条已出画面，接管成功")
+                /* 画面稳了再去拉字幕，不跟起播抢带宽（父亲 2026-10-16） */
+                loadWebSubtitle(webSubtitleUrl)
             }
         }, 8000L)
     }

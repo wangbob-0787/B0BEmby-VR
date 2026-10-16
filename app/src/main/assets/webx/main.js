@@ -218,6 +218,7 @@
   function applyPlayinfo(d) {
     try {
       if (!d) return;
+      takeBiliSubtitle(d);      /* 同一份响应里就有字幕地址（父亲 2026-10-16） */
       var streams = [];
       var durSec = 0;
       if (d.dash) {
@@ -359,6 +360,36 @@
    * 先确认真在播 → 才开始收它下载的片段 → 时间窗就没必要了）。
    */
   var liveSince = 0;
+  /*
+   * B站 字幕（父亲 2026-10-16）：片子的字幕地址就在页面自己请求的那份播放信息里
+   * （`subtitle.subtitles[]`，每条带 lan 语言和 subtitle_url）。
+   * 拿到的是 JSON 格式（每句 from/to/content），客户端会转成普通字幕文件挂上。
+   */
+  var biliSubUrl = '';
+  var biliSubLan = '';
+  function takeBiliSubtitle(obj) {
+    try {
+      var d = obj && (obj.data || obj.result);
+      var subs = d && d.subtitle && d.subtitle.subtitles;
+      if (!subs || !subs.length) return;
+      var pick = null, i, s;
+      for (i = 0; i < subs.length; i++) {
+        s = subs[i];
+        if (!s || !s.subtitle_url) continue;
+        var lan = String(s.lan || '');
+        /* 优先中文（含 AI 字幕），没有中文就拿第一条 */
+        if (lan.indexOf('zh') === 0 || lan.indexOf('ai-zh') === 0) { pick = s; break; }
+        if (!pick) pick = s;
+      }
+      if (!pick) return;
+      var u = String(pick.subtitle_url);
+      if (u.slice(0, 2) === '//') u = 'https:' + u;
+      if (u === biliSubUrl) return;
+      biliSubUrl = u;
+      biliSubLan = String(pick.lan || '');
+      console.log('[b0b]⑥ 拿到字幕地址（' + biliSubLan + '）：' + u.slice(-40));
+    } catch (e) {}
+  }
   var mediaKeys = {};
 
   function looksMedia(u) {
@@ -572,6 +603,7 @@
       if (cands[0].video === lastPairedVideo) return;
       lastPairedVideo = cands[0].video;
       pendingPlay = {
+        subtitle: biliSubUrl,
         title: '', kind: 'play', t: Date.now(), frame: location.href,
         durSec: 0, quality: 0, site: '', streams: cands
       };
