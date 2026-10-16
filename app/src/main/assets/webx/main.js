@@ -662,11 +662,15 @@
    * 原来只认 `ep`，电影会取到空钥匙，多部电影会互相顶替。
    */
   function epKeyOf() {
+    /*
+     * 【2026-10-17 03:20 父亲纠正：不要去解析 ep/ss/BV 的含义】
+     *
+     * 父亲原话："我们没有必要去猜 ep…、ss…、video/BV…，我的意思是小窗口和大窗口时，
+     * URL 不会变。" —— 这就是全部判据：**地址不变 = 还是同一份**。
+     * 所以钥匙直接用地址本身（保留路径，丢掉后面那串与内容无关的参数，如 trackid/spm_id）。
+     */
     try {
-      var m = String(location.pathname).match(/\/play\/(ep|ss|av|BV)([0-9A-Za-z]+)/i);
-      if (m) return (m[1] + m[2]).toLowerCase();
-      m = String(location.href).match(/[?&](ep_id|season_id)=(\d+)/);
-      if (m) return (m[1] + m[2]).toLowerCase();
+      return String(location.origin || '') + String(location.pathname || '');
     } catch (e) {}
     return '';
   }
