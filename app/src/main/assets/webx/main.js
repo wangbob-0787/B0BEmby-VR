@@ -106,6 +106,7 @@
       var v = vs[i];
       if (!v) continue;
       if (v.paused) continue;
+      if (!v.__b0bWin) { v.__b0bWin = 'w' + (++winSeq); }
       /* 0.3 秒太严：缓冲刚过、画面刚出来那一两秒也会被判"没在播" */
       if ((v.currentTime || 0) < 0.05) continue;
       if (!(v.videoWidth > 0)) continue;
@@ -194,7 +195,7 @@
      */
     if (!pendingPlay && pendingQq && Date.now() - qqAt < 180000) {
       pendingPlay = {
-        title: '', kind: 'play', t: Date.now(), frame: location.href,
+        title: '', kind: 'play', t: Date.now(), frame: location.href, winId: poolWin,
         durSec: 0, quality: 0, site: 'qq',
         streams: [{ id: 0, height: 0, width: 0, bw: 0, vcodec: 'h264',
                     video: pendingQq, audio: '' }]
@@ -214,7 +215,8 @@
      * liveSince 是 scan() 里只有"窗口占了屏幕九成"才会置上的标记：
      *   没置上 = 现在只是小窗试看 → 不交。
      */
-    if (!liveSince) { console.log('[b0b] 没交出去：还没有铺满屏幕的播放窗口（小窗算试看）'); return; }
+    /* 接管门槛仍是九成（父亲 2026-10-17 定的顺序：先抓地址，铺满九成才接管） */
+    if (!liveSince) { console.log('[b0b] 没交出去：播放窗口还没铺满九成（地址已经收着了，等放大）'); return; }
     var obj = pendingPlay;
     /*
      * 【2026-10-17】交之前核对：这份待交是不是"当前正在播的那一集"。
@@ -224,6 +226,12 @@
     if (obj.cid && biliCid && String(obj.cid) !== String(biliCid)) {
       console.log('[b0b]③不交：手里那份是编号 ' + obj.cid + '，当前在播编号 ' + biliCid +
         '（页面 ' + String(location.href).slice(-40) + '）');
+      pendingPlay = null;
+      return;
+    }
+    if (obj.winId && poolWin && String(obj.winId) !== String(poolWin)) {
+      console.log('[b0b]③不交：手里那份是窗口 ' + obj.winId + ' 收的，现在铺满的是窗口 ' +
+        poolWin + '（不是同一个窗口）');
       pendingPlay = null;
       return;
     }
@@ -249,6 +257,8 @@
         '，编号 ' + (obj.cid || 0) + '，季 ' + (obj.season || '?') + '，集 ' + (obj.ep || '?') +
         '，片名「' + String(obj.title || '').slice(0, 30) + '」' +
         '，首条 ' + String(obj.streams[0].video).slice(-34));
+      console.log('[b0b]③窗口：这份是 ' + (obj.winId || '?') + ' 收的，现在铺满的是 ' +
+        (poolWin || '?') + ' → ' + ((obj.winId && poolWin && obj.winId === poolWin) ? '同一个窗口' : '不是同一个★'));
       console.log('[b0b]③比对：这份记的集 ep' + (obj.ep || '?') + '／季 ' + (obj.season || '?') +
         '，当前页面集 ep' + (biliEp || '?') + '／季 ' + (biliSeason || '?') +
         ' → ' + ((String(obj.ep || '') === String(biliEp || '') &&
@@ -429,6 +439,31 @@
    */
   var liveSince = 0;
   /*
+   * 【2026-10-17 父亲 02:01 定的口径：收集与接管分两个门槛】
+   *
+   * 病根（r614 实测）：这两个门槛原来是同一个 `liveSince`（九成）——
+   * 于是**小窗期间下载的画面/声音片段一条都不记**，等父亲放大时这一集早就缓冲好了，
+   * 池子里只剩放大后新下的一条画面片 → 声音配不上，接管后有画无声。
+   *
+   * 现在：
+   *   · `poolSince` —— 窗口占到屏幕 **两成**（原来的 1/5 门槛）就开始记片段（小窗也是真在播）；
+   *   · `liveSince` —— 只有占到 **九成** 才允许交出去（接管）。
+   * 收集归收集，接管归接管，互不牵连。
+   */
+  var poolSince = 0;
+  /*
+   * 【2026-10-17 02:03 父亲问："你怎么知道那个小窗变成了大窗？"】
+   *
+   * 光看"有个窗口占屏多少"是不够的 —— 页面上可能有好几个在播的元素（正片小窗、
+   * 推荐位、悬停预览）。收片段的那一个和放大接管的那一个**必须同一个**，
+   * 所以给每个在播的 video 元素贴一个自己的编号，全程带着它：
+   *   · 开池时记下是哪个窗口（poolWin）；
+   *   · 铺满九成时要求还是那个窗口，换了窗口就当作换片，池子重来；
+   *   · 交给客户端的那一份也带着编号，递交前再核一次。
+   */
+  var winSeq = 0;
+  var poolWin = '';
+  /*
    * B站 字幕（父亲 2026-10-16）：片子的字幕地址就在页面自己请求的那份播放信息里
    * （`subtitle.subtitles[]`，每条带 lan 语言和 subtitle_url）。
    * 拿到的是 JSON 格式（每句 from/to/content），客户端会转成普通字幕文件挂上。
@@ -534,8 +569,11 @@
     if (!u || typeof u !== 'string') return;
     if (u.slice(0, 5) === 'blob:') return;
     if (!looksMedia(u)) return;
-    /* 闸：没确认真在放片之前，收到的片段一律不算（父亲 2026-10-16 定的顺序） */
-    if (!liveSince) return;
+    /*
+     * 闸：窗口占到两成（`poolSince`，小窗就算）就开始记 —— 不再是"九成"。
+     * 只看"有没有真在播"，"要不要接管"由递交那一步单独把关（2026-10-17）。
+     */
+    if (!poolSince) return;
     var key = u.split('?')[0];
     if (mediaKeys[key]) return;            /* 同一条主干只记一次（分片换参数也算一条） */
     /* 值要存完整地址：分片带时效 token，丢了参数就播不了（2026-10-16） */
@@ -756,7 +794,7 @@
          * 改成一集一判：手里那份还是**当前这一集**就留着（同时省掉重复劳动），
          * 属于别的集就作废，改用这次新攒的。
          */
-        var nowEp = { ep: biliEp, season: biliSeason, cid: biliCid };
+        var nowEp = { ep: biliEp, season: biliSeason, cid: biliCid, winId: poolWin };
         if (sameEpisode(pendingPlay, nowEp)) {
           console.log('[b0b]③配对跳过：手里那份就是当前这一集（' +
             (pendingPlay.ep ? 'ep' + pendingPlay.ep : '编号 ' + pendingPlay.cid) + '）');
@@ -779,7 +817,7 @@
         cid: biliCid,
         ep: biliEp,
         season: biliSeason,
-        title: '', kind: 'play', t: Date.now(), frame: location.href,
+        title: '', kind: 'play', t: Date.now(), frame: location.href, winId: poolWin,
         durSec: 0, quality: 0, site: '', streams: cands
       };
       console.log('[b0b]③ 交给客户端 ' + cands.length + ' 条候选：' +
@@ -1065,6 +1103,7 @@
        * 不筛的话每次扫描挑中的对象会来回换，银幕比例跟着跳。
        */
       if (v.paused) continue;
+      if (!v.__b0bWin) { v.__b0bWin = 'w' + (++winSeq); }
       /*
        * 太小的预览窗不算（父亲 2026-10-16：浏览页面时点个「历史播放」按钮，比例也在变）。
        * 正片在播放页上占视口宽度六成左右（实测 668/1100），缩略预览远小于此。
@@ -1081,7 +1120,13 @@
        * 1/5 的门槛把这种"试看"也当成正式播放抢着接管，结果他还没选完季/集就被顶走了。
        * 现在的语义是：**把画面放到全屏才算"我要看"，这时才接管**；小窗是试看，不碰。
        */
-      if ((r.width * r.height) < (window.innerWidth || 1) * (window.innerHeight || 1) * 0.9) continue;
+      /*
+       * 门槛回到**两成**（父亲 2026-10-17 02:01 明确："小窗还是用我们原来的那个 1/5"）。
+       *
+       * 九成那道门挪去管"接管"了 —— 这里只负责挑出"页面上真在播的那个窗口"，
+       * 小窗试看也算，因为它的画面与声音此刻正在下载，正是我们要收的东西。
+       */
+      if ((r.width * r.height) < (window.innerWidth || 1) * (window.innerHeight || 1) * 0.2) continue;
       var area = r.width * r.height;
       if (area <= bestArea) continue;
       var cw = r.width, ch = r.height;
@@ -1103,7 +1148,8 @@
          */
         ar: vw / vh,
         area: Math.round(cw * ch),
-        url: v.currentSrc || v.src || ''
+        url: v.currentSrc || v.src || '',
+        winId: v.__b0bWin
       };
     }
     /*
@@ -1111,14 +1157,41 @@
      * 先确认页面上真有一个大窗口在放片，确认之后才开始收它下载的片段；
      * 页面一停就清空已收的（换集时正好靠这一下重来，不会串片）。
      */
+    var vpArea = (window.innerWidth || 1) * (window.innerHeight || 1);
     if (best) {
-      if (!liveSince) {
-        liveSince = Date.now();
-        console.log('[b0b]① 检测到全屏播放窗口：' + Math.round(best.w) + 'x' + Math.round(best.h) +
-          '，占屏幕 ' + Math.round(best.area * 100 / ((window.innerWidth || 1) * (window.innerHeight || 1))) +
-          '%（门槛九成），开始收它的片段');
+      var pctNow = best.area * 100 / vpArea;
+      if (poolSince && poolWin && best.winId !== poolWin) {
+        /* 在播的换成了另一个窗口（换片/换了集）→ 池子按新窗口重来 */
+        console.log('[b0b]① 在播的窗口换了一个（' + poolWin + ' → ' + best.winId + '）→ 池子重来');
+        invalidateForNewEpisode('换成另一个播放窗口 ' + best.winId);
+        poolSince = 0;
+        poolWin = '';
+        lastSmallLog = '';
       }
-    } else if (liveSince) {
+      if (!poolSince) {
+        poolSince = Date.now();
+        poolWin = best.winId;
+        console.log('[b0b]① 检测到在播窗口 ' + best.winId + '：' + Math.round(best.w) + 'x' +
+          Math.round(best.h) + '，占屏幕 ' + Math.round(pctNow) +
+          '%（收片段门槛两成），开始收它的片段');
+      }
+      /* 九成那个门槛只管"能不能接管"，与收片段无关 */
+      if (pctNow >= 90) {
+        if (!liveSince) {
+          liveSince = Date.now();
+          console.log('[b0b]① 窗口 ' + best.winId + ' 占到九成（' + Math.round(best.w) + 'x' +
+            Math.round(best.h) + '，' + Math.round(pctNow) + '%）→ 允许接管；池子里已有 ' +
+            candPool.length + ' 条，收片段时是 ' + (poolWin || '?') + ' 这个窗口');
+        }
+      } else if (liveSince) {
+        /* 从全屏退回小窗（不是关掉）：撤掉接管许可，但**池子留着**，再放大还能接着用 */
+        liveSince = 0;
+        console.log('[b0b]① 窗口退回小窗（' + Math.round(pctNow) + '%）→ 暂停接管，池子留着 ' +
+          candPool.length + ' 条');
+      }
+    } else if (poolSince) {
+      poolSince = 0;
+      poolWin = '';
       liveSince = 0;
       candPool = [];
       candSeen = {};
@@ -1216,7 +1289,7 @@
         if (sig2 !== lastPlaySig) {
           lastPlaySig = sig2;
           playable = {
-            kind: 'play', t: Date.now(), frame: location.href,
+            kind: 'play', t: Date.now(), frame: location.href, winId: poolWin,
             durSec: 0, quality: 0, streams: [pick]
           };
           console.log('[b0b] 兜底配对成功：视频 + ' + (pick.audio ? '音频' : '（无音频）'));
