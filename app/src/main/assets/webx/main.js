@@ -495,6 +495,8 @@
     remoteArmed = false;
     try { localStorage.setItem('b0b_tookover_at', String(Date.now())); } catch (e) {}
   }
+  var lastSubmitSig = '';   /* 上一份交出去的签名（去重用） */
+  var lastSubmitAt = 0;
   var webFullExitTried = false;
   function tryExitWebFullscreen() {
     if (webFullExitTried) return;
@@ -1163,9 +1165,15 @@
         if (vs[i] && vs[i].currentSrc) noteMedia(vs[i].currentSrc);
       }
     } catch (e) {}
-    flushMedia();
-    readGlobalPlayinfo();
-    flushPendingPlay();
+    /*
+     * 【2026-10-17 04:35 教训】这三步原来一个 try 都没有：
+     * 递交那一处读了一个没声明的变量，报错把整个 scan 打断 —— 之后窗口量不到、
+     * 日志也停了、永远交不出去（表现就是父亲报的"没有接管"）。
+     * 现在每一步各自兜住错误，出错只记一行、继续跑。
+     */
+    try { flushMedia(); } catch (e) { console.log('[b0b]扫描出错(flushMedia)：' + e); }
+    try { readGlobalPlayinfo(); } catch (e) { console.log('[b0b]扫描出错(readGlobalPlayinfo)：' + e); }
+    try { flushPendingPlay(); } catch (e) { console.log('[b0b]扫描出错(flushPendingPlay)：' + e); }
     var best = null, bestArea = 0;
     /*
      * 只在"播放页"上认画面（父亲 2026-10-16：还没播、只是在首页点个「历史播放」，
@@ -1419,6 +1427,12 @@
   }
 
   console.log('[b0b] 页面探子就绪 ' + location.href);
+  try {
+    window.addEventListener('error', function (ev) {
+      try { console.log('[b0b]脚本出错：' + (ev && ev.message ? ev.message : '?') +
+        ' @ ' + (ev && ev.filename ? ev.filename : '?') + ':' + (ev && ev.lineno ? ev.lineno : '?')); } catch (e) {}
+    });
+  } catch (e) {}
   setInterval(scan, 400);
   scan();
 })();
