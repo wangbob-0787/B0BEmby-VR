@@ -268,10 +268,37 @@
   }
 
   /* 接口返回是文本：解析后交给 applyPlayinfo */
+  /*
+   * 腾讯在火狐内核下不请求 m3u8 播放列表（父亲 2026-10-16 现场：分片 .ts 抓到了、
+   * 播放列表一次都没有）。它的地址是随接口响应发下来的，所以不去猜它的结构，
+   * 直接在响应文本里找 m3u8 字样。
+   */
+  function scanTextForQqHls(text) {
+    try {
+      if (!text) return;
+      var m = String(text).match(/https?:\/\/[^"'\s]{10,600}?\.m3u8[^"'\s]{0,300}/g);
+      if (m && m.length) {
+        var u = m[0].replace(/\\u002F/gi, '/').replace(/\\\//g, '/');
+        if (u !== pendingQq) {
+          pendingQq = u; qqAt = Date.now();
+          console.log('[b0b] 腾讯播放列表（从接口响应里找到）');
+        }
+      }
+    } catch (e) {}
+  }
+
   function parsePlayurl(text) {
     try {
       var j = JSON.parse(text);
-      if (j && j.data) applyPlayinfo(j.data);
+      if (!j) return;
+      scanTextForQqHls(text);            /* 腾讯的地址夹在响应里 */
+      /*
+       * 两种结构都要认（父亲 2026-10-16）：
+       *   普通视频 x/player/playurl  →  { data:  { dash } }
+       *   番剧影视 pgc/.../playurl   →  { code, message, result: { dash } }
+       * 原来只认 data，番剧那一路等于没解析 —— 表现就是"有时抓得到有时抓不到"。
+       */
+      applyPlayinfo(j.result || j.data || j);
     } catch (e) {}
   }
 
@@ -463,6 +490,17 @@
         note(u);
         noteApi(u);
         noteMedia(u);
+        /* 腾讯：地址在这些接口的响应里，读回来扫一遍 */
+        if (u.indexOf('qq.com') >= 0) {
+          this.addEventListener('load', function () {
+            try {
+              var rt = this.responseType;
+              if (rt === '' || rt === 'text') scanTextForQqHls(this.responseText);
+              else if (rt === 'json') scanTextForQqHls(JSON.stringify(this.response));
+              else if (this.response) scanTextForQqHls(new TextDecoder('utf-8').decode(this.response));
+            } catch (e) {}
+          });
+        }
         if (isPlayApi(u)) {
           this.addEventListener('load', function () {
             /*
@@ -477,7 +515,7 @@
                 parsePlayurl(this.responseText);
               } else if (rt === 'json') {
                 var j = this.response;
-                if (j) applyPlayinfo(j.data ? j.data : j);
+                if (j) applyPlayinfo(j.result || j.data || j);
               } else if (this.response) {
                 parsePlayurl(new TextDecoder('utf-8').decode(this.response));
               }
