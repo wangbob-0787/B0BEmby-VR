@@ -152,9 +152,9 @@ private fun parseVideoRect(raw: String?): FloatArray? {
 /** 把探测结果报给原生（null = 没在播/读不到 → 原生按整张画布走） */
 private fun pushVideoRect(f: FloatArray?) {
     if (f == null) {
-        com.xxxx.emby_vr.vr.VrNative.setWebVideoRect(0f, 0f, 1f, 1f, 0f)
+        /* 银幕不再跟随网页画面比例（父亲 2026-10-16 08:09）：系统网页这条路也同样不下发 */
     } else {
-        com.xxxx.emby_vr.vr.VrNative.setWebVideoRect(f[0], f[1], f[2], f[3], f[4])
+        /* 同上，不再下发 */
     }
 }
 
@@ -439,6 +439,9 @@ private object WebRuntime {
     /** 内容脚本随消息附上的本站 cookie（会员片要拿它才换得到高清地址） */
     private var bridgeCookie = ""
 
+    /** 网页那侧的银幕比例是否已归零（父亲 2026-10-16 08:09：网页显示不再改比例） */
+    private var bridgeAspectCleared = false
+
     /** 装扩展 + 接上消息通道；一个进程只做一次 */
     fun ensureBridge(runtime: org.mozilla.geckoview.GeckoRuntime) {
         if (bridgeInstalled) return
@@ -587,6 +590,22 @@ private object WebRuntime {
                     }
                     if (best == null || v[5] > best!![5]) best = v
                 }
+                /*
+                 * 银幕不再跟随网页画面比例（父亲 2026-10-16 08:09 明确）：
+                 * 「既然抓播放地址用自己播放器播放，那网页显示就不用变比例」。
+                 *
+                 * 于是网页彻底回到"选片器"的角色：银幕固定不动，网页怎么排版、有没有黑边都不影响。
+                 * 真正要按影片比例铺满墙的是我们自己的播放器那条路（mpv 的画面比例），与这里无关。
+                 * 这里只保留两件事：把旧值归零一次；把看到的数据记进日志供排查。
+                 */
+                if (!bridgeAspectCleared) {
+                    bridgeAspectCleared = true
+                    com.xxxx.emby_vr.vr.VrNative.setWebVideoRect(0f, 0f, 1f, 1f, 0f)
+                    android.util.Log.i(
+                        "B0BEmbyVR",
+                        "网页显示不再改银幕比例（银幕固定，网页只当选片器）",
+                    )
+                }
                 val b = best
                 val target = if (b != null && b[4] > 0.1f) b[4] else 0f
                 /*
@@ -620,10 +639,9 @@ private object WebRuntime {
                                     "，画面块 " + "%.3f".format(b[2]) + "x" + "%.3f".format(b[3]) +
                                     "，位置 " + "%.3f".format(b[0]) + "," + "%.3f".format(b[1]),
                             )
-                            com.xxxx.emby_vr.vr.VrNative.setWebVideoRect(b[0], b[1], b[2], b[3], b[4])
+                            /* 不再下发比例（父亲 08:09）—— 上面的日志仅作排查记录 */
                         } else {
-                            android.util.Log.i("B0BEmbyVR", "网页视频画面：没有了，银幕按整张来")
-                            com.xxxx.emby_vr.vr.VrNative.setWebVideoRect(0f, 0f, 1f, 1f, 0f)
+                            android.util.Log.i("B0BEmbyVR", "网页视频画面：没有了（银幕本来就不跟着变）")
                         }
                     }
                 }
