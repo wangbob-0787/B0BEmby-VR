@@ -1768,13 +1768,24 @@ class MainActivity : ComponentActivity() {
         if (obj == null) return
         val siteName = WEB_SITE_NAMES.getOrElse(webStreamSite ?: -1) { "网页" }
         val epName = obj.optString("title", "").trim()
-        osdState.webSiteName = if (epName.isEmpty()) siteName else siteName + "-" + epName
-        Log.i(TAG, "控制条标题（网页流）→ ${osdState.webSiteName}")
+        val t = if (epName.isEmpty()) siteName else siteName + "-" + epName
+        /*
+         * 【2026-10-16 父亲定的口径：不分优先级，正在播什么就显示什么】
+         *
+         * 原来网页流走 webSiteName 这个独立字段，而控制条标题里它优先级最高 ——
+         * 于是"在放自己的片子、标题还挂着 B站 名字"这种错位必然会发生。
+         * 现在只有**一个**标题字段：谁在播就写谁，控制条直接显示它。
+         * webSiteName 保留只为判断"银幕上是不是网页"，不再参与标题。
+         */
+        osdState.title = t
+        osdState.webSiteName = t
+        Log.i(TAG, "控制条标题（网页流）→ $t")
     }
 
     private fun clearFilmInfoFromOsd() {
         osdState.hasPlayback = false
         osdState.title = ""
+        osdState.webSiteName = ""
         osdState.durationMs = 0L
         osdState.positionMs = 0L
         osdState.bufferedMs = 0L
