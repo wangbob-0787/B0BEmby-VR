@@ -229,7 +229,9 @@
       console.log('[b0b]③提交：生成于 ' + Math.round((Date.now() - obj.t) / 1000) + ' 秒前' +
         '，它记的页面 ' + String(obj.frame).slice(-46) +
         '（当前页面 ' + String(location.href).slice(-46) + '）' +
-        '，编号 ' + (obj.cid || 0) + '，首条 ' + String(obj.streams[0].video).slice(-34));
+        '，编号 ' + (obj.cid || 0) + '，季 ' + (obj.season || '?') + '，集 ' + (obj.ep || '?') +
+        '，片名「' + String(obj.title || '').slice(0, 30) + '」' +
+        '，首条 ' + String(obj.streams[0].video).slice(-34));
     } catch (e) {}
     console.log('[b0b] 页面已在播放，把抓到的地址交给客户端');
     try { window.postMessage({ __b0b: 1, payload: obj }, '*'); } catch (e) {}
@@ -285,6 +287,8 @@
       lastPlaySig = sig;
       lastPlaySigAt = Date.now();
       playable = {
+        ep: biliEp,
+        season: biliSeason,
 
         /* 控制条要写「站点-片名」，标题从页面取（父亲 2026-10-16） */
 
@@ -414,6 +418,9 @@
    * 编号就在同一份播放信息里（data.cid / result.cid）。字幕与弹幕是两个接口，别混。
    */
   var biliCid = 0;
+  /* 观测（2026-10-17）：当前页面在播的是哪一季哪一集 —— 父亲要拿它对上"我选的那集" */
+  var biliEp = '';
+  var biliSeason = '';
   function takeBiliCid(obj) {
     try {
       /*
@@ -704,6 +711,8 @@
       pendingPlay = {
         subtitle: biliSubUrl,
         cid: biliCid,
+        ep: biliEp,
+        season: biliSeason,
         title: '', kind: 'play', t: Date.now(), frame: location.href,
         durSec: 0, quality: 0, site: '', streams: cands
       };
@@ -776,6 +785,20 @@
     try {
       var m = /[?&](?:cid|oid)=(\d{5,})/.exec(u);
       if (m) takeBiliCid({ cid: parseInt(m[1], 10) });
+      /*
+       * 观测（2026-10-17）：把"哪一季哪一集"也记下来。
+       * B站 番剧的接口地址里带 ep_id 与 season_id，直接取即可 —— 不用猜结构。
+       */
+      var me = /[?&]ep_id=(\d+)/.exec(u);
+      var ms = /[?&]season_id=(\d+)/.exec(u);
+      if (me && me[1] !== biliEp) {
+        biliEp = me[1];
+        console.log('[b0b]②页面在播的集号变了：ep' + biliEp + '（季 ' + (biliSeason || '?') + '）');
+      }
+      if (ms && ms[1] !== biliSeason) {
+        biliSeason = ms[1];
+        console.log('[b0b]②页面在播的季号变了：season ' + biliSeason);
+      }
     } catch (e) {}
   }
 

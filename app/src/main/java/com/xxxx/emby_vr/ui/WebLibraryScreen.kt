@@ -530,7 +530,17 @@ private object WebRuntime {
         android.util.Log.i(
             "B0BEmbyVR",
             "网页可播地址就绪：" + streams.length() + " 档（" + lines + "），时长 " + dur +
-                "s，登录票 " + ck + "，页面 " + obj.optString("frame").take(60),
+                "s，登录票 " + ck + "，页面 " + obj.optString("frame").take(60) +
+                /*
+                 * 【2026-10-17 00:16】父亲要问的是"抓的这一份是不是我选的那一季那一集"，
+                 * 所以把扩展带过来的季号/集号/片子编号一并打出来：
+                 * 拿它对上页面地址里的集号，就能判断抓的是不是当前这一集。
+                 */
+                "，季 " + obj.optString("season", "?") +
+                "，集 " + obj.optString("ep", "?") +
+                "，编号 " + obj.optString("cid", "?") +
+                "，片名「" + obj.optString("title", "").take(40) + "」" +
+                "，首条地址尾 " + fp.takeLast(40),
         )
         /*
          * 自动接管（2026-10-16，父亲定的方向）：抓到地址就交给我们自己的播放器。
