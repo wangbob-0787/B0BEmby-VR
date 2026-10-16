@@ -467,15 +467,39 @@
     candPool.sort(function (a, b) { return candRank(b) - candRank(a); });
   }
 
-  /* 按顺序取一条还没试过的；整片试完就试"画面+声音"配对 */
-  function pickCandidate() {
-    var i, u;
-    for (i = candTried; i < candPool.length; i++) {
-      u = candPool[i];
-      if (candRank(u) >= 700) { candTried = i + 1; return { video: u, audio: '' }; }
+  /*
+   * 按"片子编号"分组（父亲 2026-10-16 提醒会播错片）。
+   * 页面会顺手预取旁边列表里其他片子的片段，混在一起就会拿错；
+   * 正在播的那部会持续下很多片段，预取的只有一两条 —— 取片段最多的那组。
+   * 组内若出现"整片 mp4"，那一定是在播的那部，优先它。
+   */
+  function pickGroup() {
+    var g = {}, order = [], i, key, m;
+    for (i = 0; i < candPool.length; i++) {
+      var u = candPool[i];
+      m = String(u).match(/\/(\d{5,})\/(\d{5,})[-_]|\/([0-9a-z_]{6,})-1-\d{6,}\.mp4/i);
+      key = (m && (m[2] || m[3])) || 'x';
+      if (!g[key]) { g[key] = []; order.push(key); }
+      g[key].push(u);
     }
-    var pair = pairFromHits(candPool);
-    if (pair && pair.video && candTried < candPool.length + 50) return pair;
+    var wholeKey = '', bestKey = '', bestN = 0;
+    for (i = 0; i < order.length; i++) {
+      var kk = order[i];
+      if (findWholeFile(g[kk])) wholeKey = kk;          /* 整片优先 */
+      if (g[kk].length > bestN) { bestN = g[kk].length; bestKey = kk; }
+    }
+    var useKey = wholeKey || bestKey;
+    return useKey ? g[useKey] : [];
+  }
+
+  /* 在本组内轮换取候选：先整片，再"画面+声音"配对 */
+  function pickCandidate() {
+    var grp = pickGroup();
+    if (!grp.length) return null;
+    var whole = findWholeFile(grp);
+    if (whole && whole !== lastPairedVideo) return { video: whole, audio: '' };
+    var pair = pairFromHits(grp);
+    if (pair && pair.video && pair.video !== lastPairedVideo) return pair;
     return null;
   }
 
