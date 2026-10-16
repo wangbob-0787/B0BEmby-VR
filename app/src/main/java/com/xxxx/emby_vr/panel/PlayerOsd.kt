@@ -386,11 +386,16 @@ fun PlayerOsdBar(state: OsdState) {
                  * 右侧时间不受影响，照常显示。
                  */
                 text = when {
-                    state.webSiteName.isNotEmpty() -> "正在播放：${state.webSiteName}"
+                    /*
+                     * 【2026-10-16 父亲定的口径：不分优先级】
+                     * 正在播什么就显示什么 —— 标题只有一个来源，谁在播谁写它：
+                     * Emby 片子写片名，网页流写"站点-片名"。
+                     */
+                    state.title.isNotEmpty() -> "正在播放：${state.title}"
                     state.hasPlayback -> state.title
                     else -> "未在播放"
                 },
-                color = if (state.hasPlayback || state.webSiteName.isNotEmpty()) {
+                color = if (state.hasPlayback || state.title.isNotEmpty()) {
                     Color(0xFFFFFFFF)
                 } else {
                     // 未播放时压暗一档，别和真在播的标题一个分量
