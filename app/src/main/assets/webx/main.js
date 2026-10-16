@@ -440,11 +440,12 @@
   var candSeen = {};
   var candTried = 0;
   /*
-   * 只看最近这段时间内出现的片段（父亲 2026-10-16 强调）。
+   * 只看最近这段时间内出现的片段（父亲 2026-10-16 定的口径：往前 5 秒、往后 10 秒）。
    * 不能按历史累计 —— 上一部片子的片段还留在池子里，
    * 累计数一多就会把已经换掉的那部当成"在播的那部"，直接播错片。
+   * 前 5 秒：刚点下去就冒出来的那几条要算；后 10 秒：起播慢的片子给它缓冲余地。
    */
-  var CAND_WINDOW_MS = 25000;
+  var CAND_WINDOW_MS = 15000;
 
   function isBiliMedia(u) {
     if (!/bilivideo\.com|akamaized\.net|hdslb\.com/i.test(u)) return false;
