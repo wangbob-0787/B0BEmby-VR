@@ -1697,7 +1697,7 @@ class MainActivity : ComponentActivity() {
         seekHudShown = false
         danmakuView?.setSeekHud(false, 0L, 0L, 0L)
         /* 进度条撤了就把层还回去：控制条收着的时候弹幕层也该收着，否则弹幕自己冒出来 */
-        if (!osdState.visible) com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(false)
+        if (!osdVisible) com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(false)
     }
 
     /** 控制条显隐（VR 侧画不画那块面板） */
