@@ -211,7 +211,6 @@
      * 判据只有两条：① 地址没变（还是同一份记录）② 播放窗口铺满九成。
      * 只看这一下，不再看"他多久以前点的"。
      */
-    if (!actedRecently()) console.log('[b0b]（提示）离上次点击较久，但按父亲口径不影响接管');
     if (!pageIsPlaying()) { console.log('[b0b] 没交出去：页面还没在播（缓冲/广告/没开始）'); return; }
     /*
      * 【2026-10-16 父亲实测定案：小窗抢播的真凶就是缺这一道关】
@@ -240,6 +239,29 @@
       obj = null;
     }
     var objFrom = '手里那份';
+    /*
+     * 【2026-10-17 04:36 审读发现】播放接口的响应（playurl / __playinfo__）是页面
+     * 自己报的标准答案：画面+声音成对、带清晰度和时长。手里那份若**没有声音**
+     * 而接口那份（同一集）有声音 → 改用接口那份；手里空着而接口有货 → 直接用接口那份。
+     * 片段池配对仍是兜底（B站 换片时接口不重新请求，那时只能靠碎片）。
+     */
+    try {
+      var apiHasAudio = !!(playable && playable.streams && playable.streams[0] &&
+                           playable.streams[0].audio);
+      var apiUsable = !!(playable && playable.streams && playable.streams.length &&
+                         sameEpisode(playable, nowId));
+      var mineHasAudio = !!(obj && obj.streams && obj.streams[0] && obj.streams[0].audio);
+      if (apiUsable && apiHasAudio && (!obj || !mineHasAudio)) {
+        if (obj) console.log('[b0b]③手里那份没有声音，改用播放接口那份（成对，' +
+          playable.streams.length + ' 档）');
+        else console.log('[b0b]③手里没有攒到货，直接用播放接口那份（成对，' +
+          playable.streams.length + ' 档）');
+        playable.subtitle = biliSubUrl;
+        playable.winId = poolWin;
+        obj = playable;
+        objFrom = '播放接口';
+      }
+    } catch (e) {}
 
     /*
      * 【2026-10-17 03:22】交过的那份**不再丢掉**：父亲会按 B 回网页、再放大，那时还要用同一份。
@@ -690,6 +712,8 @@
       candSeen = {};
       poolKeysLog = {};
       lastPairedVideo = '';
+      mediaKeys = {};
+      mediaHits = [];
     } catch (e) {}
   }
   function invalidateForNewEpisode(why) { resetCollection(why); }
@@ -1271,15 +1295,16 @@
       bigNow = (pctNow >= 90);
       if (bigNow) {
         if (!liveSince) {
+          /*
+           * 【2026-10-17 04:36 审读发现】这里原来把 pendingPlay 和池子一起清掉 ——
+           * 但播放接口给的成对地址（画面+声音）在放大之前就已经到手，
+           * 清掉等于扔掉"标准答案"，只能靠放大后的碎片重新凑，
+           * 而声音那条常常不再重新下载 → 有画无声。所以开闸时**不清**；
+           * 清的时机仍是父亲定的两处：退回小窗、换集。
+           */
           liveSince = Date.now();
           poolSince = liveSince;
           poolWin = best.winId;
-          pendingPlay = null;
-          candPool = [];
-          candSeen = {};
-          poolKeysLog = {};
-          candTried = 0;
-          lastPairedVideo = '';
           console.log('[b0b]① 窗口 ' + best.winId + ' 占到九成（' + Math.round(best.w) + 'x' +
             Math.round(best.h) + '，' + Math.round(pctNow) + '%）→ 开始收它的画面与声音');
         }
