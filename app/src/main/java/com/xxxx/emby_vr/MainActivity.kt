@@ -2287,28 +2287,69 @@ class MainActivity : ComponentActivity() {
      * 兜底：8 秒后内核还没出画面，说明这条流播不动（地址过期 / 缺凭证 / 编码不支持），
      * 打一条日志并提示，父亲不会停在黑屏上猜。
      */
+    /* 网页流候选：一条播不动就换下一条（父亲 2026-10-16 定） */
+    private var webCandSrc: org.json.JSONObject? = null
+    private var webCandIdx = -1
+    private val webCandHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
     private fun playWebStream(obj: org.json.JSONObject) {
-        val s = obj.optJSONArray("streams")?.optJSONObject(0) ?: return
+        val streams = obj.optJSONArray("streams") ?: return
+        if (streams.length() == 0) return
+        webCandSrc = obj
+        webCandIdx = -1
+        tryWebStreamAt(0)
+    }
+
+    /*
+     * 起播第 idx 条候选；8 秒内内核还没出画面就换下一条（父亲 2026-10-16：
+     * 用我们自己播放器起播这件事要稳，一条播不动不能就停在黑屏上）。
+     *
+     * 判据用内核的 `video-params/w`（拿到第一个视频帧才有值），比"纹理来了一帧"
+     * 可靠 —— 换片瞬间纹理层里还留着上一部的旧帧。
+     * 候选由扩展按优先级排好：整片文件 → 画面+声音配对 → 其它画面分片。
+     */
+    private fun tryWebStreamAt(idx: Int) {
+        val src = webCandSrc ?: return
+        val streams = src.optJSONArray("streams") ?: return
+        if (idx >= streams.length()) {
+            Log.w(TAG, "网页流：${streams.length()} 条候选都没能出画面")
+            hud("抓到的地址都没能播起来（可能是会员票或地址过期）")
+            return
+        }
+        val s = streams.optJSONObject(idx) ?: return
         if (s.optString("video").isBlank()) return
+        webCandIdx = idx
         val site = webSiteState.value
-        val hasCookie = obj.optString("cookie").isNotBlank()
+        val hasCookie = src.optString("cookie").isNotBlank()
         Log.i(
             TAG,
-            "网页流 → 自己的播放器：最高 ${s.optInt("height", 0)}p，" +
+            "网页流 → 自己的播放器：第 ${idx + 1}/${streams.length()} 条，" +
                 "音轨=${s.optString("audio").isNotBlank()}，会员票=$hasCookie，站点 $site",
         )
+        /* 只把这一条递给内核（内核那侧本来就只认 streams[0]），换条时重建一份 */
+        val one = org.json.JSONObject(src.toString())
+        val arr = org.json.JSONArray()
+        arr.put(s)
+        try {
+            one.put("streams", arr)
+        } catch (_: Throwable) {
+        }
+        webCandHandler.removeCallbacksAndMessages(null)
         closeWeb()
-        startPlayer(url = "", title = "网页", startMs = 0L, webStream = obj)
+        startPlayer(url = "", title = "网页", startMs = 0L, webStream = one)
         /*
          * 接管之后控制条保持展开（父亲 2026-10-16）：
          * 抓来的地址播起来时，条上要能看到片名与进度，别一接管就收起来。
          */
         setOsdVisible(true)
-        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+        webCandHandler.postDelayed({
+            if (webCandIdx != idx) return@postDelayed
             val m = mpvBackend
             if (m != null && !m.videoReady()) {
-                Log.w(TAG, "网页流 8 秒内没出画面（站点 $site）")
-                hud("这条流没能播起来（可能是会员票或地址问题）")
+                Log.w(TAG, "网页流：第 ${idx + 1} 条 8 秒没出画面，换下一条（站点 $site）")
+                tryWebStreamAt(idx + 1)
+            } else {
+                Log.i(TAG, "网页流：第 ${idx + 1} 条已出画面")
             }
         }, 8000L)
     }
