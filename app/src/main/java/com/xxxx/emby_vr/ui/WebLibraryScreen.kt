@@ -516,7 +516,14 @@ private object WebRuntime {
         }
         val dur = obj.optInt("durSec", 0)
         val ck = if (bridgeCookie.isNotBlank()) "有" else "无"
-        val sig = "$dur|$lines|$ck"
+        /*
+         * 去重判据必须带"地址指纹"。
+         * 原来只有 时长|档位|登录票 —— 而候选池交出来的地址这三项恒为 "0|0p@0|无"，
+         * 于是装完第一次成功接管之后，换片、切集、点旁边列表全被这一句挡掉，
+         * 表现为"播放器再也不接手"（父亲 2026-10-16 现场定案，r590 日志）。
+         */
+        val fp = (streams.optJSONObject(0)?.optString("video") ?: "").takeLast(80)
+        val sig = "$dur|$lines|$ck|$fp"
         if (sig == bridgeLastPlaySig) return
         bridgeLastPlaySig = sig
         bridgePlayable = obj
