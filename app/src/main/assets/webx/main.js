@@ -751,7 +751,19 @@
   var CAND_WINDOW_MS = 15000;
 
   function isBiliMedia(u) {
-    if (!/bilivideo\.com|akamaized\.net|hdslb\.com/i.test(u)) return false;
+    /*
+     * 【2026-10-17 04:56 r626 实测定案 —— 这就是"有时行有时不行"的真凶】
+     *
+     * B站 的分片不只从 bilivideo.com 下，还会从它自家的 P2P 边缘域下
+     * （r626 现场：*.edge.mountaintoys.cn:4483）。原来只认 bilivideo.com/
+     * akamaized/hdslb，这些货全被扔在门口：日志里"收到片段"认出了编号，
+     * 但候进池的 addCandidate 里 isBiliMedia 把它拒了 → 池子 0 条 →
+     * 候选池分组"选 无" → 永远交不出去（父亲 04:55 电视剧没接管，全程池子为空）。
+     * 改法：认**路径特征**而不是主机 —— /upgcxcode/<段>/<段>/<编号>/ 是
+     * B站 分片统一的路径，主机是什么无所谓；老域名清单仅作后备。
+     */
+    if (/\/upgcxcode\/\d+\/\d+\/\d{5,}\//.test(u) && /\.(m4s|mp4)(\?|$)/i.test(u)) return true;
+    if (!/bilivideo\.(com|cn)|akamaized\.net|hdslb\.com|mountaintoys\.cn|mcdn/i.test(u)) return false;
     return /\.(m4s|mp4|m3u8)(\?|$)/i.test(u);
   }
 
