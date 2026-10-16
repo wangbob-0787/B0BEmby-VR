@@ -256,6 +256,12 @@
           playable.streams.length + ' 档）');
         else console.log('[b0b]③手里没有攒到货，直接用播放接口那份（成对，' +
           playable.streams.length + ' 档）');
+        /*
+         * 【2026-10-17 04:42 审读发现】客户端的弹幕按我们报的"片子编号"拉
+         * （api.bilibili.com/x/v1/dm/list.so?oid=<编号>）。接口那份创建时编号可能还没得知，
+         * 递交这一刻现补 —— 不补弹幕就拉不到。
+         */
+        if (!playable.cid && biliCid) playable.cid = biliCid;
         playable.subtitle = biliSubUrl;
         playable.winId = poolWin;
         obj = playable;
@@ -352,6 +358,7 @@
       lastPlaySig = sig;
       lastPlaySigAt = Date.now();
       playable = {
+        cid: biliCid || 0,
         ep: biliEp,
         season: biliSeason,
 
@@ -519,10 +526,15 @@
   }
   var lastSubmitSig = '';   /* 上一份交出去的签名（去重用） */
   var lastSubmitAt = 0;
-  var webFullExitTried = false;
+  var webFullExitDone = false;
+  var webFullExitNoteAt = 0;
   function tryExitWebFullscreen() {
-    if (webFullExitTried) return;
-    webFullExitTried = true;
+    /*
+     * 【2026-10-17 04:42 审读发现】原来只试一次：刚回到网页时播放器的控件
+     * 往往还没渲染出来，一次扑空后就永远不再试 —— "替你退出网页全屏"形同虚设。
+     * 改成：回到网页后的 10 秒内反复找（scan 每 0.4 秒叫一次），点成功为止。
+     */
+    if (webFullExitDone) return;
     try {
       var btns = document.querySelectorAll('.bpx-player-ctrl-web, .squirtle-video-web-fullscreen, [aria-label*="网页全屏"]');
       for (var bi = 0; bi < btns.length; bi++) {
@@ -530,11 +542,15 @@
         var on = /active|selected/i.test(String(el.className || '') + ' ' + String(el.getAttribute('aria-pressed') || ''));
         if (on) {
           el.click();
+          webFullExitDone = true;
           console.log('[b0b]① 刚回到网页，页面自己进了网页全屏 → 替你退出，回到小窗');
           return;
         }
       }
-      console.log('[b0b]① 刚回到网页，没找到"网页全屏"按钮（不影响别的）');
+      if (Date.now() - webFullExitNoteAt > 3000) {
+        webFullExitNoteAt = Date.now();
+        console.log('[b0b]① 暂时没找到"网页全屏"按钮，10 秒内继续找');
+      }
     } catch (e) {}
   }
   /*
