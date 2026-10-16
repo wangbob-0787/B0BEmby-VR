@@ -41,6 +41,20 @@
    * mpv 用「视频流 + --audio-file 音频流」就能直接播，不需要网页播放器。
    * 会员片才额外需要 Cookie（SESSDATA），那一条由客户端从网页里取。
    */
+  /*
+   * 编码偏好（2026-10-16 本机实测后定）：
+   * B站 最高那档常是 AV1（日志里 4096x1716 就是 av1），而 PICO 4 的芯片**没有 AV1 硬解**，
+   * 挑"分辨率最高"等于挑一个播不动的档。所以先按"这台机器解不解得动"排，
+   * 同编码内再挑分辨率高、码率大的。HEVC（hev1/hvc1）最稳 → AVC → AV1 垫底。
+   */
+  function codecRank(c) {
+    c = String(c || '').toLowerCase();
+    if (c.indexOf('hev') >= 0 || c.indexOf('hvc') >= 0 || c.indexOf('dvh') >= 0) return 3;
+    if (c.indexOf('avc') >= 0) return 2;
+    if (c.indexOf('av01') >= 0 || c.indexOf('av1') >= 0) return 1;
+    return 2;
+  }
+
   /* 播放信息（B站 的 playurl 返回，或页面全局 __playinfo__）→ 可播地址 */
   function applyPlayinfo(d) {
     try {
@@ -54,7 +68,9 @@
         });
         var audioUrl = auds.length ? (auds[0].baseUrl || auds[0].base_url || '') : '';
         var vids = (d.dash.video || []).slice().sort(function (a, b) {
-          return (b.height || 0) - (a.height || 0);
+          var sa = codecRank(a.codecs) * 100000 + (a.height || 0) * 10 + (a.bandwidth || 0) / 1000000;
+          var sb = codecRank(b.codecs) * 100000 + (b.height || 0) * 10 + (b.bandwidth || 0) / 1000000;
+          return sb - sa;
         });
         for (var i = 0; i < vids.length; i++) {
           var v = vids[i];
@@ -129,23 +145,41 @@
    * code 30xxx 是音频（30216/30232/30280），其余是视频（30011…30080、1000xx）。
    * 同一个 cid 里挑一条视频 + 一条音频就能播（本机 mpv 实测这种地址可直接播）。
    */
+  /*
+   * 分片编号打分（兜底配对用）：B站 的视频编号里
+   *   30077 / 30080 是 HEVC（头显能硬解）→ 最高分；
+   *   30032 / 30033 等 30xxx 是 AVC → 次之；
+   *   1000xx / 1002xx 是 AV1（PICO 4 无硬解）→ 垫底（只在没有别的可用时才选）。
+   */
+  function vidScore(code) {
+    if (code === 30077 || code === 30080) return 300000 + code;
+    if (code >= 30000 && code < 30100) return 200000 + code;
+    if (code >= 100000) return 100000 + code;
+    return 150000 + code;
+  }
+
   function pairFromUrls() {
     var vid = null, aud = null;
     for (var i = 0; i < urls.length; i++) {
       var u = urls[i];
-      var m = /\/upgcxcode\/(?:\d+\/)+([0-9]{5,})\/[^/]*?-([0-9]{5})\.m4s/.exec(u);
+      var m = /\/upgcxcode\/(?:\d+\/)+([0-9]{5,})\/[^/]*?-([0-9]{5,})\.m4s/.exec(u);
       if (!m) continue;
       var cid = m[1];
       var code = parseInt(m[2], 10);
-      var isAudio = code >= 30000 && code < 40000;
+      /* 音频编号都在 302xx（30216 / 30232 / 30280）；30011…30080、1000xx 都是视频 */
+      var isAudio = code >= 30200 && code < 30300;
       if (isAudio) {
         if (!aud || code > aud.code) aud = { cid: cid, code: code, url: u };
-      } else if (!vid || code > vid.code) {
-        vid = { cid: cid, code: code, url: u };
+      } else {
+        var sc = vidScore(code);
+        if (!vid || sc > vid.score) vid = { cid: cid, code: code, url: u, score: sc };
       }
     }
     if (!vid) return null;
     if (aud && aud.cid !== vid.cid) aud = null;
+    console.log('[b0b] 配对：视频 code=' + vid.code + '（' +
+      (vid.score >= 300 ? 'HEVC' : vid.score >= 200 ? 'AVC' : 'AV1/其它') + '）' +
+      '，音频 ' + (aud ? ('code=' + aud.code) : '无'));
     return {
       id: vid.code, height: 0, width: 0, bw: 0, vcodec: '', acodec: '',
       video: vid.url, audio: aud ? aud.url : '', pair: true
@@ -189,7 +223,23 @@
         noteApi(u);
         if (isPlayApi(u)) {
           this.addEventListener('load', function () {
-            try { parsePlayurl(this.responseText); } catch (e) {}
+            /*
+             * 2026-10-16 实测补：播放接口那一路一直解析不出来 —— 接口请求确实发生了
+             * （诊断日志里有 /x/player/wbi/v2、/pgc/player/web/v2/playurl），
+             * 但读返回的方式没吃全：responseType=json 时取 responseText 会直接抛错，
+             * 被 catch 吞掉就什么都没发生。三种类型都照顾到。
+             */
+            try {
+              var rt = this.responseType;
+              if (rt === '' || rt === 'text') {
+                parsePlayurl(this.responseText);
+              } else if (rt === 'json') {
+                var j = this.response;
+                if (j) applyPlayinfo(j.data ? j.data : j);
+              } else if (this.response) {
+                parsePlayurl(new TextDecoder('utf-8').decode(this.response));
+              }
+            } catch (e) {}
           });
         }
       } catch (e) {}

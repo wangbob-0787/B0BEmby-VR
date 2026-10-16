@@ -4330,6 +4330,31 @@ class MainActivity : ComponentActivity() {
 
     private fun userToken(): String = embySession.apiKey ?: BuildConfig.EMBY_API_KEY
 
+    /*
+     * 手动地址入口（2026-10-16，诊断用，可长期保留）。
+     *
+     * 用途：把"抓地址"和"能不能播"两件事分开验 —— 扩展那条路还没修好时，
+     * 也能先确认我们的播放器在头显上真能把这条流播起来。
+     *
+     * 约定：外部存储放了 vr-manual-stream.json 就直接播它，格式与网页抓来的那份一致：
+     *   {"kind":"play","frame":"https://www.bilibili.com/","durSec":0,
+     *    "streams":[{"id":30080,"height":1080,"width":1920,"video":"…","audio":"…"}]}
+     * 路径：/sdcard/Android/data/com.xxxx.emby_vr/files/vr-manual-stream.json
+     * （用 adb push 写，不需要应用申请存储权限；地址有效期约 2 小时，用完即删。）
+     */
+    private fun maybePlayManualStream() {
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            runCatching {
+                val dir = getExternalFilesDir(null) ?: return@runCatching
+                val f = java.io.File(dir, "vr-manual-stream.json")
+                if (!f.exists()) return@runCatching
+                val obj = org.json.JSONObject(f.readText())
+                Log.i(TAG, "手动地址文件：${f.absolutePath}，直接交给自己的播放器")
+                playWebStream(obj)
+            }.onFailure { Log.w(TAG, "手动地址文件读取失败：${it.message}") }
+        }, 10000L)
+    }
+
     private fun userServer(): String = embySession.serverUrl ?: BuildConfig.EMBY_SERVER
 
     private fun playbackReportBody(
@@ -5041,6 +5066,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        /* 诊断入口：外部存储若放了手动地址文件，起来 10 秒后直接播它（见 maybePlayManualStream） */
+        maybePlayManualStream()
         Log.i(TAG, "onCreate: B0BEmby VR 启动")
         /*
          * VR 影院模式的第一步（2026-10-05）：确认原生层能编出来、官方 OpenXR loader
