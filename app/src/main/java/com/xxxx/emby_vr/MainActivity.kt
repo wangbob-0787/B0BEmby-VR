@@ -186,6 +186,13 @@ class MainActivity : ComponentActivity() {
 
     /** 银幕上现在是不是在放网页（原生侧银幕取样网页面纹理） */
     private var webOnScreen = false
+    /*
+     * 网页被"我们自己的播放器"顶掉时置 true（父亲 2026-10-16）：
+     * 这时网页**没有销毁**，只是从大银幕上收起来了，地址也没动过。
+     * 按返回键就该把它显示回来 —— 回到起播前那一页，而不是 B站 首页。
+     */
+    private var webHiddenByStream = false
+    private var webSiteBeforeStream: String? = null
 
     /*
      * 片名 logo 的位图（父亲 2026-10-06 晚：logo 一直没画出来）。
@@ -1807,6 +1814,7 @@ class MainActivity : ComponentActivity() {
         runOnUiThread {
             webSiteState.value = null
             webOnScreen = false
+            webHiddenByStream = false
             osdState.webSiteName = ""
             com.xxxx.emby_vr.vr.VrNative.setScreenWeb(false)
             Log.i(TAG, "网页面已关闭（大银幕交回影片）")
@@ -2336,6 +2344,11 @@ class MainActivity : ComponentActivity() {
         } catch (_: Throwable) {
         }
         webCandHandler.removeCallbacksAndMessages(null)
+        /* 记下"网页是被我们顶掉的"，返回时好还原（父亲 2026-10-16） */
+        if (webOnScreen) {
+            webHiddenByStream = true
+            webSiteBeforeStream = webSiteState.value
+        }
         closeWeb()
         startPlayer(url = "", title = "网页", startMs = 0L, webStream = one)
         /*
@@ -5696,6 +5709,19 @@ class MainActivity : ComponentActivity() {
              */
             val wentBack = com.xxxx.emby_vr.web.WebPageHub.back()
             Log.i(TAG, if (wentBack) "BACK 交给网页：退回上一页" else "BACK 忽略：网页已无上一页")
+            return true
+        }
+        /*
+         * 从我方播放器回网页（父亲 2026-10-16）：接管时网页没销毁、地址也没动，
+         * 所以直接把大银幕交回网页即可，不需要任何导航 —— 落点就是起播前那一页。
+         */
+        if (keyCode == KeyEvent.KEYCODE_BACK && webHiddenByStream && !panelPointerOnPanel) {
+            webHiddenByStream = false
+            stopPlayback()
+            webSiteState.value = webSiteBeforeStream
+            webOnScreen = true
+            com.xxxx.emby_vr.vr.VrNative.setScreenWeb(true)
+            Log.i(TAG, "BACK：从自己的播放器回到网页（起播前那一页）")
             return true
         }
         if (keyCode == KeyEvent.KEYCODE_BACK && renderer.videoActive && !panelPointerOnPanel) {
