@@ -913,6 +913,17 @@ class MainActivity : ComponentActivity() {
             vrInputLive = true
             runOnUiThread {
                 /*
+                 * 【2026-10-17 00:12 观测：按 B 那一刻的现场】
+                 * 父亲报"光标对着大银幕按 B 还是回 B站 首页"。这一行把决定分支的四个状态
+                 * 一次打全 —— 之后无论走哪一支，都能对上是从哪个状态落下去的，不用再猜。
+                 */
+                Log.i(
+                    TAG,
+                    "光柱 B 键现场：网页在屏=$webOnScreen 被播放器顶掉=$webHiddenByStream " +
+                        "光标在面板=$panelPointerOnPanel 网页页=${webSiteState.value} " +
+                        "记下的站=${webStreamSite}",
+                )
+                /*
                  * 父亲 2026-10-07 重定 B 键语义：
                  *  · 菜单开着 → 关菜单（回上一级）；
                  *  · 光点在播放画面上 → **不响应**。播放页的退出、快进快退、选集
@@ -5962,6 +5973,14 @@ class MainActivity : ComponentActivity() {
          * 想换内容就在海报墙点别的片子，网页会被那部片子顶掉。
          * 光柱指海报墙时照旧走下面的面板导航栈（详情页按 B 回上一页）。
          */
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            /* 观测（2026-10-17）：系统返回键那条路的现场，与光柱那条对齐 */
+            Log.i(
+                TAG,
+                "返回键现场：网页在屏=$webOnScreen 被播放器顶掉=$webHiddenByStream " +
+                    "光标在面板=$panelPointerOnPanel 网页页=${webSiteState.value}",
+            )
+        }
         if (keyCode == KeyEvent.KEYCODE_BACK && webOnScreen && !panelPointerOnPanel) {
             /*
              * 先让网页自己返回（父亲 2026-10-14 实测报障：B站 网页里按 B 键完全没反应）。

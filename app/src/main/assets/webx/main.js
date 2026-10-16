@@ -219,6 +219,18 @@
     pendingPlay = null;
     /* 标题在交出去这一刻现取（抓取时页面标题可能还没更新） */
     try { obj.title = pageTitle(); } catch (e) {}
+    /*
+     * 【2026-10-17 00:12 观测：交出去的到底是哪一份】
+     * 父亲报"《良医》无论选哪集，放大后都是同一集"。这一行把
+     * "这份待交内容是什么时候生成的、它记的页面是哪个"打出来，
+     * 就能一眼看出是不是一直在交一份旧的。
+     */
+    try {
+      console.log('[b0b]③提交：生成于 ' + Math.round((Date.now() - obj.t) / 1000) + ' 秒前' +
+        '，它记的页面 ' + String(obj.frame).slice(-46) +
+        '（当前页面 ' + String(location.href).slice(-46) + '）' +
+        '，编号 ' + (obj.cid || 0) + '，首条 ' + String(obj.streams[0].video).slice(-34));
+    } catch (e) {}
     console.log('[b0b] 页面已在播放，把抓到的地址交给客户端');
     try { window.postMessage({ __b0b: 1, payload: obj }, '*'); } catch (e) {}
   }
@@ -404,8 +416,17 @@
   var biliCid = 0;
   function takeBiliCid(obj) {
     try {
+      /*
+       * 【2026-10-17 00:12 修一个真 bug：这个函数被两种形状的参数调用】
+       *
+       * 一处传的是接口响应体（包装结构 {data:{cid}} 或 {result:{cid}}），
+       * 另一处（从接口地址里取到编号那条路）传的是**裸的** {cid: n}。
+       * 原来只认包装结构，于是裸的那种永远取不到 —— 头显日志实证：
+       * 页面为五集分别请求了不同编号，而"拿到片子编号"只打了一次。
+       * 现在两种形状都认。
+       */
       var d = obj && (obj.data || obj.result);
-      var c = d && d.cid;
+      var c = (d && d.cid) || (obj && obj.cid);
       if (!c) return;
       if (String(c) === String(biliCid)) return;
       biliCid = c;
@@ -527,6 +548,9 @@
    */
   var candPool = [];          /* [{u, t, key}]，带时间戳 */
   var candSeen = {};
+  /* 观测用（2026-10-17）：池子里出现过哪些"片子编号"，以及页面地址变过没有 */
+  var poolKeysLog = {};
+  var lastHrefLogged = '';
   var candTried = 0;
   /*
    * 只看最近这段时间内出现的片段（父亲 2026-10-16 定的口径：往前 5 秒、往后 10 秒）。
@@ -576,7 +600,16 @@
     var k = String(u).split('?')[0];
     if (candSeen[k]) return;
     candSeen[k] = 1;
-    candPool.push({ u: u, t: Date.now(), key: candKeyOf(u) });
+    var key = candKeyOf(u);
+    candPool.push({ u: u, t: Date.now(), key: key });
+    /*
+     * 【2026-10-17 00:12 观测：池子里出现过哪些"片子编号"】
+     * 只在出现新的编号时打一行 —— 用来回答"我翻到第 5 集了，池子里有没有第 5 集的编号"。
+     */
+    if (!poolKeysLog[key]) {
+      poolKeysLog[key] = 1;
+      console.log('[b0b]②候选池出现新编号 ' + key + '，当前页面 ' + String(location.href).slice(-42));
+    }
     if (candPool.length > 400) candPool = candPool.slice(-200);
   }
 
@@ -604,6 +637,18 @@
       if (g[kk].length > bestN) { bestN = g[kk].length; bestKey = kk; }
     }
     var useKey = wholeKey || bestKey;
+    /*
+     * 【2026-10-17 00:10 只做观测、不改行为】
+     * 父亲报"无论选哪一季哪一集，放大后都是固定的某一集"。
+     * 要判的是：候选池里到底有几个片子编号、最后挑中的是哪一个、
+     * 它与"当前页面地址"对不对得上。不看到这三样，任何改法都是猜。
+     */
+    try {
+      var brief = order.map(function (k) { return k + '(' + g[k].length + ')'; }).join(' ');
+      console.log('[b0b]③候选池分组：' + brief +
+        ' → 选 ' + (useKey || '无') + (wholeKey ? '（整片）' : '') +
+        '，页面 ' + String(location.href).slice(-42));
+    } catch (e) {}
     return useKey ? g[useKey] : [];
   }
 
@@ -642,10 +687,19 @@
 
   function tryPairFromHits(keysAll) {
     try {
-      if (pendingPlay) return;
+      if (pendingPlay) {
+        /* 观测：已有一份"待交"时，新的片子会被这里挡掉（换集问题的一号嫌疑） */
+        console.log('[b0b]③配对跳过：已有一份待交（它记的页面 ' +
+          String(pendingPlay.frame).slice(-42) + '），本次页面 ' +
+          String(location.href).slice(-42));
+        return;
+      }
       var cands = pickCandidates(6);
       if (!cands.length) return;
-      if (cands[0].video === lastPairedVideo) return;
+      if (cands[0].video === lastPairedVideo) {
+        console.log('[b0b]③配对跳过：候选与上次完全相同');
+        return;
+      }
       lastPairedVideo = cands[0].video;
       pendingPlay = {
         subtitle: biliSubUrl,
@@ -656,7 +710,7 @@
       console.log('[b0b]③ 交给客户端 ' + cands.length + ' 条候选：' +
         cands.map(function (c, i) {
           return (i + 1) + ')' + (c.audio ? '画面+声音' : '单条') + ' ' + String(c.video).slice(-26);
-        }).join(' | '));
+        }).join(' | ') + '，页面 ' + String(location.href).slice(-42));
     } catch (e) {}
   }
 
@@ -977,8 +1031,18 @@
       liveSince = 0;
       candPool = [];
       candSeen = {};
+      poolKeysLog = {};
       candTried = 0;
       console.log('[b0b]① 页面上没有在播的播放窗口了，已收的片段清空');
+    }
+    /*
+     * 观测（2026-10-17）：页面地址变过没有。
+     * 父亲翻季/翻集时，如果这个地址一直不动，就说明"换集没换页"，
+     * 我们按页面地址判断的两处（播放页判据、交给客户端时记的页面）都会跟着钝掉。
+     */
+    if (location.href !== lastHrefLogged) {
+      lastHrefLogged = location.href;
+      console.log('[b0b]①页面地址变为 ' + String(location.href).slice(-70));
     }
     var msg = { kind: 'rect', t: Date.now(), frame: location.href };
     if (best) {
