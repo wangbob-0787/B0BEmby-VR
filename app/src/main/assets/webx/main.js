@@ -216,6 +216,23 @@
      */
     if (!liveSince) { console.log('[b0b] 没交出去：还没有铺满屏幕的播放窗口（小窗算试看）'); return; }
     var obj = pendingPlay;
+    /*
+     * 【2026-10-17】交之前核对：这份待交是不是"当前正在播的那一集"。
+     * 不认识编号也不要紧（有些站点没有集号），但**认得编号又对不上**就一定不交 ——
+     * 父亲报的"无论选哪一集放大都是同一集"就是这么交错的。
+     */
+    if (obj.cid && biliCid && String(obj.cid) !== String(biliCid)) {
+      console.log('[b0b]③不交：手里那份是编号 ' + obj.cid + '，当前在播编号 ' + biliCid +
+        '（页面 ' + String(location.href).slice(-40) + '）');
+      pendingPlay = null;
+      return;
+    }
+    if (obj.ep && biliEp && String(obj.ep) !== String(biliEp)) {
+      console.log('[b0b]③不交：手里那份是 ep' + obj.ep + '，当前在播 ep' + biliEp +
+        '（页面 ' + String(location.href).slice(-40) + '）');
+      pendingPlay = null;
+      return;
+    }
     pendingPlay = null;
     /* 标题在交出去这一刻现取（抓取时页面标题可能还没更新） */
     try { obj.title = pageTitle(); } catch (e) {}
@@ -564,6 +581,39 @@
   var poolKeysLog = {};
   var lastHrefLogged = '';
   var lastSmallLog = '';   /* 小窗/全屏在播那一行，内容变了才重打 */
+
+  /*
+   * 【2026-10-17 修「无论选哪一集，放大后都是同一集」】
+   *
+   * 头显实证（r612）：交出去的那一份是 213 秒前在**另一集页面**上生成的旧快照，
+   * 而当前这一集的候选池是空的 —— 因为
+   *   ① `tryPairFromHits` 见"手里已有一份待交"就直接返回，新的进不来；
+   *   ② 片段池只在"够大到九成"之后才收，小窗试看期间没收也不清，留着上一集的碎片。
+   * 现在做一条总规矩：**在播的集号一变，手里那份和池子一起作废**，按新集重新攒。
+   */
+  function invalidateForNewEpisode(why) {
+    try {
+      if (pendingPlay) {
+        console.log('[b0b]②作废手里那份待交（' + why + '）：它记的页面 ' +
+          String(pendingPlay.frame).slice(-40));
+        pendingPlay = null;
+      }
+      var had = candPool.length;
+      candPool = [];
+      candSeen = {};
+      poolKeysLog = {};
+      lastPairedVideo = '';
+      if (had) console.log('[b0b]②清空候选池 ' + had + ' 条（' + why + '）');
+    } catch (e) {}
+  }
+
+  /* 两份"在播身份"是不是同一集（编号优先，其次集号+季号） */
+  function sameEpisode(a, b) {
+    if (!a || !b) return false;
+    if (a.cid && b.cid && String(a.cid) === String(b.cid)) return true;
+    return String(a.ep || '') !== '' && String(a.ep || '') === String(b.ep || '') &&
+           String(a.season || '') === String(b.season || '');
+  }
   var candTried = 0;
   /*
    * 只看最近这段时间内出现的片段（父亲 2026-10-16 定的口径：往前 5 秒、往后 10 秒）。
@@ -701,11 +751,21 @@
   function tryPairFromHits(keysAll) {
     try {
       if (pendingPlay) {
-        /* 观测：已有一份"待交"时，新的片子会被这里挡掉（换集问题的一号嫌疑） */
-        console.log('[b0b]③配对跳过：已有一份待交（它记的页面 ' +
-          String(pendingPlay.frame).slice(-42) + '），本次页面 ' +
-          String(location.href).slice(-42));
-        return;
+        /*
+         * 【2026-10-17 修】原来这里是"有就不生成"，于是换集后旧的那份一直占位 ——
+         * 改成一集一判：手里那份还是**当前这一集**就留着（同时省掉重复劳动），
+         * 属于别的集就作废，改用这次新攒的。
+         */
+        var nowEp = { ep: biliEp, season: biliSeason, cid: biliCid };
+        if (sameEpisode(pendingPlay, nowEp)) {
+          console.log('[b0b]③配对跳过：手里那份就是当前这一集（' +
+            (pendingPlay.ep ? 'ep' + pendingPlay.ep : '编号 ' + pendingPlay.cid) + '）');
+          return;
+        }
+        console.log('[b0b]③手里那份属于别的集（它记的 ' +
+          (pendingPlay.ep ? 'ep' + pendingPlay.ep : '编号 ' + pendingPlay.cid) +
+          '，现在 ep' + (biliEp || '?') + '）→ 作废重攒');
+        pendingPlay = null;
       }
       var cands = pickCandidates(6);
       if (!cands.length) return;
@@ -800,10 +860,12 @@
       if (me && me[1] !== biliEp) {
         biliEp = me[1];
         console.log('[b0b]②页面在播的集号变了：ep' + biliEp + '（季 ' + (biliSeason || '?') + '）');
+        invalidateForNewEpisode('集号变成 ep' + biliEp);
       }
       if (ms && ms[1] !== biliSeason) {
         biliSeason = ms[1];
         console.log('[b0b]②页面在播的季号变了：season ' + biliSeason);
+        invalidateForNewEpisode('季号变成 ' + biliSeason);
       }
     } catch (e) {}
   }

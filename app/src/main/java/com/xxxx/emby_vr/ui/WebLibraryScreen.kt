@@ -313,6 +313,15 @@ private fun dispatchArrowKey(wv: android.view.View, right: Boolean) {
 fun WebLibraryScreen(
     site: Int,
     /**
+     * 【2026-10-17 修「按 B 回到 B站 首页」】要载入的**具体页面**。
+     *
+     * 原来这里只会载入站点首页。接管时网页面整个被拆掉（`webSiteState = null`），
+     * 回网页时再把它建回来 —— 建的时候只有站点编号可用，于是重新载入的必然是站点首页。
+     * 头显日志实证：按 B 后紧跟 `网页开始载入：about:blank` → `https://www.bilibili.com/`。
+     * 现在接管那一刻把"当时那一页的地址"记下来，回网页时按它载入，落回原页。
+     */
+    startUrl: String? = null,
+    /**
      * 抓到"可播地址"时的回调（2026-10-16）。
      *
      * 由 MainActivity 接过去，用我们自己的播放器播 —— 这样网页只当选片器，
@@ -432,6 +441,8 @@ private object WebRuntime {
 
     /** 上次记录的"可播地址"指纹（同一份不重复打日志） */
     private var bridgeLastPlaySig = ""
+    /* 扩展每轮扫描都会带 location.href 上来 —— 这是"此刻页面在哪"的最新事实（2026-10-17） */
+    private var bridgeLastFrame = ""
 
     /** 最近一次拿到的可播地址（网页播放接口的完整返回），供"用自己的播放器播"用 */
     private var bridgePlayable: org.json.JSONObject? = null
@@ -515,6 +526,19 @@ private object WebRuntime {
                 .append(s.optInt("bw", 0) / 1000).append("k")
         }
         val dur = obj.optInt("durSec", 0)
+        /*
+         * 【2026-10-17】这一份待交是扩展在本集"攒片段"时生成的，它自带的 frame 可能是
+         * 更早那一页（头显实证：交出来的那一份记的页面比当前页面早 213 秒）。
+         * 记"回网页要落在哪一页"必须用**此刻**的页面地址，所以这里用最新一跳覆盖它。
+         */
+        if (bridgeLastFrame.isNotBlank() && bridgeLastFrame != obj.optString("frame")) {
+            android.util.Log.i(
+                "B0BEmbyVR",
+                "页面地址以此刻为准：交接对象记的 " + obj.optString("frame").takeLast(50) +
+                    " → 此刻 " + bridgeLastFrame.takeLast(50),
+            )
+            obj.put("frame", bridgeLastFrame)
+        }
         val ck = if (bridgeCookie.isNotBlank()) "有" else "无"
         /*
          * 去重判据必须带"地址指纹"。
@@ -568,6 +592,7 @@ private object WebRuntime {
         val ck = obj.optString("cookie")
         if (ck.isNotBlank()) bridgeCookie = ck
         val frame = obj.optString("frame")
+        if (frame.isNotBlank()) bridgeLastFrame = frame
         val rect = obj.optJSONObject("rect")
         if (rect != null) {
             bridgeRects[frame] = floatArrayOf(
@@ -992,7 +1017,8 @@ private fun WebPageForSite(site: Int) {
      * 诊断用（2026-10-15）：调参文件里给了 <web_url> 就加载它（本地测试页），
      * 否则用三个站点的默认电脑版首页。换试验页面不必重编 APK。
      */
-    val url = com.xxxx.emby_vr.vr.VrTuning.webUrl.takeIf { it.isNotEmpty() }
+    val url = startUrl?.takeIf { it.isNotBlank() }
+        ?: com.xxxx.emby_vr.vr.VrTuning.webUrl.takeIf { it.isNotEmpty() }
         ?: when (site) {
             0 -> "https://www.bilibili.com/"
             1 -> "https://v.qq.com/"

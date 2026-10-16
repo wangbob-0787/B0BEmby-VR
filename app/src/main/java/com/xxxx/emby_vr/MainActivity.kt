@@ -177,6 +177,14 @@ class MainActivity : ComponentActivity() {
 
     /** 网页面当前加载哪个站（null = 网页面空着）；改它会触发重画与重新加载 */
     private val webSiteState = androidx.compose.runtime.mutableStateOf<Int?>(null)
+    /*
+     * 【2026-10-17 修「按 B 回到 B站 首页」】
+     * 接管那一刻把"当时那一页的地址"记下来（扩展每轮扫描都会报 location.href）。
+     * 回网页时按它载入 —— 原来只能载入站点首页，因为网页面在接管时被整个拆掉、
+     * 回来时只能按站点编号重建（头显日志：`网页开始载入：about:blank` → `bilibili.com/`）。
+     */
+    private var webReturnUrl: String? = null
+    private val webStartUrlState = androidx.compose.runtime.mutableStateOf<String?>(null)
 
     /**
      * 这一次播放的流是从哪个站点抓来的（父亲 2026-10-16）。
@@ -1561,6 +1569,20 @@ class MainActivity : ComponentActivity() {
     private fun osdTitleText(prefix: String = "正在播放："): String =
         prefix + itemTitleOf(currentItem)
 
+    /**
+     * 【2026-10-17 修「控制条写着『正在播放： 正在播放：』且片名空」】
+     *
+     * `osdState.title` 现在**只放片名本身**，前缀由控制条那一行加一次（原来这里放的
+     * 是带前缀的整句，而控制条又加一遍 → 前缀画两次）。
+     * 另外"每秒刷新"这一路原来无条件写入 —— 放网页流时 `currentItem` 是空的，
+     * 于是每秒把网页流的片名覆盖成空串（这就是片名那格空着的原因）。
+     * 规矩：**取不到片名就不写**，别用空值覆盖别人写好的标题。
+     */
+    private fun refreshOsdTitleFromItem() {
+        val t = itemTitleOf(currentItem)
+        if (t.isNotEmpty()) osdState.title = t
+    }
+
     /** 最近 300ms 面板刚吃过指针 / 点击 / 滚动：这一下扳机归面板 */
     private fun panelTouchedRecently(): Boolean =
         android.os.SystemClock.uptimeMillis() - lastPanelClickAt < 300L
@@ -1834,6 +1856,7 @@ class MainActivity : ComponentActivity() {
              */
             com.xxxx.emby_vr.vr.VrNative.setVideoAspect(16f / 9f)
             applyDanmakuCanvas(16f / 9f)
+            webStartUrlState.value = null      /* 从图标进站点 = 站点首页 */
             webSiteState.value = site
             webOnScreen = true
             /*
@@ -1920,7 +1943,7 @@ class MainActivity : ComponentActivity() {
                 val d = ctl.durationMs()
                 if (d > 0L) osdState.durationMs = d
                 // 控制条第一行左侧：正在播放什么（右侧的时间由独立时钟负责）
-                osdState.title = osdTitleText()
+                refreshOsdTitleFromItem()
                 // 弹幕画布要的播放位置：主线程取，画笔线程只读缓存
                 refreshPosBase()
                 kotlinx.coroutines.delay(1000)
@@ -2298,10 +2321,21 @@ class MainActivity : ComponentActivity() {
         stopPlaybackInternal(keepUi = true)
         renderer.videoActive = false
         renderer.setHudText("")
+        /*
+         * 【2026-10-17 真因修复】这里原来只设了站点编号 —— 而网页面在接管时已经被拆掉，
+         * 重新建起来时只能载入站点首页（日志：`网页开始载入：about:blank` → `bilibili.com/`），
+         * 于是"按 B 回网页"实际是"回到 B站 首页"。现在把接管时记下的那一页交给网页屏。
+         */
+        val back = webReturnUrl
+        webStartUrlState.value = back
         webSiteState.value = webSiteBeforeStream
         webOnScreen = true
         com.xxxx.emby_vr.vr.VrNative.setScreenWeb(true)
-        Log.i(TAG, "回网页：从自己的播放器交回网页（起播前那一页）")
+        Log.i(
+            TAG,
+            "回网页：从自己的播放器交回网页（按接管时那一页重建：" +
+                (back?.takeLast(60) ?: "站点首页") + "）",
+        )
     }
 
     /** 面板按键入口：面板没就绪（还在启动/播放中）时静默忽略 */
@@ -2551,6 +2585,14 @@ class MainActivity : ComponentActivity() {
     private val webCandHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
     private fun playWebStream(obj: org.json.JSONObject) {
+        /*
+         * 【2026-10-17】记下接管那一刻页面在哪 —— 按 B 回网页就落回这一页。
+         * 以此刻页面为准（WebLibraryScreen 已用最新一跳覆盖过 frame）。
+         */
+        obj.optString("frame").takeIf { it.isNotBlank() && it != "about:blank" }?.let {
+            webReturnUrl = it
+            Log.i(TAG, "记下要回去的那一页：" + it.takeLast(70))
+        }
         val streams = obj.optJSONArray("streams") ?: return
         if (streams.length() == 0) return
         webCandSrc = obj
@@ -3102,7 +3144,7 @@ class MainActivity : ComponentActivity() {
                              */
                             if (waitingFirstFrame) {
                                 osdState.hasPlayback = true
-                                osdState.title = osdTitleText()
+                                refreshOsdTitleFromItem()
                             }
                         }
                         // 自然播完 → 上报停止（服务端据此记"已看"与进度）
@@ -5603,6 +5645,7 @@ class MainActivity : ComponentActivity() {
                 if (s != null) {
                     com.xxxx.emby_vr.ui.WebLibraryScreen(
                         site = s,
+                        startUrl = webStartUrlState.value,
                         /*
                          * 回调来自火狐内核自己的线程，而播放链路（建 mpv、挂 surface、改界面状态）
                          * 必须在主线程 —— 先切回主线程再动（2026-10-16 自审补的，避免装机即崩）。

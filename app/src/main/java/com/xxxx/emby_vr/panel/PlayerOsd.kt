@@ -391,8 +391,15 @@ fun PlayerOsdBar(state: OsdState) {
                      * 正在播什么就显示什么 —— 标题只有一个来源，谁在播谁写它：
                      * Emby 片子写片名，网页流写"站点-片名"。
                      */
+                    /*
+                     * 【2026-10-17 修两个可见毛病（父亲截图实证）】
+                     * ①「正在播放：」被画了两次 —— 因为 `osdState.title` 里原来带着前缀，
+                     *   这一行又加一遍。现在 title 只放片名本身，前缀只在这里加一次。
+                     * ②片名那格空着还硬写前缀 —— 取不到片名时（网页流那一秒被覆盖成空）
+                     *   退成「正在播放」而不是留一个孤零零的冒号。
+                     */
                     state.title.isNotEmpty() -> "正在播放：${state.title}"
-                    state.hasPlayback -> state.title
+                    state.hasPlayback -> "正在播放"
                     else -> "未在播放"
                 },
                 color = if (state.hasPlayback || state.title.isNotEmpty()) {
