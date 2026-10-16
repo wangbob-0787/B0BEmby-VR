@@ -647,7 +647,18 @@
       var es = performance.getEntriesByType('resource');
       for (var i = 0; i < es.length; i++) {
         var u = es[i] && es[i].name;
-        if (u && isQqHls(u) && u !== pendingQq) {
+        if (!u) continue;
+        /*
+         * 【2026-10-17 05:14 父亲报"接管太慢/有时接管不过去"提】
+         * r627 实测：B站 换集(SPA)不重新请求播放接口；全屏后画面分片要等
+         * 播放器下一段真正的分片请求才进池 —— 父亲等了 63 秒。
+         * 而资源时间线(performance resource)里躺着页面**早就下过**的全部分片地址。
+         * 全屏一开盘(每 0.4 �扫一轮)就把它们捞进收集 → 秒配对秒接管。
+         */
+        if (liveSince && u.indexOf('/upgcxcode/') > 0) {
+          try { noteMedia(u); } catch (e) {}
+        }
+        if (isQqHls(u) && u !== pendingQq) {
           pendingQq = u; qqAt = Date.now();
           console.log('[b0b] 腾讯播放列表（从资源时间线找到）');
         }
@@ -1424,6 +1435,13 @@
       lastHrefLogged = location.href;
       console.log('[b0b]①页面地址变为 ' + String(location.href).slice(-70));
     }
+    /*
+     * 【2026-10-17 05:14 父亲报"按 B 白屏"根修】
+     * 每个 iframe 里都有一个探子实例：message.bilibili.com 那个小框架的地址
+     * 曾把"要回去的那一页"顶掉 → 按 B 回来重建的是一张空白页。
+     * 跨框架探子一律不上报；播放器都在顶层文档里（B站/腾讯/爱奇艺 均是）。
+     */
+    if (window.self !== window.top) return;
     var msg = { kind: 'rect', t: Date.now(), frame: location.href };
     if (best) {
       var iw = window.innerWidth || 1, ih = window.innerHeight || 1;
