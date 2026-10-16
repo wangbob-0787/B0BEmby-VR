@@ -482,19 +482,19 @@ class MpvBackend(private val context: Context) {
     ) {
         if (videoUrl.isBlank()) return
         post {
-            try {
-                MPVLib.setOptionString(
-                    "http-header-fields",
-                    headers.entries.joinToString(",") { "${it.key}: ${it.value}" },
-                )
-            } catch (t: Throwable) {
-                Log.e(TAG, "设请求头失败: ${t.message}")
-            }
-            try {
-                MPVLib.setOptionString("audio-file", audioUrl ?: "")
-            } catch (t: Throwable) {
-                Log.e(TAG, "设外部音轨失败: ${t.message}")
-            }
+            /*
+             * 运行期必须用**属性**接口（setOptionRuntime = setPropertyString）。
+             *
+             * 2026-10-16 头显实测（r560）：这里原来用的是 setOptionString —— 那是**初始化之前**
+             * 才能用的接口，播出过程中调它等于没调，而且不报错。结果：
+             * 内核日志里只有视频流被打开、外部音轨一条打开记录都没有，
+             * 紧接着就是 `restart complete @ 0.000000, audio=eof, video=playing`（有画无声）。
+             */
+            setOptionRuntime(
+                "http-header-fields",
+                headers.entries.joinToString(",") { "${it.key}: ${it.value}" },
+            )
+            if (!audioUrl.isNullOrBlank()) setOptionRuntime("audio-file", audioUrl)
         }
         play(videoUrl, startSec)
     }
