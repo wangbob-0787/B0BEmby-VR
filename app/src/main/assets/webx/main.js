@@ -352,6 +352,7 @@
    * 收满一批按行打到日志，客户端那边的日志里就能直接 grep `[b0b]媒体 `。
    */
   var mediaHits = [];
+  var lastPairedVideo = '';
   var mediaKeys = {};
 
   function looksMedia(u) {
@@ -402,14 +403,73 @@
     if (u.slice(0, 5) === 'blob:') return;
     if (!looksMedia(u)) return;
     var key = u.split('?')[0];
-    if (mediaKeys[key]) return;            // 同一条主干只记一次（分片换参数也算一条）
-    mediaKeys[key] = 1;
+    if (mediaKeys[key]) return;            /* 同一条主干只记一次（分片换参数也算一条） */
+    /* 值要存完整地址：分片带时效 token，丢了参数就播不了（2026-10-16） */
+    mediaKeys[key] = u;
     mediaHits.push(u);
     if (isQqHls(u)) {                      /* 腾讯：抓到播放列表就等于拿到了地址 */
       pendingQq = u; qqAt = Date.now();
       console.log('[b0b] 腾讯播放列表已记下（长度 ' + u.length + '）');
     }
     if (mediaHits.length >= 60) flushMedia();
+    tryPairFromHits(mediaKeys);       /* 每收到一条就试着配对（父亲 2026-10-16） */
+  }
+
+  /* 配对成功就把待播地址填上（页面是否在播交给后面几道关卡判断） */
+  function tryPairFromHits(keysAll) {
+    try {
+      if (pendingPlay) return;
+      var all = [];
+      for (var k in keysAll) all.push(k);
+      var pair = pairFromHits(all);
+      if (!pair || !pair.video) return;
+      if (pair.video === lastPairedVideo) return;
+      lastPairedVideo = pair.video;
+      pendingPlay = {
+        title: '', kind: 'play', t: Date.now(), frame: location.href,
+        durSec: 0, quality: 0, site: '',
+        streams: [{ id: 0, height: 0, width: 0, bw: 0, vcodec: 'h264',
+                    video: pair.video, audio: pair.audio || '' }]
+      };
+      console.log('[b0b] B站：用抓到的分片配出可播地址（画面+声音）');
+    } catch (e) {}
+  }
+
+  /*
+   * 从抓到的分片里配对出可播地址 —— 这是 B站 换片/切集/点旁边列表唯一可靠的路。
+   * 原因（父亲 2026-10-16 现场三层证据）：换片时它不请求播放地址接口，
+   * 地址在页面自己的缓存里，外面接不到；它发的那几个请求正文里也没有地址。
+   * 但分片一直在下载，命名有规律：
+   *   …/upgcxcode/aa/bb/<cid>/<cid>[-srN]-1-<code>.m4s
+   * 同一条 <cid> 里挑一条画面 + 一条声音即可（本机 mpv 实测这种地址可直接播）。
+   * 30xxx 里 302xx/303xx 是音频，300xx 是画面；1000xx 是 AV1（垫底）。
+   */
+  function pairFromHits(list) {
+    var vids = {}, auds = {}, cidOrder = [];
+    for (var i = 0; i < list.length; i++) {
+      var u = list[i];
+      var m = String(u).match(/\/(\d{5,})\/(\d{5,})(?:-sr\d+)?-1-(\d{3,6})\.(m4s|mp4)/i);
+      if (!m) continue;
+      var cid = m[2];
+      var code = parseInt(m[3], 10);
+      if (!vids[cid] && !auds[cid]) cidOrder.push(cid);
+      var isAudio = (code >= 30200 && code < 30400);
+      if (isAudio) {
+        if (!auds[cid] || code > auds[cid].code) auds[cid] = { u: u, code: code };
+      } else {
+        if (!vids[cid] || vidScore(code) > vidScore(vids[cid].code)) vids[cid] = { u: u, code: code };
+      }
+    }
+    var best = null;
+    for (var k = 0; k < cidOrder.length; k++) {
+      var c = cidOrder[k], v = vids[c];
+      if (!v) continue;
+      var a = auds[c];
+      var sc = vidScore(v.code) + (a ? 1000000 : 0);
+      if (!best || sc > best.sc) best = { sc: sc, v: v, a: a, cid: c };
+    }
+    if (!best) return null;
+    return { video: best.v.u, audio: best.a ? best.a.u : '' };
   }
 
   function flushMedia() {
