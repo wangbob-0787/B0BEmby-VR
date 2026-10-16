@@ -228,7 +228,7 @@
      *   ② 不是 → 从存档里找当前这一集的；
      *   ③ 还没有 → 用存档里最新的一份（父亲原话"不管如何，用最新的"），并打日志说清来源。
      */
-    var nowKey = biliEp ? ('ep' + biliEp) : (biliCid ? ('c' + biliCid) : '');
+    var nowKey = epKeyOf() || (biliEp ? ('ep' + biliEp) : '');
     var nowId = { ep: biliEp, season: biliSeason, cid: biliCid };
     var obj = pendingPlay, objFrom = '手里那份';
     if (obj && !sameEpisode(obj, nowId)) {
@@ -653,6 +653,23 @@
    *
    * 现在：旧的那份**存进 records 留着**（换集时还可能在用），当前这一集开一份新的。
    */
+  /*
+   * 【2026-10-17 03:05 父亲举例定的钥匙】
+   *
+   * 剧集：`/bangumi/play/ep5852931`（每集不同）
+   * 电影：`/bangumi/play/ss307572?theme=movie`（没有集号，只有番剧号）
+   * 两种情况**小窗到网页全屏地址都不变** —— 所以"地址里那一段标识"就是最干净的钥匙。
+   * 原来只认 `ep`，电影会取到空钥匙，多部电影会互相顶替。
+   */
+  function epKeyOf() {
+    try {
+      var m = String(location.pathname).match(/\/play\/(ep|ss|av|BV)([0-9A-Za-z]+)/i);
+      if (m) return (m[1] + m[2]).toLowerCase();
+      m = String(location.href).match(/[?&](ep_id|season_id)=(\d+)/);
+      if (m) return (m[1] + m[2]).toLowerCase();
+    } catch (e) {}
+    return '';
+  }
   var records = [];        /* 最近几份播放记录：{key, at, snap, pool} */
   var lastEpKey = '';      /* 上一份记录属于哪一集 */
   function archiveAndReset(why, newKey) {
@@ -673,7 +690,7 @@
     } catch (e) {}
   }
   /* 兼容旧调用名 */
-  function invalidateForNewEpisode(why) { archiveAndReset(why, biliEp ? ('ep' + biliEp) : ''); }
+  function invalidateForNewEpisode(why) { archiveAndReset(why, epKeyOf()); }
 
   /* 以后备记录里挑一份可用的：当前集的优先，其次最新的一份 */
   function pickRecordFor(nowKey, maxAgeMs) {
@@ -941,12 +958,12 @@
       if (me && me[1] !== biliEp) {
         biliEp = me[1];
         console.log('[b0b]②页面在播的集号变了：ep' + biliEp + '（季 ' + (biliSeason || '?') + '）');
-        archiveAndReset('集号变成 ep' + biliEp, 'ep' + biliEp);
+        archiveAndReset('集号变成 ep' + biliEp, epKeyOf());
       }
       if (ms && ms[1] !== biliSeason) {
         biliSeason = ms[1];
         console.log('[b0b]②页面在播的季号变了：season ' + biliSeason);
-        archiveAndReset('季号变成 ' + biliSeason, biliEp ? ('ep' + biliEp) : '');
+        archiveAndReset('季号变成 ' + biliSeason, epKeyOf());
       }
     } catch (e) {}
   }
@@ -1217,6 +1234,7 @@
       if (!poolSince) {
         poolSince = Date.now();
         poolWin = best.winId;
+        if (!lastEpKey) lastEpKey = epKeyOf();
         console.log('[b0b]① 检测到在播窗口 ' + best.winId + '：' + Math.round(best.w) + 'x' +
           Math.round(best.h) + '，占屏幕 ' + Math.round(pctNow) +
           '%（收片段门槛两成），开始收它的片段');
