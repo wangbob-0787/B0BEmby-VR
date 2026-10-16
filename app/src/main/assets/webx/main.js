@@ -152,6 +152,10 @@
       if (sig === lastPlaySig) return;
       lastPlaySig = sig;
       playable = {
+
+        /* 控制条要写「站点-片名」，标题从页面取（父亲 2026-10-16） */
+
+        title: (document.title || '').replace(/[_|]\s*哔哩哔哩.*$/, '').trim().slice(0, 80),
         kind: 'play', t: Date.now(), frame: location.href,
         durSec: durSec, quality: d.quality || 0, streams: streams.slice(0, 10)
       };

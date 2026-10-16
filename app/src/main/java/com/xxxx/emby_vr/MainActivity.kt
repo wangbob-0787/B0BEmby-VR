@@ -1632,7 +1632,13 @@ class MainActivity : ComponentActivity() {
          * 电视版是控制条展开就收起来，但 VR 里光柱不在控制条上时摇杆照样快进快退，
          * 这时没有进度条就没有反馈 —— 所以不跟电视版这一条，照常显示。
          */
-        val v = danmakuView ?: return
+        val v = danmakuView
+        if (v == null) {
+            /* 父亲 2026-10-16：网页流快进快退时银幕上没有进度条 —— 这条日志用来判断
+             * 是"承载进度条的层没建起来"还是"建了但没画上去" */
+            Log.w(TAG, "银幕进度条没显示：承载层未建立（danmakuView 为空）")
+            return
+        }
         seekHudShown = true
         /*
          * 数据走播放接口层（父亲 2026-10-08）。
@@ -2317,6 +2323,18 @@ class MainActivity : ComponentActivity() {
             val isWeb = webStream != null
             /* 从 Emby 播的片子：清掉"这一部是从网页抓来的"标记，免得按 B 跳到网页去 */
             if (!isWeb) webStreamSite = null
+            /*
+             * 网页流：控制条上要写「正在播放 哔哩哔哩-片名」（父亲 2026-10-16）。
+             * 原来只在网页还挂在大银幕上时才写站点名，接管播放时网页面被收掉、
+             * 标题跟着被清空 —— 于是控制条显示"什么都没在播"，而画面上明明在放。
+             */
+            if (isWeb) {
+                val siteName = WEB_SITE_NAMES.getOrElse(webStreamSite ?: -1) { "网页" }
+                val epName = webStream?.optString("title", "")?.trim().orEmpty()
+                osdState.webSiteName =
+                    if (epName.isEmpty()) siteName else siteName + "-" + epName
+                Log.i(TAG, "控制条标题（网页流）→ ${osdState.webSiteName}")
+            }
             if (isWeb || com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder) {
                 Log.i(TAG, "起播走 mpv 内核（杜比视界 Profile 5 或选了图形字幕，片源 ${com.xxxx.emby_vr.player.PlaybackFlags.videoDescriptor}，" +
                     "版本 ${com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionProfile ?: "未探到"}）")
@@ -4375,19 +4393,6 @@ class MainActivity : ComponentActivity() {
      * 路径：/sdcard/Android/data/com.xxxx.emby_vr/files/vr-manual-stream.json
      * （用 adb push 写，不需要应用申请存储权限；地址有效期约 2 小时，用完即删。）
      */
-    private fun maybePlayManualStream() {
-        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-            runCatching {
-                val dir = getExternalFilesDir(null) ?: return@runCatching
-                val f = java.io.File(dir, "vr-manual-stream.json")
-                if (!f.exists()) return@runCatching
-                val obj = org.json.JSONObject(f.readText())
-                Log.i(TAG, "手动地址文件：${f.absolutePath}，直接交给自己的播放器")
-                playWebStream(obj)
-            }.onFailure { Log.w(TAG, "手动地址文件读取失败：${it.message}") }
-        }, 10000L)
-    }
-
     private fun userServer(): String = embySession.serverUrl ?: BuildConfig.EMBY_SERVER
 
     private fun playbackReportBody(
@@ -5099,8 +5104,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        /* 诊断入口：外部存储若放了手动地址文件，起来 10 秒后直接播它（见 maybePlayManualStream） */
-        maybePlayManualStream()
         Log.i(TAG, "onCreate: B0BEmby VR 启动")
         /*
          * VR 影院模式的第一步（2026-10-05）：确认原生层能编出来、官方 OpenXR loader

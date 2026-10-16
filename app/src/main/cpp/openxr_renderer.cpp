@@ -3562,7 +3562,13 @@ void pushInput(VrContext &c) {
             const bool onScreenStick = rayHitsPlacement(c.aimPose[h], frontScreen(c), &sT, &su,
                                                         &sv, &swx, &swy, &swz);
             const bool webScroll = onScreenStick && c.screenShowsWeb.load();
-            if ((c.videoActive.load() || webScroll) && !c.menuVisible.load()) {
+            /*
+             * 父亲 2026-10-16 实测：光点没对着银幕时推摇杆也会快进快退。
+             * 网页那条路本来就要求光点打中银幕（webScroll 自带 onScreenStick），
+             * 播放中这条路原来只看"有没有在播"，没看光点在哪儿 —— 补上。
+             */
+            if ((webScroll || (c.videoActive.load() && onScreenStick)) &&
+                !c.menuVisible.load()) {
                 float pxStick = 0.f, pyStick = 0.f;
                 if (webScroll) {
                     const ScreenPlacement &sp = frontScreen(c);
