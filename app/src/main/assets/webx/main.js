@@ -106,21 +106,35 @@
    * 先从页面上的标题元素取（各站这类元素的类名不同，挨个试），
    * 再退回 document.title，并剥掉站点后缀。
    */
+  /*
+   * 选集列表里的一项、语言版本标签都不是片名 —— 父亲 2026-10-16 实测：
+   * 电影电视剧抓回来的是"第12集""潮汕话版"这种。
+   */
+  function isJunkTitle(s) {
+    if (!s) return true;
+    if (s.length <= 2) return true;
+    if (/^第?\s*\d+\s*[集话期]/.test(s)) return true;
+    if (/(普通话|粤语|潮汕话|国语|原声|英语|日语|韩语)版?$/.test(s)) return true;
+    if (/^(选集|选集列表|播放列表|相关推荐|猜你喜欢)$/.test(s)) return true;
+    return false;
+  }
+
   function pageTitle() {
     var sels = [
       '.video-title', 'h1.video-title', '.mediainfo_mediaTitle',
-      '.media-title', '.bpx-player-top-title', 'h1'
+      '.media-title', '.bpx-player-top-title', '.player-title', 'h1'
     ];
     for (var i = 0; i < sels.length; i++) {
       var e = document.querySelector(sels[i]);
       var s = e && e.textContent ? e.textContent.trim() : '';
-      if (s && s.length > 1 && !/^哔哩哔哩/.test(s)) return s.slice(0, 80);
+      if (s && !/^哔哩哔哩/.test(s) && !isJunkTitle(s)) return s.slice(0, 80);
     }
-    return (document.title || '')
+    var dt = (document.title || '')
       .replace(/[_|]\s*哔哩哔哩.*$/, '')
       .replace(/^哔哩哔哩.*$/, '')
-      .trim()
-      .slice(0, 80);
+      .replace(/[-_|]\s*腾讯视频.*$/, '')
+      .trim();
+    return isJunkTitle(dt) ? '' : dt.slice(0, 80);
   }
 
   /* 每轮扫描都问一次：条件齐了就交出去（只交一次） */

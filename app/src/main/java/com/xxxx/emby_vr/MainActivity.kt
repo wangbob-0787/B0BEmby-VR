@@ -1641,6 +1641,12 @@ class MainActivity : ComponentActivity() {
         }
         seekHudShown = true
         /*
+         * 进度条画在弹幕层上，而"收起 UI"会把那一层一起收掉 ——
+         * 于是光柱对着银幕推摇杆快进快退时，银幕上什么反馈都没有
+         * （父亲 2026-10-16）。显示期间临时把这一层放出来。
+         */
+        com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(true)
+        /*
          * 数据走播放接口层（父亲 2026-10-08）。
          * 原来这里直接读系统播放器对象，内核模式下它是空的 —— 银幕上那条进度条
          * 就是「屏幕上的进度条也有问题」那条反馈的根子。
@@ -1690,6 +1696,8 @@ class MainActivity : ComponentActivity() {
         if (!seekHudShown) return
         seekHudShown = false
         danmakuView?.setSeekHud(false, 0L, 0L, 0L)
+        /* 进度条撤了就把层还回去：控制条收着的时候弹幕层也该收着，否则弹幕自己冒出来 */
+        if (!osdState.visible) com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(false)
     }
 
     /** 控制条显隐（VR 侧画不画那块面板） */
