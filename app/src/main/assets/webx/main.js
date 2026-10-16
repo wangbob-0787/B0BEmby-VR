@@ -605,10 +605,15 @@
     if (u.slice(0, 5) === 'blob:') return;
     if (!looksMedia(u)) return;
     /*
-     * 闸：窗口占到两成（`poolSince`，小窗就算）就开始记 —— 不再是"九成"。
-     * 只看"有没有真在播"，"要不要接管"由递交那一步单独把关（2026-10-17）。
+     * 【2026-10-17 03:37：收片段这道闸再放宽一档】
+     *
+     * r619 实测：父亲在小窗等了一会儿再全屏，全屏那一刻池子里是 **0 条**，
+     * 而同一段时间客户端明明收到了成对的分片地址（画面 `_sr1-1-100xxx` + 声音 `-1-30280`）。
+     * 说明"按窗口大小决定收不收"这件事本身就是错的方向 —— 页面在播，它下载的东西我们就该记。
+     * 现在只留一条：**页面确实在播**（不是悬停预览、不是广告位）。
+     * "要不要接管"仍由 90% 那道门单独把关。
      */
-    if (!poolSince) return;
+    if (!pageIsPlaying() && !poolSince && !liveSince) return;
     var key = u.split('?')[0];
     if (mediaKeys[key]) return;            /* 同一条主干只记一次（分片换参数也算一条） */
     /* 值要存完整地址：分片带时效 token，丢了参数就播不了（2026-10-16） */
@@ -710,12 +715,13 @@
         console.log('[b0b]②存档一份（' + why + '）：' + (lastEpKey || '未知集') +
           '，含待交=' + (pendingPlay ? '有' : '无') + '，池子 ' + candPool.length + ' 条（留着重用，不清）');
       }
+      /*
+       * 【2026-10-17 03:37】池子与候选**一律不清**。
+       * 父亲的口径是"不要扔"：URL 不变就是同一份，URL 变了也只是换一份新的，旧的留着。
+       * 池子里的条目都带自己的编号（cid），递交时按编号挑，不会串片，
+       * 所以"留着"没有代价，而"清掉"的代价是等到全屏时手上空的 —— 就是今晚这个毛病。
+       */
       lastEpKey = newKey || '';
-      pendingPlay = null;
-      candPool = [];
-      candSeen = {};
-      poolKeysLog = {};
-      lastPairedVideo = '';
     } catch (e) {}
   }
   /* 兼容旧调用名 */
@@ -826,7 +832,14 @@
       if (findWholeFile(g[kk])) wholeKey = kk;          /* 整片优先 */
       if (g[kk].length > bestN) { bestN = g[kk].length; bestKey = kk; }
     }
-    var useKey = wholeKey || bestKey;
+    /*
+     * 【2026-10-17 03:37】池子从此不再清空，于是里面会同时留着好几集的东西。
+     * 挑的时候：**当前正在播的那一集**（页面报的编号）优先，其次整片，再次最多的那组。
+     * 这样"留着"就没有串片风险。
+     */
+    var curKey = '';
+    try { if (biliCid && g[String(biliCid)]) curKey = String(biliCid); } catch (e) {}
+    var useKey = curKey || wholeKey || bestKey;
     /*
      * 【2026-10-17 00:10 只做观测、不改行为】
      * 父亲报"无论选哪一季哪一集，放大后都是固定的某一集"。
@@ -1299,11 +1312,7 @@
         poolWin = '';
         poolGoneAt = 0;
         liveSince = 0;
-        candPool = [];
-        candSeen = {};
-        poolKeysLog = {};
-        candTried = 0;
-        console.log('[b0b]① 播放停了两成窗口二十秒以上，已收的片段清空');
+        console.log('[b0b]① 播放停了二十秒以上（已收的 ' + candPool.length + ' 条留着，不清）');
       }
     }
     if (best) poolGoneAt = 0;
