@@ -326,6 +326,26 @@
     return /(gtimg\.com|smtcdns\.com|tc\.qq\.com|video\.qq\.com)/i.test(u);
   }
 
+  /*
+   * 有些请求拦不到 fetch/XHR 的钩子（播放器在 Worker 里发、或内核代发），
+   * 但浏览器的资源时间线里一定有它 —— 父亲 2026-10-16 实测：腾讯的
+   * 播放列表没抓到，反倒是分片抓到了，说明播放列表请求走了另一条路。
+   * 每轮扫描顺带看一眼资源时间线。
+   */
+  function scanPerfForHls() {
+    try {
+      if (!window.performance || !performance.getEntriesByType) return;
+      var es = performance.getEntriesByType('resource');
+      for (var i = 0; i < es.length; i++) {
+        var u = es[i] && es[i].name;
+        if (u && isQqHls(u) && u !== pendingQq) {
+          pendingQq = u; qqAt = Date.now();
+          console.log('[b0b] 腾讯播放列表（从资源时间线找到）');
+        }
+      }
+    } catch (e) {}
+  }
+
   function noteMedia(u) {
     if (!u || typeof u !== 'string') return;
     if (u.slice(0, 5) === 'blob:') return;
@@ -480,6 +500,7 @@
   } catch (e) {}
 
   function scan() {
+    try { scanPerfForHls(); } catch (e) {}
     /*
      * video 标签的最终地址也扫一眼：有的站不给接口拿地址（或地址是 blob:），
      * 这一路能把 HLS/MP4 的真实入口露出来。
