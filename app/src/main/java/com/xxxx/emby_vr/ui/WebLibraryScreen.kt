@@ -340,7 +340,11 @@ fun WebLibraryScreen(
      */
     /* 抓到可播地址的出口（onBridgePlayable 住在 WebRuntime 里，够不到这里的参数） */
     WebRuntime.setStreamSink(onWebStream)
-    key(site) { WebPageForSite(site) }
+    /*
+     * 起始页一起进 key：接管后回网页要落在"接管那一刻那一页"，那是同一站点下的另一个地址，
+     * 只按站点编号做 key 不会重建（2026-10-17）。
+     */
+    key(site, startUrl) { WebPageForSite(site, startUrl) }
 }
 
 /*
@@ -983,7 +987,7 @@ private fun GeckoWebView(
 }
 
 @Composable
-private fun WebPageForSite(site: Int) {
+private fun WebPageForSite(site: Int, startUrl: String? = null) {
     val context = LocalContext.current
     /*
      * 三个站点全部走**电脑版**网页（父亲 2026-10-13 定：腾讯也从手机版改成电脑版）。
