@@ -189,6 +189,44 @@
     } catch (e) {}
   }
 
+  /*
+   * 通用媒体地址雷达（2026-10-16，摸腾讯 / 爱奇艺 / 优酷用）。
+   *
+   * 每家站的播放接口千差万别（腾讯 getinfo 要拼 vkey，爱奇艺还要签名），
+   * 与其先猜，不如先把"页面到底去要了哪些地址"看清楚：
+   *   · 播放接口（getinfo / playurl / dash / .json）；
+   *   · 媒体文件（.m4s / .mp4 / .m3u8 / .ts）；
+   *   · video 标签的最终地址（HLS 会是 blob:，那时只能靠请求记录）。
+   * 收满一批按行打到日志，客户端那边的日志里就能直接 grep `[b0b]媒体 `。
+   */
+  var mediaHits = [];
+  var mediaKeys = {};
+
+  function looksMedia(u) {
+    return /\.(m4s|mp4|m3u8|ts|flv|m4a|aac|mp3)(\?|$)/i.test(u) ||
+      /getinfo|playurl|get_play|getplaylist|\/dash|\.json(\?|$)/i.test(u);
+  }
+
+  function noteMedia(u) {
+    if (!u || typeof u !== 'string') return;
+    if (u.slice(0, 5) === 'blob:') return;
+    if (!looksMedia(u)) return;
+    var key = u.split('?')[0];
+    if (mediaKeys[key]) return;            // 同一条主干只记一次（分片换参数也算一条）
+    mediaKeys[key] = 1;
+    mediaHits.push(u);
+    if (mediaHits.length >= 30) flushMedia();
+  }
+
+  function flushMedia() {
+    if (!mediaHits.length) return;
+    var list = mediaHits;
+    mediaHits = [];
+    for (var i = 0; i < list.length; i++) {
+      console.log('[b0b]媒体 ' + String(list[i]).slice(0, 400));
+    }
+  }
+
   /* 诊断：看清播放接口到底有没有被请求（只打与播放接口相关的） */
   function noteApi(u) {
     if (!u || typeof u !== 'string') return;
@@ -257,6 +295,7 @@
           u = (typeof input === 'string') ? input : ((input && input.url) || '');
           note(u);
           noteApi(u);
+        noteMedia(u);
         } catch (e) {}
         var p = origFetch.apply(this, arguments);
         try {
@@ -279,6 +318,7 @@
       try {
         note(u);
         noteApi(u);
+        noteMedia(u);
         if (isPlayApi(u)) {
           this.addEventListener('load', function () {
             /*
@@ -317,6 +357,17 @@
   } catch (e) {}
 
   function scan() {
+    /*
+     * video 标签的最终地址也扫一眼：有的站不给接口拿地址（或地址是 blob:），
+     * 这一路能把 HLS/MP4 的真实入口露出来。
+     */
+    try {
+      var vs = document.querySelectorAll('video');
+      for (var i = 0; i < vs.length; i++) {
+        if (vs[i] && vs[i].currentSrc) noteMedia(vs[i].currentSrc);
+      }
+    } catch (e) {}
+    flushMedia();
     readGlobalPlayinfo();
     flushPendingPlay();
     var best = null, bestArea = 0;
