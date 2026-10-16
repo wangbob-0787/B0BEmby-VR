@@ -232,7 +232,12 @@
         '，编号 ' + (obj.cid || 0) + '，季 ' + (obj.season || '?') + '，集 ' + (obj.ep || '?') +
         '，片名「' + String(obj.title || '').slice(0, 30) + '」' +
         '，首条 ' + String(obj.streams[0].video).slice(-34));
+      console.log('[b0b]③比对：这份记的集 ep' + (obj.ep || '?') + '／季 ' + (obj.season || '?') +
+        '，当前页面集 ep' + (biliEp || '?') + '／季 ' + (biliSeason || '?') +
+        ' → ' + ((String(obj.ep || '') === String(biliEp || '') &&
+                  String(obj.season || '') === String(biliSeason || '')) ? '一致' : '不一致★'));
     } catch (e) {}
+    if (lastSmallLog) console.log('[b0b]③小窗最后看到的：' + lastSmallLog);
     console.log('[b0b] 页面已在播放，把抓到的地址交给客户端');
     try { window.postMessage({ __b0b: 1, payload: obj }, '*'); } catch (e) {}
   }
@@ -558,6 +563,7 @@
   /* 观测用（2026-10-17）：池子里出现过哪些"片子编号"，以及页面地址变过没有 */
   var poolKeysLog = {};
   var lastHrefLogged = '';
+  var lastSmallLog = '';   /* 小窗/全屏在播那一行，内容变了才重打 */
   var candTried = 0;
   /*
    * 只看最近这段时间内出现的片段（父亲 2026-10-16 定的口径：往前 5 秒、往后 10 秒）。
@@ -1058,6 +1064,54 @@
       candTried = 0;
       console.log('[b0b]① 页面上没有在播的播放窗口了，已收的片段清空');
     }
+    /*
+     * 【2026-10-17 00:20 观测：小窗里在试播什么，也要打出来】
+     *
+     * 父亲的要求：先看到他"在小窗口试播的是哪一季哪一集"，再看到"放大之后接管的
+     * 是不是同一个"。原来只有"够大到九成"才打一行，小窗阶段完全是黑盒。
+     * 这里每轮扫描都算一遍：在播的那个窗口多大、占屏多少、当前页面在播哪一集。
+     * 只在内容变了时打（尺寸或集号变了），免得每 400ms 刷屏。
+     */
+    try {
+      var iw0 = window.innerWidth || 1, ih0 = window.innerHeight || 1;
+      var anyBest = best;
+      if (anyBest) {
+        anyBest.pct = Math.round(anyBest.area * 100 / (iw0 * ih0));
+        anyBest.tag = anyBest.pct >= 90 ? '全屏' : '小窗';
+      } else {
+        var smalls = document.querySelectorAll('video');
+        for (var si = 0; si < smalls.length; si++) {
+          var sv = smalls[si];
+          if (sv.paused) continue;
+          if (!sv.videoWidth) continue;
+          var sr = sv.getBoundingClientRect();
+          if (sr.width < 40 || sr.height < 30) continue;
+          var ov = 0;
+          try { ov = parseFloat(getComputedStyle(sv).opacity || '1'); } catch (e) {}
+          if (ov < 0.05) continue;
+          anyBest = {
+            w: sr.width, h: sr.height,
+            area: Math.round(sr.width * sr.height),
+            pct: Math.round(sr.width * sr.height * 100 / (iw0 * ih0)),
+            tag: '小窗',
+          };
+          break;
+        }
+      }
+      if (anyBest) {
+        var line = anyBest.tag + '在播 ' + Math.round(anyBest.w) + 'x' + Math.round(anyBest.h) +
+          '，占屏 ' + anyBest.pct + '%（门槛九成），集 ep' + (biliEp || '?') +
+          '，季 ' + (biliSeason || '?') + '，编号 ' + (biliCid || 0) +
+          '，页面 ' + String(location.href).slice(-42);
+        if (line !== lastSmallLog) {
+          lastSmallLog = line;
+          console.log('[b0b]①' + line);
+        }
+      } else if (lastSmallLog) {
+        lastSmallLog = '';
+        console.log('[b0b]①页面上没有在播的窗口了（小窗与全屏都没有）');
+      }
+    } catch (e) {}
     /*
      * 观测（2026-10-17）：页面地址变过没有。
      * 父亲翻季/翻集时，如果这个地址一直不动，就说明"换集没换页"，
