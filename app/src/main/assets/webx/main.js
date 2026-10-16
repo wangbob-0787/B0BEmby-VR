@@ -223,6 +223,10 @@
      */
     /* 接管门槛仍是九成（父亲 2026-10-17 定的顺序：先抓地址，铺满九成才接管） */
     if (!liveSince) { console.log('[b0b] 没交出去：播放窗口还没铺满九成（地址已经收着了，等放大）'); return; }
+    if (!remoteArmed) {
+      console.log('[b0b] 没交出去：刚接管过一次，得先回到小窗（页面自己变成全屏的不算你放大）');
+      return;
+    }
     /*
      * 【2026-10-17 03:54 简化】只有一个门槛之后，手里的那份必定属于这一次放大，
      * 所以只做一件事：它是不是当前这一集？是就交，不是就丢掉重新攒。
@@ -248,6 +252,7 @@
     }
     lastSubmitSig = subSig;
     lastSubmitAt = Date.now();
+    markTookOver();
     /* 标题在交出去这一刻现取（抓取时页面标题可能还没更新） */
     try { obj.title = pageTitle(); } catch (e) {}
     /*
@@ -470,6 +475,44 @@
   var winSeq = 0;
   var poolWin = '';
   var poolGoneAt = 0;      /* 页面短暂没有在播窗口的起点（给 20 秒宽限） */
+
+  /*
+   * 【2026-10-17 03:57 父亲报的隐患：按 B 回来会立刻又被接管】
+   *
+   * 父亲原话："按 B 回来时网页不能按接管时那一页重建，因为接管时那一页是网页全屏，又会触发接管。"
+   * 页面重建后 B站 若自己恢复成"网页全屏"→ 一上来就是九成 → 我们又顶上去，来回死循环。
+   * 两道保险：
+   *   一、接管过一次之后，**必须先看到一次小窗（窗口不到九成）**才允许再次接管；
+   *   二、刚回到网页时若发现页面自己进了"网页全屏"，替父亲点一次退出，回到小窗。
+   */
+  var remoteArmed = true;
+  var justReturnedAt = 0;
+  try {
+    var _tk = parseInt(localStorage.getItem('b0b_tookover_at') || '0', 10);
+    if (_tk && Date.now() - _tk < 180000) { remoteArmed = false; justReturnedAt = Date.now(); }
+  } catch (e) {}
+  function markTookOver() {
+    remoteArmed = false;
+    try { localStorage.setItem('b0b_tookover_at', String(Date.now())); } catch (e) {}
+  }
+  var webFullExitTried = false;
+  function tryExitWebFullscreen() {
+    if (webFullExitTried) return;
+    webFullExitTried = true;
+    try {
+      var btns = document.querySelectorAll('.bpx-player-ctrl-web, .squirtle-video-web-fullscreen, [aria-label*="网页全屏"]');
+      for (var bi = 0; bi < btns.length; bi++) {
+        var el = btns[bi];
+        var on = /active|selected/i.test(String(el.className || '') + ' ' + String(el.getAttribute('aria-pressed') || ''));
+        if (on) {
+          el.click();
+          console.log('[b0b]① 刚回到网页，页面自己进了网页全屏 → 替你退出，回到小窗');
+          return;
+        }
+      }
+      console.log('[b0b]① 刚回到网页，没找到"网页全屏"按钮（不影响别的）');
+    } catch (e) {}
+  }
   /*
    * B站 字幕（父亲 2026-10-16）：片子的字幕地址就在页面自己请求的那份播放信息里
    * （`subtitle.subtitles[]`，每条带 lan 语言和 subtitle_url）。
@@ -636,18 +679,6 @@
    *   ② 片段池只在"够大到九成"之后才收，小窗试看期间没收也不清，留着上一集的碎片。
    * 现在做一条总规矩：**在播的集号一变，手里那份和池子一起作废**，按新集重新攒。
    */
-  /*
-   * 【2026-10-17 02:56 父亲定的规则 —— 把"作废"改成"存档"】
-   *
-   * 父亲原话："如果小窗口的时候我们记下来了，接下来我就全屏，那么不应该扔。
-   * 除非在小屏状态下我切换季集，扔掉旧的、记新的，不管如何，切大屏时用最新的小窗地址。"
-   *
-   * 原来这里是**清空**：一发现集号变了就把手里的和池子全扔掉，等页面重新下载来补 ——
-   * 可那一集早就缓冲完了、不会再有新下载，于是全屏时手上经常是空的（r615 实测：
-   * 七次"没选出候选"，池子里多数时候 0~1 条）。这就是"小窗明明抓到了，大窗却接管不了"。
-   *
-   * 现在：旧的那份**存进 records 留着**（换集时还可能在用），当前这一集开一份新的。
-   */
   /* 单一门槛后只需要"清掉重来"这一个动作（父亲 2026-10-17 03:54） */
   function resetCollection(why) {
     try {
@@ -660,19 +691,6 @@
     } catch (e) {}
   }
   function invalidateForNewEpisode(why) { resetCollection(why); }
-
-  /* 以后备记录里挑一份可用的：当前集的优先，其次最新的一份 */
-  function pickRecordFor(nowKey, maxAgeMs) {
-    var best = null;
-    for (var i = records.length - 1; i >= 0; i--) {
-      var r = records[i];
-      if (!r.snap) continue;
-      if (maxAgeMs && Date.now() - r.at > maxAgeMs) continue;
-      if (nowKey && r.key === nowKey) return r;
-      if (!best) best = r;
-    }
-    return best;
-  }
 
   /* 两份"在播身份"是不是同一集（编号优先，其次集号+季号） */
   function sameEpisode(a, b) {
@@ -1227,6 +1245,14 @@
             Math.round(best.h) + '，' + Math.round(pctNow) + '%）→ 开始收它的画面与声音');
         }
       }
+    }
+    if (best && !bigNow && !remoteArmed) {
+      remoteArmed = true;
+      justReturnedAt = 0;
+      console.log('[b0b]① 看到小窗了 → 允许接管了，下次你放大才接管');
+    }
+    if (bigNow && !remoteArmed && justReturnedAt && Date.now() - justReturnedAt < 10000) {
+      tryExitWebFullscreen();
     }
     if (bigNow) {
       poolGoneAt = 0;
