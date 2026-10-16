@@ -192,7 +192,7 @@ class MainActivity : ComponentActivity() {
      * 按返回键就该把它显示回来 —— 回到起播前那一页，而不是 B站 首页。
      */
     private var webHiddenByStream = false
-    private var webSiteBeforeStream: String? = null
+    private var webSiteBeforeStream: Int? = null
 
     /*
      * 片名 logo 的位图（父亲 2026-10-06 晚：logo 一直没画出来）。
