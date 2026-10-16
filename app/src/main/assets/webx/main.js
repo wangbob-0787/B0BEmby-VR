@@ -97,6 +97,32 @@
     return false;
   }
 
+  /*
+   * 片名（父亲 2026-10-16：电影电视剧的片名没出来，UP主视频的名字倒是有）。
+   *
+   * 原因：番剧/影视页的 `document.title` 长时间还是站点首页标题，
+   * 而 UP 主视频页的标题很早就换成视频名 —— 所以只取 document.title 时，
+   * 影视内容抓到的就是"哔哩哔哩"。
+   * 先从页面上的标题元素取（各站这类元素的类名不同，挨个试），
+   * 再退回 document.title，并剥掉站点后缀。
+   */
+  function pageTitle() {
+    var sels = [
+      '.video-title', 'h1.video-title', '.mediainfo_mediaTitle',
+      '.media-title', '.bpx-player-top-title', 'h1'
+    ];
+    for (var i = 0; i < sels.length; i++) {
+      var e = document.querySelector(sels[i]);
+      var s = e && e.textContent ? e.textContent.trim() : '';
+      if (s && s.length > 1 && !/^哔哩哔哩/.test(s)) return s.slice(0, 80);
+    }
+    return (document.title || '')
+      .replace(/[_|]\s*哔哩哔哩.*$/, '')
+      .replace(/^哔哩哔哩.*$/, '')
+      .trim()
+      .slice(0, 80);
+  }
+
   /* 每轮扫描都问一次：条件齐了就交出去（只交一次） */
   function flushPendingPlay() {
     if (!pendingPlay) return;
@@ -105,6 +131,8 @@
     if (!pageIsPlaying()) return;
     var obj = pendingPlay;
     pendingPlay = null;
+    /* 标题在交出去这一刻现取（抓取时页面标题可能还没更新） */
+    try { obj.title = pageTitle(); } catch (e) {}
     console.log('[b0b] 页面已在播放，把抓到的地址交给客户端');
     try { window.postMessage({ __b0b: 1, payload: obj }, '*'); } catch (e) {}
   }
@@ -155,7 +183,7 @@
 
         /* 控制条要写「站点-片名」，标题从页面取（父亲 2026-10-16） */
 
-        title: (document.title || '').replace(/[_|]\s*哔哩哔哩.*$/, '').trim().slice(0, 80),
+        title: '',   /* 交出去那一刻用 pageTitle() 现取 */
         kind: 'play', t: Date.now(), frame: location.href,
         durSec: durSec, quality: d.quality || 0, streams: streams.slice(0, 10)
       };
