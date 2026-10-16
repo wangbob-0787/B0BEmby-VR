@@ -41,10 +41,9 @@
    * mpv 用「视频流 + --audio-file 音频流」就能直接播，不需要网页播放器。
    * 会员片才额外需要 Cookie（SESSDATA），那一条由客户端从网页里取。
    */
-  function parsePlayurl(text) {
+  /* 播放信息（B站 的 playurl 返回，或页面全局 __playinfo__）→ 可播地址 */
+  function applyPlayinfo(d) {
     try {
-      var j = JSON.parse(text);
-      var d = j && j.data;
       if (!d) return;
       var streams = [];
       var durSec = 0;
@@ -92,6 +91,67 @@
     } catch (e) {}
   }
 
+  /* 接口返回是文本：解析后交给 applyPlayinfo */
+  function parsePlayurl(text) {
+    try {
+      var j = JSON.parse(text);
+      if (j && j.data) applyPlayinfo(j.data);
+    } catch (e) {}
+  }
+
+  /*
+   * B站 会把播放信息直接挂在页面全局 __playinfo__ 上（2026-10-16 加，最稳的一路）。
+   * 上一版只 hook 了 fetch / XHR —— 实测没抓到（客户端没等到 kind:'play'），
+   * 说明播放器那次请求没走我们 hook 到的对象。全局变量不受这个影响。
+   */
+  var lastPlayinfoObj = null;
+  function readGlobalPlayinfo() {
+    try {
+      var j = window.__playinfo__;
+      if (!j || !j.data || j === lastPlayinfoObj) return;
+      lastPlayinfoObj = j;
+      console.log('[b0b] 从页面全局拿到播放信息');
+      applyPlayinfo(j.data);
+    } catch (e) {}
+  }
+
+  /* 诊断：看清播放接口到底有没有被请求（只打与播放接口相关的） */
+  function noteApi(u) {
+    if (!u || typeof u !== 'string') return;
+    if (u.indexOf('bilibili.com') < 0) return;
+    if (u.indexOf('/x/player/') < 0 && u.indexOf('playurl') < 0) return;
+    console.log('[b0b] 播放接口请求 ' + u.slice(0, 130));
+  }
+
+  /*
+   * 兜底：从已抓到的分片地址里配对（2026-10-16）。
+   * B站 的 dash 命名有规律：…/upgcxcode/aa/bb/<cid>/<cid>[_srN]-1-<code>.m4s，
+   * code 30xxx 是音频（30216/30232/30280），其余是视频（30011…30080、1000xx）。
+   * 同一个 cid 里挑一条视频 + 一条音频就能播（本机 mpv 实测这种地址可直接播）。
+   */
+  function pairFromUrls() {
+    var vid = null, aud = null;
+    for (var i = 0; i < urls.length; i++) {
+      var u = urls[i];
+      var m = /\/upgcxcode\/(?:\d+\/)+([0-9]{5,})\/[^/]*?-([0-9]{5})\.m4s/.exec(u);
+      if (!m) continue;
+      var cid = m[1];
+      var code = parseInt(m[2], 10);
+      var isAudio = code >= 30000 && code < 40000;
+      if (isAudio) {
+        if (!aud || code > aud.code) aud = { cid: cid, code: code, url: u };
+      } else if (!vid || code > vid.code) {
+        vid = { cid: cid, code: code, url: u };
+      }
+    }
+    if (!vid) return null;
+    if (aud && aud.cid !== vid.cid) aud = null;
+    return {
+      id: vid.code, height: 0, width: 0, bw: 0, vcodec: '', acodec: '',
+      video: vid.url, audio: aud ? aud.url : '', pair: true
+    };
+  }
+
   function isPlayApi(u) {
     return !!u && u.indexOf('playurl') >= 0;
   }
@@ -104,6 +164,7 @@
         try {
           u = (typeof input === 'string') ? input : ((input && input.url) || '');
           note(u);
+          noteApi(u);
         } catch (e) {}
         var p = origFetch.apply(this, arguments);
         try {
@@ -125,6 +186,7 @@
     XMLHttpRequest.prototype.open = function (m, u) {
       try {
         note(u);
+        noteApi(u);
         if (isPlayApi(u)) {
           this.addEventListener('load', function () {
             try { parsePlayurl(this.responseText); } catch (e) {}
@@ -147,6 +209,7 @@
   } catch (e) {}
 
   function scan() {
+    readGlobalPlayinfo();
     var best = null, bestArea = 0;
     /*
      * 只在"播放页"上认画面（父亲 2026-10-16：还没播、只是在首页点个「历史播放」，
@@ -220,6 +283,25 @@
       msg.rect = lastGood.rect;
     }
     if (urls.length) msg.urls = urls.slice(-10);
+    /*
+     * 兜底（2026-10-16）：接口那一路一直没抓到（playable 为空）时，
+     * 用从分片地址配对出来的视频 + 音频顶上，先让"自己的播放器播"能跑起来。
+     */
+    if (!playable && urls.length) {
+      var pick = pairFromUrls();
+      if (pick) {
+        var sig2 = 'pair|' + String(pick.video).slice(-60);
+        if (sig2 !== lastPlaySig) {
+          lastPlaySig = sig2;
+          playable = {
+            kind: 'play', t: Date.now(), frame: location.href,
+            durSec: 0, quality: 0, streams: [pick]
+          };
+          console.log('[b0b] 兜底配对成功：视频 + ' + (pick.audio ? '音频' : '（无音频）'));
+          try { window.postMessage({ __b0b: 1, payload: playable }, '*'); } catch (e) {}
+        }
+      }
+    }
     /*
      * 节流：画面没变就最多每 3 秒报一次（客户端本来就是 500ms 挑一次），变了立刻报 ——
      * 免得每 400ms 给客户端塞一条，框架一多就成灾。

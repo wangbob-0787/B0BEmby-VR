@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "b0b-bridge",
-  "version": "1.7",
+  "version": "1.8",
   "description": "把网页里正在播的视频画面位置与真实播放地址交回 B0BEmby VR 客户端（父亲 2026-10-15）",
   "browser_specific_settings": {
     "gecko": {
