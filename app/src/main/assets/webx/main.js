@@ -911,7 +911,14 @@
        * 原来按宽度卡四成，遇到"又宽又扁"的海报预览挡不住，改按面积。
        * 实测参照：正片播放 1100x619 占满；海报预览约 300x170，只有几个点。
        */
-      if ((r.width * r.height) < (window.innerWidth || 1) * (window.innerHeight || 1) * 0.2) continue;
+      /*
+       * 门槛：只认「铺满屏幕」的那个窗口（父亲 2026-10-16 改定，原来是 1/5）。
+       *
+       * 原因（父亲实测）：剧集有好多季好多集，点一集时页面上的小窗也会开始播，
+       * 1/5 的门槛把这种"试看"也当成正式播放抢着接管，结果他还没选完季/集就被顶走了。
+       * 现在的语义是：**把画面放到全屏才算"我要看"，这时才接管**；小窗是试看，不碰。
+       */
+      if ((r.width * r.height) < (window.innerWidth || 1) * (window.innerHeight || 1) * 0.9) continue;
       var area = r.width * r.height;
       if (area <= bestArea) continue;
       var cw = r.width, ch = r.height;
@@ -944,9 +951,9 @@
     if (best) {
       if (!liveSince) {
         liveSince = Date.now();
-        console.log('[b0b]① 检测到在播的播放窗口：' + Math.round(best.w) + 'x' + Math.round(best.h) +
+        console.log('[b0b]① 检测到全屏播放窗口：' + Math.round(best.w) + 'x' + Math.round(best.h) +
           '，占屏幕 ' + Math.round(best.area * 100 / ((window.innerWidth || 1) * (window.innerHeight || 1))) +
-          '%，开始收它的片段');
+          '%（门槛九成），开始收它的片段');
       }
     } else if (liveSince) {
       liveSince = 0;
