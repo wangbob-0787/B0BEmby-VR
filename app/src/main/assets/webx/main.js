@@ -353,6 +353,12 @@
    */
   var mediaHits = [];
   var lastPairedVideo = '';
+  /*
+   * 闸：页面"真在放片"的时刻。0 = 还没确认，此时收到的片段一律丢掉。
+   * 由 scan() 每 400ms 维护（父亲 2026-10-16 定的顺序：
+   * 先确认真在播 → 才开始收它下载的片段 → 时间窗就没必要了）。
+   */
+  var liveSince = 0;
   var mediaKeys = {};
 
   function looksMedia(u) {
@@ -402,6 +408,8 @@
     if (!u || typeof u !== 'string') return;
     if (u.slice(0, 5) === 'blob:') return;
     if (!looksMedia(u)) return;
+    /* 闸：没确认真在放片之前，收到的片段一律不算（父亲 2026-10-16 定的顺序） */
+    if (!liveSince) return;
     var key = u.split('?')[0];
     if (mediaKeys[key]) return;            /* 同一条主干只记一次（分片换参数也算一条） */
     /* 值要存完整地址：分片带时效 token，丢了参数就播不了（2026-10-16） */
@@ -502,7 +510,8 @@
     var g = {}, order = [], i, key;
     for (i = 0; i < candPool.length; i++) {
       var e = candPool[i];
-      if (!e || now - e.t > CAND_WINDOW_MS) continue;   /* 旧片子的不算 */
+      if (!e) continue;
+      /* 不再按时间过滤：能进池的只可能是"确认真在播之后"收的片段（见 noteMedia 的闸） */
       key = e.key;
       if (!g[key]) { g[key] = []; order.push(key); }
       g[key].push(e.u);
@@ -517,31 +526,52 @@
     return useKey ? g[useKey] : [];
   }
 
-  /* 在本组内轮换取候选：先整片，再"画面+声音"配对 */
-  function pickCandidate() {
+  /*
+   * 一次给出排好序的多条候选（父亲 2026-10-16 定）：
+   * 客户端拿第一条起播，8 秒还不出画面就换第二条 —— 换的动作放在客户端，
+   * 因为只有它知道内核有没有真的拉起来（扩展这边看不到播放器）。
+   * 顺序：整片文件 → 画面+声音配对 → 其它画面分片（清晰度高的在前）。
+   */
+  function pickCandidates(n) {
     var grp = pickGroup();
-    if (!grp.length) return null;
+    if (!grp.length) return [];
+    var out = [], seen = {}, i, u;
     var whole = findWholeFile(grp);
-    if (whole && whole !== lastPairedVideo) return { video: whole, audio: '' };
+    if (whole) {
+      out.push({ id: 0, height: 0, width: 0, bw: 0, vcodec: 'h264', video: whole, audio: '' });
+      seen[whole] = 1;
+    }
     var pair = pairFromHits(grp);
-    if (pair && pair.video && pair.video !== lastPairedVideo) return pair;
-    return null;
+    if (pair && pair.video && !seen[pair.video]) {
+      out.push({ id: 0, height: 0, width: 0, bw: 0, vcodec: 'h264',
+                 video: pair.video, audio: pair.audio || '' });
+      seen[pair.video] = 1;
+    }
+    var sorted = grp.slice().sort(function (a, b) { return candRank(b) - candRank(a); });
+    for (i = 0; i < sorted.length && out.length < n; i++) {
+      u = sorted[i];
+      if (seen[u]) continue;
+      /* 声音分片单独交出去没意义（没画面），只挑画面类 */
+      if (candRank(u) < 500) continue;
+      seen[u] = 1;
+      out.push({ id: 0, height: 0, width: 0, bw: 0, vcodec: 'h264', video: u, audio: '' });
+    }
+    return out;
   }
 
   function tryPairFromHits(keysAll) {
     try {
       if (pendingPlay) return;
-      var cand = pickCandidate();
-      if (!cand || !cand.video) return;
-      if (cand.video === lastPairedVideo) return;
-      lastPairedVideo = cand.video;
+      var cands = pickCandidates(6);
+      if (!cands.length) return;
+      if (cands[0].video === lastPairedVideo) return;
+      lastPairedVideo = cands[0].video;
       pendingPlay = {
         title: '', kind: 'play', t: Date.now(), frame: location.href,
-        durSec: 0, quality: 0, site: '',
-        streams: [{ id: 0, height: 0, width: 0, bw: 0, vcodec: 'h264',
-                    video: cand.video, audio: cand.audio || '' }]
+        durSec: 0, quality: 0, site: '', streams: cands
       };
-      console.log('[b0b] B站：从候选池取了一条交给内核（第 ' + candTried + ' 条）');
+      console.log('[b0b] B站：给客户端 ' + cands.length + ' 条候选（首选 ' +
+        String(cands[0].video).slice(-40) + '）');
     } catch (e) {}
   }
 
@@ -795,7 +825,12 @@
        * 太小的预览窗不算（父亲 2026-10-16：浏览页面时点个「历史播放」按钮，比例也在变）。
        * 正片在播放页上占视口宽度六成左右（实测 668/1100），缩略预览远小于此。
        */
-      if (r.width < (window.innerWidth || 1) * 0.4) continue;
+      /*
+       * 预览窗不算（父亲 2026-10-16 定的口径：真在播的至少占视口面积两成）。
+       * 原来按宽度卡四成，遇到"又宽又扁"的海报预览挡不住，改按面积。
+       * 实测参照：正片播放 1100x619 占满；海报预览约 300x170，只有几个点。
+       */
+      if ((r.width * r.height) < (window.innerWidth || 1) * (window.innerHeight || 1) * 0.2) continue;
       var area = r.width * r.height;
       if (area <= bestArea) continue;
       var cw = r.width, ch = r.height;
@@ -819,6 +854,23 @@
         area: Math.round(cw * ch),
         url: v.currentSrc || v.src || ''
       };
+    }
+    /*
+     * 开闸/关闸（父亲 2026-10-16 定的顺序）：
+     * 先确认页面上真有一个大窗口在放片，确认之后才开始收它下载的片段；
+     * 页面一停就清空已收的（换集时正好靠这一下重来，不会串片）。
+     */
+    if (best) {
+      if (!liveSince) {
+        liveSince = Date.now();
+        console.log('[b0b] 确认页面真在放片，开始收它下载的片段');
+      }
+    } else if (liveSince) {
+      liveSince = 0;
+      candPool = [];
+      candSeen = {};
+      candTried = 0;
+      console.log('[b0b] 页面停了，已收的片段清空');
     }
     var msg = { kind: 'rect', t: Date.now(), frame: location.href };
     if (best) {
