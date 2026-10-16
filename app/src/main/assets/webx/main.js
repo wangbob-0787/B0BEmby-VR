@@ -420,6 +420,11 @@
       console.log('[b0b] 腾讯播放列表已记下（长度 ' + u.length + '）');
     }
     addCandidate(u);                  /* 进候选池（不按名字挑） */
+    {
+      var kk = candKeyOf(u), cc = String(u).match(/-1-(\d{3,6})\.(m4s|mp4)/i);
+      console.log('[b0b]② 收到片段：片子 ' + kk + '，类型 ' + (cc ? cc[1] : '?') +
+        '，池子里已有 ' + candPool.length + ' 条');
+    }
     if (mediaHits.length >= 60) flushMedia();
     tryPairFromHits(mediaKeys);       /* 每收到一条就试着取一条候选（父亲 2026-10-16） */
   }
@@ -570,8 +575,10 @@
         title: '', kind: 'play', t: Date.now(), frame: location.href,
         durSec: 0, quality: 0, site: '', streams: cands
       };
-      console.log('[b0b] B站：给客户端 ' + cands.length + ' 条候选（首选 ' +
-        String(cands[0].video).slice(-40) + '）');
+      console.log('[b0b]③ 交给客户端 ' + cands.length + ' 条候选：' +
+        cands.map(function (c, i) {
+          return (i + 1) + ')' + (c.audio ? '画面+声音' : '单条') + ' ' + String(c.video).slice(-26);
+        }).join(' | '));
     } catch (e) {}
   }
 
@@ -863,14 +870,16 @@
     if (best) {
       if (!liveSince) {
         liveSince = Date.now();
-        console.log('[b0b] 确认页面真在放片，开始收它下载的片段');
+        console.log('[b0b]① 检测到在播的播放窗口：' + Math.round(best.w) + 'x' + Math.round(best.h) +
+          '，占屏幕 ' + Math.round(best.area * 100 / ((window.innerWidth || 1) * (window.innerHeight || 1))) +
+          '%，开始收它的片段');
       }
     } else if (liveSince) {
       liveSince = 0;
       candPool = [];
       candSeen = {};
       candTried = 0;
-      console.log('[b0b] 页面停了，已收的片段清空');
+      console.log('[b0b]① 页面上没有在播的播放窗口了，已收的片段清空');
     }
     var msg = { kind: 'rect', t: Date.now(), frame: location.href };
     if (best) {

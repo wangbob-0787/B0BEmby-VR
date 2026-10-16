@@ -2297,6 +2297,7 @@ class MainActivity : ComponentActivity() {
         if (streams.length() == 0) return
         webCandSrc = obj
         webCandIdx = -1
+        Log.i(TAG, "④ 收到网页地址：${streams.length()} 条候选")
         tryWebStreamAt(0)
     }
 
@@ -2312,7 +2313,7 @@ class MainActivity : ComponentActivity() {
         val src = webCandSrc ?: return
         val streams = src.optJSONArray("streams") ?: return
         if (idx >= streams.length()) {
-            Log.w(TAG, "网页流：${streams.length()} 条候选都没能出画面")
+            Log.w(TAG, "⑤ ${streams.length()} 条候选都没能出画面")
             hud("抓到的地址都没能播起来（可能是会员票或地址过期）")
             return
         }
@@ -2323,7 +2324,7 @@ class MainActivity : ComponentActivity() {
         val hasCookie = src.optString("cookie").isNotBlank()
         Log.i(
             TAG,
-            "网页流 → 自己的播放器：第 ${idx + 1}/${streams.length()} 条，" +
+            "④ 起播第 ${idx + 1}/${streams.length()} 条：" +
                 "音轨=${s.optString("audio").isNotBlank()}，会员票=$hasCookie，站点 $site",
         )
         /* 只把这一条递给内核（内核那侧本来就只认 streams[0]），换条时重建一份 */
@@ -2346,10 +2347,10 @@ class MainActivity : ComponentActivity() {
             if (webCandIdx != idx) return@postDelayed
             val m = mpvBackend
             if (m != null && !m.videoReady()) {
-                Log.w(TAG, "网页流：第 ${idx + 1} 条 8 秒没出画面，换下一条（站点 $site）")
+                Log.w(TAG, "⑤ 第 ${idx + 1} 条 8 秒没出画面，换下一条（站点 $site）")
                 tryWebStreamAt(idx + 1)
             } else {
-                Log.i(TAG, "网页流：第 ${idx + 1} 条已出画面")
+                Log.i(TAG, "⑤ 第 ${idx + 1} 条已出画面，接管成功")
             }
         }, 8000L)
     }
