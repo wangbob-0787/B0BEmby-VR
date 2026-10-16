@@ -1832,6 +1832,15 @@ class MainActivity : ComponentActivity() {
      * 父亲 2026-10-13 定：不留后台、也不暂停在后台，直接退出 —— 免得两个声音一起响。
      */
     private fun closeWeb() {
+        /*
+         * 【2026-10-16 父亲实测：播 Emby 片子时控制条还写着"正在播放：哔哩哔哩"】
+         *
+         * 控制条标题网页那一路优先级最高（PlayerOsd：webSiteName 非空就盖过片名），
+         * 而这里原来是"网页没开着就直接返回"，返回时**没清标题** ——
+         * 于是上一部网页片子留下的站名一直挂在控制条上，明明在放自己的片子。
+         * 清标题这一步必须在提前返回之前做。
+         */
+        osdState.webSiteName = ""
         if (!webOnScreen && webSiteState.value == null) return
         runOnUiThread {
             webSiteState.value = null
@@ -3166,6 +3175,11 @@ class MainActivity : ComponentActivity() {
             // 外挂 ASS 是弹幕还是片子自带字幕 —— 后台看内容定（父亲 2026-10-09）
             probeExternalAssForDanmaku()
             picking = false
+            /*
+             * 大银幕换成影片 = 网页那一路彻底让位，控制条标题也一并交还给片名
+             * （父亲 2026-10-16：不然放着自己的片子，控制条上还写着 B站 的名字）。
+             */
+            osdState.webSiteName = ""
             osdState.title = title
             // 旧片已经停过（停止上报用的是旧身份），新片身份从现在起正式生效 —— 后面的字幕、弹幕、上报都要用它
             /*
