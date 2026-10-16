@@ -197,6 +197,8 @@ class MainActivity : ComponentActivity() {
     private var webSubtitleUrl: String = ""
     /** 网页片子自带的"片子编号"，弹幕按它拉（父亲 2026-10-16） */
     private var webCid: Long = 0L
+    /** 这一部网页片子的弹幕是否已经挂上（挂上后别再被对白字幕顶掉） */
+    private var webDanmakuLoaded = false
 
     /*
      * 片名 logo 的位图（父亲 2026-10-06 晚：logo 一直没画出来）。
@@ -920,7 +922,21 @@ class MainActivity : ComponentActivity() {
                 if (menuState.kind != null) {
                     Log.i(TAG, "光柱 B 键 → 菜单返回上一级")
                     menuBack()
-                } else if (webOnScreen && !panelPointerOnPanel) {
+                } else if (panelPointerOnPanel) {
+                    /*
+                     * 【2026-10-16 父亲定的总语义：B 键必须"光标指着谁才管谁"】
+                     *
+                     * 光标在海报墙上 / 面板上 → B 只归面板（返回上一级），
+                     * 绝不能顺手把大银幕上的播放顶回网页 —— 原来就是因为在哪儿按都一样，
+                     * 随手一按大银幕就回网页了（父亲实测反馈）。
+                     */
+                    if (panelInputReady()) {
+                        Log.i(TAG, "光柱 B 键 → 面板返回（光标在面板上）")
+                        panel.back()
+                    } else {
+                        Log.i(TAG, "光柱 B 键忽略：光标在面板区但面板没就绪")
+                    }
+                } else if (webOnScreen) {
                     /*
                      * 父亲 2026-10-13 实测：光柱指着大银幕按 B，海报墙反而退回上一屏。
                      * 手柄 B 键走的是这条路（不是 onKeyDown），这里原来只挡了"播放画面"，
@@ -950,16 +966,8 @@ class MainActivity : ComponentActivity() {
                      * 这一支必须排在下面 openWeb 那一支**之前**，否则永远轮不到。
                      */
                     returnFromStreamToWeb()
-                } else if (webStreamSite != null && !panelPointerOnPanel) {
-                    /*
-                     * 兜底：没有"被自己的播放器顶掉"这个状态时，才按记下的站点重开网页。
-                     */
-                    val site = webStreamSite ?: 0
-                    webStreamSite = null
-                    Log.i(TAG, "光柱 B 键 → 回网页继续选片（站点 $site）")
-                    openWeb(site)
-                } else if (renderer.videoActive && !panelPointerOnPanel) {
-                    Log.i(TAG, "光柱 B 键忽略：光点在播放画面上（播放页操作走控制条）")
+                } else if (renderer.videoActive) {
+                    Log.i(TAG, "光柱 B 键忽略：光标对着播放画面（播放页操作走控制条）")
                 } else if (panelInputReady()) {
                     Log.i(TAG, "光柱 B 键 → 面板返回")
                     panel.back()
@@ -2175,6 +2183,7 @@ class MainActivity : ComponentActivity() {
                 return@launch
             }
             danmakuTrack = track
+            webDanmakuLoaded = true
             applyDanmakuSetting()
             Log.i(TAG, "⑦ 弹幕已挂到弹幕层（" + track.items.size + " 条），字号与提前延后跟着生效")
         }
@@ -2182,6 +2191,11 @@ class MainActivity : ComponentActivity() {
 
     private fun loadWebSubtitle(url: String) {
         if (url.isBlank()) return
+        /*
+         * 弹幕已经挂上了就别再换成对白字幕（父亲 2026-10-16 要的是弹幕）。
+         * 两个都来自网页，但弹幕才是他要看的那一层。
+         */
+        if (webDanmakuLoaded) return
         val want = url
         scope.launch {
             val track = withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -2535,6 +2549,7 @@ class MainActivity : ComponentActivity() {
         webCandIdx = idx
         webSubtitleUrl = src.optString("subtitle")
         webCid = src.optLong("cid", 0L)
+        webDanmakuLoaded = false
         val site = webSiteState.value
         val hasCookie = src.optString("cookie").isNotBlank()
         Log.i(
@@ -5938,12 +5953,25 @@ class MainActivity : ComponentActivity() {
          * 从我方播放器回网页（父亲 2026-10-16）：接管时网页没销毁、地址也没动，
          * 所以直接把大银幕交回网页即可，不需要任何导航 —— 落点就是起播前那一页。
          */
-        if (keyCode == KeyEvent.KEYCODE_BACK && webHiddenByStream && !panelPointerOnPanel) {
+        /*
+         * 光标在面板上时，返回键一律归面板（父亲 2026-10-16 定的总语义：
+         * 光标指着谁才管谁）—— 这样"对着海报墙按 B"绝不会把大银幕顶回网页。
+         */
+        if (keyCode == KeyEvent.KEYCODE_BACK && panelPointerOnPanel) {
+            if (::panel.isInitialized && panel.ready &&
+                com.xxxx.emby_vr.vr.VrNative.panelActive
+            ) {
+                Log.i(TAG, "BACK → 面板返回（光标在面板上）")
+                panel.back()
+                return true
+            }
+        }
+        if (keyCode == KeyEvent.KEYCODE_BACK && webHiddenByStream) {
             returnFromStreamToWeb()
             return true
         }
-        if (keyCode == KeyEvent.KEYCODE_BACK && renderer.videoActive && !panelPointerOnPanel) {
-            Log.i(TAG, "BACK 忽略：光点在播放画面上（播放页操作走控制条）")
+        if (keyCode == KeyEvent.KEYCODE_BACK && renderer.videoActive) {
+            Log.i(TAG, "BACK 忽略：光标对着播放画面（播放页操作走控制条）")
             return true
         }
         // 返回键再给面板：复用界面的导航栈（NavHost）在面板窗口里，

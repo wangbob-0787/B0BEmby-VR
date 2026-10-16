@@ -206,6 +206,15 @@
     if (!isPlayPage()) { console.log('[b0b] 没交出去：当前不是播放页 ' + location.href); return; }
     if (!actedRecently()) { console.log('[b0b] 没交出去：扣扳机已经超过 2 分钟'); return; }
     if (!pageIsPlaying()) { console.log('[b0b] 没交出去：页面还没在播（缓冲/广告/没开始）'); return; }
+    /*
+     * 【2026-10-16 父亲实测定案：小窗抢播的真凶就是缺这一道关】
+     *
+     * 上面的 pageIsPlaying() 只问"页面上有东西在播"，点一集时那个小窗、推荐位预览
+     * 都能满足它 —— 于是 90% 的门槛形同虚设，父亲还没选完季/集就被顶走。
+     * liveSince 是 scan() 里只有"窗口占了屏幕九成"才会置上的标记：
+     *   没置上 = 现在只是小窗试看 → 不交。
+     */
+    if (!liveSince) { console.log('[b0b] 没交出去：还没有铺满屏幕的播放窗口（小窗算试看）'); return; }
     var obj = pendingPlay;
     pendingPlay = null;
     /* 标题在交出去这一刻现取（抓取时页面标题可能还没更新） */
@@ -703,8 +712,17 @@
   function noteApi(u) {
     if (!u || typeof u !== 'string') return;
     if (u.indexOf('bilibili.com') < 0) return;
-    if (u.indexOf('/x/player/') < 0 && u.indexOf('playurl') < 0) return;
+    if (u.indexOf('/x/player/') < 0 && u.indexOf('playurl') < 0 &&
+        u.indexOf('/pgc/player/') < 0 && u.indexOf('/x/v2/dm/') < 0) return;
     console.log('[b0b] 播放接口请求 ' + u.slice(0, 130));
+    /*
+     * 片子编号优先从**接口地址**里取（父亲 2026-10-16 实测：从响应体里取不到，
+     * 本文件的日志证明这条 URL 路一定被走到 —— 地址里就带 cid=…）。
+     */
+    try {
+      var m = /[?&](?:cid|oid)=(\d{5,})/.exec(u);
+      if (m) takeBiliCid({ cid: parseInt(m[1], 10) });
+    } catch (e) {}
   }
 
   /*
