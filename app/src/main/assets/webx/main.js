@@ -436,9 +436,15 @@
    * 改成：凡是视频服务器上下的东西全进池子，按"一条能不能直接播"排序，
    * 一条不行换下一条，交给播放器去判 —— 比我猜命名规则准。
    */
-  var candPool = [];
+  var candPool = [];          /* [{u, t, key}]，带时间戳 */
   var candSeen = {};
   var candTried = 0;
+  /*
+   * 只看最近这段时间内出现的片段（父亲 2026-10-16 强调）。
+   * 不能按历史累计 —— 上一部片子的片段还留在池子里，
+   * 累计数一多就会把已经换掉的那部当成"在播的那部"，直接播错片。
+   */
+  var CAND_WINDOW_MS = 25000;
 
   function isBiliMedia(u) {
     if (!/bilivideo\.com|akamaized\.net|hdslb\.com/i.test(u)) return false;
@@ -458,13 +464,18 @@
     return 200;
   }
 
+  function candKeyOf(u) {
+    var m = String(u).match(/\/(\d{5,})\/(\d{5,})[-_]|\/([0-9a-z_]{6,})-1-\d{6,}\.mp4/i);
+    return (m && (m[2] || m[3])) || 'x';
+  }
+
   function addCandidate(u) {
     if (!isBiliMedia(u)) return;
     var k = String(u).split('?')[0];
     if (candSeen[k]) return;
     candSeen[k] = 1;
-    candPool.push(u);
-    candPool.sort(function (a, b) { return candRank(b) - candRank(a); });
+    candPool.push({ u: u, t: Date.now(), key: candKeyOf(u) });
+    if (candPool.length > 400) candPool = candPool.slice(-200);
   }
 
   /*
@@ -474,13 +485,14 @@
    * 组内若出现"整片 mp4"，那一定是在播的那部，优先它。
    */
   function pickGroup() {
-    var g = {}, order = [], i, key, m;
+    var now = Date.now();
+    var g = {}, order = [], i, key;
     for (i = 0; i < candPool.length; i++) {
-      var u = candPool[i];
-      m = String(u).match(/\/(\d{5,})\/(\d{5,})[-_]|\/([0-9a-z_]{6,})-1-\d{6,}\.mp4/i);
-      key = (m && (m[2] || m[3])) || 'x';
+      var e = candPool[i];
+      if (!e || now - e.t > CAND_WINDOW_MS) continue;   /* 旧片子的不算 */
+      key = e.key;
       if (!g[key]) { g[key] = []; order.push(key); }
-      g[key].push(u);
+      g[key].push(e.u);
     }
     var wholeKey = '', bestKey = '', bestN = 0;
     for (i = 0; i < order.length; i++) {
