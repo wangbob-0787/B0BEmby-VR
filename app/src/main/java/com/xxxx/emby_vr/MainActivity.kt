@@ -2043,8 +2043,20 @@ class MainActivity : ComponentActivity() {
                  * 父亲 2026-10-06：B 键只管面板返回，不再顺手把片子退掉 ——
                  * 播放中要退出，用控制条上的「退出」按钮。
                  */
-                if (::panel.isInitialized && panel.ready &&
-                    com.xxxx.emby_vr.vr.VrNative.panelActive) panel.back()
+                /*
+                 * 【2026-10-16 头显实测定案】手柄 B 键走的是**这一路**，不是系统返回键
+                 * （mapKey 把 KEYCODE_BUTTON_B 也映射成 BACK）—— 所以只在系统返回键上加
+                 * 「回网页」是永远不生效的，实测按了还是落回网页首面。
+                 *
+                 * 网页被我们自己的播放器顶掉时：B 的含义是「回网页」，不是「面板返回」
+                 * （panel.back() 会把面板导航栈退回根页面，表现出来就是回到 B站 首页）。
+                 */
+                if (webHiddenByStream) {
+                    returnFromStreamToWeb()
+                } else if (::panel.isInitialized && panel.ready &&
+                    com.xxxx.emby_vr.vr.VrNative.panelActive) {
+                    panel.back()
+                }
             }
             InputRouter.Action.PLAY_PAUSE ->
                 if (renderer.videoActive && !panelTouchedRecently()) togglePlayPause()
@@ -2052,6 +2064,24 @@ class MainActivity : ComponentActivity() {
             InputRouter.Action.SEEK_FORWARD -> if (renderer.videoActive) seekBy(+10_000)
             else -> { /* 余下动作后续接 */ }
         }
+    }
+
+    /**
+     * 从"我们自己的播放器"回到网页（父亲 2026-10-16 定的语义）。
+     *
+     * 网页在接管期间**没有销毁、地址也没动过**，只是从大银幕上收起来了；
+     * 所以这里只做三件事：停下播放器、把大银幕交回网页、恢复站点状态。
+     * 落点就是起播前那一页 —— 关键是**不能走 panel.back()**，
+     * 那会把面板导航栈退回根页面，那才是"回到 B站 首页"的真凶。
+     */
+    private fun returnFromStreamToWeb() {
+        if (!webHiddenByStream) return
+        webHiddenByStream = false
+        stopPlayback()
+        webSiteState.value = webSiteBeforeStream
+        webOnScreen = true
+        com.xxxx.emby_vr.vr.VrNative.setScreenWeb(true)
+        Log.i(TAG, "回网页：从自己的播放器交回网页（起播前那一页）")
     }
 
     /** 面板按键入口：面板没就绪（还在启动/播放中）时静默忽略 */
@@ -5716,12 +5746,7 @@ class MainActivity : ComponentActivity() {
          * 所以直接把大银幕交回网页即可，不需要任何导航 —— 落点就是起播前那一页。
          */
         if (keyCode == KeyEvent.KEYCODE_BACK && webHiddenByStream && !panelPointerOnPanel) {
-            webHiddenByStream = false
-            stopPlayback()
-            webSiteState.value = webSiteBeforeStream
-            webOnScreen = true
-            com.xxxx.emby_vr.vr.VrNative.setScreenWeb(true)
-            Log.i(TAG, "BACK：从自己的播放器回到网页（起播前那一页）")
+            returnFromStreamToWeb()
             return true
         }
         if (keyCode == KeyEvent.KEYCODE_BACK && renderer.videoActive && !panelPointerOnPanel) {
