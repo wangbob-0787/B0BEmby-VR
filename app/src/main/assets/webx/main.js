@@ -205,7 +205,13 @@
     /* 每道关卡都留下记录：抓不到时能一眼看出卡在哪 */
     if (!pendingPlay) return;
     if (!isPlayPage()) { console.log('[b0b] 没交出去：当前不是播放页 ' + location.href); return; }
-    if (!actedRecently()) { console.log('[b0b] 没交出去：扣扳机已经超过 2 分钟'); return; }
+    /*
+     * 【2026-10-17 03:22 父亲定的口径：停多久都没关系】
+     * 原来这里有一道"扣扳机超过 2 分钟就不交"的门 —— 删掉。
+     * 判据只有两条：① 地址没变（还是同一份记录）② 播放窗口铺满九成。
+     * 只看这一下，不再看"他多久以前点的"。
+     */
+    if (!actedRecently()) console.log('[b0b]（提示）离上次点击较久，但按父亲口径不影响接管');
     if (!pageIsPlaying()) { console.log('[b0b] 没交出去：页面还没在播（缓冲/广告/没开始）'); return; }
     /*
      * 【2026-10-16 父亲实测定案：小窗抢播的真凶就是缺这一道关】
@@ -232,7 +238,7 @@
     var nowId = { ep: biliEp, season: biliSeason, cid: biliCid };
     var obj = pendingPlay, objFrom = '手里那份';
     if (obj && !sameEpisode(obj, nowId)) {
-      var r1 = pickRecordFor(nowKey, 600000);
+      var r1 = pickRecordFor(nowKey, 0);
       if (r1 && r1.snap) {
         console.log('[b0b]③手里那份(' + (obj.ep || obj.cid || '?') + ')不是当前这一集 → 改用存档里的 ' +
           r1.key + '（' + Math.round((Date.now() - r1.at) / 1000) + ' 秒前存的）');
@@ -244,7 +250,7 @@
       }
     }
     if (!obj) {
-      var r2 = pickRecordFor(nowKey, 600000);
+      var r2 = pickRecordFor(nowKey, 0);
       if (r2 && r2.snap) {
         obj = r2.snap;
         objFrom = '存档 ' + r2.key;
@@ -253,6 +259,23 @@
       }
     }
     if (!obj) { console.log('[b0b]③不交：手里和存档里都没有可用的地址'); return; }
+    /*
+     * 【2026-10-17 03:22】交过的那份**不再丢掉**：父亲会按 B 回网页、再放大，那时还要用同一份。
+     * 只做 3 秒去重，免得每 400ms 重复递一次（客户端本来也有去重，这里少打日志）。
+     */
+    var subSig = String((obj.streams && obj.streams[0] && obj.streams[0].video) || '').slice(-60) +
+      '|' + (nowKey || '');
+    if (subSig === lastSubmitSig && Date.now() - lastSubmitAt < 3000) {
+      console.log('[b0b]③刚刚交过同一份（3 秒内），不重复交');
+      return;
+    }
+    lastSubmitSig = subSig;
+    lastSubmitAt = Date.now();
+    /* 交出去的这份存进 records：按 B 回网页、再放大时还用它 */
+    try {
+      records.push({ key: nowKey || lastEpKey || '未知', at: Date.now(), snap: obj, pool: [] });
+      if (records.length > 6) records.shift();
+    } catch (e) {}
     /* 标题在交出去这一刻现取（抓取时页面标题可能还没更新） */
     try { obj.title = pageTitle(); } catch (e) {}
     /*
@@ -675,6 +698,8 @@
     return '';
   }
   var records = [];        /* 最近几份播放记录：{key, at, snap, pool} */
+  var lastSubmitAt = 0;    /* 上一份交出去的时刻（只做 3 秒去重） */
+  var lastSubmitSig = '';
   var lastEpKey = '';      /* 上一份记录属于哪一集 */
   function archiveAndReset(why, newKey) {
     try {
@@ -702,7 +727,7 @@
     for (var i = records.length - 1; i >= 0; i--) {
       var r = records[i];
       if (!r.snap) continue;
-      if (Date.now() - r.at > maxAgeMs) continue;
+      if (maxAgeMs && Date.now() - r.at > maxAgeMs) continue;
       if (nowKey && r.key === nowKey) return r;
       if (!best) best = r;
     }
@@ -866,7 +891,12 @@
         }
         console.log('[b0b]③手里那份属于别的集（它记的 ' +
           (pendingPlay.ep ? 'ep' + pendingPlay.ep : '编号 ' + pendingPlay.cid) +
-          '，现在 ep' + (biliEp || '?') + '）→ 作废重攒');
+          '，现在 ep' + (biliEp || '?') + '）→ 存起来，换新的继续攒');
+        /* 父亲 2026-10-17 03:22：不要扔 —— 存进 records，回那一集还能用 */
+        try {
+          records.push({ key: lastEpKey || '旧', at: Date.now(), snap: pendingPlay, pool: [] });
+          if (records.length > 6) records.shift();
+        } catch (e) {}
         pendingPlay = null;
       }
       var cands = pickCandidates(6);
