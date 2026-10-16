@@ -121,6 +121,20 @@
     return false;
   }
 
+  /*
+   * 剥掉标题尾巴上的集号与语言版本：B站影视页的标题元素常常长成
+   * "剧名 第12集"/"剧名 粤语版"，整段判"垃圾"不够，得先剥了再看
+   * （父亲 2026-10-16：抓回来只剩后半截）。
+   */
+  function stripTitleTail(s) {
+    var t = String(s || '');
+    t = t.replace(/\s*[-_|·]\s*第?\s*\d+\s*[集话期].*$/, '');
+    t = t.replace(/\s*第?\s*\d+\s*[集话期]\s*$/, '');
+    t = t.replace(/\s*[-_|·（(]?\s*(普通话|粤语|潮汕话|客家话|闽南语|国语|原声|中配|台配|日语|英语)版?\s*[)）]?\s*$/, '');
+    t = t.replace(/\s*[-_|·]\s*(预告|花絮|片段|正片|抢先看|会员版|加长版)\s*$/, '');
+    return t.trim();
+  }
+
   function pageTitle() {
     var sels = [
       '.video-title', 'h1.video-title', '.mediainfo_mediaTitle',
@@ -129,14 +143,18 @@
     for (var i = 0; i < sels.length; i++) {
       var e = document.querySelector(sels[i]);
       var s = e && e.textContent ? e.textContent.trim() : '';
-      if (s && !/^哔哩哔哩/.test(s) && !isJunkTitle(s)) return s.slice(0, 80);
+      if (s && !/^哔哩哔哩/.test(s)) {
+        var st = stripTitleTail(s);
+        if (st && !isJunkTitle(st)) return st.slice(0, 80);
+      }
     }
     var dt = (document.title || '')
       .replace(/[_|]\s*哔哩哔哩.*$/, '')
       .replace(/^哔哩哔哩.*$/, '')
       .replace(/[-_|]\s*腾讯视频.*$/, '')
       .trim();
-    return isJunkTitle(dt) ? '' : dt.slice(0, 80);
+    var st2 = stripTitleTail(dt);
+    return (st2 && !isJunkTitle(st2)) ? st2.slice(0, 80) : '';
   }
 
   /* 每轮扫描都问一次：条件齐了就交出去（只交一次） */
