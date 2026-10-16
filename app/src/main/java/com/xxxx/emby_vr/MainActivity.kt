@@ -2502,6 +2502,24 @@ class MainActivity : ComponentActivity() {
                  * onVideoSizeChanged 里更新 —— 内核路径没更新，画布还是 16:9，
                  * 却被按 2.39 的形状贴出去，于是转圈、片名这些字被压扁（父亲看到的"字体变形"）。
                  */
+                /*
+                 * 影片自己的形状（父亲 2026-10-16：接管后宽银幕片被拉长，例如《功夫女足》）。
+                 *
+                 * 这里原来一律用"上一部片子的比例"（PlaybackFlags.videoAspect）——
+                 * 网页流接管时那个值还是上一部影片留下的，宽银幕内容落到 16:9 的银幕上
+                 * 就被纵向拉长（人变高变瘦）。网页流要按它自己那一档的真实宽高铺。
+                 */
+                if (isWeb) {
+                    val ww = webStream?.optInt("width", 0) ?: 0
+                    val hh = webStream?.optInt("height", 0) ?: 0
+                    if (ww > 0 && hh > 0) {
+                        val a = ww.toFloat() / hh.toFloat()
+                        Log.i(TAG, "网页流银幕比例 → $ww x $hh = $a")
+                        com.xxxx.emby_vr.vr.VrNative.setVideoAspect(a)
+                        applyDanmakuCanvas(a)
+                        com.xxxx.emby_vr.vr.VrNative.setVideoSize(ww, hh)
+                    }
+                }
                 val kernelAspect = com.xxxx.emby_vr.player.PlaybackFlags.videoAspect ?: (16f / 9f)
                 com.xxxx.emby_vr.vr.VrNative.setVideoAspect(kernelAspect)
                 applyDanmakuCanvas(kernelAspect)
