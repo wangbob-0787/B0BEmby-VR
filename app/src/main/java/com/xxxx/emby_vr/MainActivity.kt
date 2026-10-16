@@ -2052,7 +2052,19 @@ class MainActivity : ComponentActivity() {
                  * （panel.back() 会把面板导航栈退回根页面，表现出来就是回到 B站 首页）。
                  */
                 if (webHiddenByStream) {
+                    /*
+                     * 大银幕上是我们自己的播放器 → B = 回网页（回到起播前那一页）。
+                     */
                     returnFromStreamToWeb()
+                } else if (webOnScreen && !panelPointerOnPanel) {
+                    /*
+                     * 大银幕上是网页 → B = 交给网页自己的返回（有上一页就退一层，
+                     * 已经在首页就停住）。注意**不能走 panel.back()**：那是面板的
+                     * 导航栈，它的"上一页"是面板根页面（B站 首页），不是网页的上一页。
+                     * 父亲 2026-10-16 明确要按这两种情况分开。
+                     */
+                    val wentBack = com.xxxx.emby_vr.web.WebPageHub.back()
+                    Log.i(TAG, if (wentBack) "B 键交给网页：退回上一页" else "B 键忽略：网页已无上一页")
                 } else if (::panel.isInitialized && panel.ready &&
                     com.xxxx.emby_vr.vr.VrNative.panelActive) {
                     panel.back()
