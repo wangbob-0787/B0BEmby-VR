@@ -416,11 +416,35 @@
   }
 
   /* 配对成功就把待播地址填上（页面是否在播交给后面几道关卡判断） */
+  /*
+   * B站 番剧/影视还会给一条"整片"（路径带 ogvresxcode 的 .mp4），
+   * 一条就含画面和声音，比配对省事也更稳（父亲 2026-10-16 现场日志里出现过）。
+   */
+  function findWholeFile(list) {
+    for (var i = 0; i < list.length; i++) {
+      var u = String(list[i]);
+      if (/ogvresxcode/i.test(u) && /\.mp4(\?|$)/i.test(u)) return u;
+    }
+    return '';
+  }
+
   function tryPairFromHits(keysAll) {
     try {
       if (pendingPlay) return;
       var all = [];
       for (var k in keysAll) all.push(k);
+      var whole = findWholeFile(all);
+      if (whole && whole !== lastPairedVideo) {
+        lastPairedVideo = whole;
+        pendingPlay = {
+          title: '', kind: 'play', t: Date.now(), frame: location.href,
+          durSec: 0, quality: 0, site: '',
+          streams: [{ id: 0, height: 0, width: 0, bw: 0, vcodec: 'h264',
+                      video: whole, audio: '' }]
+        };
+        console.log('[b0b] B站：用抓到的整片文件交给内核');
+        return;
+      }
       var pair = pairFromHits(all);
       if (!pair || !pair.video) return;
       if (pair.video === lastPairedVideo) return;
@@ -448,7 +472,8 @@
     var vids = {}, auds = {}, cidOrder = [];
     for (var i = 0; i < list.length; i++) {
       var u = list[i];
-      var m = String(u).match(/\/(\d{5,})\/(\d{5,})(?:-sr\d+)?-1-(\d{3,6})\.(m4s|mp4)/i);
+      /* 实测命名有 -sr1 / _sr1 / _qe1 几种写法（父亲 2026-10-16 现场日志） */
+      var m = String(u).match(/\/(\d{5,})\/(\d{5,})(?:[-_]s?r\d+|[-_]qe\d+)?-1-(\d{3,6})\.(m4s|mp4)/i);
       if (!m) continue;
       var cid = m[2];
       var code = parseInt(m[3], 10);
