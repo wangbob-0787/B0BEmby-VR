@@ -602,6 +602,20 @@ class MainActivity : ComponentActivity() {
 
         override fun onWebStick(px: Float, py: Float, sx: Float, sy: Float) {
             vrInputLive = true
+            /*
+             * 原生按"银幕上是不是网页"决定摇杆送哪条通道
+             * （openxr_renderer.cpp:3562-3582，判据是 screenShowsWeb）。
+             *
+             * 父亲 2026-10-16 实测：接管播放之后，光点对着银幕推摇杆不能快进快退
+             * （Emby 片子可以）。网页那一侧此时已经收掉，这一下却仍被送到网页通道，
+             * 而通道那头除了滚网页没别的事可做 —— 事件就等于丢了。
+             * 修法：网页不在就把它当普通摇杆用（光点在银幕上 = 快进快退）。
+             */
+            if (!webOnScreen && webSiteState.value == null) {
+                Log.i(TAG, "网页摇杆通道收到，但网页不在 → 转普通摇杆（光点在银幕上=快进快退）")
+                onStick(px, py, sx, sy)
+                return
+            }
             runOnUiThread { com.xxxx.emby_vr.web.WebPageHub.scroll(px, py, sx, sy) }
         }
 
