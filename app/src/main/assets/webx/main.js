@@ -23,6 +23,7 @@
   /** 播放接口解析出来的可播地址（多档清晰度），客户端据此用自己的播放器播 */
   var playable = null;
   var lastPlaySig = '';
+  var lastPlaySigAt = 0;   /* 去重限时用（见 applyPlayinfo） */
 
   function note(u) {
     if (!u || typeof u !== 'string') return;
@@ -90,7 +91,8 @@
       var v = vs[i];
       if (!v) continue;
       if (v.paused) continue;
-      if ((v.currentTime || 0) < 0.3) continue;
+      /* 0.3 秒太严：缓冲刚过、画面刚出来那一两秒也会被判"没在播" */
+      if ((v.currentTime || 0) < 0.05) continue;
       if (!(v.videoWidth > 0)) continue;
       return true;
     }
@@ -139,10 +141,14 @@
 
   /* 每轮扫描都问一次：条件齐了就交出去（只交一次） */
   function flushPendingPlay() {
-    if (!pendingPlay) return;
-    if (!isPlayPage()) return;
-    if (!actedRecently()) return;
-    if (!pageIsPlaying()) return;
+    /* 每道关卡都留下记录：抓不到时能一眼看出卡在哪（父亲 2026-10-16 报"时好时坏"） */
+    if (!pendingPlay) {
+      if (window.__b0bWhy !== 'no-pending') { window.__b0bWhy = 'no-pending'; }
+      return;
+    }
+    if (!isPlayPage()) { console.log('[b0b] 没交出去：当前不是播放页 ' + location.href); return; }
+    if (!actedRecently()) { console.log('[b0b] 没交出去：扣扳机已经超过 30 秒'); return; }
+    if (!pageIsPlaying()) { console.log('[b0b] 没交出去：页面还没在播（缓冲/广告/没开始）'); return; }
     if (!pendingPlay && pendingQq && Date.now() - qqAt < 180000) {
       /* 腾讯这条路没有播放接口可解析，直接用抓到的那条播放列表 */
       pendingPlay = {
@@ -201,8 +207,14 @@
       if (!streams.length) return;
       /* 同一份播放接口不重复上报（URL 很长，没变化就不发） */
       var sig = streams.length + '|' + String(streams[0].video).slice(-70);
-      if (sig === lastPlaySig) return;
+      /*
+       * 同一份播放接口短时间去重即可 —— 原来是不限时去重，
+       * 于是同一部片子第二次打开时签名与上次相同、直接 return，
+       * 表现为"同一部片有时抓得到有时抓不到"（父亲 2026-10-16 实测）。
+       */
+      if (sig === lastPlaySig && Date.now() - lastPlaySigAt < 15000) return;
       lastPlaySig = sig;
+      lastPlaySigAt = Date.now();
       playable = {
 
         /* 控制条要写「站点-片名」，标题从页面取（父亲 2026-10-16） */
