@@ -465,9 +465,21 @@
     return 200;
   }
 
+  /*
+   * 片子编号要从"文件名"里取。
+   * 原来从整条路径里找数字，取到的是 upgcxcode/73/43/ 里的 43，
+   * 结果所有片段被归成同一部，配对全错（父亲 2026-10-16 用真实地址定位）。
+   * 真实形态：…/upgcxcode/73/43/41325364373/41325364373_sr1-1-100035.m4s
+   */
+  function biliFileOf(u) {
+    return String(u).split('?')[0].split('/').pop() || '';
+  }
   function candKeyOf(u) {
-    var m = String(u).match(/\/(\d{5,})\/(\d{5,})[-_]|\/([0-9a-z_]{6,})-1-\d{6,}\.mp4/i);
-    return (m && (m[2] || m[3])) || 'x';
+    var f = biliFileOf(u);
+    var m = f.match(/^([0-9a-z_]{5,}?)(?:[-_]s?r\d+|[-_]qe\d+)?-1-\d{3,6}\.(m4s|mp4)$/i);
+    if (m) return m[1];
+    var m2 = String(u).match(/upgcxcode\/[^\/]+\/[^\/]+\/(\d{5,})\//);
+    return m2 ? m2[1] : 'x';
   }
 
   function addCandidate(u) {
@@ -547,10 +559,11 @@
     for (var i = 0; i < list.length; i++) {
       var u = list[i];
       /* 实测命名有 -sr1 / _sr1 / _qe1 几种写法（父亲 2026-10-16 现场日志） */
-      var m = String(u).match(/\/(\d{5,})\/(\d{5,})(?:[-_]s?r\d+|[-_]qe\d+)?-1-(\d{3,6})\.(m4s|mp4)/i);
+      var f = biliFileOf(u);
+      var m = f.match(/^([0-9a-z_]{5,}?)(?:[-_]s?r\d+|[-_]qe\d+)?-1-(\d{3,6})\.(m4s|mp4)$/i);
       if (!m) continue;
-      var cid = m[2];
-      var code = parseInt(m[3], 10);
+      var cid = m[1];
+      var code = parseInt(m[2], 10);
       if (!vids[cid] && !auds[cid]) cidOrder.push(cid);
       var isAudio = (code >= 30200 && code < 30400);
       if (isAudio) {
