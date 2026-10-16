@@ -411,8 +411,9 @@
       pendingQq = u; qqAt = Date.now();
       console.log('[b0b] 腾讯播放列表已记下（长度 ' + u.length + '）');
     }
+    addCandidate(u);                  /* 进候选池（不按名字挑） */
     if (mediaHits.length >= 60) flushMedia();
-    tryPairFromHits(mediaKeys);       /* 每收到一条就试着配对（父亲 2026-10-16） */
+    tryPairFromHits(mediaKeys);       /* 每收到一条就试着取一条候选（父亲 2026-10-16） */
   }
 
   /* 配对成功就把待播地址填上（页面是否在播交给后面几道关卡判断） */
@@ -428,34 +429,70 @@
     return '';
   }
 
+  /*
+   * 候选池（父亲 2026-10-16 定调：一次搞明白，别再按名字猜）。
+   * B站 的文件名写法随片子变（-sr1 / _sr1 / _qe1 / ogvresxcode / 纯数字 …），
+   * 按名字认必然漏，前面两轮就是这么漏的。
+   * 改成：凡是视频服务器上下的东西全进池子，按"一条能不能直接播"排序，
+   * 一条不行换下一条，交给播放器去判 —— 比我猜命名规则准。
+   */
+  var candPool = [];
+  var candSeen = {};
+  var candTried = 0;
+
+  function isBiliMedia(u) {
+    if (!/bilivideo\.com|akamaized\.net|hdslb\.com/i.test(u)) return false;
+    return /\.(m4s|mp4|m3u8)(\?|$)/i.test(u);
+  }
+
+  /* 分数越高越先试：整片 > 播放列表 > 高画质分片 > 声音分片 > 其他 */
+  function candRank(u) {
+    if (/ogvresxcode/i.test(u) && /\.mp4(\?|$)/i.test(u)) return 900;
+    if (/\.m3u8(\?|$)/i.test(u)) return 800;
+    var m = String(u).match(/-1-(\d{3,6})\.(m4s|mp4)/i);
+    var code = m ? parseInt(m[1], 10) : 0;
+    if (code >= 30200 && code < 30400) return 300;
+    if (code >= 30000 && code < 30200) return 600 + (vidScore(code) % 100) / 100;
+    if (code >= 100000) return 400;
+    if (code >= 1000) return 500;
+    return 200;
+  }
+
+  function addCandidate(u) {
+    if (!isBiliMedia(u)) return;
+    var k = String(u).split('?')[0];
+    if (candSeen[k]) return;
+    candSeen[k] = 1;
+    candPool.push(u);
+    candPool.sort(function (a, b) { return candRank(b) - candRank(a); });
+  }
+
+  /* 按顺序取一条还没试过的；整片试完就试"画面+声音"配对 */
+  function pickCandidate() {
+    var i, u;
+    for (i = candTried; i < candPool.length; i++) {
+      u = candPool[i];
+      if (candRank(u) >= 700) { candTried = i + 1; return { video: u, audio: '' }; }
+    }
+    var pair = pairFromHits(candPool);
+    if (pair && pair.video && candTried < candPool.length + 50) return pair;
+    return null;
+  }
+
   function tryPairFromHits(keysAll) {
     try {
       if (pendingPlay) return;
-      var all = [];
-      for (var k in keysAll) all.push(k);
-      var whole = findWholeFile(all);
-      if (whole && whole !== lastPairedVideo) {
-        lastPairedVideo = whole;
-        pendingPlay = {
-          title: '', kind: 'play', t: Date.now(), frame: location.href,
-          durSec: 0, quality: 0, site: '',
-          streams: [{ id: 0, height: 0, width: 0, bw: 0, vcodec: 'h264',
-                      video: whole, audio: '' }]
-        };
-        console.log('[b0b] B站：用抓到的整片文件交给内核');
-        return;
-      }
-      var pair = pairFromHits(all);
-      if (!pair || !pair.video) return;
-      if (pair.video === lastPairedVideo) return;
-      lastPairedVideo = pair.video;
+      var cand = pickCandidate();
+      if (!cand || !cand.video) return;
+      if (cand.video === lastPairedVideo) return;
+      lastPairedVideo = cand.video;
       pendingPlay = {
         title: '', kind: 'play', t: Date.now(), frame: location.href,
         durSec: 0, quality: 0, site: '',
         streams: [{ id: 0, height: 0, width: 0, bw: 0, vcodec: 'h264',
-                    video: pair.video, audio: pair.audio || '' }]
+                    video: cand.video, audio: cand.audio || '' }]
       };
-      console.log('[b0b] B站：用抓到的分片配出可播地址（画面+声音）');
+      console.log('[b0b] B站：从候选池取了一条交给内核（第 ' + candTried + ' 条）');
     } catch (e) {}
   }
 
