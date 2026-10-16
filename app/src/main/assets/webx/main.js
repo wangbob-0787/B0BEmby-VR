@@ -292,8 +292,26 @@
       if (!text || text.length > 4000000) return;
       if (text.indexOf('"baseUrl"') < 0 && text.indexOf('"base_url"') < 0) return;
       var j = JSON.parse(text);
+      takeBiliSubtitle(j);
       var d = (j && (j.result || j.data || j)) || null;
       if (d && (d.dash || d.durl)) applyPlayinfo(d);
+    } catch (e) {}
+  }
+
+  /*
+   * 字幕单独扫一遍（2026-10-19 头显实测定案）。
+   *
+   * 之前只在 applyPlayinfo（能解析出 dash/durl 的那条支路）里取字幕，
+   * 而剧集走的是 pgc/player/web/v2/playurl，响应结构里没有 dash 顶层，
+   * 于是 takeBiliSubtitle 一次都没被调到 —— 日志里连 subtitle 字样都没有。
+   * 现在跟播放地址那条支路解耦：只要正文里出现 subtitle 就解析。
+   */
+  function scanTextForBiliSubtitle(text) {
+    try {
+      if (!text || text.length > 4000000) return;
+      if (text.indexOf('"subtitle"') < 0) return;
+      if (text.indexOf('subtitle_url') < 0) return;
+      takeBiliSubtitle(JSON.parse(text));
     } catch (e) {}
   }
 
@@ -798,11 +816,15 @@
               var rt = this.responseType;
               if (rt === '' || rt === 'text') {
                 parsePlayurl(this.responseText);
+                scanTextForBiliSubtitle(this.responseText);
               } else if (rt === 'json') {
                 var j = this.response;
+                if (j) takeBiliSubtitle(j);
                 if (j) applyPlayinfo(j.result || j.data || j);
               } else if (this.response) {
-                parsePlayurl(new TextDecoder('utf-8').decode(this.response));
+                var t2 = new TextDecoder('utf-8').decode(this.response);
+                parsePlayurl(t2);
+                scanTextForBiliSubtitle(t2);
               }
             } catch (e) {}
           });
