@@ -2220,35 +2220,6 @@ class MainActivity : ComponentActivity() {
                     }
                     if (raw.isEmpty()) return@withContext null
                     val re = Regex("<d p=\"([^\"]+)\">([^<]*)</d>")
-                    val items = ArrayList<com.xxxx.emby_vr.danmaku.DanmakuItem>()
-                    for (m in re.findAll(raw)) {
-                        val f = m.groupValues[1].split(',')
-                        if (f.size < 4) continue
-                        val sec = f[0].toDoubleOrNull() ?: continue
-                        val mode = f[1].trim().toIntOrNull() ?: 1
-                        val color = f[3].trim().toLongOrNull() ?: 16777215L
-                        val text = m.groupValues[2].trim()
-                        if (text.isEmpty()) continue
-                        val move = mode in 1..3
-                        items.add(
-                            com.xxxx.emby_vr.danmaku.DanmakuItem(
-                                startMs = (sec * 1000).toLong(),
-                                endMs = (sec * 1000).toLong() + if (move) 8000L else 4000L,
-                                text = text,
-                                isMove = move,
-                                x1 = 1920f, y1 = 60f, x2 = -400f, y2 = 60f,
-                                posX = 960f, posY = if (mode == 4) 1040f else 60f,
-                                style = com.xxxx.emby_vr.danmaku.DanmakuStyle(
-                                    fontSize = 52f,
-                                    primaryColor = (0xFF000000L or (color and 0xFFFFFFL)).toInt(),
-                                    outlineColor = android.graphics.Color.BLACK,
-                                    outline = 3f,
-                                    alignment = 2,
-                                ),
-                            ),
-                        )
-                    }
-                    if (items.isEmpty()) return@withContext null
                     /*
                      * 【2026-10-17 18:10 现场定案：B站 的 XML 不按时间排】
                      *
@@ -2261,8 +2232,82 @@ class MainActivity : ComponentActivity() {
                      *
                      * Emby 那条路一直正常，正是因为 AssDanmakuParser 里有
                      * `items.sortBy { it.startMs }`，网页这条路漏了这一步。
+                     * 下面先攒成 (时间, 文字, 颜色) 再排序 —— 排完才轮到分行。
                      */
-                    items.sortBy { it.startMs }
+                    val parsed = ArrayList<Triple<Long, String, Long>>()
+                    for (m in re.findAll(raw)) {
+                        val f = m.groupValues[1].split(',')
+                        if (f.size < 4) continue
+                        val sec = f[0].toDoubleOrNull() ?: continue
+                        val color = f[3].trim().toLongOrNull() ?: 16777215L
+                        val text = m.groupValues[2].trim()
+                        if (text.isEmpty()) continue
+                        parsed.add(Triple((sec * 1000).toLong(), text, color))
+                    }
+                    parsed.sortBy { it.first }
+                    /*
+                     * 【2026-10-17 18:30 父亲定：行数照 Emby 那条路来，多出来的丢掉】
+                     *
+                     * Emby 的弹幕是我们自己生成的（`scripts/danmaku/make_ass.py`），
+                     * 生成时写死 **2 行**：`fetch_episode.py` 传 `--lanes 2 --top-margin 15`，
+                     * `line_h = 字号 × 1.35`，轨道满了就丢弃多余弹幕
+                     * （make_ass.py 原话：`固定行数模式:轨道满则丢弃,保证同屏只有 N 行`），
+                     * 同一条轨道上的下一条要等前一条时长的 0.35 倍（`--density-gap 0.35`）。
+                     *
+                     * 网页这条路原来是"每一条都写在 y=60 那一行"，全挤成一坨。
+                     * 这里照 Emby 的规则重排：同样 2 行、同样丢溢出，字号 52 也对齐
+                     * （Emby 1080 画布下 max(40, 1080×0.05) = 54，同一档）。
+                     * B站 的固定弹幕（模式 4/5）也一并按滚动处理 —— Emby 那条路
+                     * 生成的弹幕**全部**是滚动（make_ass.py 只写 \move），口径一致。
+                     */
+                    val fs = 52f
+                    val lineH = fs * 1.35f
+                    val topMargin = 15f
+                    val spanMs = 8000L
+                    val gapMs = (spanMs * 0.35).toLong()
+                    val laneY = floatArrayOf(topMargin, topMargin + lineH)
+                    val laneFree = LongArray(laneY.size)
+                    var dropped = 0
+                    val items = ArrayList<com.xxxx.emby_vr.danmaku.DanmakuItem>()
+                    for (p in parsed) {
+                        /* 选一条空着的行；两行都占着 → 这条丢掉（同 Emby 的"轨道满则丢弃"） */
+                        var lane = -1
+                        for (i in laneY.indices) {
+                            if (laneFree[i] <= p.first) {
+                                lane = i
+                                break
+                            }
+                        }
+                        if (lane < 0) {
+                            dropped++
+                            continue
+                        }
+                        laneFree[lane] = p.first + gapMs
+                        val y = laneY[lane]
+                        items.add(
+                            com.xxxx.emby_vr.danmaku.DanmakuItem(
+                                startMs = p.first,
+                                endMs = p.first + spanMs,
+                                text = p.second,
+                                isMove = true,
+                                x1 = 1920f, y1 = y, x2 = -400f, y2 = y,
+                                posX = 960f, posY = y,
+                                style = com.xxxx.emby_vr.danmaku.DanmakuStyle(
+                                    fontSize = fs,
+                                    primaryColor = (0xFF000000L or (p.third and 0xFFFFFFL)).toInt(),
+                                    outlineColor = android.graphics.Color.BLACK,
+                                    outline = 3f,
+                                    alignment = 2,
+                                ),
+                            ),
+                        )
+                    }
+                    if (items.isEmpty()) return@withContext null
+                    Log.i(
+                        TAG,
+                        "⑦ 弹幕按 Emby 那套排成 " + laneY.size + " 行：保留 " + items.size +
+                            " 条，行满丢弃 " + dropped + " 条（共解析 " + parsed.size + " 条）",
+                    )
                     com.xxxx.emby_vr.danmaku.DanmakuTrack(1920f, 1080f, items)
                 } catch (t: Throwable) {
                     Log.w(TAG, "⑦ 弹幕没拉下来：" + t.message)
