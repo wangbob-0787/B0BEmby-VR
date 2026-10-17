@@ -1385,6 +1385,37 @@
             } catch (e) {}
           });
         }
+        /*
+         * 通用：**响应正文本身就是播放列表**（以 #EXTM3U 开头）—— 2026-10-18 01:22 加。
+         *
+         * 现场（父亲 01:21 实测，腾讯仍不接管）：真正的播放流是
+         *   https://ltsyd.qq.com/B_BDw…（一长串不透明令牌，**没有 .m3u8 后缀**）
+         * 播放列表请求是 https://pl.video.qq.com/plr/tr?te=…&ce=…（同样没有后缀）。
+         * 我们一直靠"地址里有没有 .m3u8"来认，腾讯这版页面根本不出现 .m3u8 字样，
+         * 所以候选池恒为空（日志一路「候选池分组： → 选 无」、池子 0 条）。
+         *
+         * 认列表最可靠的办法是看**正文开头**：HLS 列表一定以 #EXTM3U 起头，
+         * 与地址长什么样无关。命中就把这个请求地址当作播放列表交给客户端。
+         */
+        if (u.indexOf('qq.com') >= 0 || u.indexOf('ltsyd') >= 0) {
+          this.addEventListener('load', function () {
+            try {
+              var rtA = this.responseType;
+              var body = '';
+              if (rtA === '' || rtA === 'text') body = String(this.responseText || '');
+              else if (this.response && this.response.byteLength < 4 * 1024 * 1024) {
+                body = new TextDecoder('utf-8').decode(this.response);
+              }
+              if (body.slice(0, 7) === '#EXTM3U') {
+                var self_u = String(this.responseURL || u);
+                if (self_u !== pendingQq) {
+                  pendingQq = self_u; qqAt = Date.now();
+                  console.log('[b0b] 腾讯播放列表（响应正文就是列表，地址无 .m3u8 后缀）');
+                }
+              }
+            } catch (e) {}
+          });
+        }
         /* 腾讯：地址在这些接口的响应里，读回来扫一遍 */
         if (u.indexOf('qq.com') >= 0) {
           this.addEventListener('load', function () {
