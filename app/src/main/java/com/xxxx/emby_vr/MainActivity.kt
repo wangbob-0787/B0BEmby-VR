@@ -5683,6 +5683,35 @@ class MainActivity : ComponentActivity() {
         osdState.durationMs = 0L
         osdState.positionMs = 0L
         /*
+         * 片名 logo 立刻作废（父亲 2026-10-17 23:44 实测：从 Emby 片切到网站视频之后，
+         * 那部 Emby 片的片名 logo 还留在弹幕层上）。
+         *
+         * logo 是画在弹幕层画布左上角的那张位图（painter.logoBitmapProvider），
+         * 只关原生那一层（setLogoVisible(false)）不够 —— 位图还在对象里，
+         * 等第一帧过去、waitingFirstFrame 落回 false，画笔照样把它画出来。
+         * 这里连位图和「已下载地址」一起清：换到网站视频时它必然消失，
+         * 换到下一部 Emby 片时按新地址重新下载（不能只清位图留地址 ——
+         * loadLogoBitmap 见地址相同会直接 return，logo 就再也不出现了）。
+         */
+        logoBitmap.value = null
+        logoLoadedUrl = null
+        com.xxxx.emby_vr.vr.VrNative.setLogoVisible(false)
+        /*
+         * 控制条上「跟着片子走」的那几份菜单数据也要清（父亲 2026-10-17 23:46 实测：
+         * 从 Emby 片切到网站视频后，选集、信息、演职人员三个菜单还挂着上一部片的内容
+         * —— 只有「正在播放」那行跟着换了）。
+         *
+         * 这几份数据只有 Emby 片才有，来源是 loadItemDetail；网站视频那条路不会重新填，
+         * 所以必须清空。空菜单是诚实的「这部没有」，留着上一部的才是错的。
+         * 音轨 / 字幕 / 质量三个菜单的数据源是流清单（currentStreams 等），上面已经清过。
+         */
+        menuState.episodes = emptyList()
+        menuState.episodesTitle = ""
+        menuState.people = emptyList()
+        menuState.info = null
+        episodeIds = emptyList()
+        episodePositions = emptyList()
+        /*
          * 片头标记作废（父亲 2026-10-12）：新片的范围等取播放信息那一步再立。
          * 不清的话，新片还没拿到章节之前，「跳过片头」会拿着**上一部片**的时间轴站着。
          */
