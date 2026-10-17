@@ -570,31 +570,8 @@
    * /tv/ 那类元素全屏走 fullscreenchange 事件，进出都知道。
    * 占屏比、页面白名单全部退场。
    */
-  var fullState = false;
-  var fullBtnAt = 0;
-  /*
-   * 【2026-10-17 15:39 修正】进出裁决放宽为三个来源（r634 现场教训：
-   * 电影/电视剧的 B站 播放器根本不挂 mode-webscreen 类，按类裁决永远判成退出）：
-   *   ① 浏览器元素全屏（document.fullscreenElement）
-   *   ② 站点自己的铺满类（webscreen / pagefullscreen 关键字）
-   *   ③ 铺满事实：正在播的画面块占屏 85% 以上（电影全屏实测 92~96%，详情页大窗 74%，小窗 37%
-   *      —— 这个数是给"按钮点下去这一下分进/出"用的，不是接管门槛；门槛始终是按钮本身）。
-   */
-  function readFullMode() {
-    try { if (document.fullscreenElement || document.webkitFullscreenElement) return true; } catch (e) {}
-    try {
-      if (document.querySelector('[class*="webscreen"],[class*="pagefullscreen"],[class*="web-fullscreen"]')) return true;
-    } catch (e) {}
-    try {
-      var vs = document.querySelectorAll('video');
-      var iw = innerWidth || 1, ih = innerHeight || 1;
-      for (var i = 0; i < vs.length; i++) {
-        var r = vs[i].getBoundingClientRect();
-        if (r.width * r.height >= iw * ih * 0.85) return true;
-      }
-    } catch (e) {}
-    return false;
-  }
+  var fullState = false;      /* 两个全屏按钮：第奇数次点下去=铺满（接管开启），偶数=收回（接管解除）。 */
+  var fullBtnCount = 0;       /* 本页内两个全屏按钮的累计点击次数（per page，页面重建即从零） */
   var lastSubmitSig = '';
   var lastSubmitAt = 0;
 
@@ -1427,25 +1404,6 @@
       }
     }
     /*
-     * 【2026-10-17 15:14】按钮点完之后：由 B站 自己的铺满类裁决进/退。
-     * （按钮 aria 进出不变，实测；铺满容器类 mode-webscreen 是它自己的话。）
-     */
-    if (fullBtnAt) {
-      if (Date.now() - fullBtnAt < 1800) {
-        if (!fullState && readFullMode()) {
-          fullState = true;
-          console.log('[b0b]①按按钮后确认铺满 → 允许接管');
-        }
-      } else if (fullState && !readFullMode()) {
-        fullState = false;
-        console.log('[b0b]①铺满类没了 → 你退出了全屏，接管解除');
-        fullBtnAt = 0;
-      } else if (!readFullMode() && Date.now() - fullBtnAt > 2500) {
-        fullBtnAt = 0;
-      }
-    }
-
-    /*
      * 【2026-10-17 00:20 观测：小窗里在试播什么，也要打出来】
      *
      * 父亲的要求：先看到他"在小窗口试播的是哪一季哪一集"，再看到"放大之后接管的
@@ -1500,7 +1458,14 @@
      */
     if (location.href !== lastHrefLogged) {
       lastHrefLogged = location.href;
-      console.log('[b0b]①页面地址变为 ' + String(location.href).slice(-70));
+      /*
+       * 【2026-10-17 15:46 父亲定稿：每新开一个页面，全屏按钮计数归零】
+       * 页面重建（按B后重载）自身会从零；SPA 换页（不重载）在这里归零 ——
+       * 首次点全屏=铺满，第二次=收回。
+       */
+      fullBtnCount = 0;
+      fullState = false;
+      console.log('[b0b]①页面地址变为 ' + String(location.href).slice(-70) + '（全屏计数归零）');
     }
     /*
      * 【2026-10-17 05:14 父亲报"按 B 白屏"根修】
@@ -1578,9 +1543,8 @@
         '.bpx-player-ctrl-web,.bpx-player-ctrl-web-enter,.bpx-player-ctrl-full,' +
         '.squirtle-video-pagefullscreen,.squirtle-video-fullscreen,[aria-label*="全屏"]') : null;
       if (!el) return;
-      fullBtnAt = Date.now();
-      var label = (el.getAttribute && (el.getAttribute('aria-label') || el.getAttribute('title'))) || '';
-      console.log('[b0b]①全屏按钮被点（' + (label || String(el.className).slice(0, 36)) + '），1.8 秒内由铺满类裁决进出');
+      fullBtnCount++;      /* 【父亲 15:46 定稿：按点击次数分进/退 —— 奇数=铺满，偶数=收回，不测比例不读类 */
+      fullState = (fullBtnCount % 2 === 1);
     }, true);
     document.addEventListener('fullscreenchange', function () {
       if (window.self !== window.top) return;
