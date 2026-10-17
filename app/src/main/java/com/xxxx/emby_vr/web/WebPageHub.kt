@@ -54,6 +54,18 @@ object WebPageHub {
      */
     var navHandler: ((String) -> Unit)? = null
 
+    /**
+     * 合成历史栈本体（放在 Hub 上：跨回调作用域都能够到）。
+     * navSite 记它是哪个站——换站时清栈（回首页/换站不残留别的站的路线）。
+     */
+    var navStack = mutableListOf<String>()
+    var navSite = -1
+    fun navResetFor(site: Int) { if (navSite != site) { navStack.clear(); navSite = site } }
+    fun pushNav(u: String) {
+        if (navStack.isEmpty() || navStack.last() != u) navStack.add(u)
+        if (navStack.size > 24) navStack.removeAt(0)
+    }
+
     /** 当前是否有网页页在用交互 */
     val active: Boolean
         get() = tapHandler != null
