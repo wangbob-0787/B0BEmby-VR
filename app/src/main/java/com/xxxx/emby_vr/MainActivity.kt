@@ -917,7 +917,7 @@ class MainActivity : ComponentActivity() {
             if (!pressed) runOnUiThread { stopOffsetRepeat() }
         }
 
-        override fun onBack() {
+        override fun onBack(onScreen: Boolean) {
             vrInputLive = true
             runOnUiThread {
                 /*
@@ -928,8 +928,8 @@ class MainActivity : ComponentActivity() {
                 Log.i(
                     TAG,
                     "光柱 B 键现场：网页在屏=$webOnScreen 被播放器顶掉=$webHiddenByStream " +
-                        "光标在面板=$panelPointerOnPanel 网页页=${webSiteState.value} " +
-                        "记下的站=${webStreamSite}",
+                        "光标在面板=$panelPointerOnPanel 光柱在银幕=$onScreen " +
+                        "网页页=${webSiteState.value} 记下的站=${webStreamSite}",
                 )
                 /*
                  * 父亲 2026-10-07 重定 B 键语义：
@@ -983,8 +983,19 @@ class MainActivity : ComponentActivity() {
                      * 网页其实一直活着（接管只是把它从大银幕上收起来，没有销毁、地址没动），
                      * 所以这里跟系统返回键走同一条路：停下播放器、把大银幕交回网页。
                      * 这一支必须排在下面 openWeb 那一支**之前**，否则永远轮不到。
+                     *
+                     * 【2026-10-17 19:26 父亲立规：只有光柱指着大银幕那一按才回网页】
+                     * 原来这里不看光柱落在哪 —— 对着天上、地板按 B 也把银幕顶回网页
+                     * （日志现场：`被播放器顶掉=true 光标在面板=false`，光柱其实不在银幕上）。
+                     * 现在这一支加一道闸：`onScreen` 为假就什么都不做。
+                     * 语义与 2026-10-16 定的总规矩一致 —— B 键"光标指着谁才管谁"。
                      */
-                    returnFromStreamToWeb()
+                    if (onScreen) {
+                        Log.i(TAG, "光柱 B 键 → 播放器让位，银幕交回网页（光柱指着银幕）")
+                        returnFromStreamToWeb()
+                    } else {
+                        Log.i(TAG, "光柱 B 键忽略：光柱没指在银幕上（接管后只认指着银幕那一按）")
+                    }
                 } else if (renderer.videoActive) {
                     Log.i(TAG, "光柱 B 键忽略：光标对着播放画面（播放页操作走控制条）")
                 } else if (panelInputReady()) {

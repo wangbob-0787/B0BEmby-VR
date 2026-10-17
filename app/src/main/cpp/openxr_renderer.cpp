@@ -3109,10 +3109,23 @@ void pushInput(VrContext &c) {
     const char *handName[2] = {"左手", "右手"};
 
     for (int h = 0; h < 2; h++) {
-        // B 键 → 返回
+        /*
+         * B 键 → 返回。
+         *
+         * 【2026-10-17 19:26 父亲定：接管之后，只有光柱**指着大银幕**那一按才回网页】
+         *
+         * 原来这里只报"按下去了"，界面层无从知道光柱落在哪，于是对着天上、地板按 B
+         * 也把银幕交回网页（父亲实测反馈）。射线打没打中银幕只有这边算得出来，
+         * 所以跟着这次按键一起报上去，由界面层决定管不管。
+         */
         if (c.bDown[h] && !c.sinkLastBack[h] && c.sinkBack != nullptr) {
-            LOGI("VR 输入：%s B 键 → 返回", handName[h]);
-            env->CallVoidMethod(c.inputSink, c.sinkBack);
+            float bT = 0.f, bu = 0.f, bv = 0.f, bx = 0.f, by = 0.f, bz = 0.f;
+            const bool aimOnScreen = rayHitsPlacement(c.aimPose[h], frontScreen(c),
+                                                      &bT, &bu, &bv, &bx, &by, &bz);
+            LOGI("VR 输入：%s B 键 → 返回（光柱落在银幕上=%d）", handName[h],
+                 aimOnScreen ? 1 : 0);
+            env->CallVoidMethod(c.inputSink, c.sinkBack,
+                                (jboolean) (aimOnScreen ? JNI_TRUE : JNI_FALSE));
             clearJavaException(env, "输入回调 onBack");
         }
         c.sinkLastBack[h] = c.bDown[h];
@@ -6676,7 +6689,8 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachInputSink(JNIEnv *env, jobject /*
     g.sinkMenuPointer = env->GetMethodID(cls, "onMenuPointer", "(FFZ)V");
     g.sinkMenuClick = env->GetMethodID(cls, "onMenuClick", "(FF)V");
     g.sinkTriggerState = env->GetMethodID(cls, "onTriggerState", "(Z)V");
-    g.sinkBack = env->GetMethodID(cls, "onBack", "()V");
+    /* (Z)V：B 键回调带上"光柱是否落在银幕上"（2026-10-17 父亲定，见上面 B 键那一段） */
+    g.sinkBack = env->GetMethodID(cls, "onBack", "(Z)V");
     g.sinkPanelFocus = env->GetMethodID(cls, "onPanelFocus", "(Z)V");
     g.sinkPanelBack = env->GetMethodID(cls, "onPanelBackMask", "(I)V");
     // 视频画面首次到纹理层（换片等待期的黑幕 / 转圈等这个信号才收）

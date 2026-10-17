@@ -425,7 +425,14 @@ object VrNative {
          * 方向：sx 右为正、sy **上**为正（与 OpenXR 一致），面板层内部再翻成面板坐标。
          */
         fun onStick(px: Float, py: Float, sx: Float, sy: Float)
-        fun onBack()
+        /**
+         * B 键 → 返回。
+         *
+         * `onScreen` = 按下那一刻**光柱是否落在银幕上**（射线打中银幕面片）。
+         * 2026-10-17 父亲定：接管之后只有「对着大银幕按 B」才把银幕交回网页，
+         * 对着别处按 B 不许动它。落点只有原生算得出来，所以跟着这次按键一起报上来。
+         */
+        fun onBack(onScreen: Boolean)
 
         /** 控制条上的指针（坐标是控制条面板像素：1920×270） */
         /**
