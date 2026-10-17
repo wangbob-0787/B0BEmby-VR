@@ -252,8 +252,20 @@
      * liveSince 是 scan() 里只有"窗口占了屏幕九成"才会置上的标记：
      *   没置上 = 现在只是小窗试看 → 不交。
      */
-    /* 接管门槛仍是九成（父亲 2026-10-17 定的顺序：先抓地址，铺满九成才接管） */
-    if (!fullState) { console.log('[b0b] 没交出去：你还没按全屏按钮（网页全屏或全屏）'); return; }
+    /*
+     * 接管门槛仍是九成（父亲 2026-10-17 定的顺序：先抓地址，铺满九成才接管）。
+     *
+     * 【2026-10-18 01:05 破案】父亲点网页全屏后日志仍说「你还没按全屏按钮」。
+     * 原因：全屏这件事原来只记在**按下它的那一层**（fullState 是个每层独立的变量），
+     * 而腾讯把它记在最外层、播放接口的响应却是在播放器那一层被扫到的 ——
+     * 两层各自算，里头那层永远看不见外头按过全屏，于是地址抓到了也交不出去。
+     * 改成：按全屏时往 localStorage 记一个时间戳（**同站点各层共享**），
+     * 哪一层来交都能读到；翻页时清掉（下面归零那处），语义仍是"这一页我按过全屏"。
+     */
+    var fsShared = 0;
+    try { fsShared = parseInt(localStorage.getItem('b0b:fullAt') || '0', 10) || 0; } catch (e) {}
+    var fsOk = fullState || (fsShared > 0 && Date.now() - fsShared < 3 * 3600 * 1000);
+    if (!fsOk) { console.log('[b0b] 没交出去：你还没按全屏按钮（网页全屏或全屏）'); return; }
     /*
      * 交接现场诊断（2026-10-17 23:14 加）：把这一刻页面上的 video 元素长什么样打出来。
      * 腾讯"抓到了地址却说没在播"那件事，靠这一行就能分清是
@@ -1673,6 +1685,11 @@
        */
       lastFullAt = 0;
       fullState = false;
+      /*
+       * 共享标记只在**最外层**换页时清（2026-10-18 01:05）：
+       * 播放器那一层自己换地址不算换页，清了就等于把父亲刚按的全屏白按掉。
+       */
+      try { if (window.self === window.top) localStorage.removeItem('b0b:fullAt'); } catch (e) {}
       console.log('[b0b]①页面地址变为 ' + String(location.href).slice(-70) + '（全屏计数归零）');
     }
     /*
@@ -1765,6 +1782,8 @@
       if (!el) return;
       fullState = true;
       lastFullAt = Date.now();
+      /* 同站点各层共享（2026-10-18 01:05）：见 flushPendingPlay 里的说明 */
+      try { localStorage.setItem('b0b:fullAt', String(Date.now())); } catch (e) {}
       /*
        * 【2026-10-17 18:35 父亲问"为什么点全屏时不重新拿一次地址，要去前面捞"】
        *
@@ -1788,6 +1807,10 @@
       if (window.self !== window.top) return;
       lastFullAt = Date.now();
       fullState = !!(document.fullscreenElement || document.webkitFullscreenElement);
+      try {
+        if (fullState) localStorage.setItem('b0b:fullAt', String(Date.now()));
+        else localStorage.removeItem('b0b:fullAt');
+      } catch (e) {}
       console.log('[b0b]①浏览器全屏事件 → ' + (fullState ? '进入全屏（可接管）' : '退出全屏'));
     });
   } catch (e) {}
