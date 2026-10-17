@@ -2248,8 +2248,22 @@ class MainActivity : ComponentActivity() {
                             ),
                         )
                     }
-                    if (items.isEmpty()) null
-                    else com.xxxx.emby_vr.danmaku.DanmakuTrack(1920f, 1080f, items)
+                    if (items.isEmpty()) return@withContext null
+                    /*
+                     * 【2026-10-17 18:10 现场定案：B站 的 XML 不按时间排】
+                     *
+                     * 在播编号 41999863759 实测：3600 条，前 8 条时间是
+                     * 484 / 226 / 471 / 267 / 1164 / 1065 / 833 / 839 秒 —— 乱的。
+                     * 而画笔按开始时间顺序走、遇到"还没到点"的那条就 `break`
+                     * （DanmakuView.onDraw 里那句 `if (item.startMs > nowMs) break`），
+                     * 于是第一条（484 秒）就把循环停住 → 屏幕上一条都没有，
+                     * 日志原文：`弹幕画笔：… 轨道=3600 本帧画了=0 条`。
+                     *
+                     * Emby 那条路一直正常，正是因为 AssDanmakuParser 里有
+                     * `items.sortBy { it.startMs }`，网页这条路漏了这一步。
+                     */
+                    items.sortBy { it.startMs }
+                    com.xxxx.emby_vr.danmaku.DanmakuTrack(1920f, 1080f, items)
                 } catch (t: Throwable) {
                     Log.w(TAG, "⑦ 弹幕没拉下来：" + t.message)
                     null
@@ -4103,7 +4117,15 @@ class MainActivity : ComponentActivity() {
         }
         subtitleStreamIndices = subs.mapNotNull { it.index }
         val rows = mutableListOf<com.xxxx.emby_vr.panel.MenuRowItem>()
-        if (hasDanmakuTrack) {
+        /*
+         * 【2026-10-17 18:12 父亲现场：字幕菜单里看不到「弹幕」那行】
+         *
+         * 上面那句 `subtitleDanmakuRow` 已经把网页流的弹幕算进去了（点击处理也按它分派），
+         * 但这里放行那一行时还只看 Emby 自己的弹幕轨（hasDanmakuTrack）——
+         * 网页播片时 Emby 侧没有任何字幕流，于是这行**从来没被生成**，
+         * 菜单里自然看不到。两处口径要一致：用同一个判断。
+         */
+        if (subtitleDanmakuRow) {
             rows += com.xxxx.emby_vr.panel.MenuRowItem("弹幕", danmakuOn)
         }
         subs.forEachIndexed { i, s ->
