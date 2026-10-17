@@ -602,7 +602,6 @@ private object WebRuntime {
          * 接管时网页面销毁重建，真实历史断了；凭 rect 每跳带回来的页面地址登记，
          * 连续相同只记一次、上限 24 条、换站清栈 —— B 键按这个栈一路回退到首页。
          */
-        if (frame.isNotBlank()) com.xxxx.emby_vr.web.WebPageHub.navResetFor(site)
         if (frame.isNotBlank()) com.xxxx.emby_vr.web.WebPageHub.pushNav(frame)
         val rect = obj.optJSONObject("rect")
         if (rect != null) {
@@ -1042,6 +1041,8 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
     }
 
     var webRef by remember { mutableStateOf<WebView?>(null) }
+    /* 换站清栈（16:39 定稿的另一半）: navSite 不是本站就清掉上一站的路线 */
+    LaunchedEffect(site) { com.xxxx.emby_vr.web.WebPageHub.navResetFor(site) }
     /* 火狐内核那两个（2026-10-14）：view 用来发事件，session 用来加载与前进后退 */
     var geckoRef by remember { mutableStateOf<org.mozilla.geckoview.GeckoView?>(null) }
     var geckoSessionRef by remember { mutableStateOf<org.mozilla.geckoview.GeckoSession?>(null) }
