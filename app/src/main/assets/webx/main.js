@@ -577,9 +577,16 @@
    * 所以：webClick = 网页全屏按钮的点击计数（奇=网页全屏开着）；fullClick = 进入全屏按钮的计数（奇=真全屏开着）。
    * fullState = 任一为奇 —— 网页全屏或真全屏，都接管。
    */
-  var webClick = 0;
-  var fullClick = 0;
+  /*
+   * 【2026-10-17 15:52 我的判断（经父亲问责"要有判断力"后定案，A 方案）】
+   *
+   * 状态机只有一句：**按钮被点（或浏览器进入元素全屏）= 我要投屏**。
+   * 退出只有一个出口：B 键三清。没有奇偶计数、没有两把开关、没有反向语义 ——
+   * 误交的风险由 20 秒同址防重兜住（同一条地址不会反复交）。
+   * 换代成本：删掉 webClick/fullClick 即可，状态只剩 fullState 单变量。
+   */
   var fullState = false;
+  var lastFullAt = 0;      /* 最近一次全屏信号，用来做接管间隔粗计时 */
   var lastSubmitSig = '';
   var lastSubmitAt = 0;
 
@@ -977,7 +984,7 @@
       if (!cands[0].audio && !isWhole) {
         var waitedMs = 0;
         if (liveSince) waitedMs = Date.now() - liveSince;
-        else if (fullState) waitedMs = Date.now() - 3000;   /* 全屏是信号阶段，等声不用精确计时 */
+        else if (fullState) waitedMs = Date.now() - (lastFullAt || (Date.now() - 3000));
         if (waitedMs < 8000) {
           console.log('[b0b]③先不交：现在只有画面那条，等声音那条（已等 ' +
             Math.round(waitedMs / 1000) + ' 秒，最多 8 秒）');
@@ -1471,8 +1478,7 @@
        * 页面重建（按B后重载）自身会从零；SPA 换页（不重载）在这里归零 ——
        * 首次点全屏=铺满，第二次=收回。
        */
-      webClick = 0;
-      fullClick = 0;
+      lastFullAt = 0;
       fullState = false;
       console.log('[b0b]①页面地址变为 ' + String(location.href).slice(-70) + '（全屏计数归零）');
     }
@@ -1552,15 +1558,14 @@
         '.bpx-player-ctrl-web,.bpx-player-ctrl-web-enter,.bpx-player-ctrl-full,' +
         '.squirtle-video-pagefullscreen,.squirtle-video-fullscreen,[aria-label*="全屏"]') : null;
       if (!el) return;
-      var cls = String(el.className || '');
-      if (cls.indexOf('bpx-player-ctrl-full') >= 0 || cls.indexOf('squirtle-video-fullscreen') >= 0) fullClick++;
-      else webClick++;
-      fullState = (webClick % 2 === 1) || (fullClick % 2 === 1);
-      console.log('[b0b]①全屏类按钮被点：web=' + webClick + '，full=' + fullClick +
-        ' → ' + (fullState ? '进入全屏（可接管）' : '退出全屏'));
+      fullState = true;
+      lastFullAt = Date.now();
+      var label = (el.getAttribute && (el.getAttribute('aria-label') || el.getAttribute('title'))) || '';
+      console.log('[b0b]①全屏按钮被点（' + (label || String(el.className).slice(0, 36)) + '）→ 进入投屏态（退出只认 B 键）');
     }, true);
     document.addEventListener('fullscreenchange', function () {
       if (window.self !== window.top) return;
+      lastFullAt = Date.now();
       fullState = !!(document.fullscreenElement || document.webkitFullscreenElement);
       console.log('[b0b]①浏览器全屏事件 → ' + (fullState ? '进入全屏（可接管）' : '退出全屏'));
     });
