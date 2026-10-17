@@ -2194,7 +2194,30 @@ class MainActivity : ComponentActivity() {
                     conn.setRequestProperty("User-Agent", "Mozilla/5.0")
                     conn.connectTimeout = 10000
                     conn.readTimeout = 10000
-                    val raw = conn.inputStream.bufferedReader().readText()
+                    /*
+                     * 【2026-10-17 17:26 实测根因】B站 的 dm/list.so 回的是 **raw deflate**
+                     * （.18 上直接 curl：16030 字节二进制，zlib -15 解出 37444 字节 XML）。
+                     * 原来按文本读 → 全是乱码 → 正则一条都匹配不到 → 日志"弹幕是空的"。
+                     * 现在先按 deflate 解，解不开再当明文（防它哪天改回明文）。
+                     */
+                    val bytes = conn.inputStream.use { it.readBytes() }
+                    val raw = try {
+                        val inf = java.util.zip.Inflater(true)
+                        inf.setInput(bytes)
+                        val out = java.io.ByteArrayOutputStream(bytes.size * 4)
+                        val buf = ByteArray(8192)
+                        var guard = 0
+                        while (!inf.finished() && guard++ < 4096) {
+                            val n = inf.inflate(buf)
+                            if (n == 0) {
+                                if (inf.needsInput() || inf.needsDictionary()) break
+                            } else out.write(buf, 0, n)
+                        }
+                        inf.end()
+                        String(out.toByteArray(), Charsets.UTF_8)
+                    } catch (t: Throwable) {
+                        String(bytes, Charsets.UTF_8)
+                    }
                     if (raw.isEmpty()) return@withContext null
                     val re = Regex("<d p=\"([^\"]+)\">([^<]*)</d>")
                     val items = ArrayList<com.xxxx.emby_vr.danmaku.DanmakuItem>()
