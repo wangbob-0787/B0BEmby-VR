@@ -990,11 +990,22 @@ class MainActivity : ComponentActivity() {
                      * 现在这一支加一道闸：`onScreen` 为假就什么都不做。
                      * 语义与 2026-10-16 定的总规矩一致 —— B 键"光标指着谁才管谁"。
                      */
-                    if (onScreen) {
+                    /*
+                     * 【2026-10-17 22:53 父亲实测：播自己的片子时对着银幕按 B 跳回了 B站 网页】
+                     *
+                     * `webHiddenByStream` 的语义是"**这一部网页流**被我们的播放器顶掉了"。
+                     * 播 Emby 片子时它还留着上一部 B站 的 true（现场日志：
+                     * `被播放器顶掉=true 记下的站=null`），于是这一支把银幕交回网页 —— 张冠李戴。
+                     * 所以再上一道闸：此刻必须真的在放网页流（`webStreamSite` 非空）
+                     * 才允许"让位回网页"。播自己的片子时 webStreamSite 已在起播处清成 null。
+                     */
+                    if (onScreen && webStreamSite != null) {
                         Log.i(TAG, "光柱 B 键 → 播放器让位，银幕交回网页（光柱指着银幕）")
                         returnFromStreamToWeb()
-                    } else {
+                    } else if (!onScreen) {
                         Log.i(TAG, "光柱 B 键忽略：光柱没指在银幕上（接管后只认指着银幕那一按）")
+                    } else {
+                        Log.i(TAG, "光柱 B 键忽略：现在放的不是网页流（记下的站=null）")
                     }
                 } else if (renderer.videoActive) {
                     Log.i(TAG, "光柱 B 键忽略：光标对着播放画面（播放页操作走控制条）")
@@ -2148,7 +2159,13 @@ class MainActivity : ComponentActivity() {
                  * 网页被我们自己的播放器顶掉时：B 的含义是「回网页」，不是「面板返回」
                  * （panel.back() 会把面板导航栈退回根页面，表现出来就是回到 B站 首页）。
                  */
-                if (webHiddenByStream) {
+                /*
+                 * 【2026-10-17 22:53 父亲实测：播自己的片子时对着银幕按 B 跳回了 B站 网页】
+                 * 与光柱那条 B 键同一个病根：`webHiddenByStream` 是"网页流被顶掉"的标记，
+                 * 播 Emby 片子时它还留着上一部 B站 的 true。两道闸一起上：既要在放网页流
+                 * （`webStreamSite` 非空），也要网页真的被顶掉。
+                 */
+                if (webHiddenByStream && webStreamSite != null) {
                     /*
                      * 大银幕上是我们自己的播放器 → B = 回网页（回到起播前那一页）。
                      */
@@ -2807,7 +2824,20 @@ class MainActivity : ComponentActivity() {
              */
             val isWeb = webStream != null
             /* 从 Emby 播的片子：清掉"这一部是从网页抓来的"标记，免得按 B 跳到网页去 */
-            if (!isWeb) webStreamSite = null
+            if (!isWeb) {
+                webStreamSite = null
+                /*
+                 * 【2026-10-17 22:53 父亲实测：播 Emby 片子时对着大银幕按 B 跳回 B站 网页】
+                 *
+                 * `webHiddenByStream` 记的是"**这一部网页流**被我们自己的播放器顶掉、B 键该回网页"。
+                 * 换去放 Emby 片子时它还留着上一部 B站 的 true —— 病根在这里。
+                 * 播非网页片子时一并清掉：B 键那一支的语义只属于网页接管，
+                 * 播自己的片子时按 B 就该什么也不做（父亲 22:55 明确）。
+                 * 注意：这只在"起播非网页片子"时清，不动 closeWeb() 里那条
+                 * （那一条清掉会把接管流程刚置好的标记抹掉，2026-10-16 踩过）。
+                 */
+                webHiddenByStream = false
+            }
             /*
              * 网页流：控制条上要写「正在播放 哔哩哔哩-片名」（父亲 2026-10-16）。
              * 原来只在网页还挂在大银幕上时才写站点名，接管播放时网页面被收掉、
