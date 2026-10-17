@@ -83,6 +83,7 @@ class MpvBackend(private val context: Context) {
         @Volatile private var cDuration = 0.0
         @Volatile private var cCacheTime = 0.0
         @Volatile private var cVideoW = 0
+        @Volatile private var cVideoH = 0
         @Volatile private var cSubText = ""
         @Volatile private var cEof = false
         @Volatile private var cPaused = false
@@ -192,6 +193,12 @@ class MpvBackend(private val context: Context) {
             if (tick % 2L == 1L) {
                 val w = try { MPVLib.getPropertyInt("video-params/w") } catch (_: Throwable) { null }
                 if (w == null) ok = false else cVideoW = w
+                /*
+                 * 高度一起缓存（父亲 2026-10-17：银幕比例必须每部片子重算，
+                 * 不能被上一部片子的比例影响）。缓存成字段，界面线程读它不用碰 MPVLib。
+                 */
+                val h = try { MPVLib.getPropertyInt("video-params/h") } catch (_: Throwable) { null }
+                if (h == null) ok = false else cVideoH = h
             }
             return ok
         }
@@ -218,6 +225,7 @@ class MpvBackend(private val context: Context) {
             cDuration = 0.0
             cCacheTime = 0.0
             cVideoW = 0
+            cVideoH = 0
             cSubText = ""
             cEof = false
             cTrackList = ""
@@ -570,6 +578,16 @@ class MpvBackend(private val context: Context) {
      * 比"原生纹理来了一帧"可靠 —— 换片瞬间纹理层里还留着上一部的旧帧。
      */
     fun videoReady(): Boolean = cVideoW > 0
+
+    /**
+     * 内核认出的画面尺寸（宽, 高）；拿到第一帧才有值，**每次起播从 0 开始**。
+     *
+     * 用途：银幕比例每部片子重算（父亲 2026-10-17 立的规矩）——
+     * 网页流那一份地址常常不带宽高，不能因此沿用上一部片子的比例。
+     * 值来自轮询线程缓存，界面线程直接读，不碰 MPVLib。
+     */
+    fun videoSize(): Pair<Int, Int>? =
+        if (cVideoW > 0 && cVideoH > 0) (cVideoW to cVideoH) else null
 
     fun currentSubtitleText(): String = cSubText
 

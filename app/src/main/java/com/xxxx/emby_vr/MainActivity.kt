@@ -192,6 +192,21 @@ class MainActivity : ComponentActivity() {
      */
     private var webStreamSite: Int? = null
 
+    /**
+     * 【2026-10-17 23:26 父亲实测：B站 → Emby 片 → B站 之后，控制条还挂着 Emby 片的信息，
+     * 连片名 logo 都还留在大银幕上，画面比例也还是 Emby 那部片的】
+     *
+     * 一句话：从自己的片子切到"网页流"时，上一部片子的遗留物没人清。
+     * 现在起播处明确记下"此刻放的是网页流"，凡是 Emby 专属的刷新（标题、logo）都让位。
+     */
+    private var webPlayingNow = false
+
+    /**
+     * 上一次按内核报的尺寸算过的比例。0 = 还没算过（新起播一律清零）。
+     * 父亲 2026-10-17 立的规矩：每部片子的比例都要重算，不能被上一部影响。
+     */
+    private var lastKernelAspect = 0f
+
     /** 银幕上现在是不是在放网页（原生侧银幕取样网页面纹理） */
     private var webOnScreen = false
     /*
@@ -1601,6 +1616,14 @@ class MainActivity : ComponentActivity() {
      * 规矩：**取不到片名就不写**，别用空值覆盖别人写好的标题。
      */
     private fun refreshOsdTitleFromItem() {
+        /*
+         * 【2026-10-17 23:26 父亲实测：从 Emby 片子切到 B站 视频后，控制条标题还是 Emby 片名】
+         *
+         * 这一拍每秒跑一次（startOsdTicker），而 currentItem 还停在上一部 Emby 片子上，
+         * 于是刚写好的「站点-片名」下一秒就被它按回去了。
+         * 正在放网页流时不许它插手 —— 标题由 applyWebStreamTitle 一个人负责。
+         */
+        if (webPlayingNow) return
         val t = itemTitleOf(currentItem)
         if (t.isNotEmpty()) osdState.title = t
     }
@@ -1968,6 +1991,22 @@ class MainActivity : ComponentActivity() {
                 refreshOsdTitleFromItem()
                 // 弹幕画布要的播放位置：主线程取，画笔线程只读缓存
                 refreshPosBase()
+                /*
+                 * 银幕比例每部片子重算（父亲 2026-10-17 立的规矩）。
+                 * 内核拿到第一帧后才会报出真实尺寸；报出来、且与当前用的比例不一样就改。
+                 * 这条同时管两件事：网页流那一份地址不带宽高时不再沿用上一部的比例；
+                 * Emby 片子自己报的尺寸也和探测值不一致时以真实帧为准。
+                 */
+                mpvBackend?.videoSize()?.let { (vw, vh) ->
+                    val a = vw.toFloat() / vh.toFloat()
+                    if (kotlin.math.abs(a - lastKernelAspect) > 0.001f) {
+                        lastKernelAspect = a
+                        com.xxxx.emby_vr.vr.VrNative.setVideoAspect(a)
+                        applyDanmakuCanvas(a)
+                        com.xxxx.emby_vr.vr.VrNative.setVideoSize(vw, vh)
+                        Log.i(TAG, "内核报出画面尺寸 ${vw}x${vh} → 银幕比例重算为 $a")
+                    }
+                }
                 kotlinx.coroutines.delay(1000)
             }
             osdState.playing = false
@@ -2710,6 +2749,21 @@ class MainActivity : ComponentActivity() {
 
     private fun playWebStream(obj: org.json.JSONObject) {
         /*
+         * 【2026-10-17 23:28 父亲立的机制：不管从哪儿切到哪儿，控制条与弹幕屏的信息都要跟着换】
+         *
+         * 三种切换都得走同一套清场：Emby片→Emby片、Emby片→网站视频、网站视频→网站视频。
+         * 前一种本来就在 playMedia 开头走 clearForNewMedia；网站这条路原来**什么都没清** ——
+         * 于是父亲看到「B站→Emby片→B站」之后，控制条还挂着 Emby 片的信息、
+         * 片名 logo 还留在大银幕上、画面还是 Emby 那部片的比例（现场日志 23:21:15：
+         * `起播走 mpv 内核（…片源 hevc SDR 3840x1604…）` —— 那是上一部 Emby 片的尺寸）。
+         *
+         * 这里补上同一次清场（标题/时长/进度、银幕比例回 16:9、字幕表清空、片名 logo 收掉），
+         * 清完由网页流自己填：标题与时长来自抓来的那一份，比例来自网页报的宽高。
+         */
+        Log.i(TAG, "换源：网站视频起播，先按新来源清一遍控制条与弹幕屏")
+        clearForNewMedia()
+        lastKernelAspect = 0f
+        /*
          * 【2026-10-17】记下接管那一刻页面在哪 —— 按 B 回网页就落回这一页。
          * 以此刻页面为准（WebLibraryScreen 已用最新一跳覆盖过 frame）。
          */
@@ -2823,6 +2877,17 @@ class MainActivity : ComponentActivity() {
              * 能正常播的 4XVR 一个路子。标记由取播放信息那一步立起来。
              */
             val isWeb = webStream != null
+            /*
+             * 网页流：从这一刻起，Emby 那套"上一部片子的信息"全部让位
+             * （标题、片名 logo、银幕比例 —— 父亲 2026-10-17 实测的三处残留）。
+             */
+            webPlayingNow = isWeb
+            /* 新起播：上一次按内核尺寸算过的比例作废，等这一部自己报（父亲 2026-10-17） */
+            lastKernelAspect = 0f
+            if (isWeb) {
+                com.xxxx.emby_vr.vr.VrNative.setLogoVisible(false)
+                Log.i(TAG, "网页流起播：片名 logo 收掉（那是上一部 Emby 片子的）")
+            }
             /* 从 Emby 播的片子：清掉"这一部是从网页抓来的"标记，免得按 B 跳到网页去 */
             if (!isWeb) {
                 webStreamSite = null

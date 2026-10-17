@@ -102,6 +102,25 @@
     return false;
   }
 
+  /*
+   * 页面上那个正在播的视频元素的真实尺寸（拿不到就 0）。
+   * 用途：银幕比例必须每部片子重算（父亲 2026-10-17 立的规矩）——
+   * 网页流的地址常常不带宽高，客户端就只能沿用上一部片子的比例，画面就被压扁。
+   * 页面里的视频元素自己知道尺寸，顺手带过去最准、也最早。
+   */
+  function pageVideoSize() {
+    try {
+      var vs = document.querySelectorAll('video');
+      for (var i = 0; i < vs.length; i++) {
+        var v = vs[i];
+        if (v && v.videoWidth > 0 && v.videoHeight > 0) {
+          return { w: v.videoWidth | 0, h: v.videoHeight | 0 };
+        }
+      }
+    } catch (e) {}
+    return { w: 0, h: 0 };
+  }
+
   function pageIsPlaying() {
     var vs = document.querySelectorAll('video');
     for (var i = 0; i < vs.length; i++) {
@@ -196,9 +215,10 @@
      * 父亲 2026-10-16 现场：播放列表已经识别到，却始终没交出去。
      */
     if (!pendingPlay && pendingQq && Date.now() - qqAt < 180000) {
+      var qqSz = pageVideoSize();
       pendingPlay = {
         title: '', kind: 'play', t: Date.now(), frame: location.href, winId: poolWin,
-        durSec: 0, quality: 0, site: 'qq',
+        durSec: 0, quality: 0, site: 'qq', width: qqSz.w, height: qqSz.h,
         streams: [{ id: 0, height: 0, width: 0, bw: 0, vcodec: 'h264',
                     video: pendingQq, audio: '' }]
       };
@@ -1062,7 +1082,8 @@
         ep: biliEp,
         season: biliSeason,
         title: '', kind: 'play', t: Date.now(), frame: location.href, winId: poolWin,
-        durSec: 0, quality: 0, site: '', streams: cands
+        durSec: 0, quality: 0, site: '', width: pageVideoSize().w, height: pageVideoSize().h,
+        streams: cands
       };
       console.log('[b0b]③ 交给客户端 ' + cands.length + ' 条候选：' +
         cands.map(function (c, i) {
