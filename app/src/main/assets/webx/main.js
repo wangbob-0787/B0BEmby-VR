@@ -206,7 +206,7 @@
     }
     /* 每道关卡都留下记录：抓不到时能一眼看出卡在哪 */
     if (!pendingPlay) return;
-    if (!isPlayPage()) { console.log('[b0b] 没交出去：当前不是播放页 ' + location.href); return; }
+    /* 【2026-10-17 15:14 父亲定：页面白名单撤了 —— 全屏按钮就是身份 */
     /*
      * 【2026-10-17 03:22 父亲定的口径：停多久都没关系】
      * 原来这里有一道"扣扳机超过 2 分钟就不交"的门 —— 删掉。
@@ -223,7 +223,7 @@
      *   没置上 = 现在只是小窗试看 → 不交。
      */
     /* 接管门槛仍是九成（父亲 2026-10-17 定的顺序：先抓地址，铺满九成才接管） */
-    if (!liveSince) { console.log('[b0b] 没交出去：播放窗口还没到90%（地址已经收着了，等放大）'); return; }
+    if (!fullState) { console.log('[b0b] 没交出去：你还没按全屏按钮（网页全屏或全屏）'); return; }
     /*
      * 【2026-10-17 03:54 简化】只有一个门槛之后，手里的那份必定属于这一次放大，
      * 所以只做一件事：它是不是当前这一集？是就交，不是就丢掉重新攒。
@@ -476,7 +476,7 @@
   var selfFetchKey = '';
   function selfFetchBiliPlayurl(why) {
     try {
-      if (!liveSince || !/\/bangumi\/play\//.test(location.href)) return;
+      if (!fullState || !/\/bangumi\/play\//.test(location.href)) return;
       if (!biliEp || !biliCid) return;
       var key = biliEp + '|' + biliCid;
       if (key === selfFetchKey) return;
@@ -561,6 +561,25 @@
   var poolGoneAt = 0;      /* 页面短暂没有在播窗口的起点（给 20 秒宽限） */
 
   /* 递交 3 秒去重（与本地存储里的 20 秒防重互补：前者防刷屏，后者防按B复活） */
+  /*
+   * 【2026-10-17 15:11-15:14 父亲定稿：接管门槛就是那两个全屏按钮】
+   *
+   * 父亲原话："接管门槛不需要九成了，接管门槛就是这两个按钮，任意按一个都可以。"
+   * 本机 CDP 实测：按钮 aria 进出都叫"网页全屏"不变；进入网页全屏后
+   * #bilibili-player 容器类多出 mode-webscreen，退出则消失 —— 进/退用它裁决。
+   * /tv/ 那类元素全屏走 fullscreenchange 事件，进出都知道。
+   * 占屏比、页面白名单全部退场。
+   */
+  var fullState = false;
+  var fullBtnAt = 0;
+  function readFullMode() {
+    try {
+      var entry = document.getElementById('bilibili-player') ||
+                  document.querySelector('.bpx-player-container');
+      if (entry) return String(entry.className || '').indexOf('webscreen') >= 0;
+    } catch (e) {}
+    return false;
+  }
   var lastSubmitSig = '';
   var lastSubmitAt = 0;
 
@@ -956,7 +975,9 @@
       var pairSig = String(cands[0].video) + '|' + String(cands[0].audio || '');
       var isWhole = !!findWholeFile([cands[0].video]) || /\.m3u8/i.test(String(cands[0].video));
       if (!cands[0].audio && !isWhole) {
-        var waitedMs = liveSince ? (Date.now() - liveSince) : 0;
+        var waitedMs = 0;
+        if (liveSince) waitedMs = Date.now() - liveSince;
+        else if (fullState) waitedMs = Date.now() - (fullBtnAt || (Date.now() - 3000));
         if (waitedMs < 8000) {
           console.log('[b0b]③先不交：现在只有画面那条，等声音那条（已等 ' +
             Math.round(waitedMs / 1000) + ' 秒，最多 8 秒）');
@@ -1383,21 +1404,32 @@
       /* 退回小窗：给 3 秒宽限（切全屏那一瞬可能量不到九成），超时才清 */
       if (!poolGoneAt) poolGoneAt = Date.now();
       if (Date.now() - poolGoneAt > 3000) {
-        var hadNow = candPool.length;
         liveSince = 0;
         poolSince = 0;
         poolWin = '';
         poolGoneAt = 0;
-        pendingPlay = null;
-        candPool = [];
-        candSeen = {};
-        poolKeysLog = {};
-        candTried = 0;
-        lastPairedVideo = '';
-        candTried = 0;
-        console.log('[b0b]① 缩回小窗 → 清掉刚收的 ' + hadNow + ' 条，下次放大重新收');
+        console.log('[b0b]① 缩回小窗：接管交给全屏按钮信号，已收的分片留着（串片有两道关挡着）');
       }
     }
+    /*
+     * 【2026-10-17 15:14】按钮点完之后：由 B站 自己的铺满类裁决进/退。
+     * （按钮 aria 进出不变，实测；铺满容器类 mode-webscreen 是它自己的话。）
+     */
+    if (fullBtnAt) {
+      if (Date.now() - fullBtnAt < 1800) {
+        if (!fullState && readFullMode()) {
+          fullState = true;
+          console.log('[b0b]①按按钮后确认铺满 → 允许接管');
+        }
+      } else if (fullState && !readFullMode()) {
+        fullState = false;
+        console.log('[b0b]①铺满类没了 → 你退出了全屏，接管解除');
+        fullBtnAt = 0;
+      } else if (!readFullMode() && Date.now() - fullBtnAt > 2500) {
+        fullBtnAt = 0;
+      }
+    }
+
     /*
      * 【2026-10-17 00:20 观测：小窗里在试播什么，也要打出来】
      *
@@ -1522,6 +1554,23 @@
     window.addEventListener('error', function (ev) {
       try { console.log('[b0b]脚本出错：' + (ev && ev.message ? ev.message : '?') +
         ' @ ' + (ev && ev.filename ? ev.filename : '?') + ':' + (ev && ev.lineno ? ev.lineno : '?')); } catch (e) {}
+    });
+  } catch (e) {}
+  try {
+    window.addEventListener('click', function (ev) {
+      if (window.self !== window.top) return;
+      var el = ev.target && ev.target.closest ? ev.target.closest(
+        '.bpx-player-ctrl-web,.bpx-player-ctrl-web-enter,.bpx-player-ctrl-full,' +
+        '.squirtle-video-pagefullscreen,.squirtle-video-fullscreen,[aria-label*="全屏"]') : null;
+      if (!el) return;
+      fullBtnAt = Date.now();
+      var label = (el.getAttribute && (el.getAttribute('aria-label') || el.getAttribute('title'))) || '';
+      console.log('[b0b]①全屏按钮被点（' + (label || String(el.className).slice(0, 36)) + '），1.8 秒内由铺满类裁决进出');
+    }, true);
+    document.addEventListener('fullscreenchange', function () {
+      if (window.self !== window.top) return;
+      fullState = !!(document.fullscreenElement || document.webkitFullscreenElement);
+      console.log('[b0b]①浏览器全屏事件 → ' + (fullState ? '进入全屏（可接管）' : '退出全屏'));
     });
   } catch (e) {}
   setInterval(scan, 400);
