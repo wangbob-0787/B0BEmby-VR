@@ -2326,6 +2326,16 @@ class MainActivity : ComponentActivity() {
          * 重新建起来时只能载入站点首页（日志：`网页开始载入：about:blank` → `bilibili.com/`），
          * 于是"按 B 回网页"实际是"回到 B站 首页"。现在把接管时记下的那一页交给网页屏。
          */
+        /*
+         * 【2026-10-17 15:11 父亲定稿：退出接管三清 —— 清成对地址、清控制条显示信息】
+         * 成对地址在网页面重建时由扩展天生清空；这里清客户端侧的网页片信息，
+         * 控制条回到"未在播放"，下一轮接管从头来。
+         */
+        webCid = 0L
+        webSubtitleUrl = ""
+        webDanmakuLoaded = false
+        osdState.title = ""
+        osdState.hasPlayback = false
         val back = webReturnUrl
         webStartUrlState.value = back
         webSiteState.value = webSiteBeforeStream
