@@ -1058,18 +1058,31 @@
     var vids = {}, auds = {}, cidOrder = [];
     for (var i = 0; i < list.length; i++) {
       var u = list[i];
-      /* 实测命名有 -sr1 / _sr1 / _qe1 几种写法（父亲 2026-10-16 现场日志） */
-      var f = biliFileOf(u);
-      var m = f.match(/^([0-9a-z_]{5,}?)(?:[-_]s?r\d+|[-_]qe\d+)?-1-(\d{3,6})\.(m4s|mp4)$/i);
-      if (!m) continue;
-      var cid = m[1];
-      var code = parseInt(m[2], 10);
+      /*
+       * 【2026-10-17 19:16 现场定案（父亲报《珍馐记》还是慢+没声音，r646 已在跑）】
+       *
+       * 这里原来自己又写了一份"认编号"的正则，尾巴照样留在编号里：
+       * 画面 `564290981-1-100241.m4s` → cid 564290981
+       * 声音 `564290981_da2-1-30280.m4s` → cid 564290981_da2
+       * 于是音频被记到另一个 cid 名下，配对结果永远是"只有画面那条"，
+       * 干等到 26 秒才交（日志：`③等了 26 秒还没有声音那条 → 先按单条交（有画无声）`）。
+       *
+       * **认编号只留一处**：身份交给 candKeyOf（它才是"开头纯数字就是身份"的唯一实现），
+       * 这里只负责取"分片类型编号"。以后改规矩只改一个地方。
+       */
+      var code = String(u).match(/-1-(\d{3,6})\.(m4s|mp4)/i);
+      if (!code) continue;
+      var cid = candKeyOf(u);
+      if (!cid || cid === 'x') continue;
+      var videoCode = parseInt(code[1], 10);
       if (!vids[cid] && !auds[cid]) cidOrder.push(cid);
-      var isAudio = (code >= 30200 && code < 30400);
+      var isAudio = (videoCode >= 30200 && videoCode < 30400);
       if (isAudio) {
-        if (!auds[cid] || code > auds[cid].code) auds[cid] = { u: u, code: code };
+        if (!auds[cid] || videoCode > auds[cid].code) auds[cid] = { u: u, code: videoCode };
       } else {
-        if (!vids[cid] || vidScore(code) > vidScore(vids[cid].code)) vids[cid] = { u: u, code: code };
+        if (!vids[cid] || vidScore(videoCode) > vidScore(vids[cid].code)) {
+          vids[cid] = { u: u, code: videoCode };
+        }
       }
     }
     var best = null;
