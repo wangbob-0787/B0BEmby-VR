@@ -502,13 +502,27 @@
   function scanTextForQqHls(text) {
     try {
       if (!text) return;
-      var m = String(text).match(/https?:\/\/[^"'\s]{10,600}?\.m3u8[^"'\s]{0,300}/g);
+      var t = String(text);
+      /*
+       * 【2026-10-18 00:26 探针破案】腾讯的地址就夹在这条响应里，但**斜杠是转义的**：
+       *   腾讯探针：https://vd6.l.qq.com/proxyhttp 类型 text 长度 7369 含m3u8=true 含引号url=false
+       * JSON 里的地址写成 https:\/\/…（每个斜杠前面一个反斜杠），
+       * 而原来的正则要求字面的 https:// —— 于是"含 m3u8"却一条都没匹配上，
+       * 表现为"有时能抓到（别处的地址没转义）有时抓不到"。
+       * 现在正则把可选的反斜杠吃进去，取到后再还原成真地址。
+       */
+      var m = t.match(/https?:\\?\/\\?\/[^"'\s]{6,600}?\.m3u8[^"'\s]{0,400}/g);
       if (m && m.length) {
         var u = m[0].replace(/\\u002F/gi, '/').replace(/\\\//g, '/');
         if (u !== pendingQq) {
           pendingQq = u; qqAt = Date.now();
-          console.log('[b0b] 腾讯播放列表（从接口响应里找到）');
+          console.log('[b0b] 腾讯播放列表（从接口响应里找到，长度 ' + u.length + '）');
         }
+      } else if (t.indexOf('m3u8') >= 0) {
+        /* 有 m3u8 字样却没拼出地址：把那一小段原样打出来，下一轮照着它修（父亲 2026-10-18） */
+        var i = t.indexOf('m3u8');
+        console.log('[b0b] 腾讯播放列表：有 m3u8 字样但拼不出地址，现场 → ' +
+          t.slice(Math.max(0, i - 90), i + 40).replace(/\s+/g, ' '));
       }
     } catch (e) {}
   }
