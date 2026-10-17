@@ -423,6 +423,23 @@ class MpvBackend(private val context: Context) {
     /** 网页流要挂的外部音轨：playStream 交代，play 在文件加载完成后用 audio-add 挂上去 */
     @Volatile private var pendingAudioUrl: String? = null
 
+    /**
+     * 网页流的请求头（Referer / User-Agent）：audio-add 挂音轨之前要**再设一遍** ——
+     * `referrer`/`user-agent`/`http-header-fields` 都是"对下一个文件生效"的选项，
+     * 不重设的话后挂的音轨拿不到头，B站 会把音频那条拒掉（有画无声）。2026-10-17 18:45。
+     */
+    @Volatile private var streamHeaders: Map<String, String> = emptyMap()
+
+    /** 把网页流的请求头设进内核（playStream 与 audio-add 前各调一次） */
+    private fun applyStreamHeaders() {
+        val h = streamHeaders
+        if (h.isEmpty()) return
+        /* 逗号是这张列表的分隔符，值里的逗号（UA 的 `(KHTML, like Gecko)`）先换成分号，免得被切碎 */
+        setOptionRuntime("http-header-fields", h.entries.joinToString(",") { "${it.key}: ${it.value.replace(',', ';')}" })
+        h["Referer"]?.let { setOptionRuntime("referrer", it) }
+        h["User-Agent"]?.let { setOptionRuntime("user-agent", it) }
+    }
+
     /** 每次 loadfile 的序号：给延迟补跳用，避免上一部片排的回调把新片跳歪 */
     private var loadGen = 0
 
@@ -459,8 +476,11 @@ class MpvBackend(private val context: Context) {
                     if (genAu != loadGen) return@postDelayed   // 已经换片了，别把音轨挂到新片上
                     post {
                         try {
+                            /* 挂音轨前把请求头再设一遍：这些是"对下一个文件生效"的选项，
+                               不重设的话音频那条拿不到 Referer，B站 会拒（有画无声） */
+                            applyStreamHeaders()
                             MPVLib.command(arrayOf("audio-add", au, "select"))
-                            Log.i(TAG, "外挂音轨已交给内核（audio-add）")
+                            Log.i(TAG, "外挂音轨已交给内核（audio-add，请求头已重设）")
                         } catch (t: Throwable) {
                             Log.e(TAG, "外挂音轨挂载失败: ${t.message}")
                         }
@@ -507,31 +527,15 @@ class MpvBackend(private val context: Context) {
         startSec: Double = 0.0,
     ) {
         if (videoUrl.isBlank()) return
-        post {
-            /*
-             * 运行期必须用**属性**接口（setOptionRuntime = setPropertyString）。
-             *
-             * 这里原来用的是 setOptionString —— 那是 **mpv 初始化之前**才能用的接口，
-             * 播出过程中调它等于没调，而且不报错（r560 实测：有画无声）。
-             */
-            val hdr = headers.entries.joinToString(",") { "${it.key}: ${it.value}" }
-            setOptionRuntime("http-header-fields", hdr)
-            /*
-             * 【2026-10-16 头显实测定案】`http-header-fields` 是**单文件选项**，
-             * 只对 loadfile 那一个文件生效 —— 后挂的 `audio-add` 文件拿到的是默认值（空），
-             * 于是 B站 直接回 400/403，内核报 `audio=eof`，表现就是**有画无声**。
-             *
-             * 本机用同一个音频地址实测过：裸请求 403，带 Referer+UA 就是 200 且完整一条 67 MB
-             * （所以不是"分片格式不认"，是请求头漏了）。
-             *
-             * `stream-lavf-o` 是 ffmpeg 层的选项，**对每一次开流都生效**（含 audio-add），
-             * 把同样的头在这里再设一遍，取声音那条就不会再被拒。
-             */
-            setOptionRuntime(
-                "stream-lavf-o",
-                "headers=" + headers.entries.joinToString("\r\n") { "${it.key}: ${it.value}" } + "\r\n",
-            )
-        }
+        streamHeaders = headers
+        /*
+         * 运行期必须用**属性**接口（setOptionRuntime = setPropertyString）。
+         *
+         * 这里原来用的是 setOptionString —— 那是 **mpv 初始化之前**才能用的接口，
+         * 播出过程中调它等于没调，而且不报错（r560 实测：有画无声）。
+         * 请求头具体怎么带、为什么改走 `referrer`/`user-agent`，见 applyStreamHeaders 的注释。
+         */
+        post { applyStreamHeaders() }
         /* 音轨不当 per-file 选项设（r562 实测仍不生效），交给 play 在文件加载后用 audio-add 挂 */
         pendingAudioUrl = audioUrl?.takeIf { it.isNotBlank() }
         play(videoUrl, startSec)
