@@ -5653,6 +5653,14 @@ class MainActivity : ComponentActivity() {
             content = {
                 val s = webSiteState.value
                 if (s != null) {
+                    /*
+                     * 【2026-10-17 16:39 父亲定稿：银幕上是网页时按 B 一路回退到首页】
+                     * 网页面在接管时被销毁重建，真实历史栈已断 —— 网页屏凭自己
+                     * 登记的合成历史回退；这里把"跳到某地址"的动作接回去。
+                     */
+                    com.xxxx.emby_vr.web.WebPageHub.navHandler = { u ->
+                        runOnUiThread { webStartUrlState.value = u }
+                    }
                     com.xxxx.emby_vr.ui.WebLibraryScreen(
                         site = s,
                         startUrl = webStartUrlState.value,
