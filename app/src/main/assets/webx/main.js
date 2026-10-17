@@ -275,7 +275,8 @@
      * 所以只做一件事：它是不是当前这一集？是就交，不是就丢掉重新攒。
      */
     var obj = pendingPlay;
-    var nowId = { ep: biliEp, season: biliSeason, cid: biliCid };
+    /* 身份里带上当前页面地址：腾讯那种没有集号的情况靠它判同一次播放（2026-10-17） */
+    var nowId = { ep: biliEp, season: biliSeason, cid: biliCid, href: location.href };
     if (obj && !sameEpisode(obj, nowId)) {
       console.log('[b0b]③手里那份不是当前这一集（它 ' + (obj.ep || obj.cid || '?') +
         '，现在 ep' + (biliEp || '?') + '）→ 丢掉，重新攒');
@@ -312,6 +313,16 @@
         objFrom = '播放接口';
       }
     } catch (e) {}
+
+    /*
+     * 手里那份被丢掉、播放接口那份也没有 → 这一轮没有可交的东西。
+     * 原来不判空就往下走（去取 obj.streams），每轮都抛一次
+     * TypeError: can't access property "streams", obj is null（2026-10-17 腾讯现场）。
+     */
+    if (!obj) {
+      console.log('[b0b]③手里那份被丢了、接口那份也没有 → 这一轮不交');
+      return;
+    }
 
     /*
      * 【2026-10-17 03:22】交过的那份**不再丢掉**：父亲会按 B 回网页、再放大，那时还要用同一份。
@@ -845,11 +856,39 @@
   function invalidateForNewEpisode(why) { resetCollection(why); }
 
   /* 两份"在播身份"是不是同一集（编号优先，其次集号+季号） */
+  /*
+   * 同一个页面（比域名 + 路径，忽略查询串与锚点）。
+   * 用途：两边都没有「集号/编号」这套身份时，用它代替身份做判断。
+   */
+  function samePageUrl(x, y) {
+    try {
+      if (!x || !y) return false;
+      var ux = new URL(x), uy = new URL(y);
+      return ux.host === uy.host && ux.pathname === uy.pathname;
+    } catch (e) { return false; }
+  }
+
   function sameEpisode(a, b) {
     if (!a || !b) return false;
     if (a.cid && b.cid && String(a.cid) === String(b.cid)) return true;
-    return String(a.ep || '') !== '' && String(a.ep || '') === String(b.ep || '') &&
-           String(a.season || '') === String(b.season || '');
+    var ae = String(a.ep || ''), be = String(b.ep || '');
+    if (ae !== '' && ae === be && String(a.season || '') === String(b.season || '')) return true;
+    /*
+     * 【2026-10-17 23:42 r652 实测定案：腾讯每次都被这一关丢掉】
+     *
+     * 现场（r652，腾讯播放页，页面确实在播 1920x1080）：
+     *   [b0b] 腾讯：用抓到的 HLS 播放列表交给内核
+     *   [b0b] 交接现场：页面 video 元素 2 个（播 1920x1080 400.9s / 停 0x0 0s）
+     *   [b0b]③手里那份不是当前这一集（它 ?，现在 ep?）→ 丢掉，重新攒
+     *   [b0b]扫描出错(flushPendingPlay)：TypeError: can't access property "streams", obj is null
+     * 每 400 毫秒一轮，地址抓到就被丢一次 —— 腾讯永远交不出去。
+     *
+     * 根因：腾讯的地址没有「集号/编号」这套身份（那是 B站 的），两边都是空；
+     * 原来的写法把「两边都空」当成「不是同一集」。两边都没有身份时改用「是不是同一个页面」判 ——
+     * 同一页就是同一次播放（换集/换片必然换页）。
+     */
+    if (ae === '' && be === '' && !a.cid && !b.cid) return samePageUrl(a.frame, b.href);
+    return false;
   }
   var candTried = 0;
   /*
@@ -1025,7 +1064,7 @@
          * 改成一集一判：手里那份还是**当前这一集**就留着（同时省掉重复劳动），
          * 属于别的集就作废，改用这次新攒的。
          */
-        var nowEp = { ep: biliEp, season: biliSeason, cid: biliCid, winId: poolWin };
+        var nowEp = { ep: biliEp, season: biliSeason, cid: biliCid, winId: poolWin, href: location.href };
         if (sameEpisode(pendingPlay, nowEp)) {
           /*
            * 【2026-10-17 04:19】手里那份**只有画面**、而现在成对（画面+声音）了 →
