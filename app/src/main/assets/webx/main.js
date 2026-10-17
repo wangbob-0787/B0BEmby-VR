@@ -217,7 +217,7 @@
     if (!pendingPlay && !pendingQq) {
       var lq = loadQqLocal();
       if (lq) {
-        pendingQq = lq.u; qqAt = lq.at || 0; qqKey = lq.key || '';
+        pendingQq = cleanUrl(lq.u); qqAt = lq.at || 0; qqKey = lq.key || '';
         console.log('[b0b] 从本地存储取回腾讯地址（页面或播放器层被重建过）');
       }
     }
@@ -575,7 +575,7 @@
        * 表现为"有时能抓到（别处的地址没转义）有时抓不到"。
        * 现在正则把可选的反斜杠吃进去，取到后再还原成真地址。
        */
-      var all = t.match(/https?:\\?\/\\?\/[^"'\s]{6,600}?\.m3u8[^"'\s]{0,400}/g) || [];
+      var all = t.match(/https?:\\?\/\\?\/[^"'\s]{6,600}?\.m3u8[^"'\s\\]{0,400}/g) || [];
       /*
        * 【2026-10-18 01:33 破案 —— 腾讯"接管了却没画面"的真凶】
        *
@@ -879,7 +879,24 @@
     return null;
   }
 
-  function shareQq(u) {
+  /*
+   * 【2026-10-18 02:27 破案：黑屏的真凶是地址尾部多了一个反斜杠】
+   *
+   * 从接口响应里抠地址时，正则的尾段把 JSON 的转义符号也吃进来了：
+   * 交出去的地址尾巴是 `…f321003.ts.m3u8?ver=4\` —— 多一个反斜杠。
+   * 用这条地址去要数据，腾讯的 CDN 直接回 **403 Forbidden**（签名对不上），
+   * 内核拿不到列表 → 一直等第一帧 → 父亲看到"接管很快但黑屏"。
+   * 在本机把尾部反斜杠去掉重试同一地址：**200 OK，正常返回播放列表**（实测）。
+   * 所以这是我们的地址清洗问题，跟登录票无关。
+   */
+  function cleanUrl(u) {
+    var v = String(u || '');
+    v = v.replace(/\\u002F/gi, '/').replace(/\\\//g, '/');
+    return v.replace(/[\\"'\s]+$/, '');
+  }
+
+  function shareQq(raw) {
+    var u = cleanUrl(raw);
     pendingQq = u; qqAt = Date.now();
     qqKey = pageVideoKey(location.href);
     var m = { __b0bQq: 1, u: u, at: qqAt, key: qqKey };
@@ -931,7 +948,7 @@
           }
         } else if (d.__b0bQq && d.u) {
           /* 别层抓到的地址（2026-10-18 02:00）：收下，最外层再转给其余各层 */
-          pendingQq = d.u; qqAt = d.at || Date.now(); qqKey = d.key || '';
+          pendingQq = cleanUrl(d.u); qqAt = d.at || Date.now(); qqKey = d.key || '';
           saveQqLocal(pendingQq, qqAt, qqKey);
           if (window.self === window.top && d.__b0bRelay !== 1) {
             for (var j = 0; j < window.frames.length; j++) {
