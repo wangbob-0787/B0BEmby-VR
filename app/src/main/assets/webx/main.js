@@ -572,11 +572,26 @@
    */
   var fullState = false;
   var fullBtnAt = 0;
+  /*
+   * 【2026-10-17 15:39 修正】进出裁决放宽为三个来源（r634 现场教训：
+   * 电影/电视剧的 B站 播放器根本不挂 mode-webscreen 类，按类裁决永远判成退出）：
+   *   ① 浏览器元素全屏（document.fullscreenElement）
+   *   ② 站点自己的铺满类（webscreen / pagefullscreen 关键字）
+   *   ③ 铺满事实：正在播的画面块占屏 85% 以上（电影全屏实测 92~96%，详情页大窗 74%，小窗 37%
+   *      —— 这个数是给"按钮点下去这一下分进/出"用的，不是接管门槛；门槛始终是按钮本身）。
+   */
   function readFullMode() {
+    try { if (document.fullscreenElement || document.webkitFullscreenElement) return true; } catch (e) {}
     try {
-      var entry = document.getElementById('bilibili-player') ||
-                  document.querySelector('.bpx-player-container');
-      if (entry) return String(entry.className || '').indexOf('webscreen') >= 0;
+      if (document.querySelector('[class*="webscreen"],[class*="pagefullscreen"],[class*="web-fullscreen"]')) return true;
+    } catch (e) {}
+    try {
+      var vs = document.querySelectorAll('video');
+      var iw = innerWidth || 1, ih = innerHeight || 1;
+      for (var i = 0; i < vs.length; i++) {
+        var r = vs[i].getBoundingClientRect();
+        if (r.width * r.height >= iw * ih * 0.85) return true;
+      }
     } catch (e) {}
     return false;
   }
