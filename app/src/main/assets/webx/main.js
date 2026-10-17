@@ -362,7 +362,18 @@
       var _sz = pageVideoSize();
       if (_sz.w > 0 && _sz.h > 0) {
         obj.width = _sz.w; obj.height = _sz.h;
-        console.log('[b0b] 递交时补上画面宽高 ' + _sz.w + 'x' + _sz.h);
+        /*
+         * 客户端读的是 streams 里**那一条**的宽高（webStream.optInt("width")），
+         * 所以那一条上也要补 —— 只补顶层等于没补（2026-10-18 00:44 日志实证：
+         * "递交时补上画面宽高 3840x2160" 打出来了，银幕比例却没跟着变）。
+         */
+        if (obj.streams) {
+          for (var si = 0; si < obj.streams.length; si++) {
+            var st = obj.streams[si];
+            if (st && !(st.width > 0 && st.height > 0)) { st.width = _sz.w; st.height = _sz.h; }
+          }
+        }
+        console.log('[b0b] 递交时补上画面宽高 ' + _sz.w + 'x' + _sz.h + '（含 streams 那一条）');
       } else {
         console.log('[b0b] 递交时页面里没有带尺寸的 video 元素（比例只能等内核报）');
       }
@@ -1736,9 +1747,21 @@
   try {
     window.addEventListener('click', function (ev) {
       if (window.self !== window.top) return;
+      /*
+       * 【2026-10-18 00:43 父亲实测：腾讯上"全屏"按钮点不动，他点的是"网页全屏"，
+       * 而我们的识别只认 B站 那几个类名 → fullState 一直是假 → 地址抓到了却永远不交】
+       * （日志实证：00:45:42「腾讯播放列表（从接口响应里找到，长度 506）」紧跟
+       *   「没交出去：你还没按全屏按钮（网页全屏或全屏）」）
+       *
+       * 各站播放器的按钮类名都不一样（腾讯是 txp_*，爱奇艺又是另一套），
+       * 与其一个个补，不如按"这个名字里带 full/全屏"来认 —— 认错最多是提前交一次，
+       * 而抓不到就是永远交不出去。命中时把类名打进日志，下一轮可以据此收窄。
+       */
       var el = ev.target && ev.target.closest ? ev.target.closest(
         '.bpx-player-ctrl-web,.bpx-player-ctrl-web-enter,.bpx-player-ctrl-full,' +
-        '.squirtle-video-pagefullscreen,.squirtle-video-fullscreen,[aria-label*="全屏"]') : null;
+        '.squirtle-video-pagefullscreen,.squirtle-video-fullscreen,' +
+        '[aria-label*="全屏"],[title*="全屏"],[class*="fullscreen"],[class*="full-screen"],' +
+        '[class*="webfull"],[class*="pagefull"],[class*="full"]') : null;
       if (!el) return;
       fullState = true;
       lastFullAt = Date.now();
@@ -1755,6 +1778,10 @@
        */
       selfFetchBiliPlayurl('全屏按钮');
       var label = (el.getAttribute && (el.getAttribute('aria-label') || el.getAttribute('title'))) || '';
+      if (!label) {
+        label = String(el.className || el.id || '').slice(0, 40);
+        console.log('[b0b]①全屏按钮被点（类名可能是 ' + label + '）→ 记下这个类名，下一轮可据此收窄');
+      }
       console.log('[b0b]①全屏按钮被点（' + (label || String(el.className).slice(0, 36)) + '）→ 进入投屏态（退出只认 B 键）');
     }, true);
     document.addEventListener('fullscreenchange', function () {
