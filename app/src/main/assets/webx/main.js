@@ -560,6 +560,10 @@
   var poolWin = '';
   var poolGoneAt = 0;      /* 页面短暂没有在播窗口的起点（给 20 秒宽限） */
 
+  /* 递交 3 秒去重（与本地存储里的 20 秒防重互补：前者防刷屏，后者防按B复活） */
+  var lastSubmitSig = '';
+  var lastSubmitAt = 0;
+
   var biliSubUrl = '';
   var biliSubLan = '';
   /*
@@ -1372,14 +1376,6 @@
             Math.round(best.h) + '，' + Math.round(pctNow) + '%）→ 开始收它的画面与声音');
         }
       }
-    }
-    if (best && !bigNow && !remoteArmed) {
-      remoteArmed = true;
-      justReturnedAt = 0;
-      console.log('[b0b]① 看到小窗了 → 允许接管了，下次你放大才接管');
-    }
-    if (bigNow && !remoteArmed && justReturnedAt && Date.now() - justReturnedAt < 10000) {
-      tryExitWebFullscreen();
     }
     if (bigNow) {
       poolGoneAt = 0;
