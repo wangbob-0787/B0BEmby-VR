@@ -223,11 +223,7 @@
      *   没置上 = 现在只是小窗试看 → 不交。
      */
     /* 接管门槛仍是九成（父亲 2026-10-17 定的顺序：先抓地址，铺满九成才接管） */
-    if (!liveSince) { console.log('[b0b] 没交出去：播放窗口还没铺满九成（地址已经收着了，等放大）'); return; }
-    if (!remoteArmed) {
-      console.log('[b0b] 没交出去：刚接管过一次，得先回到小窗（页面自己变成全屏的不算你放大）');
-      return;
-    }
+    if (!liveSince) { console.log('[b0b] 没交出去：播放窗口还没到 95%（地址已经收着了，等放大）'); return; }
     /*
      * 【2026-10-17 03:54 简化】只有一个门槛之后，手里的那份必定属于这一次放大，
      * 所以只做一件事：它是不是当前这一集？是就交，不是就丢掉重新攒。
@@ -282,7 +278,20 @@
     }
     lastSubmitSig = subSig;
     lastSubmitAt = Date.now();
-    markTookOver();
+    /*
+     * 【2026-10-17 13:31 父亲定的唯一防误】同一条地址 20 秒内只接一次（记在浏览器本地存储，
+     * 按过 B 网页重建也认得）：不然按 B 回来 B站 自己恢复成全屏（实测会），
+     * 3 秒后就被再次顶走，按 B 就永远退出不来。这不是小窗判断，就是"同一条地址不重复接"。
+     */
+    try {
+      var _last = {};
+      _last = JSON.parse(localStorage.getItem('b0b_sub') || '{}');
+    } catch (e) { _last = {}; }
+    if (_last && _last.s === subSig && Date.now() - (_last.t || 0) < 20000) {
+      console.log('[b0b]③同一条地址 20 秒内已交过（防按B回来被再顶走），不重复接');
+      return;
+    }
+    try { localStorage.setItem('b0b_sub', JSON.stringify({ s: subSig, t: Date.now() })); } catch (e) {}
     /* 标题在交出去这一刻现取（抓取时页面标题可能还没更新） */
     try { obj.title = pageTitle(); } catch (e) {}
     /*
@@ -551,59 +560,6 @@
   var poolWin = '';
   var poolGoneAt = 0;      /* 页面短暂没有在播窗口的起点（给 20 秒宽限） */
 
-  /*
-   * 【2026-10-17 03:57 父亲报的隐患：按 B 回来会立刻又被接管】
-   *
-   * 父亲原话："按 B 回来时网页不能按接管时那一页重建，因为接管时那一页是网页全屏，又会触发接管。"
-   * 页面重建后 B站 若自己恢复成"网页全屏"→ 一上来就是九成 → 我们又顶上去，来回死循环。
-   * 两道保险：
-   *   一、接管过一次之后，**必须先看到一次小窗（窗口不到九成）**才允许再次接管；
-   *   二、刚回到网页时若发现页面自己进了"网页全屏"，替父亲点一次退出，回到小窗。
-   */
-  var remoteArmed = true;
-  var justReturnedAt = 0;
-  try {
-    var _tk = parseInt(localStorage.getItem('b0b_tookover_at') || '0', 10);
-    if (_tk && Date.now() - _tk < 180000) { remoteArmed = false; justReturnedAt = Date.now(); }
-  } catch (e) {}
-  function markTookOver() {
-    remoteArmed = false;
-    try { localStorage.setItem('b0b_tookover_at', String(Date.now())); } catch (e) {}
-  }
-  var lastSubmitSig = '';   /* 上一份交出去的签名（去重用） */
-  var lastSubmitAt = 0;
-  var webFullExitDone = false;
-  var webFullExitNoteAt = 0;
-  function tryExitWebFullscreen() {
-    /*
-     * 【2026-10-17 04:42 审读发现】原来只试一次：刚回到网页时播放器的控件
-     * 往往还没渲染出来，一次扑空后就永远不再试 —— "替你退出网页全屏"形同虚设。
-     * 改成：回到网页后的 10 秒内反复找（scan 每 0.4 秒叫一次），点成功为止。
-     */
-    if (webFullExitDone) return;
-    try {
-      var btns = document.querySelectorAll('.bpx-player-ctrl-web, .squirtle-video-web-fullscreen, [aria-label*="网页全屏"]');
-      for (var bi = 0; bi < btns.length; bi++) {
-        var el = btns[bi];
-        var on = /active|selected/i.test(String(el.className || '') + ' ' + String(el.getAttribute('aria-pressed') || ''));
-        if (on) {
-          el.click();
-          webFullExitDone = true;
-          console.log('[b0b]① 刚回到网页，页面自己进了网页全屏 → 替你退出，回到小窗');
-          return;
-        }
-      }
-      if (Date.now() - webFullExitNoteAt > 3000) {
-        webFullExitNoteAt = Date.now();
-        console.log('[b0b]① 暂时没找到"网页全屏"按钮，10 秒内继续找');
-      }
-    } catch (e) {}
-  }
-  /*
-   * B站 字幕（父亲 2026-10-16）：片子的字幕地址就在页面自己请求的那份播放信息里
-   * （`subtitle.subtitles[]`，每条带 lan 语言和 subtitle_url）。
-   * 拿到的是 JSON 格式（每句 from/to/content），客户端会转成普通字幕文件挂上。
-   */
   var biliSubUrl = '';
   var biliSubLan = '';
   /*
@@ -1379,7 +1335,7 @@
     var bigNow = false;
     if (best) {
       var pctNow = best.area * 100 / vpArea;
-      bigNow = (pctNow >= 90);
+      bigNow = (pctNow >= 95);
       if (bigNow) {
         if (!liveSince) {
           /*
@@ -1463,7 +1419,7 @@
       }
       if (anyBest) {
         var line = anyBest.tag + '在播 ' + Math.round(anyBest.w) + 'x' + Math.round(anyBest.h) +
-          '，占屏 ' + anyBest.pct + '%（门槛九成），集 ep' + (biliEp || '?') +
+          '，占屏 ' + anyBest.pct + '%（门槛九五），集 ep' + (biliEp || '?') +
           '，季 ' + (biliSeason || '?') + '，编号 ' + (biliCid || 0) +
           '，页面 ' + String(location.href).slice(-42);
         if (line !== lastSmallLog) {
