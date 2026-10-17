@@ -270,8 +270,14 @@
      */
     var fsShared = 0;
     try { fsShared = parseInt(localStorage.getItem('b0b:fullAt') || '0', 10) || 0; } catch (e) {}
-    var fsOk = fullState || (fsShared > 0 && Date.now() - fsShared < 3 * 3600 * 1000);
-    if (!fsOk) { console.log('[b0b] 没交出去：你还没按全屏按钮（网页全屏或全屏）'); return; }
+    var fsStamps = [fullState ? Date.now() : 0, fsShared, peerFullAt];
+    var fsBest = Math.max.apply(null, fsStamps);
+    var fsOk = fsBest > 0 && Date.now() - fsBest < 3 * 3600 * 1000;
+    if (!fsOk) {
+      console.log('[b0b] 没交出去：你还没按全屏按钮（本层=' + (fullState ? 1 : 0) +
+        ' 本地存=' + (fsShared ? 1 : 0) + ' 别层报=' + (peerFullAt ? 1 : 0) + '）');
+      return;
+    }
     /*
      * 交接现场诊断（2026-10-17 23:14 加）：把这一刻页面上的 video 元素长什么样打出来。
      * 腾讯"抓到了地址却说没在播"那件事，靠这一行就能分清是
@@ -808,6 +814,43 @@
    * 现在把时效放宽（见 flushPendingPlay），并用"页面里的片子编号"作安全绳：
    * 只要还在同一集上，旧地址照样能用；换了集就自动作废，不会交出上一集的地址。
    */
+  /*
+   * 【2026-10-18 01:52 补：跨层广播】
+   * 父亲 01:49 的现场：地址 01:49:26 抓到了、也组装好了（「用抓到的 HLS 播放列表交给内核」），
+   * 但同一秒被判「没交出去：你还没按全屏按钮」——他 01:49:31 才按的网页全屏；
+   * 按下之后**再也没有任何提交动作**。说明按下全屏那一层，和手里攥着地址的那一层
+   * 不是同一层，而"按过全屏"这个事实没能传到那一层（同源才共享的本地存储不够用，
+   * 腾讯的播放器层与页面层未必同源）。
+   * 现在按全屏时向所有层广播一次，各层都记下这个时刻；拿地址的那一层据此放行。
+   */
+  var peerFullAt = 0;
+  function announceFullscreen(t) {
+    peerFullAt = t;
+    try { localStorage.setItem('b0b:fullAt', String(t)); } catch (e) {}
+    try { window.top.postMessage({ __b0bFull: 1, t: t }, '*'); } catch (e) {}
+  }
+  try {
+    window.addEventListener('message', function (ev) {
+      try {
+        var d = ev.data;
+        if (!d || typeof d !== 'object') return;
+        if (d.__b0bFull) {
+          peerFullAt = Math.max(peerFullAt, d.t || Date.now());
+          if (window.self === window.top) {
+            /* 最外层收到后替下层转发一遍（下层之间不互通） */
+            for (var i = 0; i < window.frames.length; i++) {
+              try { window.frames[i].postMessage({ __b0bFull: 1, t: d.t }, '*'); } catch (e2) {}
+            }
+          }
+        } else if (d.__b0bAsk) {
+          if (peerFullAt > 0 && ev.source) {
+            try { ev.source.postMessage({ __b0bFull: 1, t: peerFullAt }, '*'); } catch (e3) {}
+          }
+        }
+      } catch (e) {}
+    });
+  } catch (e) {}
+
   function pageVideoKey(u) {
     try {
       var t = String(u || '').split('?')[0];
@@ -1531,6 +1574,8 @@
 
   function scan() {
     try { scanPerfForHls(); } catch (e) {}
+    /* 每拍问一次"谁按过全屏"（2026-10-18 01:52）：跨层、跨源都靠它 */
+    try { if (window.self !== window.top) window.top.postMessage({ __b0bAsk: 1 }, '*'); } catch (e) {}
     /*
      * video 标签的最终地址也扫一眼：有的站不给接口拿地址（或地址是 blob:），
      * 这一路能把 HLS/MP4 的真实入口露出来。
@@ -1854,7 +1899,7 @@
       fullState = true;
       lastFullAt = Date.now();
       /* 同站点各层共享（2026-10-18 01:05）：见 flushPendingPlay 里的说明 */
-      try { localStorage.setItem('b0b:fullAt', String(Date.now())); } catch (e) {}
+      announceFullscreen(Date.now());
       /*
        * 【2026-10-17 18:35 父亲问"为什么点全屏时不重新拿一次地址，要去前面捞"】
        *
@@ -1878,10 +1923,8 @@
       if (window.self !== window.top) return;
       lastFullAt = Date.now();
       fullState = !!(document.fullscreenElement || document.webkitFullscreenElement);
-      try {
-        if (fullState) localStorage.setItem('b0b:fullAt', String(Date.now()));
-        else localStorage.removeItem('b0b:fullAt');
-      } catch (e) {}
+      if (fullState) announceFullscreen(Date.now());
+      else { try { localStorage.removeItem('b0b:fullAt'); } catch (e) {} }
       console.log('[b0b]①浏览器全屏事件 → ' + (fullState ? '进入全屏（可接管）' : '退出全屏'));
     });
   } catch (e) {}
