@@ -6253,7 +6253,11 @@ class MainActivity : ComponentActivity() {
                 return true
             }
         }
-        if (keyCode == KeyEvent.KEYCODE_BACK && webHiddenByStream) {
+        /*
+         * 系统返回键这条同理：只有"此刻在放网页流、且它被我们顶掉了"才回网页
+         * （2026-10-17：播 Emby 片子时这条会把人送回 B站 网页）。
+         */
+        if (keyCode == KeyEvent.KEYCODE_BACK && webHiddenByStream && webStreamSite != null) {
             returnFromStreamToWeb()
             return true
         }
