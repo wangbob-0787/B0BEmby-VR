@@ -2819,6 +2819,24 @@ class MainActivity : ComponentActivity() {
                     "版本 ${com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionProfile ?: "未探到"}）")
                 mpvBackend?.stop()
                 /*
+                 * 【2026-10-17 19:47 父亲问"为什么有两个播放器在放" → 是缺陷，这里收掉】
+                 *
+                 * 内核接手时只收掉了上一个内核，**没收系统播放器**：它交班之后对象还活着，
+                 * 于是干出两件坏事 ——
+                 *  · 它的状态回调继续左右弹幕层（`onIsPlayingChanged` → 弹幕"暂停"），
+                 *    弹幕就被冻在那一刻、整场不滚动，重启 app 才好（父亲当晚实测）；
+                 *  · 取播放位置时它排在前面，弹幕时钟被它那个不动的旧值反复拽回去
+                 *    （日志 `弹幕画笔：… 进度=3秒` 几百帧不变）。
+                 * 只放声音的是内核，它并没有真的在放 —— 但必须让它彻底退场。
+                 */
+                player?.let {
+                    Log.i(TAG, "内核接手：系统播放器退场（收掉，交班对象不再影响弹幕与位置）")
+                    runCatching { it.stop() }
+                    runCatching { it.release() }
+                }
+                player = null
+                setDanmakuPaused(false)
+                /*
                  * 地址要换成原文件直连（父亲 2026-10-08 实测）。
                  *
                  * 第一次跑 mpv 时用的是传进来的那个地址，日志里看到它拉的是
@@ -3266,6 +3284,12 @@ class MainActivity : ComponentActivity() {
                      * 用 isPlaying 而不是按钮状态 —— 缓冲卡住、外部暂停也一并覆盖。
                      */
                     override fun onIsPlayingChanged(isPlaying: Boolean) {
+                        /*
+                         * 内核在放时，这个回调属于**已经交班的系统播放器**，不许它再动弹幕
+                         * （2026-10-17：它一报"没在放"，弹幕就被冻住，整场不滚动）。
+                         * 内核那条路的暂停/继续由 `togglePlayPause()` 自己管。
+                         */
+                        if (mpvBackend != null) return
                         setDanmakuPaused(!isPlaying)
                     }
 
@@ -4829,7 +4853,17 @@ class MainActivity : ComponentActivity() {
 
     private fun togglePlayPause() {
         // 走播放接口层：内核模式下也生效（父亲 2026-10-08）
-        if (!ctl.togglePlayPause()) Log.w(TAG, "暂停/继续：当前没有可操作的播放引擎")
+        if (!ctl.togglePlayPause()) {
+            Log.w(TAG, "暂停/继续：当前没有可操作的播放引擎")
+            return
+        }
+        /*
+         * 弹幕跟着暂停/继续。
+         *
+         * 【2026-10-17】原来只有系统播放器的 `onIsPlayingChanged` 会冻/解冻弹幕，
+         * 内核（B站 接管那条路）没有 —— 补上，两个引擎一个口径。
+         */
+        setDanmakuPaused(!ctl.isPlaying())
     }
 
     /** 最近一次 seek 的目标位置与发起时间（毫秒）；用于连跳时的基准 */
