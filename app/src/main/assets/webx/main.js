@@ -223,7 +223,7 @@
      *   没置上 = 现在只是小窗试看 → 不交。
      */
     /* 接管门槛仍是九成（父亲 2026-10-17 定的顺序：先抓地址，铺满九成才接管） */
-    if (!liveSince) { console.log('[b0b] 没交出去：播放窗口还没到 95%（地址已经收着了，等放大）'); return; }
+    if (!liveSince) { console.log('[b0b] 没交出去：播放窗口还没到90%（地址已经收着了，等放大）'); return; }
     /*
      * 【2026-10-17 03:54 简化】只有一个门槛之后，手里的那份必定属于这一次放大，
      * 所以只做一件事：它是不是当前这一集？是就交，不是就丢掉重新攒。
@@ -673,10 +673,11 @@
     if (u.slice(0, 5) === 'blob:') return;
     if (!looksMedia(u)) return;
     /*
-     * 【2026-10-17 03:54】只在"窗口占到九成"之后才收（父亲定的单一门槛）。
-     * 小窗一概不管。所以这里只认 liveSince。
+     * 【2026-10-17 13:40 三道关卡定稿之三：收集只是后勤，不再绑窗口大小】
+     * 页面确实在播就记它下载的分片；分片只是接口拿不到时的兜底，不该左右接管。
+     * 串片风险由两道关卡挡住：挑组认"当前编号"、递交核"同一集"。
      */
-    if (!liveSince) return;
+    if (!pageIsPlaying()) return;
     var key = u.split('?')[0];
     if (mediaKeys[key]) return;            /* 同一条主干只记一次（分片换参数也算一条） */
     /* 值要存完整地址：分片带时效 token，丢了参数就播不了（2026-10-16） */
@@ -1286,8 +1287,26 @@
        * 九成那道门挪去管"接管"了 —— 这里只负责挑出"页面上真在播的那个窗口"，
        * 小窗试看也算，因为它的画面与声音此刻正在下载，正是我们要收的东西。
        */
-      if ((r.width * r.height) < (window.innerWidth || 1) * (window.innerHeight || 1) * 0.2) continue;
-      var area = r.width * r.height;
+      /*
+       * 【2026-10-17 13:40 父亲定口径：量"播放器区域"占屏，不量"内容"占屏】
+       *
+       * 父亲原话："我觉得黑边也是播放口的内容，我觉得应该计算播放口占屏幕的比例，
+       * 而不是计算播放口内容占屏幕比例。"
+       * 实现（通用，不猜站名）：从画面元素向上找"包含它的最小盒子" —— 允许容器
+       * 比内容大一成以内（全屏时黑边就是这块），一旦明显放大（翻倍级别）就是页面版式，
+       * 停止并入。网页全屏时这个盒子就是整屏 → 任何片型都是 100%，不再出现 92/96 浮动。
+       */
+      var pbw = r.width, pbh = r.height;
+      try {
+        var pel = v.parentElement;
+        var capW = r.width * 1.10, capH = r.height * 1.10;
+        for (var k = 0; pel && k < 6; k++, pel = pel.parentElement) {
+          var pr = pel.getBoundingClientRect();
+          if (pr.width <= capW && pr.height <= capH) { pbw = pr.width; pbh = pr.height; }
+          else break;
+        }
+      } catch (e) {}
+      var area = pbw * pbh;
       if (area <= bestArea) continue;
       var cw = r.width, ch = r.height;
       var fit = st.objectFit || 'contain';
@@ -1335,7 +1354,7 @@
     var bigNow = false;
     if (best) {
       var pctNow = best.area * 100 / vpArea;
-      bigNow = (pctNow >= 95);
+      bigNow = (pctNow >= 90);
       if (bigNow) {
         if (!liveSince) {
           /*
@@ -1419,7 +1438,7 @@
       }
       if (anyBest) {
         var line = anyBest.tag + '在播 ' + Math.round(anyBest.w) + 'x' + Math.round(anyBest.h) +
-          '，占屏 ' + anyBest.pct + '%（门槛九五），集 ep' + (biliEp || '?') +
+          '，占屏 ' + anyBest.pct + '%（门槛90%），集 ep' + (biliEp || '?') +
           '，季 ' + (biliSeason || '?') + '，编号 ' + (biliCid || 0) +
           '，页面 ' + String(location.href).slice(-42);
         if (line !== lastSmallLog) {
