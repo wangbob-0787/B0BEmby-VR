@@ -5038,11 +5038,19 @@ class MainActivity : ComponentActivity() {
      *               否则它们会在起播过程中被收掉，等标志生效时界面早没了。
      */
     /**
-     * 当前播放位置（毫秒）。ExoPlayer 与 mpv 两条内核都从这里取，
-     * 进度上报、弹幕时间轴、控制条进度共用同一个口径（父亲 2026-10-08）。
+     * 当前播放位置（毫秒）。**统一走 ctl（播放接口层）**，与控制条、银幕进度条同一个口径。
+     *
+     * 【2026-10-17 19:40 现场定案：只有这一部片子"弹幕不滚动"】
+     *
+     * 原来这里是自己写的"先问 ExoPlayer、没有再问内核"，而控制条走的是 `ctl.positionMs()`
+     * （**先问内核**、再问 ExoPlayer）。两者顺序相反 —— 当内核在放、ExoPlayer 又还在
+     * （位置停在那里不动）时，控制条进度正常走，弹幕却拿到那个停在 3 秒的旧值：
+     * 每 250ms 被"纠正"回 3 秒一次 → 弹幕永远停在 3 秒那一屏，看着就是"不滚动"
+     * （日志：`弹幕画笔：… 本帧画了=4 条 进度=3秒`，几百帧不变）。
+     * 别部片子只有一个引擎，两个口径恰好一致，所以只有这一部露出问题。
+     * 这正是 2026-10-13 记下的隐患"同一界面两套取位置优先级就是 bug 温床"，现在收掉。
      */
-    private fun currentPositionMs(): Long =
-        player?.currentPosition ?: ((mpvBackend?.positionSec() ?: 0.0) * 1000.0).toLong()
+    private fun currentPositionMs(): Long = ctl.positionMs()
 
     private fun stopPlaybackInternal(keepUi: Boolean = false) {
         /*
