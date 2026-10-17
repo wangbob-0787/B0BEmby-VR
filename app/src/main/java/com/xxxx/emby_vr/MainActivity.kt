@@ -4764,7 +4764,18 @@ class MainActivity : ComponentActivity() {
     }
 
     /** 取这一集的详情：剧集 id / 季 id / 简介 / 演员（信息与演职人员菜单用） */
-    private fun loadItemDetail() {        val id = currentMediaId
+    private fun loadItemDetail() {
+        /*
+         * 同上（2026-10-18 00:23）：信息和演职人员也是"打开菜单就去拉"，
+         * 放网站视频时不许拉 —— 清空之后又被拉回来，等于没清。
+         */
+        if (webPlayingNow) {
+            menuState.info = null
+            menuState.people = emptyList()
+            Log.i(TAG, "信息/演职人员：现在放的是网站视频，不去拉 Emby 的条目详情")
+            return
+        }
+        val id = currentMediaId
         if (id.isBlank()) return
         scope.launch {
             try {
@@ -4882,6 +4893,20 @@ class MainActivity : ComponentActivity() {
 
     /** 选集列表（同一季的剧集；当前集打勾） */
     private fun loadEpisodes() {
+        /*
+         * 【2026-10-18 00:23 父亲实测：正在放 B站 视频，打开"选集"却是 60 集（上一部 Emby 片的）】
+         *
+         * 换源清场确实把 episodes 清空了，但菜单**一打开就去重新拉** —— 而 currentSeriesId
+         * 还指着上一部 Emby 片子，于是刚清掉的列表又被原样拉回来。
+         * 正在放网站视频时，这条路直接不走：网站视频的剧集由网页自己选（父亲 2026-10-17 定，
+         * 客户端不做网站选集）。
+         */
+        if (webPlayingNow) {
+            menuState.episodes = emptyList()
+            menuState.episodesTitle = ""
+            Log.i(TAG, "选集：现在放的是网站视频，不去拉 Emby 的剧集列表")
+            return
+        }
         val seriesId = currentSeriesId
         if (seriesId.isNullOrBlank()) {
             menuState.episodes = emptyList()

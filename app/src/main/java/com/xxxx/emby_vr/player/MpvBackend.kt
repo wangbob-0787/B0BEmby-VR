@@ -197,8 +197,17 @@ class MpvBackend(private val context: Context) {
                  * 高度一起缓存（父亲 2026-10-17：银幕比例必须每部片子重算，
                  * 不能被上一部片子的比例影响）。缓存成字段，界面线程读它不用碰 MPVLib。
                  */
+                /*
+                 * 高度：先问 video-params/h（与宽度成对），读不到再退到解码高度 dheight
+                 * （2026-10-18 00:23：网页流那一路高度一直拿不到 → 银幕比例永远纠不回来）。
+                 * 这里**不动 ok**：这两个字段是本轮新加的，不能因为读不到它就影响老的"就绪"判定。
+                 */
                 val h = try { MPVLib.getPropertyInt("video-params/h") } catch (_: Throwable) { null }
-                if (h == null) ok = false else cVideoH = h
+                if (h != null && h > 0) cVideoH = h
+                else {
+                    val dh = try { MPVLib.getPropertyInt("dheight") } catch (_: Throwable) { null }
+                    if (dh != null && dh > 0) cVideoH = dh
+                }
             }
             return ok
         }
