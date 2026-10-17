@@ -476,7 +476,14 @@
   var selfFetchKey = '';
   function selfFetchBiliPlayurl(why) {
     try {
-      if (!fullState || !/\/bangumi\/play\//.test(location.href)) return;
+      /*
+       * 【2026-10-17 18:36 父亲定：点全屏那一刻现识别最准确】
+       * 原来这里卡了一道路径白名单（只认 `/bangumi/play/`），而电影页/普通视频页
+       * 的路径各不相同 → 电影《消失的人》现场一次都没触发。
+       * 撤掉白名单，改由"有没有拿到 B站 的集号 + 片子编号"认人 ——
+       * 这两样只可能来自 B站 自己的播放接口，足以证明这是 B站 的片。
+       */
+      if (!fullState || !/bilibili\.com/.test(location.href)) return;
       if (!biliEp || !biliCid) return;
       var key = biliEp + '|' + biliCid;
       if (key === selfFetchKey) return;
@@ -1573,6 +1580,18 @@
       if (!el) return;
       fullState = true;
       lastFullAt = Date.now();
+      /*
+       * 【2026-10-17 18:35 父亲问"为什么点全屏时不重新拿一次地址，要去前面捞"】
+       *
+       * 对，这里应该现问一次。原来那条"自己调播放接口"只在**窗口占到九成**时才触发
+       * （scan 里 liveSince 那一段），而网页全屏时探子量到的窗口是 72%~75%，
+       * 永远够不到九成 → 从没触发过，只能退回去从下载记录里捞。
+       *
+       * 现在改成：**按下全屏按钮这一下就直接问一次接口** —— 接口给的是官方那一对
+       * （画面 + 声音，带清晰度和时长），比捞旧记录干净。捞只当它失败时的兜底。
+       * 认人仍靠 ep_id + 编号：拿不到这两样（腾讯/爱奇艺页面）直接返回，不会误请求。
+       */
+      selfFetchBiliPlayurl('全屏按钮');
       var label = (el.getAttribute && (el.getAttribute('aria-label') || el.getAttribute('title'))) || '';
       console.log('[b0b]①全屏按钮被点（' + (label || String(el.className).slice(0, 36)) + '）→ 进入投屏态（退出只认 B 键）');
     }, true);
