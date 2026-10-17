@@ -94,7 +94,9 @@
      * （父亲 2026-10-16 实测：停在剧集页面上，画面在播）。
      * 另外 /x/page/<vid>.html 也是它的单集形态。
      */
-    if (/\/(video|bangumi\/play|cheese\/play|medialist)\//.test(location.href)) return true;
+    /* 【2026-10-17 12:55 父亲实测定案：电影频道页 /movie/ 也是播放页 ——
+   * 12:52 现场他在 /movie/ 的片上放大，全程被"当前不是播放页"拦死。 */
+    if (/\/(video|bangumi\/play|cheese\/play|medialist|movie)\//.test(location.href)) return true;
     if (/v\.qq\.com\/x\/cover\//.test(location.href)) return true;
     if (/v\.qq\.com\/x\/page\//.test(location.href)) return true;
     return false;
@@ -1288,7 +1290,7 @@
      * 只在"播放页"上认画面（父亲 2026-10-16：还没播、只是在首页点个「历史播放」，
      * 银幕比例也跟着变）—— 非播放页上的自动预览视频一律不算。
      */
-    var onPlayPage = /\/(video|bangumi\/play|cheese\/play|medialist)\//.test(location.href);
+    var onPlayPage = /\/(video|bangumi\/play|cheese\/play|medialist|movie)\//.test(location.href);
     var vs = onPlayPage ? document.querySelectorAll('video') : [];
     for (var i = 0; i < vs.length; i++) {
       var v = vs[i];
