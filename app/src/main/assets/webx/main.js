@@ -221,6 +221,15 @@
         console.log('[b0b] 从本地存储取回腾讯地址（页面或播放器层被重建过）');
       }
     }
+    /* 手里有地址却交不出去：每 3 秒报一次状态（父亲 2026-10-18 02:10 要求日志更细） */
+    var qqNow = Date.now();
+    if (pendingQq && qqNow - (window.__b0bHoldLog || 0) > 3000) {
+      window.__b0bHoldLog = qqNow;
+      console.log('[b0b] 交接追踪：地址在手（' + String(pendingQq).length + ' 字符，抓于 ' +
+        Math.round((qqNow - qqAt) / 1000) + ' 秒前）尚未交出去 —— 全屏(本层=' +
+        (fullState ? 1 : 0) + ' 存=' + (fsShared ? 1 : 0) + ' 别层=' + (peerFullAt ? 1 : 0) +
+        ') 同集=' + (keyKnown(qqKey) ? (qqKey === pageVideoKey(location.href) ? 1 : 0) : '未知'));
+    }
     var qqHere = pageVideoKey(location.href);
     var qqSamePage = !keyKnown(qqKey) || !keyKnown(qqHere) || qqKey === qqHere;
     if (!pendingPlay && pendingQq && Date.now() - qqAt < 30 * 60 * 1000 && qqSamePage) {
@@ -431,6 +440,18 @@
                   String(obj.season || '') === String(biliSeason || '')) ? '一致' : '不一致★'));
     } catch (e) {}
     if (lastSmallLog) console.log('[b0b]③小窗最后看到的：' + lastSmallLog);
+    /*
+     * 交接追踪（父亲 2026-10-18 02:10 要求"日志弄详细些，看看到底卡在哪"）：
+     * 一行交代这次交出去的是什么、抓了多久、凭哪一条放行。
+     */
+    try {
+      var tHost = String(pendingPlay.video || '').split('/')[2] || '?';
+      console.log('[b0b] 交接追踪：交出去 主机=' + tHost +
+        ' 长度=' + String(pendingPlay.video || '').length +
+        ' 抓于=' + Math.round((Date.now() - qqAt) / 1000) + '秒前' +
+        ' 放行依据=' + (fullState ? '本层按过全屏'
+          : (fsShared && fsShared >= fsBest ? '本地存的全屏时刻' : '别层报的全屏时刻')));
+    } catch (e) {}
     console.log('[b0b] 页面已在播放，把抓到的地址交给客户端');
     try { window.postMessage({ __b0b: 1, payload: obj }, '*'); } catch (e) {}
   }

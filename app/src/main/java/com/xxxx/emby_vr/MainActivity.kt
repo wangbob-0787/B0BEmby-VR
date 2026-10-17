@@ -3020,11 +3020,25 @@ class MainActivity : ComponentActivity() {
                             hd,
                             startMs / 1000.0,
                         )
+                        /*
+                         * 交接追踪（父亲 2026-10-18 02:10 要求"日志弄详细些，看看到底卡在哪"）。
+                         * 这一行把内核真正要打开的东西交代清楚：哪个主机、地址多长、
+                         * 有没有登录票、Referer 是哪一页 —— 黑屏/403 这类问题一眼能对号。
+                         * 令牌串很长，只留主机与末 12 个字符（够认，不淹日志）。
+                         */
+                        val uHost = try { java.net.URI(directUrl).host ?: "?" } catch (t: Throwable) { "?" }
                         Log.i(
                             TAG,
                             "网页流送进内核：${webFirst.optInt("height", 0)}p，外部音轨=" +
                                 webFirst.optString("audio").isNotBlank() + "，会员票=" + ck.isNotBlank(),
                         )
+                        Log.i(
+                            TAG,
+                            "交接追踪：主机=$uHost 地址长=${directUrl.length} 末12=${directUrl.takeLast(12)} " +
+                                "登录票=${if (ck.isNotBlank()) "有(${ck.length}字符)" else "无"} " +
+                                "Referer=${hd["Referer"]?.take(60)} 站点=${webStreamSite ?: -1}",
+                        )
+                        startWebStreamWatchdog(uHost, ck.isNotBlank(), ck.length)
                     } else {
                         m.play(directUrl, startMs / 1000.0)
                     }
@@ -4146,6 +4160,41 @@ class MainActivity : ComponentActivity() {
         Log.i(TAG, "真实轨道：codecs=$codecs 色彩传输=$transfer 杜比=$isDv 杜比5=$dv5 HDR=$hdr")
         if (dv5 && mpvBackend == null) {
             switchToKernelForFallback("真实轨道是杜比视界 Profile 5（系统解不出颜色）")
+        }
+    }
+
+    /**
+     * 网页流看门狗（父亲 2026-10-18 02:10 要求"日志详细些，看看到底卡在哪"）。
+     *
+     * 交接成功 ≠ 有画面。腾讯那次就是：地址交出去了、内核也起来了、请求头也设了，
+     * 但服务器回 403（缺登录票），内核一直"等第一帧"，父亲看到的是黑屏，
+     * 而现场只有 mpv 内部的英文行。这里每 2 秒记一次进展，12 秒还没画面就写清卡在哪。
+     */
+    private var webStreamJob: kotlinx.coroutines.Job? = null
+
+    private fun startWebStreamWatchdog(host: String, hasTicket: Boolean, cookieLen: Int) {
+        webStreamJob?.cancel()
+        webStreamJob = scope.launch {
+            var waited = 0L
+            while (waited < 12_000L) {
+                kotlinx.coroutines.delay(2_000L)
+                waited += 2_000L
+                if (renderer.videoActive) {
+                    Log.i(TAG, "网页流看门狗：${waited / 1000} 秒内出画面了（主机 $host）")
+                    return@launch
+                }
+                Log.w(
+                    TAG,
+                    "网页流看门狗：${waited / 1000} 秒仍无画面（主机 $host 登录票=" +
+                        (if (hasTicket) "有(${cookieLen}字符)" else "无") + "）",
+                )
+            }
+            Log.w(
+                TAG,
+                "网页流看门狗：12 秒没出画面 → 判定交接后播放失败（主机 $host，" +
+                    "登录票=" + (if (hasTicket) "有" else "无") +
+                    "）。常见原因：地址过期、缺登录票被服务器拒（403）、或该地址只给网页播放器用。",
+            )
         }
     }
 
