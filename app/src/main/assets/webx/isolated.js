@@ -36,6 +36,24 @@
   /* 两个来源合并去重：按域取 + 按当前页面取 */
   function gatherCookies() {
     var dom = cookieDomain();
+    /* 内容脚本里没有 cookies 接口 → 向后台页要（2026-10-18 02:24） */
+    if (!(typeof browser !== 'undefined' && browser.cookies && browser.cookies.getAll)) {
+      return new Promise(function (res) {
+        try {
+          browser.runtime.sendMessage({ __b0bCookies: 1, domain: dom }).then(function (r) {
+            var c = (r && r.cookie) || '';
+            console.log('[b0b] 向后台页取票（' + dom + '）：' + (c ? '有' : '无'));
+            res(c);
+          }).catch(function (e) {
+            console.log('[b0b] 向后台页取票失败：' + e);
+            res('');
+          });
+        } catch (e) {
+          console.log('[b0b] 向后台页取票抛错：' + e);
+          res('');
+        }
+      });
+    }
     var jobs = [];
     try { jobs.push(browser.cookies.getAll({ domain: dom })); } catch (e) {}
     try { jobs.push(browser.cookies.getAll({ url: location.href })); } catch (e) {}

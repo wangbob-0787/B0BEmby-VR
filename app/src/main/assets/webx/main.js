@@ -1672,8 +1672,31 @@
     }
   } catch (e) {}
 
+  /*
+   * 「登录票到底有没有」的现场取证（父亲 2026-10-18 02:22）。
+   *
+   * 腾讯那条路服务器回 403（缺票），而扩展那边报"登录票：无"。
+   * 两种可能分不清：① 这个浏览器里确实没登录腾讯；② 我们取票的通道不通
+   * （扩展的内容脚本里 likely 拿不到 cookies 接口）。
+   * 页面世界能看到非 HttpOnly 的 cookie，就先用它打个底：
+   * 有名字有长度说明票在浏览器里，那就是②；空的说明就是①。
+   */
+  function reportCookies() {
+    try {
+      if (window.__b0bCookieLogged) return;
+      var c = '';
+      try { c = String(document.cookie || ''); } catch (e) { c = ''; }
+      var names = c ? c.split(';').map(function (x) { return x.split('=')[0].trim(); }) : [];
+      window.__b0bCookieLogged = 1;
+      console.log('[b0b] 页面 cookie 取证：主机=' + location.hostname +
+        ' 有票=' + (c ? '有' : '无') + ' 长度=' + c.length +
+        ' 名字=' + (names.length ? names.slice(0, 8).join(',') : '（空）'));
+    } catch (e) {}
+  }
+
   function scan() {
     try { scanPerfForHls(); } catch (e) {}
+    try { reportCookies(); } catch (e) {}
     /* 每拍问一次"谁按过全屏"（2026-10-18 01:52）：跨层、跨源都靠它 */
     try { if (window.self !== window.top) window.top.postMessage({ __b0bAsk: 1 }, '*'); } catch (e) {}
     /*

@@ -46,3 +46,29 @@ browser.runtime.onMessage.addListener(function (msg) {
   if (!msg || msg.__b0b !== 1 || !msg.payload) return;
   forward(msg.payload);
 });
+
+/*
+ * 代内容脚本取 cookie（2026-10-18 02:24）。
+ *
+ * 内容脚本里可能没有 cookies 接口（GeckoView 的 MV2 环境对内容脚本限制更严），
+ * 后台页是扩展里权限最全的地方 —— 这里取好再回给内容脚本。
+ * 腾讯那次"登录票：无"到底是真没票，还是取票通道不通，这条通道能分开。
+ */
+try {
+  browser.runtime.onMessage.addListener(function (msg, sender, respond) {
+    try {
+      if (!msg || !msg.__b0bCookies) return;
+      var dom = msg.domain || '';
+      browser.cookies.getAll({ domain: dom }).then(function (list) {
+        var str = (list || []).map(function (c) { return c.name + '=' + c.value; }).join('; ');
+        console.log('[b0b] 后台页代取 cookie（' + dom + '）：' + (str ? '有(' + str.length + '字符)' : '无'));
+        try { respond({ cookie: str }); } catch (e) {}
+      }).catch(function (e) {
+        console.log('[b0b] 后台页取 cookie 失败：' + e);
+        try { respond({ cookie: '' }); } catch (e2) {}
+      });
+      return true;
+    } catch (e) {}
+    return false;
+  });
+} catch (e) {}
