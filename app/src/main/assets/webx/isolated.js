@@ -15,13 +15,51 @@
   var cookieAt = 0;
   var cookiePending = null;
 
+  /*
+   * 取哪个域的 cookie（2026-10-18 02:15 修）。
+   *
+   * 原来写死 `domain: 'bilibili.com'` —— B站 那条路一直好使，所以没人发现；
+   * 腾讯的地址交给内核后**服务器回 403**（日志实证：
+   * `ffmpeg https: HTTP error 403 Forbidden` → `Failed to open`
+   * → 银幕一直等第一帧 = 父亲看到的"接管了但黑屏"）。
+   * 原因是腾讯的媒体地址要带登录票（Cookie）才给数据，而我们从没给腾讯取过 cookie。
+   * 现在按当前站点挑域，并且同时按"当前页面地址"取一遍（有些是主机专属 cookie）。
+   */
+  function cookieDomain() {
+    var h = String(location.hostname || '');
+    if (/qq\.com$/.test(h)) return 'qq.com';
+    if (/iqiyi\.com$/.test(h)) return 'iqiyi.com';
+    if (/bilibili\.com$/.test(h)) return 'bilibili.com';
+    return h.replace(/^www\./, '');
+  }
+
+  /* 两个来源合并去重：按域取 + 按当前页面取 */
+  function gatherCookies() {
+    var dom = cookieDomain();
+    var jobs = [];
+    try { jobs.push(browser.cookies.getAll({ domain: dom })); } catch (e) {}
+    try { jobs.push(browser.cookies.getAll({ url: location.href })); } catch (e) {}
+    return Promise.all(jobs).then(function (lists) {
+      var seen = {}, out = [];
+      for (var i = 0; i < lists.length; i++) {
+        var l = lists[i] || [];
+        for (var j = 0; j < l.length; j++) {
+          var c = l[j];
+          if (!c || !c.name || seen[c.name]) continue;
+          seen[c.name] = 1;
+          out.push(c.name + '=' + c.value);
+        }
+      }
+      return out.join('; ');
+    });
+  }
+
   /* 一分钟刷一次就够（cookie 不会秒变），拿不到就先用上一次的 */
   function cookies() {
     if (Date.now() - cookieAt < 60000) return cookieCache;
     cookieAt = Date.now();
     try {
-      browser.cookies.getAll({ domain: 'bilibili.com' }).then(function (list) {
-        var s = (list || []).map(function (c) { return c.name + '=' + c.value; }).join('; ');
+      gatherCookies().then(function (s) {
         if (s) cookieCache = s;
       }).catch(function (e) {
         console.log('[b0b] 取 cookie 失败：' + e);
@@ -41,11 +79,10 @@
     if (cookieCache) return Promise.resolve(cookieCache);
     if (!cookiePending) {
       try {
-        cookiePending = browser.cookies.getAll({ domain: 'bilibili.com' }).then(function (list) {
-          var s = (list || []).map(function (c) { return c.name + '=' + c.value; }).join('; ');
+        cookiePending = gatherCookies().then(function (s) {
           if (s) cookieCache = s;
           cookieAt = Date.now();
-          console.log('[b0b] 登录票已取：' + (s ? '有' : '无'));
+          console.log('[b0b] 登录票已取（' + cookieDomain() + '）：' + (s ? '有' : '无'));
           return cookieCache;
         }).catch(function (e) {
           console.log('[b0b] 取 cookie 失败：' + e);
