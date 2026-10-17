@@ -214,6 +214,13 @@
      * 原来写在"待播为空就返回"的后面，等于永远走不到 ——
      * 父亲 2026-10-16 现场：播放列表已经识别到，却始终没交出去。
      */
+    if (!pendingPlay && !pendingQq) {
+      var lq = loadQqLocal();
+      if (lq) {
+        pendingQq = lq.u; qqAt = lq.at || 0; qqKey = lq.key || '';
+        console.log('[b0b] 从本地存储取回腾讯地址（页面或播放器层被重建过）');
+      }
+    }
     var qqHere = pageVideoKey(location.href);
     var qqSamePage = !keyKnown(qqKey) || !keyKnown(qqHere) || qqKey === qqHere;
     if (!pendingPlay && pendingQq && Date.now() - qqAt < 30 * 60 * 1000 && qqSamePage) {
@@ -828,10 +835,34 @@
    * 最外层再转发给其余各层；哪一层都记一份。按全屏这一下恰恰是最外层记的 ——
    * 两者终于在同一层会合。
    */
+  /*
+   * 【2026-10-18 02:08 补：按全屏会重建整棵文档树】
+   *
+   * 上一版把地址报给最外层，日志确实收到了（「收到别的层报来的腾讯地址（长度 502）」×4），
+   * 但父亲一按网页全屏（02:06:02）之后**又是一条日志都没有** ——
+   * 因为腾讯进网页全屏时把文档整个换了一遍，我们所有层的脚本上下文都是新的，
+   * 旧的广播对象已经不存在，新上下文手里什么都没有（探针日志证明新上下文在跑）。
+   * 所以地址不能只放在内存里，要落到**同源共享的本地存储**：
+   * 文档重建后，新上下文照样能把它取回来接着用。
+   */
+  function saveQqLocal(u, at, key) {
+    try { localStorage.setItem('b0b:qq', JSON.stringify({ u: u, at: at, key: key })); } catch (e) {}
+  }
+  function loadQqLocal() {
+    try {
+      var raw = localStorage.getItem('b0b:qq');
+      if (!raw) return null;
+      var o = JSON.parse(raw);
+      if (o && o.u && (Date.now() - (o.at || 0)) < 30 * 60 * 1000) return o;
+    } catch (e) {}
+    return null;
+  }
+
   function shareQq(u) {
     pendingQq = u; qqAt = Date.now();
     qqKey = pageVideoKey(location.href);
     var m = { __b0bQq: 1, u: u, at: qqAt, key: qqKey };
+    saveQqLocal(u, qqAt, qqKey);
     try { window.top.postMessage(m, '*'); } catch (e) {}
     try {
       if (window.self === window.top) {
@@ -880,6 +911,7 @@
         } else if (d.__b0bQq && d.u) {
           /* 别层抓到的地址（2026-10-18 02:00）：收下，最外层再转给其余各层 */
           pendingQq = d.u; qqAt = d.at || Date.now(); qqKey = d.key || '';
+          saveQqLocal(pendingQq, qqAt, qqKey);
           if (window.self === window.top && d.__b0bRelay !== 1) {
             for (var j = 0; j < window.frames.length; j++) {
               try {
