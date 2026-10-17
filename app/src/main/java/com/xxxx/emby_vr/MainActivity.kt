@@ -202,10 +202,17 @@ class MainActivity : ComponentActivity() {
     private var webPlayingNow = false
 
     /**
-     * 上一次按内核报的尺寸算过的比例。0 = 还没算过（新起播一律清零）。
-     * 父亲 2026-10-17 立的规矩：每部片子的比例都要重算，不能被上一部影响。
+     * **当前实际生效的银幕比例**（宽 / 高）。
+     *
+     * 父亲 2026-10-18 00:08 实测：「切换的时候，有时候比例正确，有时候不正确」。
+     *
+     * 病根是比例有好几个地方在写（换源清场写 16:9、网页流写抓来的宽高、
+     * 内核报出真实尺寸、网页面铺上银幕时写 16:9），谁最后写谁生效；
+     * 而「内核报的那份」原来靠自己记的一个标记去重 —— 只要别的路径先把它写成别的值，
+     * 内核那一路就再也不补，于是时对时错。
+     * 现在所有写入都走 applyScreenAspect() 并记在这里，内核每拍拿它比对、不一致就纠回来。
      */
-    private var lastKernelAspect = 0f
+    private var appliedAspect = 0f
 
     /** 银幕上现在是不是在放网页（原生侧银幕取样网页面纹理） */
     private var webOnScreen = false
@@ -1615,6 +1622,24 @@ class MainActivity : ComponentActivity() {
      * 于是每秒把网页流的片名覆盖成空串（这就是片名那格空着的原因）。
      * 规矩：**取不到片名就不写**，别用空值覆盖别人写好的标题。
      */
+    /**
+     * 银幕比例的**唯一入口**（父亲 2026-10-18 00:08 实测「切换时比例时对时错」立的）。
+     *
+     * 银幕高度 = 宽度 / 比例，所以这个值错了画面就被压扁或拉长。写它的地方有四处：
+     * 换源清场（回 16:9）、网页流（抓来的宽高）、内核（报出的真实尺寸）、
+     * 网页面铺上银幕（16:9）。谁都直接调原生，就必然出现「谁最后写谁生效」，
+     * 而内核那一路原本还带一个自己记的去重标记 —— 一旦被别的路径覆盖就再也不纠。
+     * 现在统一走这里：记下当前生效的值，任何一路发现与自己不一致都能纠回来。
+     */
+    private fun applyScreenAspect(a: Float, why: String) {
+        if (a <= 0f || !a.isFinite()) return
+        if (kotlin.math.abs(a - appliedAspect) < 0.0005f) return
+        appliedAspect = a
+        com.xxxx.emby_vr.vr.VrNative.setVideoAspect(a)
+        applyDanmakuCanvas(a)
+        Log.i(TAG, "银幕比例 → $a（$why）")
+    }
+
     private fun refreshOsdTitleFromItem() {
         /*
          * 【2026-10-17 23:26 父亲实测：从 Emby 片子切到 B站 视频后，控制条标题还是 Emby 片名】
@@ -1899,8 +1924,7 @@ class MainActivity : ComponentActivity() {
              * 再开 B 站，银幕还是 2.39:1 的形状，16:9 的网页画面贴上去被横向拉扁。
              * 网页面画布固定 1920×1080，银幕固有形状也是 16:9，两边一致。
              */
-            com.xxxx.emby_vr.vr.VrNative.setVideoAspect(16f / 9f)
-            applyDanmakuCanvas(16f / 9f)
+            applyScreenAspect(16f / 9f, "网页面铺上银幕")
             webStartUrlState.value = null      /* 从图标进站点 = 站点首页 */
             webSiteState.value = site
             webOnScreen = true
@@ -1998,14 +2022,8 @@ class MainActivity : ComponentActivity() {
                  * Emby 片子自己报的尺寸也和探测值不一致时以真实帧为准。
                  */
                 mpvBackend?.videoSize()?.let { (vw, vh) ->
-                    val a = vw.toFloat() / vh.toFloat()
-                    if (kotlin.math.abs(a - lastKernelAspect) > 0.001f) {
-                        lastKernelAspect = a
-                        com.xxxx.emby_vr.vr.VrNative.setVideoAspect(a)
-                        applyDanmakuCanvas(a)
-                        com.xxxx.emby_vr.vr.VrNative.setVideoSize(vw, vh)
-                        Log.i(TAG, "内核报出画面尺寸 ${vw}x${vh} → 银幕比例重算为 $a")
-                    }
+                    com.xxxx.emby_vr.vr.VrNative.setVideoSize(vw, vh)
+                    applyScreenAspect(vw.toFloat() / vh.toFloat(), "内核报出画面尺寸 ${vw}x${vh}")
                 }
                 kotlinx.coroutines.delay(1000)
             }
@@ -2762,7 +2780,6 @@ class MainActivity : ComponentActivity() {
          */
         Log.i(TAG, "换源：网站视频起播，先按新来源清一遍控制条与弹幕屏")
         clearForNewMedia()
-        lastKernelAspect = 0f
         /*
          * 【2026-10-17】记下接管那一刻页面在哪 —— 按 B 回网页就落回这一页。
          * 以此刻页面为准（WebLibraryScreen 已用最新一跳覆盖过 frame）。
@@ -2882,8 +2899,6 @@ class MainActivity : ComponentActivity() {
              * （标题、片名 logo、银幕比例 —— 父亲 2026-10-17 实测的三处残留）。
              */
             webPlayingNow = isWeb
-            /* 新起播：上一次按内核尺寸算过的比例作废，等这一部自己报（父亲 2026-10-17） */
-            lastKernelAspect = 0f
             if (isWeb) {
                 com.xxxx.emby_vr.vr.VrNative.setLogoVisible(false)
                 Log.i(TAG, "网页流起播：片名 logo 收掉（那是上一部 Emby 片子的）")
@@ -3116,17 +3131,13 @@ class MainActivity : ComponentActivity() {
                     val ww = webStream?.optInt("width", 0) ?: 0
                     val hh = webStream?.optInt("height", 0) ?: 0
                     if (ww > 0 && hh > 0) {
-                        val a = ww.toFloat() / hh.toFloat()
-                        Log.i(TAG, "网页流银幕比例 → $ww x $hh = $a")
-                        com.xxxx.emby_vr.vr.VrNative.setVideoAspect(a)
-                        applyDanmakuCanvas(a)
+                        applyScreenAspect(ww.toFloat() / hh.toFloat(), "网页流宽高 $ww x $hh")
                         com.xxxx.emby_vr.vr.VrNative.setVideoSize(ww, hh)
                     }
                 } else {
                     val kernelAspect =
                         com.xxxx.emby_vr.player.PlaybackFlags.videoAspect ?: (16f / 9f)
-                    com.xxxx.emby_vr.vr.VrNative.setVideoAspect(kernelAspect)
-                    applyDanmakuCanvas(kernelAspect)
+                    applyScreenAspect(kernelAspect, "内核片的探测比例")
                 }
                 /*
                  * 等待态**不再直接放行**（2026-10-09 父亲实测）。
@@ -3282,8 +3293,7 @@ class MainActivity : ComponentActivity() {
                         if (videoSize.width > 0 && videoSize.height > 0) {
                             val a = videoSize.width * videoSize.pixelWidthHeightRatio /
                                 videoSize.height
-                            com.xxxx.emby_vr.vr.VrNative.setVideoAspect(a)
-                            applyDanmakuCanvas(a)
+                            applyScreenAspect(a, "解码器报出 ${videoSize.width}x${videoSize.height}")
                             // 纹理尺寸也要给（锐化的邻域步长按真实像素算）
                             com.xxxx.emby_vr.vr.VrNative.setVideoSize(
                                 videoSize.width,
@@ -5731,13 +5741,12 @@ class MainActivity : ComponentActivity() {
          * 于是被非等比拉伸 —— 圆成了椭圆、字被压扁。首播时比例还是默认 16:9，所以正常。
          * 新片第一帧到位后 onVideoSizeChanged 会把它改回真实比例。
          */
-        com.xxxx.emby_vr.vr.VrNative.setVideoAspect(16f / 9f)
         /*
          * 画布比例必须跟着一起回 16:9（父亲 2026-10-07：等待期的转圈与「即将播放」变形）。
          * 等待期画在弹幕层上，而这一层此刻按 16:9 摆 —— 画布若还留着上一部（比如 2.39:1）
-         * 的比例，圆就被压成椭圆。两者永远是成对改的。
+         * 的比例，圆就被压成椭圆。两者永远是成对改的（applyScreenAspect 里就是成对的）。
          */
-        applyDanmakuCanvas(16f / 9f)
+        applyScreenAspect(16f / 9f, "换源清场回 16:9")
         waitingStartedAtMs = android.os.SystemClock.uptimeMillis()
         /*
          * 字幕表必须跟着换片清掉（2026-10-09 复查发现）。

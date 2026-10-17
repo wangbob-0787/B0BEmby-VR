@@ -1337,10 +1337,30 @@
           this.addEventListener('load', function () {
             try {
               var rt = this.responseType;
-              if (rt === '' || rt === 'text') scanTextForQqHls(this.responseText);
-              else if (rt === 'json') scanTextForQqHls(JSON.stringify(this.response));
-              else if (this.response) scanTextForQqHls(new TextDecoder('utf-8').decode(this.response));
-            } catch (e) {}
+              var seen = '';
+              if (rt === '' || rt === 'text') seen = String(this.responseText || '');
+              else if (rt === 'json') seen = JSON.stringify(this.response || '');
+              else if (this.response && this.response.byteLength < 4 * 1024 * 1024) {
+                seen = new TextDecoder('utf-8').decode(this.response);
+              }
+              scanTextForQqHls(seen);
+              /*
+               * 腾讯探针（2026-10-18 00:10 加，父亲实测"腾讯还是没接播"）。
+               *
+               * 现场：几轮里有时能抓到 .m3u8（日志"腾讯播放列表（从接口响应里找到）"），
+               * 有时一条都抓不到（同一台机器、同一个页面，只有一条 vd6.l.qq.com/proxyhttp 请求）。
+               * 到底是「响应里根本没有 m3u8（腾讯把地址藏在加密串里）」还是
+               * 「响应是二进制、我们当文本解失败」，只有把这条现场打出来才能分清。
+               */
+              if (/\/\/(vd|vd6|vv)\.l\.qq\.com|proxyhttp|getvinfo|getprog/i.test(String(this.responseURL || '')) ||
+                  /proxyhttp|getvinfo|getprog/i.test(u)) {
+                console.log('[b0b] 腾讯探针：' + String(this.responseURL || u).slice(0, 80) +
+                  ' 类型 ' + (rt || 'text') + ' 长度 ' + seen.length +
+                  ' 含m3u8=' + /m3u8/.test(seen) +
+                  ' 含引号url=' + /"url"|'url'/.test(seen) +
+                  ' 开头 ' + seen.slice(0, 70));
+              }
+            } catch (e) { console.log('[b0b] 腾讯探针：读响应失败 ' + e); }
           });
         }
         if (isPlayApi(u)) {
