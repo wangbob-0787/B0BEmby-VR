@@ -597,6 +597,15 @@ private object WebRuntime {
         if (ck.isNotBlank()) bridgeCookie = ck
         val frame = obj.optString("frame")
         if (frame.isNotBlank()) bridgeLastFrame = frame
+        /*
+         * 【2026-10-17 16:39 父亲定稿：把走过的页登记成合成历史栈】
+         * 接管时网页面被销毁，真实历史没了；凭 rect 消息每跳附带的页面地址自查：
+         * 连续相同的只记一次，最多 24 条 —— B 键按这个栈一路回退到首页。
+         */
+        if (frame.isNotBlank() && (webHist.isEmpty() || webHist.last() != frame)) {
+            webHist.add(frame)
+            if (webHist.size > 24) webHist.removeAt(0)
+        }
         val rect = obj.optJSONObject("rect")
         if (rect != null) {
             bridgeRects[frame] = floatArrayOf(
@@ -1038,6 +1047,7 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
     /* 火狐内核那两个（2026-10-14）：view 用来发事件，session 用来加载与前进后退 */
     var geckoRef by remember { mutableStateOf<org.mozilla.geckoview.GeckoView?>(null) }
     var geckoSessionRef by remember { mutableStateOf<org.mozilla.geckoview.GeckoSession?>(null) }
+    val webHist = remember { java.util.ArrayList<String>() }   /* 合成历史栈（本站内） */
     /*
      * 网页内核做成可实时切换（2026-10-14）：VrTuning 不是 Compose 状态，
      * 直接读它切不动 —— 这里每秒对一次，文件里改了，网页块立刻按新引擎重建。
@@ -1520,9 +1530,26 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
              * 火狐内核那条路：直接让它的会话后退（它没有同步的 canGoBack 可问，
              * 退不动时就是什么都不发生，与原来"退不动返回 false"的观感一致）。
              */
-            geckoSessionRef?.let { s ->
-                runCatching { s.goBack() }
+            /*
+             * 【16:39 修正】接管回来那一页没有真实历史（网页销毁重建），
+             * 原来 gecko 这条"永远成功"的分支让 B 键按了没动静。
+             * 现在先走合成历史栈（网页屏自己记的路线）， honestly 回退一步是一步；
+             * 没得退时再走 gecko 真历史（会话没重建的场合）。
+             */
+            if (webHist.size >= 2) {
+                val cur = webHist.removeAt(webHist.size - 1)      // 当前页不算"上一页"
+                if (webHist.isNotEmpty() && webHist.last() == cur) webHist.removeAt(webHist.size - 1)
+                if (webHist.isEmpty()) return@back false
+                val nav = com.xxxx.emby_vr.web.WebPageHub.navHandler ?: return@back false
+                val prev = webHist.removeAt(webHist.size - 1)
+                bridgeLastFrame = prev
+                nav(prev)
                 return@back true
+            }
+            geckoSessionRef?.let { s ->
+                var ok = false
+                runCatching { ok = s.canGoBack; if (ok) s.goBack() }
+                return@back ok
             }
             val wv = webRef
             if (wv != null && wv.canGoBack()) {
