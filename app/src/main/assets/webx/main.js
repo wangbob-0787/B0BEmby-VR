@@ -570,8 +570,16 @@
    * /tv/ 那类元素全屏走 fullscreenchange 事件，进出都知道。
    * 占屏比、页面白名单全部退场。
    */
-  var fullState = false;      /* 两个全屏按钮：第奇数次点下去=铺满（接管开启），偶数=收回（接管解除）。 */
-  var fullBtnCount = 0;       /* 本页内两个全屏按钮的累计点击次数（per page，页面重建即从零） */
+  /*
+   * 【2026-10-17 15:50 父亲定稿：两把开关各自计数 —— 合在一起逻辑会乱】
+   * 父亲原话："即使我点了网页全屏，它只是网页全屏，我再点全屏，它就真正全屏。它是两个不同的逻辑啊。
+   * 但是现在我们不管是网页全屏还是真正全屏，都要接管。"
+   * 所以：webClick = 网页全屏按钮的点击计数（奇=网页全屏开着）；fullClick = 进入全屏按钮的计数（奇=真全屏开着）。
+   * fullState = 任一为奇 —— 网页全屏或真全屏，都接管。
+   */
+  var webClick = 0;
+  var fullClick = 0;
+  var fullState = false;
   var lastSubmitSig = '';
   var lastSubmitAt = 0;
 
@@ -969,7 +977,7 @@
       if (!cands[0].audio && !isWhole) {
         var waitedMs = 0;
         if (liveSince) waitedMs = Date.now() - liveSince;
-        else if (fullState) waitedMs = Date.now() - (fullBtnAt || (Date.now() - 3000));
+        else if (fullState) waitedMs = Date.now() - 3000;   /* 全屏是信号阶段，等声不用精确计时 */
         if (waitedMs < 8000) {
           console.log('[b0b]③先不交：现在只有画面那条，等声音那条（已等 ' +
             Math.round(waitedMs / 1000) + ' 秒，最多 8 秒）');
@@ -1463,7 +1471,8 @@
        * 页面重建（按B后重载）自身会从零；SPA 换页（不重载）在这里归零 ——
        * 首次点全屏=铺满，第二次=收回。
        */
-      fullBtnCount = 0;
+      webClick = 0;
+      fullClick = 0;
       fullState = false;
       console.log('[b0b]①页面地址变为 ' + String(location.href).slice(-70) + '（全屏计数归零）');
     }
@@ -1543,8 +1552,12 @@
         '.bpx-player-ctrl-web,.bpx-player-ctrl-web-enter,.bpx-player-ctrl-full,' +
         '.squirtle-video-pagefullscreen,.squirtle-video-fullscreen,[aria-label*="全屏"]') : null;
       if (!el) return;
-      fullBtnCount++;      /* 【父亲 15:46 定稿：按点击次数分进/退 —— 奇数=铺满，偶数=收回，不测比例不读类 */
-      fullState = (fullBtnCount % 2 === 1);
+      var cls = String(el.className || '');
+      if (cls.indexOf('bpx-player-ctrl-full') >= 0 || cls.indexOf('squirtle-video-fullscreen') >= 0) fullClick++;
+      else webClick++;
+      fullState = (webClick % 2 === 1) || (fullClick % 2 === 1);
+      console.log('[b0b]①全屏类按钮被点：web=' + webClick + '，full=' + fullClick +
+        ' → ' + (fullState ? '进入全屏（可接管）' : '退出全屏'));
     }, true);
     document.addEventListener('fullscreenchange', function () {
       if (window.self !== window.top) return;
