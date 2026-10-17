@@ -449,6 +449,50 @@
    * 上一版只 hook 了 fetch / XHR —— 实测没抓到（客户端没等到 kind:'play'），
    * 说明播放器那次请求没走我们 hook 到的对象。全局变量不受这个影响。
    */
+  /*
+   * 【2026-10-17 11:33 父亲问"为什么普通视频秒接、电视剧/电影不行"的根治】
+   *
+   * 普通视频(BV)页面把完整播放信息写死在页面里（__playinfo__），每 0.4 秒就有现成的；
+   * 电视剧/电影(bangumi)的地址只在**整页打开**时向 B站 要一次：SPA 换集/从推荐点进去
+   * 都不整页刷新、B站 不重新要 —— 我们只能等分片，缓冲充足时几十秒都不来。
+   *
+   * 现在：发现换集（或放大而手里没有当前这一集的清单）时，
+   * **我们自己带着页面里的身份去调一次 B站 自己的播放接口** ——
+   * 与它自己调用的完全相同（同样的接口、同样的登录态），拿回来的清单
+   * 和普通视频一样：画面+声音成对、带各档清晰度。电影/电视剧从此同级。
+   */
+  var selfFetchAt = 0;
+  var selfFetchKey = '';
+  function selfFetchBiliPlayurl(why) {
+    try {
+      if (!liveSince || !/\/bangumi\/play\//.test(location.href)) return;
+      if (!biliEp || !biliCid) return;
+      var key = biliEp + '|' + biliCid;
+      if (key === selfFetchKey) return;
+      if (Date.now() - selfFetchAt < 5000) return;
+      selfFetchAt = Date.now();
+      selfFetchKey = key;
+      var url = 'https://api.bilibili.com/pgc/player/web/v2/playurl?ep_id=' + biliEp +
+        '&cid=' + biliCid + '&qn=120&fnver=0&fnval=16&fourk=1';
+      console.log('[b0b]②自己调一次播放接口（' + why + '）：ep' + biliEp + ' 编号 ' + biliCid);
+      fetch(url, { credentials: 'include' })
+        .then(function (r) { return r.text(); })
+        .then(function (t) {
+          try {
+            var j = JSON.parse(t);
+            var d = j.result || j.data;
+            if (d) {
+              console.log('[b0b]②自调播放接口：拿到 ' + (d.dash ? 'dash' : 'durl') + ' 清单');
+              applyPlayinfo(d);
+            } else {
+              console.log('[b0b]②自调播放接口：响应里没有地址（code=' + (j.code || '?') + '）');
+            }
+          } catch (e) { console.log('[b0b]②自调播放接口解析失败：' + e); }
+        })
+        .catch(function (e) { console.log('[b0b]②自调播放接口失败：' + e); });
+    } catch (e) {}
+  }
+
   var lastPlayinfoObj = null;
   function readGlobalPlayinfo() {
     try {
@@ -1049,11 +1093,13 @@
         biliEp = me[1];
         console.log('[b0b]②页面在播的集号变了：ep' + biliEp + '（季 ' + (biliSeason || '?') + '）');
         resetCollection('页面在播的集号变了');
+        selfFetchBiliPlayurl('换集');
       }
       if (ms && ms[1] !== biliSeason) {
         biliSeason = ms[1];
         console.log('[b0b]②页面在播的季号变了：season ' + biliSeason);
         resetCollection('页面在播的季号变了');
+        selfFetchBiliPlayurl('换集');
       }
     } catch (e) {}
   }
@@ -1344,6 +1390,7 @@
           liveSince = Date.now();
           poolSince = liveSince;
           poolWin = best.winId;
+          selfFetchBiliPlayurl('放大');
           console.log('[b0b]① 窗口 ' + best.winId + ' 占到九成（' + Math.round(best.w) + 'x' +
             Math.round(best.h) + '，' + Math.round(pctNow) + '%）→ 开始收它的画面与声音');
         }
