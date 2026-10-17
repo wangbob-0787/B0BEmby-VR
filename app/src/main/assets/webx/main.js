@@ -214,7 +214,8 @@
      * 原来写在"待播为空就返回"的后面，等于永远走不到 ——
      * 父亲 2026-10-16 现场：播放列表已经识别到，却始终没交出去。
      */
-    if (!pendingPlay && pendingQq && Date.now() - qqAt < 180000) {
+    var qqSamePage = pageVideoKey(qqFrame) === pageVideoKey(location.href);
+    if (!pendingPlay && pendingQq && Date.now() - qqAt < 30 * 60 * 1000 && qqSamePage) {
       var qqSz = pageVideoSize();
       pendingPlay = {
         title: '', kind: 'play', t: Date.now(), frame: location.href, winId: poolWin,
@@ -222,7 +223,12 @@
         streams: [{ id: 0, height: 0, width: 0, bw: 0, vcodec: 'h264',
                     video: pendingQq, audio: '' }]
       };
-      console.log('[b0b] 腾讯：用抓到的 HLS 播放列表交给内核');
+      console.log('[b0b] 腾讯：用抓到的 HLS 播放列表交给内核（抓于 ' +
+        Math.round((Date.now() - qqAt) / 1000) + ' 秒前，同一集）');
+    }
+    if (!pendingPlay && pendingQq && !qqSamePage) {
+      console.log('[b0b] 手里那份腾讯地址是**别的集**的（已经翻页），丢掉等新的');
+      pendingQq = ''; qqAt = 0;
     }
     /* 每道关卡都留下记录：抓不到时能一眼看出卡在哪 */
     if (!pendingPlay) return;
@@ -554,7 +560,7 @@
       if (m && m.length) {
         var u = m[0].replace(/\\u002F/gi, '/').replace(/\\\//g, '/');
         if (u !== pendingQq) {
-          pendingQq = u; qqAt = Date.now();
+          pendingQq = u; qqAt = Date.now(); qqFrame = location.href;
           console.log('[b0b] 腾讯播放列表（从接口响应里找到，长度 ' + u.length + '，正片非字幕）');
         }
       } else if (t.indexOf('m3u8') >= 0) {
@@ -793,7 +799,23 @@
    * 与 B站 不同：腾讯这条路不需要解析播放接口，认出来即可。
    * （2026-10-16 在电脑浏览器上实测：mpv 带 Referer 能正常出画出声）
    */
-  var pendingQq = '', qqAt = 0;
+  var pendingQq = '', qqAt = 0, qqFrame = '';
+  /*
+   * 地址是属于哪一页的（2026-10-18 01:44 加）。
+   * 腾讯的播放列表**只在起播那一刻出现一次**，之后再也不请求 ——
+   * 父亲 01:41 的现场就是这样：他起播后过十来分钟才按网页全屏，
+   * 三分钟时效早过了，手里那份地址被当成过期丢掉，于是永远交不出去。
+   * 现在把时效放宽（见 flushPendingPlay），并用"页面里的片子编号"作安全绳：
+   * 只要还在同一集上，旧地址照样能用；换了集就自动作废，不会交出上一集的地址。
+   */
+  function pageVideoKey(u) {
+    try {
+      var t = String(u || '').split('?')[0];
+      var m = /\/([A-Za-z0-9_-]{8,})\.html?$/i.exec(t);
+      if (m) return m[1];
+      return t.slice(-40);
+    } catch (e) { return ''; }
+  }
 
   function isQqHls(u) {
     if (!/\.m3u8(\?|$)/i.test(u)) return false;
@@ -837,7 +859,7 @@
           try { noteMedia(u); } catch (e) {}
         }
         if (isQqHls(u) && u !== pendingQq) {
-          pendingQq = u; qqAt = Date.now();
+          pendingQq = u; qqAt = Date.now(); qqFrame = location.href;
           console.log('[b0b] 腾讯播放列表（从资源时间线找到）');
         }
       }
@@ -1427,7 +1449,7 @@
               if (body.slice(0, 7) === '#EXTM3U' && !isCaptionBody) {
                 var self_u = String(this.responseURL || u);
                 if (self_u !== pendingQq) {
-                  pendingQq = self_u; qqAt = Date.now();
+                  pendingQq = self_u; qqAt = Date.now(); qqFrame = location.href;
                   console.log('[b0b] 腾讯播放列表（响应正文就是列表，地址无 .m3u8 后缀）');
                 }
               }
