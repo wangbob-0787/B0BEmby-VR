@@ -214,7 +214,8 @@
      * 原来写在"待播为空就返回"的后面，等于永远走不到 ——
      * 父亲 2026-10-16 现场：播放列表已经识别到，却始终没交出去。
      */
-    var qqSamePage = pageVideoKey(qqFrame) === pageVideoKey(location.href);
+    var qqHere = pageVideoKey(location.href);
+    var qqSamePage = !keyKnown(qqKey) || !keyKnown(qqHere) || qqKey === qqHere;
     if (!pendingPlay && pendingQq && Date.now() - qqAt < 30 * 60 * 1000 && qqSamePage) {
       var qqSz = pageVideoSize();
       pendingPlay = {
@@ -566,7 +567,7 @@
       if (m && m.length) {
         var u = m[0].replace(/\\u002F/gi, '/').replace(/\\\//g, '/');
         if (u !== pendingQq) {
-          pendingQq = u; qqAt = Date.now(); qqFrame = location.href;
+          shareQq(u);
           console.log('[b0b] 腾讯播放列表（从接口响应里找到，长度 ' + u.length + '，正片非字幕）');
         }
       } else if (t.indexOf('m3u8') >= 0) {
@@ -805,7 +806,41 @@
    * 与 B站 不同：腾讯这条路不需要解析播放接口，认出来即可。
    * （2026-10-16 在电脑浏览器上实测：mpv 带 Referer 能正常出画出声）
    */
-  var pendingQq = '', qqAt = 0, qqFrame = '';
+  var pendingQq = '', qqAt = 0, qqKey = '';
+  /*
+   * 页面编号是不是"能认的"（2026-10-18 02:00）：
+   * 播放器那一层的地址是 …/thumbplayer，编号就成了 thumbplayer ——
+   * 它不是"哪一集"的编号，不能拿它去跟页面比，否则会把好地址误判成别的集。
+   */
+  function keyKnown(k) {
+    return !!k && k.length >= 6 && !/thumbplayer|player|^https?:/i.test(k);
+  }
+
+  /*
+   * 【2026-10-18 02:00 破案】父亲问"为什么检测不到我按了全屏"——检测到了
+   * （日志里「①全屏按钮被点（网页全屏）」一条不少），问题在**检测到的那一层
+   * 与攥着地址的那一层不是同一层**：腾讯一进网页全屏就把播放器那一层重建
+   * （新文档、新脚本上下文），而地址是记在那一层内存里的 —— 重建即清空，
+   * 于是"按了全屏"这个事实与"手里那份地址"永远碰不上面
+   * （01:58 日志：01:58:05 还在判"没交出去"，01:58:11 按下全屏之后一条日志都没有）。
+   *
+   * 改法：抓到地址时**同时报给最外层**（最外层不随播放器重建），
+   * 最外层再转发给其余各层；哪一层都记一份。按全屏这一下恰恰是最外层记的 ——
+   * 两者终于在同一层会合。
+   */
+  function shareQq(u) {
+    pendingQq = u; qqAt = Date.now();
+    qqKey = pageVideoKey(location.href);
+    var m = { __b0bQq: 1, u: u, at: qqAt, key: qqKey };
+    try { window.top.postMessage(m, '*'); } catch (e) {}
+    try {
+      if (window.self === window.top) {
+        for (var i = 0; i < window.frames.length; i++) {
+          try { window.frames[i].postMessage(m, '*'); } catch (e2) {}
+        }
+      }
+    } catch (e) {}
+  }
   /*
    * 地址是属于哪一页的（2026-10-18 01:44 加）。
    * 腾讯的播放列表**只在起播那一刻出现一次**，之后再也不请求 ——
@@ -842,6 +877,18 @@
               try { window.frames[i].postMessage({ __b0bFull: 1, t: d.t }, '*'); } catch (e2) {}
             }
           }
+        } else if (d.__b0bQq && d.u) {
+          /* 别层抓到的地址（2026-10-18 02:00）：收下，最外层再转给其余各层 */
+          pendingQq = d.u; qqAt = d.at || Date.now(); qqKey = d.key || '';
+          if (window.self === window.top && d.__b0bRelay !== 1) {
+            for (var j = 0; j < window.frames.length; j++) {
+              try {
+                window.frames[j].postMessage(
+                  { __b0bQq: 1, u: d.u, at: d.at, key: d.key, __b0bRelay: 1 }, '*');
+              } catch (e4) {}
+            }
+          }
+          console.log('[b0b] 收到别的层报来的腾讯地址（长度 ' + String(d.u).length + '）');
         } else if (d.__b0bAsk) {
           if (peerFullAt > 0 && ev.source) {
             try { ev.source.postMessage({ __b0bFull: 1, t: peerFullAt }, '*'); } catch (e3) {}
@@ -902,7 +949,7 @@
           try { noteMedia(u); } catch (e) {}
         }
         if (isQqHls(u) && u !== pendingQq) {
-          pendingQq = u; qqAt = Date.now(); qqFrame = location.href;
+          shareQq(u);
           console.log('[b0b] 腾讯播放列表（从资源时间线找到）');
         }
       }
@@ -1492,7 +1539,7 @@
               if (body.slice(0, 7) === '#EXTM3U' && !isCaptionBody) {
                 var self_u = String(this.responseURL || u);
                 if (self_u !== pendingQq) {
-                  pendingQq = self_u; qqAt = Date.now(); qqFrame = location.href;
+                  shareQq(self_u);
                   console.log('[b0b] 腾讯播放列表（响应正文就是列表，地址无 .m3u8 后缀）');
                 }
               }
