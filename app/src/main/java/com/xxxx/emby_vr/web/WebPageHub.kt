@@ -46,6 +46,14 @@ object WebPageHub {
      */
     var backHandler: (() -> Boolean)? = null
 
+    /**
+     * 【2026-10-17 16:39 父亲定稿：银幕上是网页时按 B，一路回退，直到首页】
+     * 网页历史登记：接管时网页面被销毁重建、真实历史栈已断，
+     * 网页屏把自己走过的地址按顺序登记在这里；back() 按这个栈回退。
+     * u = 目标地址（上一个页面）。
+     */
+    var navHandler: ((String) -> Unit)? = null
+
     /** 当前是否有网页页在用交互 */
     val active: Boolean
         get() = tapHandler != null
