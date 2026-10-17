@@ -534,12 +534,28 @@
        * 表现为"有时能抓到（别处的地址没转义）有时抓不到"。
        * 现在正则把可选的反斜杠吃进去，取到后再还原成真地址。
        */
-      var m = t.match(/https?:\\?\/\\?\/[^"'\s]{6,600}?\.m3u8[^"'\s]{0,400}/g);
+      var all = t.match(/https?:\\?\/\\?\/[^"'\s]{6,600}?\.m3u8[^"'\s]{0,400}/g) || [];
+      /*
+       * 【2026-10-18 01:33 破案 —— 腾讯"接管了却没画面"的真凶】
+       *
+       * 上一版把地址交出去了、内核也起来了，但 mpv 打开的是
+       *   https://playproxy.video.qq.com/captionV3/…f53102000.vtt.m3u8?…
+       * 也就是**字幕轨的播放列表**（captionV3 / .vtt.m3u8）—— 视频列表里
+       * 字幕的 m3u8 排在前面，我们取的是第一条，等于把字幕当片子交给内核，
+       * mpv 自然 loading failed（reason 4），第一帧永远不来，银幕就一直不切。
+       * 现在先把字幕类的挑掉，只认正片列表。
+       */
+      var m = all.filter(function (x) {
+        return !/captionV3|\/caption|subtitle|\.vtt\.m3u8|\.ass\.m3u8|\.srt\.m3u8|dm\.video\.qq/i.test(x);
+      });
+      if (!m.length && all.length) {
+        console.log('[b0b] 腾讯播放列表：只找到字幕类的 m3u8（' + all.length + ' 条），先不用它');
+      }
       if (m && m.length) {
         var u = m[0].replace(/\\u002F/gi, '/').replace(/\\\//g, '/');
         if (u !== pendingQq) {
           pendingQq = u; qqAt = Date.now();
-          console.log('[b0b] 腾讯播放列表（从接口响应里找到，长度 ' + u.length + '）');
+          console.log('[b0b] 腾讯播放列表（从接口响应里找到，长度 ' + u.length + '，正片非字幕）');
         }
       } else if (t.indexOf('m3u8') >= 0) {
         /* 有 m3u8 字样却没拼出地址：把那一小段原样打出来，下一轮照着它修（父亲 2026-10-18） */
@@ -1406,7 +1422,9 @@
               else if (this.response && this.response.byteLength < 4 * 1024 * 1024) {
                 body = new TextDecoder('utf-8').decode(this.response);
               }
-              if (body.slice(0, 7) === '#EXTM3U') {
+              var isCaptionBody = /captionV3|TYPE=SUBTITLES|\.vtt/i.test(body) ||
+                /captionV3|\.vtt\.m3u8/i.test(String(this.responseURL || u));
+              if (body.slice(0, 7) === '#EXTM3U' && !isCaptionBody) {
                 var self_u = String(this.responseURL || u);
                 if (self_u !== pendingQq) {
                   pendingQq = self_u; qqAt = Date.now();
