@@ -3054,7 +3054,7 @@ class MainActivity : ComponentActivity() {
     /** 分片播放列表里那串片号，用来判断"换集"（换了就清空重攒）。 */
     private var segHlsVid: String? = null
 
-    private fun playPlaylistForSegs(quality: String, cookie: String, frame: String) {
+    private fun playPlaylistForSegs(durSecIn: Int, quality: String, cookie: String, frame: String) {
         val vid = com.xxxx.emby_vr.web.TencentWholeUrl.vidFromFrame(frame)
         if (vid != null) {
             wholePlayingVid = vid
@@ -3068,7 +3068,7 @@ class MainActivity : ComponentActivity() {
         }
         webKeepPageAlive = false
         webFragMode = false
-        val durSec = webCandSrc?.optInt("durSec", 0) ?: 0
+        val durSec = if (durSecIn > 0) durSecIn else (webCandSrc?.optInt("durSec", 0) ?: 0)
         val ready = segHls
         if (ready != null) {
             tencentSegs.forEach { (i, u) -> ready.put(i, u) }
@@ -3138,7 +3138,7 @@ class MainActivity : ComponentActivity() {
          */
         if (tencentSegs.size >= 3) {
             Log.i(TAG, "整集：本机已攒到 ${tencentSegs.size} 段分片，改走分片播放列表（不走被限速的整集文件）")
-            playPlaylistForSegs(quality, cookie, frame)
+            playPlaylistForSegs(webCandSrc?.optInt("durSec", 0) ?: 0, quality, cookie, frame)
             return
         }
         com.xxxx.emby_vr.web.TencentWholeUrl.vidFromFrame(frame)?.let {
@@ -3180,6 +3180,29 @@ class MainActivity : ComponentActivity() {
          * 所以这里记下来，分片路那边就不要再问一遍、把好地址顶掉了。
          */
         if (obj.optInt("whole", 0) == 1) {
+            /*
+             * 本机已经攒到够数的腾讯分片 → **优先走分片播放列表**（2026-10-19 02:05 修）。
+             *
+             * 头显实测（r705）：分片是攒到了（日志「腾讯分片记账：本轮 +11，共 11 段」），
+             * 但"优先走分片"的判断只加在了 playWholeUrl 那条入口上，而全屏那一趟实际走的是
+             * 这里（扩展带 whole=1 送来的整集地址）→ 于是又落回被限速到约 1KB/s 的整集 mp4，
+             * 内核读不出轨道（日志「内核轨道清单：[]」「画面参数：格式=-」）→ 大屏黑着。
+             * 分片是明文 MPEG-TS、下载 33–44MB/s，所以只要攒到 3 段以上就改走它。
+             */
+            if (tencentSegs.size >= 3) {
+                Log.i(
+                    TAG,
+                    "整集：本机已攒到 ${tencentSegs.size} 段分片，改走分片播放列表" +
+                        "（不走被限速的整集文件）",
+                )
+                playPlaylistForSegs(
+                    obj.optInt("durSec", 0),
+                    obj.optString("quality"),
+                    obj.optString("cookie"),
+                    obj.optString("frame"),
+                )
+                return
+            }
             val v = com.xxxx.emby_vr.web.TencentWholeUrl.vidFromFrame(obj.optString("frame"))
             if (v != null) {
                 webWholeTried = v
