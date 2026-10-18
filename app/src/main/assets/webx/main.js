@@ -1029,10 +1029,16 @@
   var fragHoldLogged = -1;
   var fragResetAt = 0;
 
-  /* 按全屏这一刻清一次攒段（5 秒内只清一次，避免同一条消息在几层之间来回转发时反复清空） */
+  /* 按全屏这一刻清一次攒段。用"这一次全屏"的时间戳记账（同站点各层共享）：
+     原来按时间节流，结果是每一层、每一跳消息都清一次，刚攒两段就被清光（r680 头显实测）。 */
   function resetFragsOnFull() {
-    if (Date.now() - fragResetAt < 5000) return;
-    fragResetAt = Date.now();
+    var stamp = 0;
+    try { stamp = parseInt(localStorage.getItem('b0b:fullAt') || '0', 10) || 0; } catch (e) {}
+    if (!stamp) stamp = Date.now();
+    var done = 0;
+    try { done = parseInt(localStorage.getItem('b0b:fragReset') || '0', 10) || 0; } catch (e) {}
+    if (done === stamp) return;
+    try { localStorage.setItem('b0b:fragReset', String(stamp)); } catch (e) {}
     fragMap = {};
     fragSent = {};
     fragHoldLogged = -1;
@@ -1181,6 +1187,15 @@
               try { window.frames[i].postMessage({ __b0bFull: 1, t: d.t }, '*'); } catch (e2) {}
             }
           }
+        } else if (d.__b0bNet) {
+          /*
+           * 扩展后台页从浏览器层面看到的请求（2026-10-18）。
+           *
+           * 这是腾讯那条路的关键：网页的播放器把分片交给后台线程去取，
+           * 页面里的清单（performance）在火狐内核里根本看不到这些请求 ——
+           * 只有 webRequest 这一层能看见。收到就并进攒段表。
+           */
+          noteFrag(d.u);
         } else if (d.__b0bClip) {
           peerClipDur = Math.max(peerClipDur, Number(d.d) || 0);
           if (window.self === window.top) {

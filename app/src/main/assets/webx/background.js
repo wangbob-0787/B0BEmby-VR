@@ -72,3 +72,29 @@ try {
     return false;
   });
 } catch (e) {}
+
+/*
+ * 从浏览器层面看媒体的每一跳请求（2026-10-18）。
+ *
+ * 【为什么必须在这一层】腾讯的网页播放器把分片（一小段一小段、各带各的签名）
+ * 交给后台线程去取 —— 页面里的资源清单在火狐内核里看不到这些请求，
+ * 于是"攒分片"这条路在头显上一条都攒不到（r680 实测日志：0 条）。
+ * webRequest 是唯一能看见全部请求的地方，收到就转发给内容脚本 → 页面世界去攒。
+ */
+try {
+  browser.webRequest.onCompleted.addListener(
+    function (d) {
+      try {
+        var u = d && d.url ? d.url : '';
+        if (u.indexOf('index=') < 0) return;
+        if (!/\.ts\?|\/B_|gtimg|ltsyd|ltshwy|vlive|vipzj/i.test(u)) return;
+        var m = /[?&]index=(\d+)/.exec(u);
+        if (!m) return;
+        browser.runtime.sendMessage({ __b0bNet: 1, i: parseInt(m[1], 10), u: u }).catch(function () {});
+      } catch (e) {}
+    },
+    { urls: ['<all_urls>'] },
+  );
+} catch (e) {
+  console.log('[b0b] 后台页挂网络监听失败：' + e);
+}

@@ -149,4 +149,22 @@
   }, false);
 
   console.log('[b0b] 内容脚本就绪 ' + location.href);
+
+  /*
+   * 浏览器层面看到的媒体请求（2026-10-18）。
+   *
+   * 腾讯的分片是网页的播放器交给后台线程去取的 —— 页面里的清单看不见，
+   * 只有扩展后台页的 webRequest 能看到。这一条把它送进页面世界去攒段。
+   */
+  try {
+    browser.runtime.onMessage.addListener(function (m) {
+      try {
+        if (!m || m.__b0bNet !== 1) return;
+        window.postMessage({ __b0bNet: 1, i: m.i, u: m.u }, '*');
+      } catch (e) {
+      }
+    });
+  } catch (e) {
+    console.log('[b0b] 挂网络监听失败：' + e);
+  }
 })();
