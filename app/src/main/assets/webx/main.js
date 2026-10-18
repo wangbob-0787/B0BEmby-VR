@@ -2506,6 +2506,24 @@
    * 而页面本身是登录着的 —— 那就让**浏览器**去发这一条，身份由浏览器带。
    * 拿到整片地址后走普通"可播地址"通道交出去，客户端那边直接播整片（可拖进度）。
    */
+  /*
+   * 页面世界里代发签名请求（2026-10-18 晚）。
+   *
+   * 为什么非要页面自己发：这条接口认身份看的是浏览器随请求带的票，内容脚本发的请求
+   * 头显上实测被判成"没登录"（回 preview=180、login=0）。页面自己发就带得全 ——
+   * 签名仍是我们自己算的，只是把"跑腿"交给页面。
+   */
+  window.addEventListener('message', function (ev) {
+    if (ev.source !== window) return;
+    var d = ev.data;
+    if (!d || d.__b0bSignFetch !== 1 || !d.url) return;
+    fetch(d.url, { credentials: 'include' }).then(function (r) { return r.text(); }).then(function (t) {
+      window.postMessage({ __b0bSignFetchBack: 1, id: d.id, text: t }, '*');
+    }).catch(function (e) {
+      window.postMessage({ __b0bSignFetchBack: 1, id: d.id, text: '', err: String(e) }, '*');
+    });
+  }, false);
+
   setInterval(scan, 400);
   scan();
 })();

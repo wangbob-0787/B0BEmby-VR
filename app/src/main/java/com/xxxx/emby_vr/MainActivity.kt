@@ -3088,6 +3088,31 @@ class MainActivity : ComponentActivity() {
         }
         val s = streams.optJSONObject(idx) ?: return
         if (s.optString("video").isBlank()) return
+        /*
+         * 整集文件走多路代理（2026-10-18 晚）。
+         *
+         * 实测：腾讯整集地址单连接被限速到约 1KB/s（1 连接 15KB / 2 连接 168MB / 4 连接 253MB，
+         * 14 秒采样）。播放器只开一条连接 → 文件头都读不下来 → 大屏黑屏、总时长显示 0。
+         * 所以整集这条路不给内核远端地址，给**本机代理**地址：代理自己开 4 条 Range 连接
+         * 分块拉、写临时文件，内核要哪段喂哪段，拖进度也补得上。
+         * 分片那条路（B站 / 腾讯试看）不动，仍直接给远端地址。
+         */
+        var playStream = s
+        if (src.optInt("whole", 0) == 1) {
+            val raw = s.optString("video")
+            val hdrs = HashMap<String, String>()
+            hdrs["Referer"] = "https://v.qq.com/"
+            hdrs["User-Agent"] = WEB_DESKTOP_UA
+            if (src.optString("cookie").isNotBlank()) hdrs["Cookie"] = src.optString("cookie")
+            val local = com.xxxx.emby_vr.web.ParallelHttpProxy.start(raw, hdrs, cacheDir, 4)
+            if (local != null) {
+                playStream = org.json.JSONObject(s.toString())
+                playStream.put("video", local)
+                Log.i(TAG, "整集走多路代理：内核拿到的是本机地址，远端由 4 条连接并行拉")
+            } else {
+                Log.w(TAG, "多路代理没起来，仍用远端原地址（单连接会被限速，大概率黑屏）")
+            }
+        }
         webCandIdx = idx
         webSubtitleUrl = src.optString("subtitle")
         webCid = src.optLong("cid", 0L)
@@ -3102,7 +3127,7 @@ class MainActivity : ComponentActivity() {
         /* 只把这一条递给内核（内核那侧本来就只认 streams[0]），换条时重建一份 */
         val one = org.json.JSONObject(src.toString())
         val arr = org.json.JSONArray()
-        arr.put(s)
+        arr.put(playStream)
         try {
             one.put("streams", arr)
         } catch (_: Throwable) {

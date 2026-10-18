@@ -268,6 +268,31 @@
       } catch (e) { if (!done) { done = true; clearTimeout(t); res(''); } }
     });
   }
+  /* 请页面世界代发这条请求并等它回（页面身份才带得全，2026-10-18） */
+  function b0bPageFetch(u, ms) {
+    return new Promise(function (res) {
+      var id = 'w' + Date.now() + Math.floor(Math.random() * 1000);
+      var done = false;
+      function h(ev) {
+        var d = ev.data;
+        if (!d || d.__b0bSignFetchBack !== 1 || d.id !== id || done) return;
+        done = true;
+        clearTimeout(t);
+        window.removeEventListener('message', h, false);
+        if (d.err) console.log('[b0b] 腾讯整集：页面代发失败（' + d.err + '）');
+        res(d.text || '');
+      }
+      var t = setTimeout(function () {
+        if (done) return;
+        done = true;
+        window.removeEventListener('message', h, false);
+        res('');
+      }, ms || 9000);
+      window.addEventListener('message', h, false);
+      try { window.postMessage({ __b0bSignFetch: 1, id: id, url: u }, '*'); } catch (e) { done = true; res(''); }
+    });
+  }
+
   /* 同一集只要过一次；换集（片号变）自然重来 */
   var b0bWholeVid = '';
   var b0bWholeBusy = false;
@@ -295,7 +320,14 @@
         var u = 'https://vv6.video.qq.com/getvinfo?otype=json&vid=' + vid +
           '&platform=10201&sdtfrom=v1010&defn=fhd&vt=3&charge=0' +
           '&cKey=' + ck + '&encryptVer=' + ver + '&tm=' + tm;
-        return b0bText(u, 12000).then(function (t) {
+        return b0bPageFetch(u, 9000).then(function (t0) {
+          if (t0) {
+            console.log('[b0b] 腾讯整集：页面代发拿到响应');
+            return t0;
+          }
+          console.log('[b0b] 腾讯整集：页面代发没回，改用内容脚本自己发');
+          return b0bText(u, 12000);
+        }).then(function (t) {
           b0bWholeBusy = false;
           if (!t) { console.log('[b0b] 腾讯整集：接口没回响应'); return; }
           var j = {};
