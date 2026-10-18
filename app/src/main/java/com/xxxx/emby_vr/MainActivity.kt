@@ -2863,6 +2863,18 @@ class MainActivity : ComponentActivity() {
              * 必须趁页面自己在放的时候把地址记下来。所以这里改成"只记账、不起播"：攒进本机列表，
              * 等父亲按网页全屏那一趟进来时，交给分片播放列表起播（整集文件那条路已废弃）。
              */
+            /*
+             * 换了页面（换剧 / 换集）就把整张表清空，一条旧片段都不留（父亲 2026-10-19 02:38 明确）。
+             * 不清的话，新老片段混在一张表里，播放列表会把上一部剧的片段接进来（r709 实测串剧）。
+             */
+            if (segFrame != null && segFrame != frame) {
+                Log.i(TAG, "分片：页面换了（${segFrame?.take(60)} → ${frame.take(60)}），旧片段全部清掉")
+                segHls?.stop()
+                segHls = null
+                tencentSegs.clear()
+                segWaitedFor = null
+            }
+            segFrame = frame
             var took = 0
             for (p in fresh) {
                 val u = p.second
@@ -3025,6 +3037,9 @@ class MainActivity : ComponentActivity() {
 
     /** 已经为哪一集等过分片（等到就起播，等不到才退回整集文件，只等一次）。 */
     private var segWaitedFor: String? = null
+
+    /** 上一批分片是从哪个页面地址来的（页面一换 = 换了剧/集，旧片段一条不留）。 */
+    private var segFrame: String? = null
 
     /**
      * 换集就先清空重攒，且必须在"判断手上分片够不够"之前调用（r706 实测的次序坑）。
