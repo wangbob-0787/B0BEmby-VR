@@ -603,32 +603,53 @@
        *   · 带 ad / adv / 广告 字样的 → 扣分（腾讯起播前插广告）
        *   · 码率高（br 上百万）→ 加分；分辨率大 → 加分
        */
-      function candScore(x) {
+      /*
+       * 【2026-10-18 09:52 父亲口径】候选要**列出时长和清晰度**，并**挑最高清晰度**的。
+       *
+       * 做法：每条候选都从它周围的正文里抠出 清晰度(vw×vh) / 码率(br) / 时长(td 或 duration)，
+       * 排成一张表打进日志（父亲要的"看看到底卡在哪"），
+       * 排序规则：先看时长（试看/广告那种短片段直接沉底），再看清晰度，最后看码率。
+       * 正文里还可能带整集的时长（"td":秒），一并打出来，方便对照"是不是正片"。
+       */
+      function candInfo(x, idx) {
         var i = t.indexOf(x);
-        var ctx = t.slice(Math.max(0, i - 260), i + x.length);
-        var sc = 0;
-        if (/vinfo|"vi":\[|"vl":/.test(ctx)) sc += 3;
-        if (/"br":\s*\d{7,}/.test(ctx)) sc += 2;
-        if (/"vw":\s*(19[0-9]{2}|[2-9]\d{3})/.test(ctx)) sc += 1;
-        if (/\bad(s|v|x)?\b|广告|guanggao/i.test(ctx)) sc -= 3;
-        if (/preview|试看|trailer|预告/i.test(ctx)) sc -= 2;
-        return sc;
+        var ctx = t.slice(Math.max(0, i - 420), i + x.length);
+        function num(re) { var mm = ctx.match(re); return mm ? parseInt(mm[1], 10) : 0; }
+        var w = num(/"vw"\s*:\s*(\d{2,5})/) || num(/"width"\s*:\s*(\d{2,5})/);
+        var h = num(/"vh"\s*:\s*(\d{2,5})/) || num(/"height"\s*:\s*(\d{2,5})/);
+        var br = num(/"br"\s*:\s*(\d{4,9})/) || num(/"bandwidth"\s*:\s*(\d{4,9})/);
+        var dur = num(/"td"\s*:\s*(\d{2,7})/) || num(/"duration"\s*:\s*(\d{1,7})/);
+        var base = cleanUrl(x).split('/')[2] || '?';
+        var bad = /\bad(s|v|x)?\b|广告|captionV3|\.vtt\.m3u8/i.test(ctx) ? 1 : 0;
+        var prev = /preview|试看|trailer|预告|trailer/i.test(ctx) ? 1 : 0;
+        var sc = (w * h) + br;
+        /* 出自"播放信息体"（vinfo）的那条才是正片：广告/花絮不会夹在 vinfo 里 */
+        if (/vinfo|"vl":|"vi":\[/.test(ctx)) sc += 1e11;
+        if (bad) sc -= 1e12;
+        if (prev) sc -= 1e9;
+        if (dur && dur < 600) sc -= 1e8;
+        return { x: x, i: idx, w: w, h: h, br: br, dur: dur, sc: sc, host: base, bad: bad, prev: prev };
       }
       if (m && m.length) {
-        var ranked = m.map(function (x, i) { return { x: x, i: i, sc: candScore(x) }; });
+        var ranked = m.map(candInfo);
         ranked.sort(function (a, b) { return (b.sc - a.sc) || (a.i - b.i); });
         try {
-          console.log('[b0b] 腾讯候选（' + m.length + ' 条）：' + ranked.slice(0, 3).map(function (r) {
-            var h = '';
-            try { h = cleanUrl(r.x).split('/')[2] || '?'; } catch (e) { h = '?'; }
-            return '[' + r.sc + ']' + h;
-          }).join(' '));
+          var td = (t.match(/"td"\s*:\s*(\d{2,7})/) || [0, 0])[1];
+          console.log('[b0b] 腾讯候选（' + m.length + ' 条，正文里的整集时长=' + td + ' 秒）：' +
+            ranked.slice(0, 4).map(function (r) {
+              return (r.w && r.h ? r.h + 'p' : '清晰度?') +
+                (r.br ? '@' + Math.round(r.br / 1000) + 'k' : '') +
+                (r.dur ? ' 时长' + r.dur + 's' : ' 时长?') +
+                (r.bad ? ' [广告类]' : '') + (r.prev ? ' [试看类]' : '') +
+                ' ' + r.host;
+            }).join(' | '));
         } catch (e) {}
         var u = cleanUrl(ranked[0].x);
         if (u !== pendingQq) {
           shareQq(u);
-          console.log('[b0b] 腾讯播放列表（从接口响应里找到，长度 ' + u.length +
-            '，正片非字幕，评分 ' + ranked[0].sc + '）');
+          console.log('[b0b] 腾讯播放列表（正片非字幕，取最高清晰度 ' +
+            (ranked[0].w && ranked[0].h ? ranked[0].h + 'p' : '未知') +
+            '，长度 ' + u.length + '）');
         }
       } else if (t.indexOf('m3u8') >= 0) {
         /* 有 m3u8 字样却没拼出地址：把那一小段原样打出来，下一轮照着它修（父亲 2026-10-18） */
