@@ -2811,15 +2811,6 @@ class MainActivity : ComponentActivity() {
      * 紧接着分片路又把同一集顶掉（分片只能顺播、拖不动）。同一集既已整集在播，就不许分片再接管。
      */
     private var wholePlayingVid: String? = null
-    /*
-     * 整集多路代理的状态（2026-10-18 深夜）。
-     * 踩过的坑：起代理第一步要问远端文件长度，那是网络请求 —— 原来直接在界面线程里做，
-     * 被系统拦成 `NetworkOnMainThreadException`，代理起不来，于是又退回单连接（读不动）。
-     * 现在起代理放后台线程，起来之后回到界面线程重新起播这一条。
-     */
-    private var proxyFor: String? = null
-    private var proxyUrl: String? = null
-    private var proxyFailedFor: String? = null
 
     /** 扩展攒到的一批分片（跑在火狐内核的线程上，先切回主线程） */
     private fun onBridgeFrags(obj: org.json.JSONObject) {
@@ -3054,19 +3045,38 @@ class MainActivity : ComponentActivity() {
     /** 分片播放列表里那串片号，用来判断"换集"（换了就清空重攒）。 */
     private var segHlsVid: String? = null
 
-    private fun playPlaylistForSegs(durSecIn: Int, quality: String, cookie: String, frame: String) {
-        val vid = com.xxxx.emby_vr.web.TencentWholeUrl.vidFromFrame(frame)
-        if (vid != null) {
-            wholePlayingVid = vid
-            if (segHlsVid != null && segHlsVid != vid) {
-                Log.i(TAG, "分片：换集（$segHlsVid → $vid），重攒")
-                segHls?.stop()
-                segHls = null
-                tencentSegs.clear()
-            }
-            segHlsVid = vid
+    /** 已经为哪一集等过分片（等到就起播，等不到才退回整集文件，只等一次）。 */
+    private var segWaitedFor: String? = null
+
+    /**
+     * 换集就先清空重攒，且必须在"判断手上分片够不够"之前调用（r706 实测的次序坑）。
+     *
+     * 当时的现象：换到第二集，判断用的是上一集剩下的十几段 → 判为"够"→ 进了分片路 →
+     * 路里才发现换了集、清空 → 新服务一段都没有 → 内核连要 122～139 段全部落空 → 卡住。
+     */
+    private fun clearSegsIfNewEpisode(frame: String) {
+        val vid = com.xxxx.emby_vr.web.TencentWholeUrl.vidFromFrame(frame) ?: return
+        if (segHlsVid != null && segHlsVid != vid) {
+            Log.i(TAG, "分片：换集（$segHlsVid → $vid），重攒")
+            segHls?.stop()
+            segHls = null
+            tencentSegs.clear()
         }
-        webKeepPageAlive = false
+        segHlsVid = vid
+    }
+
+    private fun playPlaylistForSegs(durSecIn: Int, quality: String, cookie: String, frame: String) {
+        clearSegsIfNewEpisode(frame)
+        com.xxxx.emby_vr.web.TencentWholeUrl.vidFromFrame(frame)?.let { wholePlayingVid = it }
+        /*
+         * 关键：**页面继续在放**（2026-10-19 02:30 定）。
+         *
+         * 分片是一段一签的，只有页面自己在取的时候我们才拿得到地址。原来接管后就把页面收掉，
+         * 于是手上永远只有接管前那几段 —— 后面播到就断（父亲看到的就是"只能播一段"）。
+         * 把页面留着（静音、不在前台），它就会一直往前取，我们手上的段跟着长，整集才接得上。
+         */
+        webKeepPageAlive = true
+        startWebAlive()
         webFragMode = false
         val durSec = if (durSecIn > 0) durSecIn else (webCandSrc?.optInt("durSec", 0) ?: 0)
         val ready = segHls
@@ -3145,32 +3155,12 @@ class MainActivity : ComponentActivity() {
             wholePlayingVid = it
             Log.i(TAG, "整集地址（我们自己签名要来的，片号 $it）进入播放器，分片路不再接管这一集")
         }
-        webKeepPageAlive = false
-        webFragMode = false
-        val headers = org.json.JSONObject()
-        try {
-            headers.put("Referer", "https://v.qq.com/")
-            headers.put("User-Agent", WEB_DESKTOP_UA)
-            if (cookie.isNotBlank()) headers.put("Cookie", cookie)
-        } catch (_: Throwable) {
-        }
-        val s0 = org.json.JSONObject()
-        s0.put("video", url)
-        s0.put("audio", "")
-        s0.put("height", 1080)
-        s0.put("bw", 0)
-        s0.put("headers", headers)
-        val arr = org.json.JSONArray()
-        arr.put(s0)
-        val one = org.json.JSONObject()
-        one.put("streams", arr)
-        one.put("kind", "play")
-        one.put("site", "qq")
-        one.put("title", "")
-        one.put("cookie", cookie)
-        one.put("frame", frame)
-        one.put("quality", quality)
-        playWebStream(one)
+        /*
+         * 这条入口原来播"我们自己签名要来的整集 mp4"，2026-10-19 父亲定：**整集那条路删掉**
+         * （单连接被限速到约 1KB/s，内核读不出轨道，实测只有 ¥1 black屏）。现在一律走分片播放列表。
+         */
+        Log.i(TAG, "整集文件那条路已废弃（被限速），改走分片播放列表（质量档 $quality）")
+        playPlaylistForSegs(0, quality, cookie, frame)
     }
 
     private fun playWebStream(obj: org.json.JSONObject) {
@@ -3189,6 +3179,7 @@ class MainActivity : ComponentActivity() {
              * 内核读不出轨道（日志「内核轨道清单：[]」「画面参数：格式=-」）→ 大屏黑着。
              * 分片是明文 MPEG-TS、下载 33–44MB/s，所以只要攒到 3 段以上就改走它。
              */
+            clearSegsIfNewEpisode(obj.optString("frame"))
             if (tencentSegs.size >= 3) {
                 Log.i(
                     TAG,
@@ -3201,6 +3192,48 @@ class MainActivity : ComponentActivity() {
                     obj.optString("cookie"),
                     obj.optString("frame"),
                 )
+                return
+            }
+            /*
+             * 分片还不够就**等一会儿**，不要退回被限速的整集文件（2026-10-19 02:30）。
+             *
+             * 父亲按全屏的时机常常是刚进播放页（页面才取了 0～2 段）。这时若退回整集 mp4，
+             * 内核照样读不动（1KB/s），大屏黑着。页面正在放，分片十几秒内就会攒起来，等它。
+             * 只等一次：等不到（页面被暂停/没在取）才退回老路。
+             */
+            val waitVid = com.xxxx.emby_vr.web.TencentWholeUrl.vidFromFrame(obj.optString("frame")) ?: ""
+            if (segWaitedFor != waitVid) {
+                segWaitedFor = waitVid
+                Log.i(TAG, "整集：分片只攒到 ${tencentSegs.size} 段，等页面多取几段（最多 12 秒）")
+                val d0 = obj.optInt("durSec", 0)
+                val q0 = obj.optString("quality")
+                val c0 = obj.optString("cookie")
+                val f0 = obj.optString("frame")
+                Thread({
+                    var waited = 0
+                    while (tencentSegs.size < 3 && waited < 24) {
+                        Thread.sleep(500)
+                        waited++
+                    }
+                    val got = tencentSegs.size
+                    runOnUiThread {
+                        if (got >= 3) {
+                            Log.i(TAG, "整集：等到 $got 段分片，改走分片播放列表")
+                            playPlaylistForSegs(d0, q0, c0, f0)
+                        } else {
+                            /*
+                             * 等不到分片就**不接管**（2026-10-19 父亲定：整集那条路删掉，播不起来）。
+                             * 页面留着继续放，父亲可以在网页里继续看；日志记下原因备查。
+                             */
+                            Log.w(
+                                TAG,
+                                "整集：等不到分片（手上 ${tencentSegs.size} 段），这一集不接管" +
+                                    "（整集文件那条路已被限速，不再使用）",
+                            )
+                            hud("这一集没抓到分片，先在网页里看着")
+                        }
+                    }
+                }, "seg-wait").start()
                 return
             }
             val v = com.xxxx.emby_vr.web.TencentWholeUrl.vidFromFrame(obj.optString("frame"))
@@ -3267,38 +3300,19 @@ class MainActivity : ComponentActivity() {
          * 分块拉、写临时文件，内核要哪段喂哪段，拖进度也补得上。
          * 分片那条路（B站 / 腾讯试看）不动，仍直接给远端地址。
          */
-        var playStream = s
+        /*
+         * 整集 mp4 分支已删除（2026-10-19 父亲定：那条播不起来）。
+         *
+         * 原委：腾讯整集文件单连接被限速到约 1KB/s（14 秒采样：1 连接 15KB、4 连接 253MB），
+         * 内核连文件头都读不下来（日志「内核轨道清单：[]」「画面参数：格式=-」），大屏全黑。
+         * 现在腾讯一律走分片播放列表（明文 MPEG-TS、33–44MB/s）；这条路若还有消息进来，
+         * 只记一条日志、不接管。
+         */
         if (src.optInt("whole", 0) == 1) {
-            val raw = s.optString("video")
-            val ready = proxyUrl
-            if (proxyFor == raw && ready != null) {
-                playStream = org.json.JSONObject(s.toString())
-                playStream.put("video", ready)
-                Log.i(TAG, "整集走多路代理：内核拿到的是本机地址，远端由 4 条连接并行拉")
-            } else if (proxyFailedFor != raw) {
-                proxyFailedFor = raw
-                val hdrs = HashMap<String, String>()
-                hdrs["Referer"] = "https://v.qq.com/"
-                hdrs["User-Agent"] = WEB_DESKTOP_UA
-                if (src.optString("cookie").isNotBlank()) hdrs["Cookie"] = src.optString("cookie")
-                Log.i(TAG, "整集：起多路代理（问远端长度是网络请求，放后台线程）")
-                Thread({
-                    val local = com.xxxx.emby_vr.web.ParallelHttpProxy.start(raw, hdrs, cacheDir, 4)
-                    runOnUiThread {
-                        if (local != null) {
-                            proxyFor = raw
-                            proxyUrl = local
-                        } else {
-                            Log.w(TAG, "多路代理没起来，仍用远端原地址（单连接会被限速，大概率读不动）")
-                        }
-                        tryWebStreamAt(idx)
-                    }
-                }, "proxy-start").start()
-                return
-            } else {
-                Log.w(TAG, "整集：多路代理起不来，仍用远端原地址")
-            }
+            Log.w(TAG, "收到整集文件播放请求，已废弃（被限速），不接管")
+            return
         }
+        val playStream = s
         webCandIdx = idx
         webSubtitleUrl = src.optString("subtitle")
         webCid = src.optLong("cid", 0L)
