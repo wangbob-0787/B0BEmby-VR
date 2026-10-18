@@ -589,6 +589,24 @@
       var m = all.filter(function (x) {
         return !/captionV3|\/caption|subtitle|\.vtt\.m3u8|\.ass\.m3u8|\.srt\.m3u8|dm\.video\.qq/i.test(x);
       });
+      /*
+       * 【2026-10-18 10:35 破案：抓到的 30 秒片子是**起播前的广告**】
+       *
+       * 父亲："抓的视频还是只有 30 秒的视频"。
+       * 现场：这条响应里只有 2 条候选 —— ltshwy.gtimg.com 和 apd-vlive.apdcdn.tc.qq.com，
+       * 而且这条响应开头是 `{"errCode":0,"lcAdCookie":[…]`，正文里根本没有 vw/vh/br/td
+       * （所以候选表里全是"清晰度? 时长?"）。`lcAdCookie` = 广告的投放票据，
+       * 这条响应就是**广告的播放信息**；广告播完，页面才去要正片的播放信息。
+       * 我们在他按全屏那一刻就把广告地址交了出去 → 内核播 30 秒 → EOF → 父亲看到"只有30秒"。
+       *
+       * 改法：广告的播放信息整条不要（打日志说明），广告 CDN 的候选也剔除，
+       * 这样"按全屏"会等到正片那份播放信息到达再交出去。
+       */
+      var isAdInfo = /lcAdCookie|apd-vlive|apdcdn\.tc\.qq\.com|"adx"|vhot\.qq\.com/i.test(t);
+      if (isAdInfo) {
+        console.log('[b0b] 这条是**广告**的播放信息（含广告票据/广告CDN），不用它，等正片那份');
+        return;
+      }
       if (!m.length && all.length) {
         console.log('[b0b] 腾讯播放列表：只找到字幕类的 m3u8（' + all.length + ' 条），先不用它');
       }
@@ -1032,7 +1050,13 @@
     } catch (e) { return ''; }
   }
 
+  /* 广告的 CDN / 域名（2026-10-18 10:35）：起播前的广告片长 30–80 秒，正是"只抓到一小段"的来源 */
+  function isAdUrl(u) {
+    return /apdcdn\.tc\.qq\.com|apd-vlive|vhot\.qq\.com|\/adx?\//i.test(String(u || ''));
+  }
+
   function isQqHls(u) {
+    if (isAdUrl(u)) return false;
     if (!/\.m3u8(\?|$)/i.test(u)) return false;
     return /(gtimg\.com|smtcdns\.com|tc\.qq\.com|video\.qq\.com)/i.test(u);
   }
@@ -1661,6 +1685,10 @@
               }
               var isCaptionBody = /captionV3|TYPE=SUBTITLES|\.vtt/i.test(body) ||
                 /captionV3|\.vtt\.m3u8/i.test(String(this.responseURL || u));
+              if (isAdUrl(this.responseURL || u)) {
+                console.log('[b0b] 这条列表来自广告 CDN，不用它：' + String(this.responseURL || u).split('/')[2]);
+                return;
+              }
               if (body.slice(0, 7) === '#EXTM3U' && !isCaptionBody) {
                 var self_u = String(this.responseURL || u);
                 /*
