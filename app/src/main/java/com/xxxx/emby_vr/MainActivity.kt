@@ -2849,6 +2849,18 @@ class MainActivity : ComponentActivity() {
         val frame = obj.optString("frame")
         val cookie = obj.optString("cookie")
         /*
+         * 腾讯页面**不走分片路**（2026-10-18 22:11 父亲定）。
+         *
+         * 理由：腾讯的分片是"一段一签"的试看片段，头显实测内核接上后一条轨道都没有
+         * （日志 `内核轨道清单：[]`、`画面参数：格式=-`），大屏全空；而整集地址由扩展在
+         * "按下网页全屏"那一刻单独送来（带 `whole=1`）。
+         * 这条只对腾讯生效：B站 / 爱奇艺 的分片接力照旧，一行未改。
+         */
+        if (com.xxxx.emby_vr.web.TencentWholeUrl.vidFromFrame(frame) != null) {
+            Log.i(TAG, "腾讯页面：分片路跳过（等整集；分片只有试看且内核起不来）")
+            return
+        }
+        /*
          * 先问整片地址（2026-10-18 父亲定的新路线）。
          *
          * 网页那条路是「一段一签」，只能顺着播、拖不了进度；腾讯的老接口给的是

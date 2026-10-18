@@ -293,92 +293,128 @@
     });
   }
 
-  /* 主脚本报来"页面确实在放这一集"的片号（2026-10-18 晚） */
-  var b0bPlayingVid = '';
+  /*
+   * 父亲 2026-10-18 22:11 定的简单逻辑：**我点了"网页全屏" → 去要整集 → 接管**。
+   *
+   * 所以腾讯整集唯一的触发点就是"全屏被按下"这件事。页面世界（main.js）按下时本来就会
+   * 广播一条 `__b0bFull`，这里把它转报给扩展后台记着（后台只有一份，跨层都查得到 ——
+   * 腾讯的播放器与页面往往不在同一层，头显日志里"本地存=0 别层报=0"就是这个病）。
+   */
+  var b0bLastFullAt = 0;
   try {
     window.addEventListener('message', function (ev) {
       var d = ev.data;
-      if (!d || d.__b0bQqPlaying !== 1 || !d.vid) return;
-      if (b0bPlayingVid !== d.vid) {
-        console.log('[b0b] 腾讯整集：页面确实在放 ' + d.vid + '，去要整集地址');
-        b0bPlayingVid = d.vid;
+      if (!d || d.__b0bFull !== 1) return;
+      b0bLastFullAt = Date.now();
+      var vid = (location.href.match(/\/([A-Za-z0-9]{10,12})\.html/) || [])[1] || '';
+      try {
+        browser.runtime.sendMessage({ __b0bFullReport: 1, vid: vid });
+      } catch (e) {}
+      if (/^v\.qq\.com$/i.test(String(location.hostname || ''))) {
+        console.log('[b0b] 你按了网页全屏（腾讯页），去要整集地址');
+        b0bTencentWhole();
       }
-      b0bTencentWhole();
     }, false);
   } catch (e) {}
+
+  /* 问后台："刚才有人按过网页全屏吗"（3 小时内算数） */
+  function b0bFullRecently() {
+    return new Promise(function (res) {
+      try {
+        browser.runtime.sendMessage({ __b0bFullAsk: 1 }).then(function (r) {
+          var at = (r && r.at) || 0;
+          res(at > 0 && (Date.now() - at) < 3 * 3600 * 1000);
+        }).catch(function () { res(false); });
+      } catch (e) { res(false); }
+    });
+  }
 
   /* 同一集只要过一次；换集（片号变）自然重来 */
   var b0bWholeVid = '';
   var b0bWholeBusy = false;
+  /*
+   * 腾讯整集的唯一入口（父亲 2026-10-18 22:11 定的简单逻辑）：
+   *   我点了"网页全屏" → 去要整集 → 接管。
+   * 判据只有全屏这一条，且"按过全屏"这件事问扩展后台（跨层共享）。
+   */
   function b0bTencentWhole() {
     try {
       if (b0bWholeBusy) return;
-      /* 只认腾讯的播放页，别的站一律不管（B站/爱奇艺那条链不碰） */
+      /* 只认腾讯的播放页，别的站一律不管（B站/爱奇艺那条链一行不碰） */
       if (!/^v\.qq\.com$/i.test(String(location.hostname || ''))) return;
       var href = location.href;
       if (!/\/x\/(cover|page)\//.test(href)) return;
       var vid = (href.match(/\/([A-Za-z0-9]{10,12})\.html/) || [])[1];
       if (!vid || vid === b0bWholeVid) return;
-      /*
-       * "页面确实在放"的判据：腾讯把真正的 video 封在播放器组件里，页面世界查 video 元素
-       * 头显实测是 0 个。所以主判据改用"页面自己发出的媒体请求"（主脚本抓到腾讯分片就报
-       * 一条 `__b0bQqPlaying`），查 video 元素只当兜底。
-       */
-      if (b0bPlayingVid !== vid) {
-        var v = document.querySelector('video');
-        if (!v || v.paused) return;
-      }
-      b0bWholeVid = vid;
       b0bWholeBusy = true;
-      var ver = b0bEncryptVer();
-      b0bText('https://vv6.video.qq.com/checktime?otype=xml&rand=' + Math.random(), 8000).then(function (xml) {
-        var m = /<t>(\d+)<\/t>/.exec(String(xml || ''));
-        var tm = m ? m[1].substring(0, 10) : String(Math.floor(Date.now() / 1000));
-        if (!m) console.log('[b0b] 腾讯整集：checktime 没回，改用本机时间兜底');
-        var salt = B0B_SALT[ver.substring(2)] || B0B_SALT['7'];
-        var ck = b0bMd5(salt + vid + tm + '*#06#' + '10201');
-        var u = 'https://vv6.video.qq.com/getvinfo?otype=json&vid=' + vid +
-          '&platform=10201&sdtfrom=v1010&defn=fhd&vt=3&charge=0' +
-          '&cKey=' + ck + '&encryptVer=' + ver + '&tm=' + tm;
-        return b0bPageFetch(u, 9000).then(function (t0) {
-          if (t0) {
-            console.log('[b0b] 腾讯整集：页面代发拿到响应');
-            return t0;
-          }
-          console.log('[b0b] 腾讯整集：页面代发没回，改用内容脚本自己发');
-          return b0bText(u, 12000);
-        }).then(function (t) {
+      b0bFullRecently().then(function (ok) {
+        if (!ok) {
           b0bWholeBusy = false;
-          if (!t) { console.log('[b0b] 腾讯整集：接口没回响应'); return; }
-          var j = {};
-          try { j = JSON.parse(String(t).replace(/^QZOutputJson=/, '').replace(/;\s*$/, '')); } catch (e) {
-            console.log('[b0b] 腾讯整集：响应解析失败'); return;
-          }
-          var vi = (j.vl && j.vl.vi && j.vl.vi[0]) || null;
-          if (!vi) { console.log('[b0b] 腾讯整集：没有片源信息（em=' + j.em + '）'); return; }
-          var td = Number(vi.td || 0), prev = Number(j.preview);
-          console.log('[b0b] 腾讯整集结果：允许看 ' + prev + ' 秒 / 整集 ' + td + ' 秒，档位 ' +
-            vi.vh + 'p，片名 ' + vi.ti + '，登录 ' + j.login);
-          if (!(prev >= td * 0.9 || prev >= 600)) {
-            console.log('[b0b] 腾讯整集：身份没带全（只给试看），不接管');
-            b0bWholeVid = '';
-            return;
-          }
-          var url = vi.ul.ui[0].url + vi.fn + (vi.fvkey ? ('?vkey=' + vi.fvkey) : '');
-          send({
-            title: vi.ti || '', kind: 'play', frame: href, winId: 0,
-            durSec: Math.round(td), quality: vi.vh || 0, whole: 1,
-            streams: [{
-              id: 0, height: vi.vh || 0, width: vi.vw || 0, bw: vi.br || 0, vcodec: '',
-              video: url, audio: '',
-              headers: { 'Referer': 'https://v.qq.com/', 'User-Agent': navigator.userAgent }
-            }]
-          });
-          console.log('[b0b] 腾讯整集：整集地址已交给客户端（' + vi.vh + 'p，' +
-            Math.round(td / 60) + ' 分钟）');
-        });
-      }).catch(function (e) { b0bWholeBusy = false; console.log('[b0b] 腾讯整集失败：' + e); });
+          return;
+        }
+        b0bWholeVid = vid;
+        b0bGoWhole(vid, href);
+      }).catch(function () { b0bWholeBusy = false; });
     } catch (e) { b0bWholeBusy = false; }
+  }
+
+  /* 签名我们自己算；请求先请页面世界代发（身份才带得全），页面不回再自己发。 */
+  function b0bGoWhole(vid, href) {
+    console.log('[b0b] 腾讯整集：全屏已按下，开始要整集（片号 ' + vid + '）');
+    var ver = b0bEncryptVer();
+    b0bText('https://vv6.video.qq.com/checktime?otype=xml&rand=' + Math.random(), 8000).then(function (xml) {
+      var m = /<t>(\d+)<\/t>/.exec(String(xml || ''));
+      var tm = m ? m[1].substring(0, 10) : String(Math.floor(Date.now() / 1000));
+      if (!m) console.log('[b0b] 腾讯整集：checktime 没回，改用本机时间兜底');
+      var salt = B0B_SALT[ver.substring(2)] || B0B_SALT['7'];
+      var ck = b0bMd5(salt + vid + tm + '*#06#' + '10201');
+      var u = 'https://vv6.video.qq.com/getvinfo?otype=json&vid=' + vid +
+        '&platform=10201&sdtfrom=v1010&defn=fhd&vt=3&charge=0' +
+        '&cKey=' + ck + '&encryptVer=' + ver + '&tm=' + tm;
+      return b0bPageFetch(u, 9000).then(function (t0) {
+        if (t0) {
+          console.log('[b0b] 腾讯整集：页面代发拿到响应');
+          return t0;
+        }
+        console.log('[b0b] 腾讯整集：页面代发没回，改用内容脚本自己发');
+        return b0bText(u, 12000);
+      }).then(function (t) {
+        b0bWholeBusy = false;
+        if (!t) { console.log('[b0b] 腾讯整集：接口没回响应'); return; }
+        var j = {};
+        try {
+          j = JSON.parse(String(t).replace(/^QZOutputJson=/, '').replace(/;\s*$/, ''));
+        } catch (e) {
+          console.log('[b0b] 腾讯整集：响应解析失败');
+          return;
+        }
+        var vi = (j.vl && j.vl.vi && j.vl.vi[0]) || null;
+        if (!vi) { console.log('[b0b] 腾讯整集：没有片源信息（em=' + j.em + '）'); return; }
+        var td = Number(vi.td || 0), prev = Number(j.preview);
+        console.log('[b0b] 腾讯整集结果：允许看 ' + prev + ' 秒 / 整集 ' + td + ' 秒，档位 ' +
+          vi.vh + 'p，片名 ' + vi.ti + '，登录 ' + j.login);
+        if (!(prev >= td * 0.9 || prev >= 600)) {
+          console.log('[b0b] 腾讯整集：身份没带全（只给试看），不接管');
+          b0bWholeVid = '';
+          return;
+        }
+        var url = vi.ul.ui[0].url + vi.fn + (vi.fvkey ? ('?vkey=' + vi.fvkey) : '');
+        send({
+          title: vi.ti || '', kind: 'play', frame: href, winId: 0,
+          durSec: Math.round(td), quality: vi.vh || 0, whole: 1,
+          streams: [{
+            id: 0, height: vi.vh || 0, width: vi.vw || 0, bw: vi.br || 0, vcodec: '',
+            video: url, audio: '',
+            headers: { 'Referer': 'https://v.qq.com/', 'User-Agent': navigator.userAgent }
+          }]
+        });
+        console.log('[b0b] 腾讯整集：整集地址已交给客户端（' + vi.vh + 'p，' +
+          Math.round(td / 60) + ' 分钟）');
+      });
+    }).catch(function (e) {
+      b0bWholeBusy = false;
+      console.log('[b0b] 腾讯整集失败：' + e);
+    });
   }
   setInterval(b0bTencentWhole, 3000);
 })();

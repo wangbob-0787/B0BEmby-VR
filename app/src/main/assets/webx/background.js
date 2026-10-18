@@ -42,6 +42,11 @@ function forward(payload) {
   }
 }
 
+
+/* 全屏记录（2026-10-18 晚）：谁按了网页全屏、什么时候、当时哪一集 —— 各层都来这儿问 */
+var b0bFullAt = 0;
+var b0bFullVid = '';
+
 browser.runtime.onMessage.addListener(function (msg) {
   if (!msg || msg.__b0b !== 1 || !msg.payload) return;
   forward(msg.payload);
@@ -75,6 +80,26 @@ browser.runtime.onMessage.addListener(function (msg, sender, respond) {
         console.log('[b0b] 后台页代发签名请求失败：' + e);
         try { respond({ error: String(e) }); } catch (e2) {}
       });
+      return true;
+    }
+    /*
+     * 全屏这件事跨层共享（2026-10-18 晚，父亲定的简单逻辑：
+     * 「我点了网页全屏 → 去要整集 → 接管」）。
+     *
+     * 为什么放后台页记：腾讯把播放器放在别的层里，按全屏那一层和去要地址那一层
+     * 往往不是同一个（头显日志「本地存=0 别层报=0」就是这个病）。后台页只有一份，
+     * 谁按了全屏都往这儿报，谁要判别都来这儿问。
+     */
+    if (msg && msg.__b0bFullReport) {
+      b0bFullAt = Date.now();
+      b0bFullVid = String(msg.vid || '');
+      console.log('[b0b] 后台页记下"按了网页全屏"：' + new Date(b0bFullAt).toTimeString().slice(0, 8) +
+        '，片号 ' + (b0bFullVid || '未知'));
+      try { respond({ ok: 1 }); } catch (e) {}
+      return true;
+    }
+    if (msg && msg.__b0bFullAsk) {
+      try { respond({ at: b0bFullAt, vid: b0bFullVid }); } catch (e) {}
       return true;
     }
     if (!msg || !msg.__b0bWhole || !msg.vid) return;
