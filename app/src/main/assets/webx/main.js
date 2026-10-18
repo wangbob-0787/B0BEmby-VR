@@ -230,6 +230,25 @@
         (fullState ? 1 : 0) + ' 存=' + (fsShared ? 1 : 0) + ' 别层=' + (peerFullAt ? 1 : 0) +
         ') 同集=' + (keyKnown(qqKey) ? (qqKey === pageVideoKey(location.href) ? 1 : 0) : '未知'));
     }
+    /*
+     * 父亲 2026-10-18 10:36：**短于 5 分钟的一律扔掉**。
+     * 页面里那段多长是有数的（video 元素的时长），广告/试看一眼就能认出来。
+     */
+    if (pendingQq) {
+      var pd = Math.max(pageClipDur(), peerClipDur);
+      if (pageClipDur() > 0) {
+        try { window.top.postMessage({ __b0bClip: 1, d: pageClipDur() }, '*'); } catch (e) {}
+      }
+      if (pd > 0 && pd < SHORT_CLIP_SEC) {
+        var nowS = Date.now();
+        if (nowS - (window.__b0bShortLog || 0) > 3000) {
+          window.__b0bShortLog = nowS;
+          console.log('[b0b] 页面正在放的是短片段（' + Math.round(pd) +
+            ' 秒 < ' + SHORT_CLIP_SEC + ' 秒），像广告/试看，先不交出去');
+        }
+        return;
+      }
+    }
     var qqHere = pageVideoKey(location.href);
     var qqSamePage = !keyKnown(qqKey) || !keyKnown(qqHere) || qqKey === qqHere;
     if (!pendingPlay && pendingQq && Date.now() - qqAt < 30 * 60 * 1000 && qqSamePage) {
@@ -1001,6 +1020,8 @@
    * 现在按全屏时向所有层广播一次，各层都记下这个时刻；拿地址的那一层据此放行。
    */
   var peerFullAt = 0;
+  /* 别层量到的"这段多长"（广告 30 秒这种，往往出现在播放器那一层，父亲 2026-10-18） */
+  var peerClipDur = 0;
   function announceFullscreen(t) {
     peerFullAt = t;
     try { localStorage.setItem('b0b:fullAt', String(t)); } catch (e) {}
@@ -1017,6 +1038,13 @@
             /* 最外层收到后替下层转发一遍（下层之间不互通） */
             for (var i = 0; i < window.frames.length; i++) {
               try { window.frames[i].postMessage({ __b0bFull: 1, t: d.t }, '*'); } catch (e2) {}
+            }
+          }
+        } else if (d.__b0bClip) {
+          peerClipDur = Math.max(peerClipDur, Number(d.d) || 0);
+          if (window.self === window.top) {
+            for (var k = 0; k < window.frames.length; k++) {
+              try { window.frames[k].postMessage({ __b0bClip: 1, d: d.d }, '*'); } catch (e5) {}
             }
           }
         } else if (d.__b0bQq && d.u) {
@@ -1708,6 +1736,11 @@
                 console.log('[b0b] 腾讯列表候选：时长≈' + Math.round(total) + ' 秒（' + durs.length +
                   ' 段，' + (/ENDLIST/.test(body) ? '整片' : '未完结') + '）' +
                   (total > 0 && total < 600 ? ' —— 像试看/广告片段' : ''));
+                if (total > 0 && total < SHORT_CLIP_SEC) {
+                  console.log('[b0b] 这条列表只有 ' + Math.round(total) +
+                    ' 秒（< ' + SHORT_CLIP_SEC + ' 秒），按父亲口径扔掉，等正片那份');
+                  return;
+                }
                 if (total > qqBestDur) {
                   qqBestDur = total;
                 } else if (total > 0 && qqBestDur > total) {
@@ -1806,6 +1839,23 @@
    * 页面世界能看到非 HttpOnly 的 cookie，就先用它打个底：
    * 有名字有长度说明票在浏览器里，那就是②；空的说明就是①。
    */
+  /*
+   * 页面里正在放的那段有多长（秒）。父亲 2026-10-18 10:36 口径：
+   * **短于 5 分钟的一律扔掉**（起播前的广告 30–80 秒、试看片段都在这一档）。
+   * 视频元素自己的时长是最省事、最准的判据：广告那段它就只有 30 来秒。
+   */
+  var SHORT_CLIP_SEC = 300;
+  function pageClipDur() {
+    try {
+      var best = 0, vs = document.querySelectorAll('video');
+      for (var i = 0; i < vs.length; i++) {
+        var d = Number(vs[i].duration);
+        if (isFinite(d) && d > best) best = d;
+      }
+      return best;
+    } catch (e) { return 0; }
+  }
+
   function reportCookies() {
     try {
       if (window.__b0bCookieLogged) return;
