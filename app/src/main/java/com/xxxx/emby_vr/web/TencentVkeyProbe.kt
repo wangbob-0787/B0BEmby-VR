@@ -11,61 +11,88 @@ import java.net.URLEncoder
 /**
  * 腾讯视频「要地址」验证入口（2026-10-18 转签名路线）。
  *
- * 官方客户端就三步（证据：`TVKCGIVkeyRequest` + `TVKConfigUrl`）：
+ * 官方客户端就三步（证据：`TVKCGIVkeyRequest` + `TVKConfigUrl` +
+ * `com.tencent.qqlive.ck.CKeyFacade.init`）：
  *   ① `https://vv6.video.qq.com/checktime` 拿服务器时间；
- *   ② 用 libckeygenerator.so 按 (guid, 时间, vid, appVer, platform, sdtfrom) 算 ckey；
- *   ③ 把表单 POST 到 `https://vv6.video.qq.com/getvkey`，响应是 XML，
- *      里面有 `url_info`（每段带 url/pt/hk）——拼出来就是能快进能跳的地址。
+ *   ② 先初始化签名库，再按 (guid, 时间, vid, appVer, platform, sdtfrom) 算 ckey；
+ *      官方初始化顺序（照抄官方类的 init 方法）：
+ *        CkeyMoudleInit(应用私有目录, guid, "", ctx)
+ *        SetIpPort("rlog.video.qq.com", 8080, "bkrlog.video.qq.com", 8080)
+ *        Registration(<设备标识>, <版本>, <SDK版本>, <平台号>, <设备标识>, ctx)
+ *   ③ 表单 POST `https://vv6.video.qq.com/getvkey`，响应是 XML，
+ *      `url_info` 里每段带 url/pt/hk —— 拼出来就是能快进能跳的地址。
  *
- * 这一版**只验证能不能拿到地址**：把每种参数组合的结果打进日志，谁通就用谁。
- * 不用父亲戴头显操作，用 adb 触发（Intent 里带 `b0b_vkey_vid`）。
+ * 首轮实测（r686）：库能加载（自报版本 ckey.5104.5.1.002），但没初始化，
+ * GenCKey 返回空 → 这一版补上初始化，并把几组参数组合一次跑完（一轮编译覆盖）。
  */
 object TencentVkeyProbe {
 
     private const val TAG = "B0BEmbyVR-Vkey"
 
-    /** 试这几组参数：站台标识 × 平台号 × 清晰度。 */
     private val SDTFROMS = listOf("v3011", "v2010", "v3020")
     private val PLATFORMS = listOf(2, 11)
     private val FORMATS = listOf("fhd", "shd", "uhd")
 
+    /** 初始化组合：官方三个字符串参数的几种可能含义，逐个试。 */
+    private fun initVariants(guid: String): List<Triple<String, String, String>> = listOf(
+        Triple("", "", ""),           // 只给目录：最保守
+        Triple(guid, "", "1"),
+        Triple("1", guid, "1"),
+        Triple(guid, "1", "1"),
+    )
+
     fun run(ctx: Context, vid: String, cookie: String?) {
         Thread {
             try {
-                probe(vid, cookie)
+                probe(ctx.applicationContext, vid, cookie)
             } catch (t: Throwable) {
                 Log.e(TAG, "验证流程异常：${t.message}", t)
             }
         }.start()
     }
 
-    private fun probe(vid: String, cookie: String?) {
+    private fun probe(ctx: Context, vid: String, cookie: String?) {
         Log.i(TAG, "开始验证：vid=$vid cookie=${if (cookie.isNullOrBlank()) "无" else "有(${cookie.length} 字符)"}")
 
-        /* 库加载与自报版本——加载不起来后面全是白搭，先探这一下 */
         val soVer = runCatching { CKeyFacade.getCKeyVersion() }.getOrElse { "加载失败:${it.message}" }
         Log.i(TAG, "签名库自报版本：$soVer")
 
         val serverTime = checkTime()
         Log.i(TAG, "服务器时间：$serverTime")
 
-        /* guid 用一个稳定值即可（官方用的是设备标识） */
-        val guid = "b0b" + android.os.Build.MODEL.hashCode().toString().replace("-", "")
+        val guid = "b0b" + (android.os.Build.MODEL.hashCode().toString().replace("-", ""))
         val appVer = "8.13.0.28536"
+
+        /* ① 把库初始化起来：官方 init 方法里的三步，字符串参数按几种可能逐个试 */
+        var inited = false
+        for ((a, b, c) in initVariants(guid)) {
+            val ok = runCatching {
+                val fac = CKeyFacade()
+                fac.CkeyMoudleInit(ctx.filesDir.path, if (a.isEmpty()) guid else a, b, ctx)
+                CKeyFacade.SetIpPort("rlog.video.qq.com", 8080, "bkrlog.video.qq.com", 8080)
+                fac.Registration(c.ifEmpty { guid }, appVer, "1.0.0", 2, guid, ctx)
+                true
+            }.getOrElse {
+                Log.w(TAG, "初始化抛异常：${it.message}")
+                false
+            }
+            val test = runCatching { CKeyFacade.ckey(guid, serverTime, vid, 2, appVer, "v3011") }.getOrElse { "" }
+            Log.i(TAG, "初始化组合(a=$a b=$b c=$c) → ${if (ok) "调用完成" else "异常"}，试算 ckey ${if (test.isBlank()) "空" else "${test.length} 字符"}")
+            if (test.isNotBlank()) { inited = true; break }
+        }
+        Log.i(TAG, if (inited) "签名库已可用" else "签名库仍算不出 ckey（下面各组合都会失败）")
 
         var found = 0
         for (sdtfrom in SDTFROMS) {
             for (platform in PLATFORMS) {
                 for (fmt in FORMATS) {
-                    val r = tryOnce(vid, guid, serverTime, platform, sdtfrom, fmt, appVer, cookie)
-                    if (r != null) found++
+                    if (tryOnce(vid, guid, serverTime, platform, sdtfrom, fmt, appVer, cookie) != null) found++
                 }
             }
         }
         Log.i(TAG, "验证结束：${found} 组参数拿到了地址")
     }
 
-    /** 一次完整尝试；拿到地址就打印，返回是否成功。 */
     private fun tryOnce(
         vid: String, guid: String, time: Long, platform: Int,
         sdtfrom: String, fmt: String, appVer: String, cookie: String?,
@@ -114,12 +141,7 @@ object TencentVkeyProbe {
             val u = between(block, "<url>", "</url>") ?: continue
             val pt = between(block, "<pt>", "</pt>") ?: ""
             val hk = between(block, "<hk>", "</hk>") ?: ""
-            val full = when {
-                u.contains(".m3u8") || u.contains(".mp4") ->
-                    "$u$pt" + (if (hk.isBlank()) "" else "&hlskey=$hk") + "&sdtfrom=$sdtfrom"
-                else -> "$u$pt" + (if (hk.isBlank()) "" else "&hlskey=$hk") + "&sdtfrom=$sdtfrom"
-            }
-            out.add(full)
+            out.add("$u$pt" + (if (hk.isBlank()) "" else "&hlskey=$hk") + "&sdtfrom=$sdtfrom")
         }
         return out
     }
@@ -134,11 +156,9 @@ object TencentVkeyProbe {
 
     private fun checkTime(): Long {
         val body = get("https://vv6.video.qq.com/checktime?otype=json") ?: return System.currentTimeMillis() / 1000
-        /* 形如 {"s":"1700000000"} 或 XML；两种都兜一下 */
-        val m = Regex("\"s\"\\s*:\\s*\"?(\\d{10})").find(body)
-        if (m != null) return m.groupValues[1].toLong()
-        val m2 = Regex(">(\\d{10})<").find(body)
-        if (m2 != null) return m2.groupValues[1].toLong()
+        /* 实测返回 QZOutputJson={"s":"o","t":1792312762,...} —— 键是 t，不是 s（s 是状态码） */
+        Regex("\"t\"\\s*:\\s*\"?(\\d{10})").find(body)?.let { return it.groupValues[1].toLong() }
+        Regex(">(\\d{10})<").find(body)?.let { return it.groupValues[1].toLong() }
         Log.w(TAG, "服务器时间没解析出来，用本机时间兜底：${body.take(120)}")
         return System.currentTimeMillis() / 1000
     }

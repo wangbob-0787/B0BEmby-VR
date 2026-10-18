@@ -37,10 +37,20 @@ public class CKeyFacade {
     /** 库自己的服务器配置（可空）。 */
     public static native int SetIpPort(String host, int port, String host6, int port6);
 
-    /** 初始化；官方类里是实例方法（三个字符串 + Context）。 */
+    /**
+     * 初始化；官方类的 init 方法是这么调的（三个字符串 + Context）：
+     * `CkeyMoudleInit(应用私有目录, guid, "", context)`。
+     */
     public native void CkeyMoudleInit(String a, String b, String c, android.content.Context ctx);
 
     private native void CkeyMoudleUnit();
+
+    /**
+     * 注册设备信息；官方调用形状：
+     * `Registration(<设备标识>, <版本>, <SDK版本>, <平台号>, <设备标识>, context)`。
+     */
+    public native int Registration(String a, String b, String c, int platform, String d,
+                                   android.content.Context ctx);
 
     /**
      * 按官方客户端 tvkplayer 那一路的参数形状算一次 ckey。
