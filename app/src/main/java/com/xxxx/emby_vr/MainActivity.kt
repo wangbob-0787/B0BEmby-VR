@@ -2488,6 +2488,9 @@ class MainActivity : ComponentActivity() {
             Log.i(TAG, "回网页：攒分片模式结束（这一部共攒过 ${webFragSeen.size} 段）")
             webFragMode = false
             webFragSeen.clear()
+            webFragPending.clear()
+            webFragMinIdx = Int.MAX_VALUE
+            webFragMaxIdx = -1
         }
         /*
          * 停播放器但**保留控制条**（父亲 2026-10-16 明确：光标对着银幕按 B 从播放状态
@@ -2785,8 +2788,11 @@ class MainActivity : ComponentActivity() {
     private var webFragMode = false
     private val webFragSeen = java.util.HashSet<Int>()
     private var webFragReturnUrl: String? = null
-    /** 这一批分片属于哪一页/哪一部片子（页面编号变了就要从头攒） */
-    private var webFragKey = ""
+    /** 起播前先到达、还没能接上去的分片（播放器一起来就补接） */
+    private val webFragPending = java.util.ArrayDeque<String>()
+    /** 这一部片子见过的分片编号范围（用来判"换片子"） */
+    private var webFragMinIdx = Int.MAX_VALUE
+    private var webFragMaxIdx = -1
     /** 起播时告诉"这一段别销毁网页"（攒分片模式专用） */
     private var webKeepPageAlive = false
 
@@ -2797,17 +2803,6 @@ class MainActivity : ComponentActivity() {
 
     private fun handleBridgeFrags(obj: org.json.JSONObject) {
         val arr = obj.optJSONArray("list") ?: return
-        /*
-         * 换片子要重新攒（2026-10-18）：分片的编号从 0 开始，
-         * 上一部片子的编号占着的话新片子的段会被当成"已经接过"而全丢。
-         */
-        val key = obj.optString("key")
-        if (key.isNotBlank() && key != webFragKey) {
-            webFragKey = key
-            webFragSeen.clear()
-            if (webFragMode) Log.i(TAG, "攒分片：页面编号变了（换片子），从头重新攒")
-            webFragMode = false
-        }
         val fresh = ArrayList<Pair<Int, String>>()
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
@@ -2817,6 +2812,24 @@ class MainActivity : ComponentActivity() {
             if (webFragSeen.add(idx)) fresh.add(idx to u)
         }
         if (fresh.isEmpty()) return
+        /*
+         * 换片子的判据用**编号往回跳**（2026-10-18 头显实测改的）：
+         * 原来按页面编号判，可这个编号是各层各算的 —— 报上来的层一变编号就变，
+         * 于是刚起播就被判成"换片子"、从头重来（父亲看到的就是又只播一小段）。
+         * 分片编号在一部片子里是递增的，真换片子才会从 0 重来，所以看编号够不够稳。
+         */
+        val minIdx = fresh.minOf { it.first }
+        if (webFragMaxIdx >= 0 && minIdx < webFragMaxIdx - 30) {
+            Log.i(TAG, "攒分片：编号从 $webFragMaxIdx 跳回 $minIdx，判为换片子，从头重新攒")
+            webFragSeen.clear()
+            webFragSeen.addAll(fresh.map { it.first })
+            webFragMode = false
+            webFragPending.clear()
+        }
+        for (p in fresh) {
+            if (p.first > webFragMaxIdx) webFragMaxIdx = p.first
+            if (p.first < webFragMinIdx) webFragMinIdx = p.first
+        }
         val frame = obj.optString("frame")
         val cookie = obj.optString("cookie")
         if (!webFragMode) {
@@ -2857,11 +2870,38 @@ class MainActivity : ComponentActivity() {
             } finally {
                 webKeepPageAlive = false
             }
-            for (k in 1 until fresh.size) mpvBackend?.appendFile(fresh[k].second)
+            for (k in 1 until fresh.size) appendFrag(fresh[k].second)
         } else {
-            for (k in 0 until fresh.size) mpvBackend?.appendFile(fresh[k].second)
+            for (k in 0 until fresh.size) appendFrag(fresh[k].second)
             Log.i(TAG, "接上第 ${fresh[0].first}～${fresh[fresh.size - 1].first} 段（共接 ${fresh.size} 段）")
         }
+    }
+
+    /**
+     * 把一段接在后面。
+     *
+     * 起播那几拍播放器还在建（`mpvBackend` 还是空的），这一段先存起来，
+     * 等播放器起来再补接 —— 不然父亲按全屏那一刻交上来的那几段会全被丢掉，
+     * 表现就是"只播了十几秒"（2026-10-18 头显实测）。
+     */
+    private fun appendFrag(url: String) {
+        val m = mpvBackend
+        if (m == null) {
+            webFragPending.addLast(url)
+            return
+        }
+        m.appendFile(url)
+    }
+
+    private fun flushPendingFrags() {
+        val m = mpvBackend ?: return
+        if (webFragPending.isEmpty()) return
+        var n = 0
+        while (webFragPending.isNotEmpty()) {
+            m.appendFile(webFragPending.removeFirst())
+            n++
+        }
+        if (n > 0) Log.i(TAG, "补接起播前到达的 $n 段（播放器起来之前先存着的）")
     }
 
     private fun playWebStream(obj: org.json.JSONObject) {
@@ -3159,6 +3199,8 @@ class MainActivity : ComponentActivity() {
                                 "Referer=${hd["Referer"]?.take(60)} 站点=${webStreamSite ?: -1}",
                         )
                         startWebStreamWatchdog(uHost, ck.isNotBlank(), ck.length)
+                        /* 起播前先到的分片，这会儿播放器有了，补接上去（2026-10-18） */
+                        if (webFragMode) flushPendingFrags()
                     } else {
                         m.play(directUrl, startMs / 1000.0)
                     }
