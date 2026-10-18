@@ -2480,6 +2480,45 @@
       console.log('[b0b]①浏览器全屏事件 → ' + (fullState ? '进入全屏（可接管）' : '退出全屏'));
     });
   } catch (e) {}
+  /*
+   * 用页面身份要整片地址（2026-10-18 晚）。
+   *
+   * 背景：我们客户端自己发请求时，服务器不认身份（preview=180、只放 3 分多钟），
+   * 而页面本身是登录着的 —— 那就让**浏览器**去发这一条，身份由浏览器带。
+   * 拿到整片地址后走普通"可播地址"通道交出去，客户端那边直接播整片（可拖进度）。
+   */
+  var wholeTriedVid = '';
+  function probeWholeUrl() {
+    try {
+      if (!/qq\.com$/.test(String(location.hostname || ''))) return;
+      var href = location.href;
+      var vid = (href.match(/\/([A-Za-z0-9]{10,12})\.html/) || [])[1] ||
+                (href.match(/[?&]vid=([A-Za-z0-9]{8,16})/) || [])[1];
+      if (!vid || wholeTriedVid === vid) return;
+      wholeTriedVid = vid;
+      console.log('[b0b] 用页面身份要整片地址：vid=' + vid);
+      browser.runtime.sendMessage({ __b0bWhole: 1, vid: vid }).then(function (r) {
+        var t = (r && r.text) || '';
+        if (!t) { console.log('[b0b] 页面身份要地址：没拿到响应'); return; }
+        var j = JSON.parse(t.replace(/^QZOutputJson=/, '').replace(/;\s*$/, ''));
+        var vi = (j && j.vl && j.vl.vi && j.vl.vi[0]) || null;
+        console.log('[b0b] 页面身份要地址结果：preview=' + j.preview + ' login=' + j.login +
+          ' 档位=' + (vi ? vi.vh + 'p' : '无') + ' 时长=' + (vi ? vi.td : '?'));
+        if (!vi) return;
+        var url = vi.ul.ui[0].url + vi.fn + (vi.fvkey ? ('?vkey=' + vi.fvkey) : '');
+        pendingPlay = {
+          title: '', kind: 'play', t: Date.now(), frame: location.href, winId: poolWin,
+          durSec: Math.round(vi.td || 0), quality: vi.vh || 0, whole: 1,
+          streams: [{ id: 0, height: vi.vh || 0, width: vi.vw || 0, bw: vi.br || 0,
+                      vcodec: '', video: url, audio: '' }]
+        };
+        console.log('[b0b] 页面身份拿到整片地址（' + (vi.vh || '?') + 'p，' +
+          Math.round((vi.td || 0) / 60) + ' 分钟），交给客户端');
+      }).catch(function (e) { console.log('[b0b] 页面身份要地址失败：' + e); });
+    } catch (e) {}
+  }
+
   setInterval(scan, 400);
+  setInterval(probeWholeUrl, 3000);
   scan();
 })();

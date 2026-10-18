@@ -54,6 +54,30 @@ browser.runtime.onMessage.addListener(function (msg) {
  * 后台页是扩展里权限最全的地方 —— 这里取好再回给内容脚本。
  * 腾讯那次"登录票：无"到底是真没票，还是取票通道不通，这条通道能分开。
  */
+/*
+ * 用**浏览器自己的身份**去问腾讯要整片地址（2026-10-18 晚）。
+ *
+ * 为什么放到后台页：内容脚本发跨域请求会被 CORS 拦，而后台页有主机权限、
+ * 请求由浏览器带票，不需要我们自己去抠 cookie（实测我们抠出来的 110 条票里
+ * 一条登录凭证都没有，而页面本身是登录着的 —— 由浏览器发请求就绕开了这件事）。
+ * 顺带把响应里的 preview / login 两个字段回给内容脚本，用于判定身份有没有生效。
+ */
+browser.runtime.onMessage.addListener(function (msg, sender, respond) {
+  try {
+    if (!msg || !msg.__b0bWhole || !msg.vid) return;
+    var u = 'https://vv.video.qq.com/getinfo?otype=json&vid=' + encodeURIComponent(msg.vid) +
+      '&platform=101001&sdtfrom=v1010&defn=fhd&vt=3&charge=0&defnpayver=1';
+    fetch(u, { credentials: 'include' }).then(function (r) { return r.text(); }).then(function (t) {
+      try { respond({ text: t }); } catch (e) {}
+    }).catch(function (e) {
+      console.log('[b0b] 后台页要整片地址失败：' + e);
+      try { respond({ error: String(e) }); } catch (e2) {}
+    });
+    return true;
+  } catch (e) {}
+  return false;
+});
+
 try {
   browser.runtime.onMessage.addListener(function (msg, sender, respond) {
     try {

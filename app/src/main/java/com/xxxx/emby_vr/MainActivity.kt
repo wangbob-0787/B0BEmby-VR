@@ -3009,6 +3009,18 @@ class MainActivity : ComponentActivity() {
 
     private fun playWebStream(obj: org.json.JSONObject) {
         /*
+         * 这条地址是**网页用浏览器自己的身份**要来的（2026-10-18 晚，扩展加了这条路）。
+         * 浏览器带票，服务器才给整集；我们自己发的那条请求没身份、只给试看，
+         * 所以这里记下来，分片路那边就不要再问一遍、把好地址顶掉了。
+         */
+        if (obj.optInt("whole", 0) == 1) {
+            val v = com.xxxx.emby_vr.web.TencentWholeUrl.vidFromFrame(obj.optString("frame"))
+            if (v != null) {
+                webWholeTried = v
+                Log.i(TAG, "整片地址来自网页身份（浏览器带票），不再重复发我们那条无身份请求")
+            }
+        }
+        /*
          * 【2026-10-17 23:28 父亲立的机制：不管从哪儿切到哪儿，控制条与弹幕屏的信息都要跟着换】
          *
          * 三种切换都得走同一套清场：Emby片→Emby片、Emby片→网站视频、网站视频→网站视频。
