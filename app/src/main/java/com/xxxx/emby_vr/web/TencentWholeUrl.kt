@@ -111,17 +111,32 @@ object TencentWholeUrl {
             val h = v.optInt("vh", 0)
             val quality = if (h > 0) "${h}P" else c.defn
             val size = head(full, cookie)
+            /*
+             * 关键判定字段（2026-10-18 晚）：`preview` 是"允许看多少秒"——
+             * 实测未登录时 preview=180（就是父亲看到的 3 分多钟），
+             * `login=0` 说明服务器**没认出我们的登录身份**。这两个字段一变化，
+             * 就说明身份生效了、能拿整集了。所以每组都打出来，别只看清晰度。
+             */
             Log.i(
                 TAG,
-                "整片地址[${c.label}] → $quality 文件 ${size / 1048576}MB" +
-                    "（${if (cookie.isNullOrBlank()) "无" else "有"}登录票，" +
-                    "响应里的正片时长 ${v.optInt("td", 0)} 秒）",
+                "整片地址[${c.label}] → $quality 文件 ${size / 1048576}MB，" +
+                    "preview=${d.optInt("preview", -1)} login=${d.optInt("login", -1)}" +
+                    " 码率=${v.optInt("br", 0)} 正片时长=${v.optInt("td", 0)}秒 票=${cookieShape(cookie)}",
             )
             Hit(full, c.defn, quality, size)
         } catch (t: Throwable) {
             Log.w(TAG, "整片地址[${c.label}] 解析失败：${t.message}")
             null
         }
+    }
+
+    /** 只看票里有哪些名字（不打印值）：判断"服务器认不认这份身份"要看它带没带关键的几个。 */
+    private fun cookieShape(cookie: String?): String {
+        if (cookie.isNullOrBlank()) return "无"
+        val names = cookie.split(';').mapNotNull { it.substringBefore('=').trim().ifBlank { null } }
+        val key = listOf("uin", "p_uin", "vusession", "p_skey", "skey", "vqq_vusession", "luin")
+            .filter { names.contains(it) }
+        return "${names.size}条[${key.joinToString(",")}]"
     }
 
     /** 问一下文件多大：大小是"整集还是试看"的硬证据。 */
