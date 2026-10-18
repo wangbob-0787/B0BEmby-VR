@@ -96,9 +96,33 @@ try {
     try {
       if (!msg || !msg.__b0bCookies) return;
       var dom = msg.domain || '';
-      browser.cookies.getAll({ domain: dom }).then(function (list) {
-        var str = (list || []).map(function (c) { return c.name + '=' + c.value; }).join('; ');
-        console.log('[b0b] 后台页代取 cookie（' + dom + '）：' + (str ? '有(' + str.length + '字符)' : '无'));
+      /*
+       * 2026-10-18 晚改：原来只按 `{domain:'qq.com'}` 取，票里一条登录名字都没有，
+       * 而父亲明确 app 浏览器是登录着的 —— 问题在过滤条件：httpOnly 的登录票挂在 `.qq.com`，
+       * 不带点的 `qq.com` 过滤会漏掉。改成"按具体网址 + 带点域名"多路取，再合并去重。
+       */
+      var filters = [
+        { url: 'https://v.qq.com/' },
+        { url: 'https://vv.video.qq.com/' },
+        { url: 'https://vv6.video.qq.com/' },
+        { domain: '.' + (dom || 'qq.com') },
+        { domain: dom || 'qq.com' }
+      ];
+      Promise.all(filters.map(function (f) {
+        return browser.cookies.getAll(f).catch(function () { return []; });
+      })).then(function (lists) {
+        var seen = {}, out = [];
+        (lists || []).forEach(function (list) {
+          (list || []).forEach(function (c) {
+            var k = c.name + '@' + (c.domain || '') + '@' + (c.path || '');
+            if (seen[k]) return;
+            seen[k] = 1;
+            out.push(c.name + '=' + c.value);
+          });
+        });
+        var str = out.join('; ');
+        console.log('[b0b] 后台页代取 cookie（' + dom + '，多路合并）：' + str.length + ' 字符，名字=' +
+          out.map(function (x) { return x.split('=')[0]; }).join(','));
         try { respond({ cookie: str }); } catch (e) {}
       }).catch(function (e) {
         console.log('[b0b] 后台页取 cookie 失败：' + e);
