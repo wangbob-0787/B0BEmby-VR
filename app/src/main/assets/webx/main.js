@@ -2496,9 +2496,33 @@
                 (href.match(/[?&]vid=([A-Za-z0-9]{8,16})/) || [])[1];
       if (!vid || wholeTriedVid === vid) return;
       wholeTriedVid = vid;
+      var u = 'https://vv.video.qq.com/getinfo?otype=json&vid=' + vid +
+        '&platform=101001&sdtfrom=v1010&defn=fhd&vt=3&charge=0&defnpayver=1';
       console.log('[b0b] 用页面身份要整片地址：vid=' + vid);
-      browser.runtime.sendMessage({ __b0bWhole: 1, vid: vid }).then(function (r) {
-        var t = (r && r.text) || '';
+      /*
+       * 直接在这个脚本里发（本脚本跑在页面世界里，2026-10-18）：
+       * 实测 `vv.video.qq.com` 对 `https://v.qq.com` 是放行跨域的
+       * （`Access-Control-Allow-Origin: https://v.qq.com` + `Allow-Credentials: true`），
+       * 所以由页面发这条请求既带登录身份、又读得到响应。
+       * 走后台页那条（`__b0bWhole`）头显上实测没回响应（挂住），所以这里改成页面直发；
+       * 后台那条保留做兜底。
+       */
+      fetch(u, { credentials: 'include' }).then(function (r) { return r.text(); }).then(function (t) {
+        wholeHandle(t);
+      }).catch(function (e) {
+        console.log('[b0b] 页面直发要地址失败（改走后台）：' + e);
+        try {
+          browser.runtime.sendMessage({ __b0bWhole: 1, vid: vid }).then(function (r) {
+            wholeHandle((r && r.text) || '');
+          }).catch(function (e2) { console.log('[b0b] 后台兜底也失败：' + e2); });
+        } catch (e3) {}
+      });
+    } catch (e) {}
+  }
+
+  /* 解析接口响应 → 当"整片地址"交给客户端（preview/login 打进日志，判定身份用） */
+  function wholeHandle(t) {
+    try {
         if (!t) { console.log('[b0b] 页面身份要地址：没拿到响应'); return; }
         var j = JSON.parse(t.replace(/^QZOutputJson=/, '').replace(/;\s*$/, ''));
         var vi = (j && j.vl && j.vl.vi && j.vl.vi[0]) || null;
@@ -2514,8 +2538,7 @@
         };
         console.log('[b0b] 页面身份拿到整片地址（' + (vi.vh || '?') + 'p，' +
           Math.round((vi.td || 0) / 60) + ' 分钟），交给客户端');
-      }).catch(function (e) { console.log('[b0b] 页面身份要地址失败：' + e); });
-    } catch (e) {}
+    } catch (e) { console.log('[b0b] 整片地址解析失败：' + e); }
   }
 
   setInterval(scan, 400);
