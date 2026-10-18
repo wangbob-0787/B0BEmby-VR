@@ -367,6 +367,17 @@ fun WebLibraryScreen(
  * 修法：拿到就留着复用，第二次直接用旧的；参数只在第一次生效
  * （所以改 <web_touch> 要重启应用）。
  */
+/**
+ * 让网页面保持活跃（2026-10-18）。
+ *
+ * 攒分片接管播放时网页面留在后台，火狐内核可能把会话判成不活跃而让页面停手；
+ * 播放侧定时调这一下，把它按回"活跃 + 高优先级"。`WebRuntime` 是文件内私有的，
+ * 所以由这个顶层函数对外开口。
+ */
+fun keepWebPageActive() {
+    WebRuntime.keepPageActive()
+}
+
 private object WebRuntime {
     private var cached: org.mozilla.geckoview.GeckoRuntime? = null
 
@@ -380,6 +391,28 @@ private object WebRuntime {
 
     fun setStreamSink(f: ((org.json.JSONObject) -> Unit)?) {
         streamSink = f
+    }
+
+    /**
+     * 网页面那个会话（2026-10-18）。
+     *
+     * 接管播放时网页面会被收起来，火狐内核如果把这个会话判成"不活跃"，
+     * 页面里的计时器和播放都会停 —— 分片就不再来（头显实测：收起来之后
+     * 十秒一跳的心跳整段消失，客户端手里那一段播完就回到网页，看着就是"反复播一小段"）。
+     * 这里留一个口子，由播放侧定时把它按回"活跃 + 高优先级"。
+     */
+    private var pageSession: org.mozilla.geckoview.GeckoSession? = null
+
+    fun attachPageSession(s: org.mozilla.geckoview.GeckoSession?) {
+        pageSession = s
+    }
+
+    fun keepPageActive() {
+        val s = pageSession ?: return
+        runCatching { s.setActive(true) }
+        runCatching {
+            s.setPriorityHint(org.mozilla.geckoview.GeckoSession.PRIORITY_HIGH)
+        }
     }
 
     /**
@@ -1186,6 +1219,8 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                 onReady = { v, s ->
                     geckoRef = v
                     geckoSessionRef = s
+                    /* 播放侧要能让这个会话保持活跃（攒分片时网页留在后台） */
+                    WebRuntime.attachPageSession(s)
                 },
                 onLoading = { loading = it },
                 onFailed = { loadFailed = it },

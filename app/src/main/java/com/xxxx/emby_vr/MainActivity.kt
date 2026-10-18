@@ -2491,6 +2491,7 @@ class MainActivity : ComponentActivity() {
             webFragPending.clear()
             webFragMinIdx = Int.MAX_VALUE
             webFragMaxIdx = -1
+            stopWebAlive()
         }
         /*
          * 停播放器但**保留控制条**（父亲 2026-10-16 明确：光标对着银幕按 B 从播放状态
@@ -2791,6 +2792,9 @@ class MainActivity : ComponentActivity() {
     /** 起播前先到达、还没能接上去的分片（播放器一起来就补接） */
     private val webFragPending = java.util.ArrayDeque<String>()
     /** 这一部片子见过的分片编号范围（用来判"换片子"） */
+    /** 最近一次接上分片的时刻 / 播到段尾后等下一段时的日志节流 */
+    @Volatile private var webFragLastAt = 0L
+    private var webFragEofLogged = 0L
     private var webFragMinIdx = Int.MAX_VALUE
     private var webFragMaxIdx = -1
     /** 起播时告诉"这一段别销毁网页"（攒分片模式专用） */
@@ -2865,6 +2869,8 @@ class MainActivity : ComponentActivity() {
             webKeepPageAlive = true
             /* 记下站点：按 B 要能回到这张网页继续选片（与网页流那条路同一套判据） */
             webStreamSite = webSiteState.value
+            /* 起播同时开始按着网页（页面停手就没新段了） */
+            startWebAlive()
             try {
                 playWebStream(one)
             } finally {
@@ -2884,7 +2890,36 @@ class MainActivity : ComponentActivity() {
      * 等播放器起来再补接 —— 不然父亲按全屏那一刻交上来的那几段会全被丢掉，
      * 表现就是"只播了十几秒"（2026-10-18 头显实测）。
      */
+    /**
+     * 攒分片时把网页面按在"活跃"上（2026-10-18 头显实测）。
+     *
+     * 接管播放后网页屏被收起来，火狐内核把会话判成不活跃 —— 页面里的心跳整段消失、
+     * 分片不再来，手里那一段播完就回到网页，看着就是"反复播一小段"。
+     * 这里每隔几秒按一次，让页面照常往下取。
+     */
+    private val webAliveHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val webAliveTick = object : Runnable {
+        override fun run() {
+            if (!webFragMode) return
+            try {
+                com.xxxx.emby_vr.ui.keepWebPageActive()
+            } catch (e: Throwable) {
+            }
+            webAliveHandler.postDelayed(this, 3000L)
+        }
+    }
+
+    private fun startWebAlive() {
+        webAliveHandler.removeCallbacks(webAliveTick)
+        webAliveHandler.post(webAliveTick)
+    }
+
+    private fun stopWebAlive() {
+        webAliveHandler.removeCallbacks(webAliveTick)
+    }
+
     private fun appendFrag(url: String) {
+        webFragLastAt = System.currentTimeMillis()
         val m = mpvBackend
         if (m == null) {
             webFragPending.addLast(url)
@@ -2901,6 +2936,7 @@ class MainActivity : ComponentActivity() {
             m.appendFile(webFragPending.removeFirst())
             n++
         }
+        webFragLastAt = System.currentTimeMillis()
         if (n > 0) Log.i(TAG, "补接起播前到达的 $n 段（播放器起来之前先存着的）")
     }
 
@@ -5821,6 +5857,20 @@ class MainActivity : ComponentActivity() {
                 if (!waitingFirstFrame && playModeIndex == 2 &&
                     runCatching { backend.endReached() }.getOrDefault(false)
                 ) {
+                    /*
+                     * 攒分片（腾讯网页那条路）：手里的段播完不等于这一部播完 ——
+                     * 网页还在后台一段一段取。照"播完停播"处理，父亲看到的就是
+                     * "回到网页、再点全屏、又只播一小段"（2026-10-18 实测）。
+                     */
+                    if (webFragMode && System.currentTimeMillis() - webFragLastAt < 40000L) {
+                        val nowMs = System.currentTimeMillis()
+                        if (nowMs - webFragEofLogged > 10000L) {
+                            webFragEofLogged = nowMs
+                            Log.i(TAG, "攒分片：手里这段播完了，等网页接下一段（不当作播完）")
+                        }
+                        kotlinx.coroutines.delay(200)
+                        continue
+                    }
                     Log.i(TAG, "内核播放结束（eof-reached）→ 停止并回到界面")
                     withContext(kotlinx.coroutines.Dispatchers.Main) {
                         runCatching { stopPlayback() }
