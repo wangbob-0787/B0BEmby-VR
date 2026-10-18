@@ -623,6 +623,7 @@
        * mpv 自然 loading failed（reason 4），第一帧永远不来，银幕就一直不切。
        * 现在先把字幕类的挑掉，只认正片列表。
        */
+      var segCount = 0;
       var m = all.filter(function (x) {
         if (isPlaylistUrl(x)) return true;
         segCount++;
@@ -646,7 +647,6 @@
        * 改法：广告的播放信息整条不要（打日志说明），广告 CDN 的候选也剔除，
        * 这样"按全屏"会等到正片那份播放信息到达再交出去。
        */
-      var segCount = 0;
       var isAdInfo = /lcAdCookie|apd-vlive|apdcdn\.tc\.qq\.com|"adx"|vhot\.qq\.com/i.test(t);
       if (isAdInfo) {
         console.log('[b0b] 这条是**广告**的播放信息（含广告票据/广告CDN），不用它，等正片那份');
