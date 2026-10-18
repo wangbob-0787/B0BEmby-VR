@@ -87,7 +87,7 @@ object TencentVkeyProbe {
          * 腾讯老接口 getinfo 不要签名、不要登录就能给整片地址，且支持分段请求。
          * 这里用设备上的真实身份（网页里那份票）再验一次，看档位能不能上去。
          */
-        val whole = com.xxxx.emby_vr.web.TencentWholeUrl.fetch(vid, cookie)
+        val whole = com.xxxx.emby_vr.web.TencentWholeUrl.fetch(vid, cookie, deep = true)
         if (whole == null) {
             Log.w(TAG, "整片地址：没拿到")
         } else {

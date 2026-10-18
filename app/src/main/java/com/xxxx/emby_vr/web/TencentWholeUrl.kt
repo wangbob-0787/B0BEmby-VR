@@ -25,13 +25,37 @@ object TencentWholeUrl {
 
     private const val TAG = "B0BEmbyVR-Vkey"
 
-    /** 档位偏好，从高到低试。 */
-    private val DEFNS = listOf("uhd", "fhd", "shd", "hd")
+    /**
+     * 参数组合矩阵（2026-10-18 下午实测后的第二版）。
+     *
+     * 现象：不带这些参数时，接口对会员片只给**试看片段**（实测 3 分 25 秒、
+     * 486P~720P），而响应里的 `td` 写着正片 2819 秒 —— 说明"整片"没给。
+     * 官方客户端/网页要拿到整集，请求里得带清晰度权益相关的开关（`defnpayver`
+     * 试出能多给一档 1080P）、付费标记 `charge` 与站点号。这里把组合一次跑完，
+     * 并把每个组合**实际文件大小**（HEAD 的 Content-Length）打出来——
+     * 大小才是"给的是整集还是试看"的硬证据。
+     */
+    private data class Combo(
+        val defn: String,
+        val platform: Int,
+        val charge: Int,
+        val extra: String,
+        val label: String,
+    )
 
-    /** 两个平台号都试：101001 是网页端，11 是手机端。 */
-    private val PLATFORMS = listOf(101001, 11)
+    private val COMBOS = listOf(
+        Combo("fhd", 101001, 0, "&defnpayver=1", "网页端+1080P权益"),
+        Combo("fhd", 101001, 0, "&defnpayver=1&fhdswitch=1", "网页端+1080P+开关"),
+        Combo("fhd", 101001, 1, "&defnpayver=1", "网页端+付费标记1"),
+        Combo("shd", 101001, 1, "&defnpayver=1", "网页端720P+付费标记1"),
+        Combo("uhd", 101001, 1, "&defnpayver=1&uhdswitch=1", "网页端4K+开关"),
+        Combo("fhd", 101001, 1, "&defnpayver=1&spwm=4", "网页端+spwm4"),
+        Combo("fhd", 2, 1, "&defnpayver=1", "平台2"),
+        Combo("fhd", 11, 1, "&defnpayver=1", "平台11"),
+        Combo("fhd", 101001, 0, "", "基准（试看对照）"),
+    )
 
-    data class Hit(val url: String, val defn: String, val quality: String)
+    data class Hit(val url: String, val defn: String, val quality: String, val size: Long = 0L)
 
     /**
      * 从页面地址里抠出视频号。
@@ -47,27 +71,33 @@ object TencentWholeUrl {
         return null
     }
 
-    /** 取整片地址；拿不到返回 null。 */
-    fun fetch(vid: String, cookie: String?): Hit? {
-        for (platform in PLATFORMS) {
-            for (defn in DEFNS) {
-                val hit = tryOnce(vid, defn, platform, cookie)
-                if (hit != null) return hit
-            }
+    /**
+     * 取整片地址；拿不到返回 null。
+     *
+     * `deep` = true 时把所有参数组合都试一遍（探针用，父亲要看看到底哪组给整集）；
+     * false 时只试最可能给整集的前两组（正常播放用，省时间）。
+     */
+    fun fetch(vid: String, cookie: String?, deep: Boolean = false): Hit? {
+        var best: Hit? = null
+        val list = if (deep) COMBOS else COMBOS.take(4)
+        for (c in list) {
+            val hit = tryOnce(vid, c, cookie) ?: continue
+            if (!deep) return hit
+            if (best == null || hit.size > best.size) best = hit
         }
-        return null
+        return best
     }
 
-    private fun tryOnce(vid: String, defn: String, platform: Int, cookie: String?): Hit? {
-        val u = "https://vv.video.qq.com/getinfo?otype=json&vid=$vid&platform=$platform" +
-            "&sdtfrom=v1010&defn=$defn&vt=3&charge=0"
+    private fun tryOnce(vid: String, c: Combo, cookie: String?): Hit? {
+        val u = "https://vv.video.qq.com/getinfo?otype=json&vid=$vid&platform=${c.platform}" +
+            "&sdtfrom=v1010&defn=${c.defn}&vt=3&charge=${c.charge}${c.extra}"
         val text = get(u, cookie) ?: return null
         val json = text.removePrefix("QZOutputJson=").trim().trimEnd(';')
         return try {
             val d = JSONObject(json)
             val vi = d.optJSONObject("vl")?.optJSONArray("vi") ?: return null
             if (vi.length() == 0) {
-                Log.i(TAG, "整片地址：$vid defn=$defn platform=$platform → 没给（可能没权限）")
+                Log.i(TAG, "整片地址[${c.label}] → 没给（可能没权限）")
                 return null
             }
             val v = vi.optJSONObject(0) ?: return null
@@ -79,16 +109,35 @@ object TencentWholeUrl {
             val full = base + fn + (if (key.isBlank()) "" else "?vkey=$key")
             val w = v.optInt("vw", 0)
             val h = v.optInt("vh", 0)
-            val quality = if (h > 0) "${h}P" else defn
+            val quality = if (h > 0) "${h}P" else c.defn
+            val size = head(full, cookie)
             Log.i(
                 TAG,
-                "整片地址：$vid defn=$defn platform=$platform → 拿到 $quality" +
-                    "（${if (cookie.isNullOrBlank()) "无" else "有"}登录票，时长 ${v.optInt("td", 0)} 秒）",
+                "整片地址[${c.label}] → $quality 文件 ${size / 1048576}MB" +
+                    "（${if (cookie.isNullOrBlank()) "无" else "有"}登录票，" +
+                    "响应里的正片时长 ${v.optInt("td", 0)} 秒）",
             )
-            Hit(full, defn, quality)
+            Hit(full, c.defn, quality, size)
         } catch (t: Throwable) {
-            Log.w(TAG, "整片地址：$vid defn=$defn 解析失败：${t.message}")
+            Log.w(TAG, "整片地址[${c.label}] 解析失败：${t.message}")
             null
+        }
+    }
+
+    /** 问一下文件多大：大小是"整集还是试看"的硬证据。 */
+    private fun head(url: String, cookie: String?): Long {
+        return try {
+            val conn = (URL(url).openConnection() as HttpURLConnection)
+            conn.requestMethod = "HEAD"
+            conn.connectTimeout = 10000
+            conn.readTimeout = 15000
+            conn.setRequestProperty("User-Agent", "Mozilla/5.0")
+            if (!cookie.isNullOrBlank()) conn.setRequestProperty("Cookie", cookie)
+            val n = conn.getHeaderField("Content-Length")?.toLongOrNull() ?: 0L
+            conn.disconnect()
+            n
+        } catch (t: Throwable) {
+            0L
         }
     }
 
