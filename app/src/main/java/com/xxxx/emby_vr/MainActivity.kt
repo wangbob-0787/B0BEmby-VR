@@ -3032,6 +3032,33 @@ class MainActivity : ComponentActivity() {
      * 当时的现象：换到第二集，判断用的是上一集剩下的十几段 → 判为"够"→ 进了分片路 →
      * 路里才发现换了集、清空 → 新服务一段都没有 → 内核连要 122～139 段全部落空 → 卡住。
      */
+    /**
+     * 只保留与"最新一段"同一个播放会话的分片（2026-10-19 02:40，父亲报"播到其他剧去了"）。
+     *
+     * 腾讯分片地址里有一段目录是**这次播放的会话号**：`/lv_/B_<会话>/svp_50112/<目录>/NN_gzc_….ts`。
+     * 换剧/换集会换掉这一段，而编号都会从 0 重来 —— 于是新旧分片混在一张表里，
+     * 播放列表就把别的剧的片段接进来看（父亲看到的就是"播到其他剧"）。
+     * 判据用"最新一段"的会话号：跟它不一样的旧段一律丢掉。
+     */
+    private fun keepOnlyCurrentPlayback() {
+        val lastUrl = tencentSegs[tencentSegs.keys.lastOrNull() ?: return] ?: return
+        val keep = prefixOf(lastUrl)
+        if (keep.isEmpty()) return
+        val drop = ArrayList<Int>()
+        for ((k, u) in tencentSegs) if (prefixOf(u) != keep) drop.add(k)
+        if (drop.isEmpty()) return
+        for (k in drop) tencentSegs.remove(k)
+        Log.i(TAG, "分片：丢掉 ${drop.size} 段旧会话的片段，只留当前这次播放的 ${tencentSegs.size} 段")
+    }
+
+    /** 取分片地址里的"播放会话目录"（`/B_…./svp_50112/<目录>` 这一段）。 */
+    private fun prefixOf(u: String): String {
+        val i = u.indexOf("/B_")
+        if (i < 0) return ""
+        val cut = u.lastIndexOf('/')
+        return if (cut > i) u.substring(i, cut) else ""
+    }
+
     private fun clearSegsIfNewEpisode(frame: String) {
         val vid = com.xxxx.emby_vr.web.TencentWholeUrl.vidFromFrame(frame) ?: return
         if (segHlsVid != null && segHlsVid != vid) {
@@ -3057,6 +3084,10 @@ class MainActivity : ComponentActivity() {
         startWebAlive()
         webFragMode = false
         val durSec = if (durSecIn > 0) durSecIn else (webCandSrc?.optInt("durSec", 0) ?: 0)
+        keepOnlyCurrentPlayback()
+        /* 每次全屏起播都重开一个服务：旧的基准段号与旧片段都不带过来（r709 串剧就是这么来的） */
+        segHls?.stop()
+        segHls = null
         val ready = segHls
         if (ready != null) {
             tencentSegs.forEach { (i, u) -> ready.put(i, u) }
@@ -3136,6 +3167,7 @@ class MainActivity : ComponentActivity() {
              * 分片是明文 MPEG-TS、下载 33–44MB/s，所以只要攒到 3 段以上就改走它。
              */
             clearSegsIfNewEpisode(obj.optString("frame"))
+            keepOnlyCurrentPlayback()
             if (tencentSegs.size >= 3) {
                 Log.i(
                     TAG,
