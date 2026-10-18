@@ -358,7 +358,54 @@
     } catch (e) { b0bWholeBusy = false; }
   }
 
-  /* 签名我们自己算；请求先请页面世界代发（身份才带得全），页面不回再自己发。 */
+  /*
+   * 签名我们自己算；请求先请页面世界代发（身份才带得全），页面不回再自己发。
+   *
+   * 档位：腾讯对"整集文件"这一形态给的档位往往比网页分片流低（父亲 2026-10-18 晚：
+   * 他账号能看臻彩MAX，但整集文件只给到 720p）。所以这里把 4K/1080p/720p 挨个问一遍，
+   * 把每档实际给到什么打进日志，最后挑最高的一档用。
+   */
+  function b0bAskOnce(vid, defn, tm, ver, ck) {
+    var u = 'https://vv6.video.qq.com/getvinfo?otype=json&vid=' + vid +
+      '&platform=10201&sdtfrom=v1010&defn=' + defn + '&vt=3&charge=0' +
+      '&cKey=' + ck + '&encryptVer=' + ver + '&tm=' + tm;
+    return b0bPageFetch(u, 9000).then(function (t0) {
+      if (!t0) t0 = null;
+      if (t0) return t0;
+      return b0bText(u, 12000);
+    }).then(function (t) {
+      if (!t) {
+        console.log('[b0b] 腾讯整集[' + defn + ']：没回响应');
+        return null;
+      }
+      var j = {};
+      try {
+        j = JSON.parse(String(t).replace(/^QZOutputJson=/, '').replace(/;\s*$/, ''));
+      } catch (e) {
+        console.log('[b0b] 腾讯整集[' + defn + ']：响应解析失败');
+        return null;
+      }
+      var vi = (j.vl && j.vl.vi && j.vl.vi[0]) || null;
+      if (!vi) {
+        console.log('[b0b] 腾讯整集[' + defn + ']：没有片源（em=' + j.em + '）');
+        return null;
+      }
+      var td = Number(vi.td || 0), prev = Number(j.preview);
+      console.log('[b0b] 腾讯整集[' + defn + ']：允许看 ' + prev + ' 秒 / 整集 ' + td +
+        ' 秒，档位 ' + vi.vh + 'p，文件 ' + Math.round((vi.fs || 0) / 1024 / 1024) + 'MB，片名 ' + vi.ti);
+      /* 顺带把这一档里列的其它码率也打出来，方便判断"最高能给到多少" */
+      try {
+        var all = [];
+        for (var k = 0; k < (j.vl.vi || []).length; k++) {
+          var e2 = j.vl.vi[k];
+          all.push(e2.vh + 'p@' + Math.round((e2.br || 0) / 1000) + 'k');
+        }
+        if (all.length) console.log('[b0b] 腾讯整集[' + defn + ']：这一档列出的画质 ' + all.join(' / '));
+      } catch (e3) {}
+      return { defn: defn, td: td, prev: prev, vi: vi, login: j.login };
+    });
+  }
+
   function b0bGoWhole(vid, href) {
     console.log('[b0b] 腾讯整集：全屏已按下，开始要整集（片号 ' + vid + '）');
     var ver = b0bEncryptVer();
@@ -368,40 +415,30 @@
       if (!m) console.log('[b0b] 腾讯整集：checktime 没回，改用本机时间兜底');
       var salt = B0B_SALT[ver.substring(2)] || B0B_SALT['7'];
       var ck = b0bMd5(salt + vid + tm + '*#06#' + '10201');
-      var u = 'https://vv6.video.qq.com/getvinfo?otype=json&vid=' + vid +
-        '&platform=10201&sdtfrom=v1010&defn=fhd&vt=3&charge=0' +
-        '&cKey=' + ck + '&encryptVer=' + ver + '&tm=' + tm;
-      return b0bPageFetch(u, 9000).then(function (t0) {
-        if (t0) {
-          console.log('[b0b] 腾讯整集：页面代发拿到响应');
-          return t0;
-        }
-        console.log('[b0b] 腾讯整集：页面代发没回，改用内容脚本自己发');
-        return b0bText(u, 12000);
-      }).then(function (t) {
+      var defns = ['uhd', 'fhd', 'shd'];
+      var hits = [];
+      function step(i) {
+        if (i >= defns.length) return Promise.resolve(hits);
+        return b0bAskOnce(vid, defns[i], tm, ver, ck).then(function (r) {
+          if (r && (r.prev >= r.td * 0.9 || r.prev >= 600)) hits.push(r);
+          return step(i + 1);
+        });
+      }
+      return step(0).then(function (list) {
         b0bWholeBusy = false;
-        if (!t) { console.log('[b0b] 腾讯整集：接口没回响应'); return; }
-        var j = {};
-        try {
-          j = JSON.parse(String(t).replace(/^QZOutputJson=/, '').replace(/;\s*$/, ''));
-        } catch (e) {
-          console.log('[b0b] 腾讯整集：响应解析失败');
-          return;
-        }
-        var vi = (j.vl && j.vl.vi && j.vl.vi[0]) || null;
-        if (!vi) { console.log('[b0b] 腾讯整集：没有片源信息（em=' + j.em + '）'); return; }
-        var td = Number(vi.td || 0), prev = Number(j.preview);
-        console.log('[b0b] 腾讯整集结果：允许看 ' + prev + ' 秒 / 整集 ' + td + ' 秒，档位 ' +
-          vi.vh + 'p，片名 ' + vi.ti + '，登录 ' + j.login);
-        if (!(prev >= td * 0.9 || prev >= 600)) {
-          console.log('[b0b] 腾讯整集：身份没带全（只给试看），不接管');
+        if (!list.length) {
+          console.log('[b0b] 腾讯整集：三档都没拿到整集（身份没带全或地址不给），不接管');
           b0bWholeVid = '';
           return;
         }
+        list.sort(function (a, b) { return (b.vi.vh || 0) - (a.vi.vh || 0); });
+        var best = list[0], vi = best.vi;
         var url = vi.ul.ui[0].url + vi.fn + (vi.fvkey ? ('?vkey=' + vi.fvkey) : '');
+        console.log('[b0b] 腾讯整集：选中 ' + vi.vh + 'p（按 ' + best.defn + ' 问到），' +
+          Math.round(best.td / 60) + ' 分钟，开始交给客户端');
         send({
           title: vi.ti || '', kind: 'play', frame: href, winId: 0,
-          durSec: Math.round(td), quality: vi.vh || 0, whole: 1,
+          durSec: Math.round(best.td), quality: vi.vh || 0, whole: 1,
           streams: [{
             id: 0, height: vi.vh || 0, width: vi.vw || 0, bw: vi.br || 0, vcodec: '',
             video: url, audio: '',
@@ -409,7 +446,7 @@
           }]
         });
         console.log('[b0b] 腾讯整集：整集地址已交给客户端（' + vi.vh + 'p，' +
-          Math.round(td / 60) + ' 分钟）');
+          Math.round(best.td / 60) + ' 分钟）');
       });
     }).catch(function (e) {
       b0bWholeBusy = false;
