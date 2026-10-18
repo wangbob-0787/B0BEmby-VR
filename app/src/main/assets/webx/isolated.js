@@ -293,6 +293,20 @@
     });
   }
 
+  /* 主脚本报来"页面确实在放这一集"的片号（2026-10-18 晚） */
+  var b0bPlayingVid = '';
+  try {
+    window.addEventListener('message', function (ev) {
+      var d = ev.data;
+      if (!d || d.__b0bQqPlaying !== 1 || !d.vid) return;
+      if (b0bPlayingVid !== d.vid) {
+        console.log('[b0b] 腾讯整集：页面确实在放 ' + d.vid + '，去要整集地址');
+        b0bPlayingVid = d.vid;
+      }
+      b0bTencentWhole();
+    }, false);
+  } catch (e) {}
+
   /* 同一集只要过一次；换集（片号变）自然重来 */
   var b0bWholeVid = '';
   var b0bWholeBusy = false;
@@ -305,9 +319,15 @@
       if (!/\/x\/(cover|page)\//.test(href)) return;
       var vid = (href.match(/\/([A-Za-z0-9]{10,12})\.html/) || [])[1];
       if (!vid || vid === b0bWholeVid) return;
-      /* 页面得确实在放（点过播放、画面在动），不然不去打扰 */
-      var v = document.querySelector('video');
-      if (!v || v.paused || !(v.currentTime > 0.5)) return;
+      /*
+       * "页面确实在放"的判据：腾讯把真正的 video 封在播放器组件里，页面世界查 video 元素
+       * 头显实测是 0 个。所以主判据改用"页面自己发出的媒体请求"（主脚本抓到腾讯分片就报
+       * 一条 `__b0bQqPlaying`），查 video 元素只当兜底。
+       */
+      if (b0bPlayingVid !== vid) {
+        var v = document.querySelector('video');
+        if (!v || v.paused) return;
+      }
       b0bWholeVid = vid;
       b0bWholeBusy = true;
       var ver = b0bEncryptVer();

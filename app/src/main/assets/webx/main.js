@@ -1197,6 +1197,16 @@
     qqKey = pageVideoKey(location.href);
     var m = { __b0bQq: 1, u: u, at: qqAt, key: qqKey, host: qqHost };
     saveQqLocal(u, qqAt, qqKey);
+    /*
+     * 页面确实在放这一集（能抓到它自己的媒体地址就是硬证据）：
+     * 通知内容脚本可以拿这一集的片号去要整集地址了（2026-10-18 晚）。
+     * 腾讯把真正的 video 封在播放器组件里，页面世界查 video 元素查到 0 个，
+     * 所以"在播"这个判断只能靠这条证据。
+     */
+    try {
+      var b0bVidNow = (location.href.match(/\/([A-Za-z0-9]{10,12})\.html/) || [])[1] || '';
+      if (b0bVidNow) window.postMessage({ __b0bQqPlaying: 1, vid: b0bVidNow }, '*');
+    } catch (e) {}
     try { window.top.postMessage(m, '*'); } catch (e) {}
     try {
       if (window.self === window.top) {
