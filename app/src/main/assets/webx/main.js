@@ -963,6 +963,9 @@
    * （2026-10-16 在电脑浏览器上实测：mpv 带 Referer 能正常出画出声）
    */
   var pendingQq = '', qqAt = 0, qqKey = '', qqHost = '';
+  /* 腾讯片段样本只打一次（2026-10-18 晚）：要照着它拼"整集播放列表"，
+   * 打印主机/路径/参数名与关键数字，token 一律省略（不把凭证写进日志）。 */
+  var qqSampleLogged = false;
   /* 手上最好那条的时长（秒）：正文能数出时长后，只留最长的（父亲 2026-10-18 10:04） */
   var qqBestDur = 0;
   /*
@@ -1391,6 +1394,22 @@
     /* 值要存完整地址：分片带时效 token，丢了参数就播不了（2026-10-16） */
     mediaKeys[key] = u;
     mediaHits.push(u);
+    if (!qqSampleLogged && /qq\.com|smtcdns|gtimg|qpic\.cn|ltscsysw/i.test(u)) {
+      qqSampleLogged = true;
+      try {
+        var mm = u.match(/^(https?:\/\/[^/]+)(\/[^?]*)\??(.*)$/) || [];
+        var names = String(mm[3] || '').split('&').map(function (kv) { return kv.split('=')[0]; }).join(',');
+        var nums = String(mm[3] || '').split('&').filter(function (kv) {
+          return /^(start|end|index|idx|seg|range|duration|br|defn|platform|sdtfrom|vkey)=/.test(kv);
+        }).map(function (kv) {
+          var pp = kv.split('=');
+          return pp[0] + '=' + (/key|token|sign/i.test(pp[0]) ? '<省略>' : String(pp[1]).slice(0, 14));
+        }).join(' ');
+        console.log('[b0b] 腾讯片段样本：主机 ' + mm[1] +
+          ' 路径 ' + String(mm[2] || '').replace(/[0-9a-f]{16,}/gi, '<hash>') +
+          ' 参数名 ' + names + ' 关键参数 ' + nums);
+      } catch (e) {}
+    }
     if (isQqHls(u)) {                      /* 腾讯：抓到播放列表就等于拿到了地址 */
       pendingQq = u; qqAt = Date.now();
       console.log('[b0b] 腾讯播放列表已记下（长度 ' + u.length + '）');
