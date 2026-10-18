@@ -888,6 +888,8 @@
    * （2026-10-16 在电脑浏览器上实测：mpv 带 Referer 能正常出画出声）
    */
   var pendingQq = '', qqAt = 0, qqKey = '';
+  /* 手上最好那条的时长（秒）：正文能数出时长后，只留最长的（父亲 2026-10-18 10:04） */
+  var qqBestDur = 0;
   /*
    * 页面编号是不是"能认的"（2026-10-18 02:00）：
    * 播放器那一层的地址是 …/thumbplayer，编号就成了 thumbplayer ——
@@ -1661,9 +1663,34 @@
                 /captionV3|\.vtt\.m3u8/i.test(String(this.responseURL || u));
               if (body.slice(0, 7) === '#EXTM3U' && !isCaptionBody) {
                 var self_u = String(this.responseURL || u);
+                /*
+                 * 【2026-10-18 10:04 父亲："还是时长很短"】
+                 *
+                 * 今天真正抓到地址的那条路是**这里**（看响应正文开头是不是 #EXTM3U），
+                 * 不是接口响应里抠 URL 的那条 —— 所以候选打分/时长清晰度那张表根本没轮到，
+                 * 交出去的可能是**试看片段**（前面实测内核只播了 77 秒就结束）。
+                 * 正文就在眼前，直接**数时长**：把列表里每段 #EXTINF 的秒数加起来，
+                 * 只认最长的那一条（短的明显是试看/广告，先留着当兜底）。
+                 */
+                var durs = body.match(/#EXTINF:([0-9.]+)/g) || [];
+                var total = 0;
+                for (var di = 0; di < durs.length; di++) {
+                  total += parseFloat(durs[di].replace('#EXTINF:', '')) || 0;
+                }
+                console.log('[b0b] 腾讯列表候选：时长≈' + Math.round(total) + ' 秒（' + durs.length +
+                  ' 段，' + (/ENDLIST/.test(body) ? '整片' : '未完结') + '）' +
+                  (total > 0 && total < 600 ? ' —— 像试看/广告片段' : ''));
+                if (total > qqBestDur) {
+                  qqBestDur = total;
+                } else if (total > 0 && qqBestDur > total) {
+                  console.log('[b0b] 这条比手上的短（' + Math.round(total) + ' < ' +
+                    Math.round(qqBestDur) + ' 秒），不替换');
+                  return;
+                }
                 if (self_u !== pendingQq) {
                   shareQq(self_u);
-                  console.log('[b0b] 腾讯播放列表（响应正文就是列表，地址无 .m3u8 后缀）');
+                  console.log('[b0b] 腾讯播放列表（响应正文就是列表，地址无 .m3u8 后缀，时长≈' +
+                    Math.round(total) + ' 秒）');
                 }
               }
             } catch (e) {}
