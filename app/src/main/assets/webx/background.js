@@ -102,6 +102,14 @@ browser.runtime.onMessage.addListener(function (msg, sender, respond) {
       try { respond({ at: b0bFullAt, vid: b0bFullVid }); } catch (e) {}
       return true;
     }
+    /* 一次按键只触发一次接管（2026-10-19，父亲报"没点全屏也接管了"） */
+    if (msg && msg.__b0bFullConsume) {
+      b0bFullAt = 0;
+      b0bFullVid = '';
+      console.log('[b0b] 这次"按了网页全屏"已用掉，清掉记录（不再重复接管）');
+      try { respond({ ok: 1 }); } catch (e) {}
+      return true;
+    }
     if (!msg || !msg.__b0bWhole || !msg.vid) return;
     var u = 'https://vv.video.qq.com/getinfo?otype=json&vid=' + encodeURIComponent(msg.vid) +
       '&platform=101001&sdtfrom=v1010&defn=fhd&vt=3&charge=0&defnpayver=1';

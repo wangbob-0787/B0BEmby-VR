@@ -328,13 +328,20 @@
     }, false);
   } catch (e) {}
 
-  /* 问后台："刚才有人按过网页全屏吗"（3 小时内算数） */
+  /*
+   * 问后台："刚才有人按过网页全屏吗"。
+   *
+   * 2026-10-19 02:24 父亲报的问题：「我现在没有点网页全屏，它就接管了」。
+   * 病根就是这个闸门：窗口原来给了 3 小时，一次按键之后 3 小时内随便进哪个腾讯播放页都会被接管，
+   * 而且 3 秒一轮的定时器会反复触发。现在改成两道：①窗口收紧到 10 分钟；
+   * ②**一次按键只认一次** —— 触发后立刻让后台把时间戳清掉（__b0bFullConsume）。
+   */
   function b0bFullRecently() {
     return new Promise(function (res) {
       try {
         browser.runtime.sendMessage({ __b0bFullAsk: 1 }).then(function (r) {
           var at = (r && r.at) || 0;
-          res(at > 0 && (Date.now() - at) < 3 * 3600 * 1000);
+          res(at > 0 && (Date.now() - at) < 10 * 60 * 1000);
         }).catch(function () { res(false); });
       } catch (e) { res(false); }
     });
@@ -364,6 +371,8 @@
           return;
         }
         b0bWholeVid = vid;
+        /* 这一次按键就用掉了：清掉后台的时间戳，避免 3 秒一轮的定时器反复接管 */
+        try { browser.runtime.sendMessage({ __b0bFullConsume: 1 }); } catch (e) {}
         b0bGoWhole(vid, href);
       }).catch(function () { b0bWholeBusy = false; });
     } catch (e) { b0bWholeBusy = false; }

@@ -2803,8 +2803,6 @@ class MainActivity : ComponentActivity() {
     /** 起播时告诉"这一段别销毁网页"（攒分片模式专用） */
     private var webKeepPageAlive = false
 
-    /** 已经问过整片地址的片子（同一部只问一次） */
-    private var webWholeTried: String? = null
     /*
      * 正在播"整集地址"的那一集的片号（2026-10-18 晚）。
      * 起因：父亲看到"总时长 45 分钟闪一下变成 3:25"——整集地址已经进播放器了，
@@ -2863,7 +2861,7 @@ class MainActivity : ComponentActivity() {
              * 原来这里直接丢掉：那时以为腾讯分片只有 3 分钟试看、内核起不来。后来实测清楚了：
              * 分片是明文 MPEG-TS、覆盖整集、那条通道完全不限速（33–44MB/s），只是**一段一签**，
              * 必须趁页面自己在放的时候把地址记下来。所以这里改成"只记账、不起播"：攒进本机列表，
-             * 等父亲按网页全屏、整集地址那一趟进来时，由 playWholeUrl 决定走分片播放列表还是整集文件。
+             * 等父亲按网页全屏那一趟进来时，交给分片播放列表起播（整集文件那条路已废弃）。
              */
             var took = 0
             for (p in fresh) {
@@ -2885,31 +2883,11 @@ class MainActivity : ComponentActivity() {
             return
         }
         /*
-         * 先问整片地址（2026-10-18 父亲定的新路线）。
-         *
-         * 网页那条路是「一段一签」，只能顺着播、拖不了进度；腾讯的老接口给的是
-         * **整片一个文件**、支持分段请求，能随便拖。所以顺序是：先整片，整片拿不到
-         * 才退回分片接力。同一部片子只问一次，问过就不再拦后面的分片。
+         * 这里原来会"一进腾讯播放页就自己去要整集地址"（2026-10-18 那条路），
+         * 2026-10-19 02:24 父亲报「我现在没有点网页全屏，它就接管了」—— 就是它干的：
+         * 触发点必须只有"父亲按下网页全屏"这一个（扩展侧那条 whole=1 消息）。
+         * 现在整段删除；腾讯只做"分片记账"，起播一律等全屏那一趟。
          */
-        val wholeVid = com.xxxx.emby_vr.web.TencentWholeUrl.vidFromFrame(frame)
-        if (wholeVid != null && webWholeTried != wholeVid) {
-            webWholeTried = wholeVid
-            Log.i(TAG, "腾讯片页 vid=$wholeVid，先问整片地址（要能拖进度的那条）")
-            Thread {
-                val hit = com.xxxx.emby_vr.web.TencentWholeUrl.fetch(
-                    wholeVid, cookie.ifBlank { null },
-                )
-                runOnUiThread {
-                    if (hit == null) {
-                        Log.i(TAG, "整片地址没拿到，退回分片接力（拖进度就别指望了）")
-                    } else {
-                        Log.i(TAG, "整片地址拿到（${hit.quality}），播整片，可拖进度")
-                        playWholeUrl(hit.url, hit.quality, cookie, frame)
-                    }
-                }
-            }.start()
-            return
-        }
         /*
          * 同一集已经在播整集地址了，分片（只能顺播、拖不动）不许再顶掉它。
          * 换集时片号不同，自然不会拦，分片路照旧可用。
@@ -3141,28 +3119,6 @@ class MainActivity : ComponentActivity() {
         playWebStream(one)
     }
 
-    private fun playWholeUrl(url: String, quality: String, cookie: String, frame: String) {
-        /*
-         * 先看本机攒到的分片够不够（2026-10-19）。够就走分片播放列表 —— 那条是明文 TS、不限速、
-         * 整集与拖动都原生支持；不够才退回整集 mp4（那条被腾讯限速到约 1KB/s，基本读不动）。
-         */
-        if (tencentSegs.size >= 3) {
-            Log.i(TAG, "整集：本机已攒到 ${tencentSegs.size} 段分片，改走分片播放列表（不走被限速的整集文件）")
-            playPlaylistForSegs(webCandSrc?.optInt("durSec", 0) ?: 0, quality, cookie, frame)
-            return
-        }
-        com.xxxx.emby_vr.web.TencentWholeUrl.vidFromFrame(frame)?.let {
-            wholePlayingVid = it
-            Log.i(TAG, "整集地址（我们自己签名要来的，片号 $it）进入播放器，分片路不再接管这一集")
-        }
-        /*
-         * 这条入口原来播"我们自己签名要来的整集 mp4"，2026-10-19 父亲定：**整集那条路删掉**
-         * （单连接被限速到约 1KB/s，内核读不出轨道，实测只有 ¥1 black屏）。现在一律走分片播放列表。
-         */
-        Log.i(TAG, "整集文件那条路已废弃（被限速），改走分片播放列表（质量档 $quality）")
-        playPlaylistForSegs(0, quality, cookie, frame)
-    }
-
     private fun playWebStream(obj: org.json.JSONObject) {
         /*
          * 这条地址是**网页用浏览器自己的身份**要来的（2026-10-18 晚，扩展加了这条路）。
@@ -3174,7 +3130,7 @@ class MainActivity : ComponentActivity() {
              * 本机已经攒到够数的腾讯分片 → **优先走分片播放列表**（2026-10-19 02:05 修）。
              *
              * 头显实测（r705）：分片是攒到了（日志「腾讯分片记账：本轮 +11，共 11 段」），
-             * 但"优先走分片"的判断只加在了 playWholeUrl 那条入口上，而全屏那一趟实际走的是
+             * 但那时"优先走分片"的判断只加在了另一条入口上，而全屏那一趟实际走的是
              * 这里（扩展带 whole=1 送来的整集地址）→ 于是又落回被限速到约 1KB/s 的整集 mp4，
              * 内核读不出轨道（日志「内核轨道清单：[]」「画面参数：格式=-」）→ 大屏黑着。
              * 分片是明文 MPEG-TS、下载 33–44MB/s，所以只要攒到 3 段以上就改走它。
@@ -3238,7 +3194,6 @@ class MainActivity : ComponentActivity() {
             }
             val v = com.xxxx.emby_vr.web.TencentWholeUrl.vidFromFrame(obj.optString("frame"))
             if (v != null) {
-                webWholeTried = v
                 wholePlayingVid = v
                 Log.i(TAG, "整片地址来自网页身份（浏览器带票），不再重复发我们那条无身份请求")
             }
