@@ -592,11 +592,43 @@
       if (!m.length && all.length) {
         console.log('[b0b] 腾讯播放列表：只找到字幕类的 m3u8（' + all.length + ' 条），先不用它');
       }
+      /*
+       * 【2026-10-18 09:50 —— 父亲："没有抓到正片，一部电视剧只抓了 1 分多钟"】
+       *
+       * 内核确实播了，但只播 0 → 77 秒就结束（日志实证），说明交出去的是
+       * **试看片段 / 广告片**，不是这一集正片。而网页自己还在放正片，
+       * 也就是说同一条响应里的候选不止一条，我们**取第一条**（挑掉字幕后）取错了。
+       * 现在给每条候选打分再挑，并把候选清单打进日志（父亲要的"看看到底卡在哪"）：
+       *   · 带 vinfo / "vi": 这种是播放信息体，里面是正片 → 加分
+       *   · 带 ad / adv / 广告 字样的 → 扣分（腾讯起播前插广告）
+       *   · 码率高（br 上百万）→ 加分；分辨率大 → 加分
+       */
+      function candScore(x) {
+        var i = t.indexOf(x);
+        var ctx = t.slice(Math.max(0, i - 260), i + x.length);
+        var sc = 0;
+        if (/vinfo|"vi":\[|"vl":/.test(ctx)) sc += 3;
+        if (/"br":\s*\d{7,}/.test(ctx)) sc += 2;
+        if (/"vw":\s*(19[0-9]{2}|[2-9]\d{3})/.test(ctx)) sc += 1;
+        if (/\bad(s|v|x)?\b|广告|guanggao/i.test(ctx)) sc -= 3;
+        if (/preview|试看|trailer|预告/i.test(ctx)) sc -= 2;
+        return sc;
+      }
       if (m && m.length) {
-        var u = m[0].replace(/\\u002F/gi, '/').replace(/\\\//g, '/');
+        var ranked = m.map(function (x, i) { return { x: x, i: i, sc: candScore(x) }; });
+        ranked.sort(function (a, b) { return (b.sc - a.sc) || (a.i - b.i); });
+        try {
+          console.log('[b0b] 腾讯候选（' + m.length + ' 条）：' + ranked.slice(0, 3).map(function (r) {
+            var h = '';
+            try { h = cleanUrl(r.x).split('/')[2] || '?'; } catch (e) { h = '?'; }
+            return '[' + r.sc + ']' + h;
+          }).join(' '));
+        } catch (e) {}
+        var u = cleanUrl(ranked[0].x);
         if (u !== pendingQq) {
           shareQq(u);
-          console.log('[b0b] 腾讯播放列表（从接口响应里找到，长度 ' + u.length + '，正片非字幕）');
+          console.log('[b0b] 腾讯播放列表（从接口响应里找到，长度 ' + u.length +
+            '，正片非字幕，评分 ' + ranked[0].sc + '）');
         }
       } else if (t.indexOf('m3u8') >= 0) {
         /* 有 m3u8 字样却没拼出地址：把那一小段原样打出来，下一轮照着它修（父亲 2026-10-18） */
