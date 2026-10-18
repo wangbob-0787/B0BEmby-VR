@@ -1,3 +1,11 @@
+package com.xxxx.emby_vr.web
+
+import android.util.Log
+import java.io.BufferedReader
+import java.net.HttpURLConnection
+import java.net.URL
+import org.json.JSONObject
+
 /**
  * 腾讯视频「整片地址」——**我们自己算签名去要**（2026-10-18 晚定案）。
  *
