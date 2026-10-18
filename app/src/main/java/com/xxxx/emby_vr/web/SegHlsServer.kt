@@ -57,6 +57,18 @@ class SegHlsServer(
     /** index → 远端地址（本机已拿到的分片）。 */
     private val segs = ConcurrentSkipListMap<Int, String>()
 
+    /**
+     * 播放列表的"第 0 段"对应哪个真实分片编号（2026-10-19 02:20 加）。
+     *
+     * 头显实测（r706）：父亲是在播放中途按的网页全屏，页面当时拿到的是 266 号往后的分片，
+     * 而我们按"整集从 0 号开始"发列表 → 内核从第 0 段起一段段要，全都要不到（日志连续
+     * `内核要第 0/1/2… 段，但还没到手（已有 4 段，最大 269）`）→ 大屏只出一段就卡住。
+     * 所以播放列表从**手上第一段的真实编号**起算：内核拿到的第 0 段就是我们有的第一段。
+     * 代价是这一集的起点随之右移 —— 要看开头，先把网页拖回开头再按全屏。
+     */
+    @Volatile
+    private var base = -1
+
     @Volatile
     private var server: ServerSocket? = null
 
@@ -108,6 +120,8 @@ class SegHlsServer(
     /** 按整集时长生成播放列表：已有分片写真实时长，未到手的写默认时长占位。 */
     private fun playlist(): String {
         val known = segs.keys
+        if (base < 0) base = known.firstOrNull() ?: 0
+        val b = base
         val sb = StringBuilder()
         sb.append("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-PLAYLIST-TYPE:EVENT\n")
         val maxSegMs = if (known.isEmpty()) DEFAULT_SEG_MS.toLong()
@@ -115,39 +129,35 @@ class SegHlsServer(
         sb.append("#EXT-X-TARGETDURATION:").append(ceil(maxSegMs / 1000.0).toInt()).append('\n')
         sb.append("#EXT-X-MEDIA-SEQUENCE:0\n")
 
-        // 已知分片的总时长；整集时长未知时就用已知分片拼出的长度
-        val knownMs = if (known.isEmpty()) 0L else {
-            val first = known.first()
-            first * DEFAULT_SEG_MS.toLong() + known.sumOf { segDurMs(segs[it] ?: "") }
+        /*
+         * 本集"还剩多久"：整集时长减去基准段号之前的部分。
+         * 整集时长未知（0）时退回"已知分片拼出来的长度"。
+         */
+        val baseMs = b * DEFAULT_SEG_MS.toLong()
+        val targetMs = when {
+            totalDurSec > 0 -> totalDurSec * 1000L - baseMs
+            known.isEmpty() -> 0L
+            else -> known.sumOf { segDurMs(segs[it] ?: "") } +
+                (known.last() - b) * DEFAULT_SEG_MS.toLong()
         }
-        val targetMs = if (totalDurSec > 0) totalDurSec * 1000L else knownMs
         val segCount = if (targetMs <= 0) 0 else ceil(targetMs.toDouble() / DEFAULT_SEG_MS).toInt()
 
         var acc = 0L
-        var i = 0
-        while (i < segCount) {
-            val url = segs[i]
+        var pos = 0
+        while (pos < segCount) {
+            val real = b + pos
+            val url = segs[real]
             val dur = if (url != null) segDurMs(url) else DEFAULT_SEG_MS.toLong()
             sb.append("#EXTINF:").append(String.format("%.3f", dur / 1000.0)).append(",\n")
-            sb.append("seg/").append(i).append(".ts\n")
+            sb.append("seg/").append(pos).append(".ts\n")
             acc += dur
-            i++
-        }
-        // 已知分片若超出估算的段数，补上，别把它们丢掉
-        if (known.isNotEmpty()) {
-            var k = segCount
-            val last = known.last()
-            while (k <= last) {
-                val url = segs[k]
-                val dur = if (url != null) segDurMs(url) else DEFAULT_SEG_MS.toLong()
-                sb.append("#EXTINF:").append(String.format("%.3f", dur / 1000.0)).append(",\n")
-                sb.append("seg/").append(k).append(".ts\n")
-                acc += dur
-                k++
-            }
+            pos++
         }
         sb.append("#EXT-X-ENDLIST\n")
-        Log.i(TAG, "发出播放列表：$segCount 段（已有 ${segs.size} 段，累计 ${acc / 1000}s）")
+        Log.i(
+            TAG,
+            "发出播放列表：$segCount 段，第 0 段 = 真实分片 #$b（已有 ${segs.size} 段，累计 ${acc / 1000}s）",
+        )
         return sb.toString()
     }
 
@@ -173,13 +183,25 @@ class SegHlsServer(
                     out.write(body)
                 }
                 path.startsWith("/seg/") -> {
-                    val idx = path.removePrefix("/seg/").removeSuffix(".ts").toIntOrNull() ?: -1
-                    val remote = if (idx >= 0) segs[idx] else null
+                    val pos = path.removePrefix("/seg/").removeSuffix(".ts").toIntOrNull() ?: -1
+                    val b = if (base < 0) 0 else base
+                    val idx = if (pos >= 0) b + pos else -1
+                    /*
+                     * 没到手先等一小会：页面通常正领先取片，过零点几秒这一段就到了。
+                     * 直接 404 会让内核停住（r706 实测：连续 404 → 只出一段）。
+                     */
+                    var remote = if (idx >= 0) segs[idx] else null
+                    var waited = 0
+                    while (remote == null && waited < 15) {
+                        Thread.sleep(100)
+                        remote = if (idx >= 0) segs[idx] else null
+                        waited++
+                    }
                     if (remote == null) {
-                        Log.w(TAG, "内核要第 $idx 段，但还没到手（已有 ${segs.size} 段，最大 ${segs.keys.lastOrNull() ?: -1}）")
+                        Log.w(TAG, "内核要第 $pos 段（真实 #$idx），等了 ${waited * 100}ms 还没到手（已有 ${segs.size} 段，最大 ${segs.keys.lastOrNull() ?: -1}）")
                         out.write("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".toByteArray())
                     } else {
-                        Log.i(TAG, "喂第 $idx 段给内核")
+                        Log.i(TAG, "喂第 $pos 段（真实 #$idx）给内核")
                         out.write("HTTP/1.1 200 OK\r\nContent-Type: video/mp2t\r\nConnection: close\r\n\r\n".toByteArray())
                         out.flush()
                         copyRemote(remote, out)
