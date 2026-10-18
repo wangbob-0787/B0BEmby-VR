@@ -249,6 +249,24 @@
         return;
       }
     }
+    /*
+     * 【2026-10-18 10:56 父亲口径】"我们也应该只抓全屏按钮所在容器的请求"。
+     *
+     * 落到实处：**只认页面本站那一层的地址**。现场确实混进过站外内嵌层
+     * （`game.weixin.qq.com` 的小游戏框也在发请求），那种层里的媒体地址
+     * 跟我们看的片子无关。这里把"抓地址的层"一起带过来，
+     * 与最外层页面不同站就直接不用（拿不到最外层站名时放行，别误杀）。
+     */
+    var qqTopHost = '';
+    try { qqTopHost = String(window.top.location.hostname || ''); } catch (e) { qqTopHost = ''; }
+    if (pendingQq && qqHost && qqTopHost && qqHost !== qqTopHost) {
+      var nowH = Date.now();
+      if (nowH - (window.__b0bOtherHostLog || 0) > 3000) {
+        window.__b0bOtherHostLog = nowH;
+        console.log('[b0b] 候选来自站外那层（' + qqHost + ' ≠ ' + qqTopHost + '），不用它');
+      }
+      return;
+    }
     var qqHere = pageVideoKey(location.href);
     var qqSamePage = !keyKnown(qqKey) || !keyKnown(qqHere) || qqKey === qqHere;
     if (!pendingPlay && pendingQq && Date.now() - qqAt < 30 * 60 * 1000 && qqSamePage) {
@@ -924,7 +942,7 @@
    * 与 B站 不同：腾讯这条路不需要解析播放接口，认出来即可。
    * （2026-10-16 在电脑浏览器上实测：mpv 带 Referer 能正常出画出声）
    */
-  var pendingQq = '', qqAt = 0, qqKey = '';
+  var pendingQq = '', qqAt = 0, qqKey = '', qqHost = '';
   /* 手上最好那条的时长（秒）：正文能数出时长后，只留最长的（父亲 2026-10-18 10:04） */
   var qqBestDur = 0;
   /*
@@ -989,9 +1007,9 @@
 
   function shareQq(raw) {
     var u = cleanUrl(raw);
-    pendingQq = u; qqAt = Date.now();
+    pendingQq = u; qqAt = Date.now(); qqHost = location.hostname;
     qqKey = pageVideoKey(location.href);
-    var m = { __b0bQq: 1, u: u, at: qqAt, key: qqKey };
+    var m = { __b0bQq: 1, u: u, at: qqAt, key: qqKey, host: qqHost };
     saveQqLocal(u, qqAt, qqKey);
     try { window.top.postMessage(m, '*'); } catch (e) {}
     try {
@@ -1050,6 +1068,7 @@
         } else if (d.__b0bQq && d.u) {
           /* 别层抓到的地址（2026-10-18 02:00）：收下，最外层再转给其余各层 */
           pendingQq = cleanUrl(d.u); qqAt = d.at || Date.now(); qqKey = d.key || '';
+          qqHost = d.host || '';
           saveQqLocal(pendingQq, qqAt, qqKey);
           if (window.self === window.top && d.__b0bRelay !== 1) {
             for (var j = 0; j < window.frames.length; j++) {
