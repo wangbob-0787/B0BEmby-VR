@@ -91,7 +91,7 @@ class SegHlsServer(
                     Thread({ serveOne(s) }, "seg-hls-conn").start()
                 }
             }, "seg-hls-accept").start()
-            Log.i(TAG, "分片播放列表服务已起：$playlistUrl()（整集 ${totalDurSec}s）")
+            Log.i(TAG, "分片播放列表服务已起：${playlistUrl()}（整集 ${totalDurSec}s）")
             true
         } catch (e: Exception) {
             Log.w(TAG, "分片播放列表服务起不来：${e.message}")
