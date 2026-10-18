@@ -378,6 +378,16 @@ fun keepWebPageActive() {
     WebRuntime.keepPageActive()
 }
 
+/**
+ * 取网页面此刻的 Cookie（2026-10-18）。
+ *
+ * 签名路线要地址时，会员身份就靠这一条（腾讯的播放接口认 Cookie）。
+ * 扩展那条桥从 qq.com 取到的票存在 WebRuntime 里，这里对外开口。
+ */
+fun currentWebCookie(): String {
+    return WebRuntime.cookieNow()
+}
+
 private object WebRuntime {
     private var cached: org.mozilla.geckoview.GeckoRuntime? = null
 
@@ -507,6 +517,9 @@ private object WebRuntime {
 
     /** 内容脚本随消息附上的本站 cookie（会员片要拿它才换得到高清地址） */
     private var bridgeCookie = ""
+
+    /** 桥取到的票（Cookie），供签名路线复用 */
+    fun cookieNow(): String = bridgeCookie
 
     /** 网页那侧的银幕比例是否已归零（父亲 2026-10-16 08:09：网页显示不再改比例） */
     private var bridgeAspectCleared = false

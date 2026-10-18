@@ -6116,6 +6116,16 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         Log.i(TAG, "onCreate: B0BEmby VR 启动")
         /*
+         * 腾讯「要地址」验证入口（2026-10-18 转签名路线）。
+         *
+         * 只用于验证：`adb shell am start -n com.xxxx.emby_vr/.MainActivity --es b0b_vkey_vid <vid>`，
+         * 结果全在日志里（标签 B0BEmbyVR-Vkey）。父亲不用戴头显、不用点任何东西。
+         */
+        intent?.getStringExtra("b0b_vkey_vid")?.takeIf { it.isNotBlank() }?.let { vid ->
+            Log.i(TAG, "收到腾讯要地址验证请求：vid=$vid")
+            com.xxxx.emby_vr.web.TencentVkeyProbe.run(this, vid, com.xxxx.emby_vr.ui.currentWebCookie())
+        }
+        /*
          * VR 影院模式的第一步（2026-10-05）：确认原生层能编出来、官方 OpenXR loader
          * 能链上。加载失败不影响 2D 面板模式（VrNative 内部已吞异常）。
          */
