@@ -14,6 +14,18 @@
   if (window.__b0bScan) return;
   window.__b0bScan = true;
 
+  /*
+   * 让页面始终认为自己是"可见"的（2026-10-18）。
+   *
+   * 接管播放时网页那块屏会被收起来，交给我们的播放器 —— 腾讯的播放器一看不见
+   * 就停手，分片不再来，于是我们这边播完手里那几十秒就停（父亲报的"只播一小段"）。
+   * 在页面世界里把可见性判断按住，它就会照常往下取。
+   */
+  try {
+    Object.defineProperty(document, 'hidden', { get: function () { return false; }, configurable: true });
+    Object.defineProperty(document, 'visibilityState', { get: function () { return 'visible'; }, configurable: true });
+  } catch (e) {}
+
   var urls = [];
   var saidHello = false;
   var lastKey = '';
@@ -1027,7 +1039,6 @@
   var fragSent = {};     /* 已经交过的 index */
   var fragLogged = -1;
   var fragHoldLogged = -1;
-  var fragResetAt = 0;
 
   /* 按全屏这一刻清一次攒段。用"这一次全屏"的时间戳记账（同站点各层共享）：
      原来按时间节流，结果是每一层、每一跳消息都清一次，刚攒两段就被清光（r680 头显实测）。 */
@@ -1066,6 +1077,49 @@
     } catch (e) {}
   }
 
+  var kaAt = 0;
+  var kaLogged = 0;
+
+  /*
+   * 网页被收起来之后，还要让它继续取分片（2026-10-18 头显实测）。
+   *
+   * 接管播放时网页屏会被收起来，腾讯的播放器一看不见就停手 —— 分片不再来，
+   * 我们这边播完手里那几十秒就停在原地（父亲报的"只播一小段"就是这个原因）。
+   * 这一拍做两件事：保证主视频一直在放（静音放，声音归我们自己的播放器），
+   * 并按时打一条心跳（页面进度 + 攒了多少段），下次再出问题一眼能看出卡在哪。
+   */
+  function keepPageFetching() {
+    var now = Date.now();
+    if (now - kaAt < 1500) return;
+    kaAt = now;
+    var vs = document.querySelectorAll('video');
+    for (var i = 0; i < vs.length; i++) {
+      var v = vs[i];
+      try {
+        v.muted = true;
+        if (v.paused && v.readyState >= 2) v.play();
+      } catch (e) {}
+    }
+    if (now - kaLogged > 10000) {
+      kaLogged = now;
+      var n = Object.keys(fragMap).length;
+      var cur = 0;
+      var dur = 0;
+      var pause = -1;
+      for (var j = 0; j < vs.length; j++) {
+        try {
+          if (!cur && vs[j].duration > 60) {
+            cur = vs[j].currentTime;
+            dur = vs[j].duration;
+            pause = vs[j].paused ? 1 : 0;
+          }
+        } catch (e2) {}
+      }
+      console.log('[b0b] 网页取分片心跳：页面进度 ' + Math.round(cur) + '/' + Math.round(dur) +
+        ' 秒 暂停=' + pause + ' 已攒 ' + n + ' 段');
+    }
+  }
+
   function flushFrags() {
     try {
       var ks = Object.keys(fragMap);
@@ -1077,16 +1131,25 @@
       try { fsShared2 = parseInt(localStorage.getItem('b0b:fullAt') || '0', 10) || 0; } catch (e) {}
       var fsBest2 = Math.max(fullState ? Date.now() : 0, fsShared2, peerFullAt);
       var fsOk2 = fsBest2 > 0 && Date.now() - fsBest2 < 3 * 3600 * 1000;
+      /*
+       * 已经交过第一批分片之后，这一部就算"在播"（2026-10-18 头显实测）：
+       * 接管时网页屏会被收起来，回来时页面可能已经翻过一次页、全屏标记被清掉，
+       * 若还按全屏判据，后面的段就全被拦下 —— 表现就是"又只播一小段"。
+       */
+      var fl = 0;
+      try { fl = parseInt(localStorage.getItem('b0b:fragLive') || '0', 10) || 0; } catch (e) {}
+      var liveOk = fl > 0 && Date.now() - fl < 20 * 60 * 1000;
       var pd2 = 0;
       try { pd2 = pageClipDur(); } catch (e) {}
-      if (!fsOk2 || pd2 < 360) {
+      if ((!fsOk2 && !liveOk) || pd2 < 360) {
         if (fragHoldLogged !== ks.length) {
           fragHoldLogged = ks.length;
           console.log('[b0b] 攒到 ' + ks.length + ' 段，先不交：' +
-            (fsOk2 ? '' : '你还没按全屏按钮') + (pd2 < 360 ? (' 页面在放的是 ' + pd2 + ' 秒的片子') : ''));
+            (fsOk2 || liveOk ? '' : '你还没按全屏按钮') + (pd2 < 360 ? (' 页面在放的是 ' + pd2 + ' 秒的片子') : ''));
         }
         return;
       }
+      try { localStorage.setItem('b0b:fragLive', String(Date.now())); } catch (e) {}
       ks.sort(function (a, b) { return (+a) - (+b); });
       var list = [];
       for (var i = 0; i < ks.length; i++) {
@@ -1126,8 +1189,7 @@
     } catch (e) {}
   }
 
-  function shareQq(raw) {
-    var u = cleanUrl(raw);
+  function shareQq(raw) {    var u = cleanUrl(raw);
     pendingQq = u; qqAt = Date.now(); qqHost = location.hostname;
     qqKey = pageVideoKey(location.href);
     var m = { __b0bQq: 1, u: u, at: qqAt, key: qqKey, host: qqHost };
@@ -2055,6 +2117,8 @@
     /* 腾讯那条路：没有播放列表，只能按顺序攒分片（2026-10-18） */
     try { scanPerfForFrags(); } catch (e) {}
     try { flushFrags(); } catch (e) {}
+    /* 页面被收起来之后还要继续取分片（见 keepPageFetching 的注释） */
+    try { keepPageFetching(); } catch (e) {}
     try { reportCookies(); } catch (e) {}
     /* 每拍问一次"谁按过全屏"（2026-10-18 01:52）：跨层、跨源都靠它 */
     try { if (window.self !== window.top) window.top.postMessage({ __b0bAsk: 1 }, '*'); } catch (e) {}
@@ -2287,7 +2351,13 @@
        * 共享标记只在**最外层**换页时清（2026-10-18 01:05）：
        * 播放器那一层自己换地址不算换页，清了就等于把父亲刚按的全屏白按掉。
        */
-      try { if (window.self === window.top) localStorage.removeItem('b0b:fullAt'); } catch (e) {}
+      try {
+        if (window.self === window.top) {
+          localStorage.removeItem('b0b:fullAt');
+          /* 真换页了，"这一部在播"的记账也要清（2026-10-18）：新片子得重新按全屏 */
+          localStorage.removeItem('b0b:fragLive');
+        }
+      } catch (e) {}
       console.log('[b0b]①页面地址变为 ' + String(location.href).slice(-70) + '（全屏计数归零）');
     }
     /*
