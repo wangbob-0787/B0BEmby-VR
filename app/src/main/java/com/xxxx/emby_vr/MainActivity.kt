@@ -2811,6 +2811,15 @@ class MainActivity : ComponentActivity() {
      * 紧接着分片路又把同一集顶掉（分片只能顺播、拖不动）。同一集既已整集在播，就不许分片再接管。
      */
     private var wholePlayingVid: String? = null
+    /*
+     * 整集多路代理的状态（2026-10-18 深夜）。
+     * 踩过的坑：起代理第一步要问远端文件长度，那是网络请求 —— 原来直接在界面线程里做，
+     * 被系统拦成 `NetworkOnMainThreadException`，代理起不来，于是又退回单连接（读不动）。
+     * 现在起代理放后台线程，起来之后回到界面线程重新起播这一条。
+     */
+    private var proxyFor: String? = null
+    private var proxyUrl: String? = null
+    private var proxyFailedFor: String? = null
 
     /** 扩展攒到的一批分片（跑在火狐内核的线程上，先切回主线程） */
     private fun onBridgeFrags(obj: org.json.JSONObject) {
@@ -3112,17 +3121,33 @@ class MainActivity : ComponentActivity() {
         var playStream = s
         if (src.optInt("whole", 0) == 1) {
             val raw = s.optString("video")
-            val hdrs = HashMap<String, String>()
-            hdrs["Referer"] = "https://v.qq.com/"
-            hdrs["User-Agent"] = WEB_DESKTOP_UA
-            if (src.optString("cookie").isNotBlank()) hdrs["Cookie"] = src.optString("cookie")
-            val local = com.xxxx.emby_vr.web.ParallelHttpProxy.start(raw, hdrs, cacheDir, 4)
-            if (local != null) {
+            val ready = proxyUrl
+            if (proxyFor == raw && ready != null) {
                 playStream = org.json.JSONObject(s.toString())
-                playStream.put("video", local)
+                playStream.put("video", ready)
                 Log.i(TAG, "整集走多路代理：内核拿到的是本机地址，远端由 4 条连接并行拉")
+            } else if (proxyFailedFor != raw) {
+                proxyFailedFor = raw
+                val hdrs = HashMap<String, String>()
+                hdrs["Referer"] = "https://v.qq.com/"
+                hdrs["User-Agent"] = WEB_DESKTOP_UA
+                if (src.optString("cookie").isNotBlank()) hdrs["Cookie"] = src.optString("cookie")
+                Log.i(TAG, "整集：起多路代理（问远端长度是网络请求，放后台线程）")
+                Thread({
+                    val local = com.xxxx.emby_vr.web.ParallelHttpProxy.start(raw, hdrs, cacheDir, 4)
+                    runOnUiThread {
+                        if (local != null) {
+                            proxyFor = raw
+                            proxyUrl = local
+                        } else {
+                            Log.w(TAG, "多路代理没起来，仍用远端原地址（单连接会被限速，大概率读不动）")
+                        }
+                        tryWebStreamAt(idx)
+                    }
+                }, "proxy-start").start()
+                return
             } else {
-                Log.w(TAG, "多路代理没起来，仍用远端原地址（单连接会被限速，大概率黑屏）")
+                Log.w(TAG, "整集：多路代理起不来，仍用远端原地址")
             }
         }
         webCandIdx = idx
