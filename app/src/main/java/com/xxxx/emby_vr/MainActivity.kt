@@ -2866,7 +2866,31 @@ class MainActivity : ComponentActivity() {
          * 这条只对腾讯生效：B站 / 爱奇艺 的分片接力照旧，一行未改。
          */
         if (com.xxxx.emby_vr.web.TencentWholeUrl.vidFromFrame(frame) != null) {
-            Log.i(TAG, "腾讯页面：分片路跳过（等整集；分片只有试看且内核起不来）")
+            /*
+             * 腾讯页面的分片**照样接住**（2026-10-19 改）。
+             *
+             * 原来这里直接丢掉：那时以为腾讯分片只有 3 分钟试看、内核起不来。后来实测清楚了：
+             * 分片是明文 MPEG-TS、覆盖整集、那条通道完全不限速（33–44MB/s），只是**一段一签**，
+             * 必须趁页面自己在放的时候把地址记下来。所以这里改成"只记账、不起播"：攒进本机列表，
+             * 等父亲按网页全屏、整集地址那一趟进来时，由 playWholeUrl 决定走分片播放列表还是整集文件。
+             */
+            var took = 0
+            for (p in fresh) {
+                val u = p.second
+                if (u.contains(".ts?") || u.contains("/gzc_")) {
+                    tencentSegs[p.first] = u
+                    segHls?.put(p.first, u)
+                    took++
+                }
+            }
+            if (took > 0) {
+                Log.i(
+                    TAG,
+                    "腾讯分片记账：本轮 +$took，共 ${tencentSegs.size} 段" +
+                        "（最大编号 ${tencentSegs.keys.lastOrNull() ?: -1}）",
+                )
+            }
+            Log.i(TAG, "腾讯页面：分片路不起播（记账中；起播等整集那一趟进来时决定）")
             return
         }
         /*
@@ -3014,7 +3038,109 @@ class MainActivity : ComponentActivity() {
      * 与分片路的关键差别：**不需要留着网页**（地址不是一段一签的），所以
      * 按 B 回来时走的是"整片看完回网页"的老路。
      */
+    /**
+     * 腾讯分片（2026-10-19 深夜，父亲定「先实现 1080P 分片逻辑」）。
+     *
+     * 腾讯网页把片子切成一二十秒一段、**一段一签**（改一个参数就 403），所以地址只能趁页面
+     * 自己在放的时候一条条记下来（扩展在 webRequest 层回报）。这些分片本身是**明文 MPEG-TS**：
+     * 720P 那条实测 h264 1280×720 + aac，4K 那条 hevc 3840×2160@60，下载 33–44 MB/s 完全不限速。
+     * 于是把它们按编号排成一条本机播放列表交给内核：整集时长、拖动全由内核原生处理。
+     */
+    private val tencentSegs = java.util.concurrent.ConcurrentSkipListMap<Int, String>()
+
+    /** 本机分片播放列表服务；起过一次就复用。 */
+    private var segHls: com.xxxx.emby_vr.web.SegHlsServer? = null
+
+    /** 分片播放列表里那串片号，用来判断"换集"（换了就清空重攒）。 */
+    private var segHlsVid: String? = null
+
+    private fun playPlaylistForSegs(quality: String, cookie: String, frame: String) {
+        val vid = com.xxxx.emby_vr.web.TencentWholeUrl.vidFromFrame(frame)
+        if (vid != null) {
+            wholePlayingVid = vid
+            if (segHlsVid != null && segHlsVid != vid) {
+                Log.i(TAG, "分片：换集（$segHlsVid → $vid），重攒")
+                segHls?.stop()
+                segHls = null
+                tencentSegs.clear()
+            }
+            segHlsVid = vid
+        }
+        webKeepPageAlive = false
+        webFragMode = false
+        val durSec = webCandSrc?.optInt("durSec", 0) ?: 0
+        val ready = segHls
+        if (ready != null) {
+            tencentSegs.forEach { (i, u) -> ready.put(i, u) }
+            handPlaylistToPlayer(ready, durSec, quality, cookie, frame)
+            return
+        }
+        Log.i(TAG, "分片：起本机播放列表服务（已有 ${tencentSegs.size} 段，整集 ${durSec}s）")
+        Thread({
+            val hdrs = HashMap<String, String>()
+            hdrs["Referer"] = "https://v.qq.com/"
+            hdrs["User-Agent"] = WEB_DESKTOP_UA
+            if (cookie.isNotBlank()) hdrs["Cookie"] = cookie
+            val made = com.xxxx.emby_vr.web.SegHlsServer(hdrs, durSec)
+            val ok = made.start()
+            runOnUiThread {
+                if (!ok) {
+                    Log.w(TAG, "分片：播放列表服务起不来，这一条不播")
+                    return@runOnUiThread
+                }
+                segHls = made
+                tencentSegs.forEach { (i, u) -> made.put(i, u) }
+                handPlaylistToPlayer(made, durSec, quality, cookie, frame)
+            }
+        }, "seg-hls-start").start()
+    }
+
+    private fun handPlaylistToPlayer(
+        srv: com.xxxx.emby_vr.web.SegHlsServer,
+        durSec: Int,
+        quality: String,
+        cookie: String,
+        frame: String,
+    ) {
+        val headers = org.json.JSONObject()
+        try {
+            headers.put("Referer", "https://v.qq.com/")
+            headers.put("User-Agent", WEB_DESKTOP_UA)
+        } catch (_: Throwable) {
+        }
+        val s0 = org.json.JSONObject()
+        s0.put("video", srv.playlistUrl())
+        s0.put("audio", "")
+        s0.put("height", 1080)
+        s0.put("bw", 0)
+        s0.put("headers", headers)
+        val arr = org.json.JSONArray()
+        arr.put(s0)
+        val one = org.json.JSONObject()
+        one.put("streams", arr)
+        one.put("kind", "play")
+        one.put("site", "qq")
+        one.put("title", "")
+        one.put("cookie", cookie)
+        one.put("frame", frame)
+        one.put("quality", quality)
+        Log.i(
+            TAG,
+            "分片播放列表交给内核：${srv.playlistUrl()}（已有 ${srv.count} 段，整集 ${durSec}s，档位 $quality）",
+        )
+        playWebStream(one)
+    }
+
     private fun playWholeUrl(url: String, quality: String, cookie: String, frame: String) {
+        /*
+         * 先看本机攒到的分片够不够（2026-10-19）。够就走分片播放列表 —— 那条是明文 TS、不限速、
+         * 整集与拖动都原生支持；不够才退回整集 mp4（那条被腾讯限速到约 1KB/s，基本读不动）。
+         */
+        if (tencentSegs.size >= 3) {
+            Log.i(TAG, "整集：本机已攒到 ${tencentSegs.size} 段分片，改走分片播放列表（不走被限速的整集文件）")
+            playPlaylistForSegs(quality, cookie, frame)
+            return
+        }
         com.xxxx.emby_vr.web.TencentWholeUrl.vidFromFrame(frame)?.let {
             wholePlayingVid = it
             Log.i(TAG, "整集地址（我们自己签名要来的，片号 $it）进入播放器，分片路不再接管这一集")
