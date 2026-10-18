@@ -115,6 +115,15 @@ class ParallelHttpProxy(
                 "分成 $chunkCount 块（每块 ${chunkSize / 1024 / 1024}MB），$connections 条连接并行拉",
         )
         Thread({ acceptLoop() }, "proxy-accept").start()
+        /* 内核最先要的是文件头（moov 在前面），先把开头几块拉起来，省掉首帧那几秒等待 */
+        Thread({
+            for (i in 0 until min(3, chunkCount)) {
+                if (state.getOrNull(i) == STATE_IDLE) {
+                    synchronized(lock) { state[i] = STATE_BUSY }
+                    pullChunk(i)
+                }
+            }
+        }, "proxy-warmup").start()
         repeat(connections) { idx ->
             val t = Thread({ workerLoop() }, "proxy-pull-$idx")
             t.isDaemon = true
@@ -175,13 +184,16 @@ class ParallelHttpProxy(
             }
             val lines = head.toString().split('\n')
             if (lines.isEmpty()) return
+            Log.i(TAG, "收到内核请求：" + lines[0])
             val req = lines[0].split(' ')
             if (req.size < 2) return
             val isHead = req[0].equals("HEAD", ignoreCase = true)
             var start = 0L
             var end = total - 1
+            var hadRange = false
             for (l in lines) {
                 if (l.startsWith("Range:", ignoreCase = true)) {
+                    hadRange = true
                     val spec = l.substringAfter("bytes=").trim()
                     val a = spec.substringBefore('-').trim().toLongOrNull()
                     val b = spec.substringAfter('-').trim().toLongOrNull()
@@ -202,15 +214,28 @@ class ParallelHttpProxy(
             readerPos = start
             val len = end - start + 1
             val out = sock.getOutputStream()
-            val header = "HTTP/1.1 206 Partial Content\r\n" +
-                "Content-Type: video/mp4\r\n" +
-                "Accept-Ranges: bytes\r\n" +
-                "Content-Length: $len\r\n" +
-                "Content-Range: bytes $start-$end/$total\r\n" +
-                "Connection: close\r\n\r\n"
+            /*
+             * 没带 Range 的请求按规矩必须回 200 —— 回 206 会被一部分客户端（含内核）
+             * 判成"服务端乱来"直接放弃，表现就是"代理起来了但内核一条轨都没有"。
+             */
+            val header = if (hadRange) {
+                "HTTP/1.1 206 Partial Content\r\n" +
+                    "Content-Type: video/mp4\r\n" +
+                    "Accept-Ranges: bytes\r\n" +
+                    "Content-Length: $len\r\n" +
+                    "Content-Range: bytes $start-$end/$total\r\n" +
+                    "Connection: close\r\n\r\n"
+            } else {
+                "HTTP/1.1 200 OK\r\n" +
+                    "Content-Type: video/mp4\r\n" +
+                    "Accept-Ranges: bytes\r\n" +
+                    "Content-Length: $len\r\n" +
+                    "Connection: close\r\n\r\n"
+            }
             out.write(header.toByteArray())
             out.flush()
             if (isHead) return
+            Log.i(TAG, "开始喂数据：从 $start 到 $end（共 ${len / 1024 / 1024}MB）")
             var pos = start
             val buf = ByteArray(256 * 1024)
             while (pos <= end && running) {
@@ -340,7 +365,9 @@ class ParallelHttpProxy(
         }
         if (ok) {
             val done = synchronized(lock) { state.count { it == STATE_DONE } }
-            if (done == chunkCount) Log.i(TAG, "整份文件已拉完（$chunkCount 块）")
+            if (done <= 6 || done % 20 == 0 || done == chunkCount) {
+                Log.i(TAG, "已拉到 $done/$chunkCount 块")
+            }
         }
     }
 
