@@ -2805,6 +2805,12 @@ class MainActivity : ComponentActivity() {
 
     /** 已经问过整片地址的片子（同一部只问一次） */
     private var webWholeTried: String? = null
+    /*
+     * 正在播"整集地址"的那一集的片号（2026-10-18 晚）。
+     * 起因：父亲看到"总时长 45 分钟闪一下变成 3:25"——整集地址已经进播放器了，
+     * 紧接着分片路又把同一集顶掉（分片只能顺播、拖不动）。同一集既已整集在播，就不许分片再接管。
+     */
+    private var wholePlayingVid: String? = null
 
     /** 扩展攒到的一批分片（跑在火狐内核的线程上，先切回主线程） */
     private fun onBridgeFrags(obj: org.json.JSONObject) {
@@ -2866,6 +2872,15 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }.start()
+            return
+        }
+        /*
+         * 同一集已经在播整集地址了，分片（只能顺播、拖不动）不许再顶掉它。
+         * 换集时片号不同，自然不会拦，分片路照旧可用。
+         */
+        val fragVidNow = com.xxxx.emby_vr.web.TencentWholeUrl.vidFromFrame(frame)
+        if (fragVidNow != null && fragVidNow == wholePlayingVid) {
+            Log.i(TAG, "整集已在播（$fragVidNow），这一站的分片不接管")
             return
         }
         if (!webFragMode) {
@@ -2979,6 +2994,10 @@ class MainActivity : ComponentActivity() {
      * 按 B 回来时走的是"整片看完回网页"的老路。
      */
     private fun playWholeUrl(url: String, quality: String, cookie: String, frame: String) {
+        com.xxxx.emby_vr.web.TencentWholeUrl.vidFromFrame(frame)?.let {
+            wholePlayingVid = it
+            Log.i(TAG, "整集地址（我们自己签名要来的，片号 $it）进入播放器，分片路不再接管这一集")
+        }
         webKeepPageAlive = false
         webFragMode = false
         val headers = org.json.JSONObject()
@@ -3017,6 +3036,7 @@ class MainActivity : ComponentActivity() {
             val v = com.xxxx.emby_vr.web.TencentWholeUrl.vidFromFrame(obj.optString("frame"))
             if (v != null) {
                 webWholeTried = v
+                wholePlayingVid = v
                 Log.i(TAG, "整片地址来自网页身份（浏览器带票），不再重复发我们那条无身份请求")
             }
         }

@@ -64,6 +64,19 @@ browser.runtime.onMessage.addListener(function (msg) {
  */
 browser.runtime.onMessage.addListener(function (msg, sender, respond) {
   try {
+    /*
+     * 页面世界直发失败时的兜底：把**已经算好签名的完整地址**丢给后台页代发
+     * （2026-10-18 晚）。后台页发的请求同样带浏览器身份。
+     */
+    if (msg && msg.__b0bSignGet && msg.url) {
+      fetch(msg.url, { credentials: 'include' }).then(function (r) { return r.text(); }).then(function (t) {
+        try { respond({ text: t }); } catch (e) {}
+      }).catch(function (e) {
+        console.log('[b0b] 后台页代发签名请求失败：' + e);
+        try { respond({ error: String(e) }); } catch (e2) {}
+      });
+      return true;
+    }
     if (!msg || !msg.__b0bWhole || !msg.vid) return;
     var u = 'https://vv.video.qq.com/getinfo?otype=json&vid=' + encodeURIComponent(msg.vid) +
       '&platform=101001&sdtfrom=v1010&defn=fhd&vt=3&charge=0&defnpayver=1';
