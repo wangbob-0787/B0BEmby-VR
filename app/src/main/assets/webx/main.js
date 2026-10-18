@@ -1026,6 +1026,18 @@
   var fragMap = {};      /* index → 地址 */
   var fragSent = {};     /* 已经交过的 index */
   var fragLogged = -1;
+  var fragHoldLogged = -1;
+  var fragResetAt = 0;
+
+  /* 按全屏这一刻清一次攒段（5 秒内只清一次，避免同一条消息在几层之间来回转发时反复清空） */
+  function resetFragsOnFull() {
+    if (Date.now() - fragResetAt < 5000) return;
+    fragResetAt = Date.now();
+    fragMap = {};
+    fragSent = {};
+    fragHoldLogged = -1;
+    console.log('[b0b] 你按了全屏：清掉之前攒的试看片段，从这一刻的新段开始接');
+  }
 
   function noteFrag(u) {
     try {
@@ -1052,6 +1064,23 @@
     try {
       var ks = Object.keys(fragMap);
       if (!ks.length) return;
+      /* 你说过：**只要点了全屏就是想播**（2026-10-18 父亲定的接管闸门）。
+         小卡片的试看、详情页里的小窗都不是你要播的，别抢（r679 实测：没点全屏就被接管、
+         接管到的还是十几秒的试看片段）。 */
+      var fsShared2 = 0;
+      try { fsShared2 = parseInt(localStorage.getItem('b0b:fullAt') || '0', 10) || 0; } catch (e) {}
+      var fsBest2 = Math.max(fullState ? Date.now() : 0, fsShared2, peerFullAt);
+      var fsOk2 = fsBest2 > 0 && Date.now() - fsBest2 < 3 * 3600 * 1000;
+      var pd2 = 0;
+      try { pd2 = pageClipDur(); } catch (e) {}
+      if (!fsOk2 || pd2 < 360) {
+        if (fragHoldLogged !== ks.length) {
+          fragHoldLogged = ks.length;
+          console.log('[b0b] 攒到 ' + ks.length + ' 段，先不交：' +
+            (fsOk2 ? '' : '你还没按全屏按钮') + (pd2 < 360 ? (' 页面在放的是 ' + pd2 + ' 秒的片子') : ''));
+        }
+        return;
+      }
       ks.sort(function (a, b) { return (+a) - (+b); });
       var list = [];
       for (var i = 0; i < ks.length; i++) {
@@ -1129,6 +1158,8 @@
   function announceFullscreen(t) {
     peerFullAt = t;
     try { localStorage.setItem('b0b:fullAt', String(t)); } catch (e) {}
+    /* 按下全屏这一层同一个道理：清掉按之前攒的试看段（2026-10-18） */
+    resetFragsOnFull();
     try { window.top.postMessage({ __b0bFull: 1, t: t }, '*'); } catch (e) {}
   }
   try {
@@ -1138,6 +1169,12 @@
         if (!d || typeof d !== 'object') return;
         if (d.__b0bFull) {
           peerFullAt = Math.max(peerFullAt, d.t || Date.now());
+          /*
+           * 按全屏 = 你决定要播这一部（2026-10-18）。所以这一刻把之前攒的分片清掉：
+           * 全屏之前那些多半是首页小卡片的试看片段，接了会"播十几秒就停"。
+           * 清掉之后从全屏这一刻往新取的段开始接，顺序仍然是连的。
+           */
+          resetFragsOnFull();
           if (window.self === window.top) {
             /* 最外层收到后替下层转发一遍（下层之间不互通） */
             for (var i = 0; i < window.frames.length; i++) {

@@ -2785,6 +2785,8 @@ class MainActivity : ComponentActivity() {
     private var webFragMode = false
     private val webFragSeen = java.util.HashSet<Int>()
     private var webFragReturnUrl: String? = null
+    /** 这一批分片属于哪一页/哪一部片子（页面编号变了就要从头攒） */
+    private var webFragKey = ""
     /** 起播时告诉"这一段别销毁网页"（攒分片模式专用） */
     private var webKeepPageAlive = false
 
@@ -2795,6 +2797,17 @@ class MainActivity : ComponentActivity() {
 
     private fun handleBridgeFrags(obj: org.json.JSONObject) {
         val arr = obj.optJSONArray("list") ?: return
+        /*
+         * 换片子要重新攒（2026-10-18）：分片的编号从 0 开始，
+         * 上一部片子的编号占着的话新片子的段会被当成"已经接过"而全丢。
+         */
+        val key = obj.optString("key")
+        if (key.isNotBlank() && key != webFragKey) {
+            webFragKey = key
+            webFragSeen.clear()
+            if (webFragMode) Log.i(TAG, "攒分片：页面编号变了（换片子），从头重新攒")
+            webFragMode = false
+        }
         val fresh = ArrayList<Pair<Int, String>>()
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
