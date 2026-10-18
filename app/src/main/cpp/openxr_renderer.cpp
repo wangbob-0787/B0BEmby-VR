@@ -1625,6 +1625,15 @@ struct VrContext {
      */
     std::atomic<bool> screenShowsWeb{false};
     /*
+     * 网页面仍然取帧、但不上银幕（2026-10-18）。
+     *
+     * 背景：攒分片接管播放时要把网页面收起来，可网页面的纹理一旦没人取帧，
+     * 生产端（火狐内核）的缓冲队列就满了 —— 页面整个冻住，分片不再来，
+     * 表现就是"只播一小段"。所以这里跟"上不上银幕"分开：
+     * 收起来的时候照样取帧（把队列吃空），只是不画。
+     */
+    std::atomic<bool> webKeepSampling{false};
+    /*
      * 上一次见到的视频帧时间戳 —— 换片时用来识别"残留的旧帧"（父亲 2026-10-07）。
      *
      * ExoPlayer 释放旧片后，Surface 里还留着上一部的最后一帧，它的 getTimestamp
@@ -5099,7 +5108,7 @@ void frameLoop(VrContext &c) {
          * 网页面取帧（父亲 2026-10-13）：银幕在放网页时，网页面这块离屏画面
          * 每帧都要取新帧，否则银幕上是定格的第一帧。
          */
-        if (c.screenShowsWeb.load() && gWebUpdate != nullptr) {
+        if ((c.screenShowsWeb.load() || c.webKeepSampling.load()) && gWebUpdate != nullptr) {
             gWebUpdate();
         }
 
@@ -6089,6 +6098,19 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetScreenPanel(JNIEnv *env, jobject /* 
  * false = 网页面关掉（网页被一部 Emby 片子顶掉时直接销毁，不留后台）。
  * 它优先于 screenShowsPanel：两者同时为真时按网页算。
  */
+/**
+ * 网页面收起来时仍然取帧（2026-10-18）。
+ *
+ * 网页面的纹理没人取帧 → 生产端缓冲队列堵死 → 页面冻住、分片不再来。
+ * 攒分片接管播放时要一直把它吃空，所以跟"上不上银幕"分成两个开关。
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetWebKeepSampling(JNIEnv *env, jobject /* this */,
+                                                            jboolean on) {
+    g.webKeepSampling = (on == JNI_TRUE);
+    LOGI("网页面后台取帧 → %s", on == JNI_TRUE ? "开" : "关");
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetScreenWeb(JNIEnv *env, jobject /* this */,
                                                      jboolean on) {

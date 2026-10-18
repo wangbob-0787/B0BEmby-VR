@@ -497,6 +497,20 @@ object VrNative {
 
     private external fun nativeSetScreenWeb(on: Boolean)
 
+    /**
+     * 网页面收起来时仍然取帧（2026-10-18）。
+     *
+     * 网页面的纹理没人取帧 → 生产端（火狐内核）缓冲队列堵死 → 页面冻住、
+     * 分片不再来，表现就是"只播一小段"。攒分片接管播放时开着它。
+     */
+    fun setWebKeepSampling(on: Boolean) {
+        if (!loaded) return
+        runCatching { nativeSetWebKeepSampling(on) }
+            .onFailure { Log.w(TAG, "网页面后台取帧开关失败: ${it.message}") }
+    }
+
+    private external fun nativeSetWebKeepSampling(on: Boolean)
+
     private external fun nativeSetVideoActive(active: Boolean)
     private external fun nativeSetSpinnerWanted(wanted: Boolean)
 

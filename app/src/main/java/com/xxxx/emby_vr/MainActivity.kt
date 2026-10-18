@@ -1972,6 +1972,7 @@ class MainActivity : ComponentActivity() {
              */
             osdState.webSiteName = ""
             com.xxxx.emby_vr.vr.VrNative.setScreenWeb(false)
+            com.xxxx.emby_vr.vr.VrNative.setWebKeepSampling(false)
             Log.i(TAG, "网页面已关闭（大银幕交回影片）")
         }
     }
@@ -2492,6 +2493,8 @@ class MainActivity : ComponentActivity() {
             webFragMinIdx = Int.MAX_VALUE
             webFragMaxIdx = -1
             stopWebAlive()
+            /* 网页又上银幕了，后台取帧这个开关收掉（银幕自己会取） */
+            com.xxxx.emby_vr.vr.VrNative.setWebKeepSampling(false)
         }
         /*
          * 停播放器但**保留控制条**（父亲 2026-10-16 明确：光标对着银幕按 B 从播放状态
@@ -3023,6 +3026,12 @@ class MainActivity : ComponentActivity() {
         if (webKeepPageAlive) {
             osdState.webSiteName = ""
             com.xxxx.emby_vr.vr.VrNative.setScreenWeb(false)
+            /*
+             * 网页屏收起来了，但它的纹理还得继续取帧（2026-10-18 头显定案）：
+             * 不取帧，生产端（火狐内核）的缓冲队列会堵死 —— 页面整个冻住、
+             * 心跳整段消失、分片不再来，"只播一小段"就是这个原因。
+             */
+            com.xxxx.emby_vr.vr.VrNative.setWebKeepSampling(true)
             Log.i(TAG, "攒分片模式：网页面留在后台继续取新段（不销毁）")
         } else {
             closeWeb()
