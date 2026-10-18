@@ -624,8 +624,15 @@
        * 现在先把字幕类的挑掉，只认正片列表。
        */
       var m = all.filter(function (x) {
+        if (isPlaylistUrl(x)) return true;
+        segCount++;
+        return false;
+      }).filter(function (x) {
         return !/captionV3|\/caption|subtitle|\.vtt\.m3u8|\.ass\.m3u8|\.srt\.m3u8|dm\.video\.qq/i.test(x);
       });
+      if (segCount > 0) {
+        console.log('[b0b] 这条响应里 ' + segCount + ' 条是**分片**（一小段视频，不是播放列表），已剔除');
+      }
       /*
        * 【2026-10-18 10:35 破案：抓到的 30 秒片子是**起播前的广告**】
        *
@@ -639,6 +646,7 @@
        * 改法：广告的播放信息整条不要（打日志说明），广告 CDN 的候选也剔除，
        * 这样"按全屏"会等到正片那份播放信息到达再交出去。
        */
+      var segCount = 0;
       var isAdInfo = /lcAdCookie|apd-vlive|apdcdn\.tc\.qq\.com|"adx"|vhot\.qq\.com/i.test(t);
       if (isAdInfo) {
         console.log('[b0b] 这条是**广告**的播放信息（含广告票据/广告CDN），不用它，等正片那份');
@@ -1097,6 +1105,29 @@
     } catch (e) { return ''; }
   }
 
+  /*
+   * 【2026-10-18 12:05 真根因（.18 上实地取证）】
+   *
+   * 父亲在虚拟桌面里播正片，我用浏览器调试口把"我们抓到的地址"原样取回来看了：
+   * 它返回的是 **video/MP2T、91 万字节的一小段视频**，
+   * 地址形如 `…/0b53hyak…f321004.2.ts?index=37&start=350800&end=362040&brs=…&ver=4&token=…`
+   * —— 这是**分片**（30 秒一段的视频文件），根本不是播放列表！
+   *
+   * 于是真相是：我们把"一整片里的一小段"当成"播放列表"交给了内核，
+   * 内核播完这一段就 EOF —— 表现就是"只抓到 30 秒/一分多钟"。
+   * 广告那条也确实存在（腾讯起播前放广告），但**主因是分片被当成列表**。
+   *
+   * 判据：真播放列表的地址路径以 .m3u8 结尾；
+   * 分片地址带 `index=/start=/end=/brs=/bre=` 这类参数，路径以 .ts 结尾。
+   */
+  function isPlaylistUrl(u) {
+    u = String(u || '');
+    if (/[?&](index|start|end|brs|bre)=\d/i.test(u)) return false;
+    var path = u.split('?')[0].toLowerCase();
+    if (/\.ts$/.test(path)) return false;
+    return /\.m3u8$/.test(path);
+  }
+
   /* 广告的 CDN / 域名（2026-10-18 10:35）：起播前的广告片长 30–80 秒，正是"只抓到一小段"的来源 */
   function isAdUrl(u) {
     return /apdcdn\.tc\.qq\.com|apd-vlive|vhot\.qq\.com|\/adx?\//i.test(String(u || ''));
@@ -1104,6 +1135,7 @@
 
   function isQqHls(u) {
     if (isAdUrl(u)) return false;
+    if (!isPlaylistUrl(u)) return false;
     if (!/\.m3u8(\?|$)/i.test(u)) return false;
     return /(gtimg\.com|smtcdns\.com|tc\.qq\.com|video\.qq\.com)/i.test(u);
   }
