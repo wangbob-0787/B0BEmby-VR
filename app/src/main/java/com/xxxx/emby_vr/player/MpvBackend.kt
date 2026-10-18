@@ -460,6 +460,17 @@ class MpvBackend(private val context: Context) {
     /** 每次 loadfile 的序号：给延迟补跳用，避免上一部片排的回调把新片跳歪 */
     private var loadGen = 0
 
+    /**
+     * 往播放列表后面接一段（2026-10-18：腾讯这种站"先把 1080P 搞定"）。
+     *
+     * 腾讯没有整片地址、也没有播放列表，它是一小段一小段（每段十几秒、各带各的签名）
+     * 发给网页的。第一段起播，后面每来一段接一段，网页留在后台继续取新段。
+     */
+    fun appendFile(url: String) {
+        if (url.isBlank()) return
+        post { MPVLib.command(arrayOf("loadfile", url, "append-play")) }
+    }
+
     fun play(url: String, startSec: Double = 0.0) {
         ensureCreated(context)
         beginPolling()

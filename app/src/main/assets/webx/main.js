@@ -1013,6 +1013,84 @@
     return v.replace(/[\\"'\s]+$/, '');
   }
 
+  /*
+   * 攒分片（2026-10-18，父亲口径：先把 1080P 搞定）。
+   *
+   * 腾讯这种站**没有整片地址、也没有播放列表**：它的网页是一小段一小段（每段十几秒、
+   * 各带各的签名、换个 index 就 403）取回来喂给自己播放器的。所以改成：
+   * 页面在后台继续放（取新段的签名靠它），我们按 index 顺序把段交上去，
+   * 由我们自己的播放器一段一段接着播。
+   *
+   * 判据只用"这条地址带 index= 且是腾讯的媒体域名"，不碰其它站的整片/播放列表那两条路。
+   */
+  var fragMap = {};      /* index → 地址 */
+  var fragSent = {};     /* 已经交过的 index */
+  var fragLogged = -1;
+
+  function noteFrag(u) {
+    try {
+      var s = cleanUrl(u);
+      if (!s || s.indexOf('index=') < 0) return;
+      if (!/\.ts\?|\/B_|gtimg|ltsyd|ltshwy|vlive|vipzj/i.test(s)) return;
+      var m = /[?&]index=(\d+)/.exec(s);
+      if (!m) return;
+      var i = m[1];
+      if (fragMap[i]) return;
+      fragMap[i] = s;
+    } catch (e) {}
+  }
+
+  /* 分片地址最稳的来源是浏览器自己的"请求清单"（2026-10-18 实测：电影页那条路只能这么看） */
+  function scanPerfForFrags() {
+    try {
+      var es = performance.getEntriesByType('resource') || [];
+      for (var i = 0; i < es.length; i++) noteFrag(es[i].name || '');
+    } catch (e) {}
+  }
+
+  function flushFrags() {
+    try {
+      var ks = Object.keys(fragMap);
+      if (!ks.length) return;
+      ks.sort(function (a, b) { return (+a) - (+b); });
+      var list = [];
+      for (var i = 0; i < ks.length; i++) {
+        if (fragSent[ks[i]]) continue;
+        fragSent[ks[i]] = 1;
+        list.push({ i: +ks[i], u: fragMap[ks[i]] });
+        if (list.length >= 40) break;
+      }
+      if (!list.length) return;
+      var payload = {
+        kind: 'frags', t: Date.now(), frame: location.href,
+        host: location.hostname,
+        title: (document.title || '').slice(0, 80),
+        key: pageVideoKey(location.href),
+        list: list,
+      };
+      var m = { __b0b: 1, payload: payload };
+      try { window.top.postMessage(m, '*'); } catch (e) {}
+      if (window.self === window.top) {
+        for (var f = 0; f < window.frames.length; f++) {
+          try { window.frames[f].postMessage(m, '*'); } catch (e2) {}
+        }
+      }
+      if (fragLogged !== ks.length) {
+        fragLogged = ks.length;
+        console.log('[b0b] 攒分片：本次交出 ' + list.length + ' 段（累计 ' + ks.length + ' 段）');
+      }
+      /*
+       * 页面留在后台继续放，但**不出声** —— 声音交给我们的播放器，
+       * 不然两边一起响（2026-10-16 父亲报过的老问题）。
+       */
+      var vs = document.querySelectorAll('video');
+      for (var j = 0; j < vs.length; j++) {
+        try { vs[j].muted = true; } catch (e3) {}
+        try { if (vs[j].paused) vs[j].play(); } catch (e4) {}
+      }
+    } catch (e) {}
+  }
+
   function shareQq(raw) {
     var u = cleanUrl(raw);
     pendingQq = u; qqAt = Date.now(); qqHost = location.hostname;
@@ -1922,6 +2000,9 @@
 
   function scan() {
     try { scanPerfForHls(); } catch (e) {}
+    /* 腾讯那条路：没有播放列表，只能按顺序攒分片（2026-10-18） */
+    try { scanPerfForFrags(); } catch (e) {}
+    try { flushFrags(); } catch (e) {}
     try { reportCookies(); } catch (e) {}
     /* 每拍问一次"谁按过全屏"（2026-10-18 01:52）：跨层、跨源都靠它 */
     try { if (window.self !== window.top) window.top.postMessage({ __b0bAsk: 1 }, '*'); } catch (e) {}

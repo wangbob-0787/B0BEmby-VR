@@ -328,6 +328,13 @@ fun WebLibraryScreen(
      * 比例、弹幕、控制条都不再受网页排版摆布（父亲 02:05 定的方向）。
      */
     onWebStream: (org.json.JSONObject) -> Unit = {},
+    /**
+     * 攒到"播放分片"时的回调（2026-10-18）。
+     *
+     * 腾讯这种站没有整片地址也没有播放列表，只能一小段一小段地收；这里把收来的段
+     * 一批一批交给 MainActivity，由它接在播放列表后面（第一段负责起播）。
+     */
+    onWebFrags: (org.json.JSONObject) -> Unit = {},
 ) {
     /*
      * 换站点 = 整棵网页子树重建（父亲 2026-10-13 报"B站切腾讯打不开，要先去播一部片子才能开"）。
@@ -340,6 +347,8 @@ fun WebLibraryScreen(
      */
     /* 抓到可播地址的出口（onBridgePlayable 住在 WebRuntime 里，够不到这里的参数） */
     WebRuntime.setStreamSink(onWebStream)
+    /* 攒到的分片走另一个出口：它不换源，只是往播放列表后面接（2026-10-18） */
+    WebRuntime.setFragSink(onWebFrags)
     /*
      * 起始页一起进 key：接管后回网页要落在"接管那一刻那一页"，那是同一站点下的另一个地址，
      * 只按站点编号做 key 不会重建（2026-10-17）。
@@ -371,6 +380,18 @@ private object WebRuntime {
 
     fun setStreamSink(f: ((org.json.JSONObject) -> Unit)?) {
         streamSink = f
+    }
+
+    /**
+     * 攒到的播放分片交给谁（2026-10-18）。
+     *
+     * 腾讯这种站没有整片地址也没有播放列表，只能一段一段收；收来的段交给
+     * MainActivity，由它喂进我们自己的播放器（第一段起播，后面的接在后面）。
+     */
+    private var fragSink: ((org.json.JSONObject) -> Unit)? = null
+
+    fun setFragSink(f: ((org.json.JSONObject) -> Unit)?) {
+        fragSink = f
     }
 
     fun get(
@@ -584,11 +605,34 @@ private object WebRuntime {
         streamSink?.invoke(obj)
     }
 
+    /**
+     * 扩展攒到的一批播放分片（2026-10-18）。
+     *
+     * 只做两件事：把登录票附上（会员片的分片也要票），再转给界面那一侧去接播放列表。
+     * 这条**不是**"可播地址"，所以不打那套档位日志，也不参与换源去重。
+     */
+    private fun onBridgeFrags(obj: org.json.JSONObject) {
+        if (bridgeCookie.isNotBlank()) {
+            try {
+                obj.put("cookie", bridgeCookie)
+            } catch (e: Exception) {
+            }
+        }
+        fragSink?.invoke(obj)
+    }
+
     /** 扩展报上来的数据；页面里有几个框架就报几份，谁的面积大由 ticker 挑 */
     private fun onBridgeMessage(message: Any?) {
         val obj = message as? org.json.JSONObject ?: return
         if (obj.optString("kind") == "play") {
             onBridgePlayable(obj)
+            return
+        }
+        if (obj.optString("kind") == "frags") {
+            if (obj.optString("frame").isNotBlank()) bridgeLastFrame = obj.optString("frame")
+            val ck0 = obj.optString("cookie")
+            if (ck0.isNotBlank()) bridgeCookie = ck0
+            onBridgeFrags(obj)
             return
         }
         if (obj.optString("kind") != "rect") return

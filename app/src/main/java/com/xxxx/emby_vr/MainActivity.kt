@@ -2480,6 +2480,16 @@ class MainActivity : ComponentActivity() {
         if (!webHiddenByStream) return
         webHiddenByStream = false
         /*
+         * 攒分片模式退场：把攒段状态清干净（2026-10-18）。
+         * 网页面本身**没有被销毁**，所以这里是"接着原来那一页继续选片"，
+         * 下一部片子从头攒段，不会把上一部的段接在后面。
+         */
+        if (webFragMode) {
+            Log.i(TAG, "回网页：攒分片模式结束（这一部共攒过 ${webFragSeen.size} 段）")
+            webFragMode = false
+            webFragSeen.clear()
+        }
+        /*
          * 停播放器但**保留控制条**（父亲 2026-10-16 明确：光标对着银幕按 B 从播放状态
          * 回网页时，控制条不用收起来）。
          * 走 keepUi = true 这条：进度上报照旧，只是不收起界面。
@@ -2765,6 +2775,82 @@ class MainActivity : ComponentActivity() {
     private var webCandIdx = -1
     private val webCandHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
+    /*
+     * 攒分片模式（2026-10-18，父亲口径：先把 1080P 搞定）。
+     *
+     * 腾讯这种站没有整片地址也没有播放列表，网页是一小段一小段取的。这条路：
+     * 第一段起播我们自己的播放器，后面每来一段接一段，**网页面留在后台继续取新段**
+     * （签名跟着段走，页面不停才有新段）。
+     */
+    private var webFragMode = false
+    private val webFragSeen = java.util.HashSet<Int>()
+    private var webFragReturnUrl: String? = null
+    /** 起播时告诉"这一段别销毁网页"（攒分片模式专用） */
+    private var webKeepPageAlive = false
+
+    /** 扩展攒到的一批分片（跑在火狐内核的线程上，先切回主线程） */
+    private fun onBridgeFrags(obj: org.json.JSONObject) {
+        runOnUiThread { handleBridgeFrags(obj) }
+    }
+
+    private fun handleBridgeFrags(obj: org.json.JSONObject) {
+        val arr = obj.optJSONArray("list") ?: return
+        val fresh = ArrayList<Pair<Int, String>>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val idx = o.optInt("i", -1)
+            val u = o.optString("u")
+            if (idx < 0 || u.isBlank()) continue
+            if (webFragSeen.add(idx)) fresh.add(idx to u)
+        }
+        if (fresh.isEmpty()) return
+        val frame = obj.optString("frame")
+        val cookie = obj.optString("cookie")
+        if (!webFragMode) {
+            webFragMode = true
+            webFragReturnUrl = frame.takeIf { it.isNotBlank() }
+            Log.i(
+                TAG,
+                "攒分片起播：这一站没有整片地址，第 1 段起播（第 ${fresh[0].first} 段），" +
+                    "网页留在后台继续取新段，登录票=" + (if (cookie.isNotBlank()) "有" else "无"),
+            )
+            val headers = org.json.JSONObject()
+            try {
+                headers.put("Referer", "https://v.qq.com/")
+                headers.put("User-Agent", WEB_DESKTOP_UA)
+                if (cookie.isNotBlank()) headers.put("Cookie", cookie)
+            } catch (e: Exception) {
+            }
+            val one = org.json.JSONObject()
+            val streams = org.json.JSONArray()
+            val s0 = org.json.JSONObject()
+            s0.put("video", fresh[0].second)
+            s0.put("audio", "")
+            s0.put("height", 1080)
+            s0.put("bw", 0)
+            s0.put("headers", headers)
+            streams.put(s0)
+            one.put("streams", streams)
+            one.put("kind", "play")
+            one.put("durSec", 0)
+            one.put("frame", frame)
+            one.put("title", obj.optString("title"))
+            one.put("cookie", cookie)
+            webKeepPageAlive = true
+            /* 记下站点：按 B 要能回到这张网页继续选片（与网页流那条路同一套判据） */
+            webStreamSite = webSiteState.value
+            try {
+                playWebStream(one)
+            } finally {
+                webKeepPageAlive = false
+            }
+            for (k in 1 until fresh.size) mpvBackend?.appendFile(fresh[k].second)
+        } else {
+            for (k in 0 until fresh.size) mpvBackend?.appendFile(fresh[k].second)
+            Log.i(TAG, "接上第 ${fresh[0].first}～${fresh[fresh.size - 1].first} 段（共接 ${fresh.size} 段）")
+        }
+    }
+
     private fun playWebStream(obj: org.json.JSONObject) {
         /*
          * 【2026-10-17 23:28 父亲立的机制：不管从哪儿切到哪儿，控制条与弹幕屏的信息都要跟着换】
@@ -2839,7 +2925,19 @@ class MainActivity : ComponentActivity() {
             webHiddenByStream = true
             webSiteBeforeStream = webSiteState.value
         }
-        closeWeb()
+        /*
+         * 攒分片模式**不销毁网页**（2026-10-18）：腾讯的分片签名是"一段一签"，
+         * 网页必须在后台继续放着才有新段。只把网页屏收起来（`setScreenWeb(false)`），
+         * 页面本身照旧活着 —— 按 B 回来时也就不用重建，直接就是原来那一页。
+         * 其余情况保持原样：整个销毁（父亲 2026-10-13 定"不留后台"）。
+         */
+        if (webKeepPageAlive) {
+            osdState.webSiteName = ""
+            com.xxxx.emby_vr.vr.VrNative.setScreenWeb(false)
+            Log.i(TAG, "攒分片模式：网页面留在后台继续取新段（不销毁）")
+        } else {
+            closeWeb()
+        }
         startPlayer(url = "", title = "网页", startMs = 0L, webStream = one)
         /*
          * 接管之后控制条保持展开（父亲 2026-10-16）：
@@ -2849,6 +2947,15 @@ class MainActivity : ComponentActivity() {
         webCandHandler.postDelayed({
             if (webCandIdx != idx) return@postDelayed
             val m = mpvBackend
+            /*
+             * 攒分片模式不做"换下一条"也不报错（2026-10-18）：这里的每一段只有十几秒，
+             * 8 秒这个判据本来就是给整片/播放列表用的；段是连着接上去的，
+             * 真播不动下一段会自己接上来。
+             */
+            if (webFragMode) {
+                Log.i(TAG, "⑤ 攒分片模式：第 ${idx + 1} 条起播 8 秒检查（不再按整片那套换条）")
+                return@postDelayed
+            }
             if (m != null && !m.videoReady()) {
                 Log.w(TAG, "⑤ 第 ${idx + 1} 条 8 秒没出画面，换下一条（站点 $site）")
                 tryWebStreamAt(idx + 1)
@@ -6034,6 +6141,11 @@ class MainActivity : ComponentActivity() {
                                 playWebStream(obj)
                             }
                         },
+                        /*
+                         * 攒到的分片走这里（2026-10-18）：腾讯那种站没有整片地址也没有
+                         * 播放列表，第一段起播、后面的接在播放列表末尾，网页留在后台继续取。
+                         */
+                        onWebFrags = { obj -> onBridgeFrags(obj) },
                     )
                 }
             },
@@ -6627,6 +6739,16 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val TAG = "B0BEmbyVR"
+
+        /**
+         * 攒分片模式取腾讯分片时用的 UA（2026-10-18）。
+         *
+         * 分片地址是"一段一签"的，CDN 认 Referer 为主；UA 用桌面浏览器这一串，
+         * 与网页里那台浏览器一致，避免被判成异常客户端。
+         */
+        private const val WEB_DESKTOP_UA =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
         /**
          * 弹幕时钟纠偏参数（父亲 2026-10-13 凌晨定）。
