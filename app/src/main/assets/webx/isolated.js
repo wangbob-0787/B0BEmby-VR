@@ -43,6 +43,18 @@
           browser.runtime.sendMessage({ __b0bCookies: 1, domain: dom }).then(function (r) {
             var c = (r && r.cookie) || '';
             console.log('[b0b] 向后台页取票（' + dom + '）：' + (c ? '有' : '无'));
+            /*
+             * 把票里**有哪些名字**打出来（只打名字不打值，2026-10-18 晚）。
+             * 起因：客户端自己发请求时服务器认不出身份（只给 180 秒试看），
+             * 需要确认"登录那几个名字（uin/vusession 之类）到底在不在我们取到的票里"。
+             */
+            try {
+              var names = c.split(';').map(function (x) { return x.split('=')[0].trim(); }).filter(function (x) { return x; });
+              var key = ['uin', 'p_uin', 'luin', 'skey', 'p_skey', 'vusession', 'vqq_vusession', 'vqq_openid',
+                         'wxuin', 'access_token', 'login_uin', 'qq_uin', 'uid', 'ptui_loginuin', 'vuid'];
+              var found = key.filter(function (k) { return names.indexOf(k) >= 0; });
+              console.log('[b0b] 票里共 ' + names.length + ' 条，登录相关的有：' + (found.length ? found.join(',') : '一条都没有'));
+            } catch (e) {}
             res(c);
           }).catch(function (e) {
             console.log('[b0b] 向后台页取票失败：' + e);

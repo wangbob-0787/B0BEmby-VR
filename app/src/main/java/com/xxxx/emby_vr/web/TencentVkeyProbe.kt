@@ -83,9 +83,11 @@ object TencentVkeyProbe {
         Log.i(TAG, if (inited) "签名库已可用" else "签名库仍算不出 ckey（下面各组合都会失败）")
 
         /*
-         * 顺手验一条更省事的路（2026-10-18 下午在 .18 上实测通了）：
-         * 腾讯老接口 getinfo 不要签名、不要登录就能给整片地址，且支持分段请求。
-         * 这里用设备上的真实身份（网页里那份票）再验一次，看档位能不能上去。
+         * 验签名那条路（2026-10-18 晚）：签名是我们自己按它的算法算的（见 TencentSign），
+         * 接口地址换成 vv6 的 getvinfo。要看的就两件事：
+         *   1) `preview` 是 180 还是整集时长 —— 判断"身份有没有生效"；
+         *   2) 档位能上到多高（uhd/fhd/shd）。
+         * 老接口 `vv.video.qq.com/getinfo` 已实测判定给不了整集，不再走。
          */
         val whole = com.xxxx.emby_vr.web.TencentWholeUrl.fetch(vid, cookie, deep = true)
         if (whole == null) {
