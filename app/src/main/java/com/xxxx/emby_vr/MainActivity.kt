@@ -3041,6 +3041,9 @@ class MainActivity : ComponentActivity() {
     /** 上一批分片是从哪个页面地址来的（页面一换 = 换了剧/集，旧片段一条不留）。 */
     private var segFrame: String? = null
 
+    /** 分片文件名里的片子身份号：`…_1000102_<这串>.f322093.1.ts`。 */
+    private val SEG_KEYID = Regex("_1000102_([0-9a-zA-Z]{16,80})\\.f\\d+")
+
     /**
      * 换集就先清空重攒，且必须在"判断手上分片够不够"之前调用（r706 实测的次序坑）。
      *
@@ -3066,12 +3069,21 @@ class MainActivity : ComponentActivity() {
         Log.i(TAG, "分片：丢掉 ${drop.size} 段旧会话的片段，只留当前这次播放的 ${tencentSegs.size} 段")
     }
 
-    /** 取分片地址里的"播放会话目录"（`/B_…./svp_50112/<目录>` 这一段）。 */
+    /**
+     * 取分片的"身份号"：优先用文件名里那串片子标识（`NN_gzc_1000102_<身份>.f<tier>.1.ts`），
+     * 拿不到再退回播放会话目录（`/B_…./svp_50112/<目录>`）。
+     *
+     * 2026-10-19 02:54 父亲报"本来想播电影，跑到电视剧上去了"：光用会话目录不够 ——
+     * 同一页面里换片时目录可能不变，靠它会放过上一部的片段。文件名里的身份号是**每部片一份**，
+     * 按它过滤才能保证播的确实是这一部。
+     */
     private fun prefixOf(u: String): String {
+        val m = SEG_KEYID.find(u)
+        if (m != null) return "k:" + m.groupValues[1]
         val i = u.indexOf("/B_")
         if (i < 0) return ""
         val cut = u.lastIndexOf('/')
-        return if (cut > i) u.substring(i, cut) else ""
+        return if (cut > i) "d:" + u.substring(i, cut) else ""
     }
 
     private fun clearSegsIfNewEpisode(frame: String) {
