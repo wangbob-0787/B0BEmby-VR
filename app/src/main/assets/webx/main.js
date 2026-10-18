@@ -2461,11 +2461,20 @@
        * 与其一个个补，不如按"这个名字里带 full/全屏"来认 —— 认错最多是提前交一次，
        * 而抓不到就是永远交不出去。命中时把类名打进日志，下一轮可以据此收窄。
        */
+      /*
+       * 只认"真的按下了"。2026-10-19 02:53 父亲报「我没有点网页全屏，它自动开始播了」——
+       * 病根就在这段选择器：末尾那个 `[class*="full"]` 太宽，页面里任何类名带 full 的元素
+       * （播放器外壳、全屏层之类）被点一下都算"按了全屏"；而且页面自己的脚本也能合成点击。
+       * 现在两道闸：①只信真实用户点击（isTrusted）；
+       * ②选择器收窄到真正的全屏按钮（三站各自的按钮类名 + aria-label/title 含"全屏"）。
+       */
+      if (!ev.isTrusted) return;
       var el = ev.target && ev.target.closest ? ev.target.closest(
         '.bpx-player-ctrl-web,.bpx-player-ctrl-web-enter,.bpx-player-ctrl-full,' +
         '.squirtle-video-pagefullscreen,.squirtle-video-fullscreen,' +
-        '[aria-label*="全屏"],[title*="全屏"],[class*="fullscreen"],[class*="full-screen"],' +
-        '[class*="webfull"],[class*="pagefull"],[class*="full"]') : null;
+        '[aria-label*="全屏"],[title*="全屏"],[class*="ctrl-full"],[class*="webfull"],' +
+        '[class*="pagefull"],[class*="fullscreen-btn"],[class*="fullscreen__btn"],' +
+        '[class*="txp_fullscreen_btn"]') : null;
       if (!el) return;
       fullState = true;
       lastFullAt = Date.now();
