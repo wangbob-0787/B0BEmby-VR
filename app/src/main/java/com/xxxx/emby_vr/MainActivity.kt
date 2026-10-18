@@ -2803,6 +2803,9 @@ class MainActivity : ComponentActivity() {
     /** 起播时告诉"这一段别销毁网页"（攒分片模式专用） */
     private var webKeepPageAlive = false
 
+    /** 已经问过整片地址的片子（同一部只问一次） */
+    private var webWholeTried: String? = null
+
     /** 扩展攒到的一批分片（跑在火狐内核的线程上，先切回主线程） */
     private fun onBridgeFrags(obj: org.json.JSONObject) {
         runOnUiThread { handleBridgeFrags(obj) }
@@ -2839,6 +2842,32 @@ class MainActivity : ComponentActivity() {
         }
         val frame = obj.optString("frame")
         val cookie = obj.optString("cookie")
+        /*
+         * 先问整片地址（2026-10-18 父亲定的新路线）。
+         *
+         * 网页那条路是「一段一签」，只能顺着播、拖不了进度；腾讯的老接口给的是
+         * **整片一个文件**、支持分段请求，能随便拖。所以顺序是：先整片，整片拿不到
+         * 才退回分片接力。同一部片子只问一次，问过就不再拦后面的分片。
+         */
+        val wholeVid = com.xxxx.emby_vr.web.TencentWholeUrl.vidFromFrame(frame)
+        if (wholeVid != null && webWholeTried != wholeVid) {
+            webWholeTried = wholeVid
+            Log.i(TAG, "腾讯片页 vid=$wholeVid，先问整片地址（要能拖进度的那条）")
+            Thread {
+                val hit = com.xxxx.emby_vr.web.TencentWholeUrl.fetch(
+                    wholeVid, cookie.ifBlank { null },
+                )
+                runOnUiThread {
+                    if (hit == null) {
+                        Log.i(TAG, "整片地址没拿到，退回分片接力（拖进度就别指望了）")
+                    } else {
+                        Log.i(TAG, "整片地址拿到（${hit.quality}），播整片，可拖进度")
+                        playWholeUrl(hit.url, hit.quality, cookie, frame)
+                    }
+                }
+            }.start()
+            return
+        }
         if (!webFragMode) {
             webFragMode = true
             webFragReturnUrl = frame.takeIf { it.isNotBlank() }
@@ -2941,6 +2970,41 @@ class MainActivity : ComponentActivity() {
         }
         webFragLastAt = System.currentTimeMillis()
         if (n > 0) Log.i(TAG, "补接起播前到达的 $n 段（播放器起来之前先存着的）")
+    }
+
+    /**
+     * 播整片地址（2026-10-18 父亲定的新路线用）。
+     *
+     * 与分片路的关键差别：**不需要留着网页**（地址不是一段一签的），所以
+     * 按 B 回来时走的是"整片看完回网页"的老路。
+     */
+    private fun playWholeUrl(url: String, quality: String, cookie: String, frame: String) {
+        webKeepPageAlive = false
+        webFragMode = false
+        val headers = org.json.JSONObject()
+        try {
+            headers.put("Referer", "https://v.qq.com/")
+            headers.put("User-Agent", WEB_DESKTOP_UA)
+            if (cookie.isNotBlank()) headers.put("Cookie", cookie)
+        } catch (_: Throwable) {
+        }
+        val s0 = org.json.JSONObject()
+        s0.put("video", url)
+        s0.put("audio", "")
+        s0.put("height", 1080)
+        s0.put("bw", 0)
+        s0.put("headers", headers)
+        val arr = org.json.JSONArray()
+        arr.put(s0)
+        val one = org.json.JSONObject()
+        one.put("streams", arr)
+        one.put("kind", "play")
+        one.put("site", "qq")
+        one.put("title", "")
+        one.put("cookie", cookie)
+        one.put("frame", frame)
+        one.put("quality", quality)
+        playWebStream(one)
     }
 
     private fun playWebStream(obj: org.json.JSONObject) {

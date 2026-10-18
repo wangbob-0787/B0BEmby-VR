@@ -82,6 +82,18 @@ object TencentVkeyProbe {
         }
         Log.i(TAG, if (inited) "签名库已可用" else "签名库仍算不出 ckey（下面各组合都会失败）")
 
+        /*
+         * 顺手验一条更省事的路（2026-10-18 下午在 .18 上实测通了）：
+         * 腾讯老接口 getinfo 不要签名、不要登录就能给整片地址，且支持分段请求。
+         * 这里用设备上的真实身份（网页里那份票）再验一次，看档位能不能上去。
+         */
+        val whole = com.xxxx.emby_vr.web.TencentWholeUrl.fetch(vid, cookie)
+        if (whole == null) {
+            Log.w(TAG, "整片地址：没拿到")
+        } else {
+            Log.i(TAG, "整片地址：✅ ${whole.quality}（${whole.defn}）→ ${whole.url.take(120)}…")
+        }
+
         var found = 0
         for (sdtfrom in SDTFROMS) {
             for (platform in PLATFORMS) {
