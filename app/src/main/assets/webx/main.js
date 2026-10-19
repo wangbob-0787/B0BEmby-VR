@@ -1243,6 +1243,21 @@
       var liveOk = fl > 0 && Date.now() - fl < 20 * 60 * 1000;
       var pd2 = 0;
       try { pd2 = pageClipDur(); } catch (e) {}
+      /*
+       * 【2026-10-19 15:52 父亲定：清单优先，分片只做兜底】
+       *
+       * 手上已经有整集清单（响应里那份，含 4K）时，就不要再交分片了 ——
+       * 分片是"页面当前在拉的那一档"，交出去会把清单那份 4K 顶掉（15:43 实测 4K → 720P）。
+       * 只有清单过期或压根没有清单时，才回到分片兜底那条路（B站/爱奇艺 不受影响）。
+       */
+      if (qqListFresh()) {
+        if (fragHoldLogged !== -1) {
+          fragHoldLogged = -1;
+          console.log('[b0b] 攒到 ' + ks.length + ' 段，不交：手上已有整集清单（' +
+            (qqTierName(pendingQq) || '档位未知') + '），按清单播');
+        }
+        return;
+      }
       if ((!fsOk2 && !liveOk) || pd2 < 360) {
         if (fragHoldLogged !== ks.length) {
           fragHoldLogged = ks.length;
@@ -1304,6 +1319,51 @@
 
   /** 播放信息里带过来的正名（这一集/这一部），比 document.title 准（2026-10-19 加） */
   var qqRemoteTitle = '';
+
+  /*
+   * 【2026-10-19 15:52 父亲定的规则：清单优先，且只升不降】
+   *
+   * 头显实测（15:43 → 15:48）：内核先解 4K(hevc 3840×2160)，随后被 1080P、720P 顶掉 ——
+   * 因为接管用的是"页面当时在拉的那一档分片"，页面自适应降档，我们跟着降。
+   * 父亲口径：**响应里带着全部档位（含 4K 整集清单），就直接把 4K 那份拎出来当播放源，
+   * 页面自己爱拉什么拉什么**。所以：
+   *   ① 手上已有整集清单时，不再交分片（分片只做兜底）；
+   *   ② 新的清单档位低于手上的那份时，不替换（防止 4K 被后来的 1080P 顶掉）。
+   */
+  var QQ_TIER_RANK = { '4K': 4, '1080P': 3, '720P': 2, '480P': 1 };
+
+  function qqTierRank(u) {
+    var n = qqTierName(u);
+    return QQ_TIER_RANK[n] || 0;
+  }
+
+  /** 手上这份清单还在保质期内吗（腾讯票据约几十分钟，取 30 分钟） */
+  function qqListFresh() {
+    return !!pendingQq && (Date.now() - qqAt) < 30 * 60 * 1000;
+  }
+
+  /*
+   * 【2026-10-19 15:52 父亲报的第二个问题】按 B 回网页之后又会自动接管。
+   *
+   * 接管时网页屏被收起来（页面转后台），回网页时页面重新可见 —— 就是这一刻，
+   * 把"按过全屏""这一部在播"两个标记清掉，于是必须**重新按一次网页全屏**才会再接管。
+   */
+  var qqLastHiddenAt = 0;
+  document.addEventListener('visibilitychange', function () {
+    try {
+      if (document.hidden) {
+        qqLastHiddenAt = Date.now();
+        return;
+      }
+      /* 隐藏超过 2 秒再回来 = 真的被收起来过（不是标签切换那种抖动） */
+      if (!qqLastHiddenAt || Date.now() - qqLastHiddenAt < 2000) return;
+      qqLastHiddenAt = 0;
+      try { localStorage.removeItem('b0b:fullAt'); } catch (e) {}
+      try { localStorage.removeItem('b0b:fragLive'); } catch (e) {}
+      fullState = 0;
+      console.log('[b0b] 网页回到前台：清掉"按过全屏/在播"标记 —— 下次要再按一次全屏才接管');
+    } catch (e) {}
+  });
 
   /* 从清单地址里认档位（f322093=4K、f322084=1080P…），只用于给人看的"清晰度"字样 */
   function qqTierName(u) {
@@ -1389,7 +1449,7 @@
           kind: 'play', preview: 1, whole: 1, site: 'qq',
           frame: location.href, title: pageMovieTitle(),
           ep: String(key || ''), durSec: dur,
-          quality: (p.info && p.info.quality) ? p.info.quality : '',
+          quality: (p.info && p.info.quality) ? p.info.quality : (qqTierName(p.u) || ''),
           width: 0, height: 0, cookie: '',
           streams: [{ id: 0, height: 0, width: 0, bw: 0, vcodec: 'h264', video: p.u, audio: '' }]
         };
@@ -1421,6 +1481,23 @@
   }
 
   function shareQq(raw, info) {    var u = cleanUrl(raw);
+    /*
+     * 【2026-10-19 15:52 父亲定：清单只升不降】
+     *
+     * 页面会反复要播放信息（切档、续播都要一次），后来的那份不一定更好。
+     * 手上已有更高档位时直接不收，避免 4K 被 1080P/720P 顶掉。
+     */
+    try {
+      if (qqListFresh() && u !== pendingQq) {
+        var oldR = qqTierRank(pendingQq);
+        var newR = qqTierRank(u);
+        if (oldR > 0 && newR > 0 && newR < oldR) {
+          console.log('[b0b] 这条清单是 ' + qqTierName(u) + '，手上已有 ' + qqTierName(pendingQq) +
+            '，不替换（只升不降）');
+          return;
+        }
+      }
+    } catch (e) {}
     pendingQq = u; qqAt = Date.now(); qqHost = location.hostname;
     qqKey = pageVideoKey(location.href);
     var m = { __b0bQq: 1, u: u, at: qqAt, key: qqKey, host: qqHost };
