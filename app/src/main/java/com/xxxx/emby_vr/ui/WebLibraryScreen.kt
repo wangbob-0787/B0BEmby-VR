@@ -400,6 +400,12 @@ fun currentWebCookie(): String {
 private object WebRuntime {
     private var cached: org.mozilla.geckoview.GeckoRuntime? = null
 
+    /** 应用上下文（2026-10-20）：整集清单要落盘成 m3u8 文件交给内核，需要 cacheDir */
+    private var appCtx: android.content.Context? = null
+
+    /** 整集清单的本机服务（2026-10-20）：同一个进程复用，换集只换内容 */
+    private var hlsServer: com.xxxx.emby_vr.web.PlaylistServer? = null
+
     /**
      * 网页抓到可播地址之后交给谁（2026-10-16）。
      *
@@ -485,6 +491,7 @@ private object WebRuntime {
                     b.javaClass.getMethod("consoleOutput", java.lang.Boolean.TYPE)
                         .invoke(b, true)
                 }
+            appCtx = ctx.applicationContext
             org.mozilla.geckoview.GeckoRuntime.create(ctx, b.build())
         }
         made.getOrNull()?.let {
@@ -688,9 +695,74 @@ private object WebRuntime {
         fragSink?.invoke(obj)
     }
 
+    /**
+     * 整集分片清单（2026-10-20 父亲定：「把清单地址原样打出来」那条思路的落地）。
+     *
+     * 扩展在播放信息响应里一次就能看到整集全部分片（头显实测 4K 共 285 段，每段自带签名），
+     * 所以不必等页面一段段拉完。这里把那份标准播放列表写到 cacheDir，再把文件交给内核：
+     * mpv 打开它就是一个普通 HLS，整集时长、拖动、逐段取流全由内核自己处理。
+     * 文件名里带上档位与段号范围 —— 客户端的换源去重是按地址尾部判的，文件名不同才算新内容。
+     */
+    private fun onBridgeHls(obj: org.json.JSONObject) {
+        val text = obj.optString("text")
+        if (text.isBlank()) return
+        val c = appCtx ?: run {
+            android.util.Log.w("B0BEmbyVR", "整集清单：拿不到上下文，放弃")
+            return
+        }
+        android.util.Log.i(
+            "B0BEmbyVR",
+            "整集清单到达：档 f" + obj.optString("tier") + "、" + obj.optInt("segs", 0) +
+                " 段、" + obj.optInt("height", 0) + "p、文本 " + text.length + " 字符",
+        )
+        /* 内容特征：换集/换档必须让去重判据看到不同的地址，所以把签名挂在查询串上 */
+        val sig = obj.optString("tier", "x") + "-" + obj.optInt("segs", 0) + "-" + obj.optInt("first", 0)
+        val srv = hlsServer ?: com.xxxx.emby_vr.web.PlaylistServer().also { hlsServer = it }
+        var target = ""
+        runCatching {
+            val base = srv.start(text)
+            if (!base.isNullOrBlank()) target = "$base?sig=$sig"
+        }
+        if (target.isBlank()) {
+            /* 本机服务起不来的兜底：落盘成文件，交给内核按本地文件播 */
+            val f = runCatching {
+                val dir = java.io.File(c.cacheDir, "vr-hls").apply { mkdirs() }
+                java.io.File(dir, "list-$sig.m3u8").also { it.writeText(text) }
+            }.getOrNull()
+            if (f == null) {
+                android.util.Log.w("B0BEmbyVR", "整集清单：本机服务与落盘都失败，放弃")
+                return
+            }
+            target = "file://" + f.absolutePath
+            android.util.Log.i("B0BEmbyVR", "整集清单：本机服务不可用，改走文件 " + f.absolutePath)
+        }
+        android.util.Log.i(
+            "B0BEmbyVR",
+            "整集清单就绪（" + sig + "，" + text.length + " 字符）→ " + target,
+        )
+        val play = org.json.JSONObject()
+        play.put("kind", "play")
+        play.put("frame", obj.optString("frame"))
+        play.put("title", obj.optString("title"))
+        play.put("durSec", 0)
+        val streams = org.json.JSONArray()
+        val one = org.json.JSONObject()
+        one.put("video", target)
+        one.put("height", obj.optInt("height", 2160))
+        one.put("bw", 0)
+        one.put("audio", "")
+        streams.put(one)
+        play.put("streams", streams)
+        onBridgePlayable(play)
+    }
+
     /** 扩展报上来的数据；页面里有几个框架就报几份，谁的面积大由 ticker 挑 */
     private fun onBridgeMessage(message: Any?) {
         val obj = message as? org.json.JSONObject ?: return
+        if (obj.optString("kind") == "hls") {
+            onBridgeHls(obj)
+            return
+        }
         if (obj.optString("kind") == "play") {
             /*
              * 提前通报（2026-10-19 父亲定）：带 preview=1 的那条只填信息、不起播，

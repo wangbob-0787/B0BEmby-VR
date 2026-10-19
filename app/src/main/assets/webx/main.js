@@ -704,6 +704,96 @@
        */
       var all = t.match(/https?:\\?\/\\?\/[^"'\s]{6,1400}?\.m3u8[^"'\s\\]{0,400}/g) || [];
       /*
+       * 【2026-10-20 02:20 父亲定：把"整集分片清单"整份取出来】
+       *
+       * 头显实测（01:34:27）：一条播放信息响应里带着 **285 段** 4K 分片地址
+       * （`…_{hash}.f322093.N.ts?index=…&start=…&end=…&token=…`），每段自带签名。
+       * 也就是说页面早在起播那一刻就把整集地址全拿到了，不需要等它一段段拉完。
+       *
+       * 而昨晚卡住的原因正是"只记了页面实际拉过的那几段"：接管后页面停手 → 后面全空。
+       * 现在改成：一看到响应里有成批的同档分片，就按 index 顺序把它们拼成一份标准播放列表，
+       * 整份交给客户端（客户端写成文件后由内核当普通 HLS 播，拖动/整集时长都原生成立）。
+       *
+       * 档位优先级：4K(f322093) > HDR10(f322350) > 1080P(f322084/321004) > 720P(f322363/321003)。
+       */
+      try {
+        var segMap = {}, segTier = {}, segHost = '';
+        var reSeg = /https?:\\?\/\\?\/[^"'\s\\]{4,1600}?\.f(\d{6})\.(\d+)\.ts\?[^"'\s\\]{0,400}/g;
+        var sm;
+        while ((sm = reSeg.exec(t))) {
+          var segUrl = String(sm[0]).replace(/\\\//g, '/');
+          var tierId = sm[1];
+          var segIdx = parseInt(sm[2], 10);
+          if (!segUrl || isNaN(segIdx)) continue;
+          if (!segMap[tierId]) segMap[tierId] = {};
+          if (!segMap[tierId][segIdx]) {
+            segMap[tierId][segIdx] = segUrl;
+            segTier[tierId] = (segTier[tierId] || 0) + 1;
+            if (!segHost) { try { segHost = String(segUrl).split('/')[2] || ''; } catch (e0) {} }
+          }
+        }
+        var QQ_SEG_TIER = ['322093', '322350', '322084', '321004', '322363', '321003'];
+        var pickedTier = '';
+        for (var ti = 0; ti < QQ_SEG_TIER.length; ti++) {
+          if ((segTier[QQ_SEG_TIER[ti]] || 0) >= 20) { pickedTier = QQ_SEG_TIER[ti]; break; }
+        }
+        if (pickedTier) {
+          var bag = segMap[pickedTier];
+          var idxs = Object.keys(bag).map(function (k) { return parseInt(k, 10); }).sort(function (a, b) { return a - b; });
+          var segTxt = ['#EXTM3U', '#EXT-X-VERSION:3', '#EXT-X-PLAYLIST-TYPE:VOD', '#EXT-X-TARGETDURATION:7', '#EXT-X-MEDIA-SEQUENCE:0'];
+          for (var si = 0; si < idxs.length; si++) {
+            var one = bag[idxs[si]];
+            /* 每段真实时长从 start/end 算（腾讯时基 90000） */
+            var dm = String(one).match(/[?&]start=(\d+)/);
+            var de = String(one).match(/[?&]end=(\d+)/);
+            var segDur = 5.25;
+            if (dm && de) {
+              var d0 = parseInt(dm[1], 10), d1 = parseInt(de[1], 10);
+              if (d1 > d0) segDur = Math.round((d1 - d0) / 900) / 100;
+            }
+            segTxt.push('#EXTINF:' + segDur.toFixed(3) + ',');
+            segTxt.push(one);
+          }
+          segTxt.push('#EXT-X-ENDLIST');
+          var segText = segTxt.join('\n');
+          var hgt = pickedTier === '322093' ? 2160 : (pickedTier === '322350' ? 2160 :
+            ((pickedTier === '322084' || pickedTier === '321004') ? 1080 : 720));
+          var listSig = pickedTier + '|' + idxs.length + '|' + idxs[0] + '|' + idxs[idxs.length - 1];
+          console.log('[b0b] 整集分片清单：档 f' + pickedTier + '（' + hgt + 'p）共 ' + idxs.length +
+            ' 段，号 ' + idxs[0] + '–' + idxs[idxs.length - 1] + '，主机 ' + segHost + '，签名 ' + listSig);
+          if (listSig !== qqHlsSig) {
+            var hlsPayload = {
+              kind: 'hls',
+              text: segText,
+              height: hgt,
+              tier: pickedTier,
+              segs: idxs.length,
+              first: idxs[0],
+              last: idxs[idxs.length - 1],
+              frame: String(location.href || ''),
+              title: String(qqRemoteTitle || document.title || ''),
+            };
+            var fullNow = false;
+            try {
+              var faNow2 = parseInt(localStorage.getItem('b0b:fullAt') || '0', 10) || 0;
+              fullNow = faNow2 > 0 && (Date.now() - faNow2) < 10 * 60 * 1000;
+            } catch (eF) {}
+            if (fullNow) {
+              qqHlsSig = listSig;
+              qqHlsPend = null;
+              try {
+                window.postMessage({ __b0b: 1, payload: hlsPayload }, '*');
+                console.log('[b0b] 整集分片清单已交客户端（' + segText.length + ' 字符）');
+              } catch (eS) { console.log('[b0b] 清单发送失败：' + eS); }
+            } else {
+              qqHlsPend = hlsPayload;
+              console.log('[b0b] 整集分片清单先候着：等他按网页全屏再交（' + idxs.length + ' 段）');
+            }
+          }
+        }
+      } catch (eH) {}
+
+      /*
        * 【2026-10-19 16:44 父亲："重点是如何拿到 4K"】
        *
        * 头显现场（r722）：页面确实要回了正片数据（proxyhttp 响应 82 KB，含 m3u8），
@@ -1204,6 +1294,10 @@
   } catch (e) {}
 
   var pendingQq = '', qqAt = 0, qqKey = '', qqHost = '';
+  /* 已交出去的整集分片清单签名（同一份只交一次，2026-10-20） */
+  var qqHlsSig = '';
+  /** 已经拼好、但还没按全屏的整集清单（按全屏时才交，沿用既有规矩） */
+  var qqHlsPend = null;
   /*
    * 【2026-10-19 20:52 父亲定的五条】
    *
@@ -1866,11 +1960,21 @@
   var peerFullAt = 0;
   /* 别层量到的"这段多长"（广告 30 秒这种，往往出现在播放器那一层，父亲 2026-10-18） */
   var peerClipDur = 0;
+  /** 整集清单候着的话，按下全屏这一刻补交（2026-10-20） */
+  function flushHlsPend() {
+    if (!qqHlsPend) return;
+    try {
+      window.postMessage({ __b0b: 1, payload: qqHlsPend }, '*');
+      console.log('[b0b] 按下全屏：把候着的整集清单交出去（' + qqHlsPend.segs + ' 段，' + qqHlsPend.height + 'p）');
+      qqHlsPend = null;
+    } catch (e) { console.log('[b0b] 整集清单补交失败：' + e); }
+  }
   function announceFullscreen(t) {
     peerFullAt = t;
     try { localStorage.setItem('b0b:fullAt', String(t)); } catch (e) {}
     /* 按下全屏这一层同一个道理：清掉按之前攒的试看段（2026-10-18） */
     resetFragsOnFull();
+    flushHlsPend();
     try { window.top.postMessage({ __b0bFull: 1, t: t }, '*'); } catch (e) {}
   }
   try {
@@ -1886,6 +1990,7 @@
            * 清掉之后从全屏这一刻往新取的段开始接，顺序仍然是连的。
            */
           resetFragsOnFull();
+          flushHlsPend();
           if (window.self === window.top) {
             /* 最外层收到后替下层转发一遍（下层之间不互通） */
             for (var i = 0; i < window.frames.length; i++) {
