@@ -740,14 +740,30 @@
        */
       try {
         if (all.length) {
-          console.log('[b0b] 腾讯响应扫到 ' + all.length + ' 条 m3u8 候选：' +
-            all.slice(0, 6).map(function (x, i) {
-              var raw = String(x).replace(/\\\//g, '/');
-              var tail = raw.split('?')[0].split('/').pop() || '';
-              return (i + 1) + ')' + (isPlaylistUrl(x) ? '清单' : '分片') +
-                '/' + (isAdUrl(x) ? '广告域' : '正常域') + ' …' + raw.slice(-90) + '(尾名' + tail + ')';
-            }).join('  '));
+          /* 候选逐条打：r723 那版拼成一行，logcat 把后半截截掉了，剩下的看不见（2026-10-19 16:58） */
+          console.log('[b0b] 腾讯响应扫到 ' + all.length + ' 条 m3u8 候选，逐条如下：');
+          all.forEach(function (x, i) {
+            var raw = String(x).replace(/\\\//g, '/');
+            var tail = raw.split('?')[0].split('/').pop() || '';
+            console.log('[b0b]   候选' + (i + 1) + ' ' + (isPlaylistUrl(x) ? '清单' : '分片') +
+              '/' + (isAdUrl(x) ? '广告域' : '正常域') + ' 尾名=' + tail.slice(-60) +
+              ' 长度=' + raw.length + ' 结尾=' + raw.slice(-40));
+          });
         }
+        /*
+         * 【2026-10-19 16:58 加：直接数响应里有几档】
+         *
+         * 腾讯的档位号长这样：f322093=4K、f322084=1080P、f322363=720P…
+         * 与其猜哪条地址是 4K，不如先看响应里到底出现了哪些档位号 —— 一个都没有就说明
+         * 服务器压根没给多档，有 4K 号就说明给了、只是我们没把它挑出来。
+         */
+        var tiers = {};
+        var mm;
+        var re = /f(\d{6})\./g;
+        while ((mm = re.exec(t))) tiers[mm[1]] = (tiers[mm[1]] || 0) + 1;
+        console.log('[b0b] 响应里的档位号：' + (Object.keys(tiers).length ?
+          Object.keys(tiers).map(function (k) { return 'f' + k + '×' + tiers[k]; }).join(' ') : '（一个都没有）') +
+          ' 含uhd=' + /uhd/.test(t) + ' 含hdr10=' + /hdr10/i.test(t) + ' 含4K字样=' + /4K|3840|2160/.test(t));
       } catch (e) {}
       /*
        * 【2026-10-18 01:33 破案 —— 腾讯"接管了却没画面"的真凶】
