@@ -752,6 +752,21 @@
             ' 含enc1=' + /"enc"\s*:\s*1/.test(t) +
             ' 有明文ts=' + /\.ts[?"']/.test(t) +
             ' 头=' + head300);
+          /* 明文地址摘录（去掉 ? 之后的部分，不留 token）：看这份响应里到底给了哪几档 */
+          try {
+            var addrs = (t.match(/https:\/\/[^"\\\s]+\.(?:ts|m3u8)[^"\\\s]*/g) || []).slice(0, 4)
+              .map(function (a) { return a.split('?')[0]; });
+            if (addrs.length) console.log('[b0b] 响应里的明文地址：' + addrs.join(' | '));
+          } catch (eA) {}
+          /* 腾讯播放信息的结构：有没有 vinfo 字段、它是不是加密的 */
+          try {
+            var jo = JSON.parse(t);
+            var ph = jo && jo.data && jo.data.proxyhttp;
+            if (ph) {
+              console.log('[b0b] 这份响应带 vinfo：enc=' + ph.enc + ' 长度=' + (ph.vinfo ? ph.vinfo.length : 0) +
+                ' 前100=' + String(ph.vinfo || '').slice(0, 100).replace(/[A-Za-z0-9+/=_\-]{30,}/g, '[长串]'));
+            }
+          } catch (eJ) {}
         } catch (eH) {}
       } catch (e) {}
       /*
