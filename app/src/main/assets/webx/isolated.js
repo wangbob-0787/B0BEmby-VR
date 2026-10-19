@@ -388,9 +388,17 @@
    * 把每档实际给到什么打进日志，最后挑最高的一档用。
    */
   function b0bAskOnce(vid, defn, tm, ver, ck) {
+    /*
+     * 2026-10-20 00:56 父亲点出：**不拼能力位，服务器不会给 4K 整集地址**。
+     * 我们这份自拼请求原来只有 defn/cKey/tm/ver，没有 spvvc 与 sphevcfps，
+     * 服务器就按"没有 HEVC 能力"下发 —— 头显 00:22:51 实测：按 uhd 问回 486p、
+     * 按 fhd 问回 720p、按 shd 问也回 720p，最后交了 720p 给内核。
+     * 现在把页面那份请求里带的两个能力位补上，整集这条通道应该就能给到 4K 档。
+     */
     var u = 'https://vv6.video.qq.com/getvinfo?otype=json&vid=' + vid +
       '&platform=10201&sdtfrom=v1010&defn=' + defn + '&vt=3&charge=0' +
-      '&cKey=' + ck + '&encryptVer=' + ver + '&tm=' + tm;
+      '&cKey=' + ck + '&encryptVer=' + ver + '&tm=' + tm +
+      '&spvvc=3&sphevcfps=52776560265087';
     return b0bPageFetch(u, 9000).then(function (t0) {
       if (!t0) t0 = null;
       if (t0) return t0;
