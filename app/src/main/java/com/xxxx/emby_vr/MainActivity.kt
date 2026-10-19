@@ -2856,44 +2856,16 @@ class MainActivity : ComponentActivity() {
          * "按下网页全屏"那一刻单独送来（带 `whole=1`）。
          * 这条只对腾讯生效：B站 / 爱奇艺 的分片接力照旧，一行未改。
          */
+        /*
+         * 腾讯页面**不再走分片路**（2026-10-19 12:05 删净，父亲定"老逻辑全删"）。
+         *
+         * 分片那一套（记账 + 本机分片播放列表 + 攒够 3 段起播 + 等 12 秒等待）是 10-19 凌晨的
+         * 过渡做法 —— 那时手里没有整集清单，只能靠页面一段段喂。现在整集清单（4K，284 段全在）
+         * 由页面在播放信息响应里直接给到，整集交给内核即可，分片那套一行都不留。
+         * 这条只对腾讯生效：B站 / 爱奇艺 的分片接力照旧，一行未改。
+         */
         if (com.xxxx.emby_vr.web.TencentWholeUrl.vidFromFrame(frame) != null) {
-            /*
-             * 腾讯页面的分片**照样接住**（2026-10-19 改）。
-             *
-             * 原来这里直接丢掉：那时以为腾讯分片只有 3 分钟试看、内核起不来。后来实测清楚了：
-             * 分片是明文 MPEG-TS、覆盖整集、那条通道完全不限速（33–44MB/s），只是**一段一签**，
-             * 必须趁页面自己在放的时候把地址记下来。所以这里改成"只记账、不起播"：攒进本机列表，
-             * 等父亲按网页全屏那一趟进来时，交给分片播放列表起播（整集文件那条路已废弃）。
-             */
-            /*
-             * 换了页面（换剧 / 换集）就把整张表清空，一条旧片段都不留（父亲 2026-10-19 02:38 明确）。
-             * 不清的话，新老片段混在一张表里，播放列表会把上一部剧的片段接进来（r709 实测串剧）。
-             */
-            if (segFrame != null && segFrame != frame) {
-                Log.i(TAG, "分片：页面换了（${segFrame?.take(60)} → ${frame.take(60)}），旧片段全部清掉")
-                segHls?.stop()
-                segHls = null
-                tencentSegs.clear()
-                segWaitedFor = null
-            }
-            segFrame = frame
-            var took = 0
-            for (p in fresh) {
-                val u = p.second
-                if (u.contains(".ts?") || u.contains("/gzc_")) {
-                    tencentSegs[p.first] = u
-                    segHls?.put(p.first, u)
-                    took++
-                }
-            }
-            if (took > 0) {
-                Log.i(
-                    TAG,
-                    "腾讯分片记账：本轮 +$took，共 ${tencentSegs.size} 段" +
-                        "（最大编号 ${tencentSegs.keys.lastOrNull() ?: -1}）",
-                )
-            }
-            Log.i(TAG, "腾讯页面：分片路不起播（记账中；起播等整集那一趟进来时决定）")
+            Log.i(TAG, "腾讯页面：分片路已删除，只认整集清单（见 playWebStream）")
             return
         }
         /*
@@ -3015,169 +2987,15 @@ class MainActivity : ComponentActivity() {
         if (n > 0) Log.i(TAG, "补接起播前到达的 $n 段（播放器起来之前先存着的）")
     }
 
-    /**
-     * 播整片地址（2026-10-18 父亲定的新路线用）。
+    /*
+     * 腾讯分片那一整套（记账表 tencentSegs、本机分片播放列表服务 segHls、换集清场
+     * clearSegsIfNewEpisode / keepOnlyCurrentPlayback / prefixOf、起播 playPlaylistForSegs /
+     * handPlaylistToPlayer）**全部删除**（2026-10-19 12:05，父亲定"老逻辑全删"）。
      *
-     * 与分片路的关键差别：**不需要留着网页**（地址不是一段一签的），所以
-     * 按 B 回来时走的是"整片看完回网页"的老路。
+     * 那套是 10-19 凌晨的过渡做法：一段一签、只能趁页面在放时一段段捡，捡够三段起播。
+     * 现在页面在播放信息响应里直接给出**整集清单**（4K，284 段全在，可拖动），
+     * 交一次给内核就够了 —— 分片那套一行不留，免得它再抢在清单前面。
      */
-    /**
-     * 腾讯分片（2026-10-19 深夜，父亲定「先实现 1080P 分片逻辑」）。
-     *
-     * 腾讯网页把片子切成一二十秒一段、**一段一签**（改一个参数就 403），所以地址只能趁页面
-     * 自己在放的时候一条条记下来（扩展在 webRequest 层回报）。这些分片本身是**明文 MPEG-TS**：
-     * 720P 那条实测 h264 1280×720 + aac，4K 那条 hevc 3840×2160@60，下载 33–44 MB/s 完全不限速。
-     * 于是把它们按编号排成一条本机播放列表交给内核：整集时长、拖动全由内核原生处理。
-     */
-    private val tencentSegs = java.util.concurrent.ConcurrentSkipListMap<Int, String>()
-
-    /** 本机分片播放列表服务；起过一次就复用。 */
-    private var segHls: com.xxxx.emby_vr.web.SegHlsServer? = null
-
-    /** 分片播放列表里那串片号，用来判断"换集"（换了就清空重攒）。 */
-    private var segHlsVid: String? = null
-
-    /** 已经为哪一集等过分片（等到就起播，等不到才退回整集文件，只等一次）。 */
-    private var segWaitedFor: String? = null
-
-    /** 上一批分片是从哪个页面地址来的（页面一换 = 换了剧/集，旧片段一条不留）。 */
-    private var segFrame: String? = null
-
-    /** 分片文件名里的片子身份号：`…_1000102_<这串>.f322093.1.ts`。 */
-    private val SEG_KEYID = Regex("_1000102_([0-9a-zA-Z]{16,80})\\.f\\d+")
-
-    /**
-     * 换集就先清空重攒，且必须在"判断手上分片够不够"之前调用（r706 实测的次序坑）。
-     *
-     * 当时的现象：换到第二集，判断用的是上一集剩下的十几段 → 判为"够"→ 进了分片路 →
-     * 路里才发现换了集、清空 → 新服务一段都没有 → 内核连要 122～139 段全部落空 → 卡住。
-     */
-    /**
-     * 只保留与"最新一段"同一个播放会话的分片（2026-10-19 02:40，父亲报"播到其他剧去了"）。
-     *
-     * 腾讯分片地址里有一段目录是**这次播放的会话号**：`/lv_/B_<会话>/svp_50112/<目录>/NN_gzc_….ts`。
-     * 换剧/换集会换掉这一段，而编号都会从 0 重来 —— 于是新旧分片混在一张表里，
-     * 播放列表就把别的剧的片段接进来看（父亲看到的就是"播到其他剧"）。
-     * 判据用"最新一段"的会话号：跟它不一样的旧段一律丢掉。
-     */
-    private fun keepOnlyCurrentPlayback() {
-        val lastUrl = tencentSegs[tencentSegs.keys.lastOrNull() ?: return] ?: return
-        val keep = prefixOf(lastUrl)
-        if (keep.isEmpty()) return
-        val drop = ArrayList<Int>()
-        for ((k, u) in tencentSegs) if (prefixOf(u) != keep) drop.add(k)
-        if (drop.isEmpty()) return
-        for (k in drop) tencentSegs.remove(k)
-        Log.i(TAG, "分片：丢掉 ${drop.size} 段旧会话的片段，只留当前这次播放的 ${tencentSegs.size} 段")
-    }
-
-    /**
-     * 取分片的"身份号"：优先用文件名里那串片子标识（`NN_gzc_1000102_<身份>.f<tier>.1.ts`），
-     * 拿不到再退回播放会话目录（`/B_…./svp_50112/<目录>`）。
-     *
-     * 2026-10-19 02:54 父亲报"本来想播电影，跑到电视剧上去了"：光用会话目录不够 ——
-     * 同一页面里换片时目录可能不变，靠它会放过上一部的片段。文件名里的身份号是**每部片一份**，
-     * 按它过滤才能保证播的确实是这一部。
-     */
-    private fun prefixOf(u: String): String {
-        val m = SEG_KEYID.find(u)
-        if (m != null) return "k:" + m.groupValues[1]
-        val i = u.indexOf("/B_")
-        if (i < 0) return ""
-        val cut = u.lastIndexOf('/')
-        return if (cut > i) "d:" + u.substring(i, cut) else ""
-    }
-
-    private fun clearSegsIfNewEpisode(frame: String) {
-        val vid = com.xxxx.emby_vr.web.TencentWholeUrl.vidFromFrame(frame) ?: return
-        if (segHlsVid != null && segHlsVid != vid) {
-            Log.i(TAG, "分片：换集（$segHlsVid → $vid），重攒")
-            segHls?.stop()
-            segHls = null
-            tencentSegs.clear()
-        }
-        segHlsVid = vid
-    }
-
-    private fun playPlaylistForSegs(durSecIn: Int, quality: String, cookie: String, frame: String) {
-        clearSegsIfNewEpisode(frame)
-        com.xxxx.emby_vr.web.TencentWholeUrl.vidFromFrame(frame)?.let { wholePlayingVid = it }
-        /*
-         * 关键：**页面继续在放**（2026-10-19 02:30 定）。
-         *
-         * 分片是一段一签的，只有页面自己在取的时候我们才拿得到地址。原来接管后就把页面收掉，
-         * 于是手上永远只有接管前那几段 —— 后面播到就断（父亲看到的就是"只能播一段"）。
-         * 把页面留着（静音、不在前台），它就会一直往前取，我们手上的段跟着长，整集才接得上。
-         */
-        webKeepPageAlive = true
-        startWebAlive()
-        webFragMode = false
-        val durSec = if (durSecIn > 0) durSecIn else (webCandSrc?.optInt("durSec", 0) ?: 0)
-        keepOnlyCurrentPlayback()
-        /* 每次全屏起播都重开一个服务：旧的基准段号与旧片段都不带过来（r709 串剧就是这么来的） */
-        segHls?.stop()
-        segHls = null
-        val ready = segHls
-        if (ready != null) {
-            tencentSegs.forEach { (i, u) -> ready.put(i, u) }
-            handPlaylistToPlayer(ready, durSec, quality, cookie, frame)
-            return
-        }
-        Log.i(TAG, "分片：起本机播放列表服务（已有 ${tencentSegs.size} 段，整集 ${durSec}s）")
-        Thread({
-            val hdrs = HashMap<String, String>()
-            hdrs["Referer"] = "https://v.qq.com/"
-            hdrs["User-Agent"] = WEB_DESKTOP_UA
-            if (cookie.isNotBlank()) hdrs["Cookie"] = cookie
-            val made = com.xxxx.emby_vr.web.SegHlsServer(hdrs, durSec)
-            val ok = made.start()
-            runOnUiThread {
-                if (!ok) {
-                    Log.w(TAG, "分片：播放列表服务起不来，这一条不播")
-                    return@runOnUiThread
-                }
-                segHls = made
-                tencentSegs.forEach { (i, u) -> made.put(i, u) }
-                handPlaylistToPlayer(made, durSec, quality, cookie, frame)
-            }
-        }, "seg-hls-start").start()
-    }
-
-    private fun handPlaylistToPlayer(
-        srv: com.xxxx.emby_vr.web.SegHlsServer,
-        durSec: Int,
-        quality: String,
-        cookie: String,
-        frame: String,
-    ) {
-        val headers = org.json.JSONObject()
-        try {
-            headers.put("Referer", "https://v.qq.com/")
-            headers.put("User-Agent", WEB_DESKTOP_UA)
-        } catch (_: Throwable) {
-        }
-        val s0 = org.json.JSONObject()
-        s0.put("video", srv.playlistUrl())
-        s0.put("audio", "")
-        s0.put("height", 1080)
-        s0.put("bw", 0)
-        s0.put("headers", headers)
-        val arr = org.json.JSONArray()
-        arr.put(s0)
-        val one = org.json.JSONObject()
-        one.put("streams", arr)
-        one.put("kind", "play")
-        one.put("site", "qq")
-        one.put("title", "")
-        one.put("cookie", cookie)
-        one.put("frame", frame)
-        one.put("quality", quality)
-        Log.i(
-            TAG,
-            "分片播放列表交给内核：${srv.playlistUrl()}（已有 ${srv.count} 段，整集 ${durSec}s，档位 $quality）",
-        )
-        playWebStream(one)
-    }
 
     /*
      * 网页那边报来的"这一集可以播了"（2026-10-19 父亲定）。
@@ -3205,6 +3023,11 @@ class MainActivity : ComponentActivity() {
             else -> osdState.title
         }
         osdState.hasPlayback = true
+        /*
+         * 标题行写「即将播放：…」（父亲 2026-10-19 定）：地址已就绪、还没交出去，
+         * 他按控制条上的播放键之后才转成「正在播放」（见 playWebStream 开头）。
+         */
+        osdState.upcoming = true
         Log.i(
             TAG,
             "网页通报：这一集已就绪（时长 ${dur}s，集号 $ep，页面 ${obj.optString("frame").take(50)}）" +
@@ -3221,12 +3044,18 @@ class MainActivity : ComponentActivity() {
      */
     private fun playWebPreview() {
         val obj = webPreview ?: return
-        webPreview = null
+        /*
+         * **不清掉 webPreview**（2026-10-19 11:58 自查）：
+         * 起播之后 hasEngine() 为真，控制条上这一下按的就是暂停/继续了；
+         * 万一这一下没起来（页面没在取片等），手里那份还得留着让他再按一次。
+         */
         Log.i(TAG, "控制条播放键：把网页这一集交给自己的播放器（时长 ${obj.optInt("durSec", 0)}s）")
         playWebStream(obj)
     }
 
     private fun playWebStream(obj: org.json.JSONObject) {
+        /* 真的开始接管了：标题行从「即将播放」转成「正在播放」（父亲 2026-10-19 定） */
+        osdState.upcoming = false
         /*
          * 这条地址是**网页用浏览器自己的身份**要来的（2026-10-18 晚，扩展加了这条路）。
          * 浏览器带票，服务器才给整集；我们自己发的那条请求没身份、只给试看，
@@ -3234,72 +3063,38 @@ class MainActivity : ComponentActivity() {
          */
         if (obj.optInt("whole", 0) == 1) {
             /*
-             * 本机已经攒到够数的腾讯分片 → **优先走分片播放列表**（2026-10-19 02:05 修）。
-             *
-             * 头显实测（r705）：分片是攒到了（日志「腾讯分片记账：本轮 +11，共 11 段」），
-             * 但那时"优先走分片"的判断只加在了另一条入口上，而全屏那一趟实际走的是
-             * 这里（扩展带 whole=1 送来的整集地址）→ 于是又落回被限速到约 1KB/s 的整集 mp4，
-             * 内核读不出轨道（日志「内核轨道清单：[]」「画面参数：格式=-」）→ 大屏黑着。
-             * 分片是明文 MPEG-TS、下载 33–44MB/s，所以只要攒到 3 段以上就改走它。
+             * 分片那套清场（clearSegsIfNewEpisode / keepOnlyCurrentPlayback）随老路一起删掉了
+             * （2026-10-19 12:05）：整集清单自带集号与会话，不存在"新旧分片串剧"这回事。
              */
-            clearSegsIfNewEpisode(obj.optString("frame"))
-            keepOnlyCurrentPlayback()
-            if (tencentSegs.size >= 3) {
+            /*
+             * 【2026-10-19 11:58 父亲提醒：别让老逻辑挡住新路】
+             *
+             * 下面那两段是 **10-19 凌晨**的做法：那时手里没有整集清单，只能靠页面
+             * 一段段喂分片，于是"攒到 3 段就改走分片播放列表"。
+             * 现在手里拿的是**整集清单**（4K 的 m3u8，284 段全在，父亲 11:13 用 IINA 验过），
+             * 它比"攒到的几段"完整得多 —— 再让老路抢先，就等于把整集换成几段。
+             * 所以先认清单：给的是清单就直接往下面走（整集交给内核）；
+             * 只有拿不到清单（老式整集文件 / 只有零散分片）才回退到那条老路。
+             */
+            val firstUrl = obj.optJSONArray("streams")?.optJSONObject(0)?.optString("video") ?: ""
+            val isPlaylist = firstUrl.contains(".m3u8") || firstUrl.contains("#EXTM3U")
+            if (isPlaylist) {
                 Log.i(
                     TAG,
-                    "整集：本机已攒到 ${tencentSegs.size} 段分片，改走分片播放列表" +
-                        "（不走被限速的整集文件）",
+                    "整集清单在手（尾 ${firstUrl.takeLast(46)}），直接交给内核，" +
+                        "不走分片记账那条老路",
                 )
-                playPlaylistForSegs(
-                    obj.optInt("durSec", 0),
-                    obj.optString("quality"),
-                    obj.optString("cookie"),
-                    obj.optString("frame"),
-                )
-                return
             }
             /*
-             * 分片还不够就**等一会儿**，不要退回被限速的整集文件（2026-10-19 02:30）。
+             * 【2026-10-19 12:00 重写，父亲定："老逻辑全删，只留拿最高清那条路"】
              *
-             * 父亲按全屏的时机常常是刚进播放页（页面才取了 0～2 段）。这时若退回整集 mp4，
-             * 内核照样读不动（1KB/s），大屏黑着。页面正在放，分片十几秒内就会攒起来，等它。
-             * 只等一次：等不到（页面被暂停/没在取）才退回老路。
+             * 这里原来有两段老路：①攒到 3 段分片就改走"分片播放列表"；
+             * ②分片不够就等页面多取几段（最多 12 秒），等不到就不接管。
+             * 它们都是 **10-19 凌晨** 的做法 —— 那时手里没有整集清单，只能靠页面
+             * 一段段喂分片。现在手里拿到的是**整集清单**（4K 的 m3u8，284 段全在，
+             * 父亲 11:13 用 IINA 验过整集可播），完整、可直接拖动，比"攒到的几段"好得多。
+             * 两段老路全部删掉，这里只剩一条路：把整集清单交给内核。
              */
-            val waitVid = com.xxxx.emby_vr.web.TencentWholeUrl.vidFromFrame(obj.optString("frame")) ?: ""
-            if (segWaitedFor != waitVid) {
-                segWaitedFor = waitVid
-                Log.i(TAG, "整集：分片只攒到 ${tencentSegs.size} 段，等页面多取几段（最多 12 秒）")
-                val d0 = obj.optInt("durSec", 0)
-                val q0 = obj.optString("quality")
-                val c0 = obj.optString("cookie")
-                val f0 = obj.optString("frame")
-                Thread({
-                    var waited = 0
-                    while (tencentSegs.size < 3 && waited < 24) {
-                        Thread.sleep(500)
-                        waited++
-                    }
-                    val got = tencentSegs.size
-                    runOnUiThread {
-                        if (got >= 3) {
-                            Log.i(TAG, "整集：等到 $got 段分片，改走分片播放列表")
-                            playPlaylistForSegs(d0, q0, c0, f0)
-                        } else {
-                            /*
-                             * 等不到分片就**不接管**（2026-10-19 父亲定：整集那条路删掉，播不起来）。
-                             * 页面留着继续放，父亲可以在网页里继续看；日志记下原因备查。
-                             */
-                            Log.w(
-                                TAG,
-                                "整集：等不到分片（手上 ${tencentSegs.size} 段），这一集不接管" +
-                                    "（整集文件那条路已被限速，不再使用）",
-                            )
-                            hud("这一集没抓到分片，先在网页里看着")
-                        }
-                    }
-                }, "seg-wait").start()
-                return
-            }
             val v = com.xxxx.emby_vr.web.TencentWholeUrl.vidFromFrame(obj.optString("frame"))
             if (v != null) {
                 wholePlayingVid = v

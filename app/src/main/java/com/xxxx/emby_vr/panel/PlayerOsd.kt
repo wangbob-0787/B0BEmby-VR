@@ -230,6 +230,15 @@ class OsdState {
     var positionMs by mutableStateOf(0L)
     var durationMs by mutableStateOf(0L)
 
+    /**
+     * 「即将播放」（2026-10-19 父亲定）。
+     *
+     * 父亲在网页上选好一集时，我们手里已经有整集地址了，但还没交出去 ——
+     * 这时标题行写「即将播放：片名/第几集」，他按控制条上的播放键之后才变成「正在播放」。
+     * 三者互斥：upcoming（已就绪待播）→ hasPlayback（真的在放）→ 都没有（未在播放）。
+     */
+    var upcoming by mutableStateOf(false)
+
     /** 已缓冲到的位置（进度条上那段浅色，照电视版） */
     var bufferedMs by mutableStateOf(0L)
     var speed by mutableStateOf(1f)
@@ -398,6 +407,9 @@ fun PlayerOsdBar(state: OsdState) {
                      * ②片名那格空着还硬写前缀 —— 取不到片名时（网页流那一秒被覆盖成空）
                      *   退成「正在播放」而不是留一个孤零零的冒号。
                      */
+                    /* 即将播放（2026-10-19 父亲定）：地址已就绪、等他按控制条上的播放键 */
+                    state.upcoming && state.title.isNotEmpty() -> "即将播放：${state.title}"
+                    state.upcoming -> "即将播放"
                     state.title.isNotEmpty() -> "正在播放：${state.title}"
                     state.hasPlayback -> "正在播放"
                     else -> "未在播放"
