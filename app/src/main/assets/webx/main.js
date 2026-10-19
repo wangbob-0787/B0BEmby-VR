@@ -1623,6 +1623,21 @@
         }
       }
     } catch (e) {}
+    /*
+     * 【2026-10-19 17:20 父亲："至少要要到 1080P 吧" —— 这条清单得先确认不是广告/试看】
+     *
+     * 现场：父亲按全屏时页面正在放**前贴片广告**（85 秒），我们顺手把广告那条清单交了，
+     * 于是内核只播 1 分 25 秒。判据用页面当前时长（pageClipDur）：短片（< 300 秒）
+     * 一律不交，等它进正片再交 —— 与 flushFrags 里那条闸门同一口径。
+     */
+    try {
+      var pdQ = 0;
+      try { pdQ = pageClipDur(); } catch (e2) {}
+      if (pdQ > 0 && pdQ < 300) {
+        console.log('[b0b] 页面正在放 ' + Math.round(pdQ) + ' 秒的短片（广告/试看），这条清单先不要');
+        return;
+      }
+    } catch (e) {}
     pendingQq = u; qqAt = Date.now(); qqHost = location.hostname;
     qqKey = pageVideoKey(location.href);
     var m = { __b0bQq: 1, u: u, at: qqAt, key: qqKey, host: qqHost };
