@@ -1202,11 +1202,69 @@
     } catch (e) {}
   }
 
-  function shareQq(raw) {    var u = cleanUrl(raw);
+  /*
+   * 提前通报"这一集可以播了"（2026-10-19 父亲定）。
+   *
+   * 父亲的口径：他在网页上选好集，播放地址其实早就到手，不必等他去点网页全屏。
+   * 先把这一集的时长与集号报到控制条上，他按控制条上的播放键才真正起播。
+   *
+   * 去抖 0.6 秒：他快速连点几集时，只报最后停下的那一集 ——
+   * 父亲 11:48 明确问过"控制条会不会不停变"，这就是那道闸。
+   */
+  var qqPreviewTimer = 0, qqPreviewPend = null;
+
+  /* 从清单地址里认档位（f322093=4K、f322084=1080P…），只用于给人看的"清晰度"字样 */
+  function qqTierName(u) {
+    var m = String(u || '').match(/f(\d+)\.ts/);
+    if (!m) return '';
+    var id = m[1];
+    if (id === '322104' || id === '322093') return '4K';
+    if (id === '322084' || id === '321004') return '1080P';
+    if (id === '322363' || id === '321003') return '720P';
+    if (id === '323002' || id === '321002') return '480P';
+    return '';
+  }
+
+  function notifyQqPreview(u, info) {
+    if (!u) return;
+    qqPreviewPend = { u: u, info: info || {} };
+    if (qqPreviewTimer) clearTimeout(qqPreviewTimer);
+    qqPreviewTimer = setTimeout(function () {
+      qqPreviewTimer = 0;
+      var p = qqPreviewPend;
+      qqPreviewPend = null;
+      if (!p || !p.u) return;
+      var dur = 0;
+      try {
+        if (p.info && p.info.durSec > 0) dur = Math.round(p.info.durSec);
+        else dur = Math.round(pageClipDur() || 0);
+      } catch (e) {}
+      try {
+        var key = pageVideoKey(location.href);
+        var payload = {
+          kind: 'play', preview: 1, whole: 1, site: 'qq',
+          frame: location.href, title: document.title || '',
+          ep: String(key || ''), durSec: dur,
+          quality: (p.info && p.info.quality) ? p.info.quality : '',
+          width: 0, height: 0, cookie: '',
+          streams: [{ id: 0, height: 0, width: 0, bw: 0, vcodec: 'h264', video: p.u, audio: '' }]
+        };
+        window.postMessage({ __b0b: 1, payload: payload }, '*');
+        console.log('[b0b] 腾讯：这一集已就绪，先通报客户端（时长≈' + dur + ' 秒，地址 ' +
+          String(p.u).length + ' 字符）');
+      } catch (e) {
+        console.log('[b0b] 腾讯：通报客户端失败：' + e);
+      }
+    }, 600);
+  }
+
+  function shareQq(raw, info) {    var u = cleanUrl(raw);
     pendingQq = u; qqAt = Date.now(); qqHost = location.hostname;
     qqKey = pageVideoKey(location.href);
     var m = { __b0bQq: 1, u: u, at: qqAt, key: qqKey, host: qqHost };
     saveQqLocal(u, qqAt, qqKey);
+    /* 提前把"这一集可以播了"报到控制条上（2026-10-19 父亲定，见 notifyQqPreview） */
+    try { notifyQqPreview(u, info); } catch (e) {}
     try { window.top.postMessage(m, '*'); } catch (e) {}
     try {
       if (window.self === window.top) {
@@ -2085,7 +2143,7 @@
                   return;
                 }
                 if (self_u !== pendingQq) {
-                  shareQq(self_u);
+                  shareQq(self_u, { durSec: total, quality: qqTierName(self_u) });
                   console.log('[b0b] 腾讯播放列表（响应正文就是列表，地址无 .m3u8 后缀，时长≈' +
                     Math.round(total) + ' 秒）');
                 }

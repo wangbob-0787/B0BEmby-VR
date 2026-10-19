@@ -335,6 +335,14 @@ fun WebLibraryScreen(
      * 一批一批交给 MainActivity，由它接在播放列表后面（第一段负责起播）。
      */
     onWebFrags: (org.json.JSONObject) -> Unit = {},
+    /*
+     * "这一集可以播了"的提前通报（2026-10-19 父亲定）。
+     *
+     * 父亲的口径：他在网页上选好集，地址其实早就到手了，不必等他去点网页全屏；
+     * 客户端先把这一集的信息填到控制条上，他按控制条上的播放键再起播。
+     * 这条只带信息（地址/时长/集号），**不触发接管**。
+     */
+    onWebPreview: (org.json.JSONObject) -> Unit = {},
 ) {
     /*
      * 换站点 = 整棵网页子树重建（父亲 2026-10-13 报"B站切腾讯打不开，要先去播一部片子才能开"）。
@@ -349,6 +357,7 @@ fun WebLibraryScreen(
     WebRuntime.setStreamSink(onWebStream)
     /* 攒到的分片走另一个出口：它不换源，只是往播放列表后面接（2026-10-18） */
     WebRuntime.setFragSink(onWebFrags)
+    WebRuntime.setPreviewSink(onWebPreview)
     /*
      * 起始页一起进 key：接管后回网页要落在"接管那一刻那一页"，那是同一站点下的另一个地址，
      * 只按站点编号做 key 不会重建（2026-10-17）。
@@ -435,6 +444,18 @@ private object WebRuntime {
 
     fun setFragSink(f: ((org.json.JSONObject) -> Unit)?) {
         fragSink = f
+    }
+
+    /**
+     * "这一集可以播了"的提前通报交给谁（2026-10-19 父亲定）。
+     *
+     * 与 streamSink 的区别：这条**只填信息、不起播**。父亲在网页上选好集之后，
+     * 控制条上就该显示这一集的时长与集号，他按控制条上的播放键才真正接管。
+     */
+    private var previewSink: ((org.json.JSONObject) -> Unit)? = null
+
+    fun setPreviewSink(f: ((org.json.JSONObject) -> Unit)?) {
+        previewSink = f
     }
 
     fun get(
@@ -671,6 +692,14 @@ private object WebRuntime {
     private fun onBridgeMessage(message: Any?) {
         val obj = message as? org.json.JSONObject ?: return
         if (obj.optString("kind") == "play") {
+            /*
+             * 提前通报（2026-10-19 父亲定）：带 preview=1 的那条只填信息、不起播，
+             * 也不进下面那条去重表 —— 否则真正的"起播"会被它顶掉。
+             */
+            if (obj.optInt("preview", 0) == 1) {
+                previewSink?.invoke(obj)
+                return
+            }
             onBridgePlayable(obj)
             return
         }

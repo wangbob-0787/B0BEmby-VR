@@ -3179,6 +3179,53 @@ class MainActivity : ComponentActivity() {
         playWebStream(one)
     }
 
+    /*
+     * 网页那边报来的"这一集可以播了"（2026-10-19 父亲定）。
+     *
+     * 父亲的口径：他在网页上选好集，地址其实早就到手，不必等他去点网页全屏。
+     * 所以这里**只填信息、不起播** —— 控制条上先出现这一集的时长与集号，
+     * 他按控制条上的播放键（PLAY_PAUSE）才真正接管，那一份地址此时才交出去。
+     */
+    private var webPreview: org.json.JSONObject? = null
+
+    private fun onWebPreviewMsg(obj: org.json.JSONObject) {
+        val dur = obj.optInt("durSec", 0)
+        val ep = obj.optString("ep")
+        val title = obj.optString("title")
+        webPreview = obj
+        if (dur > 0) osdState.durationMs = dur * 1000L
+        osdState.positionMs = 0L
+        /*
+         * 标题与集号：网页报了片名就用片名，否则用"第 N 集"。
+         * hasPlayback 置上，控制条上的播放按钮才是可用的 —— 父亲要按的就是它。
+         */
+        osdState.title = when {
+            title.isNotBlank() -> title
+            ep.isNotBlank() -> "第 $ep 集"
+            else -> osdState.title
+        }
+        osdState.hasPlayback = true
+        Log.i(
+            TAG,
+            "网页通报：这一集已就绪（时长 ${dur}s，集号 $ep，页面 ${obj.optString("frame").take(50)}）" +
+                "，等父亲按控制条播放键",
+        )
+        hud(if (dur > 0) "这一集可以播了，按播放键开始（约 ${dur / 60} 分钟）" else "这一集可以播了，按播放键开始")
+    }
+
+    /**
+     * 控制条播放键按下时，把网页手里那份地址交出去（2026-10-19 父亲定）。
+     *
+     * 走的是与"网页按全屏起播"完全相同的那条路（playWebStream），
+     * 只是触发点从网页按钮搬到了我们的控制条上。
+     */
+    private fun playWebPreview() {
+        val obj = webPreview ?: return
+        webPreview = null
+        Log.i(TAG, "控制条播放键：把网页这一集交给自己的播放器（时长 ${obj.optInt("durSec", 0)}s）")
+        playWebStream(obj)
+    }
+
     private fun playWebStream(obj: org.json.JSONObject) {
         /*
          * 这条地址是**网页用浏览器自己的身份**要来的（2026-10-18 晚，扩展加了这条路）。
@@ -4180,7 +4227,12 @@ class MainActivity : ComponentActivity() {
             // 内核（mpv）这条路上 player 恒为空 —— 判据要用播放接口层，
             // 否则"因图片字幕走内核"的片子上，控制条的快退/快进按钮点了没反应（父亲 2026-10-09）
             com.xxxx.emby_vr.panel.OsdButton.SEEK_BACK -> if (ctl.hasEngine()) seekBy(-10_000)
-            com.xxxx.emby_vr.panel.OsdButton.PLAY_PAUSE -> togglePlayPause()
+            com.xxxx.emby_vr.panel.OsdButton.PLAY_PAUSE ->
+                /*
+                 * 网页还没接管、但手里已经有这一集的地址（2026-10-19 父亲定）：
+                 * 这一下按的是"开始播"，不是暂停。
+                 */
+                if (!ctl.hasEngine() && webPreview != null) playWebPreview() else togglePlayPause()
             com.xxxx.emby_vr.panel.OsdButton.SEEK_FWD -> if (ctl.hasEngine()) seekBy(+10_000)
             // 片头跳过（父亲 2026-10-12）：这颗按钮只在片头范围内存在
             com.xxxx.emby_vr.panel.OsdButton.SKIP_INTRO -> skipIntroManual()
@@ -6621,6 +6673,11 @@ class MainActivity : ComponentActivity() {
                          * 播放列表，第一段起播、后面的接在播放列表末尾，网页留在后台继续取。
                          */
                         onWebFrags = { obj -> onBridgeFrags(obj) },
+                        /*
+                         * 提前通报（2026-10-19 父亲定）：网页那边一拿到整集清单就把
+                         * 这一集的信息报上来，先填控制条，等他按控制条上的播放键再起播。
+                         */
+                        onWebPreview = { obj -> runOnUiThread { onWebPreviewMsg(obj) } },
                     )
                 }
             },
