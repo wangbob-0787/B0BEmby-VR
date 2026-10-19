@@ -1063,6 +1063,8 @@
    * 换代成本：删掉 webClick/fullClick 即可，状态只剩 fullState 单变量。
    */
   var fullState = false;
+  /* 父亲真的点过全屏按钮的时刻（2026-10-19 21:15：只认这一种全屏） */
+  var lastUserFullClickAt = 0;
   var lastFullAt = 0;      /* 最近一次全屏信号，用来做接管间隔粗计时 */
   var lastSubmitSig = '';
   var lastSubmitAt = 0;
@@ -1180,10 +1182,45 @@
           rec.title = ti; rec.epName = ti;
         }
       }
+      /*
+       * 【2026-10-19 21:15 父亲第 3 条：标题有时是 WXGAMESDKFRAME】
+       * 那是页面里另一个内嵌框架的标识（全大写英文），不是片名。
+       * 判据收紧：片名必须含中文，否则整条作废（宁可暂时不显示，也不显示错的）。
+       */
+      if (!/[\u4e00-\u9fa5]/.test(rec.title)) {
+        if (rec.title) console.log('[b0b] 片名「' + rec.title + '」看着不是中文片名，不收');
+        rec.title = ''; rec.ep = '';
+      }
       var vidM = String(t).match(/"vid"\s*:\s*"([0-9a-zA-Z]{6,24})"/);
       if (vidM) rec.vid = vidM[1];
+      /* 时长一起收：短于 5 分钟的是预告/广告，整条作废（父亲第 5 条：别播几十秒的片段） */
+      var tdM = String(t).match(/"td"\s*:\s*(\d{2,7})/);
+      if (tdM) {
+        rec.durSec = parseInt(tdM[1], 10) || 0;
+        if (rec.durSec > 0 && rec.durSec < 300) {
+          console.log('[b0b] 这条播放信息只有 ' + rec.durSec + ' 秒，是广告/预告，不收');
+          rec.title = ''; rec.ep = '';
+        }
+      }
     } catch (e) {}
     return rec;
+  }
+
+  /* 父亲点过的选集链接（记下 vid），用来判断"这条地址是不是他选的那一集" */
+  function rememberSelectedVid(vid) {
+    try {
+      if (!vid) return;
+      localStorage.setItem('b0b:selVid', vid + '|' + Date.now());
+      console.log('[b0b] 记下父亲选的那一集：' + vid);
+    } catch (e) {}
+  }
+  function selectedVid() {
+    try {
+      var raw = String(localStorage.getItem('b0b:selVid') || '');
+      var p = raw.split('|');
+      if (p.length === 2 && Date.now() - parseInt(p[1], 10) < 2 * 3600 * 1000) return p[0];
+    } catch (e) {}
+    return '';
   }
 
   /* 页面地址里那一集的编号（/x/cover/<cid>/<vid>.html 或 /x/page/<vid>.html） */
@@ -1669,10 +1706,26 @@
       var rec = info || { u: u, at: qqAt };
       rec.u = u; rec.at = qqAt;
       var pv = pageVidNow();
+      var sv = selectedVid();
       if (rec.vid && pv && rec.vid !== pv) {
         console.log('[b0b] 这条地址属于「' + rec.vid + '」，页面这一集是「' + pv + '」，不是同一集 —— 丢掉');
         pendingQq = ''; qqAt = 0; qqRec = null;
         return;
+      }
+      if (rec.vid && sv && rec.vid !== sv) {
+        /* 他选了这一集、页面却跑到别的集：先丢；超过 60 秒仍不一致就认页面这一集（避免永远接不上） */
+        var selOld = 0;
+        try {
+          selOld = parseInt(String(localStorage.getItem('b0b:selVid') || '').split('|')[1] || '0', 10) || 0;
+        } catch (e2) {}
+        if (Date.now() - selOld > 60000) {
+          console.log('[b0b] 选择已过期（' + Math.round((Date.now() - selOld) / 1000) + ' 秒），改认页面这一集「' + rec.vid + '」');
+          rememberSelectedVid(rec.vid);
+        } else {
+          console.log('[b0b] 这条地址属于「' + rec.vid + '」，父亲选的是「' + sv + '」，不是同一集 —— 丢掉');
+          pendingQq = ''; qqAt = 0; qqRec = null;
+          return;
+        }
       }
       qqRec = rec;
       console.log('[b0b] 即将播放记录：剧名「' + (rec.title || '?') + '」集号「' + (rec.ep || '?') +
@@ -3034,6 +3087,7 @@
         '[class*="txp_fullscreen_btn"]') : null;
       if (!el) return;
       fullState = true;
+      lastUserFullClickAt = Date.now();
       lastFullAt = Date.now();
       /* 同站点各层共享（2026-10-18 01:05）：见 flushPendingPlay 里的说明 */
       announceFullscreen(Date.now());
@@ -3056,14 +3110,46 @@
       }
       console.log('[b0b]①全屏按钮被点（' + (label || String(el.className).slice(0, 36)) + '）→ 进入投屏态（退出只认 B 键）');
     }, true);
+    /*
+     * 【2026-10-19 21:15 父亲第 1/6 条：没点全屏，它自己接管；按 B 回来几秒又接管一次】
+     *
+     * 病根就在这一段：页面自己进全屏（B 回来重建时它记得全屏、以及起播时它自己会进全屏）
+     * 也会触发 fullscreenchange，我们把它当成"父亲按了全屏"。现在只认**刚点过全屏按钮**
+     * 那一下（3 秒内），其余一概不算，并把共享记号一起清掉。
+     */
     document.addEventListener('fullscreenchange', function () {
       if (window.self !== window.top) return;
+      var inFs = !!(document.fullscreenElement || document.webkitFullscreenElement);
+      var clicked = Date.now() - (lastUserFullClickAt || 0) < 3000;
+      if (inFs && !clicked) {
+        console.log('[b0b]①页面自己进了全屏（不是父亲点的）→ 不算接管，清掉记号');
+        fullState = false;
+        try { localStorage.removeItem('b0b:fullAt'); } catch (e) {}
+        return;
+      }
       lastFullAt = Date.now();
-      fullState = !!(document.fullscreenElement || document.webkitFullscreenElement);
+      fullState = inFs;
       if (fullState) announceFullscreen(Date.now());
       else { try { localStorage.removeItem('b0b:fullAt'); } catch (e) {} }
       console.log('[b0b]①浏览器全屏事件 → ' + (fullState ? '进入全屏（可接管）' : '退出全屏'));
     });
+
+    /*
+     * 【2026-10-19 21:15 父亲第 4 条：明明选第一集，播的是第三集】
+     *
+     * 页面自己会续播/自动下一集，于是"当前页面上在放的那一集"未必是他选的那一集。
+     * 这里记下他真实点过的选集链接（是 a 元素、且带 /x/cover/ + vid），
+     * 之后拿到的地址若与它不一致就丢弃。
+     */
+    document.addEventListener('click', function (ev) {
+      try {
+        if (!ev.isTrusted) return;
+        var a = ev.target && ev.target.closest ? ev.target.closest('a[href*="/x/cover/"], a[href*="/x/page/"]') : null;
+        if (!a) return;
+        var m = String(a.getAttribute('href') || '').match(/\/x\/(?:cover\/[0-9a-zA-Z]+\/|page\/)([0-9a-zA-Z]{6,24})/);
+        if (m) rememberSelectedVid(m[1]);
+      } catch (e) {}
+    }, true);
   } catch (e) {}
   /*
    * 用页面身份要整片地址（2026-10-18 晚）。
