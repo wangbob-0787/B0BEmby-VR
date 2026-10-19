@@ -305,6 +305,8 @@
     }
     var qqHere = pageVideoKey(location.href);
     var qqSamePage = !keyKnown(qqKey) || !keyKnown(qqHere) || qqKey === qqHere;
+    /* 【2026-10-19 21:56】页面上量不到集号时（电影页/改版），一律按同一集处理，
+       否则新地址每 0.4 秒被判"别的集"扔掉，永远换不上 4K。 */
     if (!pendingPlay && pendingQq && Date.now() - qqAt < 30 * 60 * 1000 && qqSamePage) {
       var qqSz = pageVideoSize();
       pendingPlay = {
@@ -1683,6 +1685,18 @@
 
   function shareQq(raw, info) {    var u = cleanUrl(raw);
     /*
+     * 【2026-10-19 21:56 头显日志】控制条标题变成「Thumbplayer 离线日志」，
+     * 原因是腾讯的离线日志页 / 小游戏框架里也有 m3u8，我们把它当成本集地址交了。
+     * 只接受真正的播放页（/x/cover/ 或 /x/page/），其余一律不参与。
+     */
+    try {
+      var here = String(location.href || '');
+      if (!/v\.qq\.com\/x\/(cover|page)\//.test(here)) {
+        console.log('[b0b] 这层不是播放页（' + here.slice(0, 60) + '），它的地址不用');
+        return;
+      }
+    } catch (e) {}
+    /*
      * 【2026-10-19 15:52 父亲定：清单只升不降】
      *
      * 页面会反复要播放信息（切档、续播都要一次），后来的那份不一定更好。
@@ -1741,7 +1755,10 @@
       if (!rec.vid) rec.vid = pageVidNow();
       var pv = pageVidNow();
       var sv = selectedVid();
-      if (rec.vid && pv && rec.vid !== pv) {
+      if (!pv) {
+        /* 电影页地址形如 /x/cover/<cid>.html，本身没有集号；此时只做"不是别的站"的判断 */
+        console.log('[b0b] 这一页没有集号（电影/单片），跳过集号比对');
+      } else if (rec.vid && rec.vid !== pv) {
         console.log('[b0b] 这条地址属于「' + rec.vid + '」，页面这一集是「' + pv + '」，不是同一集 —— 丢掉');
         pendingQq = ''; qqAt = 0; qqRec = null;
         return;
