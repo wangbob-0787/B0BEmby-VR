@@ -2512,6 +2512,35 @@
     return false;
   }
 
+  /*
+   * 【2026-10-20 00:50 父亲定位的时序问题】
+   *
+   * 父亲实测：第一次进播放页没有 4K 选项；切到别的集再切回来，4K 就出现了。
+   * 根因：能力位补丁原来只挂在 XHR 的 body 上（proxyhttp/onlyvinfo），
+   * 而页面第一次进播放页时走的是别的通道（fetch / getvinfo 的 URL 参数），补丁没盖到。
+   *
+   * 所以这里再补两道：
+   *  ① fetch 通道同样改 body（proxyhttp/onlyvinfo）；
+   *  ② 页面自己发的 getvinfo 请求，直接在 URL 上补 spvvc / sphevcfps / defn=uhd。
+   */
+  function patchQqUrl(u) {
+    try {
+      if (!u || String(u).indexOf('getvinfo') < 0) return u;
+      var n = String(u);
+      var changed = false;
+      if (n.indexOf('spvvc=') < 0) { n += '&spvvc=3'; changed = true; }
+      if (n.indexOf('sphevcfps=') < 0) { n += '&sphevcfps=52776560265087'; changed = true; }
+      if (QQ_WANT_DEFN && /defn=[A-Za-z0-9]+/.test(n) && n.indexOf('defn=' + QQ_WANT_DEFN) < 0) {
+        n = n.replace(/defn=[A-Za-z0-9]+/, 'defn=' + QQ_WANT_DEFN);
+        changed = true;
+      }
+      if (changed) {
+        console.log('[b0b] 页面自己的 getvinfo 请求：URL 上补了能力位，defn=' + QQ_WANT_DEFN);
+      }
+      return n;
+    } catch (e) { return u; }
+  }
+
   try {
     var origFetch = window.fetch;
     if (origFetch) {
@@ -2519,6 +2548,20 @@
         var u = '';
         try {
           u = (typeof input === 'string') ? input : ((input && input.url) || '');
+          var pu = patchQqUrl(u);
+          if (pu !== u) {
+            if (typeof input === 'string') input = pu;
+            else if (input && input.url) { try { input = new Request(pu, input); } catch (e0) {} }
+            u = pu;
+          }
+          /* 腾讯播放信息走 fetch 时，body 同样补能力位 */
+          try {
+            if (init && typeof init.body === 'string' &&
+                (u.indexOf('proxyhttp') >= 0 || u.indexOf('onlyvinfo') >= 0)) {
+              var nb0 = patchQqVinfoBody(init.body);
+              if (nb0 !== init.body) init.body = nb0;
+            }
+          } catch (e1) {}
           note(u);
           noteApi(u);
         noteMedia(u);
@@ -2599,6 +2642,8 @@
     var origOpen = XMLHttpRequest.prototype.open;
     XMLHttpRequest.prototype.open = function (m, u) {
       try {
+        var pu2 = patchQqUrl(u);
+        if (pu2 !== u) { u = pu2; arguments[1] = pu2; }
         this.__b0bUrl = String(u || '');
         note(u);
         noteApi(u);
