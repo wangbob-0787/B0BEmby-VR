@@ -2493,6 +2493,8 @@ class MainActivity : ComponentActivity() {
             webFragMinIdx = Int.MAX_VALUE
             webFragMaxIdx = -1
             stopWebAlive()
+            /* 回网页 = 这一轮"留着网页"的任务结束，标记复位（2026-10-19） */
+            webKeepPageAlive = false
             /* 网页又上银幕了，后台取帧这个开关收掉（银幕自己会取） */
             com.xxxx.emby_vr.vr.VrNative.setWebKeepSampling(false)
         }
@@ -3721,7 +3723,19 @@ class MainActivity : ComponentActivity() {
                  * 银幕上放着网页 / 网页视频时，切一部走内核解码的片子，网页退不出去）。
                  * 系统播放器那条路早就有这一句，mpv 分支提前 return，整段被跳过。
                  */
-                closeWeb()
+                /*
+                 * 攒分片模式例外（2026-10-19 08:30 修，r713 头显实测）：
+                 * 这个模式下网页必须活着才有新段 —— 我们把 setWebKeepSampling(true) 刚设好，
+                 * closeWeb() 立刻又把它 setWebKeepSampling(false) + setScreenWeb(false) 推翻
+                 * （日志里两句只差 36ms），页面当场停手，手上永远只有接管前那 3 段，
+                 * 内核播到 20 秒就连续 404。这里按标记放行，标题照旧由下面 applyWebStreamTitle 写。
+                 * 判据带上 isWeb：标记万一残留，也只对网页流生效，播 Emby 片子照旧关网页（不留后台）。
+                 */
+                if (!(isWeb && webKeepPageAlive)) {
+                    closeWeb()
+                } else {
+                    Log.i(TAG, "攒分片模式：起播不关网页（页面继续攒段，取帧保持开启）")
+                }
                 /*
                  * closeWeb() 顺手把控制条上的影片信息清了（那是给 Emby 片子用的），
                  * 网页流的标题刚写就被抹掉 —— 父亲 2026-10-16 只看到「哔哩哔哩」。
@@ -4021,8 +4035,10 @@ class MainActivity : ComponentActivity() {
             /*
              * 大银幕这一路同时只能有一个来源（父亲 2026-10-13 定）：
              * 起播一部 Emby 片子 = 网页面直接退出（不留后台），银幕换成影片。
+             * 攒分片模式例外（2026-10-19 修）：这个模式下页面必须活着才有新段，
+             * 关掉它等于掐断分片来源 —— 见内核分支同款判断的说明。
              */
-            closeWeb()
+            if (!(isWeb && webKeepPageAlive)) closeWeb()
             /*
              * 系统播放器路径 GPU 只要 1.8~2.4ms，视频层可以放开到 1920（2026-10-09）：
              * 只有内核那条（杜比视界 Profile 5）才需要压到 1280 换稳定。
