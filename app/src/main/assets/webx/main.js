@@ -1934,10 +1934,68 @@
     }
   } catch (e) {}
 
+  /*
+   * 【2026-10-19 11:20 4K 破案】腾讯播放信息请求的「能力位补丁」。
+   *
+   * 背景（父亲这天全程追的就是这一条）：
+   *   · 同一个账号、同一部剧，父亲 mac 上的豆包浏览器能拿到 4K，我们这台内核只给到 1080P；
+   *   · 把 mac 上能拿 4K 的完整请求与我们这边的逐字段对比，差的就是两个字段：
+   *       spvvc=3、sphevcfps=52776560265087（后者是 HEVC 帧率能力位图）；
+   *   · 在这台机器上把这两项补进请求，服务器当场把档位表从三档变成五档
+   *     （含 uhd=4K、hdr10=臻彩），清单 tier 从 f321004 变成 f322093，
+   *     下载首段 ffprobe = hevc Main 10 / 3840×2160；整集清单交给播放器直接能播
+   *     （父亲 11:13 用 IINA 实测通过）。
+   *
+   * 所以这里做一件事：页面发播放信息请求时，**在发出前替它补上这两项能力**，
+   * 并把 defn 要成 uhd（4K）。页面自己仍以为在正常发请求，服务器按 4K 下发整集清单，
+   * 我们再照旧把清单地址交给内核播。
+   *
+   * 回退：万一某集没有 4K 档，服务器会退回它能给的档位，页面照常播，不会卡死。
+   */
+  var QQ_CAP_APPEND = '&spvvc=3&sphevcfps=52776560265087';
+  var QQ_WANT_DEFN = 'uhd';
+
+  function patchQqVinfoBody(body) {
+    try {
+      if (typeof body !== 'string' || body.indexOf('vinfoparam') < 0) return body;
+      var o = JSON.parse(body);
+      if (!o || typeof o.vinfoparam !== 'string') return body;
+      var p = o.vinfoparam;
+      var changed = false;
+      if (p.indexOf('spvvc=') < 0) { p += QQ_CAP_APPEND; changed = true; }
+      if (p.indexOf('sphevcfps=') < 0) { p += '&sphevcfps=52776560265087'; changed = true; }
+      if (QQ_WANT_DEFN && /defn=[A-Za-z0-9]+/.test(p) && p.indexOf('defn=' + QQ_WANT_DEFN) < 0) {
+        p = p.replace(/defn=[A-Za-z0-9]+/, 'defn=' + QQ_WANT_DEFN);
+        changed = true;
+      }
+      if (!changed) return body;
+      o.vinfoparam = p;
+      console.log('[b0b] 腾讯播放信息：已替它补上 HEVC 能力位，并把清晰度要成 ' +
+        QQ_WANT_DEFN + '（拿 4K 的关键，2026-10-19）');
+      return JSON.stringify(o);
+    } catch (e) { return body; }
+  }
+
+  try {
+    var origSend = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.send = function (body) {
+      var args = Array.prototype.slice.call(arguments);
+      try {
+        var su = String(this.__b0bUrl || '');
+        if (su.indexOf('proxyhttp') >= 0 || su.indexOf('onlyvinfo') >= 0) {
+          var nb = patchQqVinfoBody(body);
+          if (nb !== body) args[0] = nb;
+        }
+      } catch (e) {}
+      return origSend.apply(this, args);
+    };
+  } catch (e) {}
+
   try {
     var origOpen = XMLHttpRequest.prototype.open;
     XMLHttpRequest.prototype.open = function (m, u) {
       try {
+        this.__b0bUrl = String(u || '');
         note(u);
         noteApi(u);
         noteMedia(u);
