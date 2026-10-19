@@ -317,6 +317,7 @@
     if (!pendingPlay && pendingQq && !qqSamePage) {
       console.log('[b0b] 手里那份腾讯地址是**别的集**的（已经翻页），丢掉等新的');
       pendingQq = ''; qqAt = 0;
+      qqRec = null; qqNotifiedSig = '';   /* 切集：整条记录先作废（父亲 2026-10-19 五条第 2 条） */
       /*
        * 【2026-10-19 14:07 父亲定：切集先把旧的清掉，收到新这一集的地址才接管】
        * "已经交过一次"的记录、"20 秒去重"的记录、"按过全屏"的记录，换集时一并作废 ——
@@ -895,7 +896,7 @@
         } catch (e) {}
         var u = cleanUrl(ranked[0].x);
         if (u !== pendingQq) {
-          shareQq(u);
+          shareQq(u, parseQqRec(t, u));
           console.log('[b0b] 腾讯播放列表（正片非字幕，取最高清晰度 ' +
             (ranked[0].w && ranked[0].h ? ranked[0].h + 'p' : '未知') +
             '，长度 ' + u.length + '）');
@@ -1136,7 +1137,62 @@
    * 与 B站 不同：腾讯这条路不需要解析播放接口，认出来即可。
    * （2026-10-16 在电脑浏览器上实测：mpv 带 Referer 能正常出画出声）
    */
+  /*
+   * 【2026-10-19 20:54 父亲第 5 条：只有主动点网页全屏或控制条播放键才接管】
+   *
+   * 现场：按 B 回网页后，页面被重建，但 localStorage 里"按过全屏"的记号还在，
+   * 于是几秒后自己又接管一次（转圈十几秒再退回），他没点任何东西。
+   * 页面每次重建时，除"刚按过（5 秒内）"以外一律清掉这个记号，等下一次真的按。
+   */
+  try {
+    var faInit = parseInt(localStorage.getItem('b0b:fullAt') || '0', 10) || 0;
+    if (!faInit || Date.now() - faInit > 5000) {
+      localStorage.removeItem('b0b:fullAt');
+      localStorage.removeItem('b0b:fragLive');
+    }
+  } catch (e) {}
+
   var pendingQq = '', qqAt = 0, qqKey = '', qqHost = '';
+  /*
+   * 【2026-10-19 20:52 父亲定的五条】
+   *
+   * 原来"手上的地址"只是一个字符串，片名/集号另外从页面标题临时抓，于是控制条上
+   * 一会儿「草场地-官方商城」一会儿「Thumbplayer 离线日志」；地址也可能是别的剧别的集。
+   * 现在把"即将播放"收敛成**一条完整记录**：剧名 + 集号 + 集名 + 地址 + vid 一起存，
+   * 缺一项就不算就绪（控制条不显示「即将播放」），换集/切片先把整条清空再写新的。
+   */
+  var qqRec = null;          /* { u, title, ep, epName, vid, at } */
+  var qqNotifiedSig = '';    /* 已经通报过的记录签名，避免同一集反复接管 */
+
+  /* 从播放信息正文里取"剧名 + 集号 + 集名 + vid"（腾讯的 ti 形如「醉梦_01」） */
+  function parseQqRec(t, u) {
+    var rec = { u: u, at: Date.now(), title: '', ep: '', epName: '', vid: '' };
+    try {
+      var tiM = String(t).match(/"ti"\s*:\s*"([^"\\]{1,60})"/);
+      var ti = tiM ? tiM[1].trim() : '';
+      if (ti && !/^[a-z0-9_.\-]{6,}$/.test(ti)) {
+        var sp = ti.split('_');
+        if (sp.length >= 2 && /^\d{1,4}$/.test(sp[sp.length - 1])) {
+          rec.title = sp.slice(0, -1).join('_').trim();
+          rec.ep = sp[sp.length - 1];
+          rec.epName = ti;
+        } else {
+          rec.title = ti; rec.epName = ti;
+        }
+      }
+      var vidM = String(t).match(/"vid"\s*:\s*"([0-9a-zA-Z]{6,24})"/);
+      if (vidM) rec.vid = vidM[1];
+    } catch (e) {}
+    return rec;
+  }
+
+  /* 页面地址里那一集的编号（/x/cover/<cid>/<vid>.html 或 /x/page/<vid>.html） */
+  function pageVidNow() {
+    try {
+      var m = String(location.pathname || '').match(/\/x\/(?:cover\/[0-9a-zA-Z]+\/|page\/)([0-9a-zA-Z]{6,24})/);
+      return m ? m[1] : '';
+    } catch (e) { return ''; }
+  }
   /* 腾讯片段样本只打一次（2026-10-18 晚）：要照着它拼"整集播放列表"，
    * 打印主机/路径/参数名与关键数字，token 一律省略（不把凭证写进日志）。 */
   var qqSampleLogged = false;
@@ -1480,7 +1536,8 @@
    * ②把腾讯那套后缀（_电影_高清完整版视频在线观看_腾讯视频）切掉。
    */
   function pageMovieTitle() {
-    /* 第一来源：播放信息里带过来的正名（最准，2026-10-19） */
+    /* 第一来源：即将播放记录里的「剧名 + 第X集」（2026-10-19 20:52 父亲五条的第 1 条） */
+    if (qqRec && qqRec.title) return (qqRec.title + (qqRec.ep ? ' 第' + qqRec.ep + '集' : '')).slice(0, 40);
     if (qqRemoteTitle && qqRemoteTitle.length >= 2) return qqRemoteTitle.slice(0, 40);
     var t = String(document.title || '').trim();
     var looksChannel = /大全|频道|首页/.test(t) && !/_[^_]{1,8}_/.test(t);
@@ -1531,6 +1588,17 @@
       var p = qqPreviewPend;
       qqPreviewPend = null;
       if (!p || !p.u) return;
+      /*
+       * 【2026-10-19 20:52 父亲第 4 条】记录不全就不许显示「即将播放」。
+       * 只有剧名 + 集号（或集名）都拿到了，才算"这一集真的可以交"。
+       */
+      var rec = (qqRec && qqRec.u === p.u) ? qqRec : null;
+      if (!rec || !rec.title || !(rec.ep || rec.epName)) {
+        console.log('[b0b] 地址有了，但片名/集号还没齐 —— 控制条先不写「即将播放」');
+        return;
+      }
+      var sig = p.u + '|' + rec.title + '|' + rec.ep;
+      if (sig === qqNotifiedSig) return;      /* 同一集只报一次，不反复接管 */
       var dur = 0;
       try {
         if (p.info && p.info.durSec > 0) dur = Math.round(p.info.durSec);
@@ -1538,35 +1606,23 @@
       } catch (e) {}
       try {
         var key = pageVideoKey(location.href);
+        /* 标题只用记录里的（剧名 + 第X集），不再取页面标题 —— 页面切集瞬间标题会变成
+           「Thumbplayer 离线日志」「草场地-官方商城」这类（父亲 2026-10-19 现场） */
+        var shownTitle = rec.title + (rec.ep ? ' 第' + rec.ep + '集' : '');
         var payload = {
           kind: 'play', preview: 1, whole: 1, site: 'qq',
-          frame: location.href, title: pageMovieTitle(),
-          ep: String(key || ''), durSec: dur,
+          frame: location.href, title: shownTitle,
+          ep: String(rec.ep || key || ''), durSec: dur,
           quality: (p.info && p.info.quality) ? p.info.quality : (qqTierName(p.u) || ''),
           width: 0, height: 0, cookie: '',
           streams: [{ id: 0, height: 0, width: 0, bw: 0, vcodec: 'h264', video: p.u, audio: '' }]
         };
         window.postMessage({ __b0b: 1, payload: payload }, '*');
+        qqNotifiedSig = sig;
         console.log('[b0b] 腾讯：这一集已就绪，先通报客户端（时长≈' + dur + ' 秒，片名「' +
           payload.title + '」，地址 ' + String(p.u).length + ' 字符）');
-        /*
-         * 片名后到就补报一次（2026-10-19 14:03）。
-         *
-         * 电影页刚打开时 document.title 还是频道页大标题、播放信息里的正名也还没到，
-         * 一秒后这些才会齐。这里隔 3 秒复核：名字变了就用同一份地址再报一次，
-         * 客户端只更新控制条上的字，不会重新起播。
-         */
-        var sentTitle = payload.title;
-        setTimeout(function () {
-          try {
-            var t2 = pageMovieTitle();
-            if (t2 && t2 !== sentTitle) {
-              payload.title = t2;
-              window.postMessage({ __b0b: 1, payload: payload }, '*');
-              console.log('[b0b] 腾讯：片名后到，补报一次「' + t2 + '」');
-            }
-          } catch (e) {}
-        }, 3000);
+        /* 片名后到的补报已撤（2026-10-19 20:52）：标题只认记录，不再取页面标题 */
+
       } catch (e) {
         console.log('[b0b] 腾讯：通报客户端失败：' + e);
       }
@@ -1608,6 +1664,20 @@
     } catch (e) {}
     pendingQq = u; qqAt = Date.now(); qqHost = location.hostname;
     qqKey = pageVideoKey(location.href);
+    /* 【2026-10-19 20:52】记录成一条完整记录；地址与页面这一集对不上就整条作废 */
+    try {
+      var rec = info || { u: u, at: qqAt };
+      rec.u = u; rec.at = qqAt;
+      var pv = pageVidNow();
+      if (rec.vid && pv && rec.vid !== pv) {
+        console.log('[b0b] 这条地址属于「' + rec.vid + '」，页面这一集是「' + pv + '」，不是同一集 —— 丢掉');
+        pendingQq = ''; qqAt = 0; qqRec = null;
+        return;
+      }
+      qqRec = rec;
+      console.log('[b0b] 即将播放记录：剧名「' + (rec.title || '?') + '」集号「' + (rec.ep || '?') +
+        '」集名「' + (rec.epName || '?') + '」vid「' + (rec.vid || '?') + '」');
+    } catch (e) { qqRec = { u: u, at: qqAt }; }
     var m = { __b0bQq: 1, u: u, at: qqAt, key: qqKey, host: qqHost };
     saveQqLocal(u, qqAt, qqKey);
     /* 提前把"这一集可以播了"报到控制条上（2026-10-19 父亲定，见 notifyQqPreview） */
