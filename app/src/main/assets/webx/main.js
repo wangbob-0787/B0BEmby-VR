@@ -295,6 +295,30 @@
     if (!pendingPlay && pendingQq && !qqSamePage) {
       console.log('[b0b] 手里那份腾讯地址是**别的集**的（已经翻页），丢掉等新的');
       pendingQq = ''; qqAt = 0;
+      /*
+       * 【2026-10-19 14:07 父亲定：切集先把旧的清掉，收到新这一集的地址才接管】
+       * "已经交过一次"的记录、"20 秒去重"的记录、"按过全屏"的记录，换集时一并作废 ——
+       * 否则新集的地址一到就被旧的去重档挡住，或反过来把上一集的地址又交一遍。
+       */
+      try { localStorage.removeItem('b0b_sub'); } catch (e) {}
+      try { localStorage.removeItem('b0b:fullAt'); } catch (e) {}
+      lastSubmitSig = '';
+      lastSubmitAt = 0;
+      /*
+       * 同时通知客户端：这一集换了，手里那份地址作废，控制条改回「即将播放」等新的
+       * （父亲 2026-10-19 14:07：切集先清旧的，收到新地址才接管）。
+       */
+      try {
+        window.postMessage({
+          __b0b: 1,
+          payload: {
+            kind: 'play', preview: 1, reset: 1, whole: 1, site: 'qq',
+            frame: location.href, title: pageMovieTitle(),
+            ep: String(pageVideoKey(location.href) || ''),
+            durSec: 0, quality: '', streams: []
+          }
+        }, '*');
+      } catch (e) {}
     }
     /* 每道关卡都留下记录：抓不到时能一眼看出卡在哪 */
     if (!pendingPlay) return;

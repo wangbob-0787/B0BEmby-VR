@@ -3007,6 +3007,22 @@ class MainActivity : ComponentActivity() {
     private var webPreview: org.json.JSONObject? = null
 
     private fun onWebPreviewMsg(obj: org.json.JSONObject) {
+        /*
+         * 换集了就先把旧的作废（父亲 2026-10-19 14:07 定：切集先清旧的，
+         * 收到新这一集的地址才接管）。这里不清就会拿上一集的地址起播。
+         */
+        if (obj.optInt("reset", 0) == 1) {
+            webPreview = null
+            osdState.upcoming = true
+            osdState.hasPlayback = true
+            osdState.durationMs = 0L
+            osdState.positionMs = 0L
+            val t0 = obj.optString("title")
+            if (t0.isNotBlank()) osdState.title = t0
+            Log.i(TAG, "网页通报：换集了，等这一集的新地址（${obj.optString("frame").take(50)}）")
+            hud("换集了，等这一集的地址")
+            return
+        }
         val dur = obj.optInt("durSec", 0)
         val ep = obj.optString("ep")
         val title = obj.optString("title")
