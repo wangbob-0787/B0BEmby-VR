@@ -3057,6 +3057,7 @@ class MainActivity : ComponentActivity() {
         webAutoPlayPending = false
         webAutoPlayAt = 0L
         osdState.upcoming = false
+        osdState.hasPlayback = false   /* 没有合格地址：播放键置灰点不动（父亲 2026-10-19 21:20） */
         osdState.positionMs = 0L
         hud("这一集的地址还没到，到了控制条会写「即将播放」")
         Log.i(TAG, "控制条播放键：手里还没有这一集的地址（不会自动起播，等地址到了再按一次）")
@@ -3069,12 +3070,12 @@ class MainActivity : ComponentActivity() {
          */
         if (obj.optInt("reset", 0) == 1) {
             webPreview = null
-            osdState.upcoming = true
-            osdState.hasPlayback = true
+            /* 切集先清空：控制条不写「即将播放」、播放键置灰（父亲 2026-10-19 21:20） */
+            osdState.upcoming = false
+            osdState.hasPlayback = false
             osdState.durationMs = 0L
             osdState.positionMs = 0L
-            val t0 = obj.optString("title")
-            if (t0.isNotBlank()) osdState.title = t0
+            osdState.title = ""
             Log.i(TAG, "网页通报：换集了，等这一集的新地址（${obj.optString("frame").take(50)}）")
             hud("换集了，等这一集的地址")
             return
