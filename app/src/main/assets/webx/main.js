@@ -317,6 +317,13 @@
         Math.round((Date.now() - qqAt) / 1000) + ' 秒前，同一集）');
     }
     if (!pendingPlay && pendingQq && !qqSamePage) {
+      /* 只有最外层页面才发"换集了"通报（2026-10-19 21:40：内嵌 game.weixin / getcookie
+         这些小框架没有地址，却每 0.4 秒把上一集的地址当成"别的集"→ 反复清场、
+         把控制条标题冲成 Thumbplayer 离线日志） */
+      if (window.self !== window.top) {
+        pendingQq = ''; qqAt = 0; qqRec = null;
+        return;
+      }
       console.log('[b0b] 手里那份腾讯地址是**别的集**的（已经翻页），丢掉等新的');
       pendingQq = ''; qqAt = 0;
       qqRec = null; qqNotifiedSig = '';   /* 切集：整条记录先作废（父亲 2026-10-19 五条第 2 条） */
@@ -1713,6 +1720,25 @@
     try {
       var rec = info || { u: u, at: qqAt };
       rec.u = u; rec.at = qqAt;
+      /*
+       * 【2026-10-19 21:40 头显日志：即将播放记录一直是「?」】
+       * 含地址的那条响应正文里不一定带 ti/vid（有时是离线日志页、有时是别的内嵌框架），
+       * 于是记录解析为空 → 控制条永远不写「即将播放」。
+       * 兜底：正名取之前捕获到的那条（如「锦心似玉_02」），vid 取当前页面这一集的。
+       */
+      if (!rec.title && qqRemoteTitle) {
+        var sp2 = String(qqRemoteTitle).split('_');
+        if (sp2.length >= 2 && /^\d{1,4}$/.test(sp2[sp2.length - 1])) {
+          rec.title = sp2.slice(0, -1).join('_').trim();
+          rec.ep = sp2[sp2.length - 1];
+          rec.epName = qqRemoteTitle;
+        } else {
+          rec.title = qqRemoteTitle;
+          rec.epName = qqRemoteTitle;
+        }
+        if (rec.title) console.log('[b0b] 片名用之前抓到的那条兜底：「' + rec.title + '」第' + (rec.ep || '?') + '集');
+      }
+      if (!rec.vid) rec.vid = pageVidNow();
       var pv = pageVidNow();
       var sv = selectedVid();
       if (rec.vid && pv && rec.vid !== pv) {
