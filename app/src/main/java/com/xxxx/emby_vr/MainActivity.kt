@@ -3045,16 +3045,21 @@ class MainActivity : ComponentActivity() {
     /** 按下控制条播放键的时刻：只在这个时刻之后的 60 秒内，地址到了才允许自动起播（父亲 2026-10-19 21:16） */
     private var webAutoPlayAt = 0L
 
-    /** 按下播放键但手里还没有地址：清空旧的，改「即将播放」，等地址自己进来 */
+    /**
+     * 按下播放键但手里还没有地址：只提示，不挂"等地址自动起播"的标记。
+     *
+     * 【2026-10-19 21:18 父亲定：绝不自动起播】
+     * 他的流程是"先看到控制条写「即将播放：剧名 第X集」，再自己按播放键"。
+     * 所以这里只提示一句；地址到达时只填控制条，一定等他再按一次才接管。
+     */
     private fun startWebWaitForAddress() {
         webPreview = null
-        webAutoPlayPending = true
-        webAutoPlayAt = android.os.SystemClock.uptimeMillis()
-        osdState.upcoming = true
-        osdState.hasPlayback = true
+        webAutoPlayPending = false
+        webAutoPlayAt = 0L
+        osdState.upcoming = false
         osdState.positionMs = 0L
-        hud("即将播放，等这一集的地址")
-        Log.i(TAG, "控制条播放键：手里还没有这一集的地址，先写「即将播放」等它")
+        hud("这一集的地址还没到，到了控制条会写「即将播放」")
+        Log.i(TAG, "控制条播放键：手里还没有这一集的地址（不会自动起播，等地址到了再按一次）")
     }
 
     private fun onWebPreviewMsg(obj: org.json.JSONObject) {
@@ -3101,25 +3106,9 @@ class MainActivity : ComponentActivity() {
                 "，等父亲按控制条播放键",
         )
         hud(if (dur > 0) "这一集可以播了，按播放键开始（约 ${dur / 60} 分钟）" else "这一集可以播了，按播放键开始")
-        /*
-         * 他已经按过播放键了（在等地址）→ 地址这一到就直接起播（父亲 2026-10-19 14:07 定）。
-         */
-        if (webAutoPlayPending) {
-            /*
-             * 【2026-10-19 21:16 父亲："我没看见页面进全屏，它就接管了"】
-             * 自动起播只允许发生在"他刚按过控制条播放键"这种情况，且 60 秒内有效；
-             * 超过就作废，等他再按一次（避免很久以前那一下在后来某条地址到达时突然起播）。
-             */
-            val ageSec = (android.os.SystemClock.uptimeMillis() - webAutoPlayAt) / 1000
-            webAutoPlayPending = false
-            if (webAutoPlayAt > 0 && ageSec < 60) {
-                Log.i(TAG, "控制条播放键 ${ageSec}s 前按下，地址到了 → 起播")
-                playWebStream(obj)
-            } else {
-                Log.i(TAG, "播放键那次等待已过 ${ageSec}s，作废；这条地址只填控制条，等父亲再按")
-                hud("这一集可以播了，按播放键开始")
-            }
-        }
+        /* 【2026-10-19 21:18 父亲定：绝不自动起播】
+           地址到了只填控制条、写「即将播放」，一定等他看到并再按一次播放键才接管。 */
+        Log.i(TAG, "网页通报：地址已就绪，只填控制条（不自动起播）")
     }
 
     /**
