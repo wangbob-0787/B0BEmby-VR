@@ -3006,6 +3006,25 @@ class MainActivity : ComponentActivity() {
      */
     private var webPreview: org.json.JSONObject? = null
 
+    /**
+     * 父亲已经按了播放键、正在等"这一集的地址"（2026-10-19 14:07 父亲定的连贯动作）。
+     *
+     * 一点网页全屏或控制条播放键 → 先清旧的 → 大屏幕写「即将播放」→ 地址一到就起播。
+     * 这个标记就是"他按了、我在等"：地址（preview 或整集清单）进来的那一刻自动起播。
+     */
+    private var webAutoPlayPending = false
+
+    /** 按下播放键但手里还没有地址：清空旧的，改「即将播放」，等地址自己进来 */
+    private fun startWebWaitForAddress() {
+        webPreview = null
+        webAutoPlayPending = true
+        osdState.upcoming = true
+        osdState.hasPlayback = true
+        osdState.positionMs = 0L
+        hud("即将播放，等这一集的地址")
+        Log.i(TAG, "控制条播放键：手里还没有这一集的地址，先写「即将播放」等它")
+    }
+
     private fun onWebPreviewMsg(obj: org.json.JSONObject) {
         /*
          * 换集了就先把旧的作废（父亲 2026-10-19 14:07 定：切集先清旧的，
@@ -3050,6 +3069,14 @@ class MainActivity : ComponentActivity() {
                 "，等父亲按控制条播放键",
         )
         hud(if (dur > 0) "这一集可以播了，按播放键开始（约 ${dur / 60} 分钟）" else "这一集可以播了，按播放键开始")
+        /*
+         * 他已经按过播放键了（在等地址）→ 地址这一到就直接起播（父亲 2026-10-19 14:07 定）。
+         */
+        if (webAutoPlayPending) {
+            webAutoPlayPending = false
+            Log.i(TAG, "控制条播放键早已按下，地址到了 → 起播")
+            playWebStream(obj)
+        }
     }
 
     /**
@@ -4043,7 +4070,9 @@ class MainActivity : ComponentActivity() {
                  * 网页还没接管、但手里已经有这一集的地址（2026-10-19 父亲定）：
                  * 这一下按的是"开始播"，不是暂停。
                  */
-                if (!ctl.hasEngine() && webPreview != null) playWebPreview() else togglePlayPause()
+                if (!ctl.hasEngine() && webPreview != null) playWebPreview()
+                else if (!ctl.hasEngine()) startWebWaitForAddress()
+                else togglePlayPause()
             com.xxxx.emby_vr.panel.OsdButton.SEEK_FWD -> if (ctl.hasEngine()) seekBy(+10_000)
             // 片头跳过（父亲 2026-10-12）：这颗按钮只在片头范围内存在
             com.xxxx.emby_vr.panel.OsdButton.SKIP_INTRO -> skipIntroManual()
