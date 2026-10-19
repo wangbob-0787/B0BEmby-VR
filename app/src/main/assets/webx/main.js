@@ -382,7 +382,7 @@
      */
     var fsShared = 0;
     try { fsShared = parseInt(localStorage.getItem('b0b:fullAt') || '0', 10) || 0; } catch (e) {}
-    var fsStamps = [fullState ? Date.now() : 0, fsShared, peerFullAt];
+    var fsStamps = [fullState ? (lastFullAt || 0) : 0, fsShared, peerFullAt];
     var fsBest = Math.max.apply(null, fsStamps);
     var fsOk = fsBest > 0 && Date.now() - fsBest < 3 * 3600 * 1000;
     if (!fsOk) {
@@ -1301,7 +1301,7 @@
          接管到的还是十几秒的试看片段）。 */
       var fsShared2 = 0;
       try { fsShared2 = parseInt(localStorage.getItem('b0b:fullAt') || '0', 10) || 0; } catch (e) {}
-      var fsBest2 = Math.max(fullState ? Date.now() : 0, fsShared2, peerFullAt);
+      var fsBest2 = Math.max(fullState ? (lastFullAt || 0) : 0, fsShared2, peerFullAt);
       var fsOk2 = fsBest2 > 0 && Date.now() - fsBest2 < 3 * 3600 * 1000;
       /*
        * 已经交过第一批分片之后，这一部就算"在播"（2026-10-18 头显实测）：
