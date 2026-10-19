@@ -738,6 +738,21 @@
         console.log('[b0b] 响应里的档位号：' + (Object.keys(tiers).length ?
           Object.keys(tiers).map(function (k) { return 'f' + k + '×' + tiers[k]; }).join(' ') : '（一个都没有）') +
           ' 含uhd=' + /uhd/.test(t) + ' 含hdr10=' + /hdr10/i.test(t) + ' 含4K字样=' + /4K|3840|2160/.test(t));
+        /*
+         * 2026-10-20 00:56 父亲问：.18 上这份响应是编码的，头显上也是吗？
+         * 以前只统计过"响应里有没有档位号"，没看过响应本身长什么样。这里补一次体检：
+         * 长度、开头像不像 JSON、有没有 enc:1 标记、有没有明文 .ts 地址、开头 300 字（长串已打码）。
+         * 只进本地日志，不外发；长串统一替换成 [长串]，避免凭据落盘。
+         */
+        try {
+          var head300 = t.slice(0, 300).replace(/[A-Za-z0-9+/=_\-]{40,}/g, '[长串]');
+          console.log('[b0b] 响应体检：长度=' + t.length +
+            ' 首字符=' + JSON.stringify(t.charAt(0)) +
+            ' 像JSON=' + /^\s*[{\[]/.test(t) +
+            ' 含enc1=' + /"enc"\s*:\s*1/.test(t) +
+            ' 有明文ts=' + /\.ts[?"']/.test(t) +
+            ' 头=' + head300);
+        } catch (eH) {}
       } catch (e) {}
       /*
        * 【2026-10-18 01:33 破案 —— 腾讯"接管了却没画面"的真凶】
