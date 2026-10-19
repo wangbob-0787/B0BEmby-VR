@@ -659,10 +659,25 @@
        * 改法：广告的播放信息整条不要（打日志说明），广告 CDN 的候选也剔除，
        * 这样"按全屏"会等到正片那份播放信息到达再交出去。
        */
-      var isAdInfo = /lcAdCookie|apd-vlive|apdcdn\.tc\.qq\.com|"adx"|vhot\.qq\.com/i.test(t);
+      /*
+       * 广告判据（2026-10-19 13:40 修：父亲实测"正片被当成广告扔了"）。
+       *
+       * 原来写的是"响应里一出现 lcAdCookie / "adx" / apd / vhot 就当广告" —— 太宽。
+       * 腾讯**正片**的播放信息响应里也夹着 adid / adx 这类字段（r715 现场日志：
+       * 一条 82083 字节、含整集清单的正片响应被判成广告扔掉 → 控制条一直空着、
+       * 按全屏也交不出地址）。
+       * 现在改成两条一起看：**同时**带广告标记、**又**一条清单（m3u8）都没有，才算广告。
+       * 广告的播放信息本来就不含整集清单；正片那份一定含。
+       */
+      var hasList = /m3u8/i.test(t);
+      var adMark = /lcAdCookie|apd-vlive|apdcdn\.tc\.qq\.com|"adx"|vhot\.qq\.com/i.test(t);
+      var isAdInfo = adMark && !hasList;
       if (isAdInfo) {
-        console.log('[b0b] 这条是**广告**的播放信息（含广告票据/广告CDN），不用它，等正片那份');
+        console.log('[b0b] 这条是**广告**的播放信息（带广告票据且没有任何清单），不用它，等正片那份');
         return;
+      }
+      if (adMark && hasList) {
+        console.log('[b0b] 这条响应里夹着广告字段，但带着整集清单，按**正片**收下（2026-10-19 修）');
       }
       if (!m.length && all.length) {
         console.log('[b0b] 腾讯播放列表：只找到字幕类的 m3u8（' + all.length + ' 条），先不用它');
@@ -1392,8 +1407,16 @@
   }
 
   /* 广告的 CDN / 域名（2026-10-18 10:35）：起播前的广告片长 30–80 秒，正是"只抓到一小段"的来源 */
+  /*
+   * 广告地址判据（2026-10-19 13:42 收紧）。
+   *
+   * 原来最后还有一个"路径里出现 /ad/ 或 /adx/ 就算广告"的判据 —— 太容易误伤：
+   * 腾讯正片那条取清单的接口（pbaccess.video.qq.com）就被它判成"广告 CDN"扔了
+   * （r715 现场日志：`这条列表来自广告 CDN，不用它：pbaccess.video.qq.com`）。
+   * 现在只认**明确的广告域名**，不再看路径；广告另有兜底（清单短于 5 分钟的片段一律不要）。
+   */
   function isAdUrl(u) {
-    return /apdcdn\.tc\.qq\.com|apd-vlive|vhot\.qq\.com|\/adx?\//i.test(String(u || ''));
+    return /apdcdn\.tc\.qq\.com|apd-vlive|vhot\.qq\.com|adx\.qq\.com|ad\.qq\.com/i.test(String(u || ''));
   }
 
   function isQqHls(u) {
