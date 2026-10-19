@@ -1243,7 +1243,7 @@
   /* 页面地址里那一集的编号（/x/cover/<cid>/<vid>.html 或 /x/page/<vid>.html） */
   function pageVidNow() {
     try {
-      var m = String(location.pathname || '').match(/\/x\/(?:cover\/[0-9a-zA-Z]+\/|page\/)([0-9a-zA-Z]{6,24})/);
+      var m = String(location.pathname || '').match(/\/(?:m\/)?x\/(?:cover\/[0-9a-zA-Z]+\/|page\/)([0-9a-zA-Z]{6,24})/);
       return m ? m[1] : '';
     } catch (e) { return ''; }
   }
@@ -1691,7 +1691,8 @@
      */
     try {
       var here = String(location.href || '');
-      if (!/v\.qq\.com\/x\/(cover|page)\//.test(here)) {
+      /* 头显里腾讯是手机页（m/x/cover/…），所以 /m/ 前缀也要认（2026-10-19 22:12） */
+      if (!/v\.qq\.com\/(m\/)?x\/(cover|page)\//.test(here)) {
         console.log('[b0b] 这层不是播放页（' + here.slice(0, 60) + '），它的地址不用');
         return;
       }
