@@ -745,6 +745,8 @@
          * 只进本地日志，不外发；长串统一替换成 [长串]，避免凭据落盘。
          */
         try {
+          /* 只体检 JSON 响应：视频分片是二进制（首字符乱七八糟），会把日志淹掉 */
+          if (!/^\s*[{\[]/.test(t)) throw 0;
           var head300 = t.slice(0, 300).replace(/[A-Za-z0-9+/=_\-]{40,}/g, '[长串]');
           console.log('[b0b] 响应体检：长度=' + t.length +
             ' 首字符=' + JSON.stringify(t.charAt(0)) +
@@ -1714,6 +1716,24 @@
   }
 
   function shareQq(raw, info) {    var u = cleanUrl(raw);
+    /*
+     * 【2026-10-20 01:45 头显现场定案（父亲问"你说的是哪条证据"）】
+     *
+     * 按全屏后交出去的地址末尾是 f322363（720P 的档位号），片名写着「Thumbplayer 离线日志」。
+     * 根因：页面里那个 thumbplayer-offline-log 框架自己也在拉 m3u8，我们把它当成了这一集的正片。
+     * 判据：来源是离线日志/推力日志页的，一律不收 —— 正片清单只会来自播放页本身。
+     */
+    try {
+      var srcHere = String(location.href || '');
+      var srcTop = srcHere;
+      try { srcTop = String((window.top && window.top.location && window.top.location.href) || srcHere); } catch (e0) {}
+      if (/offline-log|thumbplayer-offline|offlineLog/i.test(srcHere + ' ' + srcTop)) {
+        console.log('[b0b] 这条地址来自离线日志页（不是正片），不收：' + u.slice(0, 60));
+        return;
+      }
+    } catch (e) {}
+
+    /* 这一集真正的播放页只认 /x/cover/ 或 /x/page/（手机页带 m/ 前缀） */
     /*
      * 【2026-10-19 21:56 头显日志】控制条标题变成「Thumbplayer 离线日志」，
      * 原因是腾讯的离线日志页 / 小游戏框架里也有 m3u8，我们把它当成本集地址交了。
