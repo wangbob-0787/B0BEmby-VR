@@ -39,61 +39,14 @@
    * （内容是 document_start + MAIN world 注入，时机正好）。
    * 只对 HEVC/AV1/VP9/4K/HDR 相关的询问改口，其余一律原样透传。
    */
-  (function fakeCodecSupport() {
-    /*
-     * 【2026-10-19 17:17 父亲报"B站还是不能接管"】—— 伪装必须限定腾讯站内。
-     *
-     * 无差别地告诉页面"我能放 HEVC/AV1/VP9"会把别的站点也带偏：
-     * B站 收到这个回答就会去要 AV1/HEVC 那一路分片，而本机内核解不了 AV1，
-     * 表现就是页面自己照常播（心跳里进度在走）但我们一段都抓不到（已攒 0 段）。
-     * 所以只在腾讯域内伪装，其它站点一律原样回答。
-     */
-    if (!/(^|\.)qq\.com$/i.test(location.hostname)) return;
-    function isBigCodec(s) {
-      return /hevc|hvc1|hev1|h265|dvh|dolby|av01|vp09|4k|uhd|3840|2160|main10|hdr/i.test(String(s || ''));
-    }
-    try {
-      if (window.MediaSource && MediaSource.isTypeSupported) {
-        var orig = MediaSource.isTypeSupported.bind(MediaSource);
-        MediaSource.isTypeSupported = function (t) {
-          try { if (isBigCodec(t)) return true; } catch (e) {}
-          return orig(t);
-        };
-      }
-    } catch (e) {}
-    try {
-      var cp = HTMLMediaElement.prototype.canPlayType;
-      HTMLMediaElement.prototype.canPlayType = function (t) {
-        try { if (isBigCodec(t)) return 'probably'; } catch (e) {}
-        return cp.apply(this, arguments);
-      };
-    } catch (e) {}
-    try {
-      if (navigator.mediaCapabilities && navigator.mediaCapabilities.decodingInfo) {
-        var di = navigator.mediaCapabilities.decodingInfo.bind(navigator.mediaCapabilities);
-        navigator.mediaCapabilities.decodingInfo = function (c) {
-          try {
-            if (isBigCodec(JSON.stringify(c))) {
-              return Promise.resolve({ supported: true, smooth: true, powerEfficient: true });
-            }
-          } catch (e) {}
-          return di(c);
-        };
-      }
-    } catch (e) {}
-    try {
-      if (window.VideoDecoder && VideoDecoder.isConfigSupported) {
-        var vd = VideoDecoder.isConfigSupported.bind(VideoDecoder);
-        VideoDecoder.isConfigSupported = function (c) {
-          try {
-            if (isBigCodec(JSON.stringify(c))) return Promise.resolve({ supported: true, config: c });
-          } catch (e) {}
-          return vd(c);
-        };
-      }
-    } catch (e) {}
-    console.log('[b0b] 已替页面把 HEVC/4K 的解码能力回答成"能"（在它生成身份串之前生效）');
-  })();
+  /*
+   * 【2026-10-19 18:10 父亲：装了 727 B站 还是坏的】
+   *
+   * 能力伪装（把 HEVC/4K 的解码能力回答成"能"）整块撤掉了。
+   * 撤掉的理由不只是"骗页面没用"：它连 B站 一起带偏过——B站 一听说能放 AV1/HEVC
+   * 就去要那一路，而 PICO 4 芯片没有 AV1 硬解，段就再也抓不到（已攒 0 段）。
+   * 腾讯 4K 改走 h5vv6 接口自取（自己算 cKey），和页面的能力探测彻底无关。
+   */
 
   var urls = [];
   var saidHello = false;
