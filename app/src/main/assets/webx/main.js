@@ -40,6 +40,15 @@
    * 只对 HEVC/AV1/VP9/4K/HDR 相关的询问改口，其余一律原样透传。
    */
   (function fakeCodecSupport() {
+    /*
+     * 【2026-10-19 17:17 父亲报"B站还是不能接管"】—— 伪装必须限定腾讯站内。
+     *
+     * 无差别地告诉页面"我能放 HEVC/AV1/VP9"会把别的站点也带偏：
+     * B站 收到这个回答就会去要 AV1/HEVC 那一路分片，而本机内核解不了 AV1，
+     * 表现就是页面自己照常播（心跳里进度在走）但我们一段都抓不到（已攒 0 段）。
+     * 所以只在腾讯域内伪装，其它站点一律原样回答。
+     */
+    if (!/(^|\.)qq\.com$/i.test(location.hostname)) return;
     function isBigCodec(s) {
       return /hevc|hvc1|hev1|h265|dvh|dolby|av01|vp09|4k|uhd|3840|2160|main10|hdr/i.test(String(s || ''));
     }
@@ -844,6 +853,18 @@
         var tm1 = t.match(/"ti"\s*:\s*"([^"\\]{1,60})"/);
         var tm2 = tm1 ? null : t.match(/\\"ti\\"\s*:\s*\\"([^"\\]{1,60})\\"/);
         var tv = ((tm1 && tm1[1]) || (tm2 && tm2[1]) || '').trim();
+        /*
+         * 【2026-10-19 17:15 父亲现场：控制条写成「即将播放：wxgamesdkfram」】
+         *
+         * 响应里第一个 `"ti"` 不一定是片名 —— 那次抠到的是一个 SDK 标识
+         * （纯小写英文数字、一个空格都没有）。真人片名不会是这种形状，直接不收，
+         * 让它回落到页面标题那条兜底。
+         */
+        var looksLikeId = /^[a-z0-9_.\-]{6,}$/.test(tv);
+        if (looksLikeId) {
+          console.log('[b0b] 播放信息里那个 "ti" 是「' + tv + '」，像标识符不像片名，不收');
+          tv = '';
+        }
         if (tv.length >= 2 && tv !== qqRemoteTitle) {
           qqRemoteTitle = tv;
           console.log('[b0b] 播放信息里的正名：「' + tv + '」');
