@@ -1353,6 +1353,24 @@
 
   function notifyQqPreview(u, info) {
     if (!u) return;
+    /*
+     * 【2026-10-19 14:19 父亲实测：腾讯**首页**就冒出一条「即将播放」】
+     *
+     * 腾讯首页自己也在偷偷自动播预览片，我们把那条当成了"这一集好了"，还带上了首页的大标题
+     * （控制条上写成「即将播放：腾讯视频，中国领先的在线视频媒体平台…」）。
+     * 两道闸门：①只在播放页（/x/cover/、/x/page/）才通报；②时长太短（< 300 秒）的是预览/广告，不报。
+     */
+    try {
+      if (!/\/x\/(cover|page)\//.test(String(location.pathname || ''))) {
+        console.log('[b0b] 不在播放页（' + location.pathname + '），这一条不通报');
+        return;
+      }
+      var dGate = (info && info.durSec) || 0;
+      if (dGate > 0 && dGate < 300) {
+        console.log('[b0b] 这一条只有 ' + Math.round(dGate) + ' 秒，像预览/广告，不通报');
+        return;
+      }
+    } catch (e) {}
     qqPreviewPend = { u: u, info: info || {} };
     if (qqPreviewTimer) clearTimeout(qqPreviewTimer);
     qqPreviewTimer = setTimeout(function () {
