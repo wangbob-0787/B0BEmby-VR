@@ -723,7 +723,13 @@
         while ((sm = reSeg.exec(t))) {
           var segUrl = String(sm[0]).replace(/\\\//g, '/');
           var tierId = sm[1];
-          var segIdx = parseInt(sm[2], 10);
+          /*
+           * 段号必须取地址里的 index，不能取文件名里那个数字（2026-10-20 03:05 自查发现）：
+           * 腾讯分片形如 `…_hash.f322093.4.ts?index=99&start=…`，文件名那个 4 是子流编号，
+           * 同一档所有段都可能是同一个数字 —— 按它排序会把 285 段压成 1 段。
+           */
+          var qIdx = String(segUrl).match(/[?&]index=(\d+)/);
+          var segIdx = qIdx ? parseInt(qIdx[1], 10) : parseInt(sm[2], 10);
           if (!segUrl || isNaN(segIdx)) continue;
           if (!segMap[tierId]) segMap[tierId] = {};
           if (!segMap[tierId][segIdx]) {
