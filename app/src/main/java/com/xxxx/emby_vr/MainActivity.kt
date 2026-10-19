@@ -2551,6 +2551,10 @@ class MainActivity : ComponentActivity() {
         osdState.title = ""
         osdState.hasPlayback = false
         webTitleBase = ""
+        /* 回网页：把"等地址自动起播"的等待一并作废，避免几秒后自己又接管（父亲 2026-10-19 21:15 第 1 条） */
+        webAutoPlayPending = false
+        webAutoPlayAt = 0L
+        webPreview = null
         val back = webReturnUrl
         webStartUrlState.value = back
         webSiteState.value = webSiteBeforeStream
@@ -3038,11 +3042,14 @@ class MainActivity : ComponentActivity() {
      * 这个标记就是"他按了、我在等"：地址（preview 或整集清单）进来的那一刻自动起播。
      */
     private var webAutoPlayPending = false
+    /** 按下控制条播放键的时刻：只在这个时刻之后的 60 秒内，地址到了才允许自动起播（父亲 2026-10-19 21:16） */
+    private var webAutoPlayAt = 0L
 
     /** 按下播放键但手里还没有地址：清空旧的，改「即将播放」，等地址自己进来 */
     private fun startWebWaitForAddress() {
         webPreview = null
         webAutoPlayPending = true
+        webAutoPlayAt = android.os.SystemClock.uptimeMillis()
         osdState.upcoming = true
         osdState.hasPlayback = true
         osdState.positionMs = 0L
@@ -3098,9 +3105,20 @@ class MainActivity : ComponentActivity() {
          * 他已经按过播放键了（在等地址）→ 地址这一到就直接起播（父亲 2026-10-19 14:07 定）。
          */
         if (webAutoPlayPending) {
+            /*
+             * 【2026-10-19 21:16 父亲："我没看见页面进全屏，它就接管了"】
+             * 自动起播只允许发生在"他刚按过控制条播放键"这种情况，且 60 秒内有效；
+             * 超过就作废，等他再按一次（避免很久以前那一下在后来某条地址到达时突然起播）。
+             */
+            val ageSec = (android.os.SystemClock.uptimeMillis() - webAutoPlayAt) / 1000
             webAutoPlayPending = false
-            Log.i(TAG, "控制条播放键早已按下，地址到了 → 起播")
-            playWebStream(obj)
+            if (webAutoPlayAt > 0 && ageSec < 60) {
+                Log.i(TAG, "控制条播放键 ${ageSec}s 前按下，地址到了 → 起播")
+                playWebStream(obj)
+            } else {
+                Log.i(TAG, "播放键那次等待已过 ${ageSec}s，作废；这条地址只填控制条，等父亲再按")
+                hud("这一集可以播了，按播放键开始")
+            }
         }
     }
 
