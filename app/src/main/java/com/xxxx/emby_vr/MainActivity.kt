@@ -200,6 +200,8 @@ class MainActivity : ComponentActivity() {
      * 现在起播处明确记下"此刻放的是网页流"，凡是 Emby 专属的刷新（标题、logo）都让位。
      */
     private var webPlayingNow = false
+    /** 网页流标题的"基底"（剧名 第X集 [集名]），分辨率后面再拼上去（父亲 2026-10-19 20:58 定） */
+    private var webTitleBase: String = "" 
 
     /**
      * **当前实际生效的银幕比例**（宽 / 高）。
@@ -1648,7 +1650,18 @@ class MainActivity : ComponentActivity() {
          * 于是刚写好的「站点-片名」下一秒就被它按回去了。
          * 正在放网页流时不许它插手 —— 标题由 applyWebStreamTitle 一个人负责。
          */
-        if (webPlayingNow) return
+        if (webPlayingNow) {
+            /* 网页流：尺寸要等第一帧才准，所以每秒复核一次，把分辨率补进标题 */
+            val base = webTitleBase
+            if (base.isNotEmpty()) {
+                val nt = base + resSuffix()
+                if (nt != osdState.title) {
+                    osdState.title = nt
+                    Log.i(TAG, "控制条标题（网页流，补分辨率）→ $nt")
+                }
+            }
+            return
+        }
         val t = itemTitleOf(currentItem)
         if (t.isNotEmpty()) osdState.title = t
     }
@@ -1867,6 +1880,16 @@ class MainActivity : ComponentActivity() {
      * 网页流接管后往控制条写「站点-片名」（父亲 2026-10-16）。
      * 片名由扩展从页面标题带过来；站点名按接管来源取（B站 / 腾讯 / 爱奇艺…）。
      */
+    /** 内核解出来的真实分辨率，拼到「正在播放」后面（父亲 2026-10-19 20:58 定） */
+    private fun resSuffix(): String {
+        /* 网页流走内核：尺寸以内核认出来的为准（第一帧之后才有值）；
+           内核还没报就退回 PlaybackFlags（Emby 直连那一路）。 */
+        val ks = try { mpvBackend?.videoSize() } catch (_: Throwable) { null }
+        val w = ks?.first ?: com.xxxx.emby_vr.player.PlaybackFlags.videoWidth
+        val h = ks?.second ?: com.xxxx.emby_vr.player.PlaybackFlags.videoHeight
+        return if (w > 0 && h > 0) " ${w}×${h}" else ""
+    }
+
     private fun applyWebStreamTitle(obj: org.json.JSONObject?) {
         if (obj == null) return
         val siteName = WEB_SITE_NAMES.getOrElse(webStreamSite ?: -1) { "网页" }
@@ -1880,9 +1903,10 @@ class MainActivity : ComponentActivity() {
          * 现在只有**一个**标题字段：谁在播就写谁，控制条直接显示它。
          * webSiteName 保留只为判断"银幕上是不是网页"，不再参与标题。
          */
-        osdState.title = t
+        webTitleBase = t
+        osdState.title = t + resSuffix()
         osdState.webSiteName = t
-        Log.i(TAG, "控制条标题（网页流）→ $t")
+        Log.i(TAG, "控制条标题（网页流）→ $t" + resSuffix())
     }
 
     private fun clearFilmInfoFromOsd() {
@@ -2526,6 +2550,7 @@ class MainActivity : ComponentActivity() {
         }
         osdState.title = ""
         osdState.hasPlayback = false
+        webTitleBase = ""
         val back = webReturnUrl
         webStartUrlState.value = back
         webSiteState.value = webSiteBeforeStream
