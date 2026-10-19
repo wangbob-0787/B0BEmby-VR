@@ -3057,7 +3057,12 @@ class MainActivity : ComponentActivity() {
         webAutoPlayPending = false
         webAutoPlayAt = 0L
         osdState.upcoming = false
-        osdState.hasPlayback = false   /* 没有合格地址：播放键置灰点不动（父亲 2026-10-19 21:20） */
+        /*
+         * 没有合格地址：播放键置灰点不动（父亲 2026-10-19 21:20）。
+         * 只在**屏幕上是网页**时这么做 —— Emby 片子那条路的置灰/等待有自己的状态，
+         * 这里不许碰它（父亲 2026-10-19 21:20 提醒：别和 Emby 的规则冲突）。
+         */
+        if (webOnScreen) osdState.hasPlayback = false
         osdState.positionMs = 0L
         hud("这一集的地址还没到，到了控制条会写「即将播放」")
         Log.i(TAG, "控制条播放键：手里还没有这一集的地址（不会自动起播，等地址到了再按一次）")
@@ -3070,9 +3075,12 @@ class MainActivity : ComponentActivity() {
          */
         if (obj.optInt("reset", 0) == 1) {
             webPreview = null
-            /* 切集先清空：控制条不写「即将播放」、播放键置灰（父亲 2026-10-19 21:20） */
+            /*
+             * 切集先清空：控制条不写「即将播放」、播放键置灰（父亲 2026-10-19 21:20）。
+             * 仍只在网页在屏时动 hasPlayback，Emby 片子的状态不归这里管。
+             */
             osdState.upcoming = false
-            osdState.hasPlayback = false
+            if (webOnScreen) osdState.hasPlayback = false
             osdState.durationMs = 0L
             osdState.positionMs = 0L
             osdState.title = ""
