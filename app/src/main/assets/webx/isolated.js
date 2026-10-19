@@ -317,6 +317,8 @@
       var d = ev.data;
       if (!d || d.__b0bFull !== 1) return;
       b0bLastFullAt = Date.now();
+      /* q:1 = 对"问一下"的回包，只是告知时间戳，不是有人按了（2026-10-19 22:10） */
+      if (d.q === 1) return;
       var vid = (location.href.match(/\/([A-Za-z0-9]{10,12})\.html/) || [])[1] || '';
       try {
         browser.runtime.sendMessage({ __b0bFullReport: 1, vid: vid });

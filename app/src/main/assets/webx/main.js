@@ -1873,7 +1873,13 @@
           console.log('[b0b] 收到别的层报来的腾讯地址（长度 ' + String(d.u).length + '）');
         } else if (d.__b0bAsk) {
           if (peerFullAt > 0 && ev.source) {
-            try { ev.source.postMessage({ __b0bFull: 1, t: peerFullAt }, '*'); } catch (e3) {}
+            /*
+             * 【2026-10-19 22:10 真凶】这里原来用同一种消息回答"问一下刚才有没有人按全屏"，
+             * 而收到 __b0bFull 的那一层会当成"又有人按了全屏"再报给后台、再广播一次 ——
+             * 于是每秒 3 次来回，后台的"按了全屏"时间戳永远等于现在，闸门永远开着：
+             * 没点全屏也接管、按 B 回网页几秒又接管。现在回包带 q:1，只做告知不触发。
+             */
+            try { ev.source.postMessage({ __b0bFull: 1, t: peerFullAt, q: 1 }, '*'); } catch (e3) {}
           }
         }
       } catch (e) {}
