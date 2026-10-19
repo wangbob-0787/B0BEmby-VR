@@ -26,6 +26,66 @@
     Object.defineProperty(document, 'visibilityState', { get: function () { return 'visible'; }, configurable: true });
   } catch (e) {}
 
+  /*
+   * 【2026-10-19 16:21 父亲："不是半路给它加 4k 能力位了吗？" —— 补第二道】
+   *
+   * 第一道（已做）：改请求体，往 vinfoparam 里补 `spvvc=3&sphevcfps=…` 且把 defn 要成 uhd。
+   * 第二道（这里）：页面在发请求**之前**会先问浏览器"你能不能解 HEVC / 4K"，
+   *   火狐内核（GeckoView）对这类探测回答"不能"，于是页面自己只去要 720P/1080P，
+   *   把第一道那句声明挡在后面 —— 头显实测（r721）：响应里只有 1 条正片候选，档位 720P。
+   * 台账早先的结论也指向同一处：本机解码能力被页面编码进 `cKey`，服务器认它。
+   *
+   * 所以这里把"能不能放 HEVC/4K"的回答按成"能"，且必须跑在页面自己的脚本之前
+   * （内容是 document_start + MAIN world 注入，时机正好）。
+   * 只对 HEVC/AV1/VP9/4K/HDR 相关的询问改口，其余一律原样透传。
+   */
+  (function fakeCodecSupport() {
+    function isBigCodec(s) {
+      return /hevc|hvc1|hev1|h265|dvh|dolby|av01|vp09|4k|uhd|3840|2160|main10|hdr/i.test(String(s || ''));
+    }
+    try {
+      if (window.MediaSource && MediaSource.isTypeSupported) {
+        var orig = MediaSource.isTypeSupported.bind(MediaSource);
+        MediaSource.isTypeSupported = function (t) {
+          try { if (isBigCodec(t)) return true; } catch (e) {}
+          return orig(t);
+        };
+      }
+    } catch (e) {}
+    try {
+      var cp = HTMLMediaElement.prototype.canPlayType;
+      HTMLMediaElement.prototype.canPlayType = function (t) {
+        try { if (isBigCodec(t)) return 'probably'; } catch (e) {}
+        return cp.apply(this, arguments);
+      };
+    } catch (e) {}
+    try {
+      if (navigator.mediaCapabilities && navigator.mediaCapabilities.decodingInfo) {
+        var di = navigator.mediaCapabilities.decodingInfo.bind(navigator.mediaCapabilities);
+        navigator.mediaCapabilities.decodingInfo = function (c) {
+          try {
+            if (isBigCodec(JSON.stringify(c))) {
+              return Promise.resolve({ supported: true, smooth: true, powerEfficient: true });
+            }
+          } catch (e) {}
+          return di(c);
+        };
+      }
+    } catch (e) {}
+    try {
+      if (window.VideoDecoder && VideoDecoder.isConfigSupported) {
+        var vd = VideoDecoder.isConfigSupported.bind(VideoDecoder);
+        VideoDecoder.isConfigSupported = function (c) {
+          try {
+            if (isBigCodec(JSON.stringify(c))) return Promise.resolve({ supported: true, config: c });
+          } catch (e) {}
+          return vd(c);
+        };
+      }
+    } catch (e) {}
+    console.log('[b0b] 已替页面把 HEVC/4K 的解码能力回答成"能"（在它生成身份串之前生效）');
+  })();
+
   var urls = [];
   var saidHello = false;
   var lastKey = '';
