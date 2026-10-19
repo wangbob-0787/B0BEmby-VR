@@ -249,7 +249,9 @@
      * 父亲 2026-10-16 现场：播放列表已经识别到，却始终没交出去。
      */
     if (!pendingPlay && !pendingQq) {
-      var lq = loadQqLocal();
+      var faNow = 0;
+      try { faNow = parseInt(localStorage.getItem('b0b:fullAt') || '0', 10) || 0; } catch (e) {}
+      var lq = (faNow > 0 || fullState) ? loadQqLocal() : null;
       if (lq) {
         pendingQq = cleanUrl(lq.u); qqAt = lq.at || 0; qqKey = lq.key || '';
         console.log('[b0b] 从本地存储取回腾讯地址（页面或播放器层被重建过）');
@@ -1151,6 +1153,12 @@
     if (!faInit || Date.now() - faInit > 5000) {
       localStorage.removeItem('b0b:fullAt');
       localStorage.removeItem('b0b:fragLive');
+      /*
+       * 【2026-10-19 21:27 头显日志实证】
+       * 最近两小时「从本地存储取回腾讯地址」出现 4492 次、「换源」31 次 —— 页面被重建后
+       * 一直把上一集的旧地址捡回来重交。页面重建时一并清掉，等这一页真的抓到新地址再说。
+       */
+      localStorage.removeItem('b0b:qq');
     }
   } catch (e) {}
 
