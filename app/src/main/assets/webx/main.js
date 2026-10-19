@@ -718,7 +718,7 @@
        */
       try {
         var segMap = {}, segTier = {}, segHost = '';
-        var reSeg = /https?:\\?\/\\?\/[^"'\s\\]{4,1600}?\.f(\d{6})\.(\d+)\.ts\?[^"'\s\\]{0,400}/g;
+        var reSeg = /https?:\\?\/\\?\/[^"'\s]{4,1600}?\.f(\d{6})\.(\d+)\.ts\?[^"'\s]{0,500}/g;
         var sm;
         while ((sm = reSeg.exec(t))) {
           var segUrl = String(sm[0]).replace(/\\\//g, '/');
@@ -739,9 +739,19 @@
           }
         }
         var QQ_SEG_TIER = ['322093', '322350', '322084', '321004', '322363', '321003'];
+        var QQ_SEG_RANK = { '322093': 5, '322350': 4, '322084': 3, '321004': 3, '322363': 2, '321003': 2 };
         var pickedTier = '';
         for (var ti = 0; ti < QQ_SEG_TIER.length; ti++) {
           if ((segTier[QQ_SEG_TIER[ti]] || 0) >= 20) { pickedTier = QQ_SEG_TIER[ti]; break; }
+        }
+        /*
+         * 只升不降（2026-10-20 07:58）：页面切档时会先后吐出低档与 4K 两份清单，
+         * 低档先到就发出去、4K 再到又发一次，等于来回切。这里给档位定级，
+         * 只有更高的档才允许顶替已经发出去/候着的那份。
+         */
+        if (pickedTier && (QQ_SEG_RANK[pickedTier] || 0) < qqHlsBestRank) {
+          console.log('[b0b] 这份清单是 f' + pickedTier + '（低档），手上已有更高档，不替换');
+          pickedTier = '';
         }
         if (pickedTier) {
           var bag = segMap[pickedTier];
@@ -786,6 +796,7 @@
             } catch (eF) {}
             if (fullNow) {
               qqHlsSig = listSig;
+              qqHlsBestRank = QQ_SEG_RANK[pickedTier] || 0;
               qqHlsPend = null;
               try {
                 window.postMessage({ __b0b: 1, payload: hlsPayload }, '*');
@@ -793,6 +804,7 @@
               } catch (eS) { console.log('[b0b] 清单发送失败：' + eS); }
             } else {
               qqHlsPend = hlsPayload;
+              qqHlsBestRank = QQ_SEG_RANK[pickedTier] || 0;
               console.log('[b0b] 整集分片清单先候着：等他按网页全屏再交（' + idxs.length + ' 段）');
             }
           }
@@ -1304,6 +1316,8 @@
   var qqHlsSig = '';
   /** 已经拼好、但还没按全屏的整集清单（按全屏时才交，沿用既有规矩） */
   var qqHlsPend = null;
+  /** 已经拿到/交出去的最高档等级（4K=5，只升不降） */
+  var qqHlsBestRank = 0;
   /*
    * 【2026-10-19 20:52 父亲定的五条】
    *
