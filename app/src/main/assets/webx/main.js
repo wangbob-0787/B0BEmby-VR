@@ -857,12 +857,26 @@
         var bad = /\bad(s|v|x)?\b|广告|captionV3|\.vtt\.m3u8/i.test(ctx) ? 1 : 0;
         var prev = /preview|试看|trailer|预告|trailer/i.test(ctx) ? 1 : 0;
         var sc = (w * h) + br;
+        /*
+         * 【2026-10-19 19:50 父亲："重点是如何拿到 4K"，.18 实测通过】
+         *
+         * 4K 清单的地址里带档位号 f322093（HDR10 是 f322350，1080P 是 f322084）。
+         * 之前排序只看 分辨率×码率，同一响应里字幕/花絮/低档都能抢到前面；
+         * 现在档位号直接定权重，4K 永远优先，日志里也把选中那条的档位打出来。
+         */
+        var tierM = String(x).match(/f(\d{6})\./) ;
+        var tier = tierM ? tierM[1] : '';
+        if (tier === '322093') sc += 5e13;
+        else if (tier === '322350') sc += 4e13;
+        else if (tier === '322084') sc += 1e12;
+        /* 正片清单一定是 `.ts.m3u8`（字幕是 .vtt.m3u8、提示音是别的后缀） */
+        if (/\.ts\.m3u8/i.test(String(x))) sc += 1e9;
         /* 出自"播放信息体"（vinfo）的那条才是正片：广告/花絮不会夹在 vinfo 里 */
         if (/vinfo|"vl":|"vi":\[/.test(ctx)) sc += 1e11;
         if (bad) sc -= 1e12;
         if (prev) sc -= 1e9;
         if (dur && dur < 600) sc -= 1e8;
-        return { x: x, i: idx, w: w, h: h, br: br, dur: dur, sc: sc, host: base, bad: bad, prev: prev };
+        return { x: x, i: idx, w: w, h: h, br: br, dur: dur, sc: sc, host: base, bad: bad, prev: prev, tier: tier };
       }
       if (m && m.length) {
         var ranked = m.map(candInfo);
@@ -874,6 +888,7 @@
               return (r.w && r.h ? r.h + 'p' : '清晰度?') +
                 (r.br ? '@' + Math.round(r.br / 1000) + 'k' : '') +
                 (r.dur ? ' 时长' + r.dur + 's' : ' 时长?') +
+                (r.tier ? ' 档f' + r.tier : '') +
                 (r.bad ? ' [广告类]' : '') + (r.prev ? ' [试看类]' : '') +
                 ' ' + r.host;
             }).join(' | '));
