@@ -439,6 +439,15 @@
       return;
     }
     try { localStorage.setItem('b0b_sub', JSON.stringify({ s: subSig, t: Date.now() })); } catch (e) {}
+    /*
+     * 【2026-10-19 14:06 父亲报"按 B 回网页，马上又被接管，然后又失败回到网页"】
+     *
+     * 交出去一次之后，就把"按过全屏"这件事**作废**：再要接管，必须重新按一次网页全屏。
+     * 不这么做的话，回到网页后页面每取一次流都会产生一份新地址（token 不同，
+     * 下面那条"20 秒只接同一条地址"挡不住），于是来回循环。
+     */
+    try { localStorage.removeItem('b0b:fullAt'); } catch (e) {}
+    fullState = false;
     /* 标题在交出去这一刻现取（抓取时页面标题可能还没更新） */
     try { obj.title = pageTitle(); } catch (e) {}
     /*
@@ -679,6 +688,36 @@
       if (adMark && hasList) {
         console.log('[b0b] 这条响应里夹着广告字段，但带着整集清单，按**正片**收下（2026-10-19 修）');
       }
+      /*
+       * 【2026-10-19 14:02 父亲报"电影播的不是我选的那部"】
+       *
+       * 电影页会顺手预取别的片子（推荐位）的播放信息，我们原来照收，于是可能把
+       * 隔壁那部的地址交了出去（电视剧按集播是对的，电影就串了）。
+       * 判据用页面地址里的 **cid**：响应里带 `"cid"` 字段却不等于本页 cid 的，一律不要。
+       */
+      try {
+        var cidM = location.href.match(/\/x\/cover\/([0-9a-zA-Z]{6,})/);
+        if (cidM && /"cid"\s*:\s*"/.test(t) && t.indexOf(cidM[1]) < 0) {
+          console.log('[b0b] 这条播放信息不是这一部（不含本页 cid ' + cidM[1] + '），不要');
+          return;
+        }
+      } catch (e) {}
+      /*
+       * 顺手把**这一集的正名**从播放信息里抠出来（2026-10-19 14:00）。
+       *
+       * 父亲实测：电影页控制条上写的是频道页大标题，不是正在播那部片子的名字 ——
+       * document.title 在电影页长时间不更新。播放信息里带着这一集的正名（`"ti"`），
+       * 拿它当第一来源最省事，标题元素与 document.title 只做兜底。
+       */
+      try {
+        var tm1 = t.match(/"ti"\s*:\s*"([^"\\]{1,60})"/);
+        var tm2 = tm1 ? null : t.match(/\\"ti\\"\s*:\s*\\"([^"\\]{1,60})\\"/);
+        var tv = ((tm1 && tm1[1]) || (tm2 && tm2[1]) || '').trim();
+        if (tv.length >= 2 && tv !== qqRemoteTitle) {
+          qqRemoteTitle = tv;
+          console.log('[b0b] 播放信息里的正名：「' + tv + '」');
+        }
+      } catch (e) {}
       if (!m.length && all.length) {
         console.log('[b0b] 腾讯播放列表：只找到字幕类的 m3u8（' + all.length + ' 条），先不用它');
       }
@@ -1228,6 +1267,9 @@
    */
   var qqPreviewTimer = 0, qqPreviewPend = null;
 
+  /** 播放信息里带过来的正名（这一集/这一部），比 document.title 准（2026-10-19 加） */
+  var qqRemoteTitle = '';
+
   /* 从清单地址里认档位（f322093=4K、f322084=1080P…），只用于给人看的"清晰度"字样 */
   function qqTierName(u) {
     var m = String(u || '').match(/f(\d+)\.ts/);
@@ -1238,6 +1280,40 @@
     if (id === '322363' || id === '321003') return '720P';
     if (id === '323002' || id === '321002') return '480P';
     return '';
+  }
+
+  /*
+   * 取"这一部片子叫什么"（2026-10-19 14:00 修，父亲实测报错）。
+   *
+   * 现场：电影详情页刚打开时 document.title 还是"腾讯视频电影频道最新热门电影大全，
+   * 高清正版在线观看"，我们把这个大标题当成片名填到了控制条上；等他按了网页全屏，
+   * 播放器起来、标题更新成"功夫女厨_电影_高清完整版…"才对。
+   * 所以这里两道：①明显是频道页标题 → 先去页面里找真片名元素；
+   * ②把腾讯那套后缀（_电影_高清完整版视频在线观看_腾讯视频）切掉。
+   */
+  function pageMovieTitle() {
+    /* 第一来源：播放信息里带过来的正名（最准，2026-10-19） */
+    if (qqRemoteTitle && qqRemoteTitle.length >= 2) return qqRemoteTitle.slice(0, 40);
+    var t = String(document.title || '').trim();
+    var looksChannel = /大全|频道|首页/.test(t) && !/_[^_]{1,8}_/.test(t);
+    if (looksChannel) {
+      var cands = ['[class*="video_title"] h1', '[class*="video_title"]',
+                   '[class*="title_text"]', '[class*="player_title"]',
+                   '[class*="episode_title"]', 'h1'];
+      for (var i = 0; i < cands.length; i++) {
+        var el = null;
+        try { el = document.querySelector(cands[i]); } catch (e) {}
+        if (el && el.textContent && el.textContent.trim().length > 1) {
+          t = el.textContent.trim();
+          break;
+        }
+      }
+    }
+    t = t.replace(/_[^_]{1,10}_(高清|超清|蓝光|完整版|动漫|综艺|电视剧|电影).*$/, '')
+         .replace(/_腾讯视频.*$/, '')
+         .replace(/^腾讯视频[·\-—:]*\s*/, '')
+         .trim();
+    return t.slice(0, 40);
   }
 
   function notifyQqPreview(u, info) {
@@ -1258,15 +1334,33 @@
         var key = pageVideoKey(location.href);
         var payload = {
           kind: 'play', preview: 1, whole: 1, site: 'qq',
-          frame: location.href, title: document.title || '',
+          frame: location.href, title: pageMovieTitle(),
           ep: String(key || ''), durSec: dur,
           quality: (p.info && p.info.quality) ? p.info.quality : '',
           width: 0, height: 0, cookie: '',
           streams: [{ id: 0, height: 0, width: 0, bw: 0, vcodec: 'h264', video: p.u, audio: '' }]
         };
         window.postMessage({ __b0b: 1, payload: payload }, '*');
-        console.log('[b0b] 腾讯：这一集已就绪，先通报客户端（时长≈' + dur + ' 秒，地址 ' +
-          String(p.u).length + ' 字符）');
+        console.log('[b0b] 腾讯：这一集已就绪，先通报客户端（时长≈' + dur + ' 秒，片名「' +
+          payload.title + '」，地址 ' + String(p.u).length + ' 字符）');
+        /*
+         * 片名后到就补报一次（2026-10-19 14:03）。
+         *
+         * 电影页刚打开时 document.title 还是频道页大标题、播放信息里的正名也还没到，
+         * 一秒后这些才会齐。这里隔 3 秒复核：名字变了就用同一份地址再报一次，
+         * 客户端只更新控制条上的字，不会重新起播。
+         */
+        var sentTitle = payload.title;
+        setTimeout(function () {
+          try {
+            var t2 = pageMovieTitle();
+            if (t2 && t2 !== sentTitle) {
+              payload.title = t2;
+              window.postMessage({ __b0b: 1, payload: payload }, '*');
+              console.log('[b0b] 腾讯：片名后到，补报一次「' + t2 + '」');
+            }
+          } catch (e) {}
+        }, 3000);
       } catch (e) {
         console.log('[b0b] 腾讯：通报客户端失败：' + e);
       }
