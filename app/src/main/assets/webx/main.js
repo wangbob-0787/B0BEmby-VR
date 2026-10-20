@@ -17,6 +17,28 @@
    * 火狐时代数据靠扩展转交；换 Chromium 后由原生注入一个接口对象 window.b0bHost。
    * 这里优先走它，拿不到再退回原来那条 postMessage（兼容旧路径与调试）。
    */
+  /*
+   * 【2026-10-20 22:22 父亲报"腾讯播一会儿就闪退"——先把网页那边的白烧停掉】
+   *
+   * 接管之后画面由我们自己的内核在放，网页里那个播放器就成了纯负担：
+   * 它还在后台解 4K60、每帧再拷一次，日志里 OMX-VDEC / C2D 每秒几十行不停，
+   * 白吃 GPU 与句柄（当晚崩的那次就是句柄先被耗光）。
+   * 所以地址一交给内核，就把页面上所有正在放的 video 暂停 —— 页面状态还在，
+   * 父亲按 B 回网页时手动点一下播放就能接着看。
+   */
+  function b0bPausePageVideos(reason) {
+    try {
+      var vs = document.querySelectorAll('video');
+      var n = 0;
+      for (var i = 0; i < vs.length; i++) {
+        var v = vs[i];
+        if (!v || v.paused) continue;
+        try { v.pause(); n++; } catch (e) {}
+      }
+      console.log('[b0b] 已交给内核，网页视频停下（' + reason + '，停了 ' + n + ' 个）');
+    } catch (e) {}
+  }
+
   var b0bNativeWarned = 0;
   function b0bSendOut(o) {
     try {
@@ -819,6 +841,7 @@
       console.log('[b0b] 交给内核：' + qqSlotName(pickA.k) + '（抓于 ' +
         Math.round((Date.now() - pickA.b.at) / 1000) + ' 秒前，尾46=…' + String(pickA.b.u).slice(-46) + '）');
       try { b0bSendOut(obj); } catch (e) {}
+      try { b0bPausePageVideos('腾讯'); } catch (e6) {}
     } else {
       if (Date.now() - (window.__b0bLastEmptyLog || 0) > 3000) {
         window.__b0bLastEmptyLog = Date.now();

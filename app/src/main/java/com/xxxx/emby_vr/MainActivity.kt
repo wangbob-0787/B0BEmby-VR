@@ -2511,6 +2511,53 @@ class MainActivity : ComponentActivity() {
     }
 
     /** 取一段文本（腾讯弹幕那几个接口只要带上 Referer 就能拿） */
+    /*
+     * 【2026-10-20 22:21 父亲报"腾讯播一会儿就闪退"→ 根因已定：句柄被耗尽】
+     *
+     * 头显日志（22:12:06）：进程句柄表被撑到上限 32768，Adreno 报
+     * `gsl_syncobj_dup_fd ... Too many open files`、`GraphicBuffer failed (Out of memory)`，
+     * 紧接着画面传不上显卡、SIGSEGV 闪退。22:01:36 起来、22:12:06 崩，10 分半；
+     * 句柄表 4096 → 8192 只用了几分钟 —— 播放时有东西**每帧领一个号不还**（约 50~60 个/秒）。
+     *
+     * 但 release 包 + 非 root，adb shell 读不到 /proc/<pid>/fd（Permission denied），
+     * 只能让应用自己数自己。这里每 10 秒把句柄按目标粗分一次记进日志，
+     * 看是哪一类在涨（网络 socket / 显存 dmabuf / 内核 anon_inode / 显卡 kgsl …），
+     * 一轮十分钟的播放就能指出漏在哪一层。
+     */
+    private fun startFdCensus() {
+        scope.launch(Dispatchers.IO) {
+            while (isActive) {
+                kotlinx.coroutines.delay(10_000L)
+                try {
+                    val names = java.io.File("/proc/self/fd").list() ?: continue
+                    val buckets = HashMap<String, Int>()
+                    for (n in names) {
+                        val t = runCatching {
+                            android.system.Os.readlink("/proc/self/fd/" + n)
+                        }.getOrNull() ?: continue
+                        val k = when {
+                            t.startsWith("socket:") -> "网络"
+                            t.startsWith("pipe:") -> "管道"
+                            t.startsWith("anon_inode:") -> "内核对象"
+                            t.contains("kgsl") -> "显卡"
+                            t.contains("dmabuf") || t.contains("dma_heap") ||
+                                t.contains("/dev/dri") || t.contains("ion") -> "显存"
+                            t.contains("ashmem") || t.contains("memfd") -> "共享内存"
+                            t.contains("binder") -> "系统调用"
+                            else -> "文件/其它"
+                        }
+                        buckets[k] = (buckets[k] ?: 0) + 1
+                    }
+                    val top = buckets.entries.sortedByDescending { it.value }.take(6)
+                        .joinToString("，") { it.key + " " + it.value }
+                    Log.i(TAG, "⑧ 句柄 " + names.size + " 个：" + top)
+                } catch (e: Throwable) {
+                    Log.w(TAG, "⑧ 句柄普查失败：" + e.message)
+                }
+            }
+        }
+    }
+
     private fun httpGetText(url: String): String {
         val conn = java.net.URL(url).openConnection()
         conn.setRequestProperty("Referer", "https://v.qq.com/")
@@ -2536,7 +2583,7 @@ class MainActivity : ComponentActivity() {
                     conn.setRequestProperty("User-Agent", "Mozilla/5.0")
                     conn.connectTimeout = 8000
                     conn.readTimeout = 8000
-                    val txt = conn.inputStream.bufferedReader().readText()
+                    val txt = conn.inputStream.bufferedReader().use { it.readText() }
                     val body = org.json.JSONObject(txt).optJSONArray("body")
                         ?: return@withContext null
                     val items = ArrayList<com.xxxx.emby_vr.danmaku.DanmakuItem>()
@@ -6545,6 +6592,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Log.i(TAG, "onCreate: B0BEmby VR 启动")
+        startFdCensus()
         /*
          * 腾讯「要地址」验证入口（2026-10-18 转签名路线）。
          *
