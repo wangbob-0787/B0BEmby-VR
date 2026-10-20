@@ -499,6 +499,26 @@
     var fsStamps = [fullState ? (lastFullAt || 0) : 0, fsShared, peerFullAt];
     var fsBest = Math.max.apply(null, fsStamps);
     var fsOk = fsBest > 0 && Date.now() - fsBest < 3 * 3600 * 1000;
+    /*
+     * 【2026-10-20 19:24 父亲定：腾讯的两个全屏按钮要分开】
+     *
+     * 原话：「我点网页全屏，你不要接管，我点全屏的时候你才接管。因为我只有点到网页全屏，
+     *       那个选择清晰度的按钮才会出来。好，我就可以利用网页全屏去选臻彩MAX，
+     *       然后选好了以后，我再点全屏那个按钮，你再接管。」
+     * 实现：原生在"真全屏"（播放器被交给系统全屏）那一刻写 window.__b0bRealFull；
+     * 腾讯页面只有看到这个标记才交地址，"网页全屏"不算。
+     */
+    if (/(^|\.)qq\.com$/i.test(String(location.hostname || ''))) {
+      var realFull = 0;
+      try { realFull = parseInt(String(window.__b0bRealFull || 0), 10) || 0; } catch (eRf) {}
+      if (!(realFull > 0 && Date.now() - realFull < 30 * 60 * 1000)) {
+        if (b0bLogGate('webfull')) {
+          console.log('[b0b] 没交出去：现在只是「网页全屏」，等按「全屏」再接管' +
+            '（网页全屏标记=' + (fsOk ? 1 : 0) + '）');
+        }
+        return;
+      }
+    }
     if (!fsOk) {
       if (b0bLogGate('nofull')) console.log('[b0b] 没交出去：你还没按全屏按钮（本层=' + (fullState ? 1 : 0) +
         ' 本地存=' + (fsShared ? 1 : 0) + ' 别层报=' + (peerFullAt ? 1 : 0) + '）');

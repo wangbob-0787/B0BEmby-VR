@@ -1247,6 +1247,20 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                 fullscreen = true
                                 /* 告诉主界面：把画面投到影院大银幕（父亲 2026-10-13） */
                                 WebPageHub.setFullscreen(true)
+                                /*
+                                 * 【2026-10-20 19:24 父亲定：两个全屏按钮要分开】
+                                 *
+                                 * 腾讯页面有两个按钮：网页全屏（只有点了它，清晰度选择才出来）
+                                 * 和真正的全屏。他要的流程是：先用网页全屏选臻彩MAX，再点真全屏接管。
+                                 * 这里在"真全屏"（播放器被交给系统全屏）这一刻给页面打个时间戳，
+                                 * 页面只在看到这个戳之后才交地址 —— 网页全屏不算。
+                                 */
+                                runCatching {
+                                    view.evaluateJavascript(
+                                        "window.__b0bRealFull=Date.now();",
+                                        null,
+                                    )
+                                }
                                 android.util.Log.i("WebLib", "网页全屏：已接管播放视图")
                             }
 
