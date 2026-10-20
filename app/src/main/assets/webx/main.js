@@ -547,20 +547,12 @@
      * 对策：按全屏后先给他一小段窗口 —— 这一集还没有臻彩MAX 的地址时，前 8 秒先不交，
      * 期间由自动切档去把最高档要回来；要到就交臻彩MAX，要不到（超时）才按现有档走。
      */
-    if (/(^|\.)qq\.com$/i.test(String(location.hostname || ''))) {
-      var vNowW = pageVideoKey(location.href);
-      var zcW = qqSlotGet('zcmax');
-      var zcHave = !!(zcW && zcW.u &&
-        (!zcW.vid || !keyKnown(vNowW) || zcW.vid === vNowW) &&
-        (Date.now() - zcW.at) < 10 * 60 * 1000);
-      if (!zcHave && Date.now() - fsBest < 8000) {
-        if (b0bLogGate('waitmax')) {
-          console.log('[b0b] 按全屏后先等最高档：这一集还没有臻彩MAX，等自动切档去要（' +
-            Math.round((Date.now() - fsBest) / 1000) + '/8 秒）');
-        }
-        return;
-      }
-    }
+    /*
+     * 【2026-10-20 20:03 随自动切档一起去掉】
+     *
+     * 原来这里在按全屏后等最多 8 秒，指望自动切档去把臻彩MAX 要回来。
+     * 父亲要求不再自动切档（它会抢他正在点的那一项），等待就没有意义了 —— 直接按现有档接管。
+     */
     /*
      * 交接现场诊断（2026-10-17 23:14 加）：把这一刻页面上的 video 元素长什么样打出来。
      * 腾讯"抓到了地址却说没在播"那件事，靠这一行就能分清是
@@ -1758,7 +1750,15 @@
       }, 900);
     } catch (e) { try { console.log('[b0b] 替它切档失败：' + e); } catch (e2) {} }
   }
-  try { setInterval(b0bForceSwitchOnce, 20000); } catch (e) {}
+  /*
+   * 【2026-10-20 20:03 父亲定：去掉自动切清晰度】
+   *
+   * 原话：「你把这一部分代码删掉，不要自动切清晰度。」
+   * 现场：自动切档会在他正要点臻彩MAX 的时候抢先点别的项，表现出来就是"切不过去"。
+   * 只保留函数定义，不再自动跑；需要时手动触发（或由"按全屏后等最高档"那条判断用）。
+   */
+  window.__b0bForceSwitchOnce = b0bForceSwitchOnce;
+  // try { setInterval(b0bForceSwitchOnce, 20000); } catch (e) {}
 
   /*
    * 【2026-10-20 14:08 关键补齐：把"能不能解 4K 那种格式"谎报成能解】
