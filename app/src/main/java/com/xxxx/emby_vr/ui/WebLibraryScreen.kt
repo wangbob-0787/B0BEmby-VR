@@ -676,6 +676,23 @@ private object WebRuntime {
     }
 
     /** 扩展报上来的数据；页面里有几个框架就报几份，谁的面积大由 ticker 挑 */
+    /**
+     * 【2026-10-20 17:18 新内核的脚本回传入口】
+     *
+     * 火狐那套是扩展的 nativeMessaging 把数据送进来；火狐拆掉后，页面脚本由我们直接注入，
+     * 它用 window.postMessage({__b0b:1, payload:...}) 向外发，注入的转接头把 payload 拼成
+     * 字符串调这里。内容格式与原来扩展通道完全一致，所以直接复用 onBridgeMessage。
+     */
+    fun acceptFromPage(json: String): String {
+        return runCatching {
+            onBridgeMessage(org.json.JSONObject(json))
+            "ok"
+        }.getOrElse {
+            android.util.Log.w("B0BEmbyVR", "页面回传解析失败：${it.message}")
+            "err"
+        }
+    }
+
     private fun onBridgeMessage(message: Any?) {
         val obj = message as? org.json.JSONObject ?: return
         if (obj.optString("kind") == "hls") {
@@ -1029,6 +1046,13 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                          * 在创建（factory）当场就记下，后面所有投递才有对象。
                          */
                         webRef = this
+                        /*
+                         * 【2026-10-20 17:22 页面 → 原生 的回传口】
+                         *
+                         * 火狐那套是扩展的 nativeMessaging；换 Chromium 后没有扩展，
+                         * 改用网页视图自带的 JS 接口：页面脚本调 window.b0bHost.post(...)。
+                         */
+                        addJavascriptInterface(WebPageBridge(), "b0bHost")
                         setBackgroundColor(AndroidColor.BLACK)
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
@@ -1078,6 +1102,17 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                             override fun onPageStarted(view: WebView, u: String, favicon: android.graphics.Bitmap?) {
                                 loading = true
                                 loadFailed = false
+                                /*
+                                 * 【2026-10-20 17:22 每次开页都把抓取脚本注进去】
+                                 *
+                                 * 火狐时代这些脚本由扩展自动注入（main.js 在页面世界、isolated.js 在
+                                 * 隔离世界）。火狐拆掉后没人注入了 —— 于是「B站/腾讯接管」整条断掉。
+                                 * 这里在页面刚开始加载时注入两样东西：
+                                 *   ① 转接头：把脚本用 window.postMessage({__b0b:1,...}) 发出的数据
+                                 *      转成对原生接口的调用（新内核没有 postMessage 到原生的通道）；
+                                 *   ② 页面脚本本体 main.js（量画面、抓播放地址、攒分片）。
+                                 */
+                                injectPageScripts(view)
                             }
 
                             override fun onPageFinished(view: WebView, u: String) {
@@ -1672,5 +1707,21 @@ fun NetVideoCard(onClick: () -> Unit) {
                 textAlign = TextAlign.Center,
             )
         }
+    }
+}
+
+/**
+ * 【2026-10-20 17:20 新内核的页面 → 原生桥】
+ *
+ * 火狐时代靠扩展的 nativeMessaging 回传；换 Chromium 后没有扩展了，改用系统网页视图自带的
+ * JavaScript 接口：页面里的脚本调 window.b0bHost.post(字符串)，这里的 post 被调用。
+ *
+ * 注意：方法必须带 @JavascriptInterface，且被 release 的代码压缩保住（见 proguard-rules）。
+ */
+class WebPageBridge {
+    @android.webkit.JavascriptInterface
+    fun post(json: String?): String {
+        if (json.isNullOrBlank()) return "empty"
+        return WebRuntime.acceptFromPage(json)
     }
 }
