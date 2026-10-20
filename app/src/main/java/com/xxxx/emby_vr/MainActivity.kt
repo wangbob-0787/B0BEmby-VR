@@ -3564,7 +3564,16 @@ class MainActivity : ComponentActivity() {
                  * 网页流没有杜比要还原，卡在 1280 只会让 4K 片源看起来糊。
                  * 所以：网页流按片源真实宽度来（最高 3840），Emby 片源仍走配置里的上限。
                  */
-                val cap = if (webFirst != null) 3840
+                /*
+                 * 【2026-10-20 21:36 父亲定：按大银幕自己的分辨率来，别冲 4K】
+                 *
+                 * 白天为了"看着更清晰"把网页流放到片源原始 3840 宽，结果播一会儿就闪退：
+                 * 崩溃前 mpv 连续报 `Failed uploading frame!`（OpenGL GL_INVALID_OPERATION），
+                 * 随后进程收到段错误 —— 4K 帧往显存里传，这块 GPU 扛不住。
+                 * 银幕画布本身只有 1920 宽，按 1920 解出来的画面就是"银幕用够"的程度，
+                 * 再高的分辨率肉眼看不到，只会把显存吃光。
+                 */
+                val cap = if (webFirst != null) 1920
                 else com.xxxx.emby_vr.vr.VrTuning.videoSurfaceMaxW.let { if (it > 0) it else 1920 }
                 val vw = if (srcW > cap) cap else srcW
                 val vh = (srcH.toLong() * vw / srcW).toInt().coerceAtLeast(64)
