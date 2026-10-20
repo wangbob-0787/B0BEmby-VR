@@ -508,16 +508,21 @@
      * 实现：原生在"真全屏"（播放器被交给系统全屏）那一刻写 window.__b0bRealFull；
      * 腾讯页面只有看到这个标记才交地址，"网页全屏"不算。
      */
-    if (/(^|\.)qq\.com$/i.test(String(location.hostname || ''))) {
-      var realFull = 0;
-      try { realFull = parseInt(String(window.__b0bRealFull || 0), 10) || 0; } catch (eRf) {}
-      if (!(realFull > 0 && Date.now() - realFull < 30 * 60 * 1000)) {
-        if (b0bLogGate('webfull')) {
-          console.log('[b0b] 没交出去：现在只是「网页全屏」，等按「全屏」再接管' +
-            '（网页全屏标记=' + (fsOk ? 1 : 0) + '）');
-        }
-        return;
+    /*
+     * 【2026-10-20 19:30 父亲补：B站 也要一样区分】
+     *
+     * 原话：「B站 也有两个按钮，一个网页全屏，一个真全屏。也可以像腾讯一样区分一下，
+     *       点网页全屏的时候不接管，点真全屏的时候才接管，这样在网页全屏的时候我还可以选清晰度。」
+     * 所以这条对所有站点生效：只有真全屏（播放器被交给系统全屏那一刻打的标记）才交地址。
+     */
+    var realFull = 0;
+    try { realFull = parseInt(String(window.__b0bRealFull || 0), 10) || 0; } catch (eRf) {}
+    if (!(realFull > 0 && Date.now() - realFull < 30 * 60 * 1000)) {
+      if (b0bLogGate('webfull')) {
+        console.log('[b0b] 没交出去：现在只是「网页全屏」，等按「全屏」再接管' +
+          '（网页全屏标记=' + (fsOk ? 1 : 0) + '）');
       }
+      return;
     }
     if (!fsOk) {
       if (b0bLogGate('nofull')) console.log('[b0b] 没交出去：你还没按全屏按钮（本层=' + (fullState ? 1 : 0) +
