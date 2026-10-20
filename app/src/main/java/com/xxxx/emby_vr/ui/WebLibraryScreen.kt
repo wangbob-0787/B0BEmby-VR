@@ -1396,7 +1396,7 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                              */
                             override fun shouldOverrideUrlLoading(
                                 view: WebView,
-                                request: android.webkit.WebResourceRequest,
+                                request: org.chromium.android_crwebview.webkit.WebResourceRequest,
                             ): Boolean {
                                 val u = request.url.toString()
                                 if (u.startsWith("http://") || u.startsWith("https://")) return false
@@ -1447,8 +1447,8 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                              */
                             override fun onReceivedError(
                                 view: WebView,
-                                request: android.webkit.WebResourceRequest,
-                                error: android.webkit.WebResourceError,
+                                request: org.chromium.android_crwebview.webkit.WebResourceRequest,
+                                error: org.chromium.android_crwebview.webkit.WebResourceError,
                             ) {
                                 android.util.Log.w(
                                     "WebLib",
@@ -1464,8 +1464,8 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                             /* HTTP 4xx / 5xx（页面在、但服务器回绝）：同样是主文档才算整页打不开 */
                             override fun onReceivedHttpError(
                                 view: WebView,
-                                request: android.webkit.WebResourceRequest,
-                                errorResponse: android.webkit.WebResourceResponse,
+                                request: org.chromium.android_crwebview.webkit.WebResourceRequest,
+                                errorResponse: org.chromium.android_crwebview.webkit.WebResourceResponse,
                             ) {
                                 android.util.Log.w(
                                     "WebLib",
