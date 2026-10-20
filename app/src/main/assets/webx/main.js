@@ -1643,8 +1643,19 @@
     try {
       if (!/(^|\.)qq\.com$/i.test(String(location.hostname || ''))) return;
       if (b0bForceTries >= 5) return;
-      var slotsFull = qqSlotPick();
-      if (slotsFull) { console.log('[b0b] 三槽已有货，不再替它切档'); return; }
+      /*
+       * 【2026-10-20 19:18 父亲实测：一按全屏就被接管，来不及自己切档】
+       *
+       * 而自动切档这里原来只看"三槽有没有货" —— 上一部片子留下的旧槽也算有货，
+       * 于是新片子一进来就跳过切档，臻彩MAX 那档永远抓不到。
+       * 改成按**当前这一集**判断：这一集还没有臻彩MAX 槽，就继续替它切。
+       */
+      var vCur = pageVideoKey(location.href);
+      var zcNow = qqSlotGet('zcmax');
+      var zcOk = !!(zcNow && zcNow.u &&
+        (!zcNow.vid || !keyKnown(vCur) || zcNow.vid === vCur) &&
+        (Date.now() - zcNow.at) < 10 * 60 * 1000);
+      if (zcOk) { if (b0bLogGate('slotdone')) console.log('[b0b] 本集已有臻彩MAX，不再替它切档'); return; }
       /*
        * 【2026-10-20 17:52 父亲点的时机问题】
        *
