@@ -1663,11 +1663,20 @@
       try { btn.click(); } catch (e) { try { btn.dispatchEvent(new MouseEvent('click', { bubbles: true })); } catch (e2) {} }
       setTimeout(function () {
         try {
+          /*
+           * 【2026-10-20 19:16 父亲实测：《醉梦》明明有臻彩MAX，却没抓到】
+           *
+           * 原因：自动切档原来固定点 480P（只想逼页面发一次请求）。但页面停在 4K 档时，
+           * 只有**切到臻彩MAX 那一刻**才会去请求臻彩MAX 的地址 —— 不切就永远抓不到那一档。
+           * 现在按"菜单里最上面那一档"点（腾讯菜单是高档在上），先把它切到最高档拿地址。
+           */
           var all = document.querySelectorAll('[class*=definition] *');
           var hit = null;
           for (var i = 0; i < all.length; i++) {
             var tx = String(all[i].textContent || '').replace(/\s+/g, '');
-            if (tx.length <= 14 && /^(480P|标清)/.test(tx)) { hit = all[i]; break; }
+            if (tx.length < 2 || tx.length > 14) continue;
+            /* 只认"档位字样"的项，避免点到标题和说明文字 */
+            if (/臻彩|4K|1080P|720P|480P|标清|准高清|超高清/.test(tx)) { hit = all[i]; break; }
           }
           if (!hit) { console.log('[b0b] 弹层里没找到 480P 项（下次再试）'); return; }
           /*
