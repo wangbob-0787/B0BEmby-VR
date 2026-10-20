@@ -579,6 +579,20 @@
         ' 放行依据=' + (fullState ? '本层按过全屏'
           : (fsShared && fsShared >= fsBest ? '本地存的全屏时刻' : '别层报的全屏时刻')));
     } catch (e) {}
+    /*
+     * 【2026-10-20 08:20 父亲现场：按全屏，交出去的还是「Thumbplayer 离线日志」那份 720P】
+     * 07:xx 那道闸门是按"页面地址像不像离线日志页"拦的，可这一份所在窗口的地址是正常播放页，
+     * 只有片名写着离线日志 —— 于是又漏了。这里在**最后一道门口按片名再拦一次**：
+     * 腾讯的离线日志页里跑着一个独立播放器实例，它那一份永远是低档（720P），
+     * 一旦让它先交出去，手里的 4K 就白抓了。
+     */
+    var sendName = String((obj && obj.title) || qqRemoteTitle || '');
+    if (/离线日志|Thumbplayer/i.test(sendName)) {
+      console.log('[b0b] 不交：这份来自「' + sendName + '」（离线日志页的独立播放器，永远是低档），' +
+        '手里 4K 那份还在，等它');
+      pendingQq = ''; qqAt = 0; qqRec = null;
+      return;
+    }
     console.log('[b0b] 页面已在播放，把抓到的地址交给客户端');
     try { window.postMessage({ __b0b: 1, payload: obj }, '*'); } catch (e) {}
   }
