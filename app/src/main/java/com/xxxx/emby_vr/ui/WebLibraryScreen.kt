@@ -5,11 +5,11 @@ import android.graphics.Color as AndroidColor
 import android.os.SystemClock
 import android.view.InputDevice
 import android.view.MotionEvent
-import android.webkit.WebChromeClient
+import org.chromium.android_crwebview.webkit.WebChromeClient
 /*
  * 【2026-10-20 15:37 换内核：网页视图与它的客户端改用打进应用的 Chromium 132】
  *
- * 这两行原来是 android.webkit.WebView / WebViewClient —— 也就是头显系统自带的 Chromium 90。
+ * 这两行原来是 org.chromium.android_crwebview.webkit.WebView / WebViewClient —— 也就是头显系统自带的 Chromium 90。
  * 现在换成 crwebview 2.0（Chromium 132）里同名同接口的类，调用侧代码完全不用改。
  * WebChromeClient 仍用系统的（库里没导出它），它是接口，可以混用。
  * 火狐那套（GeckoView）等这条新的跑通后再整体拆掉。
@@ -1286,7 +1286,7 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
     /* 网页要"全屏"时，它把自己的播放视图塞进这个容器里（腾讯的「全屏」按钮走这条路） */
     var fullscreen by remember { mutableStateOf(false) }
     var customContainer by remember { mutableStateOf<android.widget.FrameLayout?>(null) }
-    var customViewCallback by remember { mutableStateOf<android.webkit.WebChromeClient.CustomViewCallback?>(null) }
+    var customViewCallback by remember { mutableStateOf<org.chromium.android_crwebview.webkit.WebChromeClient.CustomViewCallback?>(null) }
     /*
      * 全屏时网页塞过来的那个播放视图（父亲 2026-10-13 实测：全屏后点不到东西）。
      * 它被我们从 WebView 里摘出来挂到自己的容器上 —— 事件必须发给它，
@@ -1373,7 +1373,7 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                          * 默认策略全拦掉（日志里一片"图片加载失败"），页面就残了。
                          */
                         settings.mixedContentMode =
-                            android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                            org.chromium.android_crwebview.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                         /*
                          * 让站点自己的 viewport 生效；页面比屏幕宽时整体缩到屏幕宽度（看得全）。
                          */
@@ -1532,7 +1532,7 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                 android.util.Log.i("WebLib", "网页全屏：已退出")
                             }
 
-                            override fun onConsoleMessage(m: android.webkit.ConsoleMessage): Boolean {
+                            override fun onConsoleMessage(m: org.chromium.android_crwebview.webkit.ConsoleMessage): Boolean {
                                 android.util.Log.i("WebLib", "控制台 ${m.message()} @${m.lineNumber()}")
                                 return true
                             }
