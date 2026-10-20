@@ -392,7 +392,10 @@ fun WebLibraryScreen(
  * 所以由这个顶层函数对外开口。
  */
 fun keepWebPageActive() {
-    WebRuntime.keepPageActive()
+    /*
+     * 2026-10-20：火狐内核拆掉后这条不再需要 —— 新内核的网页跑在独立渲染进程里，
+     * 不会因为"会话判成不活跃"而停手。函数保留为空实现，免得调用方到处改。
+     */
 }
 
 /**
@@ -1183,7 +1186,7 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                 },
                 update = { webRef = it },
             )
-        }   /* 结束「系统网页视图」分支；火狐分支见上方 if（2026-10-14） */
+        /* 网页容器结束（火狐分支已拆，这里不再有 else 的收尾括号） */
         /*
          * 网页全屏用的容器：平时藏着，网页要全屏时把它的播放视图挂进来铺满整块画面。
          * 它排在网页之后 = 画在最上层。
