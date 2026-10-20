@@ -685,7 +685,13 @@ private object WebRuntime {
      */
     fun acceptFromPage(json: String): String {
         return runCatching {
-            onBridgeMessage(org.json.JSONObject(json))
+            val o = org.json.JSONObject(json)
+            /* 打一行就够：能看出"页面确实交上来了什么"，没这行就是没接上 */
+            android.util.Log.i(
+                "B0BEmbyVR",
+                "页面交来一条：kind=${o.optString("kind")} 长度=${json.length}",
+            )
+            onBridgeMessage(o)
             "ok"
         }.getOrElse {
             android.util.Log.w("B0BEmbyVR", "页面回传解析失败：${it.message}")

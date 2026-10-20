@@ -11,6 +11,26 @@
  * 页面里有多个框架（播放器常在 iframe 里）时每层各报一份，谁的面积大由客户端挑。
  */
 (function () {
+  /*
+   * 【2026-10-20 17:40 换内核后：直接调原生接口】
+   *
+   * 火狐时代数据靠扩展转交；换 Chromium 后由原生注入一个接口对象 window.b0bHost。
+   * 这里优先走它，拿不到再退回原来那条 postMessage（兼容旧路径与调试）。
+   */
+  function b0bSendOut(o) {
+    try {
+      if (window.b0bHost && window.b0bHost.post) {
+        window.b0bHost.post(JSON.stringify(o));
+        return;
+      }
+    } catch (e) {}
+    try { b0bSendOut(o); } catch (e) {}
+  }
+  /* 原生接口有没有装上，报一次，便于判断是"没接上"还是"没抓到" */
+  try {
+    console.log('[b0b] 原生接口：' + (window.b0bHost && window.b0bHost.post ? '已就绪' : '不存在'));
+  } catch (e) {}
+
   if (window.__b0bScan) return;
   window.__b0bScan = true;
 
@@ -691,7 +711,7 @@
      */
     /*
     console.log('[b0b] 页面已在播放，把抓到的地址交给客户端');
-    try { window.postMessage({ __b0b: 1, payload: obj }, '*'); } catch (e) {}
+    try { b0bSendOut(obj); } catch (e) {}
     */
     /*
      * 【2026-10-20 13:10 父亲报"B站 接管被改坏"→ 定案在这里】
@@ -704,7 +724,7 @@
     var isQqPageA = /(^|\.)qq\.com$/i.test(String(location.hostname || ''));
     if (!isQqPageA) {
       console.log('[b0b] 非腾讯页面：照原来的路把地址交给客户端');
-      try { window.postMessage({ __b0b: 1, payload: obj }, '*'); } catch (e) {}
+      try { b0bSendOut(obj); } catch (e) {}
       return;
     }
     var pickA = qqSlotPick();
@@ -712,7 +732,7 @@
       try { obj.streams[0].video = pickA.b.u; } catch (e4) {}
       console.log('[b0b] 交给内核：' + qqSlotName(pickA.k) + '（抓于 ' +
         Math.round((Date.now() - pickA.b.at) / 1000) + ' 秒前，尾46=…' + String(pickA.b.u).slice(-46) + '）');
-      try { window.postMessage({ __b0b: 1, payload: obj }, '*'); } catch (e) {}
+      try { b0bSendOut(obj); } catch (e) {}
     } else {
       if (Date.now() - (window.__b0bLastEmptyLog || 0) > 3000) {
         window.__b0bLastEmptyLog = Date.now();
@@ -956,7 +976,7 @@
               /* 【2026-10-20 08:33 父亲定：老路注释掉 —— 分片清单这条通道停用，只留 4K 槽】 */
               /*
               try {
-                window.postMessage({ __b0b: 1, payload: hlsPayload }, '*');
+                b0bSendOut(hlsPayload);
                 console.log('[b0b] 整集分片清单已交客户端（' + segText.length + ' 字符）');
               } catch (eS) { console.log('[b0b] 清单发送失败：' + eS); }
               */
@@ -2284,7 +2304,7 @@
         };
         /* 【2026-10-20 08:34 父亲定：老路注释掉 —— 预告这条也不再把非 4K 的地址报上去】 */
         /*
-        window.postMessage({ __b0b: 1, payload: payload }, '*');
+        b0bSendOut(payload);
         */
         console.log('[b0b] 预告（只记不发）：' + String(p.u).slice(-40));
         qqNotifiedSig = sig;
@@ -2469,7 +2489,7 @@
       return;
     }
     try {
-      window.postMessage({ __b0b: 1, payload: qqHlsPend }, '*');
+      b0bSendOut(qqHlsPend);
       console.log('[b0b] 按下全屏：把候着的整集清单交出去（' + qqHlsPend.segs + ' 段，' + qqHlsPend.height + 'p）');
       qqHlsPend = null;
     } catch (e) { console.log('[b0b] 整集清单补交失败：' + e); }
@@ -3907,7 +3927,7 @@
     if (key === lastKey && Date.now() - lastSent < 3000) return;
     lastKey = key;
     lastSent = Date.now();
-    try { window.postMessage({ __b0b: 1, payload: msg }, '*'); } catch (e) {}
+    try { b0bSendOut(msg); } catch (e) {}
   }
 
   console.log('[b0b] 页面探子就绪 ' + location.href);
