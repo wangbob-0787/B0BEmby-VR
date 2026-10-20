@@ -1569,7 +1569,34 @@
       console.log('[b0b] 探测·视频元素：' + (vs.join(' | ') || '（无）'));
     } catch (e) { try { console.log('[b0b] 探测失败：' + e); } catch (e2) {} }
   }
+  /*
+   * 【2026-10-20 14:04 探测第二步：点开清晰度按钮，看弹层里到底列了哪几档】
+   * 14:03:49 的探测已经找到它：DIV.txp_btn.txp_btn_definition〔720P〕。
+   * 这里只点开菜单、3 秒后把菜单里的每一项打出来，不选档、不改页面设置。
+   */
+  function b0bProbeDefMenu() {
+    try {
+      if (!/(^|\.)qq\.com$/i.test(String(location.hostname || ''))) return;
+      var btn = document.querySelector('.txp_btn_definition');
+      if (!btn) { console.log('[b0b] 探测·没找到清晰度按钮'); return; }
+      console.log('[b0b] 探测·点开清晰度按钮（当前显示「' + String(btn.textContent || '').trim() + '」）');
+      try { btn.click(); } catch (e) { try { btn.dispatchEvent(new MouseEvent('click', { bubbles: true })); } catch (e2) {} }
+      setTimeout(function () {
+        try {
+          var pop = document.querySelectorAll('.txp_popup, .txp_panel, [class*=popup], [class*=list]');
+          var out = [];
+          for (var i = 0; i < pop.length && out.length < 20; i++) {
+            var e = pop[i], txt = String(e.textContent || '').replace(/\s+/g, ' ').trim();
+            if (!txt || txt.length > 120) continue;
+            out.push((e.className || '?').slice(0, 36) + '〔' + txt.slice(0, 60) + '〕');
+          }
+          console.log('[b0b] 探测·清晰度弹层：' + (out.join(' | ') || '（没抓到弹层）'));
+        } catch (e3) {}
+      }, 1800);
+    } catch (e) { try { console.log('[b0b] 探测弹层失败：' + e); } catch (e2) {} }
+  }
   try { setTimeout(b0bProbeDefinitionUI, 9000); } catch (e) {}
+  try { setTimeout(b0bProbeDefMenu, 12000); } catch (e) {}
 
   /*
    * 【2026-10-20 13:24 父亲报"切清晰度很慢"→ 降噪闸门】
