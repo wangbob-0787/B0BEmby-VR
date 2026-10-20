@@ -984,6 +984,7 @@
         var mm;
         var re = /f(\d{6})\./g;
         while ((mm = re.exec(t))) tiers[mm[1]] = (tiers[mm[1]] || 0) + 1;
+        console.log('[b0b] 响应来自：' + String(window.__b0bCurUrl || '(未知)').split('?')[0].slice(-70));
         console.log('[b0b] 响应里的档位号：' + (Object.keys(tiers).length ?
           Object.keys(tiers).map(function (k) { return 'f' + k + '×' + tiers[k]; }).join(' ') : '（一个都没有）') +
           ' 含uhd=' + /uhd/.test(t) + ' 含hdr10=' + /hdr10/i.test(t) + ' 含4K字样=' + /4K|3840|2160/.test(t));
@@ -3247,6 +3248,12 @@
               else if (this.response && this.response.byteLength < 4 * 1024 * 1024) {
                 seen = new TextDecoder('utf-8').decode(this.response);
               }
+              /*
+               * 【2026-10-20 12:35 定案用：扫到档位号的那条响应，到底对应哪个请求】
+               * 电影页按播放那次，响应里只有 720P（f322363），而它的请求没走我们认的接口，
+               * 能力位自然补不上。这里把请求地址挂到扫描函数上，日志里一起打。
+               */
+              try { window.__b0bCurUrl = String(this.__b0bUrl || ''); } catch (eU) {}
               scanTextForQqHls(seen);
               /*
                * 腾讯探针（2026-10-18 00:10 加，父亲实测"腾讯还是没接播"）。
