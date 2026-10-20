@@ -3073,14 +3073,40 @@
     } catch (e) { return body; }
   }
 
+  /* 页面也可能用 fetch 发播放信息，一并看住（只记日志，改写交给下面的 XHR 那条） */
+  try {
+    var origFetch0 = window.fetch;
+    if (origFetch0) {
+      window.fetch = function (input, init) {
+        try {
+          var fu = String((typeof input === 'string') ? input : ((input && input.url) || ''));
+          if (/proxyhttp|onlyvinfo|getvinfo|playinfo|vinfoparam/i.test(fu)) {
+            var fb = init && typeof init.body === 'string' ? init.body : '';
+            console.log('[b0b] 请求来了（fetch）：主机=' + (fu.split('/')[2] || '?') +
+              ' 带vinfoparam=' + (fb.indexOf('vinfoparam') >= 0) + ' 尾=' + fu.slice(-34));
+            if (fb && fb.indexOf('vinfoparam') >= 0) {
+              var nfb = patchQqVinfoBody(fb);
+              if (nfb !== fb && init) { init.body = nfb; console.log('[b0b] fetch 这条也补上能力位了'); }
+            }
+          }
+        } catch (e0) {}
+        return origFetch0.apply(this, arguments);
+      };
+    }
+  } catch (e) {}
   try {
     var origSend = XMLHttpRequest.prototype.send;
     XMLHttpRequest.prototype.send = function (body) {
       var args = Array.prototype.slice.call(arguments);
       try {
         var su = String(this.__b0bUrl || '');
-        if (su.indexOf('proxyhttp') >= 0 || su.indexOf('onlyvinfo') >= 0) {
+        /* 【2026-10-20 11:10 父亲要：点海报进详情页时，看网页到底发没发播放信息请求】 */
+        if (/proxyhttp|onlyvinfo|getvinfo|playinfo|vinfoparam/i.test(su)) {
           var nb = patchQqVinfoBody(body);
+          var hitBody = typeof body === 'string' && body.indexOf('vinfoparam') >= 0;
+          console.log('[b0b] 请求来了（XHR）：' + (nb !== body ? '已补能力位' : '没改') +
+            ' 带vinfoparam=' + hitBody + ' 主机=' + (su.split('/')[2] || '?') +
+            ' 尾=' + su.slice(-34));
           if (nb !== body) args[0] = nb;
         }
       } catch (e) {}
