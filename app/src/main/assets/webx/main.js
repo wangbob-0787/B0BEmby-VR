@@ -324,7 +324,7 @@
      * 【2026-10-20 11:00 三槽方案】按全屏这一刻，取三槽里**最新抓到**的那一份。
      * 父亲最后在页面上选的是哪一档，哪一槽就是最新的 —— 于是他选什么就播什么。
      */
-    if (!pendingPlay) {
+    if (!pendingPlay && /(^|\.)qq\.com$/i.test(String(location.hostname || ''))) {
       var pickF = qqSlotPick();
       if (pickF) {
         var vNow4 = pageVideoKey(location.href);
