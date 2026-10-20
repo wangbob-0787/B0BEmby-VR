@@ -2527,7 +2527,7 @@ class MainActivity : ComponentActivity() {
     private fun startFdCensus() {
         scope.launch(Dispatchers.IO) {
             while (isActive) {
-                kotlinx.coroutines.delay(10_000L)
+                kotlinx.coroutines.delay(5_000L)
                 try {
                     val names = java.io.File("/proc/self/fd").list() ?: continue
                     val buckets = HashMap<String, Int>()
@@ -2535,10 +2535,16 @@ class MainActivity : ComponentActivity() {
                         val t = runCatching {
                             android.system.Os.readlink("/proc/self/fd/" + n)
                         }.getOrNull() ?: continue
+                        /*
+                         * 【2026-10-20 23:16 第一轮普查结论】涨的全是 anon_inode 一类，
+                         * 每秒约 52 个（和 4K60 帧率同频），其余类别一动不动。
+                         * anon_inode 底下混着 显卡缓冲(dmabuf) / 帧同步(sync_file) / 事件fd 等，
+                         * 必须按**原文**细分才能点名，所以这里直接拿 target 原文当桶名。
+                         */
                         val k = when {
                             t.startsWith("socket:") -> "网络"
                             t.startsWith("pipe:") -> "管道"
-                            t.startsWith("anon_inode:") -> "内核对象"
+                            t.startsWith("anon_inode:") -> t.take(34)
                             t.contains("kgsl") -> "显卡"
                             t.contains("dmabuf") || t.contains("dma_heap") ||
                                 t.contains("/dev/dri") || t.contains("ion") -> "显存"
