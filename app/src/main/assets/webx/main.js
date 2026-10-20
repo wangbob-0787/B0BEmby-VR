@@ -516,6 +516,27 @@
       return;
     }
     /*
+     * 【2026-10-20 19:20 父亲现场：一按全屏就被接管，来不及切到臻彩MAX】
+     *
+     * 原话：「我一全屏就被接管了，我就没机会去选最高清的那个臻彩MAX 那个选项。」
+     * 对策：按全屏后先给他一小段窗口 —— 这一集还没有臻彩MAX 的地址时，前 8 秒先不交，
+     * 期间由自动切档去把最高档要回来；要到就交臻彩MAX，要不到（超时）才按现有档走。
+     */
+    if (/(^|\.)qq\.com$/i.test(String(location.hostname || ''))) {
+      var vNowW = pageVideoKey(location.href);
+      var zcW = qqSlotGet('zcmax');
+      var zcHave = !!(zcW && zcW.u &&
+        (!zcW.vid || !keyKnown(vNowW) || zcW.vid === vNowW) &&
+        (Date.now() - zcW.at) < 10 * 60 * 1000);
+      if (!zcHave && Date.now() - fsBest < 8000) {
+        if (b0bLogGate('waitmax')) {
+          console.log('[b0b] 按全屏后先等最高档：这一集还没有臻彩MAX，等自动切档去要（' +
+            Math.round((Date.now() - fsBest) / 1000) + '/8 秒）');
+        }
+        return;
+      }
+    }
+    /*
      * 交接现场诊断（2026-10-17 23:14 加）：把这一刻页面上的 video 元素长什么样打出来。
      * 腾讯"抓到了地址却说没在播"那件事，靠这一行就能分清是
      * 「它把播放器封在组件里、我们一个都看不见」还是「它真的没播」。
