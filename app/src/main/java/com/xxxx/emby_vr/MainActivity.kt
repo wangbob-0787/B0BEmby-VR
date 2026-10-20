@@ -4927,7 +4927,12 @@ class MainActivity : ComponentActivity() {
          * 网页流（B站）的弹幕拉的也是 danmakuTrack（loadWebDanmaku 走同一个画笔/开关/字号/偏移），
          * 所以"有无弹幕"这里把网页弹幕也纳入 —— 字幕菜单第一行在网页流里同样会出现。
          */
-        subtitleDanmakuRow = hasDanmakuTrack || (webCid > 0L && webDanmakuLoaded)
+        /*
+             * 【2026-10-20 19:58 父亲实测：弹幕出来了，但字幕菜单里没有「弹幕」那一行】
+             * 原来只认 B站 的片号（webCid），腾讯走的是 webVid，条件永远不成立。
+             */
+            subtitleDanmakuRow = hasDanmakuTrack ||
+                ((webCid > 0L || webVid.isNotBlank()) && webDanmakuLoaded)
         /*
          * 图形字幕（PGS 等）分两条路对待（父亲 2026-10-09 定）：
          *   · 内核路径（Profile 5）：**列出来**，内核画得了图片字幕，选中就能显示；
