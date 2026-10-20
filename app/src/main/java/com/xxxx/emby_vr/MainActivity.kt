@@ -229,6 +229,8 @@ class MainActivity : ComponentActivity() {
     private var webSubtitleUrl: String = ""
     /** 网页片子自带的"片子编号"，弹幕按它拉（父亲 2026-10-16） */
     private var webCid: Long = 0L
+    /** 腾讯的片号（如 j410292e7ng），拉弹幕要用（2026-10-20） */
+    private var webVid: String = ""
     /** 这一部网页片子的弹幕是否已经挂上（挂上后别再被对白字幕顶掉） */
     private var webDanmakuLoaded = false
 
@@ -2297,11 +2299,59 @@ class MainActivity : ComponentActivity() {
      * 走弹幕层而不是播放器字幕：控制条上的字号、提前/延后本来就作用在弹幕层上，
      * 挂上去这三样天然生效。
      */
+    /*
+     * 【2026-10-20 19:36 腾讯弹幕接入（父亲要求）】
+     *
+     * 两个站的入口不一样：
+     *   B站  → 一个公开接口按片号（cid）拉一个 XML；
+     *   腾讯 → 先拉一份分段目录（每 30 秒一段），再逐段拉那一小段里的弹幕（实测 .18 上直接可取，
+     *          只需带 Referer，不需要登录）。
+     * 后半段"怎么分行、怎么丢溢出"完全共用，跟 Emby 那条路的口径一致。
+     */
     private fun loadWebDanmaku(cid: Long) {
-        if (cid <= 0L) return
+        val vid = webVid
+        if (cid <= 0L && vid.isBlank()) return
         scope.launch {
             val track = withContext(kotlinx.coroutines.Dispatchers.IO) {
                 try {
+                    if (vid.isNotBlank()) {
+                        /* —— 腾讯这一支：分段目录 → 逐段拉 —— */
+                        val parsed = ArrayList<Triple<Long, String, Long>>()
+                        val base = org.json.JSONObject(
+                            httpGetText("https://dm.video.qq.com/barrage/base/" + vid),
+                        )
+                        val segIdx = base.optJSONObject("segment_index")
+                        val names = ArrayList<String>()
+                        if (segIdx != null) {
+                            val keys = segIdx.keys()
+                            while (keys.hasNext()) {
+                                val seg = segIdx.optJSONObject(keys.next()) ?: continue
+                                val nm = seg.optString("segment_name")
+                                if (nm.isNotBlank()) names.add(nm)
+                            }
+                        }
+                        /* 只拉前 2 小时的分段：一集电视剧够了，避免一上来几百个请求 */
+                        for (nm in names.take(240)) {
+                            val obj = runCatching {
+                                org.json.JSONObject(
+                                    httpGetText("https://dm.video.qq.com/barrage/segment/" + vid + "/" + nm),
+                                )
+                            }.getOrNull() ?: continue
+                            val list = obj.optJSONArray("barrage_list") ?: continue
+                            for (i in 0 until list.length()) {
+                                val it0 = list.optJSONObject(i) ?: continue
+                                val txt = it0.optString("content").trim()
+                                if (txt.isEmpty()) continue
+                                val offMs = it0.optString("time_offset").toLongOrNull() ?: 0L
+                                /* time_offset 是该段内的毫秒偏移，段名里带着段起点（t/v1/<起>/<止>） */
+                                val segStart = nm.split("/").getOrNull(2)?.toLongOrNull() ?: 0L
+                                parsed.add(Triple(segStart + offMs, txt, 16777215L))
+                            }
+                        }
+                        parsed.sortBy { it.first }
+                        android.util.Log.i(TAG, "⑦ 腾讯弹幕已拉到 ${parsed.size} 条（片号 $vid，分段 ${names.size}）")
+                        return@withContext buildDanmakuTrack(parsed)
+                    }
                     val conn = java.net.URL(
                         "https://api.bilibili.com/x/v1/dm/list.so?oid=" + cid,
                     ).openConnection()
@@ -2375,55 +2425,7 @@ class MainActivity : ComponentActivity() {
                      * B站 的固定弹幕（模式 4/5）也一并按滚动处理 —— Emby 那条路
                      * 生成的弹幕**全部**是滚动（make_ass.py 只写 \move），口径一致。
                      */
-                    val fs = 52f
-                    val lineH = fs * 1.35f
-                    val topMargin = 15f
-                    val spanMs = 8000L
-                    val gapMs = (spanMs * 0.35).toLong()
-                    val laneY = floatArrayOf(topMargin, topMargin + lineH)
-                    val laneFree = LongArray(laneY.size)
-                    var dropped = 0
-                    val items = ArrayList<com.xxxx.emby_vr.danmaku.DanmakuItem>()
-                    for (p in parsed) {
-                        /* 选一条空着的行；两行都占着 → 这条丢掉（同 Emby 的"轨道满则丢弃"） */
-                        var lane = -1
-                        for (i in laneY.indices) {
-                            if (laneFree[i] <= p.first) {
-                                lane = i
-                                break
-                            }
-                        }
-                        if (lane < 0) {
-                            dropped++
-                            continue
-                        }
-                        laneFree[lane] = p.first + gapMs
-                        val y = laneY[lane]
-                        items.add(
-                            com.xxxx.emby_vr.danmaku.DanmakuItem(
-                                startMs = p.first,
-                                endMs = p.first + spanMs,
-                                text = p.second,
-                                isMove = true,
-                                x1 = 1920f, y1 = y, x2 = -400f, y2 = y,
-                                posX = 960f, posY = y,
-                                style = com.xxxx.emby_vr.danmaku.DanmakuStyle(
-                                    fontSize = fs,
-                                    primaryColor = (0xFF000000L or (p.third and 0xFFFFFFL)).toInt(),
-                                    outlineColor = android.graphics.Color.BLACK,
-                                    outline = 3f,
-                                    alignment = 2,
-                                ),
-                            ),
-                        )
-                    }
-                    if (items.isEmpty()) return@withContext null
-                    Log.i(
-                        TAG,
-                        "⑦ 弹幕按 Emby 那套排成 " + laneY.size + " 行：保留 " + items.size +
-                            " 条，行满丢弃 " + dropped + " 条（共解析 " + parsed.size + " 条）",
-                    )
-                    com.xxxx.emby_vr.danmaku.DanmakuTrack(1920f, 1080f, items)
+                    return@withContext buildDanmakuTrack(parsed)
                 } catch (t: Throwable) {
                     Log.w(TAG, "⑦ 弹幕没拉下来：" + t.message)
                     null
@@ -2438,6 +2440,73 @@ class MainActivity : ComponentActivity() {
             applyDanmakuSetting()
             Log.i(TAG, "⑦ 弹幕已挂到弹幕层（" + track.items.size + " 条），字号与提前延后跟着生效")
         }
+    }
+
+
+    /**
+     * 把 (时间, 文字, 颜色) 列表排成弹幕轨道（2026-10-20 从 B站 那段抽出来，腾讯共用）。
+     * 规则照 Emby 那条路：2 行、行满丢弃、长 8 秒、同轨下一条等 0.35 倍时长。
+     */
+    private fun buildDanmakuTrack(parsed: List<Triple<Long, String, Long>>): com.xxxx.emby_vr.danmaku.DanmakuTrack? {
+        val fs = 52f
+        val lineH = fs * 1.35f
+        val topMargin = 15f
+        val spanMs = 8000L
+        val gapMs = (spanMs * 0.35).toLong()
+        val laneY = floatArrayOf(topMargin, topMargin + lineH)
+        val laneFree = LongArray(laneY.size)
+        var dropped = 0
+        val items = ArrayList<com.xxxx.emby_vr.danmaku.DanmakuItem>()
+        for (p in parsed) {
+            /* 选一条空着的行；两行都占着 → 这条丢掉（同 Emby 的"轨道满则丢弃"） */
+            var lane = -1
+            for (i in laneY.indices) {
+                if (laneFree[i] <= p.first) {
+                    lane = i
+                    break
+                }
+            }
+            if (lane < 0) {
+                dropped++
+                continue
+            }
+            laneFree[lane] = p.first + gapMs
+            val y = laneY[lane]
+            items.add(
+                com.xxxx.emby_vr.danmaku.DanmakuItem(
+                    startMs = p.first,
+                    endMs = p.first + spanMs,
+                    text = p.second,
+                    isMove = true,
+                    x1 = 1920f, y1 = y, x2 = -400f, y2 = y,
+                    posX = 960f, posY = y,
+                    style = com.xxxx.emby_vr.danmaku.DanmakuStyle(
+                        fontSize = fs,
+                        primaryColor = (0xFF000000L or (p.third and 0xFFFFFFL)).toInt(),
+                        outlineColor = android.graphics.Color.BLACK,
+                        outline = 3f,
+                        alignment = 2,
+                    ),
+                ),
+            )
+        }
+        if (items.isEmpty()) return@withContext null
+        Log.i(
+            TAG,
+            "⑦ 弹幕按 Emby 那套排成 " + laneY.size + " 行：保留 " + items.size +
+                " 条，行满丢弃 " + dropped + " 条（共解析 " + parsed.size + " 条）",
+        )
+        return com.xxxx.emby_vr.danmaku.DanmakuTrack(1920f, 1080f, items)
+    }
+
+    /** 取一段文本（腾讯弹幕那几个接口只要带上 Referer 就能拿） */
+    private fun httpGetText(url: String): String {
+        val conn = java.net.URL(url).openConnection()
+        conn.setRequestProperty("Referer", "https://v.qq.com/")
+        conn.setRequestProperty("User-Agent", "Mozilla/5.0")
+        conn.connectTimeout = 10000
+        conn.readTimeout = 10000
+        return conn.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
     }
 
     private fun loadWebSubtitle(url: String) {
@@ -3274,6 +3343,14 @@ class MainActivity : ComponentActivity() {
         webCandIdx = idx
         webSubtitleUrl = src.optString("subtitle")
         webCid = src.optLong("cid", 0L)
+        /*
+         * 腾讯的片号从页面地址里取（形如 /x/cover/<cid>/j410292e7ng.html）——
+         * 拉弹幕要它（2026-10-20）。非腾讯站留空，走 B站 那条。
+         */
+        webVid = runCatching {
+            val u = src.optString("frame")
+            Regex("/([a-z][0-9a-z]{9,15})\\.html").find(u)?.groupValues?.get(1).orEmpty()
+        }.getOrDefault("")
         webDanmakuLoaded = false
         val site = webSiteState.value
         val hasCookie = src.optString("cookie").isNotBlank()
