@@ -406,7 +406,7 @@ fun currentWebCookie(): String {
 }
 
 private object WebRuntime {
-    private var cached: org.mozilla.geckoview.GeckoRuntime? = null
+    /* 火狐内核已拆（2026-10-20）：原来缓存的 GeckoRuntime 不再需要 */
 
     /** 应用上下文（2026-10-20）：整集清单要落盘成 m3u8 文件交给内核，需要 cacheDir */
     private var appCtx: android.content.Context? = null
@@ -434,19 +434,10 @@ private object WebRuntime {
      * 十秒一跳的心跳整段消失，客户端手里那一段播完就回到网页，看着就是"反复播一小段"）。
      * 这里留一个口子，由播放侧定时把它按回"活跃 + 高优先级"。
      */
-    private var pageSession: org.mozilla.geckoview.GeckoSession? = null
-
-    fun attachPageSession(s: org.mozilla.geckoview.GeckoSession?) {
-        pageSession = s
-    }
-
-    fun keepPageActive() {
-        val s = pageSession ?: return
-        runCatching { s.setActive(true) }
-        runCatching {
-            s.setPriorityHint(org.mozilla.geckoview.GeckoSession.PRIORITY_HIGH)
-        }
-    }
+    /*
+     * 火狐内核的两个能力（attachPageSession / keepPageActive）随内核一起删了（2026-10-20）。
+     * 新内核（Chromium 132）里网页跑在自己的渲染进程，不需要我们手动保活。
+     */
 
     /**
      * 攒到的播放分片交给谁（2026-10-18）。
@@ -472,47 +463,10 @@ private object WebRuntime {
         previewSink = f
     }
 
-    fun get(
-        ctx: android.content.Context,
-        keepTouch: Boolean,
-        extraPrefs: List<String>,
-    ): org.mozilla.geckoview.GeckoRuntime {
-        cached?.let { return it }
-        val made = runCatching {
-            /*
-             * 2026-10-15 修正：以前 keepTouch 为真时直接 getDefault()，等于**一个参数都不传**，
-             * 调参文件里的 pref 全被丢掉。现在统一走 Builder，触摸那条只是"加不加"的区别。
-             * 参数先在日志里打出来，免得以后再靠猜判断有没有生效。
-             */
-            val args = mutableListOf<String>()
-            if (!keepTouch) args += "--setpref=dom.w3c_touch_events.enabled=0"
-            extraPrefs.forEach { args += "--setpref=$it" }
-            android.util.Log.i("B0BEmbyVR", "网页内核参数：${args.joinToString("；")}")
-            val b = org.mozilla.geckoview.GeckoRuntimeSettings.Builder()
-                .arguments(args.toTypedArray())
-                /*
-                 * 诊断（2026-10-15）：让页面自己的控制台消息进日志。
-                 * run 527 用 ContentDelegate.onConsoleMessage 编译不过（该版本没这个方法），
-                 * 改用设置项并用反射叫 —— 诊断项绝不能把编译或启动搞挂。
-                 */
-                runCatching {
-                    b.javaClass.getMethod("consoleOutput", java.lang.Boolean.TYPE)
-                        .invoke(b, true)
-                }
-            appCtx = ctx.applicationContext
-            org.mozilla.geckoview.GeckoRuntime.create(ctx, b.build())
-        }
-        made.getOrNull()?.let {
-            cached = it
-            ensureBridge(it)
-            return it
-        }
-        android.util.Log.i("B0BEmbyVR", "内核参数没生效，退回默认内核：${made.exceptionOrNull()?.message}")
-        val fallback = org.mozilla.geckoview.GeckoRuntime.getDefault(ctx)
-        cached = fallback
-        ensureBridge(fallback)
-        return fallback
-    }
+    /*
+     * 原来这里按启动参数建火狐 runtime（get），随火狐内核一起删了（2026-10-20）。
+     * 新内核由库自己初始化，不需要我们建。
+     */
 
     /*
      * ============ 内置扩展：把页面里的数据交回客户端（父亲 2026-10-15） ============
@@ -560,69 +514,11 @@ private object WebRuntime {
     /** 网页那侧的银幕比例是否已归零（父亲 2026-10-16 08:09：网页显示不再改比例） */
     private var bridgeAspectCleared = false
 
-    /** 装扩展 + 接上消息通道；一个进程只做一次 */
-    fun ensureBridge(runtime: org.mozilla.geckoview.GeckoRuntime) {
-        if (bridgeInstalled) return
-        bridgeInstalled = true
-        runCatching {
-            val listener =
-                org.mozilla.geckoview.GeckoResult.Consumer<org.mozilla.geckoview.WebExtension> { ext ->
-                    if (ext == null) {
-                        android.util.Log.w("B0BEmbyVR", "网页扩展没装上（内核返回空）")
-                    } else {
-                        ext.setMessageDelegate(
-                            object : org.mozilla.geckoview.WebExtension.MessageDelegate {
-                                /** 一次性消息这条路（后台页里 sendNativeMessage 用的） */
-                                override fun onMessage(
-                                    nativeApp: String,
-                                    message: Any,
-                                    sender: org.mozilla.geckoview.WebExtension.MessageSender,
-                                ): org.mozilla.geckoview.GeckoResult<Any>? {
-                                    android.util.Log.i("B0BEmbyVR", "扩展来消息（一次性）")
-                                    onBridgeMessage(message)
-                                    return null
-                                }
-
-                                override fun onConnect(port: org.mozilla.geckoview.WebExtension.Port) {
-                                    android.util.Log.i("B0BEmbyVR", "扩展已连上客户端（port）")
-                                    port.setDelegate(
-                                        object : org.mozilla.geckoview.WebExtension.PortDelegate {
-                                            override fun onPortMessage(
-                                                message: Any,
-                                                p: org.mozilla.geckoview.WebExtension.Port,
-                                            ) {
-                                                onBridgeMessage(message)
-                                            }
-
-                                            override fun onDisconnect(
-                                                p: org.mozilla.geckoview.WebExtension.Port,
-                                            ) {}
-                                        },
-                                    )
-                                }
-                            },
-                            BRIDGE_APP,
-                        )
-                        android.util.Log.i("B0BEmbyVR", "网页扩展已装上：$BRIDGE_ID")
-                    }
-                }
-            runtime.webExtensionController.ensureBuiltIn(BRIDGE_URI, BRIDGE_ID).accept(listener)
-        }.onFailure {
-            android.util.Log.w("B0BEmbyVR", "网页扩展安装失败：${it.message}")
-        }
-        startBridgeTicker()
-    }
-
-    /**
-     * 网页播放接口解析出来的可播地址（2026-10-16）。
-     *
-     * 这一段是"网页只选片、播放交给我们自己的播放器"的原料：B站 的 dash 音视频地址、
-     * 每一档清晰度、时长都在里面。本机实测（yt-dlp 取真实流 + mpv 播）：只要
-     * Referer + User-Agent 两样就能直接播（会员片才额外需要 Cookie，由客户端从网页里取）。
-     *
-     * 父亲 02:10 定：**不做清晰度菜单，固定用最高那档**（streams[0] 就是最高，
-     * 扩展已按高度降序排好）。列表留着，将来想要菜单不用再改抓取。
+    /*
+     * 原来这里往火狐内核里注册内置扩展（ensureBridge）来收发页面数据，随火狐一起删了。
+     * 新内核走「页面里执行脚本 + 原生接口回传」，入口见 WebPageBridge（2026-10-20）。
      */
+
     private fun onBridgePlayable(obj: org.json.JSONObject) {
         val streams = obj.optJSONArray("streams") ?: return
         val lines = StringBuilder()
@@ -918,85 +814,34 @@ private object WebRuntime {
      * （2026-10-15 13:57 实测：SW 报错 50 条、预检 100 条）—— 腾讯页面**每次访问都会重新注册**
      * 那个 Service Worker，所以每次进网页栏都得清一遍。时间戳只为挡 Compose 的重复重组。
      */
-    /**
-     * 清腾讯站数据时用的范围：**SITE_DATA 去掉 COOKIES**（2026-10-15）。
-     *
-     * 用完整 SITE_DATA 会把腾讯的登录状态一起清掉，页面于是永远是未登录 ——
-     * 而腾讯对未登录用户最高只给 1080p（父亲 14:31 实测提出）。
-     * 把 COOKIES 位取反后与 SITE_DATA 相与 = "除了 cookie，其余站点数据全清"，
-     * 既保住登录态，又保留清掉 Service Worker 注册的能力。
+    /*
+     * 清腾讯站数据的三段（wipeFlags / wipeTencentOnce / wipeBeforeTencent）原本用的是
+     * 火狐内核的 StorageController，随火狐一起删掉（2026-10-20）。
+     * 新内核改用系统的网页 cookie/存储接口清，见下面 wipeTencentNow()。
      */
-    private val wipeFlags: Long =
-        org.mozilla.geckoview.StorageController.ClearFlags.SITE_DATA and
-            org.mozilla.geckoview.StorageController.ClearFlags.COOKIES.inv()
 
     private var lastWipeMs = 0L
 
     /**
-     * 清掉腾讯站的网页数据（2026-10-15）。
+     * 清掉腾讯站的网页数据（2026-10-20 换成 Chromium 后的实现）。
      *
-     * 为什么需要：腾讯页面注册的 Service Worker 会**持久化在 profile 里**。即使内核已经禁用
-     * SW 能力（run 534 实测探针 `navigator.serviceWorker` 已消失为 undefined），这份**残留注册
-     * 仍在拦截脚本请求** —— 日志里 SW 报错与脚本加载失败一条没少（各 10 条）。
-     * 清掉站点数据即可去掉这份注册。
-     *
-     * 用 `clearDataFromHost` 只清 v.qq.com 一个域，不动 B站 / 爱奇艺；
-     * 代价是腾讯网页的登录态会一起清掉（清完需要重新登录腾讯）。
-     *
-     * 由 `<web_wipe>=1` 触发，清一次即在本进程内失效。
+     * 为什么还要清：腾讯页面注册的后台服务（Service Worker）会持久化在内核的存储里，
+     * 残留注册会拦脚本请求 —— 2026-10-14 那次黑屏就是它。
+     * 新内核没有"按域名清"的公开接口，这里清整个网页存储；代价是各站登录态会一起清掉，
+     * 所以只在 <web_wipe>=1 时做一次（默认关）。
      */
-    fun wipeTencentOnce(ctx: android.content.Context, runtime: org.mozilla.geckoview.GeckoRuntime) {
+    fun wipeTencentNow(ctx: android.content.Context) {
         if (!com.xxxx.emby_vr.vr.VrTuning.webWipeNow(ctx)) return
         val now = android.os.SystemClock.elapsedRealtime()
-        if (now - lastWipeMs < 5000L) return
+        if (now - lastWipeMs < 8000L) return
         lastWipeMs = now
         runCatching {
-            runtime.storageController.clearDataFromHost(
-                "v.qq.com",
-                wipeFlags,
-            )
-        }.onSuccess {
-            android.util.Log.i("B0BEmbyVR", "已清 v.qq.com 站点数据（去掉残留的后台服务注册）")
+            org.chromium.android_crwebview.webkit.CookieManager.getInstance().removeAllCookies(null)
+            org.chromium.android_crwebview.webkit.WebStorage.getInstance().deleteAllData()
+            android.util.Log.i("B0BEmbyVR", "已清网页存储与 cookie（去掉残留的后台服务注册）")
         }.onFailure {
-            android.util.Log.w("B0BEmbyVR", "清 v.qq.com 站点数据失败：${it.message}")
+            android.util.Log.w("B0BEmbyVR", "清网页数据失败：${it.message}")
         }
-    }
-
-    /**
-     * 打开腾讯页**之前**清一遍它的站点数据（2026-10-15）。
-     *
-     * 为什么必须挂在导航上：腾讯页面每次访问都会重新注册那个 Service Worker，
-     * 所以"进网页栏时清一次"只保一次 —— run 536 实测**第一次正常、第二次黑**。
-     * 挂钩到 onLoadRequest 才能保证每次打开腾讯页面都是干净状态。
-     *
-     * 清数据是异步的，这里返回一个 GeckoResult 把导航**挂住**，清完再放行
-     * （onLoadRequest 允许异步决定）；不在腾讯域上、或刚清过（8 秒内）则返回 null = 不干预。
-     */
-    fun wipeBeforeTencent(
-        ctx: android.content.Context,
-        runtime: org.mozilla.geckoview.GeckoRuntime,
-        uri: String,
-    ): org.mozilla.geckoview.GeckoResult<org.mozilla.geckoview.AllowOrDeny>? {
-        if (!com.xxxx.emby_vr.vr.VrTuning.webWipeNow(ctx)) return null
-        if (!uri.contains("v.qq.com")) return null
-        val now = android.os.SystemClock.elapsedRealtime()
-        if (now - lastWipeMs < 8000L) return null
-        lastWipeMs = now
-        android.util.Log.i("B0BEmbyVR", "打开腾讯页面前清站点数据：$uri")
-        val out = org.mozilla.geckoview.GeckoResult<org.mozilla.geckoview.AllowOrDeny>()
-        runCatching {
-            runtime.storageController.clearDataFromHost(
-                "v.qq.com",
-                wipeFlags,
-            ).accept(
-                { out.complete(org.mozilla.geckoview.AllowOrDeny.ALLOW) },
-                { out.complete(org.mozilla.geckoview.AllowOrDeny.ALLOW) },
-            )
-        }.onFailure {
-            android.util.Log.w("B0BEmbyVR", "清站点数据失败，直接放行：${it.message}")
-            out.complete(org.mozilla.geckoview.AllowOrDeny.ALLOW)
-        }
-        return out
     }
 }
 
@@ -1009,188 +854,6 @@ private object WebRuntime {
  *
  * 这一版只负责「把页面显示出来 + 报告加载状态」，点击/悬停/滚动在下一版接上。
  */
-@Composable
-private fun GeckoWebView(
-    url: String,
-    desktopUa: String,
-    onRect: (Rect) -> Unit,
-    onReady: (org.mozilla.geckoview.GeckoView, org.mozilla.geckoview.GeckoSession) -> Unit,
-    onLoading: (Boolean) -> Unit,
-    onFailed: (Boolean) -> Unit,
-) {
-    AndroidView(
-        modifier = Modifier
-            .fillMaxSize()
-            .onGloballyPositioned { coords ->
-                val p = coords.positionInRoot()
-                onRect(Rect(p.x, p.y, p.x + coords.size.width, p.y + coords.size.height))
-            },
-        factory = { ctx ->
-            /*
-             * 2026-10-15：**把"关掉触摸事件"这条加回来**。
-             *
-             * 昨晚唯一一次腾讯播放页正常（r519）就带着这条设置；它被撤掉的理由是"父亲实测那一版
-             * 包有问题"，而当时的症状始终没问清（那时还有"包损坏"这档事搅在一起），于是白撤了。
-             * 之后 r521→r525 一路改"开新窗口的方式"，腾讯一直黑 —— 改错了地方。
-             *
-             * 只在启动参数里写这一条（builder 上设偏好项的方法不存在），失败就退回默认内核。
-             * 运行时开关 <web_touch>：0 = 关（默认，本次要验证的就是这一档）、1 = 保留触摸。
-             * 内核只建一次，切换后要重启应用。
-             */
-            val keepTouch = com.xxxx.emby_vr.vr.VrTuning.webTouchKept == 1
-            val runtime = WebRuntime.get(ctx, keepTouch, com.xxxx.emby_vr.vr.VrTuning.webPrefsNow(ctx))
-            android.util.Log.i("B0BEmbyVR", "网页内核就绪：触摸事件${if (keepTouch) "保留" else "已关掉"}")
-            /* 一次性清腾讯站数据（<web_wipe>=1 时才做）：去掉残留的后台服务注册，见该函数注释。 */
-            WebRuntime.wipeTencentOnce(ctx, runtime)
-            /* 面板上正在显示的窗口；开新窗口时要更新它（事件必须发给正在显示的那个） */
-            var panelView: org.mozilla.geckoview.GeckoView? = null
-
-            /*
-             * 造一个网页窗口：设置全按电脑版来，接上「新窗口」与「加载进度」两个回调。
-             * 递归调用 —— 新窗口里再点开新窗口时，仍旧走同一套设置。
-             */
-            fun newBrowserSession(): org.mozilla.geckoview.GeckoSession {
-                val s = org.mozilla.geckoview.GeckoSession()
-                /*
-                 * 三站一律按电脑版走（父亲 2026-10-14 定：腾讯、爱奇艺也要电脑版）。
-                 *
-                 * 火狐内核这里光换 UA 不够 —— 它有两个独立的"模式"开关，默认都是手机档，
-                 * 页面照样按移动端排版：
-                 *   userAgentMode = DESKTOP   告诉页面"我是电脑"
-                 *   viewportMode  = DESKTOP   让页面按电脑宽度排版（网页宽度撑满大银幕靠这个）
-                 * UA 再覆盖成与系统网页视图那条路完全相同的一串，两边口径一致。
-                 */
-                s.settings.userAgentMode =
-                    org.mozilla.geckoview.GeckoSessionSettings.USER_AGENT_MODE_DESKTOP
-                s.settings.viewportMode =
-                    org.mozilla.geckoview.GeckoSessionSettings.VIEWPORT_MODE_DESKTOP
-                s.settings.userAgentOverride = desktopUa
-                s.navigationDelegate = object :
-                    org.mozilla.geckoview.GeckoSession.NavigationDelegate {
-                    /*
-                     * 每次要打开腾讯的页面之前先清一遍腾讯站数据（2026-10-15）。
-                     * 见 WebRuntime.wipeBeforeTencent 的注释 —— run 536 实测"第一次正常、
-                     * 第二次黑"，因为清一次只保一次，必须挂在导航上。
-                     */
-                    override fun onLoadRequest(
-                        session: org.mozilla.geckoview.GeckoSession,
-                        request: org.mozilla.geckoview.GeckoSession.NavigationDelegate.LoadRequest,
-                    ): org.mozilla.geckoview.GeckoResult<org.mozilla.geckoview.AllowOrDeny>? =
-                        WebRuntime.wipeBeforeTencent(ctx, runtime, request.uri)
-
-                    /*
-                     * 「在新窗口打开」= 交一个**全新的、还没打开过**的窗口给内核，由内核接过去显示。
-                     *
-                     * 前两次的教训（2026-10-14）：
-                     *   run 519：把当前这个已经打开过的窗口交回去 → 内核断言崩溃
-                     *            （父亲实测：点 B站/腾讯 海报闪退）；
-                     *   run 517/521：回答「不提供」再自己把地址接到当前页面上 → 内核的收尾与我们
-                     *            的发起的载入撞车，页面只开了一半（父亲实测：腾讯跳过去不加载内容；
-                     *            B站 / 爱奇艺 不受影响 —— 它们的海报是原页跳转，根本不走这条路）。
-                     * 「给内核一个新的未打开窗口」这条是官方示例的写法，前两次都没试到。
-                     */
-                    override fun onNewSession(
-                        session: org.mozilla.geckoview.GeckoSession,
-                        uri: String,
-                    ): org.mozilla.geckoview.GeckoResult<org.mozilla.geckoview.GeckoSession>? {
-                        android.util.Log.i("B0BEmbyVR", "网页新窗口就地打开（延后载入）：$uri")
-                        /*
-                         * 就在**当前这个窗口**里打开（run 525 定，回到"单窗口"这条路）。
-                         *
-                         * 三条路都走过（2026-10-14 深夜连着实测）：
-                         *   · 交给内核（把当前窗口还回去，run 518）：腾讯能打开，但内核随后断言崩溃 —— 点海报闪退；
-                         *   · 交一个**新窗口**给内核（run 522/523）：不崩，可新窗口是另一条历史 ——
-                         *     B 键退不回去、离开网页页时关掉的还是旧窗口（B站 的声音在 Emby 播放时继续响）；
-                         *   · 自己**马上** loadUri（run 517/521）：与内核的收尾撞车，页面只开一半。
-                         *
-                         * 现在：不提供新窗口（返回空 = 忽略这次新窗口请求，内核只收尾、不再导航），
-                         * 并把载入**推迟到内核收尾之后**再做 —— 单窗口，历史连着，也没有两次载入互撞。
-                         */
-                        if (!uri.startsWith("about:")) {
-                            /*
-                             * run 530 编译失败：GeckoSession 这一版没有 currentUri（Unresolved reference）。
-                             * 本次只为验证「带来源页」这一条假设，且腾讯首页固定是 v.qq.com ——
-                             * 先用固定值，假设成立再改成从 onPageStart 记录的真实地址。
-                             */
-                            val from = "https://v.qq.com/"
-                            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                                runCatching {
-                                    /*
-                                     * <web_ref> 开关（2026-10-15）：再打开时带不带「来源页」。
-                                     *
-                                     * 差异起点：正常浏览器是从首页**点进去**的，页面拿得到来源页；
-                                     * 我们是从代码里直接 loadUri，来源页为空 —— 页面可能因此走了另一条
-                                     * 加载路径（run 528/529 日志：173 条跨域预检被腾讯 CDN 拒 400/403/405，
-                                     * 播放器与页面主脚本一个都没进来；电脑上同一页面这些脚本全是 200）。
-                                     * 用 Loader 把来源页显式设上，别的一律不动。
-                                     */
-                                    if (com.xxxx.emby_vr.vr.VrTuning.webRefOn == 1) {
-                                        session.load(
-                                            org.mozilla.geckoview.GeckoSession.Loader()
-                                                .uri(uri)
-                                                .referrer(from),
-                                        )
-                                    } else {
-                                        session.loadUri(uri)
-                                    }
-                                }
-                            }, 500L)
-                        }
-                        return null
-                    }
-                }
-                /*
-                 * 进度回调只接「加载结束」这一个。
-                 *
-                 * run 507 实测：onPageStart 的 URL 参数在接口里是非空 String，写成 String?
-                 * 会被判「overrides nothing」；而它的默认实现本来就够用 ——
-                 * 「正在加载」在发起加载时由外层置位，这里只负责收尾（成功=撤提示，失败=换提示）。
-                 */
-                s.progressDelegate = object : org.mozilla.geckoview.GeckoSession.ProgressDelegate {
-                    /* 诊断用（2026-10-15）：确认腾讯到底把哪个地址载进来了 */
-                    override fun onPageStart(ss: org.mozilla.geckoview.GeckoSession, url: String) {
-                        android.util.Log.i("B0BEmbyVR", "网页开始载入：$url")
-                    }
-
-                    override fun onPageStop(ss: org.mozilla.geckoview.GeckoSession, success: Boolean) {
-                        /*
-                         * 只有"当前显示的那个窗口"的收尾才动提示。
-                         * 被新窗口顶掉的旧窗口也会收尾（success=false，其实是加载被中止），
-                         * 不挡住的话，新页面明明是好的，面板上却挂着"请检查网络连接"。
-                         */
-                        if (panelView?.tag !== ss) return
-                        onLoading(false)
-                        onFailed(!success)
-                    }
-                }
-                return s
-            }
-
-            val session = newBrowserSession()
-            session.open(runtime)
-            val view = org.mozilla.geckoview.GeckoView(ctx)
-            view.setSession(session)
-            /*
-             * session 借 view.tag 带出去：factory 跑在布局阶段，在那里改 Compose 状态
-             * 会在组合期改状态（轻则警告重则崩），所以引用交给 update 再回调。
-             */
-            view.tag = session
-            panelView = view
-            session.loadUri(url)
-            view
-        },
-        update = { v ->
-            /* 键盘（网页播放器认的左右键）要能进来：给它焦点；鼠标事件是直接派发的，不依赖焦点 */
-            if (!v.isFocusable) {
-                v.isFocusable = true
-                v.isFocusableInTouchMode = true
-            }
-            if (!v.hasFocus()) v.requestFocus()
-            (v.tag as? org.mozilla.geckoview.GeckoSession)?.let { onReady(v, it) }
-        },
-    )
-}
-
 @Composable
 private fun WebPageForSite(site: Int, startUrl: String? = null) {
     val context = LocalContext.current
@@ -1243,8 +906,7 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
     /* 换站清栈（16:39 定稿的另一半）: navSite 不是本站就清掉上一站的路线 */
     LaunchedEffect(site) { com.xxxx.emby_vr.web.WebPageHub.navResetFor(site) }
     /* 火狐内核那两个（2026-10-14）：view 用来发事件，session 用来加载与前进后退 */
-    var geckoRef by remember { mutableStateOf<org.mozilla.geckoview.GeckoView?>(null) }
-    var geckoSessionRef by remember { mutableStateOf<org.mozilla.geckoview.GeckoSession?>(null) }
+    /* 火狐内核已拆（2026-10-20），原来这两个引用不再需要 */
     /*
      * 网页内核做成可实时切换（2026-10-14）：VrTuning 不是 Compose 状态，
      * 直接读它切不动 —— 这里每秒对一次，文件里改了，网页块立刻按新引擎重建。
@@ -1267,12 +929,7 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
     LaunchedEffect(Unit) {
         while (true) {
             val js = VIDEO_RECT_JS
-            if (com.xxxx.emby_vr.vr.VrTuning.webEngine == 1) {
-                /*
-                 * 火狐内核：画面数据由内置扩展交上来（WebRuntime.ensureBridge + 它的 ticker），
-                 * 这里**什么都不做** —— 否则这个循环每 250ms 报一次"没有"，会把扩展的数据顶掉。
-                 */
-            } else {
+            run {
                 val w = webRef
                 if (w == null) {
                     pushVideoRect(null)
@@ -1326,28 +983,12 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
 
     Box(modifier = Modifier.fillMaxSize().background(Color(0xFF0B0C0F))) {
         /*
-         * 两套网页内核（2026-10-14 父亲定）。
+         * 【2026-10-20 16:16 父亲要求：拆掉火狐与系统内核，只留打进应用的 Chromium 132】
          *
-         * 系统自带的网页视图停在 Chromium 90，B站这类重页面在它上面渲染慢；
-         * 火狐内核（GeckoView）作为依赖打进本应用，版本不受系统限制。
-         * 运行时可切：改 <files/vr-tuning.txt> 的 web_engine（0=系统，1=火狐），
-         * 下一秒整块网页按新引擎重建，不用重装、不用重起播。
+         * 原来这里是两套内核二选一（web_engine 开关选火狐或系统网页视图）。
+         * 火狐那套连同依赖一起删掉，网页只走打进应用的 Chromium 132（crwebview）。
+         * 开关字段保留但不再影响内核选择，只为兼容设备上已有的配置行。
          */
-        if (webEngine == 1) {
-            GeckoWebView(
-                url = url,
-                desktopUa = desktopUa,
-                onRect = { webRect = it },
-                onReady = { v, s ->
-                    geckoRef = v
-                    geckoSessionRef = s
-                    /* 播放侧要能让这个会话保持活跃（攒分片时网页留在后台） */
-                    WebRuntime.attachPageSession(s)
-                },
-                onLoading = { loading = it },
-                onFailed = { loadFailed = it },
-            )
-        } else {
         AndroidView(
                 modifier = Modifier
                     .fillMaxSize()
@@ -1600,7 +1241,7 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
              * 发给 WebView 等于发给一块不再显示内容的控件，什么都不会发生。
              */
             /* 火狐内核那条路也要能点：geckoRef 插在中间（2026-10-14） */
-            val wv: android.view.View? = customView ?: geckoRef ?: webRef
+            val wv: android.view.View? = customView ?: webRef
             if (r != null && wv != null && r.width > 0f && r.height > 0f) {
                 val u = (px - r.left) / r.width
                 val v = (py - r.top) / r.height
@@ -1635,7 +1276,7 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
          */
         WebPageHub.hoverHandler = hover@{ px, py ->
             val r = webRect ?: return@hover
-            val wv = customView ?: geckoRef ?: webRef ?: return@hover
+            val wv = customView ?: webRef ?: return@hover
             if (r.width <= 0f || r.height <= 0f) return@hover
             /*
              * 负坐标 = 光柱离开银幕（原生推来的哨兵，2026-10-15 父亲提）：
@@ -1742,10 +1383,6 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                 nav(prev)
                 return@back true
             }
-            geckoSessionRef?.let { s ->
-                runCatching { s.goBack() }
-                return@back true
-            }
             val wv = webRef
             if (wv != null && wv.canGoBack()) {
                 runCatching { wv.goBack() }
@@ -1756,7 +1393,7 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
         }
         WebPageHub.scrollHandler = scroll@{ px, py, sx, sy ->
             /* 同上：全屏时滚的是那个播放视图 */
-            val wv: android.view.View? = customView ?: geckoRef ?: webRef
+            val wv: android.view.View? = customView ?: webRef
             val r = webRect
             /*
              * 摇杆左右 = 网页里快退 / 快进（父亲 2026-10-13 定，2026-10-14 放宽）。

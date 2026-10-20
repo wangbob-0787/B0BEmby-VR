@@ -15,7 +15,6 @@ dependencyResolutionManagement {
          * Chromium 90，B站这类重页面渲染慢，改用打进应用里的火狐内核，版本自己说了算。
          * 只有这一个仓库能有 GeckoView，别处拉不到。
          */
-        maven("https://maven.mozilla.org/maven2")
     }
 }
 

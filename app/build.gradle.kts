@@ -215,20 +215,12 @@ dependencies {
     implementation(libs.nanohttpd)
 
     /*
-     * 火狐内核（2026-10-14 父亲定）。
+     * 【2026-10-20 16:18 父亲要求：火狐内核整套拆掉】
      *
-     * 头显系统自带的网页视图是 Chromium 90，B站这类重页面在它上面很慢；
-     * GeckoView 作为依赖打进应用，内核版本不受系统限制。
-     *
-     * 版本选择：最新那版（158）要求 compileSdk 37，而 Google 的 SDK 仓库里
-     * platforms 最高只到 android-36（2026-10-14 实测 repository2-3.xml，
-     * build-tools 有 37.0.0 但平台没有）—— 用不了。退到 150（2026-04），
-     * 比系统那个 Chromium 90 仍然新出 60 个版本。
-     *
-     * 只留 arm64 那套原生库（abiFilters 已限 arm64-v8a），体积可控。
-     * 运行时可切：<files/vr-tuning.txt> 的 web_engine=1 启用，=0 回到系统网页视图。
+     * 原因：火狐内核切不动腾讯的清晰度（同账号同页面，谷歌内核能切），换内核后它就没有用了；
+     * 它还占着包体一大半（原包 288MB 里火狐原生库是大头），留着只会让安装包继续臃肿。
+     * 网页内核改由下面 crwebview（Chromium 132）承担。
      */
-    implementation("org.mozilla.geckoview:geckoview:150.0.20260415192539")
 
     /*
      * 【2026-10-20 父亲定：换成 Chromium 132 内核】
