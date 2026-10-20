@@ -254,6 +254,17 @@ dependencies {
     // implementation(files("libs/android_webview_resources-debug.aar"))
 
     /*
+     * 【2026-10-20 16:07 闪退根因：还缺三个配套包】
+     *
+     * 实机日志原文：Caused by: java.lang.ClassNotFoundException: org.chromium.ui.R$integer
+     * 内核启动时要读这个资源 id 表，它不在主 aar 里，而在作者同时发布的三个小包里
+     * （每个只有几十到一百多 KB）。缺一个就在打开网页那一刻闪退。
+     */
+    implementation(files("libs/content-debug.aar"))
+    implementation(files("libs/ui-debug.aar"))
+    implementation(files("libs/embedder_support_resources-debug.aar"))
+
+    /*
      * 【2026-10-20 15:45 两处编译冲突（run 787 实证）】
      *
      * ① Duplicate class org.jspecify.annotations.NonNull：
