@@ -752,7 +752,23 @@
       return;
     }
     var pickA = qqSlotPick();
+    /*
+     * 【2026-10-20 18:40 父亲实测：控制条写着《伟大的长征》，播的却是上一部电影】
+     *
+     * 三槽是持久化的（十分钟内有效），换片时旧槽还在里面；而这里取地址没核对片号，
+     * 于是把上一部片子的地址塞进了这一部。加一道校验：槽里记的片号必须与当前页面一致，
+     * 判定不了片号（电影页/改版）才放行 —— 与按全屏那条路的判断口径保持一致。
+     */
     if (pickA) {
+      var vNowA = pageVideoKey(location.href);
+      var sameA = !pickA.b.vid || !keyKnown(vNowA) || pickA.b.vid === vNowA;
+      if (!sameA) {
+        if (b0bLogGate('otherVid')) {
+          console.log('[b0b] 「' + qqSlotName(pickA.k) + '」那一槽是别的片子的（槽=' +
+            pickA.b.vid + ' 当前=' + vNowA + '），这次不交');
+        }
+        return;
+      }
       try { obj.streams[0].video = pickA.b.u; } catch (e4) {}
       /*
        * 【2026-10-20 18:32 父亲要看得出"这是臻彩MAX 还是标准 4K"】
