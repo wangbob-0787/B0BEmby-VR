@@ -1085,6 +1085,15 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                          */
                         addJavascriptInterface(WebPageBridge(), "b0bHost")
                         setBackgroundColor(AndroidColor.BLACK)
+                        /*
+                         * 【2026-10-20 19:46 开调试口（父亲报爱奇艺内容区全黑）】
+                         *
+                         * 三家站里只有爱奇艺内容区渲染不出来，本机同视口同身份却正常 ——
+                         * 光看截图分不清是"页面元素没生成"还是"生成了但没画"。
+                         * 打开网页调试口，.18 上可以直接连进头显里这个网页看 DOM 与报错，
+                         * 一次定位，不用父亲反复试。发布版留着也无害（只在 adb 可达时用）。
+                         */
+                        WebView.setWebContentsDebuggingEnabled(true)
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
                         /* 网页播放器默认要"用户手势"才播，这里放开（父亲 2026-10-13） */
