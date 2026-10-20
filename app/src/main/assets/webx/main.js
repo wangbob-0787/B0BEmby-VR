@@ -338,7 +338,7 @@
           console.log('[b0b] 「' + qqSlotName(pickF.k) + '」那一槽是别的集的，这次不用');
         }
       } else {
-        console.log('[b0b] 三槽都空着或都过期了：这次不交');
+        if (b0bLogGate('empty3')) console.log('[b0b] 三槽都空着或都过期了：这次不交');
       }
     }
     var qqHere = pageVideoKey(location.href);
@@ -456,7 +456,7 @@
     var fsBest = Math.max.apply(null, fsStamps);
     var fsOk = fsBest > 0 && Date.now() - fsBest < 3 * 3600 * 1000;
     if (!fsOk) {
-      console.log('[b0b] 没交出去：你还没按全屏按钮（本层=' + (fullState ? 1 : 0) +
+      if (b0bLogGate('nofull')) console.log('[b0b] 没交出去：你还没按全屏按钮（本层=' + (fullState ? 1 : 0) +
         ' 本地存=' + (fsShared ? 1 : 0) + ' 别层报=' + (peerFullAt ? 1 : 0) + '）');
       return;
     }
@@ -484,7 +484,7 @@
         vst.push((vv.paused ? '停' : '播') + ' ' + (vv.videoWidth || 0) + 'x' + (vv.videoHeight || 0) +
           ' ' + (Math.round((vv.currentTime || 0) * 10) / 10) + 's');
       }
-      console.log('[b0b] 交接现场：页面 video 元素 ' + vids.length + ' 个' +
+      if (b0bLogGate('scene')) console.log('[b0b] 交接现场：页面 video 元素 ' + vids.length + ' 个' +
         (vids.length ? '（' + vst.join(' / ') + '）' : ' —— 一个都没找到'));
     } catch (e) {}
     /*
@@ -1001,10 +1001,12 @@
         var mm;
         var re = /f(\d{6})\./g;
         while ((mm = re.exec(t))) tiers[mm[1]] = (tiers[mm[1]] || 0) + 1;
+        if (b0bLogGate('tiers')) {
         console.log('[b0b] 响应来自：' + String(window.__b0bCurUrl || '(未知)').split('?')[0].slice(-70));
         console.log('[b0b] 响应里的档位号：' + (Object.keys(tiers).length ?
           Object.keys(tiers).map(function (k) { return 'f' + k + '×' + tiers[k]; }).join(' ') : '（一个都没有）') +
           ' 含uhd=' + /uhd/.test(t) + ' 含hdr10=' + /hdr10/i.test(t) + ' 含4K字样=' + /4K|3840|2160/.test(t));
+        }
         /*
          * 2026-10-20 00:56 父亲问：.18 上这份响应是编码的，头显上也是吗？
          * 以前只统计过"响应里有没有档位号"，没看过响应本身长什么样。这里补一次体检：
@@ -1536,6 +1538,21 @@
     /* 高清1080P / 720P / 480P 一律不收（父亲 2026-10-20 11:00 只留上面三档） */
     return '';
   }
+
+  /*
+   * 【2026-10-20 13:24 父亲报"切清晰度很慢"→ 降噪闸门】
+   * 这页面上有好几处每 200ms 打一次日志，3 分钟能刷上千条；打日志本身走主线程，
+   * 切档时就卡在这上面。统一用这个闸门：同一类日志 3 秒内只放一条。
+   */
+  function b0bLogGate(key, ms) {
+    try {
+      window.__b0bGates = window.__b0bGates || {};
+      var now = Date.now();
+      if (window.__b0bGates[key] && now - window.__b0bGates[key] < (ms || 3000)) return false;
+      window.__b0bGates[key] = now;
+      return true;
+    } catch (e) { return true; }
+  }
   /** 槽的中文名，日志里用 */
   function qqSlotName(k) {
     if (k === 'zcmax') return '臻彩MAX';
@@ -1829,7 +1846,7 @@
           }
         } catch (e2) {}
       }
-      console.log('[b0b] 网页取分片心跳：页面进度 ' + Math.round(cur) + '/' + Math.round(dur) +
+      if (b0bLogGate('hb')) console.log('[b0b] 网页取分片心跳：页面进度 ' + Math.round(cur) + '/' + Math.round(dur) +
         ' 秒 暂停=' + pause + ' 已攒 ' + n + ' 段');
     }
   }
