@@ -321,25 +321,24 @@
       return;
     }
     /*
-     * 【2026-10-20 08:28 父亲定：现在只认 4K 那一槽，不做"从高到低"】
-     *
-     * 先把 4K 这条交明白，确认内核真拿到 3840×2160，再谈 1080P/720P 的退路。
-     * 4K 槽空着时仍按老路走（否则这一集连普通画质都放不出来）。
+     * 【2026-10-20 11:00 三槽方案】按全屏这一刻，取三槽里**最新抓到**的那一份。
+     * 父亲最后在页面上选的是哪一档，哪一槽就是最新的 —— 于是他选什么就播什么。
      */
     if (!pendingPlay) {
-      var b4 = qqSlotGet('2160');
-      if (b4 && Date.now() - b4.at < 10 * 60 * 1000) {
+      var pickF = qqSlotPick();
+      if (pickF) {
         var vNow4 = pageVideoKey(location.href);
-        var same4 = !b4.vid || !keyKnown(vNow4) || b4.vid === vNow4;
-        if (same4 && !qqIsOfflineSlot(b4)) {
-          pendingQq = b4.u; qqAt = b4.at;
-          console.log('[b0b] 按全屏：交 4K 那一槽（' + Math.round((Date.now() - b4.at) / 1000) +
-            ' 秒前抓的，…' + String(b4.u).slice(-40) + '）');
-        } else if (!same4) {
-          console.log('[b0b] 4K 那一槽是别的集的，这次不用');
+        var same4 = !pickF.b.vid || !keyKnown(vNow4) || pickF.b.vid === vNow4;
+        if (same4) {
+          pendingQq = pickF.b.u; qqAt = pickF.b.at;
+          console.log('[b0b] 按全屏：交「' + qqSlotName(pickF.k) + '」那一槽（' +
+            Math.round((Date.now() - pickF.b.at) / 1000) + ' 秒前抓的，…' +
+            String(pickF.b.u).slice(-40) + '）');
+        } else {
+          console.log('[b0b] 「' + qqSlotName(pickF.k) + '」那一槽是别的集的，这次不用');
         }
-      } else if (!b4) {
-        console.log('[b0b] 4K 那一槽还空着 —— 调试期：不交任何低档，等 4K 到手');
+      } else {
+        console.log('[b0b] 三槽都空着或都过期了：这次不交');
       }
     }
     var qqHere = pageVideoKey(location.href);
@@ -1467,8 +1466,18 @@
    * 依次取第一个新鲜的、同一集的，直接交给内核。其他的清晰度一概不收。
    * 槽里记：地址 u、抓的时刻 at、集号 vid、标题 title、标题来源 from（resp=响应自己写的，可信）。
    */
-  /* 【2026-10-20 08:53 父亲定：只要 4K 和 1080P 两槽，720P 及以下一概不收】 */
-  var qqBucket = { '2160': null, '1080': null };
+  /*
+   * 【2026-10-20 11:00 父亲定的三槽方案】
+   *
+   *   臻彩MAX   ← f322104（实测 17.8M，最高）
+   *   4K超清    ← f322093
+   *   臻彩1080P ← f322350（实测 13.4M）
+   *
+   * 父亲在页面上选哪一档，服务器就发哪一档的分片清单，对应那个槽拿到地址；
+   * 接管时取**最新抓到的那一槽** —— 于是"他选什么就播什么"，不会因为槽里留着旧的高档
+   * 而把低档顶掉。720P 及以下没有槽，永远不会交出去。
+   */
+  var qqBucket = { 'zcmax': null, '4k': null, 'zc1080': null };
   /*
    * 【2026-10-20 08:46 现场定案：槽必须是**跨窗口共用**的】
    *
@@ -1503,14 +1512,18 @@
   var qq4kOnly = false;
   function qqBucketOf(u) {
     var s2 = String(u || '');
-    /* 2160 槽：臻彩MAX(f322104) 与 4K超清(f322093) 都收，谁最后来就是父亲当前选的那档 */
-    if (/f322104/.test(s2)) return '2160';
-    if (/f322093/.test(s2)) return '2160';
-    /* 1080 槽：臻彩1080P(f322350，13.4M) 与 高清1080P(f322084) 都收 */
-    if (/f322350/.test(s2)) return '1080';
-    if (/f322084|f321004/.test(s2)) return '1080';
-    /* 720P（f322363 / f321003）与更低档一律不收（父亲 2026-10-20 08:53 定） */
+    if (/f322104/.test(s2)) return 'zcmax';    /* 臻彩MAX */
+    if (/f322093/.test(s2)) return '4k';       /* 4K 超清 */
+    if (/f322350/.test(s2)) return 'zc1080';   /* 臻彩 1080P */
+    /* 高清1080P / 720P / 480P 一律不收（父亲 2026-10-20 11:00 只留上面三档） */
     return '';
+  }
+  /** 槽的中文名，日志里用 */
+  function qqSlotName(k) {
+    if (k === 'zcmax') return '臻彩MAX';
+    if (k === '4k') return '4K超清';
+    if (k === 'zc1080') return '臻彩1080P';
+    return k;
   }
   /*
    * 【2026-10-20 10:38 父亲：4K 已两集验通，打开退路】
@@ -1518,24 +1531,26 @@
    * 返回 {k, b}，k 是档位字符串（'2160'/'1080'），b 是槽对象；都没有返回 null。
    */
   function qqSlotPick() {
-    var order = ['2160', '1080'];
+    var order = ['zcmax', '4k', 'zc1080'];
+    var best = null;
     for (var i = 0; i < order.length; i++) {
       var b = qqSlotGet(order[i]);
       if (!b || !b.u) continue;
       if (Date.now() - b.at > 10 * 60 * 1000) continue;
       if (qqIsOfflineSlot(b)) continue;
-      return { k: order[i], b: b };
+      /* 取最新抓到的那一槽：他最后选的那一档就是最后抓到的那一份 */
+      if (!best || b.at > best.b.at) best = { k: order[i], b: b };
     }
-    return null;
+    return best;
   }
   /** 把三个槽的现状原样打出来（父亲 2026-10-20 08:29 要：日志要描述槽里的地址到底是什么） */
   function qqBucketDump(tag) {
-    var keys = ['2160', '1080'];
+    var keys = ['zcmax', '4k', 'zc1080'];
     var parts = [];
     for (var i = 0; i < keys.length; i++) {
       var b = qqSlotGet(keys[i]);
-      if (!b) { parts.push(keys[i] + 'P=空'); continue; }
-      parts.push(keys[i] + 'P=有〔尾46=…' + String(b.u).slice(-46) +
+      if (!b) { parts.push(qqSlotName(keys[i]) + '=空'); continue; }
+      parts.push(qqSlotName(keys[i]) + '=有〔尾46=…' + String(b.u).slice(-46) +
         '｜抓于' + Math.round((Date.now() - b.at) / 1000) + '秒前' +
         '｜集=' + (b.vid || '?') +
         '｜标题「' + String(b.title || '').slice(0, 24) + '」来源=' + b.from +
@@ -1546,7 +1561,7 @@
   /** 这份是不是离线日志页那份：只看"响应自己写的标题"，兜底来的标题不算数 */
   function qqIsOfflineSlot(b) {
     if (!b) return false;
-    if (qqBucketOf(b.u) === '2160') return false;   /* 4K 不可能是那份 */
+    if (qqBucketOf(b.u) === '4k' || qqBucketOf(b.u) === 'zcmax') return false;   /* 4K 级不可能是那份 */
     return b.from === 'resp' && /离线日志|Thumbplayer/i.test(String(b.title || ''));
   }
   /*
