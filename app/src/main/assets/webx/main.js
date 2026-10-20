@@ -4009,6 +4009,25 @@
           localStorage.removeItem('b0b:fullAt');
           /* 真换页了，"这一部在播"的记账也要清（2026-10-18）：新片子得重新按全屏 */
           localStorage.removeItem('b0b:fragLive');
+          /* 真全屏标记也清：新页面还没按过「全屏」（2026-10-20） */
+          try { window.__b0bRealFull = 0; } catch (eR) {}
+          /*
+           * 【2026-10-20 19:28 父亲定：换页就把三个槽清干净】
+           *
+           * 原话：「在我切换页面的时候，比如说切到下一集、或者是另外一部电影、
+           *       或者是另外一部电视剧，你首先得把三个槽清掉。」
+           * 三槽只能装同一部片子的三档；换页不清就会把上一部的地址混进来（当天出过串台）。
+           */
+          try {
+            var ks = ['zcmax', '4k', 'zc1080'];
+            for (var ki = 0; ki < ks.length; ki++) {
+              qqBucket[ks[ki]] = null;
+              localStorage.removeItem(qqSlotStoreKey(ks[ki]));
+            }
+            pendingQq = null;
+            qqHlsPend = null;
+            console.log('[b0b] 换页：三槽已清空');
+          } catch (eC) {}
         }
       } catch (e) {}
       console.log('[b0b]①页面地址变为 ' + String(location.href).slice(-70) + '（全屏计数归零）');
