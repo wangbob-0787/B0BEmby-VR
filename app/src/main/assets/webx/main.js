@@ -243,41 +243,21 @@
 
   /* 每轮扫描都问一次：条件齐了就交出去（只交一次） */
   /*
-   * 【2026-10-20 08:56 父亲要：进任何页面主动刷新一次】
+   * 【2026-10-20 10:14 父亲现场：装上 r762 后腾讯小窗加载不出来 → 自动刷新这条撤掉】
    *
-   * 现场规律：第一次进播放页时，页面按"这个浏览器没有 4K 能力"去要播放信息，
-   * 所以响应里根本没有 4K 档；重新加载一次（等价于父亲手动"切集再切回来"），
-   * 我们注入的能力位才跟着生效，4K 档才出现。
+   * 现场只有 1 次刷新、没有循环，但整页重载会把页面的播放器状态一起清掉，
+   * 小窗就不再起来。要"重新请求一次拿 4K"，可以等父亲自己切集/切档时自然产生，
+   * 不能拿整页重载去换。原写法留在下面供以后参考：
    *
-   * 做法：只在最外层、只在腾讯播放页、每页只刷一次（sessionStorage 记账，防止循环刷新）。
-   * 延迟 1.2 秒再刷，给页面先把首屏和第二批请求发完。
+   *   (function () {
+   *     if (window.self !== window.top) return;
+   *     if (!/qq\.com$/i.test(String(location.hostname || ''))) return;
+   *     var key = 'b0b:reloaded:' + location.href.split('#')[0];
+   *     if (sessionStorage.getItem(key)) return;
+   *     sessionStorage.setItem(key, '1');
+   *     setTimeout(function () { location.reload(); }, 1200);
+   *   })();
    */
-  try {
-    (function () {
-      if (window.self !== window.top) return;
-      /*
-       * 【2026-10-20 08:57 父亲改口径：进**任何页面**都刷一次，不只播放页】
-       * 全站按域名放行（腾讯系），离线日志那种诊断页除外。
-       */
-      var host = String(location.hostname || '');
-      if (!/qq\.com$/i.test(host)) return;
-      var href = String(location.href || '');
-      if (/offline-log|thumbplayer-offline|offlineLog/i.test(href)) return;
-      var key = 'b0b:reloaded:' + href.split('#')[0];
-      var done = '';
-      try { done = sessionStorage.getItem(key) || ''; } catch (e) {}
-      if (done) {
-        console.log('[b0b] 这一页已经自动刷过一次，不再刷');
-        return;
-      }
-      try { sessionStorage.setItem(key, '1'); } catch (e) {}
-      console.log('[b0b] 进播放页：1.2 秒后自动刷新一次（否则页面按无 4K 能力去请求，拿不到 4K 档）');
-      setTimeout(function () {
-        try { location.reload(); } catch (e) { console.log('[b0b] 自动刷新失败：' + e); }
-      }, 1200);
-    })();
-  } catch (e) {}
-
   function flushPendingPlay() {
     /*
      * 腾讯那条兜底必须放在最前面：它本身就是"没有解析到播放接口"时的替代品。
