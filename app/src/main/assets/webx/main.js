@@ -3103,14 +3103,25 @@
       var changed = false;
       if (p.indexOf('spvvc=') < 0) { p += QQ_CAP_APPEND; changed = true; }
       if (p.indexOf('sphevcfps=') < 0) { p += '&sphevcfps=52776560265087'; changed = true; }
-      if (QQ_WANT_DEFN && /defn=[A-Za-z0-9]+/.test(p) && p.indexOf('defn=' + QQ_WANT_DEFN) < 0) {
-        p = p.replace(/defn=[A-Za-z0-9]+/, 'defn=' + QQ_WANT_DEFN);
+      /*
+       * 【2026-10-20 13:33 定案：只给"要播放地址"那条（buid=onlyvinfo）改档位】
+       *
+       * 今天的日志证据：13:25:33 那条 proxyhttp 我们已经补上了 HEVC 能力位，服务器回的还是
+       * 只有 f322363（720P）——因为"要哪一档"这个参数（defn）仍是页面当时那一档。
+       * 而 13:19:57 那次臻彩MAX(f322104) 抓到过，说明这条路本身通。
+       * 所以：只把 onlyvinfo 这条的 defn 改成 uhd，其它请求（资格查询、广告）一律不碰
+       * —— 之前把 defn 全局改成 uhd 才是菜单塌成只剩 4K 的原因。
+       */
+      var isVinfoReq = /"buid"\s*:\s*"onlyvinfo"/.test(body);
+      if (isVinfoReq && p.indexOf('defn=uhd') < 0) {
+        if (/defn=[A-Za-z0-9]+/.test(p)) p = p.replace(/defn=[A-Za-z0-9]+/, 'defn=uhd');
+        else p += '&defn=uhd';
         changed = true;
       }
       if (!changed) return body;
       o.vinfoparam = p;
-      console.log('[b0b] 腾讯播放信息：已替它补上 HEVC 能力位，并把清晰度要成 ' +
-        QQ_WANT_DEFN + '（拿 4K 的关键，2026-10-19）');
+      console.log('[b0b] 腾讯播放信息：已补 HEVC 能力位' +
+        (isVinfoReq ? '，并把这一条要成 defn=uhd（4K）' : '（不是 onlyvinfo，不动档位）'));
       return JSON.stringify(o);
     } catch (e) { return body; }
   }
@@ -3295,6 +3306,15 @@
                * 能力位自然补不上。这里把请求地址挂到扫描函数上，日志里一起打。
                */
               try { window.__b0bCurUrl = String(this.__b0bUrl || ''); } catch (eU) {}
+              /*
+               * 【2026-10-20 13:34 父亲问"切档慢"→ 只扫可能带地址的接口】
+               * 腾讯页面每 0.3 秒就来好几条响应（雪花、广告、心跳），原来每条都要把正文
+               * 过一遍全文正则找 m3u8，几百 KB 的正则跑在主线程上，切档时就卡在这。
+               * 真正出地址的只有下面这几个（今天的实测：13:25:33 档位号来自 proxyhttp）。
+               */
+              var worth = /proxyhttp|vinfo_proxy|getvinfo|onlyvinfo|playinfo|plr\/|m3u8|\.ts/i.test(
+                String(window.__b0bCurUrl || ''));
+              if (!worth || seen.length > 4 * 1024 * 1024) return;
               scanTextForQqHls(seen);
               /*
                * 腾讯探针（2026-10-18 00:10 加，父亲实测"腾讯还是没接播"）。
