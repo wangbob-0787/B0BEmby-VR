@@ -1590,6 +1590,15 @@
       if (b0bForceTries >= 5) return;
       var slotsFull = qqSlotPick();
       if (slotsFull) { console.log('[b0b] 三槽已有货，不再替它切档'); return; }
+      /*
+       * 【2026-10-20 17:52 父亲点的时机问题】
+       *
+       * 原话：「切了 480 以后，高清地址还是没有拿到。可能你切的时机不对，
+       *       你应该等详情页加载完了再切。」
+       * 原来只看"有没有 video 在播"，页面骨架刚出来就可能命中，此时播放器还没就绪，
+       * 切档自然要不到全套地址。这里加两道时间条件：文档加载完成 + 播放器真有时长。
+       */
+      if (String(document.readyState) !== 'complete') return;
       var v = document.querySelector('video');
       if (!v || v.paused || !(v.duration > 0)) return;
       var btn = document.querySelector('.txp_btn_definition');
