@@ -187,6 +187,13 @@ configurations.all {
     }
 }
 
+/*
+ * 见下方 dependencies 注释①：内核库自带 jspecify 注解类，排掉外部那一份，避免打包判重复。
+ */
+configurations.configureEach {
+    exclude(group = "org.jspecify", module = "jspecify")
+}
+
 dependencies {
     implementation(libs.openxr.loader)
     implementation(libs.androidx.core.ktx)
@@ -237,6 +244,18 @@ dependencies {
      */
     implementation(files("libs/android_crwebview_webkit.WebView-v2.0.0.aar"))
     implementation(files("libs/android_webview_resources-debug.aar"))
+
+    /*
+     * 【2026-10-20 15:45 两处编译冲突（run 787 实证）】
+     *
+     * ① Duplicate class org.jspecify.annotations.NonNull：
+     *    内核库把 jspecify 的注解类打在自己包里了，依赖树里又有 org.jspecify:jspecify:1.0.0，
+     *    两边同名 → 打包时判重复。jspecify 只是编译期注解、运行时不用，直接排掉外部那份。
+     *
+     * ② 内核库的清单引用了 Theme.AppCompat.DayNight，而本项目从来没有 appcompat 依赖
+     *    → aapt 链接资源时报 not found。补上 appcompat 即可（只用到它的主题，不引界面）。
+     */
+    implementation("androidx.appcompat:appcompat:1.6.1")
 
     implementation(libs.media3.exoplayer)
     // HLS 模块（2026-10-05 父亲实测：电视直播、部分转码片源"起播失败"，
