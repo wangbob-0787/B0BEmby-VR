@@ -1540,6 +1540,49 @@
   }
 
   /*
+   * 【2026-10-20 14:25 父亲实测定的机理：起播不发，切档才发】
+   *
+   * 原话：「你伪装生成了，但是它并没有往服务器去发。我刚才碰巧切换 480P，切换成功一次，
+   *  它就发过去了，发过去了，然后马上就返回了，然后你马上就接管了。」
+   * ⇒ 页面把"这台机器能不能解 4K"算进了加密串（cKey），而**只有切档时才重算**；
+   *   起播沿用的是之前算好的旧值，所以我们新补的能力伪装起播时等于没用上。
+   * 对策：进播放页后由我们替它切一次档（480P 最轻），逼它重算并发出请求；
+   *   切不成功就隔 20 秒再来一次，最多 5 次 —— 父亲实测切档九成失败，靠重试撞开。
+   */
+  var b0bForceTries = 0;
+  function b0bForceSwitchOnce() {
+    try {
+      if (!/(^|\.)qq\.com$/i.test(String(location.hostname || ''))) return;
+      if (b0bForceTries >= 5) return;
+      var slotsFull = qqSlotPick();
+      if (slotsFull) { console.log('[b0b] 三槽已有货，不再替它切档'); return; }
+      var v = document.querySelector('video');
+      if (!v || v.paused || !(v.duration > 0)) return;
+      var btn = document.querySelector('.txp_btn_definition');
+      if (!btn) return;
+      b0bForceTries++;
+      console.log('[b0b] 替它切一次档（第 ' + b0bForceTries + ' 次，逼它重算能力并要地址）');
+      try { btn.click(); } catch (e) { try { btn.dispatchEvent(new MouseEvent('click', { bubbles: true })); } catch (e2) {} }
+      setTimeout(function () {
+        try {
+          var all = document.querySelectorAll('.txp_btn_definition *, [class*=definition] *');
+          for (var i = 0; i < all.length; i++) {
+            var e = all[i];
+            var tx = String(e.textContent || '').replace(/\s+/g, '');
+            if (tx.length > 14) continue;
+            if (!/^(480P|标清)/.test(tx)) continue;
+            console.log('[b0b] 点中了这一项：' + tx);
+            try { e.click(); } catch (e3) { try { e.dispatchEvent(new MouseEvent('click', { bubbles: true })); } catch (e4) {} }
+            return;
+          }
+          console.log('[b0b] 弹层里没找到 480P 项（下次再试）');
+        } catch (e5) {}
+      }, 700);
+    } catch (e) { try { console.log('[b0b] 替它切档失败：' + e); } catch (e2) {} }
+  }
+  try { setInterval(b0bForceSwitchOnce, 20000); } catch (e) {}
+
+  /*
    * 【2026-10-20 14:08 关键补齐：把"能不能解 4K 那种格式"谎报成能解】
    *
    * 腾讯的清晰度菜单是**按浏览器的解码能力上报**渲染的：页面先问内核
