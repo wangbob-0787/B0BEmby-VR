@@ -323,13 +323,26 @@
           console.log('[b0b] 4K 那一槽是别的集的，这次不用');
         }
       } else if (!b4) {
-        console.log('[b0b] 4K 那一槽还空着，先按老路走（交当前手上那份）');
+        console.log('[b0b] 4K 那一槽还空着 —— 调试期：不交任何低档，等 4K 到手');
       }
     }
     var qqHere = pageVideoKey(location.href);
     var qqSamePage = !keyKnown(qqKey) || !keyKnown(qqHere) || qqKey === qqHere;
     /* 【2026-10-19 21:56】页面上量不到集号时（电影页/改版），一律按同一集处理，
        否则新地址每 0.4 秒被判"别的集"扔掉，永远换不上 4K。 */
+    if (qq4kOnly && pendingQq) {
+      var b4now = qqBucket['2160'];
+      var is4kSlot = !!(b4now && b4now.u === pendingQq);
+      if (!is4kSlot) {
+        var nowK = Date.now();
+        if (nowK - (window.__b0b4kOnlyLog || 0) > 3000) {
+          window.__b0b4kOnlyLog = nowK;
+          console.log('[b0b] 调试期只交 4K：手上这份不是 4K 槽（尾 …' + String(pendingQq).slice(-40) +
+            '），不交' + (b4now ? '（4K 槽是另一份）' : '（4K 槽还空着）'));
+        }
+        return;
+      }
+    }
     if (!pendingPlay && pendingQq && Date.now() - qqAt < 30 * 60 * 1000 && qqSamePage) {
       var qqSz = pageVideoSize();
       pendingPlay = {
@@ -1389,6 +1402,12 @@
    * 槽里记：地址 u、抓的时刻 at、集号 vid、标题 title、标题来源 from（resp=响应自己写的，可信）。
    */
   var qqBucket = { '2160': null, '1080': null, '720': null };
+  /*
+   * 调试开关（2026-10-20 08:30 父亲定）：程序没调通之前，腾讯**只交 4K 槽那一份**。
+   * 4K 槽空着就什么都不交，绝不再回落到"手上那份"——混着老路会把问题搅浑。
+   * 调通后把这里改成 false，再启用 1080P/720P 的退路。
+   */
+  var qq4kOnly = true;
   function qqBucketOf(u) {
     var s2 = String(u || '');
     if (/f322093/.test(s2)) return '2160';
