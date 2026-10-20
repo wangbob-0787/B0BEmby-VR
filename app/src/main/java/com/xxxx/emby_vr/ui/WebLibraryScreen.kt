@@ -1094,6 +1094,18 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                          * 一次定位，不用父亲反复试。发布版留着也无害（只在 adb 可达时用）。
                          */
                         WebView.setWebContentsDebuggingEnabled(true)
+                        /*
+                         * 【2026-10-20 20:18 爱奇艺内容区全黑的头号嫌疑：跨子域 cookie 被拦】
+                         *
+                         * 实机日志里它自己的接口被跨域策略挡掉：
+                         *   Access to fetch at 'https://mesh.if.iqiyi.com/portal/lw/v5/channel/recommend…'
+                         *   from origin 'https://www.iqiyi.com' has been blocked by CORS policy
+                         * 而内容区就是靠这个子域上的接口取数据的 —— 被挡 → 内容区空。
+                         * 本机同页面、同样注入我们的脚本都正常，差别只剩内核的 cookie 策略：
+                         * 网页视图默认**不接受第三方（跨子域）cookie**，那几个接口就带不上登录态。
+                         */
+                        org.chromium.android_crwebview.webkit.CookieManager.getInstance()
+                            .setAcceptThirdPartyCookies(this, true)
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
                         /* 网页播放器默认要"用户手势"才播，这里放开（父亲 2026-10-13） */
