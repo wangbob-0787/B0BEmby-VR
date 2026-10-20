@@ -1906,6 +1906,42 @@
    * 取用顺序 4K → 1080P；720P 及以下没有槽，永远不会被交出去。
    * 返回 {k, b}，k 是档位字符串（'2160'/'1080'），b 是槽对象；都没有返回 null。
    */
+  /*
+   * 【2026-10-20 19:58 父亲现场：菜单里明明有臻彩MAX，点了却没用】
+   *
+   * 原话：「网页全屏的时候，切换那个清晰度的选项里边有臻彩MAX 呀」——
+   * 菜单项存在是真的，但点了之后页面仍按 4K 回（三槽里臻彩MAX 一直是空的）。
+   * 这里补两条日志，下次一眼分清是"点击没送到"还是"页面拒绝切"：
+   *   ① 用户/脚本点到哪一项（带文字）；
+   *   ② 点完 2.5 秒后，播放器档位标签实际变成什么。
+   */
+  function b0bWatchDefinitionClicks() {
+    try {
+      if (window.__b0bDefClickWatch) return;
+      window.__b0bDefClickWatch = 1;
+      document.addEventListener('click', function (ev) {
+        try {
+          var t = ev && ev.target;
+          if (!t) return;
+          var box = t.closest ? t.closest('[class*=definition]') : null;
+          if (!box) return;
+          var txt = String(t.textContent || '').replace(/\s+/g, '');
+          if (!txt || txt.length > 20) return;
+          console.log('[b0b] 点了清晰度项：「' + txt + '」');
+          setTimeout(function () {
+            try {
+              var lab = document.querySelector('.txp_btn_definition');
+              console.log('[b0b] 2.5 秒后播放器档位标签：' +
+                String((lab && lab.textContent) || '?').replace(/\s+/g, '').slice(0, 20));
+            } catch (e2) {}
+          }, 2500);
+        } catch (e) {}
+      }, true);
+      console.log('[b0b] 清晰度点击观测已装');
+    } catch (e) {}
+  }
+  try { b0bWatchDefinitionClicks(); } catch (e) {}
+
   function qqSlotPick() {
     /*
      * 【2026-10-20 18:30 父亲定：接管一律取清晰度最高的那一槽】
