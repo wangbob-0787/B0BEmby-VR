@@ -3489,7 +3489,14 @@
                * 过一遍全文正则找 m3u8，几百 KB 的正则跑在主线程上，切档时就卡在这。
                * 真正出地址的只有下面这几个（今天的实测：13:25:33 档位号来自 proxyhttp）。
                */
-              var worth = /proxyhttp|vinfo_proxy|getvinfo|onlyvinfo|playinfo|plr\/|m3u8|\.ts/i.test(
+              /*
+               * 【2026-10-20 14:47 真正的拖累：连视频分片都在扫】
+               * 之前白名单里有 m3u8 和 .ts —— 也就是腾讯那 284 个视频分片，每一个响应都要
+               * 被我们整篇过一遍正则。切档时页面要重新拉一批分片，主线程被这些扫描占住，
+               * 首段迟迟 append 不进去，界面就一直停"正在为你切换清晰度"。
+               * 地址只出现在接口响应里（实测 13:25:33 来自 proxyhttp），分片一律不扫。
+               */
+              var worth = /proxyhttp|vinfo_proxy|getvinfo|onlyvinfo|playinfo|plr\//i.test(
                 String(window.__b0bCurUrl || ''));
               if (!worth || seen.length > 4 * 1024 * 1024) return;
               scanTextForQqHls(seen);
