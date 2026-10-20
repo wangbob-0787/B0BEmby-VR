@@ -587,7 +587,14 @@
      * 一旦让它先交出去，手里的 4K 就白抓了。
      */
     var sendName = String((obj && obj.title) || qqRemoteTitle || '');
-    if (/离线日志|Thumbplayer/i.test(sendName)) {
+    /*
+     * 只看标题会冤杀：片名是全局残留的，上一页留下的「离线日志」会跟着 4K 那份一起过来。
+     * 所以加一条放行条件 —— 地址本身就是 4K 档（f322093）时一律放行。
+     */
+    var sendUrl = '';
+    try { sendUrl = String((obj.streams && obj.streams[0] && obj.streams[0].video) || ''); } catch (e0) {}
+    var sendIs4k = /f322093/.test(sendUrl);
+    if (!sendIs4k && /离线日志|Thumbplayer/i.test(sendName)) {
       console.log('[b0b] 不交：这份来自「' + sendName + '」（离线日志页的独立播放器，永远是低档），' +
         '手里 4K 那份还在，等它');
       pendingQq = ''; qqAt = 0; qqRec = null;
