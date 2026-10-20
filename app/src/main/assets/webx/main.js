@@ -1540,6 +1540,38 @@
   }
 
   /*
+   * 【2026-10-20 13:50 父亲定的方向：进详情页后由我们替它切一次清晰度
+   *  （切档才会发那条带档位参数的"要地址"请求 —— 起播不发）。
+   *  要替它切，先得知道页面上的换档入口长什么样：是 DOM 按钮还是播放器内部函数。
+   *  这一段只探测、不点击，把候选入口打进日志。】
+   */
+  function b0bProbeDefinitionUI() {
+    try {
+      if (!/(^|\.)qq\.com$/i.test(String(location.hostname || ''))) return;
+      var names = [];
+      for (var k in window) { if (/txp|player|Player|definition|quality/i.test(k)) names.push(k); }
+      console.log('[b0b] 探测·播放器相关全局名：' + (names.slice(0, 24).join(',') || '（无）'));
+      var els = document.querySelectorAll('[class*=definition],[class*=quality],[class*=clarity],[class*=Definition],[data-defn]');
+      var out = [];
+      for (var i = 0; i < els.length && out.length < 14; i++) {
+        var e = els[i];
+        out.push((e.tagName || '?') + '.' + String(e.className || '').slice(0, 40) +
+          '〔' + String(e.textContent || '').trim().slice(0, 16) + '〕');
+      }
+      console.log('[b0b] 探测·清晰度相关元素(' + els.length + ')：' + (out.join(' | ') || '（无）'));
+      var vids = document.querySelectorAll('video');
+      var vs = [];
+      for (var j = 0; j < vids.length && j < 4; j++) {
+        var v = vids[j];
+        vs.push('video' + j + '〔' + (v.className || '?') + '〕currentSrc=' +
+          String(v.currentSrc || '').slice(0, 40) + ' 控=' + !!v.controls);
+      }
+      console.log('[b0b] 探测·视频元素：' + (vs.join(' | ') || '（无）'));
+    } catch (e) { try { console.log('[b0b] 探测失败：' + e); } catch (e2) {} }
+  }
+  try { setTimeout(b0bProbeDefinitionUI, 9000); } catch (e) {}
+
+  /*
    * 【2026-10-20 13:24 父亲报"切清晰度很慢"→ 降噪闸门】
    * 这页面上有好几处每 200ms 打一次日志，3 分钟能刷上千条；打日志本身走主线程，
    * 切档时就卡在这上面。统一用这个闸门：同一类日志 3 秒内只放一条。
