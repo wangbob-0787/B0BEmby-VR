@@ -2490,7 +2490,7 @@ class MainActivity : ComponentActivity() {
                 ),
             )
         }
-        if (items.isEmpty()) return@withContext null
+        if (items.isEmpty()) return null
         Log.i(
             TAG,
             "⑦ 弹幕按 Emby 那套排成 " + laneY.size + " 行：保留 " + items.size +
