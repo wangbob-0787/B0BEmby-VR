@@ -1659,7 +1659,14 @@
   var qq4kOnly = false;
   function qqBucketOf(u) {
     var s2 = String(u || '');
-    if (/f322104/.test(s2)) return 'zcmax';    /* 臻彩MAX */
+    /*
+     * 【2026-10-20 20:55 父亲实测：《舌尖上的中国》S2 的臻彩MAX 用的是 f322100】
+     *
+     * 同一档在不同片子上会用不同编号，不能只认一个。臻彩MAX 目前见过：
+     *   f322104（大部分片子）、f322100（舌尖上的中国 S2 实测）
+     * 以后再遇到新的，走下面 b0bLearnTier 自动收集，回来加进这一行即可。
+     */
+    if (/f322104|f322100/.test(s2)) return 'zcmax';    /* 臻彩MAX */
     if (/f322093/.test(s2)) return '4k';       /* 4K 超清 */
     if (/f322350/.test(s2)) return 'zc1080';   /* 臻彩 1080P */
     /* 高清1080P / 720P / 480P 一律不收（父亲 2026-10-20 11:00 只留上面三档） */
@@ -1943,26 +1950,84 @@
   }
   try { setInterval(b0bFixViewportHeight, 800); } catch (e) {}
 
+  /*
+   * 【2026-10-20 20:56 父亲定的"自动收集编号"】
+   *
+   * 原话：「我们通过读那个清晰度菜单的选项，如果发现臻彩MAX 编号变了，就把它收集起来，
+   *       以后播不同的片子，你就慢慢收集出不同清晰度选项对应的编码，不就收集全了吗？」
+   * 做法：每次点到某个清晰度项，过 2.6 秒看**最新抓到的地址里的编号**，
+   * 和这一项的文字配成一对存起来（localStorage: b0b:tiers），并打日志。
+   * 同一编号学会了就不再重复打；新编号会明确标「新档位编号」。
+   */
+  function b0bCurrentTierLabel() {
+    try {
+      var box = document.querySelector('.txp_btn_definition');
+      if (!box) return '';
+      var nodes = box.querySelectorAll('*');
+      for (var i = 0; i < nodes.length; i++) {
+        var e = nodes[i];
+        var cls = String(e.className || '');
+        if (!/active|current|selected|checked|on\b/i.test(cls)) continue;
+        var t = String(e.textContent || '').replace(/\s+/g, '');
+        if (t && t.length <= 20 && /臻彩|4K|1080P|720P|480P|标清|准高清|超高清/.test(t)) return t;
+      }
+    } catch (e) {}
+    return '';
+  }
+  function b0bLearnTier(clicked) {
+    try {
+      var map = {};
+      try { map = JSON.parse(localStorage.getItem('b0b:tiers') || '{}'); } catch (e0) { map = {}; }
+      var latest = null;
+      var keys = ['zcmax', '4k', 'zc1080'];
+      for (var i = 0; i < keys.length; i++) {
+        var b = qqSlotGet(keys[i]);
+        if (b && b.u && (!latest || (b.at || 0) > (latest.at || 0))) latest = b;
+      }
+      if (!latest) { console.log('[b0b] 学档位：暂时没有槽里的地址可配对'); return; }
+      var m = String(latest.u).match(/f3\d{5}/);
+      var code = m ? m[0] : '?';
+      var label = b0bCurrentTierLabel() || clicked || '?';
+      var before = map[code];
+      if (before === label) {
+        console.log('[b0b] 学档位：' + code + ' ↔ 「' + label + '」（已记过）');
+        return;
+      }
+      map[code] = label;
+      try { localStorage.setItem('b0b:tiers', JSON.stringify(map)); } catch (e1) {}
+      console.log('[b0b] 学档位：' + (before ? '更新' : '新档位编号') +
+        ' ' + code + ' ↔ 「' + label + '」，目前已收集 ' + Object.keys(map).length + ' 个：' +
+        Object.keys(map).map(function (k) { return k + '=' + map[k]; }).join('，'));
+    } catch (e) {}
+  }
+  window.__b0bLearnTier = b0bLearnTier;
+
   function b0bWatchDefinitionClicks() {
     try {
       if (window.__b0bDefClickWatch) return;
       window.__b0bDefClickWatch = 1;
+      /*
+       * 【2026-10-20 20:56 修两件事】
+       *  ① 原来只在 [class*=definition] 容器内才算点击 —— 父亲点臻彩MAX 那一下没被记到，
+       *    说明落点不在那个容器里。改成整页监听，只按文字特征筛。
+       *  ② 点完读到的"档位标签"读成了整块菜单文字（菜单所有档连在一起），没法用。
+       *    改成只读"被标记为选中"的那一项（class 里带 active/current/selected/on 的）。
+       */
+      var TIER_WORD = /臻彩|4K|1080P|720P|480P|标清|准高清|超高清|杜比|HDR/;
       document.addEventListener('click', function (ev) {
         try {
           var t = ev && ev.target;
           if (!t) return;
-          var box = t.closest ? t.closest('[class*=definition]') : null;
-          if (!box) return;
-          var txt = String(t.textContent || '').replace(/\s+/g, '');
-          if (!txt || txt.length > 20) return;
+          var node = t;
+          var txt = '';
+          for (var up = 0; up < 4 && node; up++) {
+            var s3 = String(node.textContent || '').replace(/\s+/g, '');
+            if (s3 && s3.length <= 20) { txt = s3; break; }
+            node = node.parentElement;
+          }
+          if (!txt || !TIER_WORD.test(txt)) return;
           console.log('[b0b] 点了清晰度项：「' + txt + '」');
-          setTimeout(function () {
-            try {
-              var lab = document.querySelector('.txp_btn_definition');
-              console.log('[b0b] 2.5 秒后播放器档位标签：' +
-                String((lab && lab.textContent) || '?').replace(/\s+/g, '').slice(0, 20));
-            } catch (e2) {}
-          }, 2500);
+          setTimeout(function () { b0bLearnTier(txt); }, 2600);
         } catch (e) {}
       }, true);
       console.log('[b0b] 清晰度点击观测已装');
