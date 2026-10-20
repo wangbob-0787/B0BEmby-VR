@@ -1007,6 +1007,16 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                 factory = { ctx ->
                     /* 三站都是电脑版：用原上下文，站点给的就是电脑排版（父亲 2026-10-13 要的） */
                     WebView(ctx).apply {
+                        /*
+                         * 【2026-10-20 16:44 手柄失效的根因：视图引用没早记下来】
+                         *
+                         * 原来只在 AndroidView 的 update 回调里给 webRef 赋值，而 update 在首次
+                         * 组合时并不可靠地调用 —— 火狐那版有个 geckoRef 当中间层掩盖了这件事，
+                         * 火狐拆掉后只剩 webRef，它仍是 null，于是点击/悬停/滚动/后退四个入口
+                         * 第一句就是 `webRef ?: return`，整块手柄操作全部静默失效。
+                         * 在创建（factory）当场就记下，后面所有投递才有对象。
+                         */
+                        webRef = this
                         setBackgroundColor(AndroidColor.BLACK)
                         settings.javaScriptEnabled = true
                         settings.domStorageEnabled = true
