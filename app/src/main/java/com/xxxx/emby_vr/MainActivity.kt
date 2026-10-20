@@ -3653,10 +3653,17 @@ class MainActivity : ComponentActivity() {
                      * 网页流都是 SDR、不需要杜比还原，零拷贝既省 GPU 又不漏；Emby 保持复制模式。
                      * 想退回：vr-tuning.txt 写 `web_zerocopy=0`（不用重装）。
                      */
-                    val zeroCopy = webFirst != null &&
-                        com.xxxx.emby_vr.vr.VrTuning.webZeroCopy != 0
+                    /*
+                     * 【2026-10-21 00:04 实测：Emby 也在漏】父亲播 Emby 片子时句柄每秒 +24
+                     * （正好这片 24 帧）—— 复制模式漏的速率与帧率一一对应，跟片源无关。
+                     * 所以普通片子（含 4K SDR）一并改零拷贝；只有**杜比视界**片保留复制模式，
+                     * 那条是历史上横向黑纹的来源（10-08 台账：零拷贝与 GL 渲染共用同一帧缓冲，读写不同步）。
+                     */
+                    val dvSource = com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource
+                    val zeroCopy = com.xxxx.emby_vr.vr.VrTuning.webZeroCopy != 0 &&
+                        (webFirst != null || !dvSource)
                     m.setHwdecMode(zeroCopy)
-                    Log.i(TAG, "解码方式：" + (if (zeroCopy) "零拷贝 mediacodec（网页流）" else "复制 mediacodec-copy"))
+                    Log.i(TAG, "解码方式：" + (if (zeroCopy) "零拷贝 mediacodec" else "复制 mediacodec-copy（杜比视界片）"))
                     if (webFirst != null) {
                         /*
                          * 网页流：请求头 = 页面地址（Referer）+ 浏览器身份（UA），
