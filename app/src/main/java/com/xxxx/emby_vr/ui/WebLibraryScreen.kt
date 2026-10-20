@@ -1464,13 +1464,7 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                 runCatching { wv.destroy() }
             }
             webRef = null
-            /* 火狐内核：停会话、放引用（视图本身随 Compose 一起销毁） */
-            geckoSessionRef?.let { s ->
-                runCatching { s.stop() }
-                runCatching { s.close() }
-            }
-            geckoSessionRef = null
-            geckoRef = null
+            /* 火狐内核已拆（2026-10-20）：这里不再有会话要停、引用要放 */
         }
     }
 }
