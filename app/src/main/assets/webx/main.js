@@ -1565,19 +1565,33 @@
       try { btn.click(); } catch (e) { try { btn.dispatchEvent(new MouseEvent('click', { bubbles: true })); } catch (e2) {} }
       setTimeout(function () {
         try {
-          var all = document.querySelectorAll('.txp_btn_definition *, [class*=definition] *');
+          var all = document.querySelectorAll('[class*=definition] *');
+          var hit = null;
           for (var i = 0; i < all.length; i++) {
-            var e = all[i];
-            var tx = String(e.textContent || '').replace(/\s+/g, '');
-            if (tx.length > 14) continue;
-            if (!/^(480P|标清)/.test(tx)) continue;
-            console.log('[b0b] 点中了这一项：' + tx);
-            try { e.click(); } catch (e3) { try { e.dispatchEvent(new MouseEvent('click', { bubbles: true })); } catch (e4) {} }
-            return;
+            var tx = String(all[i].textContent || '').replace(/\s+/g, '');
+            if (tx.length <= 14 && /^(480P|标清)/.test(tx)) { hit = all[i]; break; }
           }
-          console.log('[b0b] 弹层里没找到 480P 项（下次再试）');
+          if (!hit) { console.log('[b0b] 弹层里没找到 480P 项（下次再试）'); return; }
+          /*
+           * 【2026-10-20 14:37 父亲报"点了没反应"→ 14:35:38 那次确实点中 480P 文字层，
+           *  但页面没发任何请求。腾讯这些项真正吃的是外层可点节点 + 完整的按下/抬起序列，
+           *  只对文字节点调 click() 不触发。这里向上找到最近的可点祖先，再补齐鼠标动作。】
+           */
+          var node = hit;
+          for (var up = 0; up < 4 && node; up++) {
+            var cls = String(node.className || '');
+            if (/item|option|btn|select|li/i.test(cls) || node.tagName === 'LI' || node.tagName === 'A') break;
+            node = node.parentElement;
+          }
+          if (!node) node = hit;
+          console.log('[b0b] 点它外层可点节点：' + (node.tagName || '?') + '.' +
+            String(node.className || '').slice(0, 30) + '〔' + String(node.textContent || '').replace(/\s+/g, '').slice(0, 12) + '〕');
+          ['mousedown', 'mouseup', 'click'].forEach(function (tn) {
+            try { node.dispatchEvent(new MouseEvent(tn, { bubbles: true, cancelable: true, view: window })); } catch (e6) {}
+          });
+          try { node.click(); } catch (e7) {}
         } catch (e5) {}
-      }, 700);
+      }, 900);
     } catch (e) { try { console.log('[b0b] 替它切档失败：' + e); } catch (e2) {} }
   }
   try { setInterval(b0bForceSwitchOnce, 20000); } catch (e) {}
