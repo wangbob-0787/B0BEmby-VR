@@ -3645,6 +3645,18 @@ class MainActivity : ComponentActivity() {
                 mpvBackend = com.xxxx.emby_vr.player.MpvBackend(this).also { m ->
                     m.attachSurface(surface)
                     m.setSurfaceSize(vw, vh)
+                    /*
+                     * 【2026-10-20 23:40 闪退根因：句柄泄漏】网页流改零拷贝硬解。
+                     *
+                     * 复制模式（mediacodec-copy）为了消黑纹多拷一份，但实测每帧漏一个句柄，
+                     * 4K60 每秒约 52 个，十分钟耗尽 32768 个 → 黑屏式闪退。
+                     * 网页流都是 SDR、不需要杜比还原，零拷贝既省 GPU 又不漏；Emby 保持复制模式。
+                     * 想退回：vr-tuning.txt 写 `web_zerocopy=0`（不用重装）。
+                     */
+                    val zeroCopy = webFirst != null &&
+                        com.xxxx.emby_vr.vr.VrTuning.webZeroCopy != 0
+                    m.setHwdecMode(zeroCopy)
+                    Log.i(TAG, "解码方式：" + (if (zeroCopy) "零拷贝 mediacodec（网页流）" else "复制 mediacodec-copy"))
                     if (webFirst != null) {
                         /*
                          * 网页流：请求头 = 页面地址（Referer）+ 浏览器身份（UA），

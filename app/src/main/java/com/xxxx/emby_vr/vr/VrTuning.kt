@@ -81,6 +81,14 @@ object VrTuning {
     var videoSurfaceMaxW: Int = 1280
 
     /**
+     * 网页流要不要走零拷贝硬解（2026-10-20 23:40，句柄泄漏）。
+     * 1 = 零拷贝（默认，不漏句柄）；0 = 退回 mediacodec-copy（画面若出现横向黑纹就改这个）。
+     * 改 vr-tuning.txt 的 `web_zerocopy=0` 即可，无需重装。
+     */
+    @Volatile
+    var webZeroCopy: Int = 1
+
+    /**
      * 弹幕画布宽度（2026-10-14 父亲定）：默认 **1920**，与银幕本身的 1920 宽对齐。
      *
      * 原来写死 2560 —— 比银幕还大三分之一，多出来的像素在 VR 里根本看不见，
@@ -313,6 +321,13 @@ object VrTuning {
         if (w != null && h != null && w >= 64 && h >= 64) {
             onVideoSize(w, h)
             applied += "画布 ${w}x$h"
+        }
+
+        raw["web_zerocopy"]?.toIntOrNull()?.let {
+            if (it != webZeroCopy) {
+                webZeroCopy = it
+                applied += "网页零拷贝=" + it
+            }
         }
 
         applied += applyNative(raw)

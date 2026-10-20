@@ -419,6 +419,24 @@ class MpvBackend(private val context: Context) {
     /**
      * 把画面输出接到这块 Surface（背后是原生层 OES 纹理 → VR 银幕）。
      */
+    /**
+     * 解码方式（2026-10-20 23:40，句柄泄漏排查）。
+     *
+     * 网页流一直走 `mediacodec-copy`（解完先整帧拷一份再交给渲染，为的是消掉杜比片子的
+     * 横向黑纹）。实测那条拷贝路径**每帧漏一个显存/同步句柄**，4K60 下每秒约 52 个，
+     * 十分钟就把进程的 32768 个句柄耗光 → 画面传不上显卡 → 段错误闪退。
+     * 网页流（腾讯/B站/爱奇艺）是普通 SDR，不需要杜比那套，改走零拷贝 `mediacodec`：
+     * 解码器解好的画面直接给渲染采样，不产生每帧拷贝，也就不漏。
+     * Emby 片源（可能带杜比视界）保持原样，不动。
+     *
+     * 这两项只能在载入片源前设，播放中改无效。
+     */
+    fun setHwdecMode(zeroCopy: Boolean) {
+        runCatching {
+            MPVLib.setOptionString("hwdec", if (zeroCopy) "mediacodec" else "mediacodec-copy")
+        }.onFailure { Log.w(TAG, "切换解码方式失败：" + it.message) }
+    }
+
     fun attachSurface(surface: Surface?) {
         ensureCreated(context)
         try {
