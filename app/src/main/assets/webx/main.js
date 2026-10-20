@@ -693,14 +693,31 @@
     console.log('[b0b] 页面已在播放，把抓到的地址交给客户端');
     try { window.postMessage({ __b0b: 1, payload: obj }, '*'); } catch (e) {}
     */
+    /*
+     * 【2026-10-20 13:10 父亲报"B站 接管被改坏"→ 定案在这里】
+     *
+     * 这个出口是所有站点共用的（函数名带 qq，但 B站/爱奇艺也走它）。
+     * 我上午把它改成"只交腾讯三槽"，于是非腾讯页面永远交不出去 —— 日志里那句
+     * "两个槽都是空的"就是盖在 B站 页面上打的。
+     * 现在按页面所在站点分流：腾讯走三槽，其它站点走原来的路。
+     */
+    var isQqPageA = /(^|\.)qq\.com$/i.test(String(location.hostname || ''));
+    if (!isQqPageA) {
+      console.log('[b0b] 非腾讯页面：照原来的路把地址交给客户端');
+      try { window.postMessage({ __b0b: 1, payload: obj }, '*'); } catch (e) {}
+      return;
+    }
     var pickA = qqSlotPick();
     if (pickA) {
       try { obj.streams[0].video = pickA.b.u; } catch (e4) {}
-      console.log('[b0b] 交给内核：' + pickA.k + 'P 那份（抓于 ' +
+      console.log('[b0b] 交给内核：' + qqSlotName(pickA.k) + '（抓于 ' +
         Math.round((Date.now() - pickA.b.at) / 1000) + ' 秒前，尾46=…' + String(pickA.b.u).slice(-46) + '）');
       try { window.postMessage({ __b0b: 1, payload: obj }, '*'); } catch (e) {}
     } else {
-      console.log('[b0b] 4K 和 1080P 两个槽都是空的：这次不交');
+      if (Date.now() - (window.__b0bLastEmptyLog || 0) > 3000) {
+        window.__b0bLastEmptyLog = Date.now();
+        console.log('[b0b] 三槽都空着：这次不交');
+      }
     }
   }
 
@@ -1743,7 +1760,14 @@
     fragMap = {};
     fragSent = {};
     fragHoldLogged = -1;
-    console.log('[b0b] 你按了全屏：清掉之前攒的试看片段，从这一刻的新段开始接');
+    /*
+     * 【2026-10-20 13:11 父亲报"切清晰度很慢"→ 这条日志每 0.2 秒刷一次，
+     *  打日志本身要过一遍主线程，切档时就是它在拖。同类 3 秒内只打一次。】
+     */
+    if (Date.now() - (window.__b0bLastFragLog || 0) > 3000) {
+      window.__b0bLastFragLog = Date.now();
+      console.log('[b0b] 你按了全屏：清掉之前攒的试看片段，从这一刻的新段开始接');
+    }
   }
 
   function noteFrag(u) {
