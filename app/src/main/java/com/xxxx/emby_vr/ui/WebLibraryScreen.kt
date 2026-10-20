@@ -6,8 +6,16 @@ import android.os.SystemClock
 import android.view.InputDevice
 import android.view.MotionEvent
 import android.webkit.WebChromeClient
-import android.webkit.WebView
-import android.webkit.WebViewClient
+/*
+ * 【2026-10-20 15:37 换内核：网页视图与它的客户端改用打进应用的 Chromium 132】
+ *
+ * 这两行原来是 android.webkit.WebView / WebViewClient —— 也就是头显系统自带的 Chromium 90。
+ * 现在换成 crwebview 2.0（Chromium 132）里同名同接口的类，调用侧代码完全不用改。
+ * WebChromeClient 仍用系统的（库里没导出它），它是接口，可以混用。
+ * 火狐那套（GeckoView）等这条新的跑通后再整体拆掉。
+ */
+import org.chromium.android_crwebview.webkit.WebView
+import org.chromium.android_crwebview.webkit.WebViewClient
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement

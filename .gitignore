@@ -10,3 +10,6 @@
 .cxx
 local.properties
 key.properties
+
+# Chromium 132 内核库（212MB，超 GitHub 限制，由 CI 现下；本地保留文件）
+app/libs/*.aar

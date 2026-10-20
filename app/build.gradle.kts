@@ -102,6 +102,15 @@ android {
             abiFilters += listOf("arm64-v8a")
         }
 
+        /*
+         * 【2026-10-20 15:35 换内核：Chromium 132 的硬要求】
+         * crwebview 官方说明：内核的数据包（.pak / .bin）一旦被 apk 压缩，运行时读不出来，
+         * 内核直接起不来。这条不写，装上就是白屏。
+         */
+        androidResources {
+            noCompress += listOf("bin", "pak")
+        }
+
         externalNativeBuild {
             cmake {
                 cppFlags += "-std=c++17"
@@ -213,6 +222,21 @@ dependencies {
      * 运行时可切：<files/vr-tuning.txt> 的 web_engine=1 启用，=0 回到系统网页视图。
      */
     implementation("org.mozilla.geckoview:geckoview:150.0.20260415192539")
+
+    /*
+     * 【2026-10-20 父亲定：换成 Chromium 132 内核】
+     *
+     * 为什么换：腾讯网页的清晰度切换在火狐内核里切不动（同账号同页面，.18 的谷歌内核能切，
+     * 火狐切不动，当天 16 次编译逐条排除后只剩内核这个变量，详见
+     * docs/handoffs/b0bemby-vr-tencent-quality-2026-10-20.md）。
+     *
+     * 来源：github.com/wuruxu/crwebview 的 2.0.0（基于 Chromium 132，2025-01）。
+     * 它把 Chromium 的网页视图原样导出成 aar，**类名只在独立命名空间下，接口与系统完全一致**，
+     * 所以调用侧只需换 import。库里只有 arm64-v8a 一套原生库，不用裁剪。
+     * 另一份是内核资源包（几十 KB），缺它内核同样起不来。
+     */
+    implementation(files("libs/android_crwebview_webkit.WebView-v2.0.0.aar"))
+    implementation(files("libs/android_webview_resources-debug.aar"))
 
     implementation(libs.media3.exoplayer)
     // HLS 模块（2026-10-05 父亲实测：电视直播、部分转码片源"起播失败"，
