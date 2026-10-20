@@ -311,7 +311,7 @@
      * 4K 槽空着时仍按老路走（否则这一集连普通画质都放不出来）。
      */
     if (!pendingPlay) {
-      var b4 = qqBucket['2160'];
+      var b4 = qqSlotGet('2160');
       if (b4 && Date.now() - b4.at < 10 * 60 * 1000) {
         var vNow4 = pageVideoKey(location.href);
         var same4 = !b4.vid || !keyKnown(vNow4) || b4.vid === vNow4;
@@ -331,7 +331,7 @@
     /* 【2026-10-19 21:56】页面上量不到集号时（电影页/改版），一律按同一集处理，
        否则新地址每 0.4 秒被判"别的集"扔掉，永远换不上 4K。 */
     if (qq4kOnly && pendingQq) {
-      var b4now = qqBucket['2160'];
+      var b4now = qqSlotGet('2160');
       var is4kSlot = !!(b4now && b4now.u === pendingQq);
       if (!is4kSlot) {
         var nowK = Date.now();
@@ -646,7 +646,8 @@
      * 手上是别的地址就一律不交 —— 播不出来正好说明 4K 没抓到。
      */
     if (qq4kOnly) {
-      var b4u = qqBucket['2160'] && qqBucket['2160'].u;
+      var b4s = qqSlotGet('2160');
+      var b4u = b4s && b4s.u;
       var sFirst = '';
       try { sFirst = String((obj.streams && obj.streams[0] && obj.streams[0].video) || ''); } catch (e1) {}
       if (!b4u || sFirst !== String(b4u)) {
@@ -670,7 +671,7 @@
     console.log('[b0b] 页面已在播放，把抓到的地址交给客户端');
     try { window.postMessage({ __b0b: 1, payload: obj }, '*'); } catch (e) {}
     */
-    var slot4a = qqBucket['2160'];
+    var slot4a = qqSlotGet('2160');
     if (slot4a && Date.now() - slot4a.at < 10 * 60 * 1000) {
       try { obj.streams[0].video = slot4a.u; } catch (e4) {}
       console.log('[b0b] 交给内核：4K 槽那份（抓于 ' + Math.round((Date.now() - slot4a.at) / 1000) +
@@ -807,10 +808,10 @@
           var bu = String(all[bi]).replace(/\\\//g, '/');
           var bt = qqBucketOf(bu);
           if (!bt) continue;
-          var prevB = qqBucket[bt];
+          var prevB = qqSlotGet(bt);
           if (prevB && prevB.u === bu) continue;
-          qqBucket[bt] = { u: bu, at: Date.now(), vid: pageVidNow(), from: 'resp',
-                           title: String(qqRemoteTitle || '') };
+          qqSlotSet(bt, { u: bu, at: Date.now(), vid: pageVidNow(), from: 'resp',
+                          title: String(qqRemoteTitle || '') });
           console.log('[b0b] 按档位收好：' + bt + 'P ← 尾46=…' + bu.slice(-46) +
             '（主机=' + String(bu).split('/')[2] + '｜长度=' + bu.length + '）');
           qqBucketDump('刚入槽');
@@ -1445,6 +1446,32 @@
    */
   var qqBucket = { '2160': null, '1080': null, '720': null };
   /*
+   * 【2026-10-20 08:46 现场定案：槽必须是**跨窗口共用**的】
+   *
+   * 头显日志（08:45:01）同一秒里出现了两句自相矛盾的话：
+   *   2160P=有〔…f322093.ts.m3u8｜集=c4102g9a01t〕   ← 抓 4K 的那个窗口
+   *   2160P=空 ／ 1080P=空 ／ 720P=空                 ← 要交付的那个窗口
+   * 因为腾讯的播放页是多个窗口叠起来的，每个窗口各有一份脚本、各有一份内存变量。
+   * 所以槽落在 localStorage 里（同源共享），读的时候先看本窗口内存、没有就取共享那份。
+   */
+  function qqSlotStoreKey(k) { return 'b0b:slot:' + k; }
+  function qqSlotSet(k, v) {
+    qqBucket[k] = v;
+    try { localStorage.setItem(qqSlotStoreKey(k), JSON.stringify(v)); } catch (e) {}
+  }
+  function qqSlotGet(k) {
+    var v = qqBucket[k];
+    if (v) return v;
+    try {
+      var raw = localStorage.getItem(qqSlotStoreKey(k));
+      if (raw) {
+        var obj = JSON.parse(raw);
+        if (obj && obj.u) { qqBucket[k] = obj; return obj; }
+      }
+    } catch (e) {}
+    return null;
+  }
+  /*
    * 调试开关（2026-10-20 08:30 父亲定）：程序没调通之前，腾讯**只交 4K 槽那一份**。
    * 4K 槽空着就什么都不交，绝不再回落到"手上那份"——混着老路会把问题搅浑。
    * 调通后把这里改成 false，再启用 1080P/720P 的退路。
@@ -1462,7 +1489,7 @@
     var keys = ['2160', '1080', '720'];
     var parts = [];
     for (var i = 0; i < keys.length; i++) {
-      var b = qqBucket[keys[i]];
+      var b = qqSlotGet(keys[i]);
       if (!b) { parts.push(keys[i] + 'P=空'); continue; }
       parts.push(keys[i] + 'P=有〔尾46=…' + String(b.u).slice(-46) +
         '｜抓于' + Math.round((Date.now() - b.at) / 1000) + '秒前' +
