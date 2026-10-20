@@ -347,7 +347,8 @@
     /* 【2026-10-19 21:56】页面上量不到集号时（电影页/改版），一律按同一集处理，
        否则新地址每 0.4 秒被判"别的集"扔掉，永远换不上 4K。 */
     if (qq4kOnly && pendingQq) {
-      var b4now = qqSlotGet('2160');
+      var pickN = qqSlotPick();
+      var b4now = pickN && pickN.b;
       var is4kSlot = !!(b4now && b4now.u === pendingQq);
       if (!is4kSlot) {
         var nowK = Date.now();
@@ -668,8 +669,8 @@
      * 手上是别的地址就一律不交 —— 播不出来正好说明 4K 没抓到。
      */
     if (qq4kOnly) {
-      var b4s = qqSlotGet('2160');
-      var b4u = b4s && b4s.u;
+      var pickG = qqSlotPick();
+      var b4u = pickG && pickG.b.u;
       var sFirst = '';
       try { sFirst = String((obj.streams && obj.streams[0] && obj.streams[0].video) || ''); } catch (e1) {}
       if (!b4u || sFirst !== String(b4u)) {
@@ -693,14 +694,14 @@
     console.log('[b0b] 页面已在播放，把抓到的地址交给客户端');
     try { window.postMessage({ __b0b: 1, payload: obj }, '*'); } catch (e) {}
     */
-    var slot4a = qqSlotGet('2160');
-    if (slot4a && Date.now() - slot4a.at < 10 * 60 * 1000) {
-      try { obj.streams[0].video = slot4a.u; } catch (e4) {}
-      console.log('[b0b] 交给内核：4K 槽那份（抓于 ' + Math.round((Date.now() - slot4a.at) / 1000) +
-        ' 秒前，尾46=…' + String(slot4a.u).slice(-46) + '）');
+    var pickA = qqSlotPick();
+    if (pickA) {
+      try { obj.streams[0].video = pickA.b.u; } catch (e4) {}
+      console.log('[b0b] 交给内核：' + pickA.k + 'P 那份（抓于 ' +
+        Math.round((Date.now() - pickA.b.at) / 1000) + ' 秒前，尾46=…' + String(pickA.b.u).slice(-46) + '）');
       try { window.postMessage({ __b0b: 1, payload: obj }, '*'); } catch (e) {}
     } else {
-      console.log('[b0b] 4K 槽空着：这次不交（调试期只认 4K）');
+      console.log('[b0b] 4K 和 1080P 两个槽都是空的：这次不交');
     }
   }
 
@@ -1499,13 +1500,29 @@
    * 4K 槽空着就什么都不交，绝不再回落到"手上那份"——混着老路会把问题搅浑。
    * 调通后把这里改成 false，再启用 1080P/720P 的退路。
    */
-  var qq4kOnly = true;
+  var qq4kOnly = false;
   function qqBucketOf(u) {
     var s2 = String(u || '');
     if (/f322093/.test(s2)) return '2160';
     if (/f322084|f321004/.test(s2)) return '1080';
     /* 720P（f322363 / f321003）与更低档一律不收（父亲 2026-10-20 08:53 定） */
     return '';
+  }
+  /*
+   * 【2026-10-20 10:38 父亲：4K 已两集验通，打开退路】
+   * 取用顺序 4K → 1080P；720P 及以下没有槽，永远不会被交出去。
+   * 返回 {k, b}，k 是档位字符串（'2160'/'1080'），b 是槽对象；都没有返回 null。
+   */
+  function qqSlotPick() {
+    var order = ['2160', '1080'];
+    for (var i = 0; i < order.length; i++) {
+      var b = qqSlotGet(order[i]);
+      if (!b || !b.u) continue;
+      if (Date.now() - b.at > 10 * 60 * 1000) continue;
+      if (qqIsOfflineSlot(b)) continue;
+      return { k: order[i], b: b };
+    }
+    return null;
   }
   /** 把三个槽的现状原样打出来（父亲 2026-10-20 08:29 要：日志要描述槽里的地址到底是什么） */
   function qqBucketDump(tag) {
