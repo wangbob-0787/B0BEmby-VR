@@ -1721,7 +1721,7 @@ fun NetVideoCard(onClick: () -> Unit) {
  * 为什么分段：main.js 两千多行、接近 200KB，一次传给页面容易失败，
  * 按 60KB 切开逐段追加到 window.__b0bSrc，最后统一 eval 一次。
  */
-private const val B0B_SHIM_JS = '''
+private const val B0B_SHIM_JS = """
 (function(){
   if (window.__b0bShim) return; window.__b0bShim = 1;
   var op;
@@ -1736,7 +1736,7 @@ private const val B0B_SHIM_JS = '''
   };
   console.log('[b0b] 转接头已装（页面 → 原生）');
 })();
-'''
+"""
 
 private fun injectPageScripts(view: android.view.View) {
     val wv = view as? WebView ?: return
