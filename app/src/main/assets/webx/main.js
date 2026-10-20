@@ -660,8 +660,25 @@
         return;
       }
     }
-    console.log('[b0b] 页面已在播放，把抓到的地址交给客户端（4K 槽那份）');
+    /*
+     * 【2026-10-20 08:33 父亲定：老路直接注释掉，只留"交 4K 槽"这一条】
+     *
+     * 原来这里是"把手上 pendingQq 那份交给客户端"。它交出过 720P、也交出过离线日志页那份，
+     * 调试期留着它只会把问题搅浑 —— 整段停用，改为只交 4K 槽里存的地址。
+     */
+    /*
+    console.log('[b0b] 页面已在播放，把抓到的地址交给客户端');
     try { window.postMessage({ __b0b: 1, payload: obj }, '*'); } catch (e) {}
+    */
+    var slot4a = qqBucket['2160'];
+    if (slot4a && Date.now() - slot4a.at < 10 * 60 * 1000) {
+      try { obj.streams[0].video = slot4a.u; } catch (e4) {}
+      console.log('[b0b] 交给内核：4K 槽那份（抓于 ' + Math.round((Date.now() - slot4a.at) / 1000) +
+        ' 秒前，尾46=…' + String(slot4a.u).slice(-46) + '）');
+      try { window.postMessage({ __b0b: 1, payload: obj }, '*'); } catch (e) {}
+    } else {
+      console.log('[b0b] 4K 槽空着：这次不交（调试期只认 4K）');
+    }
   }
 
   /* 播放信息（B站 的 playurl 返回，或页面全局 __playinfo__）→ 可播地址 */
@@ -896,10 +913,13 @@
               qqHlsSig = listSig;
               qqHlsBestRank = QQ_SEG_RANK[pickedTier] || 0;
               qqHlsPend = null;
+              /* 【2026-10-20 08:33 父亲定：老路注释掉 —— 分片清单这条通道停用，只留 4K 槽】 */
+              /*
               try {
                 window.postMessage({ __b0b: 1, payload: hlsPayload }, '*');
                 console.log('[b0b] 整集分片清单已交客户端（' + segText.length + ' 字符）');
               } catch (eS) { console.log('[b0b] 清单发送失败：' + eS); }
+              */
             } else {
               qqHlsPend = hlsPayload;
               qqHlsBestRank = QQ_SEG_RANK[pickedTier] || 0;
@@ -1957,7 +1977,11 @@
           width: 0, height: 0, cookie: '',
           streams: [{ id: 0, height: 0, width: 0, bw: 0, vcodec: 'h264', video: p.u, audio: '' }]
         };
+        /* 【2026-10-20 08:34 父亲定：老路注释掉 —— 预告这条也不再把非 4K 的地址报上去】 */
+        /*
         window.postMessage({ __b0b: 1, payload: payload }, '*');
+        */
+        console.log('[b0b] 预告（只记不发）：' + String(p.u).slice(-40));
         qqNotifiedSig = sig;
         console.log('[b0b] 腾讯：这一集已就绪，先通报客户端（时长≈' + dur + ' 秒，片名「' +
           payload.title + '」，地址 ' + String(p.u).length + ' 字符）');
@@ -2131,6 +2155,8 @@
   var peerClipDur = 0;
   /** 整集清单候着的话，按下全屏这一刻补交（2026-10-20） */
   function flushHlsPend() {
+    /* 【2026-10-20 08:33 父亲定：老路注释掉，按全屏不再补交分片清单】 */
+    /*
     if (!qqHlsPend) return;
     if (qq4kOnly && String(qqHlsPend.tier || '') !== '322093') {
       console.log('[b0b] 调试期只交 4K：候着的清单是 f' + qqHlsPend.tier + '，不交');
@@ -2142,6 +2168,8 @@
       console.log('[b0b] 按下全屏：把候着的整集清单交出去（' + qqHlsPend.segs + ' 段，' + qqHlsPend.height + 'p）');
       qqHlsPend = null;
     } catch (e) { console.log('[b0b] 整集清单补交失败：' + e); }
+    */
+    return;
   }
   function announceFullscreen(t) {
     peerFullAt = t;
