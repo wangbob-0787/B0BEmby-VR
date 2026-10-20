@@ -303,6 +303,28 @@
       }
       return;
     }
+    /*
+     * 【2026-10-20 08:28 父亲定：现在只认 4K 那一槽，不做"从高到低"】
+     *
+     * 先把 4K 这条交明白，确认内核真拿到 3840×2160，再谈 1080P/720P 的退路。
+     * 4K 槽空着时仍按老路走（否则这一集连普通画质都放不出来）。
+     */
+    if (!pendingPlay) {
+      var b4 = qqBucket['2160'];
+      if (b4 && Date.now() - b4.at < 10 * 60 * 1000) {
+        var vNow4 = pageVideoKey(location.href);
+        var same4 = !b4.vid || !keyKnown(vNow4) || b4.vid === vNow4;
+        if (same4 && !qqIsOfflineSlot(b4)) {
+          pendingQq = b4.u; qqAt = b4.at;
+          console.log('[b0b] 按全屏：交 4K 那一槽（' + Math.round((Date.now() - b4.at) / 1000) +
+            ' 秒前抓的，…' + String(b4.u).slice(-40) + '）');
+        } else if (!same4) {
+          console.log('[b0b] 4K 那一槽是别的集的，这次不用');
+        }
+      } else if (!b4) {
+        console.log('[b0b] 4K 那一槽还空着，先按老路走（交当前手上那份）');
+      }
+    }
     var qqHere = pageVideoKey(location.href);
     var qqSamePage = !keyKnown(qqKey) || !keyKnown(qqHere) || qqKey === qqHere;
     /* 【2026-10-19 21:56】页面上量不到集号时（电影页/改版），一律按同一集处理，
@@ -587,6 +609,10 @@
      * 一旦让它先交出去，手里的 4K 就白抓了。
      */
     var sendName = String((obj && obj.title) || qqRemoteTitle || '');
+    var sendFrom = (qqRec && qqRec.titleFrom) || 'none';
+    console.log('[b0b] 交付户口：标题「' + sendName + '」来源=' + sendFrom +
+      ' 档=' + (qqTierName(String(((obj.streams || [])[0] || {}).video || '')) || '未知') +
+      ' 主页=' + String(location.href || '').slice(-40));
     /*
      * 只看标题会冤杀：片名是全局残留的，上一页留下的「离线日志」会跟着 4K 那份一起过来。
      * 所以加一条放行条件 —— 地址本身就是 4K 档（f322093）时一律放行。
@@ -594,7 +620,7 @@
     var sendUrl = '';
     try { sendUrl = String((obj.streams && obj.streams[0] && obj.streams[0].video) || ''); } catch (e0) {}
     var sendIs4k = /f322093/.test(sendUrl);
-    if (!sendIs4k && /离线日志|Thumbplayer/i.test(sendName)) {
+    if (!sendIs4k && sendFrom === 'resp' && /离线日志|Thumbplayer/i.test(sendName)) {
       console.log('[b0b] 不交：这份来自「' + sendName + '」（离线日志页的独立播放器，永远是低档），' +
         '手里 4K 那份还在，等它');
       pendingQq = ''; qqAt = 0; qqRec = null;
@@ -724,6 +750,19 @@
        * 现在正则把可选的反斜杠吃进去，取到后再还原成真地址。
        */
       var all = t.match(/https?:\\?\/\\?\/[^"'\s]{6,1400}?\.m3u8[^"'\s\\]{0,400}/g) || [];
+      /* 【2026-10-20 08:27】把这份响应里的 m3u8 按档位分别存进槽（父亲要的三槽） */
+      try {
+        for (var bi = 0; bi < all.length; bi++) {
+          var bu = String(all[bi]).replace(/\\\//g, '/');
+          var bt = qqBucketOf(bu);
+          if (!bt) continue;
+          var prevB = qqBucket[bt];
+          if (prevB && prevB.u === bu) continue;
+          qqBucket[bt] = { u: bu, at: Date.now(), vid: pageVidNow(), from: 'resp',
+                           title: String(qqRemoteTitle || '') };
+          console.log('[b0b] 按档位收好：' + bt + 'P ← …' + bu.slice(-46));
+        }
+      } catch (eB) {}
       /*
        * 【2026-10-20 02:20 父亲定：把"整集分片清单"整份取出来】
        *
@@ -1340,6 +1379,27 @@
   /** 已经拿到/交出去的最高档等级（4K=5，只升不降） */
   var qqHlsBestRank = 0;
   /*
+   * 【2026-10-20 08:27 父亲定：不要候选池，按档位各存一个变量】
+   *
+   * 4K / 1080P / 720P 各一个槽，抓到就覆盖自己那槽；按下网页全屏后按 4K → 1080P → 720P
+   * 依次取第一个新鲜的、同一集的，直接交给内核。其他的清晰度一概不收。
+   * 槽里记：地址 u、抓的时刻 at、集号 vid、标题 title、标题来源 from（resp=响应自己写的，可信）。
+   */
+  var qqBucket = { '2160': null, '1080': null, '720': null };
+  function qqBucketOf(u) {
+    var s2 = String(u || '');
+    if (/f322093/.test(s2)) return '2160';
+    if (/f322084|f321004/.test(s2)) return '1080';
+    if (/f322363|f321003/.test(s2)) return '720';
+    return '';
+  }
+  /** 这份是不是离线日志页那份：只看"响应自己写的标题"，兜底来的标题不算数 */
+  function qqIsOfflineSlot(b) {
+    if (!b) return false;
+    if (qqBucketOf(b.u) === '2160') return false;   /* 4K 不可能是那份 */
+    return b.from === 'resp' && /离线日志|Thumbplayer/i.test(String(b.title || ''));
+  }
+  /*
    * 【2026-10-19 20:52 父亲定的五条】
    *
    * 原来"手上的地址"只是一个字符串，片名/集号另外从页面标题临时抓，于是控制条上
@@ -1926,6 +1986,14 @@
        * 于是记录解析为空 → 控制条永远不写「即将播放」。
        * 兜底：正名取之前捕获到的那条（如「锦心似玉_02」），vid 取当前页面这一集的。
        */
+      /*
+       * 【2026-10-20 08:25 父亲要求：离线日志那份到底怎么过闸门的，代码里要写清楚】
+       * 关键区别是**标题从哪来**：
+       *   resp   = 这条响应的正文里自己写的片名（可信，它说自己是离线日志就真是）
+       *   remote = 响应里没片名，用之前抓到的那条兜底（是全局残留，可能带着别的页的标题）
+       * 07:xx 那道闸门只看窗口地址，而这份 720P 所在窗口是正常播放页、地址合规，
+       * 于是它合法通过；标题里的"离线日志"其实是兜底带过来的 —— 所以按标题一律拦会误伤 4K。
+       */
       if (!rec.title && qqRemoteTitle) {
         var sp2 = String(qqRemoteTitle).split('_');
         if (sp2.length >= 2 && /^\d{1,4}$/.test(sp2[sp2.length - 1])) {
@@ -1936,7 +2004,8 @@
           rec.title = qqRemoteTitle;
           rec.epName = qqRemoteTitle;
         }
-        if (rec.title) console.log('[b0b] 片名用之前抓到的那条兜底：「' + rec.title + '」第' + (rec.ep || '?') + '集');
+        rec.titleFrom = 'remote';
+        if (rec.title) console.log('[b0b] 片名用之前抓到的那条兜底：「' + rec.title + '」第' + (rec.ep || '?') + '集（来源=兜底，不能据此判定是不是离线日志页）');
       }
       if (!rec.vid) rec.vid = pageVidNow();
       var pv = pageVidNow();
@@ -1964,9 +2033,9 @@
           return;
         }
       }
+      if (!rec.titleFrom) rec.titleFrom = rec.title ? 'resp' : 'none';
       qqRec = rec;
-      console.log('[b0b] 即将播放记录：剧名「' + (rec.title || '?') + '」集号「' + (rec.ep || '?') +
-        '」集名「' + (rec.epName || '?') + '」vid「' + (rec.vid || '?') + '」');
+      console.log('[b0b] 即将播放记录：剧名「' + (rec.title || '?') + '」（来源=' + rec.titleFrom + '）集号「' + (rec.ep || '?') + '」集名「' + (rec.epName || '?') + '」vid「' + (rec.vid || '?') + '」');
     } catch (e) { qqRec = { u: u, at: qqAt }; }
     var m = { __b0bQq: 1, u: u, at: qqAt, key: qqKey, host: qqHost };
     saveQqLocal(u, qqAt, qqKey);
