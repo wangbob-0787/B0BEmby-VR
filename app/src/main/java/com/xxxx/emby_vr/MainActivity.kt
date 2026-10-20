@@ -2321,17 +2321,22 @@ class MainActivity : ComponentActivity() {
                             httpGetText("https://dm.video.qq.com/barrage/base/" + vid),
                         )
                         val segIdx = base.optJSONObject("segment_index")
-                        val names = ArrayList<String>()
+                        /* 段按起点排好再取：JSON 的键序不保证，先 take 会漏掉靠前的段 */
+                        val segs = ArrayList<Pair<Long, String>>()
                         if (segIdx != null) {
                             val keys = segIdx.keys()
                             while (keys.hasNext()) {
                                 val seg = segIdx.optJSONObject(keys.next()) ?: continue
                                 val nm = seg.optString("segment_name")
-                                if (nm.isNotBlank()) names.add(nm)
+                                if (nm.isBlank()) continue
+                                val start = seg.optString("segment_start").toLongOrNull()
+                                    ?: nm.split("/").getOrNull(2)?.toLongOrNull() ?: 0L
+                                segs.add(start to nm)
                             }
                         }
+                        segs.sortBy { it.first }
                         /* 只拉前 2 小时的分段：一集电视剧够了，避免一上来几百个请求 */
-                        for (nm in names.take(240)) {
+                        for ((segStart, nm) in segs.take(240)) {
                             val obj = runCatching {
                                 org.json.JSONObject(
                                     httpGetText("https://dm.video.qq.com/barrage/segment/" + vid + "/" + nm),
@@ -2343,13 +2348,19 @@ class MainActivity : ComponentActivity() {
                                 val txt = it0.optString("content").trim()
                                 if (txt.isEmpty()) continue
                                 val offMs = it0.optString("time_offset").toLongOrNull() ?: 0L
-                                /* time_offset 是该段内的毫秒偏移，段名里带着段起点（t/v1/<起>/<止>） */
-                                val segStart = nm.split("/").getOrNull(2)?.toLongOrNull() ?: 0L
-                                parsed.add(Triple(segStart + offMs, txt, 16777215L))
+                                /*
+                                 * 【2026-10-20 22:10 父亲反馈"腾讯弹幕时间线对不上"，实测定案】
+                                 * time_offset 是**整集绝对毫秒**，不是段内偏移：实测片号
+                                 * z4102y0l2x7 的 t/v1/60000/90000 段，offset 全落在 60000~89000。
+                                 * 原来又加了一遍段起点 → 第 N 段的弹幕被推到第 2N 段的位置，越往后越晚。
+                                 * 防老接口按段内给：offset 比段起点还小才当段内偏移补起点。
+                                 */
+                                val at = if (segStart > 0L && offMs < segStart) segStart + offMs else offMs
+                                parsed.add(Triple(at, txt, 16777215L))
                             }
                         }
                         parsed.sortBy { it.first }
-                        android.util.Log.i(TAG, "⑦ 腾讯弹幕已拉到 ${parsed.size} 条（片号 $vid，分段 ${names.size}）")
+                        android.util.Log.i(TAG, "⑦ 腾讯弹幕已拉到 ${parsed.size} 条（片号 $vid，分段 ${segs.size}）")
                         return@withContext buildDanmakuTrack(parsed)
                     }
                     val conn = java.net.URL(
