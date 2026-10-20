@@ -3090,7 +3090,13 @@
             }
           }
         } catch (e0) {}
-        return origFetch0.apply(this, arguments);
+        /*
+         * 【2026-10-20 11:28 父亲报"B站又被改坏了"】
+         * 这里原来写 apply(this, ...)：页面若把 fetch 解出来单独调用，this 就是空，
+         * 原生 fetch 会直接抛 Illegal invocation —— B站 的请求就是这么被我们弄断的。
+         * 一律绑到 window 上，保证和原生调用等价。
+         */
+        return origFetch0.apply(window, arguments);
       };
     }
   } catch (e) {}
