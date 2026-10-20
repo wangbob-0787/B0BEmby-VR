@@ -2048,6 +2048,11 @@ class MainActivity : ComponentActivity() {
                  */
                 mpvBackend?.videoSize()?.let { (vw, vh) ->
                     com.xxxx.emby_vr.vr.VrNative.setVideoSize(vw, vh)
+                    /*
+                     * 尺寸到手就标记"已知"：揭幕要等这个标记（2026-10-20，
+                     * 免得第一次接管时把"先按 16:9 建的画面"揭给人看，看着是拉扁的）。
+                     */
+                    webSizeKnown = true
                     applyScreenAspect(vw.toFloat() / vh.toFloat(), "内核报出画面尺寸 ${vw}x${vh}")
                 }
                 kotlinx.coroutines.delay(1000)
@@ -3148,6 +3153,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun playWebStream(obj: org.json.JSONObject) {
+        webSizeKnown = false   /* 新一集：尺寸重新等（2026-10-20） */
         /* 真的开始接管了：标题行从「即将播放」转成「正在播放」（父亲 2026-10-19 定） */
         osdState.upcoming = false
         /*
@@ -6227,10 +6233,29 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** 网页流：内核是否已报出真实画面尺寸（2026-10-20，用于等尺寸再揭幕） */
+    @Volatile private var webSizeKnown = false
+
     private fun tryRevealWaitingFrame() {
         if (!waitingFirstFrame) return
         // 只认"播放器已渲染出第一帧"这一个条件（+150ms 纹理余量，见 onRenderedFirstFrame）
         if (!playerFrameSeen) return
+        /*
+         * 【2026-10-20 18:47 父亲实测：第一次接管时画面是拉扁的，第二次才对】
+         *
+         * 根因：起播那一刻还不知道片源真实尺寸，银幕先按 16:9 建好、视频层先按 1920x1080 建，
+         * 等内核报出真实尺寸（比如 3840x1606）才改正 —— 这段时间揭幕，看到的就是被拉扁的画面。
+         * 第二次接管时尺寸已经有了，所以直接正确。
+         * 修法：网页流起播时，等内核报出真实画面尺寸之后再揭幕（最多多等 1.2 秒，仍在黑幕里）。
+         */
+        if (webStream != null && !webSizeKnown) {
+            val waited = android.os.SystemClock.uptimeMillis() - waitingStartedAtMs
+            if (waited < kMinWaitingMs + 1200L) {
+                handler.postDelayed({ tryRevealWaitingFrame() }, 120L)
+                return
+            }
+            Log.i(TAG, "收黑幕：等尺寸超时（${waited}ms），按当前比例揭幕")
+        }
         /*
          * 最短停留（父亲 2026-10-09：至少两秒）——两条路都走这里，所以统一卡在这。
          * 不够就等够再来，别让「即将播放」一闪而过。
