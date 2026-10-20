@@ -581,6 +581,7 @@ private object WebRuntime {
                 "，季 " + obj.optString("season", "?") +
                 "，集 " + obj.optString("ep", "?") +
                 "，编号 " + obj.optString("cid", "?") +
+                "，档名 " + obj.optString("slotName", "?") +
                 "，片名「" + obj.optString("title", "").take(40) + "」" +
                 "，首条地址尾 " + fp.takeLast(40),
         )

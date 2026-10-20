@@ -754,6 +754,14 @@
     var pickA = qqSlotPick();
     if (pickA) {
       try { obj.streams[0].video = pickA.b.u; } catch (e4) {}
+      /*
+       * 【2026-10-20 18:32 父亲要看得出"这是臻彩MAX 还是标准 4K"】
+       * 分辨率两者一样，只有档名能区分。把档名与英文键一起交上去，控制条照它显示。
+       */
+      try {
+        obj.slotKey = pickA.k;
+        obj.slotName = qqSlotName(pickA.k);
+      } catch (e5) {}
       console.log('[b0b] 交给内核：' + qqSlotName(pickA.k) + '（抓于 ' +
         Math.round((Date.now() - pickA.b.at) / 1000) + ' 秒前，尾46=…' + String(pickA.b.u).slice(-46) + '）');
       try { b0bSendOut(obj); } catch (e) {}
@@ -1796,17 +1804,23 @@
    * 返回 {k, b}，k 是档位字符串（'2160'/'1080'），b 是槽对象；都没有返回 null。
    */
   function qqSlotPick() {
+    /*
+     * 【2026-10-20 18:30 父亲定：接管一律取清晰度最高的那一槽】
+     *
+     * 原话：「我们现在不是有三个槽吗？接管以后，你最好是按照那个清晰度最高的那个槽去接管。」
+     * 原来这里比的是"谁抓得最新"，谁后抓就交谁 —— 于是页面上随手切过一次 720P，
+     * 接管就按 720P 走。现在改成按槽位优先级：臻彩MAX > 4K 超清 > 臻彩 1080P，
+     * 有高档就用高档，不看抓到时间。
+     */
     var order = ['zcmax', '4k', 'zc1080'];
-    var best = null;
     for (var i = 0; i < order.length; i++) {
       var b = qqSlotGet(order[i]);
       if (!b || !b.u) continue;
       if (Date.now() - b.at > 10 * 60 * 1000) continue;
       if (qqIsOfflineSlot(b)) continue;
-      /* 取最新抓到的那一槽：他最后选的那一档就是最后抓到的那一份 */
-      if (!best || b.at > best.b.at) best = { k: order[i], b: b };
+      return { k: order[i], b: b };
     }
-    return best;
+    return null;
   }
   /** 把三个槽的现状原样打出来（父亲 2026-10-20 08:29 要：日志要描述槽里的地址到底是什么） */
   function qqBucketDump(tag) {
