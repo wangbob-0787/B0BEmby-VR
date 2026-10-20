@@ -261,6 +261,7 @@
     var qqNow = Date.now();
     if (pendingQq && qqNow - (window.__b0bHoldLog || 0) > 3000) {
       window.__b0bHoldLog = qqNow;
+      try { qqBucketDump('交接中'); } catch (eD) {}
       console.log('[b0b] 交接追踪：地址在手（' + String(pendingQq).length + ' 字符，抓于 ' +
         Math.round((qqNow - qqAt) / 1000) + ' 秒前）尚未交出去 —— 全屏(本层=' +
         (fullState ? 1 : 0) + ' 存=' + (fsShared ? 1 : 0) + ' 别层=' + (peerFullAt ? 1 : 0) +
@@ -760,7 +761,9 @@
           if (prevB && prevB.u === bu) continue;
           qqBucket[bt] = { u: bu, at: Date.now(), vid: pageVidNow(), from: 'resp',
                            title: String(qqRemoteTitle || '') };
-          console.log('[b0b] 按档位收好：' + bt + 'P ← …' + bu.slice(-46));
+          console.log('[b0b] 按档位收好：' + bt + 'P ← 尾46=…' + bu.slice(-46) +
+            '（主机=' + String(bu).split('/')[2] + '｜长度=' + bu.length + '）');
+          qqBucketDump('刚入槽');
         }
       } catch (eB) {}
       /*
@@ -1392,6 +1395,21 @@
     if (/f322084|f321004/.test(s2)) return '1080';
     if (/f322363|f321003/.test(s2)) return '720';
     return '';
+  }
+  /** 把三个槽的现状原样打出来（父亲 2026-10-20 08:29 要：日志要描述槽里的地址到底是什么） */
+  function qqBucketDump(tag) {
+    var keys = ['2160', '1080', '720'];
+    var parts = [];
+    for (var i = 0; i < keys.length; i++) {
+      var b = qqBucket[keys[i]];
+      if (!b) { parts.push(keys[i] + 'P=空'); continue; }
+      parts.push(keys[i] + 'P=有〔尾46=…' + String(b.u).slice(-46) +
+        '｜抓于' + Math.round((Date.now() - b.at) / 1000) + '秒前' +
+        '｜集=' + (b.vid || '?') +
+        '｜标题「' + String(b.title || '').slice(0, 24) + '」来源=' + b.from +
+        '｜离线日志页=' + (qqIsOfflineSlot(b) ? '是（不交）' : '否') + '〕');
+    }
+    console.log('[b0b] 三槽现状（' + tag + '）：' + parts.join(' ／ '));
   }
   /** 这份是不是离线日志页那份：只看"响应自己写的标题"，兜底来的标题不算数 */
   function qqIsOfflineSlot(b) {
