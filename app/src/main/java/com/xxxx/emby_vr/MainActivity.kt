@@ -3473,7 +3473,16 @@ class MainActivity : ComponentActivity() {
                  * 实测杜比还原每帧吃约 15ms GPU，开销与像素量成正比，
                  * 把内核处理宽度压下来是当前最直接的省 GPU 手段。
                  */
-                val cap = com.xxxx.emby_vr.vr.VrTuning.videoSurfaceMaxW.let { if (it > 0) it else 1920 }
+                /*
+                 * 【2026-10-20 18:44 父亲定：网页流不设限，片源多大就按多大解】
+                 *
+                 * 原话：「这几个网站的视频，把那个限制改成或者不限制，原生分辨率是多少就给 MPV 多少。」
+                 * 那个上限本来是给 Emby 的杜比片省 GPU 用的（杜比还原每帧十几毫秒）；
+                 * 网页流没有杜比要还原，卡在 1280 只会让 4K 片源看起来糊。
+                 * 所以：网页流按片源真实宽度来（最高 3840），Emby 片源仍走配置里的上限。
+                 */
+                val cap = if (webFirst != null) 3840
+                else com.xxxx.emby_vr.vr.VrTuning.videoSurfaceMaxW.let { if (it > 0) it else 1920 }
                 val vw = if (srcW > cap) cap else srcW
                 val vh = (srcH.toLong() * vw / srcW).toInt().coerceAtLeast(64)
                 renderer.setVideoBufferSize(vw, vh)
