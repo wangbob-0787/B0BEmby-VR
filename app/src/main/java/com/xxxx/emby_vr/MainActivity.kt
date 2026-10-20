@@ -6248,7 +6248,7 @@ class MainActivity : ComponentActivity() {
          * 第二次接管时尺寸已经有了，所以直接正确。
          * 修法：网页流起播时，等内核报出真实画面尺寸之后再揭幕（最多多等 1.2 秒，仍在黑幕里）。
          */
-        if (webStream != null && !webSizeKnown) {
+        if (webStreamSite != null && !webSizeKnown) {
             val waited = android.os.SystemClock.uptimeMillis() - waitingStartedAtMs
             if (waited < kMinWaitingMs + 1200L) {
                 handler.postDelayed({ tryRevealWaitingFrame() }, 120L)
