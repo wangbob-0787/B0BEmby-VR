@@ -1618,6 +1618,35 @@
         return msi0.apply(this, arguments);
       };
     }
+    /*
+     * 【2026-10-20 14:44 关键第二处：解码详情也要谎报】
+     *
+     * 页面判断"这一档我到底解不解得动"用的不是 isTypeSupported，而是
+     * navigator.mediaCapabilities.decodingInfo()（返回 supported / smooth / powerEfficient）。
+     * 之前只骗了 isTypeSupported 与 canPlayType：
+     *   → 菜单肯把 4K 列出来（所以菜单看着有高档）；
+     *   → 但一点档位，页面按 decodingInfo 的真实回答判断"这档解不了"，
+     *     于是它去等一个永远不会起来的解码器 —— 界面就一直转"正在为你切换清晰度"。
+     * 这与父亲实测完全吻合：菜单能亮，档位永远切不过去；偶尔撞上低档（h264）才成。
+     */
+    try {
+      var mc0 = navigator.mediaCapabilities;
+      if (mc0 && mc0.decodingInfo) {
+        var di0 = mc0.decodingInfo.bind(mc0);
+        mc0.decodingInfo = function (cfg) {
+          var out = null;
+          try { out = di0(cfg); } catch (e8) { out = null; }
+          var codec = '';
+          try { codec = String((cfg && cfg.video && cfg.video.contentType) || ''); } catch (e9) {}
+          if (/hvc1|hev1|dvh1|dolby|av01/i.test(codec)) {
+            console.log('[b0b] 解码详情上报：把 ' + codec.slice(0, 50) + ' 报成可解');
+            return Promise.resolve({ supported: true, smooth: true, powerEfficient: false });
+          }
+          if (out && out.then) return out;
+          return Promise.resolve(out || { supported: true, smooth: true, powerEfficient: false });
+        };
+      }
+    } catch (eM) {}
     var cpt0 = window.HTMLVideoElement && HTMLVideoElement.prototype.canPlayType;
     if (cpt0) {
       HTMLVideoElement.prototype.canPlayType = function (t) {
