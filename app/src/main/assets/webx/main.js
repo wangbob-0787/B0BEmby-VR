@@ -255,10 +255,14 @@
   try {
     (function () {
       if (window.self !== window.top) return;
+      /*
+       * 【2026-10-20 08:57 父亲改口径：进**任何页面**都刷一次，不只播放页】
+       * 全站按域名放行（腾讯系），离线日志那种诊断页除外。
+       */
       var host = String(location.hostname || '');
-      if (!/^v\.qq\.com$/i.test(host)) return;
+      if (!/qq\.com$/i.test(host)) return;
       var href = String(location.href || '');
-      if (!/\/x\/(cover|page)\//.test(href)) return;
+      if (/offline-log|thumbplayer-offline|offlineLog/i.test(href)) return;
       var key = 'b0b:reloaded:' + href.split('#')[0];
       var done = '';
       try { done = sessionStorage.getItem(key) || ''; } catch (e) {}
