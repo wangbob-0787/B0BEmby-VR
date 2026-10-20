@@ -3121,6 +3121,19 @@
         var pu2 = patchQqUrl(u);
         if (pu2 !== u) { u = pu2; arguments[1] = pu2; }
         this.__b0bUrl = String(u || '');
+        /*
+         * 【2026-10-20 11:23 父亲定：先把详情页那一刻所有请求都打出来，看走的是哪条路】
+         * 同一地址 5 秒内只打一次，避免刷屏。
+         */
+        try {
+          var nk = String(u || '').split('?')[0];
+          window.__b0bSeen = window.__b0bSeen || {};
+          var tSeen = Date.now();
+          if (!window.__b0bSeen[nk] || tSeen - window.__b0bSeen[nk] > 5000) {
+            window.__b0bSeen[nk] = tSeen;
+            console.log('[b0b] 请求：' + nk.slice(0, 112));
+          }
+        } catch (eS) {}
         note(u);
         noteApi(u);
         noteMedia(u);
