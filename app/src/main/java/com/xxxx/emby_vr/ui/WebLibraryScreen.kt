@@ -973,6 +973,30 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                     pushVideoRect(null)
                 } else {
                     w.evaluateJavascript(js) { r -> pushVideoRect(parseVideoRect(r)) }
+                    /*
+                     * 【2026-10-20 18:12 取件：页面把要交的数据攒在收件箱里，这里定时来取】
+                     *
+                     * 系统的 JS 接口（addJavascriptInterface）在这套内核里没接上，
+                     * 页面交上来的地址一条都没到过原生。改成"页面放、原生取"：
+                     * 脚本把每条数据塞进 window.__b0bOutbox，这里每 250ms 取空一次。
+                     * 取件用的 evaluateJavascript 是已经在跑的通路（视频矩形就靠它），不依赖新接口。
+                     */
+                    w.evaluateJavascript(B0B_TAKE_OUTBOX_JS) { r ->
+                        if (r != null && r.length > 4 && r != "[]") {
+                            runCatching {
+                                val arr = org.json.JSONArray(
+                                    if (r.startsWith("\"") && r.endsWith("\"")) {
+                                        org.json.JSONTokener(r).nextValue() as String
+                                    } else r,
+                                )
+                                for (i in 0 until arr.length()) {
+                                    WebRuntime.acceptFromPage(arr.getString(i))
+                                }
+                            }.onFailure {
+                                android.util.Log.w("B0BEmbyVR", "取件解析失败：${it.message}")
+                            }
+                        }
+                    }
                 }
             }
             kotlinx.coroutines.delay(250L)
@@ -1743,6 +1767,13 @@ private const val B0B_SHIM_JS = """
   console.log('[b0b] 转接头已装（页面 → 原生）');
 })();
 """
+
+/*
+ * 取件脚本：把页面收件箱里的数据全部取出并清空，返回 JSON 数组（字符串）。
+ * 页面那边的投递函数会往 window.__b0bOutbox 里塞字符串。
+ */
+private const val B0B_TAKE_OUTBOX_JS =
+    "(function(){try{var a=window.__b0bOutbox||[];window.__b0bOutbox=[];return JSON.stringify(a);}catch(e){return '[]';}})();"
 
 private fun injectPageScripts(view: android.view.View) {
     val wv = view as? WebView ?: return

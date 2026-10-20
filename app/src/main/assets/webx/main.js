@@ -34,10 +34,20 @@
      * 无限递归、异常被 catch 吞掉，一条数据都发不出去，日志上还看不出动静。
      * 兜底必须回到原来的 window.postMessage。
      */
-    if (!b0bNativeWarned) {
-      b0bNativeWarned = 1;
-      try { console.log('[b0b] 原生接口不存在，退回 postMessage 兜底'); } catch (e3) {}
-    }
+    /*
+     * 【2026-10-20 18:12 主通路改成"收件箱"：页面放、原生定时来取】
+     *
+     * 系统的 JS 接口在这套内核里没接上（实测原生一条都没收到），所以不再依赖它。
+     * 这里把数据塞进 window.__b0bOutbox，原生每 250ms 取空一次 —— 取件走的是
+     * 已经在用的 evaluateJavascript 通路，不依赖任何新接口。
+     */
+    try {
+      (window.__b0bOutbox = window.__b0bOutbox || []).push(JSON.stringify(o));
+      if (!b0bNativeWarned) {
+        b0bNativeWarned = 1;
+        console.log('[b0b] 投递通路：收件箱（等原生来取）');
+      }
+    } catch (e4) {}
     try { window.postMessage({ __b0b: 1, payload: o }, '*'); } catch (e) {}
   }
   /* 原生接口有没有装上，报一次，便于判断是"没接上"还是"没抓到" */
