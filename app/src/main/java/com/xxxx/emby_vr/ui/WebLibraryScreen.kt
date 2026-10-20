@@ -207,11 +207,12 @@ private fun dispatchMouse(
      * 这里不再看 <web_click> 开关，点击一律按标准触摸发（FINGER + TOUCHSCREEN）；
      * 悬停/移出仍走鼠标通道（网页的 hover 效果必须有鼠标源）。
      */
-    val mode = if (hover) 0 else 1
     /* HOVER_EXIT 也必须按"悬停类"处理（2026-10-15）：它是"鼠标移出"，走的是
      * 通用运动事件那条路，若按触摸发，网页根本收不到。 */
     val hover = action == MotionEvent.ACTION_HOVER_MOVE ||
         action == MotionEvent.ACTION_HOVER_EXIT
+    /* 悬停/移出走鼠标通道，真正的点击一律走触摸（见上面 2026-10-20 的说明） */
+    val mode = if (hover) 0 else 1
     if (mode == 2 && !hover) {
         /* 「鼠标左键按下 / 抬起」在 Android 里是通用运动事件，不是触摸的 DOWN / UP */
         val btnAction = when (action) {
