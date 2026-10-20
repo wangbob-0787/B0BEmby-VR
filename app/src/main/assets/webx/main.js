@@ -17,14 +17,28 @@
    * 火狐时代数据靠扩展转交；换 Chromium 后由原生注入一个接口对象 window.b0bHost。
    * 这里优先走它，拿不到再退回原来那条 postMessage（兼容旧路径与调试）。
    */
+  var b0bNativeWarned = 0;
   function b0bSendOut(o) {
     try {
       if (window.b0bHost && window.b0bHost.post) {
         window.b0bHost.post(JSON.stringify(o));
         return;
       }
-    } catch (e) {}
-    try { b0bSendOut(o); } catch (e) {}
+    } catch (e) {
+      try { console.log('[b0b] 调原生接口出错：' + e); } catch (e2) {}
+    }
+    /*
+     * 【2026-10-20 17:50 修正一处致命自递归】
+     *
+     * 上一版这里被批量替换成了 b0bSendOut(o) —— 于是"原生接口不在"时它调自己，
+     * 无限递归、异常被 catch 吞掉，一条数据都发不出去，日志上还看不出动静。
+     * 兜底必须回到原来的 window.postMessage。
+     */
+    if (!b0bNativeWarned) {
+      b0bNativeWarned = 1;
+      try { console.log('[b0b] 原生接口不存在，退回 postMessage 兜底'); } catch (e3) {}
+    }
+    try { window.postMessage({ __b0b: 1, payload: o }, '*'); } catch (e) {}
   }
   /* 原生接口有没有装上，报一次，便于判断是"没接上"还是"没抓到" */
   try {
