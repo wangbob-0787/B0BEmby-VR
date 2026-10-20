@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  【2026-10-20 16:22 为内核资源包补的系统内部资源名】
+
+  背景：Chromium 的内核启动时要读 org.chromium.android_webview.R$raw（资源索引表），
+  这个类由 android_webview_resources-debug.aar 里的 res 编译生成。而那个包的
+  aw_context_menu*.xml 引用了 AOSP 系统私有的资源名（普通应用拿不到），aapt 直接链接失败，
+  于是 R$raw 生成不出来，实机一开网页就崩：
+      NoClassDefFoundError: Failed resolution of: Lorg/chromium/android_webview/R$raw;
+
+  这里把这几个名字按原语义补上（系统上下文菜单的间距与配色），资源包即可编过、R$raw 正常生成。
+  取值取自 AOSP 同名资源，视觉上只影响网页里的长按菜单，本项目不依赖它。
+-->
+<resources>
+    <color name="dialog_bg_color_baseline">#FFFFFFFF</color>
+    <dimen name="context_menu_list_lateral_padding">8dp</dimen>
+    <dimen name="context_menu_list_vertical_padding">8dp</dimen>
+    <dimen name="context_menu_small_vertical_margin">8dp</dimen>
+    <style name="TextAppearance.TextLarge.Primary.Baseline" parent="@android:style/TextAppearance">
+        <item name="android:textSize">18sp</item>
+    </style>
+</resources>

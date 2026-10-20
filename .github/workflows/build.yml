@@ -51,7 +51,7 @@ jobs:
         run: |
           mkdir -p app/libs
           BASE=https://github.com/wuruxu/crwebview/releases/download/2.0.0
-          for f in android_crwebview_webkit.WebView-v2.0.0.aar content-debug.aar ui-debug.aar embedder_support_resources-debug.aar; do
+          for f in android_crwebview_webkit.WebView-v2.0.0.aar android_webview_resources-debug.aar content-debug.aar ui-debug.aar embedder_support_resources-debug.aar; do
             if [ ! -f "app/libs/$f" ]; then
               echo "下载 $f"
               curl -fL --retry 3 --retry-delay 5 -o "app/libs/$f" "$BASE/$f"

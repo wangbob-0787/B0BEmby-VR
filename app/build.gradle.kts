@@ -243,7 +243,14 @@ dependencies {
      * aapt 直接链接失败。内核运行真正需要的资源（pak / bin / icudtl / 语言包）都在主 aar 里，
      * 已经随主 aar 一起打进包，所以这一个整包不要。
      */
-    // implementation(files("libs/android_webview_resources-debug.aar"))
+    /*
+     * 【2026-10-20 16:22 资源包必须引回来】
+     *
+     * 它提供内核启动时要读的资源索引表（org.chromium.android_webview.R$raw）。
+     * 之前引它会失败，是因为里面的菜单布局引用了系统私有资源名；这些名字已在
+     * app/src/main/res/values/aw_res_compat.xml 里补齐，所以现在能正常编过。
+     */
+    implementation(files("libs/android_webview_resources-debug.aar"))
 
     /*
      * 【2026-10-20 16:07 闪退根因：还缺三个配套包】
