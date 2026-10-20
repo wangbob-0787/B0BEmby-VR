@@ -2512,6 +2512,8 @@ class MainActivity : ComponentActivity() {
          * 这里补同一步 —— 网页面固定 16:9，与 openWeb 保持同一个基准。
          */
         applyScreenAspect(16f / 9f, "回网页：银幕复位 16:9")
+        /* 三槽一起清掉（2026-10-20 父亲定）：换片时不留上一部的地址，免得串台 */
+        runCatching { com.xxxx.emby_vr.web.WebPageHub.clearSlotsHandler?.invoke() }
         /*
          * 攒分片模式退场：把攒段状态清干净（2026-10-18）。
          * 网页面本身**没有被销毁**，所以这里是"接着原来那一页继续选片"，

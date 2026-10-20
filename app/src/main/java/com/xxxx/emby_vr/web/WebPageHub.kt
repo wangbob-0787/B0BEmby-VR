@@ -25,6 +25,12 @@ object WebPageHub {
     var tapHandler: ((Float, Float) -> Boolean)? = null
 
     /**
+     * 【2026-10-20 18:47】回网页时把页面里的三个清晰度槽清空（父亲要求）。
+     * 由网页屏登记实现，主界面在"让位回网页"那一步调用。
+     */
+    var clearSlotsHandler: (() -> Unit)? = null
+
+    /**
      * 网页页登记：摇杆。
      * 参数 = 光柱落点(px,py，面板像素) + 摇杆横向 sx + 纵向 sy。
      * 带落点是必须的 —— 滚动事件按坐标做命中测试，落点在哪就滚哪一块。

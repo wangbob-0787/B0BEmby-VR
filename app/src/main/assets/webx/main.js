@@ -1566,6 +1566,27 @@
    * 而把低档顶掉。720P 及以下没有槽，永远不会交出去。
    */
   var qqBucket = { 'zcmax': null, '4k': null, 'zc1080': null };
+
+  /*
+   * 【2026-10-20 18:47 父亲定：按 B 回网页时把三槽清空】
+   *
+   * 原话：「我觉得我按 B 键返回网页的时候，应该把三个槽的地址清空。」
+   * 理由很实在：三槽是持久化的（十分钟内有效），不清理就会在换片时把上一部的地址
+   * 当成这一部的交出去（当天实测过一次串台）。回网页等于这一轮结束，清干净最稳。
+   * 由原生在"让位回网页"那一步调用（见 WebPageHub.clearSlotsHandler）。
+   */
+  window.__b0bClearSlots = function () {
+    try {
+      var keys = ['zcmax', '4k', 'zc1080'];
+      for (var i = 0; i < keys.length; i++) {
+        qqBucket[keys[i]] = null;
+        try { localStorage.removeItem(qqSlotStoreKey(keys[i])); } catch (e) {}
+      }
+      qqHlsPend = null;
+      pendingQq = null;
+      console.log('[b0b] 回网页：三槽已清空');
+    } catch (e) {}
+  };
   /*
    * 【2026-10-20 08:46 现场定案：槽必须是**跨窗口共用**的】
    *

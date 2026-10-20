@@ -1323,6 +1323,19 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
      * 落在矩形外（比如点在顶栏上）就不处理，交给原来的查表逻辑。
      */
     DisposableEffect(Unit) {
+        /*
+         * 回网页时清空三槽（2026-10-20 父亲定）：主界面"让位回网页"那一步会调它。
+         * 走 evaluateJavascript，调用页面里注册的 window.__b0bClearSlots。
+         */
+        WebPageHub.clearSlotsHandler = {
+            runCatching {
+                webRef?.evaluateJavascript(
+                    "window.__b0bClearSlots && window.__b0bClearSlots();",
+                    null,
+                )
+                android.util.Log.i("B0BEmbyVR", "回网页：已通知页面清空三槽")
+            }
+        }
         WebPageHub.tapHandler = handler@{ px, py ->
             val r = webRect
             /*
