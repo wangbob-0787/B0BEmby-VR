@@ -1503,6 +1503,8 @@
   var qq4kOnly = false;
   function qqBucketOf(u) {
     var s2 = String(u || '');
+    /* 2160 槽：臻彩MAX(f322104) 与 4K超清(f322093) 都收，谁最后来就是父亲当前选的那档 */
+    if (/f322104/.test(s2)) return '2160';
     if (/f322093/.test(s2)) return '2160';
     if (/f322084|f321004/.test(s2)) return '1080';
     /* 720P（f322363 / f321003）与更低档一律不收（父亲 2026-10-20 08:53 定） */
