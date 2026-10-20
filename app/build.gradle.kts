@@ -243,7 +243,15 @@ dependencies {
      * 另一份是内核资源包（几十 KB），缺它内核同样起不来。
      */
     implementation(files("libs/android_crwebview_webkit.WebView-v2.0.0.aar"))
-    implementation(files("libs/android_webview_resources-debug.aar"))
+    /*
+     * 【2026-10-20 15:48 不引 android_webview_resources-debug.aar（run 788 实证）】
+     *
+     * 那个包只有菜单/对话框这类界面资源，而且引用了 AOSP 系统内部的私有资源
+     * （dimen/context_menu_*、color/dialog_bg_color_baseline 等），普通应用拿不到，
+     * aapt 直接链接失败。内核运行真正需要的资源（pak / bin / icudtl / 语言包）都在主 aar 里，
+     * 已经随主 aar 一起打进包，所以这一个整包不要。
+     */
+    // implementation(files("libs/android_webview_resources-debug.aar"))
 
     /*
      * 【2026-10-20 15:45 两处编译冲突（run 787 实证）】
