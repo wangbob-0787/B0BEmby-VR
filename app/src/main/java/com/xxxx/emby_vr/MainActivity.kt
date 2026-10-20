@@ -3660,8 +3660,9 @@ class MainActivity : ComponentActivity() {
                      * 那条是历史上横向黑纹的来源（10-08 台账：零拷贝与 GL 渲染共用同一帧缓冲，读写不同步）。
                      */
                     val dvSource = com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource
+                    val dvZero = com.xxxx.emby_vr.vr.VrTuning.dvZeroCopy != 0
                     val zeroCopy = com.xxxx.emby_vr.vr.VrTuning.webZeroCopy != 0 &&
-                        (webFirst != null || !dvSource)
+                        (webFirst != null || !dvSource || dvZero)
                     m.setHwdecMode(zeroCopy)
                     Log.i(TAG, "解码方式：" + (if (zeroCopy) "零拷贝 mediacodec" else "复制 mediacodec-copy（杜比视界片）"))
                     if (webFirst != null) {

@@ -89,6 +89,13 @@ object VrTuning {
     var webZeroCopy: Int = 1
 
     /**
+     * 杜比视界片要不要也走零拷贝（2026-10-21 00:12）。
+     * 1 = 也零拷贝（默认，实测杜比片同样每秒漏 24 个句柄）；0 = 退回复制模式（若画面出横向黑纹就写 0）。
+     */
+    @Volatile
+    var dvZeroCopy: Int = 1
+
+    /**
      * 弹幕画布宽度（2026-10-14 父亲定）：默认 **1920**，与银幕本身的 1920 宽对齐。
      *
      * 原来写死 2560 —— 比银幕还大三分之一，多出来的像素在 VR 里根本看不见，
@@ -321,6 +328,13 @@ object VrTuning {
         if (w != null && h != null && w >= 64 && h >= 64) {
             onVideoSize(w, h)
             applied += "画布 ${w}x$h"
+        }
+
+        raw["dv_zerocopy"]?.toIntOrNull()?.let {
+            if (it != dvZeroCopy) {
+                dvZeroCopy = it
+                applied += "杜比零拷贝=" + it
+            }
         }
 
         raw["web_zerocopy"]?.toIntOrNull()?.let {
