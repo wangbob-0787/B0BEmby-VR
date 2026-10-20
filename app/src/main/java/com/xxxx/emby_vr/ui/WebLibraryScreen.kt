@@ -1256,7 +1256,9 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                  * 页面只在看到这个戳之后才交地址 —— 网页全屏不算。
                                  */
                                 runCatching {
-                                    view.evaluateJavascript(
+                                    /* onShowCustomView 拿到的是被交出来的那个视图，不是网页本身；
+                                       打标记必须发给网页（webRef），它才有 evaluateJavascript。 */
+                                    webRef?.evaluateJavascript(
                                         "window.__b0bRealFull=Date.now();",
                                         null,
                                     )
