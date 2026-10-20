@@ -1710,6 +1710,63 @@ fun NetVideoCard(onClick: () -> Unit) {
     }
 }
 
+/*
+ * ============ 2026-10-20 17:24：往页面里注入抓取脚本（换内核后重建这条通道） ============
+ *
+ * 火狐时代由扩展自动干这件事，火狐拆掉后必须我们自己注。两段：
+ *   ① 转接头：把 main.js 用 window.postMessage({__b0b:1,payload}) 发出的数据，
+ *      改成调用原生接口 window.b0bHost.post(JSON字符串)。
+ *   ② 脚本本体：assets/webx/main.js（页面世界跑，量画面尺寸 + 抓播放地址 + 攒分片）。
+ *
+ * 为什么分段：main.js 两千多行、接近 200KB，一次传给页面容易失败，
+ * 按 60KB 切开逐段追加到 window.__b0bSrc，最后统一 eval 一次。
+ */
+private const val B0B_SHIM_JS = '''
+(function(){
+  if (window.__b0bShim) return; window.__b0bShim = 1;
+  var op;
+  try { op = window.postMessage ? window.postMessage.bind(window) : null; } catch (e) { op = null; }
+  window.postMessage = function (m, t) {
+    try {
+      if (m && m.__b0b && window.b0bHost && window.b0bHost.post) {
+        window.b0bHost.post(JSON.stringify(m.payload));
+      }
+    } catch (e) {}
+    try { if (op) return op(m, t); } catch (e) {}
+  };
+  console.log('[b0b] 转接头已装（页面 → 原生）');
+})();
+'''
+
+private fun injectPageScripts(view: android.view.View) {
+    val wv = view as? WebView ?: return
+    runCatching { wv.evaluateJavascript(B0B_SHIM_JS, null) }
+    val src = runCatching {
+        wv.context.assets.open("webx/main.js").bufferedReader().use { it.readText() }
+    }.getOrNull()
+    if (src.isNullOrBlank()) {
+        android.util.Log.w("B0BEmbyVR", "注入失败：assets/webx/main.js 读不到")
+        return
+    }
+    runCatching { wv.evaluateJavascript("window.__b0bSrc='';", null) }
+    val chunk = 60000
+    var i = 0
+    while (i < src.length) {
+        val end = minOf(i + chunk, src.length)
+        val js = "window.__b0bSrc += " + org.json.JSONObject.quote(src.substring(i, end)) + ";"
+        runCatching { wv.evaluateJavascript(js, null) }
+        i = end
+    }
+    runCatching {
+        wv.evaluateJavascript(
+            "(function(){try{eval(window.__b0bSrc);window.__b0bSrc='';" +
+                "console.log('[b0b] 抓取脚本已注入');}catch(e){" +
+                "console.log('[b0b] 抓取脚本注入失败：'+e);}})();",
+            null,
+        )
+    }
+}
+
 /**
  * 【2026-10-20 17:20 新内核的页面 → 原生桥】
  *
