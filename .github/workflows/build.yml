@@ -43,12 +43,10 @@ jobs:
       #   EMBY_SERVER    选填，默认内网 http://192.168.150.15:6908
       #   EMBY_USER_ID   选填，默认父亲账号 wangbob 的 guid
       # Secret 未配置时该步骤不写文件，构建仍能通过，只是应用内提示未配置。
-      /*
-       * 【2026-10-20 15:42 大文件不进仓库】
-       * Chromium 132 内核库 212MB，超过 GitHub 单文件 100MB 上限，推不上去（实测被拒）。
-       * 改成编译机上现下：从 crwebview 官方 release 拉那两个 aar 到 app/libs。
-       * 只影响 CI；本地开发时项目里已经有这两个文件。
-       */
+      # 【2026-10-20 大文件不进仓库】
+      # Chromium 132 内核库 212MB，超过 GitHub 单文件 100MB 上限，推不上去（实测被拒）。
+      # 改成编译机上现下：从 crwebview 官方 release 拉那两个 aar 到 app/libs。
+      # 只影响 CI；本地开发时项目里已经有这两个文件。
       - name: 下载 Chromium 132 内核库
         run: |
           mkdir -p app/libs
