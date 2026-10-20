@@ -242,6 +242,38 @@
   }
 
   /* 每轮扫描都问一次：条件齐了就交出去（只交一次） */
+  /*
+   * 【2026-10-20 08:56 父亲要：进任何页面主动刷新一次】
+   *
+   * 现场规律：第一次进播放页时，页面按"这个浏览器没有 4K 能力"去要播放信息，
+   * 所以响应里根本没有 4K 档；重新加载一次（等价于父亲手动"切集再切回来"），
+   * 我们注入的能力位才跟着生效，4K 档才出现。
+   *
+   * 做法：只在最外层、只在腾讯播放页、每页只刷一次（sessionStorage 记账，防止循环刷新）。
+   * 延迟 1.2 秒再刷，给页面先把首屏和第二批请求发完。
+   */
+  try {
+    (function () {
+      if (window.self !== window.top) return;
+      var host = String(location.hostname || '');
+      if (!/^v\.qq\.com$/i.test(host)) return;
+      var href = String(location.href || '');
+      if (!/\/x\/(cover|page)\//.test(href)) return;
+      var key = 'b0b:reloaded:' + href.split('#')[0];
+      var done = '';
+      try { done = sessionStorage.getItem(key) || ''; } catch (e) {}
+      if (done) {
+        console.log('[b0b] 这一页已经自动刷过一次，不再刷');
+        return;
+      }
+      try { sessionStorage.setItem(key, '1'); } catch (e) {}
+      console.log('[b0b] 进播放页：1.2 秒后自动刷新一次（否则页面按无 4K 能力去请求，拿不到 4K 档）');
+      setTimeout(function () {
+        try { location.reload(); } catch (e) { console.log('[b0b] 自动刷新失败：' + e); }
+      }, 1200);
+    })();
+  } catch (e) {}
+
   function flushPendingPlay() {
     /*
      * 腾讯那条兜底必须放在最前面：它本身就是"没有解析到播放接口"时的替代品。
