@@ -640,7 +640,27 @@
       pendingQq = ''; qqAt = 0; qqRec = null;
       return;
     }
-    console.log('[b0b] 页面已在播放，把抓到的地址交给客户端');
+    /*
+     * 【2026-10-20 08:32 父亲查：老路是不是都断了】
+     * 这是**唯一会真正起播**的交付口。调试期只放 4K 槽那一份，
+     * 手上是别的地址就一律不交 —— 播不出来正好说明 4K 没抓到。
+     */
+    if (qq4kOnly) {
+      var b4u = qqBucket['2160'] && qqBucket['2160'].u;
+      var sFirst = '';
+      try { sFirst = String((obj.streams && obj.streams[0] && obj.streams[0].video) || ''); } catch (e1) {}
+      if (!b4u || sFirst !== String(b4u)) {
+        var nowO = Date.now();
+        if (nowO - (window.__b0b4kOnlyShareLog || 0) > 3000) {
+          window.__b0b4kOnlyShareLog = nowO;
+          console.log('[b0b] 调试期只交 4K：这条不是 4K 槽那份' +
+            (b4u ? '（4K 槽是另一份）' : '（4K 槽还空着）') + '，丢弃：…' + sFirst.slice(-40));
+        }
+        pendingQq = ''; qqAt = 0; qqRec = null;
+        return;
+      }
+    }
+    console.log('[b0b] 页面已在播放，把抓到的地址交给客户端（4K 槽那份）');
     try { window.postMessage({ __b0b: 1, payload: obj }, '*'); } catch (e) {}
   }
 
@@ -870,7 +890,9 @@
               var faNow2 = parseInt(localStorage.getItem('b0b:fullAt') || '0', 10) || 0;
               fullNow = faNow2 > 0 && (Date.now() - faNow2) < 10 * 60 * 1000;
             } catch (eF) {}
-            if (fullNow) {
+            if (fullNow && qq4kOnly && pickedTier !== '322093') {
+              console.log('[b0b] 调试期只交 4K：这份清单是 f' + pickedTier + '，不交');
+            } else if (fullNow) {
               qqHlsSig = listSig;
               qqHlsBestRank = QQ_SEG_RANK[pickedTier] || 0;
               qqHlsPend = null;
@@ -2110,6 +2132,11 @@
   /** 整集清单候着的话，按下全屏这一刻补交（2026-10-20） */
   function flushHlsPend() {
     if (!qqHlsPend) return;
+    if (qq4kOnly && String(qqHlsPend.tier || '') !== '322093') {
+      console.log('[b0b] 调试期只交 4K：候着的清单是 f' + qqHlsPend.tier + '，不交');
+      qqHlsPend = null;
+      return;
+    }
     try {
       window.postMessage({ __b0b: 1, payload: qqHlsPend }, '*');
       console.log('[b0b] 按下全屏：把候着的整集清单交出去（' + qqHlsPend.segs + ' 段，' + qqHlsPend.height + 'p）');
