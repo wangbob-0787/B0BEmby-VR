@@ -3113,6 +3113,15 @@
           console.log('[b0b] 请求来了（XHR）：' + (nb !== body ? '已补能力位' : '没改') +
             ' 带vinfoparam=' + hitBody + ' 主机=' + (su.split('/')[2] || '?') +
             ' 尾=' + su.slice(-34));
+          /*
+           * 【2026-10-20 11:43 定案用：电影详情页按播放那一下，proxyhttp 来了但 body 里没有
+           *  vinfoparam 字样 → 我们那种补丁根本没机会生效 → 服务器按 720P 发。
+           *  这里把它的原样打出来，照它的真实形态再补能力位。】
+           */
+          if (nb === body && /proxyhttp/i.test(su)) {
+            console.log('[b0b] 这条 body 不是 vinfoparam 形态，原样前 260 字：' +
+              String(body || '(空)').slice(0, 260));
+          }
           if (nb !== body) args[0] = nb;
         }
       } catch (e) {}
