@@ -1915,6 +1915,34 @@
    *   ① 用户/脚本点到哪一项（带文字）；
    *   ② 点完 2.5 秒后，播放器档位标签实际变成什么。
    */
+  /*
+   * 【2026-10-20 20:40 爱奇艺黑屏根因：html/body 高度被算成 0】
+   *
+   * 用调试口连进头显里的页面读到的事实：
+   *   html h=0px  body h=0px  （本机同页面是 632px）
+   *   但内容容器 channelCardPage_container 有 3202px 高、89 张图都在
+   * ⇒ 内容全在，只是被压进一个 0 高度的根容器里，看不见。
+   * 这里按视口真实高度把根容器撑开（只对爱奇艺做，别的站本来正常，不去动）。
+   */
+  function b0bFixViewportHeight() {
+    try {
+      if (!/(^|\.)iqiyi\.com$/i.test(String(location.hostname || ''))) return;
+      var h = Math.max(window.innerHeight || 0, document.documentElement.clientHeight || 0, 600);
+      var de = document.documentElement;
+      if (de && parseInt(getComputedStyle(de).height, 10) < h) {
+        de.style.height = h + 'px';
+        de.style.minHeight = h + 'px';
+      }
+      var b = document.body;
+      if (b && parseInt(getComputedStyle(b).height, 10) < h) {
+        b.style.height = h + 'px';
+        b.style.minHeight = h + 'px';
+        console.log('[b0b] 爱奇艺根容器高度已撑到 ' + h + 'px');
+      }
+    } catch (e) {}
+  }
+  try { setInterval(b0bFixViewportHeight, 800); } catch (e) {}
+
   function b0bWatchDefinitionClicks() {
     try {
       if (window.__b0bDefClickWatch) return;
