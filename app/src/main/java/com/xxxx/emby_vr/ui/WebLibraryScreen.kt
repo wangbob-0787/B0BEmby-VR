@@ -196,7 +196,18 @@ private fun dispatchMouse(
      *   1 = 触摸式：ACTION_DOWN/UP + SOURCE_TOUCHSCREEN。
      *   0 = 鼠标触摸式：ACTION_DOWN/UP + SOURCE_MOUSE。
      */
-    val mode = com.xxxx.emby_vr.vr.VrTuning.webClickMode
+    /*
+     * 【2026-10-20 16:55 换内核后点击只能走触摸】
+     *
+     * 实机日志（r797）：「网页点击派发（方式 0）：0 被接住=true … 有焦点=false」——
+     * 事件送到了网页，网页却不理。原因是方式 0 把按下/抬起发成"鼠标源的触摸事件"，
+     * 火狐内核吃这一口，Chromium 不吃（它只认真正的触摸序列）。
+     * 滚动那条一直是鼠标滚轮、新内核照吃，所以只有点击坏掉，与现象一致。
+     *
+     * 这里不再看 <web_click> 开关，点击一律按标准触摸发（FINGER + TOUCHSCREEN）；
+     * 悬停/移出仍走鼠标通道（网页的 hover 效果必须有鼠标源）。
+     */
+    val mode = if (hover) 0 else 1
     /* HOVER_EXIT 也必须按"悬停类"处理（2026-10-15）：它是"鼠标移出"，走的是
      * 通用运动事件那条路，若按触摸发，网页根本收不到。 */
     val hover = action == MotionEvent.ACTION_HOVER_MOVE ||
@@ -1263,6 +1274,11 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                     val y = (v * wv.height).coerceIn(0f, (wv.height - 1).toFloat())
                     val now = SystemClock.uptimeMillis()
                     runCatching {
+                        /*
+                         * 先把焦点要过来（2026-10-20 日志：新内核下网页视图"有焦点=false"，
+                         * Chromium 会因此忽略部分输入事件）。
+                         */
+                        if (!wv.hasFocus()) wv.requestFocus()
                         /*
                          * 只发"按下 → 抬起"，干净的一次点击。
                          *
