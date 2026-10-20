@@ -1540,6 +1540,38 @@
   }
 
   /*
+   * 【2026-10-20 14:08 关键补齐：把"能不能解 4K 那种格式"谎报成能解】
+   *
+   * 腾讯的清晰度菜单是**按浏览器的解码能力上报**渲染的：页面先问内核
+   * "hvc1/hev1（HEVC 4K 那几档用的编码）你支持吗"，GeckoView 老实回答"不支持"，
+   * 于是菜单里根本不出现「4K 超高清」「臻彩」这两项 —— 没有这两项，用户点不到，
+   * 页面也就永远不会发 defn=uhd 的请求，我们自然永远抓不到 4K。
+   * 台账 2026-10-16 已在桌面 Chrome 实测过：把这条回答改成支持，菜单立刻从
+   * 1080P/720P/480P 变成 4K 超高清 SDR（SVIP尊享）/1080P/720P/480P。
+   * 这个补丁此前只在桌面试验过，**没进头显版本**，这就是今天一直卡住的根子。
+   */
+  try {
+    var msi0 = window.MediaSource && window.MediaSource.isTypeSupported;
+    if (msi0) {
+      window.MediaSource.isTypeSupported = function (t) {
+        if (/hvc1|hev1|dvh1|dvh1\.|dolby|av01/i.test(String(t))) {
+          console.log('[b0b] 解码能力上报：把 ' + String(t).slice(0, 60) + ' 报成支持（拿 4K 菜单的关键）');
+          return true;
+        }
+        return msi0.apply(this, arguments);
+      };
+    }
+    var cpt0 = window.HTMLVideoElement && HTMLVideoElement.prototype.canPlayType;
+    if (cpt0) {
+      HTMLVideoElement.prototype.canPlayType = function (t) {
+        if (/hvc1|hev1|dvh1|dolby|av01/i.test(String(t))) return 'probably';
+        return cpt0.apply(this, arguments);
+      };
+    }
+    console.log('[b0b] 已把 HEVC/杜比/AV1 的解码能力上报改成"支持"');
+  } catch (eCap) {}
+
+  /*
    * 【2026-10-20 13:50 父亲定的方向：进详情页后由我们替它切一次清晰度
    *  （切档才会发那条带档位参数的"要地址"请求 —— 起播不发）。
    *  要替它切，先得知道页面上的换档入口长什么样：是 DOM 按钮还是播放器内部函数。
