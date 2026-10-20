@@ -354,9 +354,15 @@
         if (nowK - (window.__b0b4kOnlyLog || 0) > 3000) {
           window.__b0b4kOnlyLog = nowK;
           console.log('[b0b] 调试期只交 4K：手上这份不是 4K 槽（尾 …' + String(pendingQq).slice(-40) +
-            '），不交' + (b4now ? '（4K 槽是另一份）' : '（4K 槽还空着）'));
+            '），丢掉腾讯这份' + (b4now ? '（4K 槽是另一份）' : '（4K 槽还空着）'));
         }
-        return;
+        /*
+         * 【2026-10-20 10:15 父亲报"B站 接管也被改坏了"】
+         * 原来这里写的是 return —— 但那会把**整个 flushPendingPlay 一起退出**，
+         * 而 B站 的交付也走这个函数，于是 B站 被腾讯这条规矩连坐、再也交不出去。
+         * 正确做法：只丢掉腾讯这一份，然后继续往下走（B站 那段照旧）。
+         */
+        pendingQq = ''; qqAt = 0;
       }
     }
     if (!pendingPlay && pendingQq && Date.now() - qqAt < 30 * 60 * 1000 && qqSamePage) {
