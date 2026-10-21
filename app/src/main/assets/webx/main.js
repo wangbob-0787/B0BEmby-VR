@@ -251,10 +251,13 @@
    */
   function isJunkTitle(s) {
     if (!s) return true;
-    if (s.length <= 2) return true;
+    /* 长度只挡 1 个字（"风起""繁花"这类两字集名/片名是正常的，2026-10-21 实测漏过） */
+    if (s.length <= 1) return true;
     if (/^第?\s*\d+\s*[集话期]/.test(s)) return true;
     if (/(普通话|粤语|潮汕话|国语|原声|英语|日语|韩语)版?$/.test(s)) return true;
     if (/^(选集|选集列表|播放列表|相关推荐|猜你喜欢)$/.test(s)) return true;
+    /* 广告/播放器内部页的标题（2026-10-21 实测："腾讯视频-Thumbplayer 离线日志"） */
+    if (/(Thumbplayer|离线日志|wxgamesdk|广告位|弹窗)/i.test(s)) return true;
     return false;
   }
 
@@ -317,39 +320,66 @@
   }
 
   function b0bCleanName(s) {
-    var t = String(s || '');
-    /* 结尾的括号注解，比如"（普通话）""(粤语版)" */
-    t = t.replace(/[（(][^）)]{0,16}[）)]\s*$/g, ' ');
-    /* 站点名：出现在前缀、后缀、中缀都吃掉 */
-    t = t.replace(/(哔哩哔哩|bilibili|腾讯视频|爱奇艺|优酷|芒果TV)/ig, ' ');
-    /* "…_高清完整版视频在线观看_腾讯视频" 这一类营销尾巴 */
-    t = t.replace(/[-_|·—]?\s*(高清|超清|蓝光|4K|1080P|HDR|杜比视界)?\s*(完整版|正版|独播|免费|VIP|会员版)?\s*(视频)?\s*(在线观看|在线播放|观看地址|观看|播放)\s*[-_|·—]?/g, ' ');
-    /* "电视剧全集""全集" */
-    t = t.replace(/[-_|·—]?\s*(电视剧|电影|综艺|动漫|纪录片|番剧|国创|少儿|影视|连续剧)?\s*全集\s*[-_|·—]?/g, ' ');
-    /* 零散的画质 / 版本词 */
-    t = t.replace(/[-_|·—]?\s*(高清|超清|蓝光|4K|1080P|HDR|杜比视界|完整版|正版|独播|免费|会员版|加长版)\s*[-_|·—]?/g, ' ');
+    /*
+     * 按分隔符切段再逐段判定（2026-10-21 16:35 实测修正）：
+     * 整串做正则替换的旧写法在腾讯那种 `_` 分隔的标题上会留残渣 ——
+     * 「当家主母_01_电视剧_高清完整版视频在线观看」会剩下「当家主母_01_电视剧」。
+     * 切段后把"纯数字段 / 分类词段 / 营销词段 / 站点名段"整段丢掉，再接回去。
+     */
+    var raw = String(s || '');
+    raw = raw.replace(/[（(][^）)]{0,16}[）)]\s*$/g, ' ');
+    /* 【4K】【高清】【完整版】这类方括号标记整块去掉 */
+    raw = raw.replace(/【\s*(4K|8K|高清|超清|蓝光|1080P|HDR|杜比视界|完整版|正片)\s*】/gi, ' ');
+    /* 中文/数字之间的 '-' 是分隔符；Spider-Man 这种英文连字符要留着 */
+    raw = raw.replace(/([\u4e00-\u9fa5\d])-([\u4e00-\u9fa5\d])/g, '$1|$2');
+    raw = raw.replace(/-(?=[\u4e00-\u9fa5])/g, '|');
+    var parts = raw.split(/[_|·—]+|\s+-\s+/);
+    var keep = [];
+    for (var i = 0; i < parts.length; i++) {
+      var p = parts[i].trim();
+      if (!p) continue;
+      p = p.replace(/(哔哩哔哩|bilibili|腾讯视频|爱奇艺|优酷|芒果TV)/ig, ' ').trim();
+      if (!p) continue;
+      /* 营销 / 画质 / 版本段：整段不要 */
+      if (/(在线观看|在线播放|观看地址|完整版|高清|超清|蓝光|正版|独播|免费|会员版|加长版|VIP)/.test(p)) continue;
+      /* 分类段：整段不要 */
+      if (/^(电视剧|电影|综艺|动漫|纪录片|番剧|国创|少儿|影视|连续剧|娱乐)(全集|全集免费)?$/.test(p)) continue;
+      if (/全集$/.test(p)) continue;
+      /* 纯数字段（腾讯的 `_01_` 就是集号，已由集号逻辑接管） */
+      if (/^\d{1,4}$/.test(p)) continue;
+      p = p.replace(/【\s*】|\[\s*\]|（\s*）|\(\s*\)/g, ' ').trim();
+      if (!p) continue;
+      keep.push(p);
+    }
+    var t = keep.join(' ');
     /* 季号 / 集号（名字里不需要，后面按口径重拼；中文数字也要认） */
     t = t.replace(/第\s*(?:\d+|[一二三四五六七八九十百]+)\s*[季部]/g, ' ');
     t = t.replace(/第\s*(?:\d+|[一二三四五六七八九十百]+)\s*[集话期]/g, ' ');
-    /* 剥完留下的空括号 */
-    t = t.replace(/【\s*】|\[\s*\]|（\s*）|\(\s*\)/g, ' ');
-    t = t.replace(/\s{2,}/g, ' ');
-    t = t.replace(/^[-_|·—\s]+/, '').replace(/[-_|·—\s]+$/, '');
-    return t.trim();
+    t = t.replace(/\s{2,}/g, ' ').trim();
+    return t;
   }
 
   /* 从一段文字里抽季号 / 集号 / 集名 */
   function b0bEpiInfo(text) {
-    var r = { season: 0, ep: 0, epName: '' };
+    var r = { season: 0, ep: 0, epName: '', unit: '集' };
     if (!text) return r;
     var ms = /第\s*(\d+|[一二三四五六七八九十百]+)\s*[季部]/.exec(text);
     if (ms) r.season = b0bCnNum(ms[1]);
     var me = /第\s*(\d+|[一二三四五六七八九十百]+)\s*[集话期]/.exec(text);
+    /* 腾讯的标题常写成 `剧名_01_电视剧_…`，没有"第X集"字样，纯数字段就是集号 */
+    if (!me) {
+      var md = /[_|]\s*(\d{1,3})\s*[_|]/.exec(text);
+      if (md) return { season: r.season, ep: parseInt(md[1], 10) || 0, epName: '', unit: '集' };
+    }
     if (me) {
       r.ep = b0bCnNum(me[1]);
+      var u = /[集话期]/.exec(me[0]);
+      if (u) r.unit = u[0];
       var rest = text.slice(me.index + me[0].length);
       rest = rest.replace(/^[\s:：\-_|·—]+/, '').replace(/[（(].*$/, '').trim();
-      if (rest && rest.length <= 40 && rest.indexOf('第') < 0) r.epName = rest;
+      /* 集名后面常跟着"电视剧_高清完整版…"，先洗一遍再判长度（2026-10-21 实测） */
+      try { rest = b0bCleanName(rest); } catch (eC) {}
+      if (rest && rest.length <= 30 && rest.indexOf('第') < 0) r.epName = rest;
     }
     return r;
   }
@@ -412,7 +442,7 @@
       }
       var out = series;
       if (epi.season > 0) out += ' 第' + epi.season + '季';
-      out += ' 第' + epi.ep + '集';
+      out += ' 第' + epi.ep + (epi.unit || '集');
       if (epName && !isJunkTitle(epName)) out += ' ' + epName;
       return out.trim().slice(0, 80);
     }
