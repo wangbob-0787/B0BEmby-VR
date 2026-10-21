@@ -481,10 +481,19 @@
           epName: b0bCleanName(curName),
         };
       }
-      /* 老版页面（UP 主视频）还有 __INITIAL_STATE__ */
+      /* 老版页面还有 __INITIAL_STATE__：番剧走 epInfo，普通视频走 videoData */
       var bs = window.__INITIAL_STATE__;
       if (bs) {
-        var bv = bs.videoData || {};
+        var bm = bs.mediaInfo || {}, be = bs.epInfo || {}, bv = bs.videoData || {};
+        if (be.ep) {
+          return {
+            series: b0bCleanName(bm.title || bv.title || ''),
+            season: 0,
+            ep: parseInt(be.ep, 10) || 0,
+            unit: '集',
+            epName: b0bCleanName(be.title || ''),
+          };
+        }
         if (bv.title) return { series: b0bCleanName(bv.title), season: 0, ep: 0, unit: '集', epName: '' };
       }
     } catch (e3) {}
