@@ -1339,77 +1339,71 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                  * 把播放器卡在重试循环里 —— 连带 B站/腾讯 都像"接管不了"。
                                  * 所以先用开关隔离：`web_iqiyi=1` 才走爱奇艺那条，默认 0。
                                  */
-                                val direct = if (com.xxxx.emby_vr.vr.VrTuning.webIqiyi == 1 &&
-                                    com.xxxx.emby_vr.web.IqiyiDash.playlistFresh()
-                                ) com.xxxx.emby_vr.web.IqiyiDash.m3u8Url else null
-                                if (direct != null) {
-                                    /*
-                                     * 【2026-10-21 13:35】不能在主线程里下载片单：挪到后台线程，
-                                     * 下完补 VOD 头落盘，再把本地文件交给内核（实测直接交 URL 会被当直播，
-                                     * 播一段就 "loading failed (reason 4)"、总时长 0）。
-                                     */
-                                    val ctx = webRef?.context
-                                    val ck = runCatching {
-                                        org.chromium.android_crwebview.webkit.CookieManager
-                                            .getInstance().getCookie("https://www.iqiyi.com/")
-                                    }.getOrNull()
-                                    val ua = runCatching { webRef?.settings?.userAgentString }.getOrNull()
-                                    val fallback = direct
-                                    /*
-                                     * 标题现取（父亲 13:17：控制条上「正在播放」的名字不准）。
-                                     * 页面脚本里已有 pageTitle() 清洗逻辑，这里调它；回调通常几毫秒就到，
-                                     * 而下面下载片单要几百毫秒，够它先到。
-                                     */
-                                    val titleHolder = arrayOf("")
-                                    runCatching {
-                                        webRef?.evaluateJavascript(
-                                            "(function(){try{return (window.__b0bPageTitle && window.__b0bPageTitle()) || document.title || '';}catch(e){return '';}})()",
-                                        ) { r -> titleHolder[0] = (r ?: "").trim().trim('"') }
-                                    }
-                                    Thread {
-                                        val f = runCatching {
-                                            com.xxxx.emby_vr.web.IqiyiDash.downloadToFile(
-                                                ctx!!.cacheDir, ck, ua,
-                                            )
-                                        }.getOrNull()
-                                        val target = if (f != null) "file://" + f.absolutePath else fallback
-                                        android.os.Handler(android.os.Looper.getMainLooper()).post {
-                                            runCatching {
-                                                val play = org.json.JSONObject()
-                                                play.put("kind", "play")
-                                                /*
-                                                 * frame 会被当成 Referer 交给内核 —— 必须是**页面地址**，
-                                                 * 不能填 m3u8 的 CDN 地址（2026-10-21 13:48）。
-                                                 */
-                                                play.put("frame", "https://www.iqiyi.com/")
-                                                play.put("title", titleHolder[0])
-                                                /*
-                                                 * 【2026-10-21 13:47】分段必须带登录 cookie：
-                                                 * 实测内核取 `.ts?start=&end=` 时回 405 Not Allowed，
-                                                 * 而页面自己取同一批段是 200 —— 差别就在身份。
-                                                 * 把网页那份 cookie 连同请求头一起交给内核。
-                                                 */
-                                                play.put("cookie", ck ?: "")
-                                                play.put("durSec", 0)
-                                                val st = org.json.JSONArray()
-                                                st.put(
-                                                    org.json.JSONObject().apply {
-                                                        put("video", target)
-                                                        put("audio", "")
-                                                        put("height", 800)
-                                                        put("bw", 0)
-                                                    },
-                                                )
-                                                play.put("streams", st)
-                                                android.util.Log.i(
-                                                    "B0BEmbyVR",
-                                                    "爱奇艺接管：交整集片单（" +
-                                                        (if (f != null) "本地文件" else "原始地址") + "）",
-                                                )
-                                                WebRuntime.acceptFromPage(play.toString())
+                                /*
+                                 * 【2026-10-21 15:15 爱奇艺整集自取（1080P）】
+                                 *
+                                 * 三步：页面只读片号与身份 → 本地按 vf=md5(路径+盐) 自签 dash → 拿整集片单交内核。
+                                 * 实测：bid=600 是 1080P（首段 1920×1080），bid=500 是 720P；
+                                 * 片单地址在 pcw-data 上，长期有效（4 小时后仍 200）。
+                                 * 只在 `web_iqiyi=1` 时走这条路，且完全不碰 WebView 的请求层。
+                                 */
+                                if (com.xxxx.emby_vr.vr.VrTuning.webIqiyi == 1) {
+                                    val jsAsk = "(function(){try{var t='';var rs=performance.getEntriesByType('resource');" +
+                                        "for(var i=rs.length-1;i>=0;i--){var m=rs[i].name.match(/qd_tvid=(\\d+)/);if(m){t=m[1];break;}}" +
+                                        "var d=(localStorage.getItem('__dfp')||'').split('@')[0];" +
+                                        "return JSON.stringify({tvid:t,dfp:d});}catch(e){return '{}';}})()"
+                                    webRef?.evaluateJavascript(jsAsk) { raw ->
+                                        val kv = runCatching { org.json.JSONObject((raw ?: "").trim('"')) }
+                                            .getOrElse { org.json.JSONObject() }
+                                        val tvid = kv.optString("tvid")
+                                        val dfp = kv.optString("dfp")
+                                        val ckAll = runCatching {
+                                            org.chromium.android_crwebview.webkit.CookieManager
+                                                .getInstance().getCookie("https://www.iqiyi.com/")
+                                        }.getOrNull().orEmpty()
+                                        val uid = Regex("P00003=([^;]+)").find(ckAll)?.groupValues?.get(1).orEmpty()
+                                        val kuid = Regex("QC005=([^;]+)").find(ckAll)?.groupValues?.get(1).orEmpty()
+                                        val ua = runCatching { webRef?.settings?.userAgentString }.getOrNull()
+                                        val ctx = webRef?.context
+                                        android.util.Log.i(
+                                            "B0BEmbyVR",
+                                            "爱奇艺自取：片号=$tvid 设备=" + kuid.take(8) + " 指纹=" + dfp.take(8),
+                                        )
+                                        Thread {
+                                            val res = runCatching {
+                                                com.xxxx.emby_vr.web.IqiyiDash2.fetch(tvid, uid, kuid, dfp, "600", ckAll, ua)
+                                            }.getOrNull()
+                                            val file = if (res != null && ctx != null)
+                                                com.xxxx.emby_vr.web.IqiyiDash2.writeTo(ctx.cacheDir, res.m3u8) else null
+                                            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                                if (file != null) {
+                                                    runCatching {
+                                                        val play = org.json.JSONObject()
+                                                        play.put("kind", "hls")
+                                                        play.put("text", file.readText())
+                                                        play.put("tier", "iq" + res!!.bid)
+                                                        play.put("segs", res.segs)
+                                                        play.put("height", if (res.bid >= 600) 1080 else 720)
+                                                        play.put("first", 0)
+                                                        play.put("frame", "https://www.iqiyi.com/")
+                                                        play.put("title", "")
+                                                        android.util.Log.i(
+                                                            "B0BEmbyVR",
+                                                            "爱奇艺自取：交整集片单（" + res.segs + " 段，" +
+                                                                (if (res.bid >= 600) "1080P" else "720P") + "）",
+                                                        )
+                                                        WebRuntime.acceptFromPage(play.toString())
+                                                    }
+                                                } else {
+                                                    android.util.Log.w("B0BEmbyVR", "爱奇艺自取失败，回退旧路（当前分片裸地址）")
+                                                    webRef?.evaluateJavascript(
+                                                        "window.__b0bIqTakeover && window.__b0bIqTakeover();",
+                                                        null,
+                                                    )
+                                                }
                                             }
-                                        }
-                                    }.start()
+                                        }.start()
+                                    }
                                     return
                                 }
                                 val hls = runCatching {
