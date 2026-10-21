@@ -1395,6 +1395,19 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                         val kuid = Regex("QC005=([^;]+)").find(ckAll)?.groupValues?.get(1).orEmpty()
                                         val ua = runCatching { webRef?.settings?.userAgentString }.getOrNull()
                                         val ctx = webRef?.context
+                                        /*
+                                         * 【2026-10-21 16:15 弹幕要的片号在这里补上】
+                                         * 弹幕接口按 tvid 取（cmts.iqiyi.com/bullet/...）。
+                                         * 原来这个片号是网络层钩子（shouldInterceptRequest）顺手记的，
+                                         * 那个钩子为了不连累 B站/腾讯已经整段删掉 —— 于是新路径下
+                                         * `IqiyiDash.tvid` 永远是空，弹幕层判定「没片号」直接不加载。
+                                         * 自取这条路本来就把片号抓到了，这里直接回填。
+                                         */
+                                        if (tvid.isNotBlank()) {
+                                            runCatching {
+                                                com.xxxx.emby_vr.web.IqiyiDash.noteTvid("tvid=$tvid")
+                                            }
+                                        }
                                         android.util.Log.i(
                                             "B0BEmbyVR",
                                             "爱奇艺自取：片号=$tvid 设备=" + kuid.take(8) + " 指纹=" + dfp.take(8),
