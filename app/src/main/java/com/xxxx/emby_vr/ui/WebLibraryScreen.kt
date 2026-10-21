@@ -211,8 +211,17 @@ private fun dispatchMouse(
      * 通用运动事件那条路，若按触摸发，网页根本收不到。 */
     val hover = action == MotionEvent.ACTION_HOVER_MOVE ||
         action == MotionEvent.ACTION_HOVER_EXIT
-    /* 悬停/移出走鼠标通道，真正的点击一律走触摸（见上面 2026-10-20 的说明） */
-    val mode = if (hover) 0 else 1
+    /*
+     * 【2026-10-21 10:40 恢复运行时可切换：爱奇艺的弹层按钮只认真鼠标点击】
+     *
+     * 头显实测（r839）：打在"智能（清晰度）""选集"上的坐标完全正确（换算日志 u/v 对得上、
+     * elementFromPoint 命中的就是这两个按钮），可点了就是不弹层。
+     * 同一页在调试口用**真鼠标点击**（Input.dispatchMouseEvent）立刻弹出 1080P 选项 ——
+     * 说明 iQiyi 这类弹层按钮认鼠标点击，不认我们现在发的触摸点击。
+     * 因此把 <web_click> 开关恢复成生效：0 = 鼠标点击、1 = 触摸点击，戴着切一下即可定论，
+     * 不用重新编译。
+     */
+    val mode = if (hover) 0 else com.xxxx.emby_vr.vr.VrTuning.webClickMode
     if (mode == 2 && !hover) {
         /* 「鼠标左键按下 / 抬起」在 Android 里是通用运动事件，不是触摸的 DOWN / UP */
         val btnAction = when (action) {
