@@ -89,6 +89,18 @@ object VrTuning {
     var webZeroCopy: Int = 1
 
     /**
+     * 网页禁用缓存（2026-10-21 12:50）。
+     * 1 = 每次请求都走网络 —— 爱奇艺的正片取流请求被缓存住时不发，导致截不到整集片单；
+     * 戴着改 `web_nocache=1` 就能让它重新发（代价是页面加载变慢）。
+     */
+    @Volatile
+    var webNoCache: Int = 0
+
+    /** 上一次已经应用到网页视图的缓存开关值（-1 = 还没应用过） */
+    @Volatile
+    var webCacheApplied: Int = -1
+
+    /**
      * 杜比视界片要不要也走零拷贝（2026-10-21 00:12）。
      * 1 = 也零拷贝（默认，实测杜比片同样每秒漏 24 个句柄）；0 = 退回复制模式（若画面出横向黑纹就写 0）。
      */
@@ -334,6 +346,13 @@ object VrTuning {
             if (it != dvZeroCopy) {
                 dvZeroCopy = it
                 applied += "杜比零拷贝=" + it
+            }
+        }
+
+        raw["web_nocache"]?.toIntOrNull()?.let {
+            if (it != webNoCache) {
+                webNoCache = it
+                applied += "网页缓存=" + if (it == 1) "禁用" else "正常"
             }
         }
 

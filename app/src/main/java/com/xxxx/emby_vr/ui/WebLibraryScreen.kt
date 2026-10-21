@@ -991,6 +991,24 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                      * 脚本把每条数据塞进 window.__b0bOutbox，这里每 250ms 取空一次。
                      * 取件用的 evaluateJavascript 是已经在跑的通路（视频矩形就靠它），不依赖新接口。
                      */
+                    /*
+                     * 运行时应用 `web_nocache`（2026-10-21）：改完不用重装，下一拍就生效。
+                     */
+                    runCatching {
+                        val want = com.xxxx.emby_vr.vr.VrTuning.webNoCache
+                        val mode = if (want == 1)
+                            org.chromium.android_crwebview.webkit.WebSettings.LOAD_NO_CACHE
+                        else
+                            org.chromium.android_crwebview.webkit.WebSettings.LOAD_DEFAULT
+                        if (com.xxxx.emby_vr.vr.VrTuning.webCacheApplied != want) {
+                            w.settings.cacheMode = mode
+                            com.xxxx.emby_vr.vr.VrTuning.webCacheApplied = want
+                            android.util.Log.i(
+                                "B0BEmbyVR",
+                                "网页缓存：" + if (want == 1) "已禁用（每次走网络）" else "恢复正常",
+                            )
+                        }
+                    }
                     w.evaluateJavascript(B0B_TAKE_OUTBOX_JS) { r ->
                         if (r != null && r.length > 4 && r != "[]") {
                             runCatching {
@@ -1133,6 +1151,16 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                         settings.useWideViewPort = true
                         settings.loadWithOverviewMode = true
                         settings.setSupportZoom(false)
+                        /*
+                         * 【2026-10-21 12:50 爱奇艺整集片单截不到：正片取流请求被缓存住没发出去】
+                         * 截到的那条是广告（只有 15 段）。戴着把 vr-tuning 的 `web_nocache` 改 1，
+                         * 页面每次请求都走网络，正片的 dash 就会真发一次，我们才能截到整集片单。
+                         */
+                        if (com.xxxx.emby_vr.vr.VrTuning.webNoCache == 1) {
+                            settings.cacheMode =
+                                org.chromium.android_crwebview.webkit.WebSettings.LOAD_NO_CACHE
+                            android.util.Log.i("B0BEmbyVR", "网页缓存：已按 web_nocache=1 禁用")
+                        }
                         settings.builtInZoomControls = false
                         /*
                          * 不许网页自己弹新窗口（弹出来就是个空白窗，画面留在原地不动）。
