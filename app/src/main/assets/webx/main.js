@@ -444,21 +444,48 @@
         }
       }
     } catch (e2) {}
-    /* B站：页面状态 */
+    /*
+     * B站（2026-10-21 21:50 改走结构化数据）
+     *
+     * 新版番剧/影视页不再有 `__INITIAL_STATE__`，改成 Next.js 的 `__NEXT_DATA__`：
+     *   props.pageProps.dehydratedState.queries[0] = ['pgc/view/web/simple/season', {ep_id}]
+     *   .state.data = { title:'良医 第七季', episodes:[{id, title:'2', long_title}], cover, evaluate }
+     * 剧名带季（"良医 第七季"），集号在 episodes[].title（这一部只有数字，long_title 为空）。
+     */
     try {
+      var nd = window.__NEXT_DATA__;
+      var qs = ((((nd || {}).props || {}).pageProps || {}).dehydratedState || {}).queries || [];
+      var season = null;
+      for (var qi = 0; qi < qs.length; qi++) {
+        var qk = String(((qs[qi] || {}).queryKey || [])[0] || '');
+        if (qk.indexOf('season') >= 0) { season = ((qs[qi] || {}).state || {}).data; break; }
+      }
+      if (season && season.title) {
+        var epId = 0, mm = /\/ep(\d+)/.exec(location.pathname || '');
+        if (mm) epId = parseInt(mm[1], 10) || 0;
+        var eps = season.episodes || [], curEp = 0, curName = '';
+        for (var ei = 0; ei < eps.length; ei++) {
+          if (epId && eps[ei] && eps[ei].id === epId) {
+            curEp = parseInt(eps[ei].title, 10) || (ei + 1);
+            curName = eps[ei].long_title || '';
+            break;
+          }
+        }
+        var rawTitle = String(season.title);
+        var seasonNo = b0bEpiInfo(rawTitle).season || 0;
+        return {
+          series: b0bCleanName(rawTitle),
+          season: seasonNo,
+          ep: curEp,
+          unit: '集',
+          epName: b0bCleanName(curName),
+        };
+      }
+      /* 老版页面（UP 主视频）还有 __INITIAL_STATE__ */
       var bs = window.__INITIAL_STATE__;
       if (bs) {
-        var bm = bs.mediaInfo || {}, be = bs.epInfo || {}, bv = bs.videoData || {};
-        var bTitle = be.title || bv.title || '';
-        if (bTitle) {
-          var bb = { series: b0bCleanName(bm.title || bv.title || bTitle), season: 0, ep: 0, unit: '集', epName: '' };
-          if (be.ep) {
-            bb.ep = parseInt(be.ep, 10) || 0;
-            bb.epName = b0bCleanName(be.title || '');
-            bb.series = b0bCleanName(bm.title || '');
-          }
-          return bb;
-        }
+        var bv = bs.videoData || {};
+        if (bv.title) return { series: b0bCleanName(bv.title), season: 0, ep: 0, unit: '集', epName: '' };
       }
     } catch (e3) {}
     return null;

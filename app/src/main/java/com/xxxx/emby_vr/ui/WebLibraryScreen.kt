@@ -1390,11 +1390,14 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                         "while(j<n.length){var c=n.charAt(j);if(c<'0'||c>'9')break;s+=c;j++;}" +
                                         "if(s.length>=8)t=s;}}" +
                                         "var d=(localStorage.getItem('__dfp')||'').split('@')[0];" +
-                                        "return JSON.stringify({tvid:t,dfp:d});}catch(e){return '{}';}})()"
+                                        "var en='';try{en=String(((window.QiyiPlayerProphetData||{}).videoInfo||{}).title||'');}catch(e3){}" +
+                                        "return JSON.stringify({tvid:t,dfp:d,epTitle:en});}catch(e){return '{}';}})()"
                                     webRef?.evaluateJavascript(jsAsk) { raw ->
                                         val kv = runCatching { org.json.JSONObject((raw ?: "").trim('"')) }
                                             .getOrElse { org.json.JSONObject() }
                                         val tvid = kv.optString("tvid")
+                                        /* 这一集的名字：页面播放器对象里的 title（如"恋爱脑被骗顶罪"） */
+                                        val pageEpTitle = kv.optString("epTitle")
                                         /*
                                          * 设备指纹兜底：头显页面 localStorage 里 `__dfp` 是空的（.18 有），
                                          * 这里回落到 2026-10-21 15:05 抓到的那个值。
@@ -1444,7 +1447,34 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                         play.put("height", if (res.bid >= 600) 1080 else 720)
                                                         play.put("first", 0)
                                                         play.put("frame", "https://www.iqiyi.com/")
-                                                        play.put("title", "")
+                                                        /*
+                                                         * 【2026-10-21 21:58 父亲定：文案完全按结构数据构造】
+                                                         *
+                                                         * 剧名与集号来自爱奇艺的 playervideoinfo 接口
+                                                         * （an / pd，实测"蒸蒸日上 / 第2集"），集名来自页面播放器对象
+                                                         * （QiyiPlayerProphetData.videoInfo.title）。
+                                                         * 拼法：剧名[ 第X季] 第X集 [集名]
+                                                         */
+                                                        val epi = runCatching {
+                                                            com.xxxx.emby_vr.web.IqiyiDash2.episodeInfo(tvid, ckAll, ua)
+                                                        }.getOrNull()
+                                                        val composed = runCatching {
+                                                            val sb = StringBuilder()
+                                                            if (epi != null && epi.series.isNotBlank()) {
+                                                                sb.append(epi.series)
+                                                                if (epi.episode > 0) sb.append(" 第").append(epi.episode).append("集")
+                                                                if (pageEpTitle.isNotBlank() &&
+                                                                    !pageEpTitle.contains("第") &&
+                                                                    !epi.series.contains(pageEpTitle)
+                                                                ) {
+                                                                    sb.append(" ").append(pageEpTitle)
+                                                                }
+                                                            } else {
+                                                                sb.append(pageEpTitle)
+                                                            }
+                                                            sb.toString().trim()
+                                                        }.getOrNull().orEmpty()
+                                                        play.put("title", composed)
                                                         android.util.Log.i(
                                                             "B0BEmbyVR",
                                                             "爱奇艺自取：交整集片单（" + res.segs + " 段，" +

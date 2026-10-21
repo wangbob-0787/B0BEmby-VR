@@ -58,6 +58,37 @@ object IqiyiDash2 {
 
     data class Result(val m3u8: String, val segs: Int, val durationSec: Int, val bid: Int)
 
+    /**
+     * 这一集的**结构化**信息（2026-10-21 21:55，父亲定「文案完全按结构数据构造」）。
+     *
+     * 来源：`https://pcw-api.iqiyi.com/video/video/playervideoinfo?tvid=<tvid>`
+     * 实测（tvid=5598014642465900）：
+     *   an = "蒸蒸日上"（剧名）· pd = 2（第几集）· es = 22（总集数）
+     *   vn = "蒸蒸日上第2集" · info = 剧情简介
+     * 集名（这一集叫什么）不在这里，由页面侧 `QiyiPlayerProphetData.videoInfo.title` 提供。
+     */
+    data class EpInfo(val series: String, val episode: Int, val epName: String, val total: Int)
+
+    fun episodeInfo(tvid: String, cookie: String?, userAgent: String?): EpInfo? {
+        if (tvid.isBlank()) return null
+        val body = runCatching {
+            get(
+                "https://pcw-api.iqiyi.com/video/video/playervideoinfo?tvid=" + tvid,
+                cookie,
+                userAgent,
+            )
+        }.getOrNull() ?: return null
+        return runCatching {
+            val d = org.json.JSONObject(body).optJSONObject("data") ?: return null
+            val series = d.optString("an").ifBlank { d.optString("vn") }
+            val ep = d.optInt("pd", 0)
+            val total = d.optInt("es", 0)
+            if (series.isBlank() && ep == 0) return null
+            Log.i(TAG, "爱奇艺结构化：剧名=" + series + " 第" + ep + "集（共 " + total + " 集）")
+            EpInfo(series, ep, "", total)
+        }.getOrNull()
+    }
+
     private fun md5(s: String): String {
         val d = MessageDigest.getInstance("MD5").digest(s.toByteArray(Charsets.UTF_8))
         val sb = StringBuilder()
