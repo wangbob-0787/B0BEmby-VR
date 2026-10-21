@@ -1180,61 +1180,6 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                              * 截到之后自己带 cookie/UA/Referer 重拉一遍（内容一致，原样回给页面），
                              * 顺手把整集 m3u8 抠出来存好；父亲按"真正的全屏"时把整张片单交给内核。
                              */
-                            override fun shouldInterceptRequest(
-                                view: WebView?,
-                                request: org.chromium.android_crwebview.webkit.WebResourceRequest?,
-                            ): org.chromium.android_crwebview.webkit.WebResourceResponse? {
-                                val u = runCatching { request?.url?.toString() }.getOrNull() ?: return null
-                                /*
-                                 * 【2026-10-21 13:05 诊断】到底能不能看到网页的请求？
-                                 *
-                                 * 现在只截到广告那条 dash，正片那条一直不出现。先分清是"请求没发"
-                                 * 还是"拦截看不到"：把 iqiyi / 71edge / qy.net 相关请求都记一行（节流）。
-                                 * 若连 .ts 分片都记不到 → 拦截只覆盖主框架，这条路得换。
-                                 */
-                                if (u.contains("iqiyi.com") || u.contains("71edge.com") ||
-                                    u.contains("qy.net") || u.contains(".ts?")
-                                ) {
-                                    val now = SystemClock.uptimeMillis()
-                                    if (now - lastIqLogAt[0] > 1200) {
-                                        lastIqLogAt[0] = now
-                                        android.util.Log.i(
-                                            "B0BEmbyVR",
-                                            "网页请求经过拦截：" + u.take(110),
-                                        )
-                                    }
-                                }
-                                /* 片号（弹幕要用）：取流接口查询串里的 tvid */
-                                runCatching { com.xxxx.emby_vr.web.IqiyiDash.noteTvid(u) }
-                                /* 整集片单直链（meta-cdn....m3u8）：只记不改，交给全屏那一趟 */
-                                if (com.xxxx.emby_vr.web.IqiyiDash.isPlaylistUrl(u)) {
-                                    com.xxxx.emby_vr.web.IqiyiDash.notePlaylistUrl(u)
-                                    return null
-                                }
-                                if (!com.xxxx.emby_vr.web.IqiyiDash.isDashUrl(u)) return null
-                                return runCatching {
-                                    android.util.Log.i("B0BEmbyVR", "截到爱奇艺取流接口：" + u.take(90))
-                                    val ck = runCatching {
-                                        org.chromium.android_crwebview.webkit.CookieManager
-                                            .getInstance().getCookie(u)
-                                    }.getOrNull()
-                                    val ua = runCatching { settings.userAgentString }.getOrNull()
-                                    val body = com.xxxx.emby_vr.web.IqiyiDash.intercept(u, ck, ua)
-                                        ?: return@runCatching null
-                                    val r = org.chromium.android_crwebview.webkit.WebResourceResponse(
-                                        "application/json",
-                                        "UTF-8",
-                                        java.io.ByteArrayInputStream(body),
-                                    )
-                                    runCatching {
-                                        r.responseHeaders = mapOf(
-                                            "Access-Control-Allow-Origin" to "*",
-                                            "Content-Type" to "application/json; charset=utf-8",
-                                        )
-                                    }
-                                    r
-                                }.getOrNull()
-                            }
 
                             /*
                              * 拦掉"打开APP"这类跳转（父亲 2026-10-13）：
