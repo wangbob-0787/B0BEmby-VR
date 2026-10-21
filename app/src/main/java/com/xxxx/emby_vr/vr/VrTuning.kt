@@ -320,8 +320,50 @@ object VrTuning {
     fun applyStartup(context: Context) {
         val raw = read(context) ?: return
         if (raw.isEmpty()) return
+        /*
+         * 【2026-10-21 16:10 修「开关写了不生效」】
+         *
+         * 这里原来只灌原生参数，却把 `lastRaw` 记成整份文件 → 紧接着的轮询看到
+         * "文件没变"直接 return，网页那几个开关（`web_iqiyi` / `dv_zerocopy` /
+         * `web_nocache` / `web_zerocopy`）**一次都没被解析过**，永远是默认值。
+         * 头显实证：vr-tuning.txt 里写着 `web_iqiyi=1`，日志里却一条"爱奇艺自取"
+         * 都没有，接管退回旧路（单段裸地址 → 只能播 6 分钟）。
+         * 修法：起播时把开关一起解析掉，轮询只负责"之后的变化"。
+         */
+        val flags = applyFlags(raw)
+        if (flags.isNotEmpty()) Log.i(TAG, "调参（起播）→ ${flags.joinToString("，")}")
         lastRaw = raw
         applyNative(raw)
+    }
+
+    /** 界面 / 网页层开关：起播与轮询共用一份解析，避免两处漂移 */
+    private fun applyFlags(raw: Map<String, String>): List<String> {
+        val applied = mutableListOf<String>()
+        raw["dv_zerocopy"]?.toIntOrNull()?.let {
+            if (it != dvZeroCopy) {
+                dvZeroCopy = it
+                applied += "杜比零拷贝=" + it
+            }
+        }
+        raw["web_iqiyi"]?.toIntOrNull()?.let {
+            if (it != webIqiyi) {
+                webIqiyi = if (it == 1) 1 else 0
+                applied += "爱奇艺接管=" + if (it == 1) "开" else "关"
+            }
+        }
+        raw["web_nocache"]?.toIntOrNull()?.let {
+            if (it != webNoCache) {
+                webNoCache = it
+                applied += "网页缓存=" + if (it == 1) "禁用" else "正常"
+            }
+        }
+        raw["web_zerocopy"]?.toIntOrNull()?.let {
+            if (it != webZeroCopy) {
+                webZeroCopy = it
+                applied += "网页零拷贝=" + it
+            }
+        }
+        return applied
     }
 
     private fun poll(
@@ -349,33 +391,8 @@ object VrTuning {
             applied += "画布 ${w}x$h"
         }
 
-        raw["dv_zerocopy"]?.toIntOrNull()?.let {
-            if (it != dvZeroCopy) {
-                dvZeroCopy = it
-                applied += "杜比零拷贝=" + it
-            }
-        }
-
-        raw["web_iqiyi"]?.toIntOrNull()?.let {
-            if (it != webIqiyi) {
-                webIqiyi = if (it == 1) 1 else 0
-                applied += "爱奇艺接管=" + if (it == 1) "开" else "关"
-            }
-        }
-
-        raw["web_nocache"]?.toIntOrNull()?.let {
-            if (it != webNoCache) {
-                webNoCache = it
-                applied += "网页缓存=" + if (it == 1) "禁用" else "正常"
-            }
-        }
-
-        raw["web_zerocopy"]?.toIntOrNull()?.let {
-            if (it != webZeroCopy) {
-                webZeroCopy = it
-                applied += "网页零拷贝=" + it
-            }
-        }
+        /* 四个开关（杜比零拷贝 / 爱奇艺接管 / 网页缓存 / 网页零拷贝）解析在 applyFlags */
+        applied += applyFlags(raw)
 
         applied += applyNative(raw)
 

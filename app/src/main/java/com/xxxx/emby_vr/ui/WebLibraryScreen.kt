@@ -1316,6 +1316,12 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                 )
                                 box.visibility = android.view.View.VISIBLE
                                 fullscreen = true
+                                /* 头显排查用：把"这一刻到底走了哪条路"钉在日志里（2026-10-21 16:12） */
+                                android.util.Log.i(
+                                    "WebLib",
+                                    "真全屏进入：站点=$site 爱奇艺开关=" +
+                                        com.xxxx.emby_vr.vr.VrTuning.webIqiyi,
+                                )
                                 /*
                                  * 【2026-10-21 爱奇艺接管】父亲按"真正的全屏"= 把 1080P 整集地址交给大银幕。
                                  *
