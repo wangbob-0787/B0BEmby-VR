@@ -122,7 +122,7 @@ object VrTuning {
      * 所以默认回到 0，并把点击序列里夹着的两条"鼠标移动"去掉（那是重复的，还会让
      * 网页的设备语义来回切）。戴着改 `web_click` 可随时切，不用重装。
      */
-    var webClickMode: Int = 0
+    var webClickMode: Int = 1
 
     /**
      * 火狐内核要不要**保留触摸事件**：0 = 关掉（默认）、1 = 保留。
@@ -462,8 +462,15 @@ object VrTuning {
             applied += "网页内核 ${if (webEngine == 1) "火狐" else "系统"}"
         }
         raw["web_click"]?.toIntOrNull()?.let {
-            webClickMode = if (it == 1) 1 else 0
-            applied += "网页点击语义 ${if (webClickMode == 1) "触摸" else "鼠标"}"
+            /*
+             * 【2026-10-21 10:47 三种语义并存】
+             * 0 = 鼠标源触摸（Chromium 不认，留着对照）
+             * 1 = 标准触摸（默认：海报/链接都能点，r797 起一直是它）
+             * 2 = 鼠标按键式（ACTION_BUTTON_PRESS/RELEASE，走通用运动事件通道）
+             *      ——爱奇艺的「清晰度/选集」弹层只认鼠标点击，这个值是为它准备的
+             */
+            webClickMode = if (it == 2) 2 else if (it == 1) 1 else 0
+            applied += "网页点击语义 " + when (webClickMode) { 1 -> "触摸"; 2 -> "鼠标按键式"; else -> "鼠标源触摸" }
         }
         raw["web_touch"]?.toIntOrNull()?.let {
             webTouchKept = if (it == 1) 1 else 0
