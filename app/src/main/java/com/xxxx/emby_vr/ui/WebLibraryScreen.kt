@@ -1425,8 +1425,19 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                             runCatching {
                                                 val play = org.json.JSONObject()
                                                 play.put("kind", "play")
-                                                play.put("frame", com.xxxx.emby_vr.web.IqiyiDash.m3u8Url ?: "")
+                                                /*
+                                                 * frame 会被当成 Referer 交给内核 —— 必须是**页面地址**，
+                                                 * 不能填 m3u8 的 CDN 地址（2026-10-21 13:48）。
+                                                 */
+                                                play.put("frame", "https://www.iqiyi.com/")
                                                 play.put("title", titleHolder[0])
+                                                /*
+                                                 * 【2026-10-21 13:47】分段必须带登录 cookie：
+                                                 * 实测内核取 `.ts?start=&end=` 时回 405 Not Allowed，
+                                                 * 而页面自己取同一批段是 200 —— 差别就在身份。
+                                                 * 把网页那份 cookie 连同请求头一起交给内核。
+                                                 */
+                                                play.put("cookie", ck ?: "")
                                                 play.put("durSec", 0)
                                                 val st = org.json.JSONArray()
                                                 st.put(
