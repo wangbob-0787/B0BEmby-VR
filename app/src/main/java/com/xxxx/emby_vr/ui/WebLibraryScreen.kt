@@ -1406,7 +1406,9 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
              */
             /* 火狐内核那条路也要能点：geckoRef 插在中间（2026-10-14） */
             val wv: android.view.View? = customView ?: webRef
-            if (r != null && wv != null && r.width > 0f && r.height > 0f) {
+            if (r != null && wv != null && r.width > 0f && r.height > 0f &&
+                wv.width > 0 && wv.height > 0
+            ) {
                 val u = (px - r.left) / r.width
                 val v = (py - r.top) / r.height
                 if (u in 0f..1f && v in 0f..1f) {
@@ -1530,6 +1532,13 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                 return@hover
             }
             hoverOnScreen[0] = true
+            /*
+             * 【2026-10-21 12:22 闪退】视图尺寸为 0 时 coerceIn(0f, -1f) 会抛
+             * IllegalArgumentException: Cannot coerce value to an empty range
+             * —— 爱奇艺一按全屏（播放视图刚换手、宽高还是 0）就命中这里，进程直接崩。
+             * 尺寸不可用时这一拍不发悬停，等下一拍尺寸出来再发。
+             */
+            if (wv.width <= 0 || wv.height <= 0) return@hover
             val x = (u * wv.width).coerceIn(0f, (wv.width - 1).toFloat())
             val y = (v * wv.height).coerceIn(0f, (wv.height - 1).toFloat())
             /* 挪动不足 3 像素不发（网页每个 mousemove 都要做命中测试，太密会拖慢） */
