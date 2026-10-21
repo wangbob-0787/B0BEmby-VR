@@ -1204,6 +1204,11 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                         )
                                     }
                                 }
+                                /* 整集片单直链（meta-cdn....m3u8）：只记不改，交给全屏那一趟 */
+                                if (com.xxxx.emby_vr.web.IqiyiDash.isPlaylistUrl(u)) {
+                                    com.xxxx.emby_vr.web.IqiyiDash.notePlaylistUrl(u)
+                                    return null
+                                }
                                 if (!com.xxxx.emby_vr.web.IqiyiDash.isDashUrl(u)) return null
                                 return runCatching {
                                     android.util.Log.i("B0BEmbyVR", "截到爱奇艺取流接口：" + u.take(90))
@@ -1376,6 +1381,33 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                  * 优先交**整集片单**（网络层截下来的那份，含全部分段）；
                                  * 没截到才退回"当前这一段"的裸地址（只能播几分钟）。
                                  */
+                                /*
+                                 * 【2026-10-21 13:15 优先级：整集 m3u8 直链 > dash 里解析出的整集片单 > 单段裸地址】
+                                 * 直链最省事：mpv 自己按 HLS 播整集、自己拖动（实测 702 段 / 45 分 26 秒，
+                                 * 且不带 cookie 也能取）。
+                                 */
+                                val direct = if (com.xxxx.emby_vr.web.IqiyiDash.playlistFresh())
+                                    com.xxxx.emby_vr.web.IqiyiDash.m3u8Url else null
+                                if (direct != null) {
+                                    val play = org.json.JSONObject()
+                                    play.put("kind", "play")
+                                    play.put("frame", com.xxxx.emby_vr.web.IqiyiDash.m3u8Url ?: "")
+                                    play.put("title", "")
+                                    play.put("durSec", 0)
+                                    val st = org.json.JSONArray()
+                                    st.put(
+                                        org.json.JSONObject().apply {
+                                            put("video", direct)
+                                            put("audio", "")
+                                            put("height", 800)
+                                            put("bw", 0)
+                                        },
+                                    )
+                                    play.put("streams", st)
+                                    android.util.Log.i("B0BEmbyVR", "爱奇艺接管：交通用整集片单直链")
+                                    runCatching { WebRuntime.acceptFromPage(play.toString()) }
+                                    return
+                                }
                                 val hls = runCatching {
                                     com.xxxx.emby_vr.web.IqiyiDash.toHlsMessage(null)
                                 }.getOrNull()

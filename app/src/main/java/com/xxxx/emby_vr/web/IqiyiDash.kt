@@ -42,6 +42,37 @@ object IqiyiDash {
     var frameUrl: String = ""
         private set
 
+    /**
+     * 整集片单的**直链**（2026-10-21 13:15 定案）。
+     *
+     * 实测：页面对 `https://meta-cdn.video.iqiyi.com/.../xxx.m3u8?qd_...` 的响应就是整集片单
+     * （那次 702 段 / 2726 秒）。这条地址**不带 cookie 也能取**（.18 上 curl 200、19 万字节）。
+     * 所以截到地址就够了：直接交给 mpv，让它自己按 HLS 播整集、自己拖动。
+     */
+    @Volatile
+    var m3u8Url: String? = null
+        private set
+    @Volatile
+    var m3u8At: Long = 0L
+        private set
+
+    fun isPlaylistUrl(u: String): Boolean {
+        if (!u.contains(".m3u8")) return false
+        return u.contains("iqiyi.com") || u.contains("71edge.com") || u.contains("qy.net")
+    }
+
+    /** 记下整集片单直链（由 shouldInterceptRequest 调用，只记不改请求） */
+    fun notePlaylistUrl(u: String) {
+        if (!isPlaylistUrl(u)) return
+        if (u == m3u8Url) return
+        m3u8Url = u
+        m3u8At = System.currentTimeMillis()
+        android.util.Log.i(TAG, "爱奇艺整集片单直链到手：" + u.take(110))
+    }
+
+    fun playlistFresh(maxAgeMs: Long = 30 * 60 * 1000L): Boolean =
+        m3u8Url != null && System.currentTimeMillis() - m3u8At in 0..maxAgeMs
+
     fun isDashUrl(u: String): Boolean =
         u.contains("cache.video.iqiyi.com/dash?") || u.contains("cache.video.iqiyi.com/dash/")
 
