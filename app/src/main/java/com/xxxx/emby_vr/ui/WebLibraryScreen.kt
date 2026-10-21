@@ -1347,7 +1347,13 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                  * 片单地址在 pcw-data 上，长期有效（4 小时后仍 200）。
                                  * 只在 `web_iqiyi=1` 时走这条路，且完全不碰 WebView 的请求层。
                                  */
-                                if (com.xxxx.emby_vr.vr.VrTuning.webIqiyi == 1) {
+                                /*
+                                 * 只在**爱奇艺**站点走这条自取路（2026-10-21 15:40 修）：
+                                 * 上一版只看开关，结果 B站/腾讯 也被拦进来、直接 return，
+                                 * 它们的接管（页面交地址 + 全屏戳）整段被跳过 —— 父亲实测"接管不过去"。
+                                 * 站点编号：0=哔哩哔哩、1=腾讯视频、2=爱奇艺（见 MainActivity.WEB_SITE_NAMES）。
+                                 */
+                                if (com.xxxx.emby_vr.vr.VrTuning.webIqiyi == 1 && site == 2) {
                                     val jsAsk = "(function(){try{var t='';var rs=performance.getEntriesByType('resource');" +
                                         "for(var i=rs.length-1;i>=0;i--){var m=rs[i].name.match(/qd_tvid=(\\d+)/);if(m){t=m[1];break;}}" +
                                         "var d=(localStorage.getItem('__dfp')||'').split('@')[0];" +
