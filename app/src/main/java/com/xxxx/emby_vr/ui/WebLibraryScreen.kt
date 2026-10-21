@@ -1368,12 +1368,27 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                      * ② 设备指纹：头显页面 localStorage 里的 `__dfp` 是空的（.18 有），
                                      *    这里补一个兜底常量（2026-10-21 15:05 抓自浏览器请求里的 dfp）。
                                      */
+                                    /*
+                                     * 【2026-10-21 17:12 片号改用播放器自己的数据】
+                                     *
+                                     * r864 实测（头显日志）：`爱奇艺自取：片号= 设备=3319b8e0 指纹=a084c603`
+                                     * → 片号还是空，自取必然失败退回 6 分钟裸地址。
+                                     * 原因：性能资源表里根本没有 `qd_tvid=`（取流是 MSE，地址不出现在资源表）。
+                                     * .18 实测爱奇艺把片号放在播放器对象上：
+                                     *   window.QiyiPlayerProphetData.tvid / .tvId / .videoInfo.tvId
+                                     * 所以优先级改成：播放器对象 → 全局 tvId → 资源表兜底。
+                                     */
                                     val jsAsk = "(function(){try{" +
-                                        "var t='';var rs=performance.getEntriesByType('resource');" +
+                                        "var t='';" +
+                                        "try{var pd=window.QiyiPlayerProphetData||{};" +
+                                        "t=String(pd.tvid||pd.tvId||(pd.videoInfo||{}).tvId||'');}catch(e1){}" +
+                                        "if(!t){try{var pl=window.QiyiPlayerLoader||{};" +
+                                        "t=String(pl.tvid||'');}catch(e2){}}" +
+                                        "if(!t){var rs=performance.getEntriesByType('resource');" +
                                         "for(var i=rs.length-1;i>=0&&!t;i--){var n=rs[i].name||'';" +
-                                        "var p=n.indexOf('qd_tvid=');if(p<0)continue;var j=p+8,s='';" +
+                                        "var p=n.indexOf('tvid=');if(p<0)continue;var j=p+5,s='';" +
                                         "while(j<n.length){var c=n.charAt(j);if(c<'0'||c>'9')break;s+=c;j++;}" +
-                                        "if(s)t=s;}" +
+                                        "if(s.length>=8)t=s;}}" +
                                         "var d=(localStorage.getItem('__dfp')||'').split('@')[0];" +
                                         "return JSON.stringify({tvid:t,dfp:d});}catch(e){return '{}';}})()"
                                     webRef?.evaluateJavascript(jsAsk) { raw ->
