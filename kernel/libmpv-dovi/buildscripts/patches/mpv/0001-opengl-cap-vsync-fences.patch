@@ -1,0 +1,19 @@
+--- a/video/out/opengl/context.c
++++ b/video/out/opengl/context.c
+@@ -245,6 +245,16 @@
+         gl->Finish();
+ 
+     if (gl->FenceSync && !p->params.external_swapchain) {
++        /*
++         * 2026-10-21 乐乐：Android 上每个 GLsync 同步对象都占一个 sync_file 句柄，
++         * 而等待/回收那条路（ra_gl_ctx_wait_frame）未必每帧都走 —— 长时间播放会把
++         * 进程句柄耗光（实测 24 帧片约 24 个/秒、60 帧片约 51 个/秒），随后段错误闪退。
++         * 这里给同步对象设上限：只保留最近 3 个，更旧的当场销毁。
++         */
++        while (p->num_vsync_fences >= 3) {
++            gl->DeleteSync(p->vsync_fences[0]);
++            MP_TARRAY_REMOVE_AT(p->vsync_fences, p->num_vsync_fences, 0);
++        }
+         GLsync fence = gl->FenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+         if (fence)
+             MP_TARRAY_APPEND(p, p->vsync_fences, p->num_vsync_fences, fence);
