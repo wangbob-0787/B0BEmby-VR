@@ -404,10 +404,92 @@
   }
 
   /*
+   * 【2026-10-21 16:45 父亲问"能不能从网页元数据取" —— 该站自己的数据最准】
+   *
+   * 三个站都在页面里放了结构化元数据，比啃可见文字可靠得多（.18 浏览器实测）：
+   *   · 腾讯：`window.__VINFO_DATA__.videoInfo`
+   *       title="兰香如故_21"（剧名_集号）、episode="21"、
+   *       second_title="兰草一盆牵两意 两厢争慕许家娘"（集名）、type_name="电视剧"
+   *   · 爱奇艺：播放器头部元素 `[class*=webHead_title__]` 直接就是
+   *       「蒸蒸日上 第4集 感情操控与金钱骗局」
+   *       （兜底：`QiyiPlayerProphetData.videoInfo.title` 是集名、"album" 里有剧名）
+   *   · B站：`window.__INITIAL_STATE__.videoData.title` 是干净标题；
+   *       番剧用 `epInfo.title`（集名）+ `mediaInfo.title`（剧名）+ `epInfo.ep`（集号）
+   *
+   * 取不到就返回 null，由下面的可见文字逻辑兜底 —— 不能因为某个站改版就整条链失效。
+   */
+  function b0bMetaInfo() {
+    /* 腾讯 */
+    try {
+      var vq = (window.__VINFO_DATA__ || {}).videoInfo;
+      if (vq && vq.title) {
+        var tq = String(vq.title);
+        var mq = /^(.*?)_(\d{1,4})$/.exec(tq);
+        var q = { series: mq ? mq[1] : tq, season: 0, ep: 0, unit: '集', epName: '' };
+        q.ep = parseInt(vq.episode, 10) || (mq ? parseInt(mq[2], 10) : 0) || 0;
+        if (vq.second_title) q.epName = String(vq.second_title);
+        if (q.series || q.ep) return q;
+      }
+    } catch (e1) {}
+    /* 爱奇艺：播放器头部一行字 */
+    try {
+      var ei = document.querySelector('[class*="webHead_title__"]');
+      var ti = ei ? (ei.textContent || '').replace(/\s+/g, ' ').trim() : '';
+      /* 头部那行后面常粘着"45分钟客户端4K播放"，截到第一个数字+分钟之前 */
+      ti = ti.replace(/\s*\d+\s*分钟.*$/, '').trim();
+      if (ti) {
+        var ii = b0bEpiInfo(ti);
+        if (ii.ep) {
+          return { series: b0bCleanName(ti), season: ii.season, ep: ii.ep, unit: ii.unit || '集', epName: ii.epName };
+        }
+      }
+    } catch (e2) {}
+    /* B站：页面状态 */
+    try {
+      var bs = window.__INITIAL_STATE__;
+      if (bs) {
+        var bm = bs.mediaInfo || {}, be = bs.epInfo || {}, bv = bs.videoData || {};
+        var bTitle = be.title || bv.title || '';
+        if (bTitle) {
+          var bb = { series: b0bCleanName(bm.title || bv.title || bTitle), season: 0, ep: 0, unit: '集', epName: '' };
+          if (be.ep) {
+            bb.ep = parseInt(be.ep, 10) || 0;
+            bb.epName = b0bCleanName(be.title || '');
+            bb.series = b0bCleanName(bm.title || '');
+          }
+          return bb;
+        }
+      }
+    } catch (e3) {}
+    return null;
+  }
+
+  /*
    * 拼最终标题：单集片只给片名，分集片给「剧名 第X季 第X集 集名」。
    * 季号找不到就不写季（很多剧页面根本不显示第几季）。
    */
   function b0bBuildTitle() {
+    /* ① 先问该站自己的元数据（最准），取不到再啃可见文字 */
+    try {
+      var mt = b0bMetaInfo();
+      if (mt) {
+        var mtEpName = b0bCleanName(mt.epName || '');
+        var mtSeries = mt.series || '';
+        if (mtEpName && mtSeries && mtSeries.indexOf(mtEpName) >= 0) {
+          mtSeries = mtSeries.split(mtEpName).join(' ').replace(/\s{2,}/g, ' ').trim();
+        }
+        if (mt.ep > 0) {
+          var mtOut = mtSeries;
+          if (mt.season > 0) mtOut += ' 第' + mt.season + '季';
+          mtOut += ' 第' + mt.ep + (mt.unit || '集');
+          if (mtEpName && !isJunkTitle(mtEpName)) mtOut += ' ' + mtEpName;
+          mtOut = mtOut.trim();
+          if (mtOut) return mtOut.slice(0, 80);
+        } else if (mtSeries) {
+          return mtSeries.slice(0, 80);
+        }
+      }
+    } catch (eMeta) {}
     var nameSels = [
       '.video-title', 'h1.video-title', '.mediainfo_mediaTitle', '.media-title',
       '.bpx-player-top-title', '.player-title', '.qy-player-title', '.txp_title',
