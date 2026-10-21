@@ -882,6 +882,19 @@
      * 所以只做一件事：它是不是当前这一集？是就交，不是就丢掉重新攒。
      */
     var obj = pendingPlay;
+    /*
+     * 【2026-10-21 23:50 爱奇艺：原生交了整集片单后，页面这条一律不交】
+     * 它交的是"当前这一段的裸地址"，只能播 6 分钟，却会把整集片单顶掉。
+     */
+    try {
+      if (/(^|\.)iqiyi\.com$/i.test(String(location.hostname || '')) &&
+          window.__b0bIqGuard && Date.now() - window.__b0bIqGuard < 30000) {
+        console.log('[b0b] 爱奇艺：原生已交整集片单，页面这条（' +
+          String(obj && obj.video || '').slice(0, 60) + '…）跳过');
+        pendingPlay = null;
+        return;
+      }
+    } catch (eG) {}
     /* 身份里带上当前页面地址：腾讯那种没有集号的情况靠它判同一次播放（2026-10-17） */
     var nowId = { ep: biliEp, season: biliSeason, cid: biliCid, href: location.href };
     if (obj && !sameEpisode(obj, nowId)) {

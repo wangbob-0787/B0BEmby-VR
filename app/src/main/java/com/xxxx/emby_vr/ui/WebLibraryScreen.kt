@@ -447,11 +447,16 @@ private object WebRuntime {
         fullDurSec = durSec
     }
 
-    /** true = 这条是"更短的兜底地址"，应该丢弃 */
-    private fun shouldDropShorter(durSec: Int): Boolean {
+    /**
+     * true = 这条是"页面那份兜底地址"，应该丢弃。
+     *
+     * 判据不是时长（爱奇艺页面对整集也报 2726 秒），而是**有没有整集分段**：
+     * 我们自己的片单带 `segs`（689 段），页面那份只有一条裸地址、没有 segs。
+     */
+    private fun shouldDropFallback(segCount: Int): Boolean {
         val age = System.currentTimeMillis() - fullAt
         if (fullDurSec <= 0 || age > 30_000) return false
-        return durSec in 1 until 300 && fullDurSec > 600
+        return segCount < 50
     }
 
     /** 应用上下文（2026-10-20）：整集清单要落盘成 m3u8 文件交给内核，需要 cacheDir */
@@ -738,11 +743,11 @@ private object WebRuntime {
             return
         }
         if (obj.optString("kind") == "play") {
-            val dur = obj.optInt("durSec", 0)
-            if (shouldDropShorter(dur)) {
+            val segs = obj.optInt("segs", 0)
+            if (shouldDropFallback(segs)) {
                 android.util.Log.w(
                     "B0BEmbyVR",
-                    "丢弃这条更短的网页流地址：时长 " + dur + " 秒（刚交过整集片单 " + fullDurSec + " 秒）",
+                    "丢弃页面那份兜底地址（只有 " + segs + " 段；刚交过整集片单 " + fullDurSec + " 秒）",
                 )
                 return
             }
