@@ -1277,6 +1277,18 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                 )
                                 box.visibility = android.view.View.VISIBLE
                                 fullscreen = true
+                                /*
+                                 * 【2026-10-21 爱奇艺接管】父亲按"真正的全屏"= 把 1080P 整集地址交给大银幕。
+                                 *
+                                 * 爱奇艺的取流请求发在播放器后台线程里，页面脚本抓不到，但**分片地址**
+                                 * 在页面资源表里读得到；页面侧已把"剥掉字节区间参数的裸地址"准备好，
+                                 * 这里一按全屏就让它递交（非爱奇艺站点该函数自己会返回 false）。
+                                 * 走的是既有的 kind:'play' 契约，接管逻辑与腾讯/B站同一套。
+                                 */
+                                webRef?.evaluateJavascript(
+                                    "window.__b0bIqTakeover && window.__b0bIqTakeover();",
+                                    null,
+                                )
                                 /* 告诉主界面：把画面投到影院大银幕（父亲 2026-10-13） */
                                 WebPageHub.setFullscreen(true)
                                 /*

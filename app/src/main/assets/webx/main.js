@@ -1965,6 +1965,79 @@
    *   凡"自己高度接近 0、但里面内容明显有一屏高"的层 → 按视口高度撑起来并留滚动口。
    * 判据只看几何关系（scrollHeight vs clientHeight），与站点、类名、页面都无关。
    */
+  /*
+   * 【2026-10-21 爱奇艺接管（父亲定：按 1080P，按"真正的全屏"就交给大银幕）】
+   *
+   * 事实（本次实测）：
+   *  1) 爱奇艺正片是**一个整集 .ts 大文件**，播放器用 `?start=&end=&contentlength=&sd=` 按字节区间取；
+   *     把这几项去掉后，服务器照常认（HTTP Range 206），内核能直接播、能跳到 40 分钟。
+   *  2) 取流请求（/dash?）发在播放器的后台线程里，**页面脚本看不到**；
+   *     但**分片请求**在页面的资源表里能读到（performance.getEntriesByType('resource')）。
+   *  3) 所以不需要片单：从分片地址里剥出裸地址，就是整集。
+   *
+   * 触发：网页进入全屏（父亲按"真正的全屏"）时，把这条地址按既有的
+   * `kind:'play'` 契约交给原生，走已经跑通的那条接管路。
+   */
+  var b0bIqLastBare = '';
+  function b0bIqCaptureBare() {
+    try {
+      if (!/(^|\.)iqiyi\.com$/i.test(String(location.hostname || ''))) return '';
+      var rs = performance.getEntriesByType('resource');
+      for (var i = rs.length - 1; i >= 0; i--) {
+        var u = String(rs[i].name || '');
+        if (u.indexOf('.ts?') < 0) continue;
+        var q = u.split('?')[1] || '';
+        var keep = [];
+        var parts = q.split('&');
+        for (var j = 0; j < parts.length; j++) {
+          var k = parts[j].split('=')[0];
+          if (k === 'start' || k === 'end' || k === 'contentlength' || k === 'sd') continue;
+          if (parts[j]) keep.push(parts[j]);
+        }
+        b0bIqLastBare = u.split('?')[0] + '?' + keep.join('&');
+        return b0bIqLastBare;
+      }
+    } catch (e) {}
+    return b0bIqLastBare;
+  }
+  /* 每秒扫一次资源表，记住最后一条裸地址（分片在播时一直在来） */
+  try { setInterval(b0bIqCaptureBare, 1000); } catch (e) {}
+
+  function b0bIqSubmit(tag) {
+    try {
+      if (!/(^|\.)iqiyi\.com$/i.test(String(location.hostname || ''))) return false;
+      var bare = b0bIqCaptureBare();
+      if (!bare) { console.log('[b0b] 爱奇艺接管：还没有分片地址，等一秒再按'); return false; }
+      var sz = { w: 0, h: 0, dur: 0 };
+      try {
+        var v = document.querySelector('video');
+        if (v) { sz.w = v.videoWidth || 0; sz.h = v.videoHeight || 0; sz.dur = Math.round(v.duration || 0); }
+      } catch (e) {}
+      var obj = {
+        kind: 'play',
+        frame: location.href,
+        cookie: String(document.cookie || ''),
+        title: (typeof pageTitle === 'function' ? pageTitle() : document.title) || '',
+        width: sz.w, height: sz.h, durSec: sz.dur, quality: '1080P',
+        streams: [{ id: 0, video: bare, audio: '', width: sz.w, height: sz.h, vcodec: 'h264', bw: 0 }],
+      };
+      b0bSendOut(obj);
+      console.log('[b0b] 爱奇艺接管已递交（' + tag + '）：' + sz.w + 'x' + sz.h + ' 时长 ' + sz.dur + 's 地址长 ' + bare.length);
+      return true;
+    } catch (e) {
+      console.log('[b0b] 爱奇艺接管递交出错：' + e);
+      return false;
+    }
+  }
+  /* 原生在"网页要全屏"时直接调它（爱奇艺的全屏走的是自定义视图，不一定触发 DOM 全屏事件） */
+  window.__b0bIqTakeover = function () { return b0bIqSubmit('原生调用'); };
+  /* 兜底：DOM 全屏事件也接一份 */
+  try {
+    document.addEventListener('fullscreenchange', function () {
+      if (document.fullscreenElement) b0bIqSubmit('DOM 全屏');
+    }, true);
+  } catch (e) {}
+
   function b0bUnstickEmptyHeights() {
     try {
       if (!/(^|\.)iqiyi\.com$/i.test(String(location.hostname || ''))) return;
