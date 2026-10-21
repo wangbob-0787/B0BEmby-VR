@@ -3747,6 +3747,13 @@ class MainActivity : ComponentActivity() {
                         )
                         val ck = webStream?.optString("cookie").orEmpty()
                         if (ck.isNotBlank()) hd["Cookie"] = ck
+                        /*
+                         * 【2026-10-21 13:50 失败不要无限重试】默认播放模式是"列表循环"，
+                         * mpv 的 loop-file=inf 会让一条打不开的网页流一直重试
+                         * （实测 13:43–13:45 每 300ms 一条 405，把播放器卡死，连带别家也接管不了）。
+                         * 网页流起播时先关掉循环，由播放模式菜单显式打开才循环。
+                         */
+                        m.setLoopFile(playModeIndex == 1)
                         m.playStream(
                             directUrl,
                             webFirst.optString("audio").takeIf { it.isNotBlank() },

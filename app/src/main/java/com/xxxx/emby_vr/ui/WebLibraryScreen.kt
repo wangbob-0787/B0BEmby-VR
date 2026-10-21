@@ -1388,8 +1388,15 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                  * 直链最省事：mpv 自己按 HLS 播整集、自己拖动（实测 702 段 / 45 分 26 秒，
                                  * 且不带 cookie 也能取）。
                                  */
-                                val direct = if (com.xxxx.emby_vr.web.IqiyiDash.playlistFresh())
-                                    com.xxxx.emby_vr.web.IqiyiDash.m3u8Url else null
+                                /*
+                                 * 【2026-10-21 13:50 先关掉爱奇艺接管】
+                                 * 分段取流还回 405（身份/来源问题在查），而失败后 mpv 会自动重试，
+                                 * 把播放器卡在重试循环里 —— 连带 B站/腾讯 都像"接管不了"。
+                                 * 所以先用开关隔离：`web_iqiyi=1` 才走爱奇艺那条，默认 0。
+                                 */
+                                val direct = if (com.xxxx.emby_vr.vr.VrTuning.webIqiyi == 1 &&
+                                    com.xxxx.emby_vr.web.IqiyiDash.playlistFresh()
+                                ) com.xxxx.emby_vr.web.IqiyiDash.m3u8Url else null
                                 if (direct != null) {
                                     /*
                                      * 【2026-10-21 13:35】不能在主线程里下载片单：挪到后台线程，

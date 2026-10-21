@@ -96,6 +96,13 @@ object VrTuning {
     @Volatile
     var webNoCache: Int = 0
 
+    /**
+     * 爱奇艺网页接管总开关（2026-10-21 13:50）。
+     * 0 = 关（默认，先保证 B站/腾讯 正常）；1 = 开（爱奇艺整集片单那条路还在调）。
+     */
+    @Volatile
+    var webIqiyi: Int = 0
+
     /** 上一次已经应用到网页视图的缓存开关值（-1 = 还没应用过） */
     @Volatile
     var webCacheApplied: Int = -1
@@ -346,6 +353,13 @@ object VrTuning {
             if (it != dvZeroCopy) {
                 dvZeroCopy = it
                 applied += "杜比零拷贝=" + it
+            }
+        }
+
+        raw["web_iqiyi"]?.toIntOrNull()?.let {
+            if (it != webIqiyi) {
+                webIqiyi = if (it == 1) 1 else 0
+                applied += "爱奇艺接管=" + if (it == 1) "开" else "关"
             }
         }
 
