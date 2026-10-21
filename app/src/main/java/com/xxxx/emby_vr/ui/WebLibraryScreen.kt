@@ -1389,9 +1389,14 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                         "var p=n.indexOf('tvid=');if(p<0)continue;var j=p+5,s='';" +
                                         "while(j<n.length){var c=n.charAt(j);if(c<'0'||c>'9')break;s+=c;j++;}" +
                                         "if(s.length>=8)t=s;}}" +
+                                        "var diag={};try{diag.globals=Object.keys(window).filter(function(k){return /qiyi|iqy|player|prophet|__/i.test(k)}).slice(0,25);}catch(e4){}" +
+                                        "try{var rsx=performance.getEntriesByType('resource');diag.res=rsx.length;" +
+                                        "diag.rsamp=rsx.filter(function(r){return /dash|iqiyi|tvid/i.test(r.name||'');}).slice(0,3).map(function(r){return String(r.name).slice(0,120)});}catch(e5){}" +
+                                        "try{diag.ls=Object.keys(localStorage).slice(0,15);}catch(e6){}" +
+                                        "try{diag.pdKeys=Object.keys(window.QiyiPlayerProphetData||{}).slice(0,15);}catch(e7){}" +
                                         "var d=(localStorage.getItem('__dfp')||'').split('@')[0];" +
                                         "var en='';try{en=String(((window.QiyiPlayerProphetData||{}).videoInfo||{}).title||'');}catch(e3){}" +
-                                        "return JSON.stringify({tvid:t,dfp:d,epTitle:en});}catch(e){return '{}';}})()"
+                                        "return JSON.stringify({tvid:t,dfp:d,epTitle:en,diag:diag});}catch(e){return '{}';}})()"
                                     webRef?.evaluateJavascript(jsAsk) { raw ->
                                         val kv = runCatching { org.json.JSONObject((raw ?: "").trim('"')) }
                                             .getOrElse { org.json.JSONObject() }
