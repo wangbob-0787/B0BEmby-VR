@@ -373,6 +373,9 @@ fun WebLibraryScreen(
      */
     onWebPreview: (org.json.JSONObject) -> Unit = {},
 ) {
+    /* 上下文：整集清单要落盘/起本机服务（2026-10-21 23:58 补，之前一直是空导致接不过去） */
+    WebRuntime.setAppCtx(androidx.compose.ui.platform.LocalContext.current)
+
     /*
      * 换站点 = 整棵网页子树重建（父亲 2026-10-13 报"B站切腾讯打不开，要先去播一部片子才能开"）。
      *
@@ -459,8 +462,19 @@ private object WebRuntime {
         return segCount < 50
     }
 
-    /** 应用上下文（2026-10-20）：整集清单要落盘成 m3u8 文件交给内核，需要 cacheDir */
+    /**
+     * 应用上下文（2026-10-20）：整集清单要起本机服务 / 落盘成 m3u8 文件，需要 cacheDir。
+     *
+     * 【2026-10-21 23:58 修】这个字段一直**没有任何地方赋值**，
+     * 于是 onBridgeHls 走到 `val c = appCtx ?: ...` 直接「拿不到上下文，放弃」——
+     * 爱奇艺自取 671 段片单明明到了，播放却起不来（父亲："接不过去"）。
+     * 现在由 WebLibraryScreen 在组合时灌进来。
+     */
     private var appCtx: android.content.Context? = null
+
+    fun setAppCtx(ctx: android.content.Context) {
+        if (appCtx == null) appCtx = ctx.applicationContext
+    }
 
     /** 整集清单的本机服务（2026-10-20）：同一个进程复用，换集只换内容 */
     private var hlsServer: com.xxxx.emby_vr.web.PlaylistServer? = null
