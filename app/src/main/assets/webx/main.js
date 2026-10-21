@@ -2292,6 +2292,20 @@
   function b0bIqSubmit(tag) {
     try {
       if (!/(^|\.)iqiyi\.com$/i.test(String(location.hostname || ''))) return false;
+      /*
+       * 【2026-10-21 23:12 原生自取优先，页面这条让路】
+       *
+       * 原生自己签 dash 拿到整集片单后，页面的 DOM 全屏监听仍会自己再交一份**单段裸地址**，
+       * 后交的覆盖先交的 → 内核拿到 71edge 那段，进度条只有 6 分钟。
+       * 头显日志实证：23:08:32.287「交整集片单（689 段）」→ 32.449「网页可播地址就绪」
+       * → 交接追踪 主机=cqglrdn3.inter.71edge.com。
+       * 所以原生开始自取时打标记，页面在标记有效期内不再递交。
+       */
+      var guard = window.__b0bIqGuard || 0;
+      if (guard && Date.now() - guard < 30000) {
+        console.log('[b0b] 爱奇艺接管：原生正在自取整集片单，页面这条跳过（' + tag + '）');
+        return false;
+      }
       var bare = b0bIqCaptureBare();
       if (!bare) { console.log('[b0b] 爱奇艺接管：还没有分片地址，等一秒再按'); return false; }
       var sz = { w: 0, h: 0, dur: 0 };

@@ -1445,6 +1445,16 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                             "B0BEmbyVR",
                                             "爱奇艺自取：片号=$tvid 设备=" + kuid.take(8) + " 指纹=" + dfp.take(8),
                                         )
+                                        /*
+                                         * 先给页面打标记：自取期间（以及之后 30 秒）页面不要再自己交地址，
+                                         * 否则它那份"单段裸地址"会把整集片单覆盖掉（进度条只有 6 分钟）。
+                                         */
+                                        runCatching {
+                                            webRef?.evaluateJavascript(
+                                                "window.__b0bIqGuard=Date.now();",
+                                                null,
+                                            )
+                                        }
                                         Thread {
                                             val res = runCatching {
                                                 com.xxxx.emby_vr.web.IqiyiDash2.fetch(tvid, uid, kuid, dfp, "600", ckAll, ua)
@@ -1506,7 +1516,8 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                 } else {
                                                     android.util.Log.w("B0BEmbyVR", "爱奇艺自取失败，回退旧路（当前分片裸地址）")
                                                     webRef?.evaluateJavascript(
-                                                        "window.__b0bIqTakeover && window.__b0bIqTakeover();",
+                                                        "try{window.__b0bIqGuard=0;}catch(e){}" +
+                                                            "window.__b0bIqTakeover && window.__b0bIqTakeover();",
                                                         null,
                                                     )
                                                 }
