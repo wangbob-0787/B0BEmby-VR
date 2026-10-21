@@ -436,33 +436,6 @@ private object WebRuntime {
     /* 火狐内核已拆（2026-10-20）：原来缓存的 GeckoRuntime 不再需要 */
 
     /**
-     * 【2026-10-21 23:15 父亲定：6 分钟那条要扔掉】
-     *
-     * 原生自取把整集片单交上去之后，页面自己的监听还会再交一份"单段裸地址"（6 分钟），
-     * 后交的会把先交的覆盖掉。页面侧已经不再自动交（只认原生喊它），这里再兜一层：
-     * 刚交过整集片单的 30 秒内，凡是时长明显更短（<300 秒）的网页流一律丢弃。
-     */
-    @Volatile private var fullAt: Long = 0L
-    @Volatile private var fullDurSec: Int = 0
-
-    fun markFullPlaylist(durSec: Int) {
-        fullAt = System.currentTimeMillis()
-        fullDurSec = durSec
-    }
-
-    /**
-     * true = 这条是"页面那份兜底地址"，应该丢弃。
-     *
-     * 判据不是时长（爱奇艺页面对整集也报 2726 秒），而是**有没有整集分段**：
-     * 我们自己的片单带 `segs`（689 段），页面那份只有一条裸地址、没有 segs。
-     */
-    private fun shouldDropFallback(segCount: Int): Boolean {
-        val age = System.currentTimeMillis() - fullAt
-        if (fullDurSec <= 0 || age > 30_000) return false
-        return segCount < 50
-    }
-
-    /**
      * 应用上下文（2026-10-20）：整集清单要起本机服务 / 落盘成 m3u8 文件，需要 cacheDir。
      *
      * 【2026-10-21 23:58 修】这个字段一直**没有任何地方赋值**，
@@ -757,14 +730,6 @@ private object WebRuntime {
             return
         }
         if (obj.optString("kind") == "play") {
-            val segs = obj.optInt("segs", 0)
-            if (shouldDropFallback(segs)) {
-                android.util.Log.w(
-                    "B0BEmbyVR",
-                    "丢弃页面那份兜底地址（只有 " + segs + " 段；刚交过整集片单 " + fullDurSec + " 秒）",
-                )
-                return
-            }
             /*
              * 提前通报（2026-10-19 父亲定）：带 preview=1 的那条只填信息、不起播，
              * 也不进下面那条去重表 —— 否则真正的"起播"会被它顶掉。
@@ -1551,17 +1516,13 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                             "爱奇艺自取：交整集片单（" + res.segs + " 段，" +
                                                                 (if (res.bid >= 600) "1080P" else "720P") + "）",
                                                         )
-                                                        WebRuntime.markFullPlaylist(res!!.durationSec)
                                                         WebRuntime.acceptFromPage(play.toString())
                                                     }
                                                 } else {
-                                                    android.util.Log.w("B0BEmbyVR", "爱奇艺自取失败，回退旧路（当前分片裸地址）")
-                                                    /*
-                                                     * 自取失败才喊页面交一份兜底地址（tag='原生调用' 才放行）。
-                                                     */
-                                                    webRef?.evaluateJavascript(
-                                                        "window.__b0bIqTakeover && window.__b0bIqTakeover();",
-                                                        null,
+                                                    /* 自取失败就让网页继续放，不再去要页面那份 6 分钟地址（父亲 07:36 定） */
+                                                    android.util.Log.w(
+                                                        "B0BEmbyVR",
+                                                        "爱奇艺自取失败：网页继续播放，不接管",
                                                     )
                                                 }
                                             }
