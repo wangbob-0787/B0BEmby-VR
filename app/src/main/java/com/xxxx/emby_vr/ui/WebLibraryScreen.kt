@@ -1143,6 +1143,44 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                         settings.userAgentString = desktopUa
                         webViewClient = object : WebViewClient() {
                             /*
+                             * 【2026-10-21 12:40 爱奇艺整集片单：在应用侧网络层截】
+                             *
+                             * 取流接口发在播放器后台线程里，页面脚本看不到（performance 0 条、挂钩也抓不到），
+                             * 但内核的 shouldInterceptRequest 能看到这个 WebView 的全部请求。
+                             * 截到之后自己带 cookie/UA/Referer 重拉一遍（内容一致，原样回给页面），
+                             * 顺手把整集 m3u8 抠出来存好；父亲按"真正的全屏"时把整张片单交给内核。
+                             */
+                            override fun shouldInterceptRequest(
+                                view: WebView?,
+                                request: org.chromium.android_crwebview.webkit.WebResourceRequest?,
+                            ): org.chromium.android_crwebview.webkit.WebResourceResponse? {
+                                val u = runCatching { request?.url?.toString() }.getOrNull() ?: return null
+                                if (!com.xxxx.emby_vr.web.IqiyiDash.isDashUrl(u)) return null
+                                return runCatching {
+                                    android.util.Log.i("B0BEmbyVR", "截到爱奇艺取流接口：" + u.take(90))
+                                    val ck = runCatching {
+                                        org.chromium.android_crwebview.webkit.CookieManager
+                                            .getInstance().getCookie(u)
+                                    }.getOrNull()
+                                    val ua = runCatching { settings.userAgentString }.getOrNull()
+                                    val body = com.xxxx.emby_vr.web.IqiyiDash.intercept(u, ck, ua)
+                                        ?: return@runCatching null
+                                    val r = org.chromium.android_crwebview.webkit.WebResourceResponse(
+                                        "application/json",
+                                        "UTF-8",
+                                        java.io.ByteArrayInputStream(body),
+                                    )
+                                    runCatching {
+                                        r.responseHeaders = mapOf(
+                                            "Access-Control-Allow-Origin" to "*",
+                                            "Content-Type" to "application/json; charset=utf-8",
+                                        )
+                                    }
+                                    r
+                                }.getOrNull()
+                            }
+
+                            /*
                              * 拦掉"打开APP"这类跳转（父亲 2026-10-13）：
                              * 页面点视频或横幅时会甩出 bilibili:// iqiyi:// qiyi-iphone:// 这些自家协议，
                              * 我们没装那些 App，系统接不住，页面就卡在原地不动 —— 直接吃掉。
@@ -1285,10 +1323,26 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                  * 这里一按全屏就让它递交（非爱奇艺站点该函数自己会返回 false）。
                                  * 走的是既有的 kind:'play' 契约，接管逻辑与腾讯/B站同一套。
                                  */
-                                webRef?.evaluateJavascript(
-                                    "window.__b0bIqTakeover && window.__b0bIqTakeover();",
-                                    null,
-                                )
+                                /*
+                                 * 优先交**整集片单**（网络层截下来的那份，含全部分段）；
+                                 * 没截到才退回"当前这一段"的裸地址（只能播几分钟）。
+                                 */
+                                val hls = runCatching {
+                                    com.xxxx.emby_vr.web.IqiyiDash.toHlsMessage(null)
+                                }.getOrNull()
+                                if (hls != null) {
+                                    android.util.Log.i(
+                                        "B0BEmbyVR",
+                                        "爱奇艺接管：交整集片单（" +
+                                            com.xxxx.emby_vr.web.IqiyiDash.segCount + " 段）",
+                                    )
+                                    runCatching { WebRuntime.acceptFromPage(hls) }
+                                } else {
+                                    webRef?.evaluateJavascript(
+                                        "window.__b0bIqTakeover && window.__b0bIqTakeover();",
+                                        null,
+                                    )
+                                }
                                 /* 告诉主界面：把画面投到影院大银幕（父亲 2026-10-13） */
                                 WebPageHub.setFullscreen(true)
                                 /*
