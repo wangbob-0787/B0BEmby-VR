@@ -660,24 +660,33 @@ private object WebRuntime {
         )
         /* 内容特征：换集/换档必须让去重判据看到不同的地址，所以把签名挂在查询串上 */
         val sig = obj.optString("tier", "x") + "-" + obj.optInt("segs", 0) + "-" + obj.optInt("first", 0)
-        val srv = hlsServer ?: com.xxxx.emby_vr.web.PlaylistServer().also { hlsServer = it }
+        /*
+         * 【2026-10-22 07:45 父亲问对了一件事：为什么不直接把文件给内核？】
+         *
+         * 因为片单里的分片是**绝对地址**（`https://pcw-data.video.iqiyi.com/…ts`），
+         * 内核拿到本地文件后自己按这些地址去 CDN 拉，不需要我们转发。
+         * 本机小服务当初是为腾讯那种"分片要我们自己记账/代理"的场景加的，爱奇艺这条用不上。
+         * 所以改成：**先落盘成文件交内核**，文件写失败才退回小服务。
+         */
         var target = ""
-        runCatching {
-            val base = srv.start(text)
-            if (!base.isNullOrBlank()) target = "$base?sig=$sig"
+        val f = runCatching {
+            val dir = java.io.File(c.cacheDir, "vr-hls").apply { mkdirs() }
+            java.io.File(dir, "list-$sig.m3u8").also { it.writeText(text) }
+        }.getOrNull()
+        if (f != null) {
+            target = "file://" + f.absolutePath
+            android.util.Log.i("B0BEmbyVR", "整集清单落盘 → " + f.absolutePath)
+        } else {
+            val srv = hlsServer ?: com.xxxx.emby_vr.web.PlaylistServer().also { hlsServer = it }
+            runCatching {
+                val base = srv.start(text)
+                if (!base.isNullOrBlank()) target = "$base?sig=$sig"
+            }
+            android.util.Log.i("B0BEmbyVR", "整集清单：落盘失败，改走本机服务 " + target)
         }
         if (target.isBlank()) {
-            /* 本机服务起不来的兜底：落盘成文件，交给内核按本地文件播 */
-            val f = runCatching {
-                val dir = java.io.File(c.cacheDir, "vr-hls").apply { mkdirs() }
-                java.io.File(dir, "list-$sig.m3u8").also { it.writeText(text) }
-            }.getOrNull()
-            if (f == null) {
-                android.util.Log.w("B0BEmbyVR", "整集清单：本机服务与落盘都失败，放弃")
-                return
-            }
-            target = "file://" + f.absolutePath
-            android.util.Log.i("B0BEmbyVR", "整集清单：本机服务不可用，改走文件 " + f.absolutePath)
+            android.util.Log.w("B0BEmbyVR", "整集清单：落盘与本机服务都失败，放弃")
+            return
         }
         android.util.Log.i(
             "B0BEmbyVR",
