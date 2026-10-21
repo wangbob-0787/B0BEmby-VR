@@ -1396,6 +1396,7 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                         val kv = runCatching { org.json.JSONObject((raw ?: "").trim('"')) }
                                             .getOrElse { org.json.JSONObject() }
                                         val tvid = kv.optString("tvid")
+                                        android.util.Log.i("B0BEmbyVR", "爱奇艺页面数据：" + (raw ?: "").take(220))
                                         /* 这一集的名字：页面播放器对象里的 title（如"恋爱脑被骗顶罪"） */
                                         val pageEpTitle = kv.optString("epTitle")
                                         /*
@@ -1434,6 +1435,12 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                             val res = runCatching {
                                                 com.xxxx.emby_vr.web.IqiyiDash2.fetch(tvid, uid, kuid, dfp, "600", ckAll, ua)
                                             }.getOrNull()
+                                            if (res == null) {
+                                                android.util.Log.w(
+                                                    "B0BEmbyVR",
+                                                    "爱奇艺自取：dash 没拿到可用片单（见上一条日志里的原因）",
+                                                )
+                                            }
                                             val file = if (res != null && ctx != null)
                                                 com.xxxx.emby_vr.web.IqiyiDash2.writeTo(ctx.cacheDir, res.m3u8) else null
                                             android.os.Handler(android.os.Looper.getMainLooper()).post {
