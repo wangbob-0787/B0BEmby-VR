@@ -1354,15 +1354,33 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                  * 站点编号：0=哔哩哔哩、1=腾讯视频、2=爱奇艺（见 MainActivity.WEB_SITE_NAMES）。
                                  */
                                 if (com.xxxx.emby_vr.vr.VrTuning.webIqiyi == 1 && site == 2) {
-                                    val jsAsk = "(function(){try{var t='';var rs=performance.getEntriesByType('resource');" +
-                                        "for(var i=rs.length-1;i>=0;i--){var m=rs[i].name.match(/qd_tvid=(\\d+)/);if(m){t=m[1];break;}}" +
+                                    /*
+                                     * 【2026-10-21 15:55 修两处】
+                                     * ① 片号提取原来写成 JS 正则（`/qd_tvid=(\\d+)/`），经过 Kotlin 字符串后
+                                     *    变成"反斜杠+d"，一条都匹配不到 → 日志里"片号="是空的。
+                                     *    改成不用正则：找 `qd_tvid=` 的下标，手工往后收数字。
+                                     * ② 设备指纹：头显页面 localStorage 里的 `__dfp` 是空的（.18 有），
+                                     *    这里补一个兜底常量（2026-10-21 15:05 抓自浏览器请求里的 dfp）。
+                                     */
+                                    val jsAsk = "(function(){try{" +
+                                        "var t='';var rs=performance.getEntriesByType('resource');" +
+                                        "for(var i=rs.length-1;i>=0&&!t;i--){var n=rs[i].name||'';" +
+                                        "var p=n.indexOf('qd_tvid=');if(p<0)continue;var j=p+8,s='';" +
+                                        "while(j<n.length){var c=n.charAt(j);if(c<'0'||c>'9')break;s+=c;j++;}" +
+                                        "if(s)t=s;}" +
                                         "var d=(localStorage.getItem('__dfp')||'').split('@')[0];" +
                                         "return JSON.stringify({tvid:t,dfp:d});}catch(e){return '{}';}})()"
                                     webRef?.evaluateJavascript(jsAsk) { raw ->
                                         val kv = runCatching { org.json.JSONObject((raw ?: "").trim('"')) }
                                             .getOrElse { org.json.JSONObject() }
                                         val tvid = kv.optString("tvid")
-                                        val dfp = kv.optString("dfp")
+                                        /*
+                                         * 设备指纹兜底：头显页面 localStorage 里 `__dfp` 是空的（.18 有），
+                                         * 这里回落到 2026-10-21 15:05 抓到的那个值。
+                                         */
+                                        val dfp = kv.optString("dfp").ifBlank {
+                                            "a084c6039f4f1d4c7da12402b0c503665e7087da9b29304c06de5fdddb79fd744c"
+                                        }
                                         val ckAll = runCatching {
                                             org.chromium.android_crwebview.webkit.CookieManager
                                                 .getInstance().getCookie("https://www.iqiyi.com/")
