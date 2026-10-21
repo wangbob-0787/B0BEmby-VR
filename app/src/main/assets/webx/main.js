@@ -1954,22 +1954,45 @@
    * ⇒ 内容全在，只是被压进一个 0 高度的根容器里，看不见。
    * 这里按视口真实高度把根容器撑开（只对爱奇艺做，别的站本来正常，不去动）。
    */
+  /*
+   * 【爱奇艺高度塌陷的通用兜底 —— 2026-10-21 父亲问"是不是该有个统一算法"】
+   *
+   * 现象：html/body/`#root`/`app_App`/`pages_*` 这一串百分比高度在嵌入式内核里算成 0，
+   * 内容（3809px）被 0 高且 overflow:hidden 的祖先整条裁掉 → 黑屏；同类结构在电脑 Chrome 正常。
+   * 按类名点名能修首页，但换一页结构就可能漏（已踩过：只改第一个匹配 = 仍黑屏）。
+   *
+   * 因此改成通用规则，不再认类名：
+   *   凡"自己高度接近 0、但里面内容明显有一屏高"的层 → 按视口高度撑起来并留滚动口。
+   * 判据只看几何关系（scrollHeight vs clientHeight），与站点、类名、页面都无关。
+   */
+  function b0bUnstickEmptyHeights() {
+    try {
+      if (!/(^|\.)iqiyi\.com$/i.test(String(location.hostname || ''))) return;
+      var h = Math.max(window.innerHeight || 0, document.documentElement.clientHeight || 0, 600);
+      var hits = [];
+      var all = document.body.getElementsByTagName('*');
+      for (var i = 0; i < all.length && hits.length < 12; i++) {
+        var e = all[i];
+        if (e.clientHeight > 8) continue;           // 有高度就不是它
+        if (e.scrollHeight < h * 0.5) continue;     // 里面也没内容，不用管
+        var cs = getComputedStyle(e);
+        if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+        e.style.setProperty('height', h + 'px', 'important');
+        e.style.setProperty('min-height', h + 'px', 'important');
+        e.style.setProperty('overflow-y', 'auto', 'important');
+        hits.push((e.id ? '#' + e.id : '') + '.' + String(e.className || '').slice(0, 24));
+      }
+      if (hits.length) console.log('[b0b] 爱奇艺高度塌陷层已撑起 ' + hits.length + ' 个：' + hits.join(' | '));
+    } catch (e) {}
+  }
+
   function b0bFixViewportHeight() {
     try {
       if (!/(^|\.)iqiyi\.com$/i.test(String(location.hostname || ''))) return;
       var h = Math.max(window.innerHeight || 0, document.documentElement.clientHeight || 0, 600);
-      /*
-       * 2026-10-21 08:47 头显实测（r835，https://www.iqiyi.com/）：
-       *
-       * 上一版只撑 html/body，页面依旧黑屏 —— CDP 量出来的真凶是
-       * `app_App__K8HqS` 计算高度 0 且 overflow:auto/hidden，把 3809px 的内容整条裁掉。
-       * 而且同名匹配不止一个：用 querySelector 只改第一个会漏（首页就是漏的那个）。
-       * 所以这里对每个选择器 **全部匹配项** 逐个撑高，并给每项留滚动口。
-       * 改成全量匹配后同一页立即正常显示（截图核对：导航/焦点大图/卡片行都在）。
-       */
+      /* 先保底：整条根链（含多个同前缀容器）都撑到视口高 */
       var sels = ['#root', '[class*="app_App"]', '[class*="pages_pages"]',
                   '[class*="pages_page__"]', '[class*="pages_container"]'];
-      var hit = [];
       for (var i = 0; i < sels.length; i++) {
         var list = document.querySelectorAll(sels[i]);
         for (var j = 0; j < list.length; j++) {
@@ -1978,10 +2001,10 @@
           e.style.setProperty('height', h + 'px', 'important');
           e.style.setProperty('min-height', h + 'px', 'important');
           e.style.setProperty('overflow-y', 'auto', 'important');
-          hit.push(sels[i]);
         }
       }
-      if (hit.length) console.log('[b0b] 爱奇艺容器高度已撑到 ' + h + 'px：' + hit.join(','));
+      /* 再扫一遍几何上塌陷的层（结构换页也不漏） */
+      b0bUnstickEmptyHeights();
     } catch (e) {}
   }
   try { setInterval(b0bFixViewportHeight, 800); } catch (e) {}
