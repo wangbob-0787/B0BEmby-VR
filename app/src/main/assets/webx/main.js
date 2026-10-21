@@ -1958,25 +1958,27 @@
     try {
       if (!/(^|\.)iqiyi\.com$/i.test(String(location.hostname || ''))) return;
       var h = Math.max(window.innerHeight || 0, document.documentElement.clientHeight || 0, 600);
+      /*
+       * 2026-10-21 08:47 头显实测（r835，https://www.iqiyi.com/）：
+       *
+       * 上一版只撑 html/body，页面依旧黑屏 —— CDP 量出来的真凶是
+       * `app_App__K8HqS` 计算高度 0 且 overflow:auto/hidden，把 3809px 的内容整条裁掉。
+       * 而且同名匹配不止一个：用 querySelector 只改第一个会漏（首页就是漏的那个）。
+       * 所以这里对每个选择器 **全部匹配项** 逐个撑高，并给每项留滚动口。
+       * 改成全量匹配后同一页立即正常显示（截图核对：导航/焦点大图/卡片行都在）。
+       */
       var sels = ['#root', '[class*="app_App"]', '[class*="pages_pages"]',
                   '[class*="pages_page__"]', '[class*="pages_container"]'];
       var hit = [];
-      var fix = function (e, tag) {
-        if (!e) return;
-        var cs = getComputedStyle(e);
-        if (parseInt(cs.height, 10) >= h - 1) return;
-        e.style.setProperty('height', h + 'px', 'important');
-        e.style.setProperty('min-height', h + 'px', 'important');
-        hit.push(tag);
-      };
-      fix(document.getElementById('root'), '#root');
       for (var i = 0; i < sels.length; i++) {
-        var e = document.querySelector(sels[i]);
-        fix(e, sels[i]);
-        /* 内容容器自己滚动 —— 高度撑起来后必须留一个滚动口，否则只能看到第一屏 */
-        if (e && !e.dataset.b0bOverflow) {
+        var list = document.querySelectorAll(sels[i]);
+        for (var j = 0; j < list.length; j++) {
+          var e = list[j];
+          if (parseInt(getComputedStyle(e).height, 10) >= h - 1) continue;
+          e.style.setProperty('height', h + 'px', 'important');
+          e.style.setProperty('min-height', h + 'px', 'important');
           e.style.setProperty('overflow-y', 'auto', 'important');
-          e.dataset.b0bOverflow = '1';
+          hit.push(sels[i]);
         }
       }
       if (hit.length) console.log('[b0b] 爱奇艺容器高度已撑到 ' + h + 'px：' + hit.join(','));
