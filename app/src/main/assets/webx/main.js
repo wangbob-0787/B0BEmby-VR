@@ -285,7 +285,145 @@
     return t.trim();
   }
 
+  /*
+   * 【2026-10-21 16:25 父亲要求：控制条只显示干净的片名】
+   *
+   * 目标口径（原话）：
+   *   · 电影 / 纪录片这类单集片 → 「剧名」
+   *   · 分季分集的和 → 「剧名 第X季 第X集 集名」
+   * 现状问题：之前直接吞 `document.title`，于是腾讯给的是
+   * 「XXX_高清完整版视频在线观看_腾讯视频」、爱奇艺给的是
+   * 「蒸蒸日上-电视剧全集-完整版视频在线观看」，这些营销词全进了控制条。
+   *
+   * 做法分两步：
+   *   ① `b0bCleanName()` —— 把营销词 / 站点名 / 分类词 / 集号从名字里全剥掉；
+   *   ② `b0bEpiInfo()`  —— 从"当前选中的那一集"的列表项里取季号、集号、集名，
+   *      再按上面的口径拼回去。
+   */
+  /* 中文数字转阿拉伯（"第二季""第十二话"很常见，不转就抽不到季号集号） */
+  function b0bCnNum(s) {
+    var m = { '零': 0, '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9 };
+    var t = String(s || '');
+    if (/^[0-9]+$/.test(t)) return parseInt(t, 10) || 0;
+    var total = 0, cur = 0;
+    for (var i = 0; i < t.length; i++) {
+      var c = t.charAt(i);
+      if (m[c] !== undefined) { cur = m[c]; continue; }
+      if (c === '十') { total += (cur || 1) * 10; cur = 0; continue; }
+      if (c === '百') { total += (cur || 1) * 100; cur = 0; continue; }
+      return 0;
+    }
+    return total + cur;
+  }
+
+  function b0bCleanName(s) {
+    var t = String(s || '');
+    /* 结尾的括号注解，比如"（普通话）""(粤语版)" */
+    t = t.replace(/[（(][^）)]{0,16}[）)]\s*$/g, ' ');
+    /* 站点名：出现在前缀、后缀、中缀都吃掉 */
+    t = t.replace(/(哔哩哔哩|bilibili|腾讯视频|爱奇艺|优酷|芒果TV)/ig, ' ');
+    /* "…_高清完整版视频在线观看_腾讯视频" 这一类营销尾巴 */
+    t = t.replace(/[-_|·—]?\s*(高清|超清|蓝光|4K|1080P|HDR|杜比视界)?\s*(完整版|正版|独播|免费|VIP|会员版)?\s*(视频)?\s*(在线观看|在线播放|观看地址|观看|播放)\s*[-_|·—]?/g, ' ');
+    /* "电视剧全集""全集" */
+    t = t.replace(/[-_|·—]?\s*(电视剧|电影|综艺|动漫|纪录片|番剧|国创|少儿|影视|连续剧)?\s*全集\s*[-_|·—]?/g, ' ');
+    /* 零散的画质 / 版本词 */
+    t = t.replace(/[-_|·—]?\s*(高清|超清|蓝光|4K|1080P|HDR|杜比视界|完整版|正版|独播|免费|会员版|加长版)\s*[-_|·—]?/g, ' ');
+    /* 季号 / 集号（名字里不需要，后面按口径重拼；中文数字也要认） */
+    t = t.replace(/第\s*(?:\d+|[一二三四五六七八九十百]+)\s*[季部]/g, ' ');
+    t = t.replace(/第\s*(?:\d+|[一二三四五六七八九十百]+)\s*[集话期]/g, ' ');
+    /* 剥完留下的空括号 */
+    t = t.replace(/【\s*】|\[\s*\]|（\s*）|\(\s*\)/g, ' ');
+    t = t.replace(/\s{2,}/g, ' ');
+    t = t.replace(/^[-_|·—\s]+/, '').replace(/[-_|·—\s]+$/, '');
+    return t.trim();
+  }
+
+  /* 从一段文字里抽季号 / 集号 / 集名 */
+  function b0bEpiInfo(text) {
+    var r = { season: 0, ep: 0, epName: '' };
+    if (!text) return r;
+    var ms = /第\s*(\d+|[一二三四五六七八九十百]+)\s*[季部]/.exec(text);
+    if (ms) r.season = b0bCnNum(ms[1]);
+    var me = /第\s*(\d+|[一二三四五六七八九十百]+)\s*[集话期]/.exec(text);
+    if (me) {
+      r.ep = b0bCnNum(me[1]);
+      var rest = text.slice(me.index + me[0].length);
+      rest = rest.replace(/^[\s:：\-_|·—]+/, '').replace(/[（(].*$/, '').trim();
+      if (rest && rest.length <= 40 && rest.indexOf('第') < 0) r.epName = rest;
+    }
+    return r;
+  }
+
+  /* 当前选中的那一集的列表项文字（各站类名不同，挨个试） */
+  function b0bActiveEpisodeText() {
+    var sels = [
+      '.qy-player-episode-item.active', '.qy-player-episode-item-current',
+      '.txp_episode_item.selected', '.txp_episode_item.active',
+      '.episode-item.active', '.playlist-item.active', '.ep-list-item.active',
+      '[class*="episode"][class*="active"]', '[class*="playlist"][class*="active"]'
+    ];
+    for (var i = 0; i < sels.length; i++) {
+      var nodes = [];
+      try { nodes = document.querySelectorAll(sels[i]); } catch (e) { continue; }
+      for (var j = 0; j < nodes.length && j < 4; j++) {
+        var t = (nodes[j].textContent || '').replace(/\s+/g, ' ').trim();
+        if (t && /第\s*\d+\s*[集话期]/.test(t) && t.length <= 60) return t;
+      }
+    }
+    return '';
+  }
+
+  /*
+   * 拼最终标题：单集片只给片名，分集片给「剧名 第X季 第X集 集名」。
+   * 季号找不到就不写季（很多剧页面根本不显示第几季）。
+   */
+  function b0bBuildTitle() {
+    var nameSels = [
+      '.video-title', 'h1.video-title', '.mediainfo_mediaTitle', '.media-title',
+      '.bpx-player-top-title', '.player-title', '.qy-player-title', '.txp_title',
+      '.mod_title', 'h1'
+    ];
+    var names = [];
+    for (var i = 0; i < nameSels.length; i++) {
+      var e = document.querySelector(nameSels[i]);
+      var s = e && e.textContent ? e.textContent.trim() : '';
+      if (s) names.push(s);
+    }
+    names.push(document.title || '');
+    /* 当前这一集的列表项文字，既用来抽集号，也可能装着"第X集 集名" */
+    var act = b0bActiveEpisodeText();
+    var epi = b0bEpiInfo(act);
+    if (!epi.ep) {
+      for (var k = 0; k < names.length && !epi.ep; k++) epi = b0bEpiInfo(names[k]);
+    }
+    var series = '';
+    for (var n = 0; n < names.length; n++) {
+      var c = b0bCleanName(names[n]);
+      if (c && c.length >= 2 && !isJunkTitle(c)) { series = c; break; }
+    }
+    if (epi.ep > 0) {
+      var epName = b0bCleanName(epi.epName);
+      /*
+       * 去重：h1 常常就是「剧名 第12集 集名」，清洗后剧名里还留着集名，
+       * 再拼一次就成「剧名 集名 第12集 集名」。所以剧名里已有的集名先摘掉。
+       */
+      if (epName && series && series.indexOf(epName) >= 0) {
+        series = series.split(epName).join(' ').replace(/\s{2,}/g, ' ').trim();
+      }
+      var out = series;
+      if (epi.season > 0) out += ' 第' + epi.season + '季';
+      out += ' 第' + epi.ep + '集';
+      if (epName && !isJunkTitle(epName)) out += ' ' + epName;
+      return out.trim().slice(0, 80);
+    }
+    return series.slice(0, 80);
+  }
+
   function pageTitle() {
+    try {
+      var bt = b0bBuildTitle();
+      if (bt) return bt;
+    } catch (e) {}
     var sels = [
       '.video-title', 'h1.video-title', '.mediainfo_mediaTitle',
       '.media-title', '.bpx-player-top-title', '.player-title', 'h1'

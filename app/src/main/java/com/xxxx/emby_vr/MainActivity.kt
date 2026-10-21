@@ -1896,7 +1896,15 @@ class MainActivity : ComponentActivity() {
         if (obj == null) return
         val siteName = WEB_SITE_NAMES.getOrElse(webStreamSite ?: -1) { "网页" }
         val epName = obj.optString("title", "").trim()
-        val t = if (epName.isEmpty()) siteName else siteName + "-" + epName
+        /*
+         * 【2026-10-21 16:25 父亲定：控制条只显示片名，不再挂站点前缀】
+         *
+         * 原来无论有没有片名都拼成「爱奇艺-蒸蒸日上…」，页面标题里的营销词
+         * （高清完整版 / 视频在线观看 / 电视剧全集）也一起显示出来。
+         * 现在片名由页面侧清洗并拼好（剧名 第X季 第X集 集名），这里原样用；
+         * 只有实在没有片名时才退回站点名，避免控制条空着。
+         */
+        val t = if (epName.isEmpty()) siteName else epName
         /*
          * 【2026-10-16 父亲定的口径：不分优先级，正在播什么就显示什么】
          *
