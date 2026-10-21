@@ -1958,17 +1958,28 @@
     try {
       if (!/(^|\.)iqiyi\.com$/i.test(String(location.hostname || ''))) return;
       var h = Math.max(window.innerHeight || 0, document.documentElement.clientHeight || 0, 600);
-      var de = document.documentElement;
-      if (de && parseInt(getComputedStyle(de).height, 10) < h) {
-        de.style.height = h + 'px';
-        de.style.minHeight = h + 'px';
+      var sels = ['#root', '[class*="app_App"]', '[class*="pages_pages"]',
+                  '[class*="pages_page__"]', '[class*="pages_container"]'];
+      var hit = [];
+      var fix = function (e, tag) {
+        if (!e) return;
+        var cs = getComputedStyle(e);
+        if (parseInt(cs.height, 10) >= h - 1) return;
+        e.style.setProperty('height', h + 'px', 'important');
+        e.style.setProperty('min-height', h + 'px', 'important');
+        hit.push(tag);
+      };
+      fix(document.getElementById('root'), '#root');
+      for (var i = 0; i < sels.length; i++) {
+        var e = document.querySelector(sels[i]);
+        fix(e, sels[i]);
+        /* 内容容器自己滚动 —— 高度撑起来后必须留一个滚动口，否则只能看到第一屏 */
+        if (e && !e.dataset.b0bOverflow) {
+          e.style.setProperty('overflow-y', 'auto', 'important');
+          e.dataset.b0bOverflow = '1';
+        }
       }
-      var b = document.body;
-      if (b && parseInt(getComputedStyle(b).height, 10) < h) {
-        b.style.height = h + 'px';
-        b.style.minHeight = h + 'px';
-        console.log('[b0b] 爱奇艺根容器高度已撑到 ' + h + 'px');
-      }
+      if (hit.length) console.log('[b0b] 爱奇艺容器高度已撑到 ' + h + 'px：' + hit.join(','));
     } catch (e) {}
   }
   try { setInterval(b0bFixViewportHeight, 800); } catch (e) {}
