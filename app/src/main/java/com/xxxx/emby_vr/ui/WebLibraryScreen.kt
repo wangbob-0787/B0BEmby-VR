@@ -1396,7 +1396,16 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                         "try{diag.pdKeys=Object.keys(window.QiyiPlayerProphetData||{}).slice(0,15);}catch(e7){}" +
                                         "var d=(localStorage.getItem('__dfp')||'').split('@')[0];" +
                                         "var en='';try{en=String(((window.QiyiPlayerProphetData||{}).videoInfo||{}).title||'');}catch(e3){}" +
-                                        "return JSON.stringify({tvid:t,dfp:d,epTitle:en,diag:diag});}catch(e){return '{}';}})()"
+                                        /*
+                                         * 【2026-10-21 22:21 修双重编码】
+                                         * 原来这里 `return JSON.stringify({...})`：JS 返回的是**字符串**，
+                                         * evaluateJavascript 回调再把它当字符串转义一次 →
+                                         * 拿到的是 `"{\"tvid\":\"6837360877143400\"…}"`，
+                                         * Kotlin 侧 trim('"') 后仍是带转义的 JSON，JSONObject 解析失败 →
+                                         * 片号永远是空。r870 诊断日志实证：页面明明给了 6837360877143400。
+                                         * 直接返回对象，回调就是干净的 JSON。
+                                         */
+                                        "return {tvid:t,dfp:d,epTitle:en,diag:diag};}catch(e){return {};}})()"
                                     webRef?.evaluateJavascript(jsAsk) { raw ->
                                         val kv = runCatching { org.json.JSONObject((raw ?: "").trim('"')) }
                                             .getOrElse { org.json.JSONObject() }
