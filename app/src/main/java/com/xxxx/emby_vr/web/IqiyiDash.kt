@@ -88,6 +88,37 @@ object IqiyiDash {
         android.util.Log.i(TAG, "爱奇艺整集片单直链到手：" + u.take(110))
     }
 
+    /**
+     * 把整集片单**下载下来**、补上 VOD 头与结束标记，落成文件交内核（2026-10-21 13:35）。
+     *
+     * 直接交 URL 的实测问题：服务端那份 m3u8 没写 `#EXT-X-ENDLIST`，mpv 当直播处理 ——
+     * 播到一段之后 "finished playback, loading failed (reason 4)"，总时长显示 0。
+     * 落盘成本地文件后，mpv 按点播读：时长、拖动、逐段取流都正常。
+     */
+    fun downloadToFile(dir: java.io.File, cookie: String?, userAgent: String?): java.io.File? {
+        val u = m3u8Url ?: return null
+        if (!playlistFresh()) return null
+        val text = runCatching {
+            String(fetch(u, cookie, userAgent), Charsets.UTF_8)
+        }.getOrNull() ?: return null
+        if (!text.contains("#EXTM3U")) {
+            Log.w(TAG, "爱奇艺整集片单：下载到的不是 m3u8，放弃")
+            return null
+        }
+        var pl = text
+        if (!pl.contains("#EXT-X-PLAYLIST-TYPE")) {
+            pl = pl.replaceFirst("#EXTM3U", "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-PLAYLIST-TYPE:VOD")
+        }
+        if (!pl.contains("#EXT-X-ENDLIST")) pl = pl.trimEnd() + "\n#EXT-X-ENDLIST\n"
+        val segs = Regex("^https?://", RegexOption.MULTILINE).findAll(pl).count()
+        val f = runCatching {
+            val d = java.io.File(dir, "vr-hls").apply { mkdirs() }
+            java.io.File(d, "iq-" + System.currentTimeMillis() + ".m3u8").also { it.writeText(pl) }
+        }.getOrNull() ?: return null
+        Log.i(TAG, "爱奇艺整集片单已落盘：" + segs + " 段 → " + f.absolutePath)
+        return f
+    }
+
     fun playlistFresh(maxAgeMs: Long = 30 * 60 * 1000L): Boolean =
         m3u8Url != null && System.currentTimeMillis() - m3u8At in 0..maxAgeMs
 

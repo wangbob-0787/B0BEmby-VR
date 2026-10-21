@@ -2310,7 +2310,12 @@ class MainActivity : ComponentActivity() {
      */
     private fun loadWebDanmaku(cid: Long) {
         val vid = webVid
-        if (cid <= 0L && vid.isBlank()) return
+        /*
+         * 爱奇艺这条路不经过 cid/vid：片号 tvid 是从取流接口查询串里记下来的
+         * （2026-10-21 13:30 实测：不改这里的话，爱奇艺接管后弹幕一条都不会去拉）。
+         */
+        val iqTvid = com.xxxx.emby_vr.web.IqiyiDash.tvid
+        if (cid <= 0L && vid.isBlank() && !(webStreamSite == 2 && iqTvid.isNotBlank())) return
         scope.launch {
             val track = withContext(kotlinx.coroutines.Dispatchers.IO) {
                 try {

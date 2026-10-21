@@ -1392,35 +1392,61 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                     com.xxxx.emby_vr.web.IqiyiDash.m3u8Url else null
                                 if (direct != null) {
                                     /*
-                                     * 标题现取（父亲 13:17：控制条上"正在播放"的名字不准）。
-                                     * 页面 title 形如「蒸蒸日上第1集-电视剧全集-完整版视频在线观看-爱奇艺」，
-                                     * 页面脚本里已有 pageTitle() 做过清洗 —— 这里直接调它。
+                                     * 【2026-10-21 13:35】不能在主线程里下载片单：挪到后台线程，
+                                     * 下完补 VOD 头落盘，再把本地文件交给内核（实测直接交 URL 会被当直播，
+                                     * 播一段就 "loading failed (reason 4)"、总时长 0）。
                                      */
-                                    var titleNow = ""
+                                    val ctx = webRef?.context
+                                    val ck = runCatching {
+                                        org.chromium.android_crwebview.webkit.CookieManager
+                                            .getInstance().getCookie("https://www.iqiyi.com/")
+                                    }.getOrNull()
+                                    val ua = runCatching { webRef?.settings?.userAgentString }.getOrNull()
+                                    val fallback = direct
+                                    /*
+                                     * 标题现取（父亲 13:17：控制条上「正在播放」的名字不准）。
+                                     * 页面脚本里已有 pageTitle() 清洗逻辑，这里调它；回调通常几毫秒就到，
+                                     * 而下面下载片单要几百毫秒，够它先到。
+                                     */
+                                    val titleHolder = arrayOf("")
                                     runCatching {
                                         webRef?.evaluateJavascript(
                                             "(function(){try{return (window.__b0bPageTitle && window.__b0bPageTitle()) || document.title || '';}catch(e){return '';}})()",
-                                        ) { r ->
-                                            titleNow = (r ?: "").trim().trim('"')
-                                        }
+                                        ) { r -> titleHolder[0] = (r ?: "").trim().trim('"') }
                                     }
-                                    val play = org.json.JSONObject()
-                                    play.put("kind", "play")
-                                    play.put("frame", com.xxxx.emby_vr.web.IqiyiDash.m3u8Url ?: "")
-                                    play.put("title", titleNow)
-                                    play.put("durSec", 0)
-                                    val st = org.json.JSONArray()
-                                    st.put(
-                                        org.json.JSONObject().apply {
-                                            put("video", direct)
-                                            put("audio", "")
-                                            put("height", 800)
-                                            put("bw", 0)
-                                        },
-                                    )
-                                    play.put("streams", st)
-                                    android.util.Log.i("B0BEmbyVR", "爱奇艺接管：交通用整集片单直链")
-                                    runCatching { WebRuntime.acceptFromPage(play.toString()) }
+                                    Thread {
+                                        val f = runCatching {
+                                            com.xxxx.emby_vr.web.IqiyiDash.downloadToFile(
+                                                ctx!!.cacheDir, ck, ua,
+                                            )
+                                        }.getOrNull()
+                                        val target = if (f != null) "file://" + f.absolutePath else fallback
+                                        android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                            runCatching {
+                                                val play = org.json.JSONObject()
+                                                play.put("kind", "play")
+                                                play.put("frame", com.xxxx.emby_vr.web.IqiyiDash.m3u8Url ?: "")
+                                                play.put("title", titleHolder[0])
+                                                play.put("durSec", 0)
+                                                val st = org.json.JSONArray()
+                                                st.put(
+                                                    org.json.JSONObject().apply {
+                                                        put("video", target)
+                                                        put("audio", "")
+                                                        put("height", 800)
+                                                        put("bw", 0)
+                                                    },
+                                                )
+                                                play.put("streams", st)
+                                                android.util.Log.i(
+                                                    "B0BEmbyVR",
+                                                    "爱奇艺接管：交整集片单（" +
+                                                        (if (f != null) "本地文件" else "原始地址") + "）",
+                                                )
+                                                WebRuntime.acceptFromPage(play.toString())
+                                            }
+                                        }
+                                    }.start()
                                     return
                                 }
                                 val hls = runCatching {
