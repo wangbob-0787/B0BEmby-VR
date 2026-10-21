@@ -432,6 +432,28 @@ fun currentWebCookie(): String {
 private object WebRuntime {
     /* 火狐内核已拆（2026-10-20）：原来缓存的 GeckoRuntime 不再需要 */
 
+    /**
+     * 【2026-10-21 23:15 父亲定：6 分钟那条要扔掉】
+     *
+     * 原生自取把整集片单交上去之后，页面自己的监听还会再交一份"单段裸地址"（6 分钟），
+     * 后交的会把先交的覆盖掉。除了在页面侧拦（`__b0bIqGuard`），原生这里再兜一层：
+     * 刚交过整集片单的 30 秒内，凡是时长明显更短（<300 秒）的网页流一律丢弃。
+     */
+    @Volatile private var fullAt: Long = 0L
+    @Volatile private var fullDurSec: Int = 0
+
+    fun markFullPlaylist(durSec: Int) {
+        fullAt = System.currentTimeMillis()
+        fullDurSec = durSec
+    }
+
+    /** true = 这条是"更短的兜底地址"，应该丢弃 */
+    private fun shouldDropShorter(durSec: Int): Boolean {
+        val age = System.currentTimeMillis() - fullAt
+        if (fullDurSec <= 0 || age > 30_000) return false
+        return durSec in 1 until 300 && fullDurSec > 600
+    }
+
     /** 应用上下文（2026-10-20）：整集清单要落盘成 m3u8 文件交给内核，需要 cacheDir */
     private var appCtx: android.content.Context? = null
 
@@ -716,6 +738,14 @@ private object WebRuntime {
             return
         }
         if (obj.optString("kind") == "play") {
+            val dur = obj.optInt("durSec", 0)
+            if (shouldDropShorter(dur)) {
+                android.util.Log.w(
+                    "B0BEmbyVR",
+                    "丢弃这条更短的网页流地址：时长 " + dur + " 秒（刚交过整集片单 " + fullDurSec + " 秒）",
+                )
+                return
+            }
             /*
              * 提前通报（2026-10-19 父亲定）：带 preview=1 的那条只填信息、不起播，
              * 也不进下面那条去重表 —— 否则真正的"起播"会被它顶掉。
@@ -1475,6 +1505,7 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                         play.put("text", file.readText())
                                                         play.put("tier", "iq" + res!!.bid)
                                                         play.put("segs", res.segs)
+                                                        play.put("durSec", res.durationSec)
                                                         play.put("height", if (res.bid >= 600) 1080 else 720)
                                                         play.put("first", 0)
                                                         play.put("frame", "https://www.iqiyi.com/")
@@ -1511,6 +1542,7 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                             "爱奇艺自取：交整集片单（" + res.segs + " 段，" +
                                                                 (if (res.bid >= 600) "1080P" else "720P") + "）",
                                                         )
+                                                        WebRuntime.markFullPlaylist(res!!.durationSec)
                                                         WebRuntime.acceptFromPage(play.toString())
                                                     }
                                                 } else {
