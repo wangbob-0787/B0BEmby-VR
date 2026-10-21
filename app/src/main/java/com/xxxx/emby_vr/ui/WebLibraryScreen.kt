@@ -439,7 +439,7 @@ private object WebRuntime {
      * 【2026-10-21 23:15 父亲定：6 分钟那条要扔掉】
      *
      * 原生自取把整集片单交上去之后，页面自己的监听还会再交一份"单段裸地址"（6 分钟），
-     * 后交的会把先交的覆盖掉。除了在页面侧拦（`__b0bIqGuard`），原生这里再兜一层：
+     * 后交的会把先交的覆盖掉。页面侧已经不再自动交（只认原生喊它），这里再兜一层：
      * 刚交过整集片单的 30 秒内，凡是时长明显更短（<300 秒）的网页流一律丢弃。
      */
     @Volatile private var fullAt: Long = 0L
@@ -1494,16 +1494,6 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                             "B0BEmbyVR",
                                             "爱奇艺自取：片号=$tvid 设备=" + kuid.take(8) + " 指纹=" + dfp.take(8),
                                         )
-                                        /*
-                                         * 先给页面打标记：自取期间（以及之后 30 秒）页面不要再自己交地址，
-                                         * 否则它那份"单段裸地址"会把整集片单覆盖掉（进度条只有 6 分钟）。
-                                         */
-                                        runCatching {
-                                            webRef?.evaluateJavascript(
-                                                "window.__b0bIqGuard=Date.now();",
-                                                null,
-                                            )
-                                        }
                                         Thread {
                                             val res = runCatching {
                                                 com.xxxx.emby_vr.web.IqiyiDash2.fetch(tvid, uid, kuid, dfp, "600", ckAll, ua)
@@ -1566,9 +1556,11 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                     }
                                                 } else {
                                                     android.util.Log.w("B0BEmbyVR", "爱奇艺自取失败，回退旧路（当前分片裸地址）")
+                                                    /*
+                                                     * 自取失败才喊页面交一份兜底地址（tag='原生调用' 才放行）。
+                                                     */
                                                     webRef?.evaluateJavascript(
-                                                        "try{window.__b0bIqGuard=0;}catch(e){}" +
-                                                            "window.__b0bIqTakeover && window.__b0bIqTakeover();",
+                                                        "window.__b0bIqTakeover && window.__b0bIqTakeover();",
                                                         null,
                                                     )
                                                 }

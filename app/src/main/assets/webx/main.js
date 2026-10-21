@@ -887,10 +887,9 @@
      * 它交的是"当前这一段的裸地址"，只能播 6 分钟，却会把整集片单顶掉。
      */
     try {
-      if (/(^|\.)iqiyi\.com$/i.test(String(location.hostname || '')) &&
-          window.__b0bIqGuard && Date.now() - window.__b0bIqGuard < 30000) {
-        console.log('[b0b] 爱奇艺：原生已交整集片单，页面这条（' +
-          String(obj && obj.video || '').slice(0, 60) + '…）跳过');
+      if (/(^|\.)iqiyi\.com$/i.test(String(location.hostname || ''))) {
+        console.log('[b0b] 爱奇艺：地址由原生自取，网络钩子攒的这条（' +
+          String(obj && obj.video || '').slice(0, 60) + '…）不交');
         pendingPlay = null;
         return;
       }
@@ -2306,17 +2305,15 @@
     try {
       if (!/(^|\.)iqiyi\.com$/i.test(String(location.hostname || ''))) return false;
       /*
-       * 【2026-10-21 23:12 原生自取优先，页面这条让路】
+       * 【2026-10-22 07:35 父亲点破：不需要"标记"，直接别让页面自己交】
        *
-       * 原生自己签 dash 拿到整集片单后，页面的 DOM 全屏监听仍会自己再交一份**单段裸地址**，
-       * 后交的覆盖先交的 → 内核拿到 71edge 那段，进度条只有 6 分钟。
-       * 头显日志实证：23:08:32.287「交整集片单（689 段）」→ 32.449「网页可播地址就绪」
-       * → 交接追踪 主机=cqglrdn3.inter.71edge.com。
-       * 所以原生开始自取时打标记，页面在标记有效期内不再递交。
+       * 爱奇艺的地址一律由原生自己去取（签 dash 拿整集片单）。页面这条只在
+       * **原生明确叫它**（`__b0bIqTakeover()` → tag='原生调用'）时才有用 ——
+       * 那是自取失败时的兜底。其余自动触发（DOM 全屏、网络钩子）一律不交，
+       * 否则它交的"单段裸地址"会把整集片单顶掉，进度条只剩 6 分钟。
        */
-      var guard = window.__b0bIqGuard || 0;
-      if (guard && Date.now() - guard < 30000) {
-        console.log('[b0b] 爱奇艺接管：原生正在自取整集片单，页面这条跳过（' + tag + '）');
+      if (tag !== '原生调用') {
+        console.log('[b0b] 爱奇艺：地址由原生自取，页面不自动递交（' + tag + '）');
         return false;
       }
       var bare = b0bIqCaptureBare();
