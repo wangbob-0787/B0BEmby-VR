@@ -1041,6 +1041,8 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
      */
     val hoverOnScreen = remember { booleanArrayOf(false) }
     val lastHoverX = remember { floatArrayOf(-9999f) }
+    /* 2026-10-21：悬停坐标采样节流（诊断用，定位"银幕落点 → 网页像素"换算是否对） */
+    val lastHoverLogAt = remember { longArrayOf(0L) }
     val lastHoverY = remember { floatArrayOf(-9999f) }
     val lastArrowAt = remember { longArrayOf(0L) }
 
@@ -1390,6 +1392,23 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                     val x = (u * wv.width).coerceIn(0f, (wv.width - 1).toFloat())
                     val y = (v * wv.height).coerceIn(0f, (wv.height - 1).toFloat())
                     val now = SystemClock.uptimeMillis()
+                    /*
+                     * 【2026-10-21 09:35 交互坐标对不上：把换算现场一起打出来】
+                     *
+                     * 父亲报爱奇艺播放页"选集/清晰度"能高亮但点不开。已用网页调试口证实：
+                     * 在同一页用真鼠标点 (1027,686) 能开面板，所以问题在"我们发出去的坐标"。
+                     * 日志里只有派发坐标、没有换算依据，无法判断是落点算错还是缩放算错，
+                     * 这里把 webRect、视图尺寸、归一化 u/v 一并打出来，一次对齐。
+                     */
+                    Log.i(
+                        "WebLib",
+                        "点击换算：webRect=" + r.left.toInt() + "," + r.top.toInt() + " " +
+                            r.width.toInt() + "x" + r.height.toInt() +
+                            " 视图=" + wv.width + "x" + wv.height +
+                            " u=" + String.format("%.3f", u) + " v=" + String.format("%.3f", v) +
+                            " → 派发=" + x.toInt() + "," + y.toInt() +
+                            "（全屏=" + (customView != null) + "）",
+                    )
                     runCatching {
                         /*
                          * 先把焦点要过来（2026-10-20 日志：新内核下网页视图"有焦点=false"，
@@ -1421,6 +1440,24 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
          * 停在一些按钮上（比如 B站头像）就会像真鼠标那样浮出菜单。
          */
         WebPageHub.hoverHandler = hover@{ px, py ->
+            /*
+             * 【2026-10-21 09:35 悬停坐标采样】用来核对"银幕落点 → 网页像素"这条换算：
+             * 父亲把光柱在屏幕上扫一圈，日志里的 min/max 就能算出真实映射与预期差多少。
+             */
+            if (px >= 0f && py >= 0f) {
+                val t = SystemClock.uptimeMillis()
+                if (t - lastHoverLogAt[0] > 400) {
+                    lastHoverLogAt[0] = t
+                    val rr = webRect
+                    val vv = customView ?: webRef
+                    Log.i(
+                        "WebLib",
+                        "悬停换算：面板=" + px.toInt() + "," + py.toInt() +
+                            " webRect=" + (rr?.let { it.left.toInt().toString() + "," + it.top.toInt() + " " + it.width.toInt() + "x" + it.height.toInt() } ?: "无") +
+                            " 视图=" + (vv?.let { it.width.toString() + "x" + it.height } ?: "无"),
+                    )
+                }
+            }
             val r = webRect ?: return@hover
             val wv = customView ?: webRef ?: return@hover
             if (r.width <= 0f || r.height <= 0f) return@hover
