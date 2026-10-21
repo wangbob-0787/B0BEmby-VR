@@ -1400,7 +1400,7 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                      * 日志里只有派发坐标、没有换算依据，无法判断是落点算错还是缩放算错，
                      * 这里把 webRect、视图尺寸、归一化 u/v 一并打出来，一次对齐。
                      */
-                    Log.i(
+                    android.util.Log.i(
                         "WebLib",
                         "点击换算：webRect=" + r.left.toInt() + "," + r.top.toInt() + " " +
                             r.width.toInt() + "x" + r.height.toInt() +
@@ -1450,7 +1450,7 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                     lastHoverLogAt[0] = t
                     val rr = webRect
                     val vv = customView ?: webRef
-                    Log.i(
+                    android.util.Log.i(
                         "WebLib",
                         "悬停换算：面板=" + px.toInt() + "," + py.toInt() +
                             " webRect=" + (rr?.let { it.left.toInt().toString() + "," + it.top.toInt() + " " + it.width.toInt() + "x" + it.height.toInt() } ?: "无") +
