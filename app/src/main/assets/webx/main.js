@@ -2031,6 +2031,8 @@
   }
   /* 原生在"网页要全屏"时直接调它（爱奇艺的全屏走的是自定义视图，不一定触发 DOM 全屏事件） */
   window.__b0bIqTakeover = function () { return b0bIqSubmit('原生调用'); };
+  /* 原生要在递交标题时现取页面标题（父亲 13:17：控制条上「正在播放」名字不准） */
+  window.__b0bPageTitle = function () { try { return pageTitle(); } catch (e) { return document.title || ''; } };
   /* 兜底：DOM 全屏事件也接一份 */
   try {
     document.addEventListener('fullscreenchange', function () {

@@ -2314,6 +2314,71 @@ class MainActivity : ComponentActivity() {
         scope.launch {
             val track = withContext(kotlinx.coroutines.Dispatchers.IO) {
                 try {
+                    /*
+                     * 【2026-10-21 13:25 爱奇艺弹幕】
+                     *
+                     * 接口（我们服务端那套一直在用，见 scripts/danmaku/iqiyi_fetch.py）：
+                     *   https://cmts.iqiyi.com/bullet/<tvid[-4:-2]>/<tvid[-2:]>/<tvid>_300_<n>.z
+                     * 每片 300 秒、zlib 压缩 XML、n 从 1 开始，超出片长返回 404。
+                     * 片号 tvid 从取流接口查询串里来（IqiyiDash.noteTvid）。
+                     * `<showTime>` 是毫秒时间点，直接用。
+                     */
+                    if (webStreamSite == 2 && com.xxxx.emby_vr.web.IqiyiDash.tvid.isNotBlank()) {
+                        val tv = com.xxxx.emby_vr.web.IqiyiDash.tvid
+                        val parsedIq = ArrayList<Triple<Long, String, Long>>()
+                        var segsOk = 0
+                        for (n in 1..40) {
+                            val bytes = try {
+                                val conn = java.net.URL(
+                                    "https://cmts.iqiyi.com/bullet/" + tv.takeLast(4).take(2) + "/" +
+                                        tv.takeLast(2) + "/" + tv + "_300_" + n + ".z",
+                                ).openConnection()
+                                conn.setRequestProperty("Referer", "https://www.iqiyi.com/")
+                                conn.setRequestProperty("User-Agent", "Mozilla/5.0")
+                                conn.connectTimeout = 8000
+                                conn.readTimeout = 8000
+                                conn.inputStream.use { it.readBytes() }
+                            } catch (t: Throwable) {
+                                break
+                            }
+                            val xml = try {
+                                val inf = java.util.zip.Inflater()
+                                inf.setInput(bytes)
+                                val out = java.io.ByteArrayOutputStream(bytes.size * 4)
+                                val buf = ByteArray(8192)
+                                while (!inf.finished()) {
+                                    val k = inf.inflate(buf)
+                                    if (k == 0) break
+                                    out.write(buf, 0, k)
+                                }
+                                inf.end()
+                                String(out.toByteArray(), Charsets.UTF_8)
+                            } catch (t: Throwable) {
+                                break
+                            }
+                            val blocks = Regex("<bulletInfo>(.*?)</bulletInfo>", RegexOption.DOT_MATCHES_ALL)
+                                .findAll(xml)
+                            var got = 0
+                            for (b in blocks) {
+                                val blk = b.groupValues[1]
+                                val mc = Regex("<content>(.*?)</content>", RegexOption.DOT_MATCHES_ALL)
+                                    .find(blk)?.groupValues?.get(1) ?: continue
+                                val mt = Regex("<showTime>(\\d+)</showTime>")
+                                    .find(blk)?.groupValues?.get(1)?.toLongOrNull() ?: continue
+                                val txt = mc.trim()
+                                if (txt.isEmpty()) continue
+                                parsedIq.add(Triple(mt, txt, 16777215L))
+                                got++
+                            }
+                            if (got > 0) segsOk++
+                        }
+                        parsedIq.sortBy { it.first }
+                        android.util.Log.i(
+                            TAG,
+                            "⑦ 爱奇艺弹幕已拉到 ${parsedIq.size} 条（片号 $tv，分片 $segsOk）",
+                        )
+                        return@withContext buildDanmakuTrack(parsedIq)
+                    }
                     if (vid.isNotBlank()) {
                         /* —— 腾讯这一支：分段目录 → 逐段拉 —— */
                         val parsed = ArrayList<Triple<Long, String, Long>>()

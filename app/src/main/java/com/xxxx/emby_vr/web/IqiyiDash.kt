@@ -56,6 +56,24 @@ object IqiyiDash {
     var m3u8At: Long = 0L
         private set
 
+    /**
+     * 当前这集的片号（tvid）。弹幕接口按它取：
+     * `https://cmts.iqiyi.com/bullet/<tvid[-4:-2]>/<tvid[-2:]>/<tvid>_300_<n>.z`
+     * 取流接口的查询串里就带 `tvid=`，顺手记下来。
+     */
+    @Volatile
+    var tvid: String = ""
+        private set
+
+    fun noteTvid(u: String) {
+        val m = Regex("tvid=(\\d{6,})").find(u) ?: return
+        val v = m.groupValues[1]
+        if (v != tvid) {
+            tvid = v
+            android.util.Log.i(TAG, "爱奇艺片号：" + v)
+        }
+    }
+
     fun isPlaylistUrl(u: String): Boolean {
         if (!u.contains(".m3u8")) return false
         return u.contains("iqiyi.com") || u.contains("71edge.com") || u.contains("qy.net")

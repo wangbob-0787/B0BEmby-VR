@@ -1204,6 +1204,8 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                         )
                                     }
                                 }
+                                /* 片号（弹幕要用）：取流接口查询串里的 tvid */
+                                runCatching { com.xxxx.emby_vr.web.IqiyiDash.noteTvid(u) }
                                 /* 整集片单直链（meta-cdn....m3u8）：只记不改，交给全屏那一趟 */
                                 if (com.xxxx.emby_vr.web.IqiyiDash.isPlaylistUrl(u)) {
                                     com.xxxx.emby_vr.web.IqiyiDash.notePlaylistUrl(u)
@@ -1389,10 +1391,23 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                 val direct = if (com.xxxx.emby_vr.web.IqiyiDash.playlistFresh())
                                     com.xxxx.emby_vr.web.IqiyiDash.m3u8Url else null
                                 if (direct != null) {
+                                    /*
+                                     * 标题现取（父亲 13:17：控制条上"正在播放"的名字不准）。
+                                     * 页面 title 形如「蒸蒸日上第1集-电视剧全集-完整版视频在线观看-爱奇艺」，
+                                     * 页面脚本里已有 pageTitle() 做过清洗 —— 这里直接调它。
+                                     */
+                                    var titleNow = ""
+                                    runCatching {
+                                        webRef?.evaluateJavascript(
+                                            "(function(){try{return (window.__b0bPageTitle && window.__b0bPageTitle()) || document.title || '';}catch(e){return '';}})()",
+                                        ) { r ->
+                                            titleNow = (r ?: "").trim().trim('"')
+                                        }
+                                    }
                                     val play = org.json.JSONObject()
                                     play.put("kind", "play")
                                     play.put("frame", com.xxxx.emby_vr.web.IqiyiDash.m3u8Url ?: "")
-                                    play.put("title", "")
+                                    play.put("title", titleNow)
                                     play.put("durSec", 0)
                                     val st = org.json.JSONArray()
                                     st.put(
