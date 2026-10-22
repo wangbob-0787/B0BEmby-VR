@@ -77,6 +77,9 @@ object IqiyiDash2 {
                 cookie,
                 userAgent,
             )
+        }.onFailure {
+            /* 2026-10-22：头显上这条请求没成过（日志里只有"结构化=空"），把原因打出来 */
+            Log.w(TAG, "爱奇艺结构化：请求失败 " + it.javaClass.simpleName + " " + it.message)
         }.getOrNull() ?: return null
         return runCatching {
             val d = org.json.JSONObject(body).optJSONObject("data") ?: return null

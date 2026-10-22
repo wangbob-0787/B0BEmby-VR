@@ -1432,7 +1432,7 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                          * 片号永远是空。r870 诊断日志实证：页面明明给了 6837360877143400。
                                          * 直接返回对象，回调就是干净的 JSON。
                                          */
-                                        "var ft='';try{ft=(typeof pageTitle==='function')?pageTitle():String(document.title||'');}catch(e8){}" +
+                                        "var ft='';try{ft=(window.__b0bPageTitle?window.__b0bPageTitle():String(document.title||''));}catch(e8){}" +
                                         "return {tvid:t,dfp:d,epTitle:en,fullTitle:ft,diag:diag};}catch(e){return {};}})()"
                                     webRef?.evaluateJavascript(jsAsk) { raw ->
                                         val kv = runCatching { org.json.JSONObject((raw ?: "").trim('"')) }
