@@ -196,10 +196,9 @@ class MpvBackend(private val context: Context) {
                  * 网页流刚起播那一两拍 video-params/* 会报 unavailable，于是 cVideoW 一直是 0，
                  * 画布就停在 1920x1080 不重设 → 1920x800 的片子上下出黑边）。
                  */
-                var w = try { MPVLib.getPropertyInt("video-params/w") } catch (_: Throwable) { null }
-                if (w == null || w <= 0) {
-                    w = try { MPVLib.getPropertyInt("dwidth") } catch (_: Throwable) { null }
-                }
+                val w0 = try { MPVLib.getPropertyInt("video-params/w") } catch (_: Throwable) { null }
+                val w = if (w0 != null && w0 > 0) w0
+                        else try { MPVLib.getPropertyInt("dwidth") } catch (_: Throwable) { null }
                 if (w == null) ok = false else cVideoW = w
                 /*
                  * 高度一起缓存（父亲 2026-10-17：银幕比例必须每部片子重算，
