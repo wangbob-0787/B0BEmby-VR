@@ -630,6 +630,38 @@
     return (st2 && !isJunkTitle(st2)) ? st2.slice(0, 80) : '';
   }
 
+  /*
+   * 【2026-10-22 11:47 父亲：页内切集时，页面只是"一部分内容"变了，光看地址可能看不出】
+   *
+   * 「当前这一集」的指纹：优先用各站的**片号**，拿不到才退回页面地址。
+   *   · 爱奇艺 → QiyiPlayerProphetData.tvid
+   *   · B站    → cid（取流接口里那一份；没有再退回地址）
+   *   · 腾讯   → __VINFO_DATA__.videoInfo.vid（播放中才有），否则地址里的 vid
+   * 扫描每次比一次这个指纹，变了 = 换集 → 清掉旧地址。
+   */
+  function b0bEpisodeKey() {
+    try {
+      var host = String(location.hostname || '');
+      if (/iqiyi\.com$/i.test(host)) {
+        var t = '';
+        try { t = String((window.QiyiPlayerProphetData || {}).tvid || ''); } catch (e1) {}
+        return 'iq:' + (t || location.href);
+      }
+      if (/bilibili\.com$/i.test(host)) {
+        var cid = 0;
+        try { cid = biliCid || ((window.__INITIAL_STATE__ || {}).videoData || {}).cid || 0; } catch (e2) {}
+        var epm = /\/ep(\d+)/.exec(String(location.pathname || ''));
+        return 'bi:' + (epm ? 'ep' + epm[1] : location.pathname) + '|' + cid;
+      }
+      if (/qq\.com$/i.test(host)) {
+        var v = '';
+        try { v = String(((window.__VINFO_DATA__ || {}).videoInfo || {}).vid || ''); } catch (e3) {}
+        return 'qq:' + (v || pageVideoKey(location.href) || location.href);
+      }
+    } catch (e0) {}
+    return 'x:' + location.href;
+  }
+
   /* 每轮扫描都问一次：条件齐了就交出去（只交一次） */
   /*
    * 【2026-10-20 10:14 父亲现场：装上 r762 后腾讯小窗加载不出来 → 自动刷新这条撤掉】
@@ -3564,6 +3596,7 @@
   /* 观测用（2026-10-17）：池子里出现过哪些"片子编号"，以及页面地址变过没有 */
   var poolKeysLog = {};
   var lastHrefLogged = '';
+  var lastEpKey = '';
   var lastSmallLog = '';   /* 小窗/全屏在播那一行，内容变了才重打 */
 
   /*
@@ -4675,7 +4708,12 @@
      * 父亲翻季/翻集时，如果这个地址一直不动，就说明"换集没换页"，
      * 我们按页面地址判断的两处（播放页判据、交给客户端时记的页面）都会跟着钝掉。
      */
-    if (location.href !== lastHrefLogged) {
+    var epKeyNow = b0bEpisodeKey();
+    if (location.href !== lastHrefLogged || epKeyNow !== lastEpKey) {
+      if (epKeyNow !== lastEpKey) {
+        console.log('[b0b] 换集指纹变化：' + String(lastEpKey || '?').slice(-40) + ' → ' + String(epKeyNow).slice(-40));
+      }
+      lastEpKey = epKeyNow;
       lastHrefLogged = location.href;
       /*
        * 【2026-10-17 15:46 父亲定稿：每新开一个页面，全屏按钮计数归零】
