@@ -1054,11 +1054,12 @@
      */
     var sendName = String((obj && obj.title) || qqRemoteTitle || '');
     var sendFrom = (qqRec && qqRec.titleFrom) || 'none';
-    /* 地址为空就别交（2026-10-22：B站 出现过 streams[0].video 是空串，交上去客户端没法起播） */
+    /* 地址为空就别交，并且立刻自己去问一次接口（2026-10-22 父亲定） */
     try {
       var chkUrl = String(((obj.streams || [])[0] || {}).video || '');
       if (!chkUrl) {
-        console.log('[b0b] 不交：这条载荷里没有可播地址（streams[0].video 为空）');
+        console.log('[b0b] 这条载荷没有可播地址 → 触发主动取流');
+        biliActiveFetchPlayurl();
         return;
       }
     } catch (eChk) {}
@@ -1229,6 +1230,47 @@
         's，最高 ' + (streams[0].height || '?') + 'p');
       pendingPlay = playable;
     } catch (e) {}
+  }
+
+  /*
+   * 【2026-10-22 11:36 父亲定：不要干等页面发请求，递交时自己去问一次】
+   *
+   * B站 的取流请求不是每次都会发（同一集重进、播放器复用、缓存命中时页面直接用旧数据），
+   * 于是我们抓不到 → 交上去空地址 → "有时候能接管、有时候不能"。
+   * 这里在递交那一刻，如果手上没有可用地址，就由页面自己（带登录态）再问一次取流接口：
+   *   · 普通视频：/x/player/playurl?bvid=&cid=&qn=80&fnval=16
+   *   · 番剧/影视：/pgc/player/web/playurl?ep_id=&qn=80&fnval=16
+   * 拿到就喂给 applyPlayinfo，然后立刻再交一次。
+   */
+  function biliActiveFetchPlayurl() {
+    try {
+      var isBangumi = /\/bangumi\/play\//.test(String(location.pathname || ''));
+      var url = '';
+      if (isBangumi) {
+        var me = /\/ep(\d+)/.exec(String(location.pathname || ''));
+        if (!me) return;
+        url = 'https://api.bilibili.com/pgc/player/web/playurl?ep_id=' + me[1] +
+              '&qn=80&fnval=16&fnver=0&fourk=1';
+      } else {
+        var mb = /\/video\/(BV[0-9A-Za-z]+)/.exec(String(location.pathname || ''));
+        var cid = 0;
+        try { cid = biliCid || (window.__INITIAL_STATE__ && window.__INITIAL_STATE__.videoData &&
+              window.__INITIAL_STATE__.videoData.cid) || 0; } catch (e1) {}
+        if (!mb || !cid) return;
+        url = 'https://api.bilibili.com/x/player/playurl?bvid=' + mb[1] + '&cid=' + cid +
+              '&qn=80&fnval=16&fnver=0&fourk=1&platform=html5&high_quality=1';
+      }
+      console.log('[b0b] 主动取流：' + url.slice(0, 90) + '…');
+      fetch(url, { credentials: 'include' }).then(function (r) { return r.json(); }).then(function (j) {
+        var d = (j && (j.data || (j.result && (j.result.data || j.result)))) || null;
+        if (!d) { console.log('[b0b] 主动取流：没有数据（' + (j && j.message ? j.message : '?') + '）'); return; }
+        applyPlayinfo(d);
+        if (pendingPlay) {
+          console.log('[b0b] 主动取流成功：' + ((pendingPlay.streams || [])[0].video || '').slice(-40));
+          try { flushPendingPlay(); } catch (e2) {}
+        }
+      }).catch(function (e) { console.log('[b0b] 主动取流失败：' + e); });
+    } catch (e0) {}
   }
 
   /* 接口返回是文本：解析后交给 applyPlayinfo */
