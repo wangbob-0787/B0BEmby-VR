@@ -670,7 +670,7 @@
 
   function pageTitle() {
     try {
-      var bt = b0bBuildTitle();
+      var bt = b0bTitleChecked(b0bBuildTitle, biliEp);
       if (bt) return bt;
     } catch (e) {}
     var sels = [
@@ -788,6 +788,44 @@
       }
     } catch (e0) {}
     return 'x:' + location.href;
+  }
+
+  /*
+   * 【2026-10-22 17:40 父亲定：核对不过就等，别硬交】
+   *
+   * 身份（片号/集号）与手里那份地址对不上时，不清也不交，
+   * 等真正这一集的地址来，最多等 12 秒（每 400 毫秒的扫描都会再核一次）；
+   * 等不到就这一轮不接管，留在网页里 —— 宁可这次不接管，也不播错集。
+   */
+  var b0bWaitUntil = 0;
+  var b0bWaitWhy = '';
+  function b0bBeginWait(why, ms) {
+    var until = Date.now() + (ms || 12000);
+    if (until > b0bWaitUntil) b0bWaitUntil = until;
+    b0bWaitWhy = why;
+    console.log('[b0b] ' + why + ' → 等这一集的新地址（最多 ' +
+      Math.round((b0bWaitUntil - Date.now()) / 1000) + ' 秒）');
+  }
+  function b0bWaiting() { return b0bWaitUntil > Date.now(); }
+
+  /*
+   * 【2026-10-22 17:40 父亲定：身份和标题对不上，就重新抓一次标题】
+   * 两次都对不上 → 按身份显示（比如「第 3 集」），地址照交，不因为标题卡住接管。
+   */
+  function b0bTitleChecked(build, epNo) {
+    var ep = String(epNo || '');
+    var t1 = '';
+    try { t1 = String(build() || ''); } catch (e1) {}
+    if (!ep) return t1;
+    if (t1 && t1.indexOf('第' + ep + '集') >= 0) return t1;
+    var t2 = '';
+    try { t2 = String(build() || ''); } catch (e2) {}
+    if (t2 && t2.indexOf('第' + ep + '集') >= 0) return t2;
+    if (t1 || t2) {
+      console.log('[b0b] 标题「' + String(t1 || t2).slice(0, 30) +
+        '」与身份（第' + ep + '集）对不上 → 按身份显示');
+    }
+    return '第' + ep + '集';
   }
 
   /* 每轮扫描都问一次：条件齐了就交出去（只交一次） */
@@ -934,7 +972,7 @@
         pendingQq = ''; qqAt = 0; qqRec = null;
         return;
       }
-      console.log('[b0b] 手里那份腾讯地址是**别的集**的（已经翻页），丢掉等新的');
+      b0bBeginWait('手里那份腾讯地址是别的集的（已经翻页）');
       pendingQq = ''; qqAt = 0;
       qqRec = null; qqNotifiedSig = '';   /* 切集：整条记录先作废（父亲 2026-10-19 五条第 2 条） */
       /*
@@ -985,7 +1023,8 @@
             Math.round((Date.now() - (sv.at || Date.now())) / 1000) + '秒前｜地址尾=' +
             String(sv.v || '').slice(-24) + '〕');
         } else {
-          console.log('[b0b] B站槽里那份不是这一集（槽 ' + sv.cid + ' / 现在 ' + (biliCid || '?') + '）→ 不用');
+          b0bBeginWait('B站槽里那份不是这一集（槽 ' + (sv.ep || sv.cid || '?') +
+            ' / 现在 ' + (biliEp || biliCid || '?') + '）');
         }
       }
       if (!pendingPlay) return;
