@@ -1432,7 +1432,8 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                          * 片号永远是空。r870 诊断日志实证：页面明明给了 6837360877143400。
                                          * 直接返回对象，回调就是干净的 JSON。
                                          */
-                                        "return {tvid:t,dfp:d,epTitle:en,diag:diag};}catch(e){return {};}})()"
+                                        "var ft='';try{ft=(typeof pageTitle==='function')?pageTitle():String(document.title||'');}catch(e8){}" +
+                                        "return {tvid:t,dfp:d,epTitle:en,fullTitle:ft,diag:diag};}catch(e){return {};}})()"
                                     webRef?.evaluateJavascript(jsAsk) { raw ->
                                         val kv = runCatching { org.json.JSONObject((raw ?: "").trim('"')) }
                                             .getOrElse { org.json.JSONObject() }
@@ -1440,6 +1441,8 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                         android.util.Log.i("B0BEmbyVR", "爱奇艺页面数据：" + (raw ?: "").take(220))
                                         /* 这一集的名字：页面播放器对象里的 title（如"恋爱脑被骗顶罪"） */
                                         val pageEpTitle = kv.optString("epTitle")
+                                        /* 页面自己拼好的整句（剧名 第X季 第X集 集名），结构化取不到时用它兜底 */
+                                        val pageFullTitle = kv.optString("fullTitle")
                                         /*
                                          * 设备指纹兜底：头显页面 localStorage 里 `__dfp` 是空的（.18 有），
                                          * 这里回落到 2026-10-21 15:05 抓到的那个值。
@@ -1507,6 +1510,11 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                         val epi = runCatching {
                                                             com.xxxx.emby_vr.web.IqiyiDash2.episodeInfo(tvid, ckAll, ua)
                                                         }.getOrNull()
+                                                        android.util.Log.i(
+                                                            "B0BEmbyVR",
+                                                            "爱奇艺文案：结构化=" + (epi?.let { it.series + "/" + it.episode } ?: "空") +
+                                                                " 页面整句=" + pageFullTitle + " 集名=" + pageEpTitle,
+                                                        )
                                                         val composed = runCatching {
                                                             val sb = StringBuilder()
                                                             if (epi != null && epi.series.isNotBlank()) {
@@ -1518,6 +1526,9 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                                 ) {
                                                                     sb.append(" ").append(pageEpTitle)
                                                                 }
+                                                            } else if (pageFullTitle.isNotBlank()) {
+                                                                /* 爱奇艺的 playervideoinfo 没取到时，用页面按结构数据拼好的那句 */
+                                                                sb.append(pageFullTitle)
                                                             } else {
                                                                 sb.append(pageEpTitle)
                                                             }
