@@ -168,13 +168,46 @@ class DanmakuView(context: Context) : View(context) {
      * 源 ASS 的 \move 终点是固定坐标(如 -810),长弹幕会在还没完全出屏时就消失(画面里"突然不见")。
      * 这里按文字实测宽度推算"完全滚出屏幕"所需时间,取两者较大值 → 弹幕完整地从屏幕外滚入、再完整滚出。
      */
+    /**
+     * 【2026-10-22 21:43 r912 崩溃定案：字号/文本过长把系统绘图算溢出】
+     *
+     * 现场：`Fatal signal 6 (SIGABRT) in tid danmaku-painter`，
+     * Abort message = `ubsan: add-overflow`，Java 栈顶是
+     * `Paint.nGetTextAdvances ← Paint.measureText ← DanmakuView.effectiveEndMs(DanmakuView.kt:177)`
+     * —— ASS 里的字号（乘上缩放后）或弹幕文本长度离谱时，
+     * Skia/Minikin 的定点加法溢出，线程直接 abort、整个 App 被杀。
+     * 字号夹在 10~200，文本截到 400 字；被夹过就打一行日志，方便下次复盘。
+     */
+    private fun safeTextSize(px: Float, tag: String): Float {
+        if (!px.isFinite()) {
+            android.util.Log.w("B0BEmbyVR", "弹幕：$tag 字号不是有效数字 → 用 24")
+            return 24f
+        }
+        val v = px.coerceIn(10f, 200f)
+        if (v != px) {
+            android.util.Log.w("B0BEmbyVR", "弹幕：$tag 字号 " + px + " 超出范围 → 夹到 " + v)
+        }
+        return v
+    }
+
+    private fun safeText(t: String?): String {
+        if (t == null) return ""
+        return if (t.length > 400) t.substring(0, 400) else t
+    }
+
     private fun effectiveEndMs(item: DanmakuItem, scale: Float): Long {
         if (!item.isMove) return item.endMs
         val spanMs = (item.endMs - item.startMs).coerceAtLeast(1L)
         val dx = item.x1 - item.x2
         if (dx <= 0f) return item.endMs
-        fillPaint.textSize = max(10f, item.style.fontSize * scale)
-        val textWidthInPlayRes = fillPaint.measureText(item.text) / scale.coerceAtLeast(0.01f)
+        fillPaint.textSize = safeTextSize(item.style.fontSize * scale, "滚动弹幕")
+        val textWidthInPlayRes = try {
+            fillPaint.measureText(safeText(item.text)) / scale.coerceAtLeast(0.01f)
+        } catch (e: Throwable) {
+            /* 真量不出来就退回原时长，宁可早一点消失，也不能把 App 弄崩 */
+            android.util.Log.w("B0BEmbyVR", "弹幕：量字宽失败（" + e + "）→ 用原始时长")
+            return item.endMs
+        }
         val speed = dx / spanMs                       // PlayRes 单位 / 毫秒
         if (speed <= 0f) return item.endMs
         val fullExitMs = ((item.x1 + textWidthInPlayRes) / speed).toLong()
@@ -314,8 +347,9 @@ class DanmakuView(context: Context) : View(context) {
                 val ln = lines[i]
                 if (ln.text.isNotEmpty()) {
                     val sz = max(10f, baseSize * ln.sizeFactor.coerceIn(0.5f, 3f))
-                    subtitlePaint.textSize = sz
-                    subtitleOutline.textSize = sz
+                    val szSafe = safeTextSize(sz, "字幕")
+                    subtitlePaint.textSize = szSafe
+                    subtitleOutline.textSize = szSafe
                     subtitleOutline.strokeWidth = max(2f, sz * 0.09f)
                     subtitlePaint.color = ln.color ?: android.graphics.Color.WHITE
                     canvas.drawText(ln.text, width / 2f, ry, subtitleOutline)
@@ -327,8 +361,9 @@ class DanmakuView(context: Context) : View(context) {
         }
         val size = baseSize
         subtitlePaint.color = android.graphics.Color.WHITE
-        subtitlePaint.textSize = size
-        subtitleOutline.textSize = size
+        val sizeSafe = safeTextSize(size, "字幕")
+        subtitlePaint.textSize = sizeSafe
+        subtitleOutline.textSize = sizeSafe
         subtitleOutline.strokeWidth = max(2f, size * 0.09f)
         val lines = subtitle.split("\n")
         /*
@@ -366,7 +401,7 @@ class DanmakuView(context: Context) : View(context) {
         }
         if (x > width || x < -width) return          // 完全在画面外
 
-        val textSize = max(10f, item.style.fontSize * scale)
+        val textSize = safeTextSize(item.style.fontSize * scale, "绘制")
         fillPaint.textSize = textSize
         outlinePaint.textSize = textSize
         outlinePaint.strokeWidth = max(1.5f, item.style.outline * scale)
@@ -379,7 +414,8 @@ class DanmakuView(context: Context) : View(context) {
 
         // Alignment 7(左上)语义:给出的坐标是文本左上角;drawText 需要基线
         val baseline = y + textSize
-        canvas.drawText(item.text, x, baseline, outlinePaint)
-        canvas.drawText(item.text, x, baseline, fillPaint)
+        val drawTxt = safeText(item.text)
+        canvas.drawText(drawTxt, x, baseline, outlinePaint)
+        canvas.drawText(drawTxt, x, baseline, fillPaint)
     }
 }
