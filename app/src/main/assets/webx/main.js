@@ -1054,6 +1054,14 @@
      */
     var sendName = String((obj && obj.title) || qqRemoteTitle || '');
     var sendFrom = (qqRec && qqRec.titleFrom) || 'none';
+    /* 地址为空就别交（2026-10-22：B站 出现过 streams[0].video 是空串，交上去客户端没法起播） */
+    try {
+      var chkUrl = String(((obj.streams || [])[0] || {}).video || '');
+      if (!chkUrl) {
+        console.log('[b0b] 不交：这条载荷里没有可播地址（streams[0].video 为空）');
+        return;
+      }
+    } catch (eChk) {}
     console.log('[b0b] 交付户口：标题「' + sendName + '」来源=' + sendFrom +
       ' 档=' + (qqTierName(String(((obj.streams || [])[0] || {}).video || '')) || '未知') +
       ' 主页=' + String(location.href || '').slice(-40));
@@ -1166,7 +1174,8 @@
         var auds = (d.dash.audio || []).slice().sort(function (a, b) {
           return (b.bandwidth || 0) - (a.bandwidth || 0);
         });
-        var audioUrl = auds.length ? (auds[0].baseUrl || auds[0].base_url || '') : '';
+        var audioUrl = auds.length ? (auds[0].baseUrl || auds[0].base_url ||
+          (auds[0].backupUrl && auds[0].backupUrl[0]) || '') : '';
         var vids = (d.dash.video || []).slice().sort(function (a, b) {
           var sa = codecRank(a.codecs) * 100000 + (a.height || 0) * 10 + (a.bandwidth || 0) / 1000000;
           var sb = codecRank(b.codecs) * 100000 + (b.height || 0) * 10 + (b.bandwidth || 0) / 1000000;
@@ -1174,7 +1183,9 @@
         });
         for (var i = 0; i < vids.length; i++) {
           var v = vids[i];
-          var u = v.baseUrl || v.base_url || '';
+          /* 有些片子只给 backupUrl（2026-10-22 实测：主地址空着 → 交上去长度 0，客户端没法起播） */
+          var u = v.baseUrl || v.base_url ||
+                  (v.backupUrl && v.backupUrl[0]) || (v.backup_url && v.backup_url[0]) || '';
           if (!u) continue;
           streams.push({
             id: v.id || 0, height: v.height || 0, width: v.width || 0,
