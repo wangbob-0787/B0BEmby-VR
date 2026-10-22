@@ -77,12 +77,12 @@ object VrTuning {
      * 每帧涨到 15.2ms、超出 13.9ms 预算 → 黑纹复现。1280 只要 6.2~8.1ms、满帧，
      * 银幕保持 IMAX 不缩，只是画面略软。
      */
-    /** 地面坡度（2026-10-22）：每往前走 1 米视线变化多少米；默认按影厅实测 0.35 */
-    @Volatile
-    var floorSlope: Float = 0.35f
-
     @Volatile
     var videoSurfaceMaxW: Int = 1280
+
+    /** 地面坡度（2026-10-22）：每往前走 1 米视线变化多少米；默认按影厅实测 0.35（0 = 平地） */
+    @Volatile
+    var floorSlope: Float = 0.35f
 
     /**
      * 网页流要不要走零拷贝硬解（2026-10-20 23:40，句柄泄漏）。

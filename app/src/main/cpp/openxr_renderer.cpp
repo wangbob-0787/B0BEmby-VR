@@ -655,6 +655,9 @@ std::atomic<float> gCinemaEyeHeight{1.65f};
  */
 std::atomic<float> gFloorSlope{0.35f};
 
+/* 观影位的前后位移在本文件后半段才定义（drawCinema 比它早），这里先声明一下 */
+extern std::atomic<float> gViewerZ;
+
 // ------------------------------------------------- 影厅环境（父亲 2026-10-10）
 /*
  * 影厅几何 assets/cinema.b0bcin —— 由 tools/build_cinema_asset.py 生成。
