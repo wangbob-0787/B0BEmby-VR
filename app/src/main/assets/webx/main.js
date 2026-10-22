@@ -41,6 +41,30 @@
 
   var b0bNativeWarned = 0;
   function b0bSendOut(o) {
+    /*
+     * 【2026-10-22 20:20】交付这一行是排查的核心：交出去的这份属于哪一集，
+     * 和页面此刻是哪一集，逐项写清"一致/不一致"，再带上是切换后第多少毫秒。
+     */
+    try {
+      var idNowD = String(b0bEpisodeKey() || '');
+      var idPayD = String((o && (o.vid || o.epKey || o.ep || o.cid)) || '');
+      var addrD = '';
+      try {
+        if (o && o.text) addrD = String(o.text).slice(-40);
+        else if (o && o.streams && o.streams[0]) addrD = String(o.streams[0].video || '');
+        else if (o && o.u) addrD = String(o.u);
+      } catch (eD1) {}
+      var sameD = true;
+      if (idPayD && idNowD) sameD = (idPayD === idNowD) || (idPayD.indexOf(idNowD) >= 0) || (idNowD.indexOf(idPayD) >= 0);
+      if (idPayD && idNowD && !sameD) {
+        try { sameD = samePageUrl((o && o.frame) || '', location.href); } catch (eD2) {}
+      }
+      b0bMark('交付', '站=' + b0bSite() + ' 身份=' + (idPayD || '?').slice(-30) +
+        ' 当前身份=' + (idNowD || '?').slice(-30) +
+        ' 核对=' + (sameD ? '一致' : '不一致（页面已经换到别的集）') +
+        ' 标题「' + String(b0bBuildTitle() || '').slice(0, 28) + '」' +
+        ' 距切换=' + b0bSince() + ' 地址尾=…' + addrD.slice(-28));
+    } catch (eD0) {}
     try {
       if (window.b0bHost && window.b0bHost.post) {
         window.b0bHost.post(JSON.stringify(o));
@@ -718,6 +742,44 @@
    *   · 待交载荷 / 腾讯地址：各自的时刻早于 since 才清
    * 这样"先点选集、后到新地址"的顺序天然安全，不会误伤新地址。
    */
+  /*
+   * 【2026-10-22 20:20 父亲定：日志要能自己把问题说出来】
+   *
+   * 一次接管的全过程按五个点记，每条都带毫秒时刻和"距上一次切换多少毫秒"：
+   *   ◆切换#N  你点了哪一集/哪一部（选集面板、播放器菜单、页面自己换）
+   *   ◆新址#N  这一刻到手的地址属于哪一集（身份 + 标题 + 地址尾）
+   *   ◆真全屏#N 按下真全屏的时刻
+   *   ◆交付#N  真正交给播放器的是哪一集，和"当前页面是哪一集"逐项比对结论
+   *   ◆等待      核对没过、进入等待窗口（从何时到何时、为什么）
+   * 这样出问题时不用父亲复述，直接对时间线。
+   */
+  var b0bSeq = 0;
+  var b0bSwitchAt = 0;
+  var b0bSwitchWhat = '';
+  function b0bSite() {
+    try {
+      var h = String(location.hostname || '');
+      if (/qq\.com$/i.test(h)) return 'qq';
+      if (/bilibili\.com$/i.test(h)) return 'bi';
+      if (/iqiyi\.com$/i.test(h)) return 'iq';
+    } catch (e) {}
+    return 'other';
+  }
+  function b0bSince() {
+    return b0bSwitchAt ? ('+' + (Date.now() - b0bSwitchAt) + 'ms') : '（本页还没有切换动作）';
+  }
+  function b0bMark(kind, text) {
+    try { console.log('[b0b]◆' + kind + ' ' + text); } catch (e) {}
+  }
+  function b0bMarkSwitch(what, src) {
+    b0bSeq++;
+    b0bSwitchAt = Date.now();
+    b0bSwitchWhat = String(what || '?');
+    b0bMark('切换#' + b0bSeq, '站=' + b0bSite() + ' 来源=' + src + ' 动作=『' + b0bSwitchWhat + '』' +
+      ' 页面身份=' + String(b0bEpisodeKey() || '?').slice(-32) +
+      ' 网址=' + String(location.href).slice(-46) + ' 时刻=' + b0bSwitchAt);
+  }
+
   function b0bClearStale(reason, since) {
     try {
       var t = since || Date.now();
@@ -742,7 +804,8 @@
        * 身份是"页面此刻是哪一集"，不该由清地址顺手抹掉。
        */
       biSlotClear(t);
-      console.log('[b0b] 清掉旧地址（' + reason + '，切换时刻 ' + t + '）：动了 ' + cleared + ' 个槽');
+      b0bMark('清场', '站=' + b0bSite() + ' 原因=' + reason + ' 清了 ' + cleared + ' 格' +
+        ' 时刻=' + t + ' 距上次切换=' + b0bSince());
     } catch (e0) {}
   }
 
@@ -803,10 +866,10 @@
     var until = Date.now() + (ms || 12000);
     if (until > b0bWaitUntil) b0bWaitUntil = until;
     b0bWaitWhy = why;
-    console.log('[b0b] ' + why + ' → 等这一集的新地址（最多 ' +
+    console.log('[b0b]◆等待 站=' + b0bSite() + ' 截止=' + b0bWaitUntil + ' ' + why +
+      ' → 等这一集的新地址（最多 ' +
       Math.round((b0bWaitUntil - Date.now()) / 1000) + ' 秒）');
   }
-  function b0bWaiting() { return b0bWaitUntil > Date.now(); }
 
   /*
    * 【2026-10-22 17:40 父亲定：身份和标题对不上，就重新抓一次标题】
@@ -1626,6 +1689,9 @@
           if (prevB && prevB.u === bu) continue;
           qqSlotSet(bt, { u: bu, at: Date.now(), vid: pageVidNow(), from: 'resp',
                           title: String(qqRemoteTitle || '') });
+          b0bMark('新址', '站=qq 槽=' + bt + ' 身份=' + (pageVidNow() || '?') +
+            ' 标题「' + String(qqRemoteTitle || '').slice(0, 24) + '」' +
+            ' 地址尾=…' + bu.slice(-28) + ' 距切换=' + b0bSince());
           console.log('[b0b] 按档位收好：' + bt + 'P ← 尾46=…' + bu.slice(-46) +
             '（主机=' + String(bu).split('/')[2] + '｜长度=' + bu.length + '）');
           qqBucketDump('刚入槽');
@@ -2670,6 +2736,7 @@
               console.log('[b0b] 点的就是当前这一集 → 不清理（' + txt + '）');
               return;
             }
+            b0bMarkSwitch(txt, '选集面板/播放器菜单');
             b0bClearStale('点了选集 ' + txt, Date.now());
             return;
           }
@@ -3597,6 +3664,11 @@
   }
   function announceFullscreen(t) {
     peerFullAt = t;
+    b0bMark('真全屏 站=' + b0bSite(), '时刻=' + t + ' 距切换=' + b0bSince() +
+      ' 页面身份=' + String(b0bEpisodeKey() || '?').slice(-32) +
+      ' 标题「' + String(b0bBuildTitle() || '').slice(0, 28) + '」' +
+      ' 网址=' + String(location.href).slice(-46) +
+      ' 上一次切换=『' + String(b0bSwitchWhat || '无') + '』');
     try { localStorage.setItem('b0b:fullAt', String(t)); } catch (e) {}
     /* 按下全屏这一层同一个道理：清掉按之前攒的试看段（2026-10-18） */
     resetFragsOnFull();
@@ -4191,6 +4263,9 @@
        * B站 这格原来标题是空的（交付时才现取）。现在入槽时也存一份快照，
        * 交付时仍按当前指纹现取一次；两份不一致就以身份为准重取标题。
        */
+      b0bMark('新址', '站=bi 槽=B站 身份=' + (biliEp ? 'ep' + biliEp : ('cid' + (biliCid || '?'))) +
+        ' 标题「' + String(b0bBuildTitle() || '').slice(0, 24) + '」' +
+        ' 地址尾=…' + String(cands[0].video || '').slice(-28) + ' 距切换=' + b0bSince());
       biSlotSave({
         v: String(cands[0].video || ''), a: String(cands[0].audio || ''),
         cid: biliCid, ep: biliEp, season: biliSeason,
@@ -5038,6 +5113,7 @@
            * 腾讯的剧集页 `/x/cover/<cid>.html` 里只有 cid，换集时地址一动不动，
            * 靠"地址变了才清"永远轮不到它，手里那份上一集的地址就还留着。
            */
+          b0bMarkSwitch(String(epKeyNow).slice(-32), '页面自己换（指纹变化）');
           b0bClearStale('片号变了（换集）', Date.now());
         }
       }

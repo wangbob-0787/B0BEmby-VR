@@ -1549,6 +1549,13 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                         /* 网址里的 v_ 编号：用来识别"页面还没切到这一集"（2026-10-22 17:29） */
                                         val pageV0 = kv.optString("pageV")
                                         android.util.Log.i("B0BEmbyVR", "爱奇艺页面数据：" + (raw ?: "").take(220))
+                                        android.util.Log.i(
+                                            "B0BEmbyVR",
+                                            "◆真全屏 站=iq 时刻=" + System.currentTimeMillis() +
+                                                " 网址=v_" + kv.optString("pageV") +
+                                                " 页面片号=" + tvid +
+                                                " 页面标题「" + kv.optString("fullTitle").take(30) + "」",
+                                        )
                                         /* 这一集的名字：页面播放器对象里的 title（如"恋爱脑被骗顶罪"） */
                                         val pageEpTitle = kv.optString("epTitle")
                                         /* 页面自己拼好的整句（剧名 第X季 第X集 集名），结构化取不到时用它兜底 */
@@ -1595,25 +1602,45 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                              * 标题却按页面文字显示第 3 集 → 控制条第 3 集、大屏第 7 集。
                                              * 父亲判断：网络慢时页面要过几秒才真正切过去，这几秒里取就是错的。
                                              */
+                                            /*
+                                             * 【2026-10-22 20:20 改：宽限 3 秒，绝不拦死接管】
+                                             *
+                                             * r912 实测 19:58:50、19:59:27 两次都是：
+                                             * 「爱奇艺：页面还没切到这一集（网址 v_xxx 以前对应片号 …）→ 这次不交」
+                                             * —— 这就是父亲报的「爱奇艺有时接管不了」：旧配对表一直不放行。
+                                             * 现在只保留一条：网址变了、片号还是上一次交付那个 → 最多等 3 秒看片号跟不跟得上；
+                                             * 3 秒后不管变没变都照交（页面此刻放的确实就是这个片号那一集）。
+                                             */
                                             var useTvid = tvid
                                             var pageV = pageV0
-                                            var ready = false
-                                            for (attempt in 0 until 6) {
-                                                val known = IqSlot.pair[pageV]
-                                                if (known == null || known == useTvid) { ready = true; break }
-                                                Thread.sleep(1200)
-                                                val again = askPageIdentity(webRef)
-                                                if (again.first.isNotBlank()) useTvid = again.first
-                                                if (again.second.isNotBlank()) pageV = again.second
-                                            }
-                                            if (!ready) {
-                                                android.util.Log.w(
+                                            val suspect = useTvid.isNotBlank() && useTvid == IqSlot.tvid &&
+                                                pageV.isNotBlank() && pageV != IqSlot.v
+                                            if (suspect) {
+                                                android.util.Log.i(
                                                     "B0BEmbyVR",
-                                                    "爱奇艺：页面还没切到这一集（网址 v_" + pageV +
-                                                        " 以前对应片号 " + IqSlot.pair[pageV] +
-                                                        "，页面此刻给的片号 " + useTvid + "）→ 这次不交，等下一次真全屏",
+                                                    "◆等待 站=iq 网址已换（v_" + IqSlot.v + " → v_" + pageV +
+                                                        "）但片号还是上一集的 " + useTvid + "，最多等 3 秒",
                                                 )
-                                                return@Thread
+                                                for (attempt in 0 until 3) {
+                                                    Thread.sleep(1000)
+                                                    val again = askPageIdentity(webRef)
+                                                    if (again.first.isNotBlank() && again.first != useTvid) {
+                                                        useTvid = again.first
+                                                        if (again.second.isNotBlank()) pageV = again.second
+                                                        android.util.Log.i(
+                                                            "B0BEmbyVR",
+                                                            "◆等待 站=iq 片号跟上了 → " + useTvid +
+                                                                "（等了 " + (attempt + 1) + " 秒）",
+                                                        )
+                                                        break
+                                                    }
+                                                }
+                                                if (useTvid == IqSlot.tvid) {
+                                                    android.util.Log.i(
+                                                        "B0BEmbyVR",
+                                                        "◆等待 站=iq 等满 3 秒片号仍是 " + useTvid + " → 照交",
+                                                    )
+                                                }
                                             }
                                             val res = runCatching {
                                                 com.xxxx.emby_vr.web.IqiyiDash2.fetch(useTvid, uid, kuid, dfp, "600", ckAll, ua)
@@ -1622,6 +1649,19 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                 android.util.Log.w(
                                                     "B0BEmbyVR",
                                                     "爱奇艺自取：dash 没拿到可用片单（见上一条日志里的原因）",
+                                                )
+                                            }
+                                            if (res != null) {
+                                                android.util.Log.i(
+                                                    "B0BEmbyVR",
+                                                    "◆新址 站=iq 身份=" + useTvid + " 槽=爱奇艺一格" +
+                                                        " 段数=" + res.segs + " 时长=" + res.durationSec + "s" +
+                                                        " 时刻=" + System.currentTimeMillis(),
+                                                )
+                                            } else {
+                                                android.util.Log.w(
+                                                    "B0BEmbyVR",
+                                                    "◆新址 站=iq 身份=" + useTvid + " 取流失败（没拿到片单）",
                                                 )
                                             }
                                             val file = if (res != null && ctx != null)
@@ -1642,6 +1682,14 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                         IqSlot.tvid = useTvid
                                                         IqSlot.title = pageFullTitle
                                                         IqSlot.at = System.currentTimeMillis()
+                                                        android.util.Log.i(
+                                                            "B0BEmbyVR",
+                                                            "◆交付 站=iq 身份=" + useTvid +
+                                                                " 网址=v_" + pageV +
+                                                                " 标题「" + pageFullTitle.take(30) + "」" +
+                                                                " 段数=" + res!!.segs + " 时长=" + res!!.durationSec + "s" +
+                                                                " 核对=片单按页面此刻的片号现取（片号即身份）",
+                                                        )
                                                         if (pageV.isNotBlank()) IqSlot.pair[pageV] = useTvid
                                                         play.put("height", if (res.bid >= 600) 1080 else 720)
                                                         play.put("first", 0)
