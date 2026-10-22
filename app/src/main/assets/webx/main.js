@@ -750,9 +750,17 @@
     try {
       var host = String(location.hostname || '');
       if (/iqiyi\.com$/i.test(host)) {
-        var t = '';
-        try { t = String((window.QiyiPlayerProphetData || {}).tvid || ''); } catch (e1) {}
-        return 'iq:' + (t || location.href);
+        /*
+         * 【2026-10-22 17:29 父亲定：判定只认网址里的集编号】
+         *
+         * 现场（《蒸蒸日上》17:11-17:12）：指纹在 iq:6060062170737200 ↔ iq:https://... 之间反复跳，
+         * 因为播放器对象上的片号忽有忽无；每跳一次就被判成换集、把刚到的地址清掉。
+         * 网址里的 v_<编号> 一直稳定，换集时它自己会变，所以只认它。
+         */
+        var pthI = String(location.pathname || '');
+        var vmI = /\/v_([0-9A-Za-z]+)/.exec(pthI);
+        if (vmI) return 'iq:' + vmI[1];
+        return 'iq:' + pthI;
       }
       if (/bilibili\.com$/i.test(host)) {
         /*

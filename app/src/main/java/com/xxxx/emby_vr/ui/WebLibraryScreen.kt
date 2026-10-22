@@ -337,6 +337,62 @@ private fun dispatchArrowKey(wv: android.view.View, right: Boolean) {
     }
 }
 
+/**
+ * 爱奇艺槽（2026-10-22 17:29 父亲定）。
+ *
+ * 和 B站、腾讯 一样要有槽，只是爱奇艺 的槽多一步：槽里存的是**整集片单**，
+ * 核对通过后交给本地服务，大屏从本地服务读。
+ *
+ * 四格：身份（网址 v_ 编号 + 片号）、标题、时刻、地址（片单）。
+ * 另外记一张「网址 v_ 编号 → 片号」的配对表：网址变了、片号没变 = 页面还没切过去。
+ */
+private object IqSlot {
+    /** 网址 v_ 编号 → 片号（成功交付一次记一笔，用来识别"页面还没切完"） */
+    val pair = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    @Volatile
+    var v: String = ""
+
+    @Volatile
+    var tvid: String = ""
+
+    @Volatile
+    var title: String = ""
+
+    @Volatile
+    var at: Long = 0L
+}
+
+/**
+ * 问页面此刻是哪一集：返回（播放器对象上的片号, 网址里的 v_ 编号）。
+ * 在后台线程调用，内部把取值动作投回主线程，避免跨线程碰 WebView。
+ */
+private fun askPageIdentity(w: WebView?): Pair<String, String> {
+    if (w == null) return "" to ""
+    var t = ""
+    var v = ""
+    val latch = java.util.concurrent.CountDownLatch(1)
+    android.os.Handler(android.os.Looper.getMainLooper()).post {
+        runCatching {
+            w.evaluateJavascript(
+                "(function(){try{var pd=window.QiyiPlayerProphetData||{};" +
+                    "var t=String(pd.tvid||pd.tvId||(pd.videoInfo||{}).tvId||'');" +
+                    "var m=/\\/v_([0-9A-Za-z]+)/.exec(location.pathname||'');" +
+                    "return {t:t,v:m?m[1]:''};}catch(e){return {};}})()"
+            ) { raw ->
+                runCatching {
+                    val o = org.json.JSONObject((raw ?: "").trim('"'))
+                    t = o.optString("t")
+                    v = o.optString("v")
+                }
+                latch.countDown()
+            }
+        }.onFailure { latch.countDown() }
+    }
+    runCatching { latch.await(3, java.util.concurrent.TimeUnit.SECONDS) }
+    return t to v
+}
+
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun WebLibraryScreen(
@@ -1484,11 +1540,14 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                          * 直接返回对象，回调就是干净的 JSON。
                                          */
                                         "var ft='';try{ft=(window.__b0bPageTitle?window.__b0bPageTitle():String(document.title||''));}catch(e8){}" +
-                                        "return {tvid:t,dfp:d,epTitle:en,fullTitle:ft,diag:diag};}catch(e){return {};}})()"
+                                        "var pgv='';try{var vm=/\\/v_([0-9A-Za-z]+)/.exec(location.pathname||'');if(vm)pgv=vm[1];}catch(e9){}" +
+                                        "return {tvid:t,dfp:d,epTitle:en,fullTitle:ft,pageV:pgv,diag:diag};}catch(e){return {};}})()"
                                     webRef?.evaluateJavascript(jsAsk) { raw ->
                                         val kv = runCatching { org.json.JSONObject((raw ?: "").trim('"')) }
                                             .getOrElse { org.json.JSONObject() }
                                         val tvid = kv.optString("tvid")
+                                        /* 网址里的 v_ 编号：用来识别"页面还没切到这一集"（2026-10-22 17:29） */
+                                        val pageV0 = kv.optString("pageV")
                                         android.util.Log.i("B0BEmbyVR", "爱奇艺页面数据：" + (raw ?: "").take(220))
                                         /* 这一集的名字：页面播放器对象里的 title（如"恋爱脑被骗顶罪"） */
                                         val pageEpTitle = kv.optString("epTitle")
@@ -1527,8 +1586,37 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                             "爱奇艺自取：片号=$tvid 设备=" + kuid.take(8) + " 指纹=" + dfp.take(8),
                                         )
                                         Thread {
+                                            /*
+                                             * 【2026-10-22 17:29 父亲定：拿到地址之后要核对，对不上不交、等新的】
+                                             *
+                                             * 现场（《蒸蒸日上》17:13）：页面已经切到第 3 集（网址 v_qqcbpladfg），
+                                             * 播放器对象里的片号还是第 7 集的 6060062170737200，
+                                             * 自取回来的片单是第 7 集（696 段 / 2725 秒，与第 7 集完全一样），
+                                             * 标题却按页面文字显示第 3 集 → 控制条第 3 集、大屏第 7 集。
+                                             * 父亲判断：网络慢时页面要过几秒才真正切过去，这几秒里取就是错的。
+                                             */
+                                            var useTvid = tvid
+                                            var pageV = pageV0
+                                            var ready = false
+                                            for (attempt in 0 until 6) {
+                                                val known = IqSlot.pair[pageV]
+                                                if (known == null || known == useTvid) { ready = true; break }
+                                                Thread.sleep(1200)
+                                                val again = askPageIdentity(webRef)
+                                                if (again.first.isNotBlank()) useTvid = again.first
+                                                if (again.second.isNotBlank()) pageV = again.second
+                                            }
+                                            if (!ready) {
+                                                android.util.Log.w(
+                                                    "B0BEmbyVR",
+                                                    "爱奇艺：页面还没切到这一集（网址 v_" + pageV +
+                                                        " 以前对应片号 " + IqSlot.pair[pageV] +
+                                                        "，页面此刻给的片号 " + useTvid + "）→ 这次不交，等下一次真全屏",
+                                                )
+                                                return@Thread
+                                            }
                                             val res = runCatching {
-                                                com.xxxx.emby_vr.web.IqiyiDash2.fetch(tvid, uid, kuid, dfp, "600", ckAll, ua)
+                                                com.xxxx.emby_vr.web.IqiyiDash2.fetch(useTvid, uid, kuid, dfp, "600", ckAll, ua)
                                             }.getOrNull()
                                             if (res == null) {
                                                 android.util.Log.w(
@@ -1548,7 +1636,13 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                         play.put("segs", res.segs)
                                                         play.put("durSec", res.durationSec)
                                                         /* 片号：让"这一集"进入去重签名，换集不会被误判为重复 */
-                                                        play.put("epKey", tvid)
+                                                        play.put("epKey", useTvid)
+                                                        /* 交付成功才记账：这份片单属于哪一集、什么时候取的 */
+                                                        IqSlot.v = pageV
+                                                        IqSlot.tvid = useTvid
+                                                        IqSlot.title = pageFullTitle
+                                                        IqSlot.at = System.currentTimeMillis()
+                                                        if (pageV.isNotBlank()) IqSlot.pair[pageV] = useTvid
                                                         play.put("height", if (res.bid >= 600) 1080 else 720)
                                                         play.put("first", 0)
                                                         /*
