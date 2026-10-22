@@ -827,6 +827,7 @@
       var qqSz = pageVideoSize();
       pendingPlay = {
         title: '', kind: 'play', t: Date.now(), frame: location.href, winId: poolWin,
+        vid: qqVidNow(),
         durSec: 0, quality: 0, site: 'qq', width: qqSz.w, height: qqSz.h,
         streams: [{ id: 0, height: 0, width: 0, bw: 0, vcodec: 'h264',
                     video: pendingQq, audio: '' }]
@@ -929,9 +930,19 @@
      *       点网页全屏的时候不接管，点真全屏的时候才接管，这样在网页全屏的时候我还可以选清晰度。」
      * 所以这条对所有站点生效：只有真全屏（播放器被交给系统全屏那一刻打的标记）才交地址。
      */
+    /*
+     * 【2026-10-22 修 P1】真全屏标记原来只存在"被写的那一层"：腾讯的播放器常常在
+     * 另一层/另一个窗口里，那一层看不到标记 → 明明按了全屏也不交；反过来，标记留 30 分钟，
+     * 换集后没再按全屏也会被自动接管。现在同时写进 localStorage（同站点各层共享、换页清），
+     * 并缩短到 10 分钟：按过全屏 → 这一轮有效；翻页之后必须重新按。
+     */
     var realFull = 0;
     try { realFull = parseInt(String(window.__b0bRealFull || 0), 10) || 0; } catch (eRf) {}
-    if (!(realFull > 0 && Date.now() - realFull < 30 * 60 * 1000)) {
+    try {
+      var rfLs = parseInt(localStorage.getItem('b0b:realFullAt') || '0', 10) || 0;
+      if (rfLs > realFull) realFull = rfLs;
+    } catch (eRf2) {}
+    if (!(realFull > 0 && Date.now() - realFull < 10 * 60 * 1000)) {
       if (b0bLogGate('webfull')) {
         console.log('[b0b] 没交出去：现在只是「网页全屏」，等按「全屏」再接管' +
           '（网页全屏标记=' + (fsOk ? 1 : 0) + '）');
@@ -1031,7 +1042,8 @@
          * （api.bilibili.com/x/v1/dm/list.so?oid=<编号>）。接口那份创建时编号可能还没得知，
          * 递交这一刻现补 —— 不补弹幕就拉不到。
          */
-        if (!playable.cid && biliCid) playable.cid = biliCid;
+        /* 【2026-10-22 修 P2】原来只在空的时候补 —— 切集后留着上一集的片号，弹幕就串集 */
+        if (biliCid) playable.cid = biliCid;
         playable.subtitle = biliSubUrl;
         playable.winId = poolWin;
         obj = playable;
@@ -3510,6 +3522,22 @@
   }
 
   /*
+   * 【2026-10-22 修 P1】腾讯"这一集的片号"：优先问播放器自己，其次地址里的 vid。
+   * 剧集页地址里只有 cid，拿 cid 当 vid 去拉弹幕会拉空/拉错集。
+   */
+  function qqVidNow() {
+    try {
+      var v = String(((window.__VINFO_DATA__ || {}).videoInfo || {}).vid || '');
+      if (v) return v;
+    } catch (e0) {}
+    try {
+      var m = /\/([a-z][0-9a-z]{9,15})\.html/.exec(String(location.href || ''));
+      if (m) return m[1];
+    } catch (e1) {}
+    return '';
+  }
+
+  /*
    * 【2026-10-18 12:05 真根因（.18 上实地取证）】
    *
    * 父亲在虚拟桌面里播正片，我用浏览器调试口把"我们抓到的地址"原样取回来看了：
@@ -4790,6 +4818,13 @@
         console.log('[b0b] 换集指纹变化：' + String(lastEpKey || '?').slice(-40) + ' → ' + String(epKeyNow).slice(-40));
         if (pendingOwner && pendingOwner === epKeyNow) {
           console.log('[b0b] 手里这份已属于新这一集 → 保留');
+        } else {
+          /*
+           * 【2026-10-22 修 P1】片号变了就是换集 —— 不管地址变没变。
+           * 腾讯的剧集页 `/x/cover/<cid>.html` 里只有 cid，换集时地址一动不动，
+           * 靠"地址变了才清"永远轮不到它，手里那份上一集的地址就还留着。
+           */
+          b0bClearStale('片号变了（换集）', Date.now());
         }
       }
       lastEpKey = epKeyNow;
@@ -4811,8 +4846,9 @@
           localStorage.removeItem('b0b:fullAt');
           /* 真换页了，"这一部在播"的记账也要清（2026-10-18）：新片子得重新按全屏 */
           localStorage.removeItem('b0b:fragLive');
-          /* 真全屏标记也清：新页面还没按过「全屏」（2026-10-20） */
+          /* 真全屏标记也清：新页面还没按过「全屏」（2026-10-20；10-22 加清共享那份） */
           try { window.__b0bRealFull = 0; } catch (eR) {}
+          try { localStorage.removeItem('b0b:realFullAt'); } catch (eR2) {}
           /*
            * 【2026-10-20 19:28 父亲定：换页就把三个槽清干净】
            *
@@ -5029,6 +5065,9 @@
       window.postMessage({ __b0bSignFetchBack: 1, id: d.id, text: '', err: String(e) }, '*');
     });
   }, false);
+
+  /* 【2026-10-22】注入凭证：原生注入后回读它，没写上就再注入一次 */
+  try { window.__b0bInjectedAt = Date.now(); } catch (eIA) {}
 
   setInterval(scan, 400);
   scan();

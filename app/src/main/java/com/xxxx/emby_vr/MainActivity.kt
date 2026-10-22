@@ -1962,6 +1962,39 @@ class MainActivity : ComponentActivity() {
         hasAutoSkippedIntro = false
     }
 
+    /**
+     * 【2026-10-22 修 P0：网页流的状态没有"统一复位"这一处，于是到处串】
+     *
+     * 病根：`webPlayingNow` 只有起播处赋值（startPlayer），`webTitleBase` 只有"让位回网页"
+     * 才清。于是"播着 B站 去点腾讯图标"、"播着网页流按停止"这两种操作之后：
+     *   · 每秒的标题刷新还认为在放网页流 → 用旧片名把控制条写回去（串片文案）；
+     *   · 选集/信息菜单还走"网站视频"分支被清空（以为还在播）；
+     *   · `webPreview` 还是上一站那一集 → 控制条播放键起播上一站的内容（串片）；
+     *   · `webHiddenByStream` + `webStreamSite` 还留着 → 之后按返回键被"让位回网页"带走。
+     * 这里一次全清，凡是"这一轮网页播放结束"的地方都调它。
+     */
+    private fun resetWebStreamState(reason: String) {
+        val had = webPlayingNow || webTitleBase.isNotEmpty() || webPreview != null ||
+            webHiddenByStream || webStreamSite != null
+        webPlayingNow = false
+        webTitleBase = ""
+        webHiddenByStream = false
+        webStreamSite = null
+        webSiteBeforeStream = null
+        webReturnUrl = null
+        webPreview = null
+        webAutoPlayPending = false
+        webAutoPlayAt = 0L
+        webVid = ""
+        webCid = 0L
+        webSubtitleUrl = ""
+        webDanmakuLoaded = false
+        webCandSrc = null
+        webCandIdx = -1
+        osdState.upcoming = false
+        if (had) Log.i(TAG, "网页流状态已复位（$reason）")
+    }
+
     private fun openWeb(site: Int) {
         runOnUiThread {
             /*
@@ -1973,6 +2006,11 @@ class MainActivity : ComponentActivity() {
                 Log.i(TAG, "开网页：先把正在播的片子停掉")
                 stopPlayback()
             }
+            /*
+             * 【2026-10-22 修 P0】切站/开网页一律先把"上一轮网页播放"的状态清干净：
+             * 否则控制条会带着上一部片名、返回键会把人带回上一站那一集。
+             */
+            resetWebStreamState("点站点图标：${WEB_SITE_NAMES.getOrElse(site) { site.toString() }}")
             /* 控制条上属于影片的信息全部清掉（父亲 2026-10-13）——见上面的函数注释 */
             clearFilmInfoFromOsd()
             /*
@@ -3516,10 +3554,17 @@ class MainActivity : ComponentActivity() {
          * 腾讯的片号从页面地址里取（形如 /x/cover/<cid>/j410292e7ng.html）——
          * 拉弹幕要它（2026-10-20）。非腾讯站留空，走 B站 那条。
          */
-        webVid = runCatching {
-            val u = src.optString("frame")
-            Regex("/([a-z][0-9a-z]{9,15})\\.html").find(u)?.groupValues?.get(1).orEmpty()
-        }.getOrDefault("")
+        /*
+         * 【2026-10-22 修 P1】原来只从页面地址里抠片号：腾讯的**剧集页**
+         * `/x/cover/<cid>.html` 里没有 vid，抠出来的是 cid，弹幕按它去拉就是空的/错的。
+         * 现在页面交来的载荷里带 vid（播放器自己的片号），优先用它，地址正则只作兜底。
+         */
+        webVid = src.optString("vid").ifBlank {
+            runCatching {
+                val u = src.optString("frame")
+                Regex("/([a-z][0-9a-z]{9,15})\\.html").find(u)?.groupValues?.get(1).orEmpty()
+            }.getOrDefault("")
+        }
         webDanmakuLoaded = false
         val site = webSiteState.value
         val hasCookie = src.optString("cookie").isNotBlank()
@@ -5892,6 +5937,14 @@ class MainActivity : ComponentActivity() {
         stopPlaybackInternal()
         renderer.videoActive = false
         renderer.setHudText("")
+        /*
+         * 【2026-10-22 修 P0】停的是网页流 → 一并把网页流状态复位。
+         * 原来只停播放器、状态留着：控制条继续被旧片名刷、返回键还会把人带回网页。
+         */
+        if (webPlayingNow) {
+            resetWebStreamState("停止播放网页流")
+            clearFilmInfoFromOsd()
+        }
         Log.i(TAG, "停止播放，回到界面")
     }
 

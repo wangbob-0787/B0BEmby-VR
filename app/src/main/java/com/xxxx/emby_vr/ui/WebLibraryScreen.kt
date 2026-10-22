@@ -537,6 +537,16 @@ private object WebRuntime {
 
     /** 上次记录的"可播地址"指纹（同一份不重复打日志） */
     private var bridgeLastPlaySig = ""
+
+    /**
+     * 【2026-10-22 修 P1：去重原来没有时间窗】
+     *
+     * 指纹相同就永久丢弃 —— 父亲按 B 回网页、再按一次全屏要重新接管时，
+     * 只要页面交的还是同一条地址（同一集、同一档、地址没重新签发），
+     * 这一下就会被当成"重复"永远接不回来。
+     * 现在与页面侧的窗口对齐：同一指纹 3 秒内才算重复。
+     */
+    private var bridgeLastPlaySigAt = 0L
     /* 扩展每轮扫描都会带 location.href 上来 —— 这是"此刻页面在哪"的最新事实（2026-10-17） */
     private var bridgeLastFrame = ""
 
@@ -548,6 +558,23 @@ private object WebRuntime {
 
     /** 桥取到的票（Cookie），供签名路线复用 */
     fun cookieNow(): String = bridgeCookie
+
+    /**
+     * 【2026-10-22 修 P2：换站时把上一站的桥状态清掉】
+     *
+     * 这几个字段是**全站点共用**的：切到腾讯之后，第一条交接载荷很可能还带着
+     * B站 的 Cookie 和 B站 那一页的地址（页面还没报新的），于是 Referer/Cookie 都指错站，
+     * 表现是"新站第一下接不过去"。换站时清一次，新站自己会再报上来。
+     */
+    fun resetForSite() {
+        bridgeCookie = ""
+        bridgeLastFrame = ""
+        bridgeLastPlaySig = ""
+        bridgeLastPlaySigAt = 0L
+        bridgePlayable = null
+        bridgeRects.clear()
+        bridgeAspectCleared = false
+    }
 
     /** 网页那侧的银幕比例是否已归零（父亲 2026-10-16 08:09：网页显示不再改比例） */
     private var bridgeAspectCleared = false
@@ -589,8 +616,12 @@ private object WebRuntime {
          */
         val fp = (streams.optJSONObject(0)?.optString("video") ?: "").takeLast(80)
         val sig = "$dur|$lines|$ck|$fp"
-        if (sig == bridgeLastPlaySig) return
+        /* 3 秒内同一指纹算重复（页面每 0.4 秒扫一次）；过了窗口就认它是新一次接管 */
+        if (sig == bridgeLastPlaySig &&
+            android.os.SystemClock.uptimeMillis() - bridgeLastPlaySigAt < 3000L
+        ) return
         bridgeLastPlaySig = sig
+        bridgeLastPlaySigAt = android.os.SystemClock.uptimeMillis()
         bridgePlayable = obj
         android.util.Log.i(
             "B0BEmbyVR",
@@ -690,6 +721,13 @@ private object WebRuntime {
         } else {
             val f = runCatching {
                 val dir = java.io.File(c.cacheDir, "vr-hls").apply { mkdirs() }
+                /* 【2026-10-22】兜底落盘只留最近 2 份，免得一集一个文件把缓存目录堆满 */
+                runCatching {
+                    dir.listFiles { x -> x.name.startsWith("list-") }
+                        ?.sortedByDescending { it.lastModified() }
+                        ?.drop(2)
+                        ?.forEach { it.delete() }
+                }
                 java.io.File(dir, "list-$sig.m3u8").also { it.writeText(text) }
             }.getOrNull()
             if (f != null) {
@@ -988,7 +1026,11 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
 
     var webRef by remember { mutableStateOf<WebView?>(null) }
     /* 换站清栈（16:39 定稿的另一半）: navSite 不是本站就清掉上一站的路线 */
-    LaunchedEffect(site) { com.xxxx.emby_vr.web.WebPageHub.navResetFor(site) }
+    LaunchedEffect(site) {
+        com.xxxx.emby_vr.web.WebPageHub.navResetFor(site)
+        /* 换站：上一站的 Cookie / 页面地址 / 去重指纹一律作废（2026-10-22） */
+        WebRuntime.resetForSite()
+    }
     /* 火狐内核那两个（2026-10-14）：view 用来发事件，session 用来加载与前进后退 */
     /* 火狐内核已拆（2026-10-20），原来这两个引用不再需要 */
     /*
@@ -1509,7 +1551,12 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                         play.put("epKey", tvid)
                                                         play.put("height", if (res.bid >= 600) 1080 else 720)
                                                         play.put("first", 0)
-                                                        play.put("frame", "https://www.iqiyi.com/")
+                                                        /*
+                                                         * 【2026-10-22 修 P1】原来写死成站点首页 → 页面还没报 rect
+                                                         * 时，"按 B 回网页"落到爱奇艺首页、Referer 也变首页。
+                                                         * 改成此刻网页真实的地址。
+                                                         */
+                                                        play.put("frame", webRef?.url ?: "")
                                                         /*
                                                          * 【2026-10-21 21:58 父亲定：文案完全按结构数据构造】
                                                          *
@@ -1595,7 +1642,13 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                     /* onShowCustomView 拿到的是被交出来的那个视图，不是网页本身；
                                        打标记必须发给网页（webRef），它才有 evaluateJavascript。 */
                                     webRef?.evaluateJavascript(
-                                        "window.__b0bRealFull=Date.now();",
+                                        /*
+                                         * 【2026-10-22】同时写进 localStorage：腾讯的播放器常在
+                                         * 另一层/另一个窗口里，只写当前这一层它看不到；
+                                         * 共享那份在换页时由页面脚本一起清掉。
+                                         */
+                                        "window.__b0bRealFull=Date.now();" +
+                                            "try{localStorage.setItem('b0b:realFullAt',String(Date.now()));}catch(e){}",
                                         null,
                                     )
                                 }
@@ -2187,6 +2240,17 @@ private const val B0B_TAKE_OUTBOX_JS =
 
 private fun injectPageScripts(view: android.view.View) {
     val wv = view as? WebView ?: return
+    injectPageScriptsAt(wv, 0)
+}
+
+/**
+ * 【2026-10-22 修 P2：注入失败没人管】
+ *
+ * main.js 有 5000 多行，按 6 万字符分块塞进页面再 eval。页面正在跳转、渲染进程刚重建时，
+ * 中途某一块会失败 —— 结果是"脚本只装了一半"：整站抓不到地址，界面上完全看不出来。
+ * 现在注入后 1.5 秒回读页面里的注入凭证，没写上就再注入一次（最多两次）。
+ */
+private fun injectPageScriptsAt(wv: WebView, attempt: Int) {
     runCatching { wv.evaluateJavascript(B0B_SHIM_JS, null) }
     val src = runCatching {
         wv.context.assets.open("webx/main.js").bufferedReader().use { it.readText() }
@@ -2211,6 +2275,24 @@ private fun injectPageScripts(view: android.view.View) {
                 "console.log('[b0b] 抓取脚本注入失败：'+e);}})();",
             null,
         )
+    }
+    if (attempt >= 2) return
+    runCatching {
+        wv.postDelayed({
+            runCatching {
+                wv.evaluateJavascript(
+                    "String((function(){try{return window.__b0bInjectedAt||0}catch(e){return 0}})())",
+                ) { v ->
+                    val ok = (v ?: "").trim('"').toLongOrNull() ?: 0L
+                    if (ok <= 0L) {
+                        android.util.Log.w("B0BEmbyVR", "抓取脚本没装上（第 ${attempt + 1} 次），重试注入")
+                        runCatching { injectPageScriptsAt(wv, attempt + 1) }
+                    } else {
+                        android.util.Log.i("B0BEmbyVR", "抓取脚本已确认装上（第 ${attempt + 1} 次）")
+                    }
+                }
+            }
+        }, 1500L)
     }
 }
 

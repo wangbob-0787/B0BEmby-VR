@@ -6,7 +6,6 @@ import java.io.File
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
-import java.util.concurrent.atomic.AtomicReference
 
 /**
  * 本机播放列表服务（2026-10-20 凌晨）。
@@ -30,13 +29,31 @@ class PlaylistServer {
         private const val TAG = "B0BEmbyVR-Hls"
     }
 
-    private val body = AtomicReference<String>("")
+    /**
+     * 【2026-10-22 修 P2：一份清单一个地址】
+     *
+     * 原来整个服务只有一个 `body`，地址永远是 `…/list.m3u8`，集号只挂在服务端**忽略**的
+     * `?sig=` 上。于是新一集的片单到了把 body 一换，**正在播的那一集**下次再读这条地址
+     * 拿到的是新集的内容 —— 画面还是旧的、数据换成新的，这就是一条串集的路。
+     * 现在每次交付分一个新路径（`…/l7.m3u8`），各存各的，旧地址永远返回它自己那份。
+     */
+    private val bodies = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val seq = java.util.concurrent.atomic.AtomicLong(0)
+    private val order = java.util.concurrent.ConcurrentLinkedQueue<String>()
+
     @Volatile private var server: ServerSocket? = null
     @Volatile private var thread: Thread? = null
 
-    /** 起服务并把初始清单装进去；返回可直接交给内核的地址。 */
+    /** 起服务并把这份清单装进去；返回可直接交给内核的地址（每份一个路径）。 */
     fun start(m3u8: String): String? {
-        body.set(m3u8)
+        val id = "l" + seq.incrementAndGet()
+        bodies[id] = m3u8
+        order.add(id)
+        /* 只留最近 6 份：够"上一集还要复读一次"用，不占内存 */
+        while (order.size > 6) {
+            val old = order.poll() ?: break
+            bodies.remove(old)
+        }
         if (server == null) {
             val s = runCatching {
                 ServerSocket(0, 8, InetAddress.getByName("127.0.0.1"))
@@ -57,12 +74,12 @@ class PlaylistServer {
             Log.i(TAG, "本机播放列表服务已起：127.0.0.1:" + s.localPort)
         }
         val p = server?.localPort ?: return null
-        return "http://127.0.0.1:$p/list.m3u8"
+        return "http://127.0.0.1:$p/$id.m3u8"
     }
 
-    /** 换一集时只换内容，端口不变。 */
+    /** 换一集时只换内容，端口不变（老调用方还在用；新路走 start()）。 */
     fun update(m3u8: String) {
-        body.set(m3u8)
+        start(m3u8)
     }
 
     fun stop() {
@@ -90,8 +107,16 @@ class PlaylistServer {
             }
             val line = sb.toString()
             val out = BufferedOutputStream(c.getOutputStream())
-            if (line.startsWith("GET ")) {
-                val payload = body.get().toByteArray(Charsets.UTF_8)
+            /*
+             * 按请求路径取那一份（2026-10-22）：`GET /l7.m3u8?sig=…` 里的 `l7` 就是这一集。
+             * 只给了一份清单的老调用（路径不是 lN）时退回"最近那一份"。
+             */
+            val path = if (line.startsWith("GET ")) line.substring(4).trim().split(' ', '?')[0] else ""
+            val id = path.trimStart('/').substringBefore('.')
+            val lastId = order.peekLast()
+            val hit = bodies[id] ?: (if (lastId != null) bodies[lastId] else null)
+            if (line.startsWith("GET ") && hit != null) {
+                val payload = hit.toByteArray(Charsets.UTF_8)
                 val head = "HTTP/1.1 200 OK\r\n" +
                     "Content-Type: application/vnd.apple.mpegurl\r\n" +
                     "Content-Length: ${payload.size}\r\n" +
@@ -115,7 +140,8 @@ class PlaylistServer {
 
     /** 调试用：把落盘的文件与内存里的内容对照（父亲要看"清单到底是不是给的这份"）。 */
     fun dumpTo(f: File): Boolean = runCatching {
-        f.writeText(body.get())
+        val lastId = order.peekLast()
+        f.writeText((if (lastId != null) bodies[lastId] else null) ?: "")
         true
     }.getOrDefault(false)
 }
