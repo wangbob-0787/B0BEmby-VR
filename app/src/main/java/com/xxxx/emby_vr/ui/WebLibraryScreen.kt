@@ -1541,7 +1541,8 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                          */
                                         "var ft='';try{ft=(window.__b0bPageTitle?window.__b0bPageTitle():String(document.title||''));}catch(e8){}" +
                                         "var pgv='';try{var vm=/\\/v_([0-9A-Za-z]+)/.exec(location.pathname||'');if(vm)pgv=vm[1];}catch(e9){}" +
-                                        "return {tvid:t,dfp:d,epTitle:en,fullTitle:ft,pageV:pgv,diag:diag};}catch(e){return {};}})()"
+                                        "var sw=0;try{sw=Number(window.__b0bSwitchAt||0)||0;}catch(es){}" +
+                                        "return {tvid:t,dfp:d,epTitle:en,fullTitle:ft,pageV:pgv,switchAt:sw,diag:diag};}catch(e){return {};}})()"
                                     webRef?.evaluateJavascript(jsAsk) { raw ->
                                         val kv = runCatching { org.json.JSONObject((raw ?: "").trim('"')) }
                                             .getOrElse { org.json.JSONObject() }
@@ -1549,9 +1550,12 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                         /* 网址里的 v_ 编号：用来识别"页面还没切到这一集"（2026-10-22 17:29） */
                                         val pageV0 = kv.optString("pageV")
                                         android.util.Log.i("B0BEmbyVR", "爱奇艺页面数据：" + (raw ?: "").take(220))
+                                        val iqSw = kv.optLong("switchAt", 0L)
+                                        val iqNow = System.currentTimeMillis()
                                         android.util.Log.i(
                                             "B0BEmbyVR",
-                                            "◆真全屏 站=iq 时刻=" + System.currentTimeMillis() +
+                                            "◆真全屏 站=iq 时刻=" + iqNow +
+                                                " 距切换=" + (if (iqSw > 0) "+" + (iqNow - iqSw) + "ms" else "（页面没记过切换）") +
                                                 " 网址=v_" + kv.optString("pageV") +
                                                 " 页面片号=" + tvid +
                                                 " 页面标题「" + kv.optString("fullTitle").take(30) + "」",
@@ -1688,6 +1692,8 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                                 " 网址=v_" + pageV +
                                                                 " 标题「" + pageFullTitle.take(30) + "」" +
                                                                 " 段数=" + res!!.segs + " 时长=" + res!!.durationSec + "s" +
+                                                                " 时刻=" + System.currentTimeMillis() +
+                                                                " 距切换=" + (if (iqSw > 0) "+" + (System.currentTimeMillis() - iqSw) + "ms" else "?") +
                                                                 " 核对=片单按页面此刻的片号现取（片号即身份）",
                                                         )
                                                         if (pageV.isNotBlank()) IqSlot.pair[pageV] = useTvid

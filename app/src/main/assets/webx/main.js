@@ -44,26 +44,32 @@
     /*
      * 【2026-10-22 20:20】交付这一行是排查的核心：交出去的这份属于哪一集，
      * 和页面此刻是哪一集，逐项写清"一致/不一致"，再带上是切换后第多少毫秒。
+     * 只对"交播放地址"这一种载荷打点，探子/状态类消息不打，免得刷屏。
      */
     try {
-      var idNowD = String(b0bEpisodeKey() || '');
-      var idPayD = String((o && (o.vid || o.epKey || o.ep || o.cid)) || '');
-      var addrD = '';
-      try {
-        if (o && o.text) addrD = String(o.text).slice(-40);
-        else if (o && o.streams && o.streams[0]) addrD = String(o.streams[0].video || '');
-        else if (o && o.u) addrD = String(o.u);
-      } catch (eD1) {}
-      var sameD = true;
-      if (idPayD && idNowD) sameD = (idPayD === idNowD) || (idPayD.indexOf(idNowD) >= 0) || (idNowD.indexOf(idPayD) >= 0);
-      if (idPayD && idNowD && !sameD) {
-        try { sameD = samePageUrl((o && o.frame) || '', location.href); } catch (eD2) {}
+      var isPlayD = !!(o && (o.kind === 'play' || o.kind === 'hls' || o.streams || o.text));
+      if (isPlayD) {
+        var idNowD = String(b0bEpisodeKey() || '');
+        var idPayD = String((o.vid || o.epKey || o.ep || o.cid) || '');
+        var addrD = '';
+        try {
+          if (o.text) addrD = String(o.text).slice(-40);
+          else if (o.streams && o.streams[0]) addrD = String(o.streams[0].video || '');
+          else if (o.u) addrD = String(o.u);
+        } catch (eD1) {}
+        var sameD = true;
+        if (idPayD && idNowD) {
+          sameD = (idPayD === idNowD) || (idPayD.indexOf(idNowD) >= 0) || (idNowD.indexOf(idPayD) >= 0);
+          if (!sameD) {
+            try { sameD = samePageUrl(o.frame || '', location.href); } catch (eD2) {}
+          }
+        }
+        b0bMark('交付', '站=' + b0bSite() + ' 身份=' + (idPayD || '?').slice(-30) +
+          ' 当前身份=' + (idNowD || '?').slice(-30) +
+          ' 核对=' + (sameD ? '一致' : '不一致（页面已经换到别的集）') +
+          ' 标题「' + String(b0bBuildTitle() || '').slice(0, 28) + '」' +
+          ' 距切换=' + b0bSince() + ' 地址尾=…' + addrD.slice(-28));
       }
-      b0bMark('交付', '站=' + b0bSite() + ' 身份=' + (idPayD || '?').slice(-30) +
-        ' 当前身份=' + (idNowD || '?').slice(-30) +
-        ' 核对=' + (sameD ? '一致' : '不一致（页面已经换到别的集）') +
-        ' 标题「' + String(b0bBuildTitle() || '').slice(0, 28) + '」' +
-        ' 距切换=' + b0bSince() + ' 地址尾=…' + addrD.slice(-28));
     } catch (eD0) {}
     try {
       if (window.b0bHost && window.b0bHost.post) {
@@ -775,6 +781,7 @@
     b0bSeq++;
     b0bSwitchAt = Date.now();
     b0bSwitchWhat = String(what || '?');
+    try { window.__b0bSwitchAt = b0bSwitchAt; } catch (eW) {}
     b0bMark('切换#' + b0bSeq, '站=' + b0bSite() + ' 来源=' + src + ' 动作=『' + b0bSwitchWhat + '』' +
       ' 页面身份=' + String(b0bEpisodeKey() || '?').slice(-32) +
       ' 网址=' + String(location.href).slice(-46) + ' 时刻=' + b0bSwitchAt);
