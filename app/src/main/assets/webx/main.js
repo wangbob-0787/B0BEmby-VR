@@ -639,6 +639,27 @@
    *   · 腾讯   → __VINFO_DATA__.videoInfo.vid（播放中才有），否则地址里的 vid
    * 扫描每次比一次这个指纹，变了 = 换集 → 清掉旧地址。
    */
+  /*
+   * 【2026-10-22 11:48 父亲：切集有两处入口 —— 详情页的选集面板、播放页控制条的"选集"按钮】
+   *
+   * 两处都是页内点击，页面地址/片号可能一时还没更新，但**手已经点下去了**。
+   * 所以在捕获阶段监听点击：命中"第N集/第N话/第N期"这类按钮，或点在选集面板里，
+   * 立刻把旧地址清掉（等价于换集），等新一集的流到了再重新拿。
+   */
+  function b0bClearStale(reason) {
+    try {
+      var ks = ['zcmax', '4k', 'zc1080'];
+      for (var i = 0; i < ks.length; i++) {
+        qqBucket[ks[i]] = null;
+        try { localStorage.removeItem(qqSlotStoreKey(ks[i])); } catch (e) {}
+      }
+      pendingQq = null; qqHlsPend = null; qqRec = null; qqNotifiedSig = '';
+      pendingPlay = null; lastPlaySig = ''; lastPlaySigAt = 0;
+      try { biliCid = 0; biliEp = ''; biliSeason = ''; } catch (eB) {}
+      console.log('[b0b] 清掉旧地址（' + reason + '）：三槽 + 待交载荷 + 片号');
+    } catch (e0) {}
+  }
+
   function b0bEpisodeKey() {
     try {
       var host = String(location.hostname || '');
@@ -2440,6 +2461,23 @@
     return b0bIqLastBare;
   }
   /* 每秒扫一次资源表，记住最后一条裸地址（分片在播时一直在来） */
+  /* 点击选集：立刻清旧地址（父亲 2026-10-22 11:48 指出的两处切集入口） */
+  try {
+    document.addEventListener('click', function (ev) {
+      try {
+        var el = ev && ev.target;
+        for (var d = 0; el && d < 5; d++, el = el.parentElement) {
+          var txt = String((el.textContent || '')).replace(/\s+/g, ' ').trim();
+          var cls = String(el.className || '');
+          if (txt.length <= 14 && /第\s*\d+\s*[集话期]/.test(txt)) { b0bClearStale('点了选集 ' + txt); return; }
+          if (/episode|ep-list|select-list|选集|series-list/i.test(cls) && /\d/.test(txt) && txt.length <= 14) {
+            b0bClearStale('点了选集面板 ' + txt); return;
+          }
+        }
+      } catch (e1) {}
+    }, true);
+  } catch (e2) {}
+
   try { setInterval(b0bIqCaptureBare, 1000); } catch (e) {}
 
   function b0bIqSubmit(tag) {
@@ -4728,6 +4766,7 @@
        */
       try {
         if (window.self === window.top) {
+          b0bClearStale('换页/换集');
           localStorage.removeItem('b0b:fullAt');
           /* 真换页了，"这一部在播"的记账也要清（2026-10-18）：新片子得重新按全屏 */
           localStorage.removeItem('b0b:fragLive');
