@@ -464,12 +464,18 @@
         var epId = 0, mm = /\/ep(\d+)/.exec(location.pathname || '');
         if (mm) epId = parseInt(mm[1], 10) || 0;
         var eps = season.episodes || [], curEp = 0, curName = '';
+        /* 集号比较要转成数字（2026-10-22 头显实测：id 有时是字符串，全等比较永远不成立 → 只剩剧名） */
         for (var ei = 0; ei < eps.length; ei++) {
-          if (epId && eps[ei] && eps[ei].id === epId) {
+          if (epId && eps[ei] && Number(eps[ei].id) === Number(epId)) {
             curEp = parseInt(eps[ei].title, 10) || (ei + 1);
             curName = eps[ei].long_title || '';
             break;
           }
+        }
+        /* 页面地址里没有 ep 号（或没对上）时，退一步从标题/选集里抽集号 */
+        if (!curEp) {
+          var tinfo = b0bEpiInfo(String(document.title || ''));
+          if (tinfo.ep) curEp = tinfo.ep;
         }
         var rawTitle = String(season.title);
         var seasonNo = b0bEpiInfo(rawTitle).season || 0;
