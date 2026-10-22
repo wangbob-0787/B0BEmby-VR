@@ -77,6 +77,10 @@ object VrTuning {
      * 每帧涨到 15.2ms、超出 13.9ms 预算 → 黑纹复现。1280 只要 6.2~8.1ms、满帧，
      * 银幕保持 IMAX 不缩，只是画面略软。
      */
+    /** 地面坡度（2026-10-22）：每往前走 1 米视线变化多少米；默认按影厅实测 0.35 */
+    @Volatile
+    var floorSlope: Float = 0.35f
+
     @Volatile
     var videoSurfaceMaxW: Int = 1280
 
@@ -280,6 +284,9 @@ object VrTuning {
     /** 自适应分辨率（2026-10-14）：档位越高越省 GPU */
     const val KEY_ADAPTIVE_RES = 31
 
+    /** 地面坡度（2026-10-22）：每往前走 1 米，视线随之变化多少米；0 = 平地 */
+    const val KEY_FLOOR_SLOPE = 32
+
     /** 上次应用的配置原文，只有变化才动手（避免每秒重复设置） */
     private var lastRaw: Map<String, String> = emptyMap()
     private var started = false
@@ -450,6 +457,13 @@ object VrTuning {
         raw["adaptive_res"]?.toFloatOrNull()?.let {
             VrNative.setTuning(KEY_ADAPTIVE_RES, it)
             applied += "自适应分辨率 ${it.toInt()}"
+        }
+        raw["floor_slope"]?.toFloatOrNull()?.let {
+            if (it != floorSlope) {
+                floorSlope = it
+                VrNative.setTuning(KEY_FLOOR_SLOPE, it)
+                applied += "地面坡度=$it"
+            }
         }
         raw["sync_mode"]?.toFloatOrNull()?.let {
             VrNative.setTuning(KEY_SYNC_MODE, it)

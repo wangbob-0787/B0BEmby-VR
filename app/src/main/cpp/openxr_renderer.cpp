@@ -644,6 +644,17 @@ std::atomic<int> gCinemaLayerMode{1};
  */
 std::atomic<float> gCinemaEyeHeight{1.65f};
 
+/*
+ * 【2026-10-22 10:55 父亲定：走坡道，按前后位置补高度】
+ *
+ * 影厅是真实坡度（每排抬高 0.3 米、排间前后差约 0.86 米 ⇒ 斜率 ≈0.35）。
+ * 原来行走高度是"平地"口径：往后走地面升到人头上（椅子比人高），往前走地面降下去（人悬空）。
+ * 现在按 gViewerZ 把整间影厅上下平移 -斜率×前后位移 —— 走到哪儿，脚下那一块地面
+ * 始终在眼睛下方 1.65 米（坐姿眼高另算），观感就是"顺着坡道走"。
+ * 系数运行时可调（调参键 32，`floor_slope`）。
+ */
+std::atomic<float> gFloorSlope{0.35f};
+
 // ------------------------------------------------- 影厅环境（父亲 2026-10-10）
 /*
  * 影厅几何 assets/cinema.b0bcin —— 由 tools/build_cinema_asset.py 生成。
@@ -957,7 +968,9 @@ void drawCinema(const Mat4 &proj, const Mat4 &view, const XrVector3f &eyePos) {
 
     Mat4 model = identity();
     model.m[12] = kCinemaShiftX;                              // 横向：让座位中心正对观影位
-    model.m[13] = s.dy + (1.65f - gCinemaEyeHeight.load()) + gSeatUp.load();
+    /* 坡度补偿：人往后走（gViewerZ 增大）→ 影厅整体下移，脚底那格地面始终在眼睛下方 */
+    const float slopeDy = -gFloorSlope.load() * gViewerZ.load();
+    model.m[13] = s.dy + (1.65f - gCinemaEyeHeight.load()) + gSeatUp.load() + slopeDy;
     model.m[14] = s.dz - gSeatFwd.load();                     // 前/后：正数 = 人往椅子前部坐
     const Mat4 mvp = multiply(multiply(proj, view), model);
 
@@ -965,7 +978,7 @@ void drawCinema(const Mat4 &proj, const Mat4 &view, const XrVector3f &eyePos) {
     glUniformMatrix4fv(gCinemaMvpLoc, 1, GL_FALSE, mvp.m);
     glUniformMatrix4fv(gCinemaModelLoc, 1, GL_FALSE, model.m);
     /* 银幕中心：世界坐标里就在观影位正前方 distance 米处（影厅平移也跟着走） */
-    glUniform3f(gCinemaScreenPosLoc, 0.f, 0.55f, -s.distance);
+    glUniform3f(gCinemaScreenPosLoc, 0.f, 0.55f + slopeDy, -s.distance);
     glUniform3f(gCinemaTintLoc, gScreenTintR.load(), gScreenTintG.load(),
                 gScreenTintB.load());
     /* 画面照亮影厅的那份也乘亮度条（0 = 全黑），并按父亲 2026-10-11 的要求砍半 */
@@ -1310,7 +1323,7 @@ float hallScreenFitWidth(float aspect) {
 float hallScreenCenterY() {
     const int seat = gSeat.load();
     const CinemaSeat &s = kCinemaSeats[seat];
-    return (kHallScreenModelY - kHallRefEyeY) + s.dy + (1.65f - gCinemaEyeHeight.load()) +
+    return (kHallScreenModelY - kHallRefEyeY) + s.dy + (1.65f - gCinemaEyeHeight.load()) + (-gFloorSlope.load() * gViewerZ.load()) +
            gScreenUp.load();
 }
 
@@ -1324,7 +1337,7 @@ float hallScreenCenterY() {
 float hallScreenBottomY() {
     const int seat = gSeat.load();
     const CinemaSeat &s = kCinemaSeats[seat];
-    return (kHallScreenBottomY - kHallRefEyeY) + s.dy + (1.65f - gCinemaEyeHeight.load()) +
+    return (kHallScreenBottomY - kHallRefEyeY) + s.dy + (1.65f - gCinemaEyeHeight.load()) + (-gFloorSlope.load() * gViewerZ.load()) +
            gScreenUp.load();
 }
 
@@ -6368,6 +6381,13 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             if (value >= 0.f && value <= 3.f) {
                 gFoveationLevel.store((int) value);
                 LOGI("调参 → 固定注视点渲染 等级 %d（0关 1低 2中 3高，下帧生效）", (int) value);
+            }
+            break;
+        case 32:
+            /* 地面坡度（每往前走 1 米视线降多少米）：0 = 平地；0.35 = 影厅实测坡度 */
+            if (value >= -0.5f && value <= 1.0f) {
+                gFloorSlope.store(value);
+                LOGI("调参 → 地面坡度 %.2f（每走 1 米视线变化 %.2f 米）", (double) value, (double) value);
             }
             break;
         case 31:
