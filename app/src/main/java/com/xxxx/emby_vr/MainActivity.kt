@@ -2142,6 +2142,20 @@ class MainActivity : ComponentActivity() {
                      */
                     webSizeKnown = true
                     applyScreenAspect(vw.toFloat() / vh.toFloat(), "内核报出画面尺寸 ${vw}x${vh}")
+                    /*
+                     * 【2026-10-23 00:50 父亲定：播出去也要有结论】
+                     * 之前的日志只到"交出去"，看不到"播起来没有、多久出画、真实分辨率多少"。
+                     * 网页流第一次报出真实尺寸就是"真的出画面了"，把耗时和比例一起记下来。
+                     */
+                    val costMs = if (lastWebDeliverAt > 0) System.currentTimeMillis() - lastWebDeliverAt else -1
+                    val tierNow = webStream?.optString("tier", "") ?: ""
+                    val siteNow = if (tierNow.startsWith("iq")) "iq" else "web"
+                    android.util.Log.i(
+                        "B0BEmbyVR",
+                        "◆起播 站=$siteNow 分辨率=${vw}x${vh}" +
+                            " 比例=" + String.format("%.3f", vw.toFloat() / vh.toFloat()) +
+                            " 交付到出画=" + (if (costMs >= 0) costMs.toString() + "ms" else "未记录"),
+                    )
                 }
                 kotlinx.coroutines.delay(1000)
             }
@@ -3448,7 +3462,11 @@ class MainActivity : ComponentActivity() {
         playWebStream(obj)
     }
 
+    /** 最近一次把网页流交给内核的时刻（用来算"交出去多久才出画面"） */
+    private var lastWebDeliverAt = 0L
+
     private fun playWebStream(obj: org.json.JSONObject) {
+        lastWebDeliverAt = System.currentTimeMillis()
         webSizeKnown = false   /* 新一集：尺寸重新等（2026-10-20） */
         /* 真的开始接管了：标题行从「即将播放」转成「正在播放」（父亲 2026-10-19 定） */
         osdState.upcoming = false

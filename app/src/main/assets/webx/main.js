@@ -71,7 +71,8 @@
             try { sameD = samePageUrl(o.frame || '', location.href); } catch (eD2) {}
           }
         }
-        b0bMark('交付', '站=' + b0bSite() + ' 身份=' + (idPayD || '?').slice(-30) +
+        b0bRoundDelivered = true;
+        b0bMark('交付', '站=' + b0bSite() + ' 层=' + b0bLayer() + ' 身份=' + (idPayD || '?').slice(-30) +
           ' 当前身份=' + (idNowD || '?').slice(-30) +
           ' 核对=' + (sameD ? '一致' : '不一致（页面已经换到别的集）') +
           ' 标题「' + String(b0bBuildTitle() || '').slice(0, 28) + '」' +
@@ -769,6 +770,16 @@
   var b0bSeq = 0;
   var b0bSwitchAt = 0;
   var b0bSwitchWhat = '';
+  /** 这一层是谁：顶层还是某个内嵌层（今晚"另一个层把槽清了"就是靠这个才分得清） */
+  function b0bLayer() {
+    try {
+      var top = (window === window.top) ? '顶层' : '内层';
+      return top + '(' + String(location.hostname || '?') + ')';
+    } catch (e) { return '未知层'; }
+  }
+  /* 本轮（一次真全屏）有没有真交出东西，用来写"结论行" */
+  var b0bRoundAt = 0;
+  var b0bRoundDelivered = false;
   function b0bSite() {
     try {
       var h = String(location.hostname || '');
@@ -802,7 +813,7 @@
     b0bSwitchAt = Date.now();
     b0bSwitchWhat = String(what || '?');
     try { window.__b0bSwitchAt = b0bSwitchAt; } catch (eW) {}
-    b0bMark('切换#' + b0bSeq, '站=' + b0bSite() + ' 来源=' + src + ' 动作=『' + b0bSwitchWhat + '』' +
+    b0bMark('切换#' + b0bSeq, '站=' + b0bSite() + ' 层=' + b0bLayer() + ' 来源=' + src + ' 动作=『' + b0bSwitchWhat + '』' +
       ' 页面身份=' + String(b0bEpisodeKey() || '?').slice(-32) +
       ' 网址=' + String(location.href).slice(-46) + ' 时刻=' + b0bSwitchAt);
   }
@@ -815,8 +826,15 @@
        * 于是每次页面翻动都把别的层抓到的新地址清掉。
        * 这类只记日志、不动槽。
        */
+      try { qqBucketDump('清场前'); } catch (eDump) {}
+      try {
+        var svc = biSlotRead();
+        b0bMark('清场前', '站=' + b0bSite() + ' 层=' + b0bLayer() + ' B站槽=' +
+          (svc && svc.v ? ('有(身份' + (svc.ep || svc.cid || '?') + '，' +
+            Math.round((Date.now() - (svc.at || 0)) / 1000) + '秒前抓)') : '空'));
+      } catch (eDump2) {}
       if (!b0bSwitchAt && String(reason).indexOf('换页') >= 0) {
-        b0bMark('清场跳过', '站=' + b0bSite() + ' 原因=' + reason +
+        b0bMark('清场跳过', '站=' + b0bSite() + ' 层=' + b0bLayer() + ' 原因=' + reason +
           '（本层没有切换动作，不清） 时刻=' + (since || Date.now()));
         return;
       }
@@ -842,7 +860,7 @@
        * 身份是"页面此刻是哪一集"，不该由清地址顺手抹掉。
        */
       biSlotClear(t);
-      b0bMark('清场', '站=' + b0bSite() + ' 原因=' + reason + ' 清了 ' + cleared + ' 格' +
+      b0bMark('清场', '站=' + b0bSite() + ' 层=' + b0bLayer() + ' 原因=' + reason + ' 清了 ' + cleared + ' 格' +
         ' 时刻=' + t + ' 距上次切换=' + b0bSince());
     } catch (e0) {}
   }
@@ -904,7 +922,7 @@
     var until = Date.now() + (ms || 18000);
     if (until > b0bWaitUntil) b0bWaitUntil = until;
     b0bWaitWhy = why;
-    console.log('[b0b]◆等待 站=' + b0bSite() + ' 截止=' + b0bWaitUntil + ' ' + why +
+    console.log('[b0b]◆等待 站=' + b0bSite() + ' 层=' + b0bLayer() + ' 截止=' + b0bWaitUntil + ' ' + why +
       ' → 等这一集的新地址（最多 ' +
       Math.round((b0bWaitUntil - Date.now()) / 1000) + ' 秒）');
   }
@@ -1749,7 +1767,7 @@
           if (prevB && prevB.u === bu) continue;
           qqSlotSet(bt, { u: bu, at: Date.now(), vid: pageVidNow(), from: 'resp',
                           title: String(qqRemoteTitle || '') });
-          b0bMark('新址', '站=qq 槽=' + bt + ' 身份=' + (pageVidNow() || '?') +
+          b0bMark('新址', '层=' + b0bLayer() + ' 站=qq 槽=' + bt + ' 身份=' + (pageVidNow() || '?') +
             ' 标题「' + String(qqRemoteTitle || '').slice(0, 24) + '」' +
             ' 地址尾=…' + bu.slice(-28) + ' 距切换=' + b0bSince());
           console.log('[b0b] 按档位收好：' + bt + 'P ← 尾46=…' + bu.slice(-46) +
@@ -3724,7 +3742,35 @@
   }
   function announceFullscreen(t) {
     peerFullAt = t;
-    b0bMark('真全屏 站=' + b0bSite(), '时刻=' + t + ' 距切换=' + b0bSince() +
+    /*
+     * 【2026-10-23 00:50 父亲定：每次按真全屏都要有一行结论】
+     * 整晚只能从"53 次真全屏 / 22 次交付"倒推失败多少次，看不出每次卡在哪一步。
+     * 这里开一轮，2.5 秒后自检：这段时间有没有真交出地址，没有就写明原因候选项。
+     */
+    b0bRoundAt = Date.now();
+    b0bRoundDelivered = false;
+    try {
+      setTimeout(function () {
+        if (b0bRoundDelivered) {
+          b0bMark('本轮', '站=' + b0bSite() + ' 层=' + b0bLayer() + ' 结果=已交出');
+        } else {
+          var why = [];
+          try {
+            var svb = biSlotRead();
+            why.push('B站槽=' + (svb && svb.v ? ('有(身份' + (svb.ep || svb.cid || '?') + '，' +
+              Math.round((Date.now() - (svb.at || 0)) / 1000) + '秒前)') : '空'));
+          } catch (eW1) {}
+          try {
+            var p3 = qqSlotPick();
+            why.push('腾讯槽=' + (p3 ? ('有(' + qqSlotName(p3.k) + '，身份' + (p3.b.vid || '?') + ')') : '空'));
+          } catch (eW2) {}
+          why.push('当前身份=' + String(b0bEpisodeKey() || '?').slice(-24));
+          why.push('等待中=' + (b0bWaitUntil > Date.now() ? '是' : '否'));
+          b0bMark('本轮', '站=' + b0bSite() + ' 层=' + b0bLayer() + ' 结果=没交出 原因候选：' + why.join('；'));
+        }
+      }, 2500);
+    } catch (eT) {}
+    b0bMark('真全屏 站=' + b0bSite(), '层=' + b0bLayer() + ' 时刻=' + t + ' 距切换=' + b0bSince() +
       ' 页面身份=' + String(b0bEpisodeKey() || '?').slice(-32) +
       ' 标题「' + String(b0bBuildTitle() || '').slice(0, 28) + '」' +
       ' 网址=' + String(location.href).slice(-46) +
@@ -4332,7 +4378,7 @@
        * B站 这格原来标题是空的（交付时才现取）。现在入槽时也存一份快照，
        * 交付时仍按当前指纹现取一次；两份不一致就以身份为准重取标题。
        */
-      b0bMark('新址', '站=bi 槽=B站 身份=' + (biliEp ? 'ep' + biliEp : ('cid' + (biliCid || '?'))) +
+      b0bMark('新址', '层=' + b0bLayer() + ' 站=bi 槽=B站 身份=' + (biliEp ? 'ep' + biliEp : ('cid' + (biliCid || '?'))) +
         ' 标题「' + String(b0bBuildTitle() || '').slice(0, 24) + '」' +
         ' 地址尾=…' + String(cands[0].video || '').slice(-28) + ' 距切换=' + b0bSince());
       biSlotSave({
@@ -5162,6 +5208,21 @@
      * 我们按页面地址判断的两处（播放页判据、交给客户端时记的页面）都会跟着钝掉。
      */
     var epKeyNow = b0bEpisodeKey();
+    /*
+     * 【2026-10-23 00:50 父亲定：把"读到什么"本身记下来】
+     * 今晚 B站 连续出现"现在 ?"，从日志看不出是读不到、还是读错了、还是读到了别的层。
+     */
+    try {
+      var idSig = String(epKeyNow) + '|' + biliEp + '|' + biliCid + '|' + biliSeason;
+      if (idSig !== window.__b0bIdSig) {
+        window.__b0bIdSig = idSig;
+        b0bMark('身份', '站=' + b0bSite() + ' 层=' + b0bLayer() +
+          ' 指纹=' + String(epKeyNow || '?').slice(-24) +
+          ' 集号ep=' + (biliEp || '?') + ' 编号cid=' + (biliCid || '?') +
+          ' 季=' + (biliSeason || '?') +
+          ' 网址=' + String(location.href).slice(-40));
+      }
+    } catch (eId) {}
     if (location.href !== lastHrefLogged || epKeyNow !== lastEpKey) {
       if (epKeyNow !== lastEpKey) {
         console.log('[b0b] 换集指纹变化：' + String(lastEpKey || '?').slice(-40) + ' → ' + String(epKeyNow).slice(-40));
