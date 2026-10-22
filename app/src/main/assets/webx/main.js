@@ -755,10 +755,23 @@
         return 'iq:' + (t || location.href);
       }
       if (/bilibili\.com$/i.test(host)) {
-        var cid = 0;
-        try { cid = biliCid || ((window.__INITIAL_STATE__ || {}).videoData || {}).cid || 0; } catch (e2) {}
-        var epm = /\/ep(\d+)/.exec(String(location.pathname || ''));
-        return 'bi:' + (epm ? 'ep' + epm[1] : location.pathname) + '|' + cid;
+        /*
+         * 【2026-10-22 16:51 父亲定：判定要更严格 —— 只有网址里的集号/稿件号真的变了才算切换】
+         *
+         * 现场（16:34 普通视频 / 16:53 良医 第1集）：刚抓到地址，同一秒就打出
+         * 「B站槽：清掉旧地址（0 秒前抓的）」，槽当场变空 → 点真全屏没东西可交；
+         * 按 B 回网页重抓一次才成，或者来回切一次集把页面逼出稳定的一次抓取才成。
+         * 根因：指纹里拼了 cid，而 cid 在页面上忽有忽无（41325560905 ↔ 0），
+         * 每 400 毫秒检查一次，跳一下就当成一次"换集"清一次。
+         * 日志证据：16:53:45「bi:ep5852945|0 → bi:ep5852945|41325560905」→ 清 → 槽空。
+         * 改法：只有 /ep<集号> 与 /video/BV<稿件号> 参与判定，cid 不参与。
+         */
+        var pth = String(location.pathname || '');
+        var epm = /\/ep(\d+)/.exec(pth);
+        if (epm) return 'bi:ep' + epm[1];
+        var bvm = /\/video\/(BV[0-9A-Za-z]+)/.exec(pth);
+        if (bvm) return 'bi:' + bvm[1];
+        return 'bi:' + pth;
       }
       if (/qq\.com$/i.test(host)) {
         var v = '';
