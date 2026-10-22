@@ -569,6 +569,41 @@
    * 拼最终标题：单集片只给片名，分集片给「剧名 第X季 第X集 集名」。
    * 季号找不到就不写季（很多剧页面根本不显示第几季）。
    */
+  /*
+   * 【2026-10-22 16:29 父亲核实：控制条显示第11集，实际播的是第15集】
+   *
+   * 交付户口写「伟大的长征 第11集 危急关头 通道转兵」，页面网址已经是 k410265gf7b
+   * （最后点的那一集），内容对、标题错。原因：active 类选集项里混着腾讯的
+   * 「上次看到第11集」，扫出来永远是第11集。
+   * 修法（只管腾讯，B站/爱奇艺 不受影响）：按当前片号去找**指向同一个片号**的选集项，
+   * 它的文字才是这一集。
+   */
+  function b0bTencentEpText() {
+    try {
+      if (!/(^|\.)qq\.com$/i.test(String(location.hostname || ''))) return '';
+      var vid = '';
+      try {
+        if (window.__VINFO_DATA__ && __VINFO_DATA__.videoInfo && __VINFO_DATA__.videoInfo.vid) {
+          vid = String(__VINFO_DATA__.videoInfo.vid);
+        }
+      } catch (e1) {}
+      if (!vid) {
+        var m = String(location.href).match(/\/([A-Za-z0-9]{8,14})\.html/);
+        if (m) vid = m[1];
+      }
+      if (!vid) return '';
+      var as = document.querySelectorAll('a[href*="' + vid + '"]');
+      for (var i = 0; i < as.length && i < 300; i++) {
+        var t = String(as[i].textContent || '').replace(/\s+/g, ' ').trim();
+        if (/第\s*\d+\s*[集话期]/.test(t) && t.length <= 60) {
+          console.log('[b0b] 标题按片号命中选集项：「' + t + '」（' + vid + '）');
+          return t;
+        }
+      }
+    } catch (e) {}
+    return '';
+  }
+
   function b0bBuildTitle() {
     /* ① 先问该站自己的元数据（最准），取不到再啃可见文字 */
     try {
@@ -604,7 +639,7 @@
     }
     names.push(document.title || '');
     /* 当前这一集的列表项文字，既用来抽集号，也可能装着"第X集 集名" */
-    var act = b0bActiveEpisodeText();
+    var act = b0bTencentEpText() || b0bActiveEpisodeText();
     if (!/第\s*\d+\s*[集话期]/.test(act || '')) act = b0bEpTextByScan() || act;
     var epi = b0bEpiInfo(act);
     if (!epi.ep) {
@@ -4365,16 +4400,20 @@
        * 所以：只把 onlyvinfo 这条的 defn 改成 uhd，其它请求（资格查询、广告）一律不碰
        * —— 之前把 defn 全局改成 uhd 才是菜单塌成只剩 4K 的原因。
        */
-      var isVinfoReq = /"buid"\s*:\s*"onlyvinfo"/.test(body);
-      if (isVinfoReq && p.indexOf('defn=uhd') < 0) {
-        if (/defn=[A-Za-z0-9]+/.test(p)) p = p.replace(/defn=[A-Za-z0-9]+/, 'defn=uhd');
-        else p += '&defn=uhd';
-        changed = true;
-      }
+      /*
+       * 【2026-10-22 16:29 父亲定：不再把档位强改成 4K】
+       *
+       * 父亲原话："不要把档位强改成4K，可以让我自己在网页全屏的情况下自己去选清晰度。
+       * 可能第一次你强改成4K以后，那个清晰度选择就变成灰色了。"
+       *
+       * 现场证据（16:16 那一轮）：强制 defn=uhd 那次拿到了 4K 清单，紧接着切集，
+       * 页面仍以 480P 去要，服务器只回 480P 一份、且整集时长 0，网页自己也播不动 ——
+       * 页面认为在 480P、我们却按 4K 要过地址，两边状态对不上。
+       * 所以这里只补解码能力位，档位一概不碰，选哪一档由父亲在网页全屏里点。
+       */
       if (!changed) return body;
       o.vinfoparam = p;
-      console.log('[b0b] 腾讯播放信息：已补 HEVC 能力位' +
-        (isVinfoReq ? '，并把这一条要成 defn=uhd（4K）' : '（不是 onlyvinfo，不动档位）'));
+      console.log('[b0b] 腾讯播放信息：已补 HEVC 能力位（档位一律不碰，2026-10-22 父亲定）');
       return JSON.stringify(o);
     } catch (e) { return body; }
   }
@@ -4906,7 +4945,16 @@
     if (location.href !== lastHrefLogged || epKeyNow !== lastEpKey) {
       if (epKeyNow !== lastEpKey) {
         console.log('[b0b] 换集指纹变化：' + String(lastEpKey || '?').slice(-40) + ' → ' + String(epKeyNow).slice(-40));
-        if (pendingOwner && pendingOwner === epKeyNow) {
+        if (!lastEpKey || lastEpKey === '?') {
+          /*
+           * 【2026-10-22 16:29 修】第一次拿到片号不算换集。
+           *
+           * 页面刚重建（按 B 回来、或 App 重进）时上一集的指纹还是空的，
+           * 这时按"现在"去清，会把刚抓到的那份新地址一起清掉 ——
+           * 16:01:50 现场：15:59 抓到的第13集地址，被这次"换集"清成三槽全空。
+           */
+          console.log('[b0b] 这是第一次拿到片号，不算换集（不清地址，只记下来）');
+        } else if (pendingOwner && pendingOwner === epKeyNow) {
           console.log('[b0b] 手里这份已属于新这一集 → 保留');
         } else {
           /*
