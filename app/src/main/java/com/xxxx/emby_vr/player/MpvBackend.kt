@@ -193,7 +193,7 @@ class MpvBackend(private val context: Context) {
             if (tick % 2L == 1L) {
                 /*
                  * 宽度：先 video-params/w，读不到退到 dwidth（2026-10-22 实测：
-                 * 网页流刚起播那一两拍 video-params/* 会报 unavailable，于是 cVideoW 一直是 0，
+                 * 网页流刚起播那一两拍 video-params 里的 w 会报 unavailable，于是 cVideoW 一直是 0，
                  * 画布就停在 1920x1080 不重设 → 1920x800 的片子上下出黑边）。
                  */
                 val w0 = try { MPVLib.getPropertyInt("video-params/w") } catch (_: Throwable) { null }
