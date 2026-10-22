@@ -1594,6 +1594,19 @@ class MainActivity : ComponentActivity() {
      *
      * 剧集 = 剧名 + 第X集 + 集名；电影 = 片名。前缀由调用方给。
      */
+    /**
+     * 【2026-10-23 00:45 父亲报"B站 集号变成 3124079"】
+     *
+     * 网页报的 `ep` 有两种东西：B站 普通视频/影视给的是**平台内部编号**（ep_id，7 位上下，
+     * 如 3124079），番剧给的是 ep_id 也是这种长号；真正的"第几集"是页面文字里的集序。
+     * 拿内部编号当集号显示，控制条上就会出现"第 3124079 集"。
+     * 这里只把 1~3 位纯数字当集序用，长号一律不当集号（标题里已经有"第N集"就不缺这块）。
+     */
+    private fun looksLikeEpisodeNumber(ep: String): Boolean {
+        val d = ep.filter { it.isDigit() }
+        return d.isNotEmpty() && d.length <= 3
+    }
+
     private fun itemTitleOf(item: com.xxxx.emby_vr.data.model.BaseItemDto?): String {
         val series = item?.seriesName
         /*
@@ -3391,8 +3404,14 @@ class MainActivity : ComponentActivity() {
          */
         osdState.title = when {
             title.isNotBlank() -> title
-            ep.isNotBlank() -> "第 $ep 集"
+            ep.isNotBlank() && looksLikeEpisodeNumber(ep) -> "第 $ep 集"
             else -> osdState.title
+        }
+        if (ep.isNotBlank() && !looksLikeEpisodeNumber(ep)) {
+            android.util.Log.i(
+                "B0BEmbyVR",
+                "◆集号 网页报的 ep=$ep 是平台内部编号，不当集号显示（标题用片名/页面文字）",
+            )
         }
         osdState.hasPlayback = true
         /*
