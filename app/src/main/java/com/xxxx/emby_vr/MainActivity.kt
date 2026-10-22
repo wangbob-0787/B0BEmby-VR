@@ -3969,6 +3969,12 @@ class MainActivity : ComponentActivity() {
                     if (ww > 0 && hh > 0) {
                         applyScreenAspect(ww.toFloat() / hh.toFloat(), "网页流宽高 $ww x $hh")
                         com.xxxx.emby_vr.vr.VrNative.setVideoSize(ww, hh)
+                    } else {
+                        /* 【2026-10-23 00:45】网页流没给宽高时不在这里猜，等内核报真实画面尺寸纠偏 */
+                        android.util.Log.i(
+                            "B0BEmbyVR",
+                            "◆比例 网页流没声明宽高（$ww x $hh）→ 不在这里定，等内核报真实画面",
+                        )
                     }
                 } else {
                     val kernelAspect =

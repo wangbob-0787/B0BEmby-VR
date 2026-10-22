@@ -56,7 +56,22 @@ object IqiyiDash2 {
         "rs" to "1",
     )
 
-    data class Result(val m3u8: String, val segs: Int, val durationSec: Int, val bid: Int)
+    /**
+     * 【2026-10-23 00:45 父亲报"爱奇艺有时候比例还是不对"】
+     *
+     * 原来交付只声明了"高"（bid>=600 就当 1080），宽度一个都没给：
+     * 原生那边按"网页流的宽高"定银幕比例，w 缺失就整段跳过 → 银幕沿用上一次的比例，
+     * 于是换到不同比例的片子时就变形。这里把变体自己报的宽高带出来，
+     * 拿不到就保持 0（由内核播起来后按真实画面尺寸纠偏）。
+     */
+    data class Result(
+        val m3u8: String,
+        val segs: Int,
+        val durationSec: Int,
+        val bid: Int,
+        val width: Int = 0,
+        val height: Int = 0,
+    )
 
     /**
      * 这一集的**结构化**信息（2026-10-21 21:55，父亲定「文案完全按结构数据构造」）。
@@ -176,8 +191,22 @@ object IqiyiDash2 {
         }
         if (!pl.contains("#EXT-X-ENDLIST")) pl = pl.trimEnd() + "\n#EXT-X-ENDLIST\n"
         val bid = pick.optInt("bid", 0)
-        Log.i(TAG, "爱奇艺自取成功：bid=" + bid + "、段数 " + bestSegs + "、时长 " + pick.optInt("duration", 0) + "s")
-        return Result(pl, bestSegs, pick.optInt("duration", 0), bid)
+        /* 变体自己报的宽高（字段名随接口版本变，几种都试一遍；都没有就 0） */
+        var vw = pick.optInt("width", 0)
+        var vh = pick.optInt("height", 0)
+        if (vw <= 0 || vh <= 0) {
+            val res = pick.optJSONObject("resolution")
+            if (res != null) {
+                vw = res.optInt("width", 0)
+                vh = res.optInt("height", 0)
+            }
+        }
+        Log.i(
+            TAG,
+            "爱奇艺自取成功：bid=" + bid + "、段数 " + bestSegs + "、时长 " + pick.optInt("duration", 0) +
+                "s、变体宽高 " + (if (vw > 0 && vh > 0) vw.toString() + "x" + vh else "未报（比例交给内核）"),
+        )
+        return Result(pl, bestSegs, pick.optInt("duration", 0), bid, vw, vh)
     }
 
     /** 把片单落盘（内核按本地文件当 VOD 播） */

@@ -1620,17 +1620,25 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                             val suspect = useTvid.isNotBlank() && useTvid == IqSlot.tvid &&
                                                 pageV.isNotBlank() && pageV != IqSlot.v
                                             if (suspect) {
+                                                /*
+                                                 * 2026-10-23 00:29 日志实证：点选集 13 后网址已换（v_11wu39wzl6c），
+                                                 * 页面片号仍是第 16 集，等 3 秒没跟上就照交 → 交出去的是第 16 集片单
+                                                 * （324 段 / 2749 秒），标题却是第 13 集。父亲口径：宁可这次不接管，
+                                                 * 也不能播错集。所以：网址已换而片号没变 → 最多等 15 秒，仍不跟上就不交。
+                                                 */
                                                 android.util.Log.i(
                                                     "B0BEmbyVR",
                                                     "◆等待 站=iq 网址已换（v_" + IqSlot.v + " → v_" + pageV +
-                                                        "）但片号还是上一集的 " + useTvid + "，最多等 3 秒",
+                                                        "）但片号还是上一集的 " + useTvid + "，最多等 15 秒",
                                                 )
-                                                for (attempt in 0 until 3) {
+                                                var caught = false
+                                                for (attempt in 0 until 15) {
                                                     Thread.sleep(1000)
                                                     val again = askPageIdentity(webRef)
                                                     if (again.first.isNotBlank() && again.first != useTvid) {
                                                         useTvid = again.first
                                                         if (again.second.isNotBlank()) pageV = again.second
+                                                        caught = true
                                                         android.util.Log.i(
                                                             "B0BEmbyVR",
                                                             "◆等待 站=iq 片号跟上了 → " + useTvid +
@@ -1639,11 +1647,13 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                         break
                                                     }
                                                 }
-                                                if (useTvid == IqSlot.tvid) {
-                                                    android.util.Log.i(
+                                                if (!caught) {
+                                                    android.util.Log.w(
                                                         "B0BEmbyVR",
-                                                        "◆等待 站=iq 等满 3 秒片号仍是 " + useTvid + " → 照交",
+                                                        "◆不交 站=iq 等满 15 秒片号仍是 " + useTvid +
+                                                            "（网址已换到 v_" + pageV + "）→ 这次不接管，避免播错集",
                                                     )
+                                                    return@Thread
                                                 }
                                             }
                                             val res = runCatching {
@@ -1697,7 +1707,25 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                                 " 核对=片单按页面此刻的片号现取（片号即身份）",
                                                         )
                                                         if (pageV.isNotBlank()) IqSlot.pair[pageV] = useTvid
-                                                        play.put("height", if (res.bid >= 600) 1080 else 720)
+                                                        /*
+                                                         * 宽高一起声明（原来只给"高"，宽缺失 → 原生跳过定比例、银幕沿用上一次
+                                                         * 的比例，换到不同比例的片子就变形 —— 父亲 2026-10-23 00:45 报的"有时比例不对"）。
+                                                         * 变体没报宽高就都不声明，交给内核按真实画面纠偏。
+                                                         */
+                                                        if (res.width > 0 && res.height > 0) {
+                                                            play.put("width", res.width)
+                                                            play.put("height", res.height)
+                                                            android.util.Log.i(
+                                                                "B0BEmbyVR",
+                                                                "◆比例 站=iq 按变体声明 " + res.width + "x" + res.height +
+                                                                    "（比例 " + String.format("%.3f", res.width.toFloat() / res.height.toFloat()) + "）",
+                                                            )
+                                                        } else {
+                                                            android.util.Log.i(
+                                                                "B0BEmbyVR",
+                                                                "◆比例 站=iq 变体没报宽高 → 不声明，等内核按真实画面纠偏",
+                                                            )
+                                                        }
                                                         play.put("first", 0)
                                                         /*
                                                          * 【2026-10-22 修 P1】原来写死成站点首页 → 页面还没报 rect

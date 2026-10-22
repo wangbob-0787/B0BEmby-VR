@@ -51,6 +51,13 @@
       if (isPlayD) {
         var idNowD = String(b0bEpisodeKey() || '');
         var idPayD = String((o.vid || o.epKey || o.ep || o.cid) || '');
+      if (!idPayD && o.kind === 'play') {
+        /* B站 的载荷常常不带集号；用当前页面身份补上，否则"身份"永远=?、核对空转 */
+        try {
+          if (biliEp) idPayD = 'bi:ep' + biliEp;
+          else if (biliCid) idPayD = 'bi:' + biliCid;
+        } catch (eId) {}
+      }
         var addrD = '';
         try {
           if (o.text) addrD = String(o.text).slice(-40);
@@ -777,6 +784,19 @@
   function b0bMark(kind, text) {
     try { console.log('[b0b]◆' + kind + ' ' + text); } catch (e) {}
   }
+  /**
+   * 这个指纹是不是"真正在看的那一集/那一片"。
+   * 2026-10-23 00:40：整晚日志里 iq:/ 和 iq:/tv/ 都被当成换集 → 每次翻页清一次槽，
+   * 清场次数 105 次、真正的切换只有 46 次。列表页/首页这种"…/ 结尾"的身份不算。
+   */
+  function b0bIsPlayIdentity(k) {
+    var t = String(k || '');
+    if (!t || t === '?' || t.indexOf(':') < 0) return false;
+    var tail = t.slice(t.indexOf(':') + 1);
+    if (!tail || tail === '/') return false;
+    if (tail.charAt(tail.length - 1) === '/') return false;
+    return true;
+  }
   function b0bMarkSwitch(what, src) {
     b0bSeq++;
     b0bSwitchAt = Date.now();
@@ -789,6 +809,17 @@
 
   function b0bClearStale(reason, since) {
     try {
+      /*
+       * 【2026-10-23 00:40】另一条误清来源：清场调用来自另一个网页层，
+       * 那一层没有"切换时刻"（日志里 距上次切换=（本页还没有切换动作）），
+       * 于是每次页面翻动都把别的层抓到的新地址清掉。
+       * 这类只记日志、不动槽。
+       */
+      if (!b0bSwitchAt && String(reason).indexOf('换页') >= 0) {
+        b0bMark('清场跳过', '站=' + b0bSite() + ' 原因=' + reason +
+          '（本层没有切换动作，不清） 时刻=' + (since || Date.now()));
+        return;
+      }
       var t = since || Date.now();
       var ks = ['zcmax', '4k', 'zc1080'];
       var cleared = 0;
@@ -870,7 +901,7 @@
   var b0bWaitUntil = 0;
   var b0bWaitWhy = '';
   function b0bBeginWait(why, ms) {
-    var until = Date.now() + (ms || 12000);
+    var until = Date.now() + (ms || 18000);
     if (until > b0bWaitUntil) b0bWaitUntil = until;
     b0bWaitWhy = why;
     console.log('[b0b]◆等待 站=' + b0bSite() + ' 截止=' + b0bWaitUntil + ' ' + why +
@@ -1080,6 +1111,22 @@
           sameEp = sameEpisode({ ep: sv.ep, season: sv.season, cid: sv.cid },
             { ep: biliEp, season: biliSeason, cid: biliCid });
         } catch (eS0) {}
+        /*
+         * 【2026-10-23 00:40 父亲日志实证】B站 这一段原来是"对不上就丢"，
+         * 但整晚日志反复出现「B站槽里那份不是这一集（槽 3124079 / 现在 ?）」——
+         * 现在=? 说明页面这一层根本没取到当前集号，于是槽里明明有地址也不交，
+         * 这就是 B站 六成接管失败的直接原因。
+         * 改：只有"两边身份都已知且真的不同"才算不是这一集；未知一律放行（宁可播这一份，
+         * 也不因为读不到编号就整晚不接管）。
+         */
+        if (!sameEp) {
+          var idA = String(sv.ep || ''), idB = String(biliEp || '');
+          var cidA = String(sv.cid || ''), cidB = String(biliCid || '');
+          if (!idB && !cidB) {
+            sameEp = true;
+            console.log('[b0b] B站当前集号读不到（现在=?）→ 不判死，照用槽里那份');
+          }
+        }
         if (sameEp) {
           pendingPlay = {
             cid: sv.cid, ep: sv.ep, season: sv.season, title: sv.title || '',
@@ -1239,7 +1286,13 @@
     } catch (eG) {}
     /* 身份里带上当前页面地址：腾讯那种没有集号的情况靠它判同一次播放（2026-10-17） */
     var nowId = { ep: biliEp, season: biliSeason, cid: biliCid, href: location.href };
-    if (obj && !sameEpisode(obj, nowId)) {
+    /* 【2026-10-23 00:40】当前身份读不到（现在 ep?）时不判死 —— 与下面槽那段同一口径 */
+    /*
+     * 放宽只对 B站 生效（腾讯/其它站点不能跟着松：它们没有集号，这一关是唯一的同一集判据）
+     */
+    var isBiliPage = /(^|\.)bilibili\.com$/i.test(String(location.hostname || ''));
+    var nowIdUnknown = isBiliPage && !biliEp && !biliCid;
+    if (obj && !nowIdUnknown && !sameEpisode(obj, nowId)) {
       console.log('[b0b]③手里那份不是当前这一集（它 ' + (obj.ep || obj.cid || '?') +
         '，现在 ep' + (biliEp || '?') + '）→ 丢掉，重新攒');
       pendingPlay = null;
@@ -5120,8 +5173,13 @@
            * 腾讯的剧集页 `/x/cover/<cid>.html` 里只有 cid，换集时地址一动不动，
            * 靠"地址变了才清"永远轮不到它，手里那份上一集的地址就还留着。
            */
-          b0bMarkSwitch(String(epKeyNow).slice(-32), '页面自己换（指纹变化）');
-          b0bClearStale('片号变了（换集）', Date.now());
+          if (!b0bIsPlayIdentity(epKeyNow)) {
+            console.log('[b0b]◆跳过 站=' + b0bSite() + ' 指纹是列表页/首页（' +
+              String(epKeyNow).slice(-24) + '）→ 不算换集、不清槽');
+          } else {
+            b0bMarkSwitch(String(epKeyNow).slice(-32), '页面自己换（指纹变化）');
+            b0bClearStale('片号变了（换集）', Date.now());
+          }
         }
       }
       lastEpKey = epKeyNow;
