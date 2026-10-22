@@ -506,6 +506,19 @@ class MpvBackend(private val context: Context) {
             if (startSec > 0.5) {
                 post { MPVLib.setPropertyString("start", "+" + startSec.toInt()) }
             }
+            /*
+             * 【2026-10-22 09:50 网页流片单：本地 .m3u8 会被当成"清单文件"逐条播】
+             *
+             * 头显日志（r879，爱奇艺《蒸蒸日上》第 5 集）：
+             *   lavfFound 'hls' at score=100 → playlistdemuxer read all data →
+             *   finished playback, success (reason 5) → 紧接着去播第 1 个分片并 loop-file=inf
+             * 也就是 mpv 把这份 m3u8 当成"播放列表（一条一条文件）"，播完第一条就回头循环 → 只能看 4 秒。
+             * 我们交的是**HLS 媒体播放列表**，必须让 lavf 的 hls 解复用器来接：
+             * 对本地片单强制 demuxer-lavf-format=hls（对下一个加载的文件生效）。
+             */
+            if (url.endsWith(".m3u8") || url.contains(".m3u8?")) {
+                post { MPVLib.setPropertyString("demuxer-lavf-format", "hls") }
+            }
             post { MPVLib.command(arrayOf("loadfile", url, "replace")) }
             /*
              * 外挂音轨（网页流用）：2026-10-16 头显实测 —— 把 audio-file 当"下一个文件的
