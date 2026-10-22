@@ -646,17 +646,33 @@
    * 所以在捕获阶段监听点击：命中"第N集/第N话/第N期"这类按钮，或点在选集面板里，
    * 立刻把旧地址清掉（等价于换集），等新一集的流到了再重新拿。
    */
-  function b0bClearStale(reason) {
+  /*
+   * 【2026-10-22 11:52 父亲：给地址带时间戳，只清"切换动作之前"的那些】
+   *
+   * since = 这次切换动作发生的时刻。清的时候逐份比较：
+   *   · 三槽：槽里有 at（抓取时刻）→ 早于 since 才清
+   *   · 待交载荷 / 腾讯地址：各自的时刻早于 since 才清
+   * 这样"先点选集、后到新地址"的顺序天然安全，不会误伤新地址。
+   */
+  function b0bClearStale(reason, since) {
     try {
+      var t = since || Date.now();
       var ks = ['zcmax', '4k', 'zc1080'];
+      var cleared = 0;
       for (var i = 0; i < ks.length; i++) {
-        qqBucket[ks[i]] = null;
-        try { localStorage.removeItem(qqSlotStoreKey(ks[i])); } catch (e) {}
+        var slot = qqBucket[ks[i]];
+        if (!slot || !slot.at || slot.at < t) {
+          qqBucket[ks[i]] = null;
+          try { localStorage.removeItem(qqSlotStoreKey(ks[i])); } catch (e) {}
+          cleared++;
+        }
       }
-      pendingQq = null; qqHlsPend = null; qqRec = null; qqNotifiedSig = '';
-      pendingPlay = null; lastPlaySig = ''; lastPlaySigAt = 0; pendingOwner = '';
+      if (pendingQq && (!qqAt || qqAt < t)) { pendingQq = null; qqHlsPend = null; qqRec = null; qqNotifiedSig = ''; }
+      if (pendingPlay && (!pendingPlayAt || pendingPlayAt < t)) {
+        pendingPlay = null; lastPlaySig = ''; lastPlaySigAt = 0; pendingOwner = '';
+      }
       try { biliCid = 0; biliEp = ''; biliSeason = ''; } catch (eB) {}
-      console.log('[b0b] 清掉旧地址（' + reason + '）：三槽 + 待交载荷 + 片号');
+      console.log('[b0b] 清掉旧地址（' + reason + '，切换时刻 ' + t + '）：动了 ' + cleared + ' 个槽');
     } catch (e0) {}
   }
 
@@ -1312,6 +1328,7 @@
         's，最高 ' + (streams[0].height || '?') + 'p');
       pendingPlay = playable;
       b0bFreshAt = Date.now();
+      pendingPlayAt = Date.now();
       pendingOwner = b0bEpisodeKey();
     } catch (e) {}
   }
@@ -2485,7 +2502,7 @@
               console.log('[b0b] 点的就是当前这一集 → 不清理（' + txt + '）');
               return;
             }
-            b0bClearStale('点了选集 ' + txt);
+            b0bClearStale('点了选集 ' + txt, Date.now());
             return;
           }
         }
@@ -3654,6 +3671,8 @@
   var b0bFreshAt = 0;
   /* 手里那份地址属于哪一集（指纹），用来判断要不要清 */
   var pendingOwner = '';
+  /* 待交载荷是什么时候拿到的（用来和时间戳比较） */
+  var pendingPlayAt = 0;
   var lastSmallLog = '';   /* 小窗/全屏在播那一行，内容变了才重打 */
 
   /*
@@ -4788,7 +4807,7 @@
        */
       try {
         if (window.self === window.top) {
-          b0bClearStale('换页/换集');
+          b0bClearStale('换页/换集', Date.now());
           localStorage.removeItem('b0b:fullAt');
           /* 真换页了，"这一部在播"的记账也要清（2026-10-18）：新片子得重新按全屏 */
           localStorage.removeItem('b0b:fragLive');
