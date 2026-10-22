@@ -654,7 +654,7 @@
         try { localStorage.removeItem(qqSlotStoreKey(ks[i])); } catch (e) {}
       }
       pendingQq = null; qqHlsPend = null; qqRec = null; qqNotifiedSig = '';
-      pendingPlay = null; lastPlaySig = ''; lastPlaySigAt = 0;
+      pendingPlay = null; lastPlaySig = ''; lastPlaySigAt = 0; pendingOwner = '';
       try { biliCid = 0; biliEp = ''; biliSeason = ''; } catch (eB) {}
       console.log('[b0b] 清掉旧地址（' + reason + '）：三槽 + 待交载荷 + 片号');
     } catch (e0) {}
@@ -1312,6 +1312,7 @@
         's，最高 ' + (streams[0].height || '?') + 'p');
       pendingPlay = playable;
       b0bFreshAt = Date.now();
+      pendingOwner = b0bEpisodeKey();
     } catch (e) {}
   }
 
@@ -2478,10 +2479,6 @@
              * 两个保护：① 1.2 秒内刚拿到过新地址 → 这次点击不清（大概率就是这次切换产生的）；
              *          ② 点的就是当前这一集（文本与当前集号一致）→ 不清。
              */
-            if (Date.now() - b0bFreshAt < 1200) {
-              console.log('[b0b] 点了选集但刚拿到新地址不到 1.2 秒 → 不清理（' + txt + '）');
-              return;
-            }
             var curEpTxt = '';
             try { var ci = b0bEpiInfo(String(document.title || '')); curEpTxt = ci.ep ? ('第' + ci.ep + '集') : ''; } catch (e3) {}
             if (curEpTxt && txt.indexOf(curEpTxt) >= 0) {
@@ -3655,6 +3652,8 @@
   var lastEpKey = '';
   /** 最近一次拿到新地址的时刻（毫秒）：点选集的清理要避让它，别把刚进来的新地址清掉 */
   var b0bFreshAt = 0;
+  /* 手里那份地址属于哪一集（指纹），用来判断要不要清 */
+  var pendingOwner = '';
   var lastSmallLog = '';   /* 小窗/全屏在播那一行，内容变了才重打 */
 
   /*
@@ -4770,6 +4769,9 @@
     if (location.href !== lastHrefLogged || epKeyNow !== lastEpKey) {
       if (epKeyNow !== lastEpKey) {
         console.log('[b0b] 换集指纹变化：' + String(lastEpKey || '?').slice(-40) + ' → ' + String(epKeyNow).slice(-40));
+        if (pendingOwner && pendingOwner === epKeyNow) {
+          console.log('[b0b] 手里这份已属于新这一集 → 保留');
+        }
       }
       lastEpKey = epKeyNow;
       lastHrefLogged = location.href;
