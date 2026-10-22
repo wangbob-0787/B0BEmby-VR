@@ -2148,11 +2148,9 @@ class MainActivity : ComponentActivity() {
                      * 网页流第一次报出真实尺寸就是"真的出画面了"，把耗时和比例一起记下来。
                      */
                     val costMs = if (lastWebDeliverAt > 0) System.currentTimeMillis() - lastWebDeliverAt else -1
-                    val tierNow = webStream?.optString("tier", "") ?: ""
-                    val siteNow = if (tierNow.startsWith("iq")) "iq" else "web"
                     android.util.Log.i(
                         "B0BEmbyVR",
-                        "◆起播 站=$siteNow 分辨率=${vw}x${vh}" +
+                        "◆起播 站=网页流 分辨率=${vw}x${vh}" +
                             " 比例=" + String.format("%.3f", vw.toFloat() / vh.toFloat()) +
                             " 交付到出画=" + (if (costMs >= 0) costMs.toString() + "ms" else "未记录"),
                     )
