@@ -711,7 +711,7 @@
       try { faNow = parseInt(localStorage.getItem('b0b:fullAt') || '0', 10) || 0; } catch (e) {}
       var lq = (faNow > 0 || fullState) ? loadQqLocal() : null;
       if (lq) {
-        pendingQq = cleanUrl(lq.u); qqAt = lq.at || 0; qqKey = lq.key || '';
+        pendingQq = cleanUrl(lq.u); qqAt = lq.at || 0; qqKey = lq.key || ''; b0bFreshAt = Date.now();
         console.log('[b0b] 从本地存储取回腾讯地址（页面或播放器层被重建过）');
       }
     }
@@ -1311,6 +1311,7 @@
       console.log('[b0b] 拿到播放接口：' + streams.length + ' 档，时长 ' + durSec +
         's，最高 ' + (streams[0].height || '?') + 'p');
       pendingPlay = playable;
+      b0bFreshAt = Date.now();
     } catch (e) {}
   }
 
@@ -2469,9 +2470,26 @@
         for (var d = 0; el && d < 5; d++, el = el.parentElement) {
           var txt = String((el.textContent || '')).replace(/\s+/g, ' ').trim();
           var cls = String(el.className || '');
-          if (txt.length <= 14 && /第\s*\d+\s*[集话期]/.test(txt)) { b0bClearStale('点了选集 ' + txt); return; }
-          if (/episode|ep-list|select-list|选集|series-list/i.test(cls) && /\d/.test(txt) && txt.length <= 14) {
-            b0bClearStale('点了选集面板 ' + txt); return;
+          var hitEp = (txt.length <= 14 && /第\s*\d+\s*[集话期]/.test(txt));
+          var hitPanel = (/episode|ep-list|select-list|选集|series-list/i.test(cls) && /\d/.test(txt) && txt.length <= 14);
+          if (hitEp || hitPanel) {
+            /*
+             * 【2026-10-22 11:49 父亲提醒：别把刚进来的新地址清掉】
+             * 两个保护：① 1.2 秒内刚拿到过新地址 → 这次点击不清（大概率就是这次切换产生的）；
+             *          ② 点的就是当前这一集（文本与当前集号一致）→ 不清。
+             */
+            if (Date.now() - b0bFreshAt < 1200) {
+              console.log('[b0b] 点了选集但刚拿到新地址不到 1.2 秒 → 不清理（' + txt + '）');
+              return;
+            }
+            var curEpTxt = '';
+            try { var ci = b0bEpiInfo(String(document.title || '')); curEpTxt = ci.ep ? ('第' + ci.ep + '集') : ''; } catch (e3) {}
+            if (curEpTxt && txt.indexOf(curEpTxt) >= 0) {
+              console.log('[b0b] 点的就是当前这一集 → 不清理（' + txt + '）');
+              return;
+            }
+            b0bClearStale('点了选集 ' + txt);
+            return;
           }
         }
       } catch (e1) {}
@@ -3635,6 +3653,8 @@
   var poolKeysLog = {};
   var lastHrefLogged = '';
   var lastEpKey = '';
+  /** 最近一次拿到新地址的时刻（毫秒）：点选集的清理要避让它，别把刚进来的新地址清掉 */
+  var b0bFreshAt = 0;
   var lastSmallLog = '';   /* 小窗/全屏在播那一行，内容变了才重打 */
 
   /*
