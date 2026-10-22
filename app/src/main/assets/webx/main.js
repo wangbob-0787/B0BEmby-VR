@@ -421,7 +421,11 @@
       '.qy-player-episode-item.active', '.qy-player-episode-item-current',
       '.txp_episode_item.selected', '.txp_episode_item.active',
       '.episode-item.active', '.playlist-item.active', '.ep-list-item.active',
-      '[class*="episode"][class*="active"]', '[class*="playlist"][class*="active"]'
+      '[class*="episode"][class*="active"]', '[class*="playlist"][class*="active"]',
+      /* 【2026-10-22 15:40】B站 番剧选集：类名随改版变，按"含 eplist/ep-list 且带高亮标记"多试几组 */
+      '[class*="eplist"][class*="active"]', '[class*="ep-list"][class*="active"]',
+      '[class*="eplist"][class*="on"]', '[class*="ep-list"][class*="on"]',
+      '[class*="eplist"][class*="current"]', '[class*="ep-list"][class*="current"]'
     ];
     for (var i = 0; i < sels.length; i++) {
       var nodes = [];
@@ -432,6 +436,30 @@
       }
     }
     return '';
+  }
+
+  /*
+   * 【2026-10-22 15:40 父亲：控制条只显示「良医」两个字，没有季集、没有集名】
+   *
+   * 兜底：把页面上"同时带第N集/话、又带高亮类名"的元素全扫一遍（选择器猜不中也能捞到），
+   * 再不行就看播放器标题条里的集号。只读 DOM，不改页面。
+   */
+  function b0bEpTextByScan() {
+    try {
+      var all = document.querySelectorAll('a,li,div,span');
+      var best = '';
+      for (var i = 0; i < all.length && i < 4000; i++) {
+        var el = all[i];
+        var cls = String(el.className || '') + ' ' + String((el.parentNode && el.parentNode.className) || '');
+        if (!/active|current|selected|on\b|cur\b/i.test(cls)) continue;
+        var t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!t || t.length > 60) continue;
+        if (!/第\s*\d+\s*[集话期]/.test(t)) continue;
+        best = t;
+        if (/第\s*\d+\s*[集话期]/.test(t.slice(0, 12))) return t;
+      }
+      return best;
+    } catch (e) { return ''; }
   }
 
   /*
@@ -577,6 +605,7 @@
     names.push(document.title || '');
     /* 当前这一集的列表项文字，既用来抽集号，也可能装着"第X集 集名" */
     var act = b0bActiveEpisodeText();
+    if (!/第\s*\d+\s*[集话期]/.test(act || '')) act = b0bEpTextByScan() || act;
     var epi = b0bEpiInfo(act);
     if (!epi.ep) {
       for (var k = 0; k < names.length && !epi.ep; k++) epi = b0bEpiInfo(names[k]);
@@ -671,7 +700,13 @@
       if (pendingPlay && (!pendingPlayAt || pendingPlayAt < t)) {
         pendingPlay = null; lastPlaySig = ''; lastPlaySigAt = 0; pendingOwner = '';
       }
-      try { biliCid = 0; biliEp = ''; biliSeason = ''; } catch (eB) {}
+      /*
+       * 【2026-10-22 15:20】身份（片号/季/集）不在这里清。
+       * "片号从 0 变成有值"会被指纹比对认成换集 → 清一次 → 片号归零 → 再"变成有值"
+       * → 再清…… 结果交付前的片号校验永远对不上，B站 一律交不出去。
+       * 身份是"页面此刻是哪一集"，不该由清地址顺手抹掉。
+       */
+      biSlotClear(t);
       console.log('[b0b] 清掉旧地址（' + reason + '，切换时刻 ' + t + '）：动了 ' + cleared + ' 个槽');
     } catch (e0) {}
   }
@@ -872,7 +907,30 @@
       } catch (e) {}
     }
     /* 每道关卡都留下记录：抓不到时能一眼看出卡在哪 */
-    if (!pendingPlay) return;
+    if (!pendingPlay) {
+      /* 【2026-10-22 15:35】手里没有新地址 → 用 B站槽里存的那份（页面重建后就靠它）。 */
+      var sv = biSlotRead();
+      if (sv && sv.v && (!sv.at || Date.now() - sv.at < 30 * 60 * 1000)) {
+        var sameEp = true;
+        try {
+          sameEp = sameEpisode({ ep: sv.ep, season: sv.season, cid: sv.cid },
+            { ep: biliEp, season: biliSeason, cid: biliCid });
+        } catch (eS0) {}
+        if (sameEp) {
+          pendingPlay = {
+            cid: sv.cid, ep: sv.ep, season: sv.season, title: sv.title || '',
+            kind: 'play', t: sv.at || Date.now(), frame: location.href, durSec: sv.dur || 0,
+            quality: 0, site: '', width: pageVideoSize().w, height: pageVideoSize().h,
+            streams: [{ id: 0, video: sv.v, audio: sv.a || '', width: 0, height: 0, bw: 0, vcodec: 'h264' }]
+          };
+          console.log('[b0b] 手里没有新地址 → 用 B站槽里那份（' +
+            Math.round((Date.now() - (sv.at || Date.now())) / 1000) + ' 秒前抓的，编号 ' + sv.cid + '）');
+        } else {
+          console.log('[b0b] B站槽里那份不是这一集（槽 ' + sv.cid + ' / 现在 ' + (biliCid || '?') + '）→ 不用');
+        }
+      }
+      if (!pendingPlay) return;
+    }
     /* 【2026-10-17 15:14 父亲定：页面白名单撤了 —— 全屏按钮就是身份 */
     /*
      * 【2026-10-17 03:22 父亲定的口径：停多久都没关系】
@@ -3694,9 +3752,37 @@
   /* 观测用（2026-10-17）：池子里出现过哪些"片子编号"，以及页面地址变过没有 */
   var poolKeysLog = {};
   var lastHrefLogged = '';
-  var lastEpKey = '';
+  var lastEpKey = (function () {
+    /* 【2026-10-22 15:35】页面重建（按 B）时接回上次的集路径 —— 否则重建第一轮
+       就把"同一个地址"当成换集，刚留下的地址全被清掉。 */
+    try { return localStorage.getItem('b0b:lastEpPath') || ''; } catch (e) { return ''; }
+  })();
   /** 最近一次拿到新地址的时刻（毫秒）：点选集的清理要避让它，别把刚进来的新地址清掉 */
   var b0bFreshAt = 0;
+  /*
+   * 【2026-10-22 15:35 父亲定】B站 也开一个槽，规矩跟腾讯那三个槽一样：
+   *   抓到就存、带时间戳；只有切页/切集才清，且只清"早于切换时刻"的；
+   *   页面重建（按 B 回网页）不算切页，槽留着 —— 重建后按全屏直接用槽里的地址
+   *   （父亲原话：抓到的地址要单独存到内存里，B站 一个槽就够）。
+   */
+  var BI_SLOT_KEY = 'b0b:biSlot';
+  function biSlotSave(o) { try { localStorage.setItem(BI_SLOT_KEY, JSON.stringify(o)); } catch (e) {} }
+  function biSlotRead() {
+    try { var s = localStorage.getItem(BI_SLOT_KEY); return s ? JSON.parse(s) : null; } catch (e) { return null; }
+  }
+  function biSlotClear(cut) {
+    try {
+      var s = biSlotRead();
+      if (!s) return;
+      if (cut && s.at && s.at >= cut) {
+        console.log('[b0b] B站槽：槽里是切换之后抓的新地址 → 保留');
+        return;
+      }
+      localStorage.removeItem(BI_SLOT_KEY);
+      console.log('[b0b] B站槽：清掉旧地址（' +
+        (s.at ? Math.round((Date.now() - s.at) / 1000) + ' 秒前抓的' : '时刻未知') + '）');
+    } catch (e) {}
+  }
   /* 手里那份地址属于哪一集（指纹），用来判断要不要清 */
   var pendingOwner = '';
   /* 待交载荷是什么时候拿到的（用来和时间戳比较） */
@@ -3996,6 +4082,10 @@
         durSec: 0, quality: 0, site: '', width: pageVideoSize().w, height: pageVideoSize().h,
         streams: cands
       };
+      biSlotSave({
+        v: String(cands[0].video || ''), a: String(cands[0].audio || ''),
+        cid: biliCid, ep: biliEp, season: biliSeason, title: '', dur: 0, at: Date.now()
+      });
       console.log('[b0b]③ 交给客户端 ' + cands.length + ' 条候选：' +
         cands.map(function (c, i) {
           return (i + 1) + ')' + (c.audio ? '画面+声音' : '单条') + ' ' + String(c.video).slice(-26);
@@ -4828,6 +4918,7 @@
         }
       }
       lastEpKey = epKeyNow;
+      try { localStorage.setItem('b0b:lastEpPath', epKeyNow); } catch (ePK) {}
       lastHrefLogged = location.href;
       /*
        * 【2026-10-17 15:46 父亲定稿：每新开一个页面，全屏按钮计数归零】
