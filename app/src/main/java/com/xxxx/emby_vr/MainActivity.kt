@@ -200,6 +200,10 @@ class MainActivity : ComponentActivity() {
      * 现在起播处明确记下"此刻放的是网页流"，凡是 Emby 专属的刷新（标题、logo）都让位。
      */
     private var webPlayingNow = false
+
+    /** 网页流当前画布尺寸（第一帧出来后按内核报的真实尺寸重设一次，2026-10-22） */
+    private var webCanvasW = 0
+    private var webCanvasH = 0
     /** 网页流标题的"基底"（剧名 第X集 [集名]），分辨率后面再拼上去（父亲 2026-10-19 20:58 定） */
     private var webTitleBase: String = "" 
 
@@ -1653,7 +1657,30 @@ class MainActivity : ComponentActivity() {
          * 正在放网页流时不许它插手 —— 标题由 applyWebStreamTitle 一个人负责。
          */
         if (webPlayingNow) {
-            /* 网页流：尺寸要等第一帧才准，所以每秒复核一次，把分辨率补进标题 */
+            /*
+             * 【2026-10-22 10:40 父亲：爱奇艺这一集画面比例不对，高度不对】
+             *
+             * 根因：网页流的画布尺寸是照交接载荷里的 width/height 定的（我们按"1080P 档"填了
+             * 1920x1080），但这一集实际是 **1920x800**（2.4:1）。内核把 1920x800 画进 1920x1080
+             * 的画布，上下各留 140px 黑边 —— 观感就是"高度不对"。
+             * 第一帧出来后内核会报真实尺寸，这里按真实尺寸把画布改一次（宽度按 1920 封顶）。
+             */
+            run {
+                val vs = try { mpvBackend?.videoSize() } catch (_: Throwable) { null }
+                if (vs != null && vs.first > 0 && vs.second > 0) {
+                    val cap = 1920
+                    val vw = if (vs.first > cap) cap else vs.first
+                    val vh = (vs.second.toLong() * vw / vs.first).toInt().coerceAtLeast(64)
+                    if (vw != webCanvasW || vh != webCanvasH) {
+                        webCanvasW = vw
+                        webCanvasH = vh
+                        runCatching { renderer.setVideoBufferSize(vw, vh) }
+                        runCatching { mpvBackend?.setSurfaceSize(vw, vh) }
+                        Log.i(TAG, "网页流画布按真实尺寸重设 → ${vw}x$vh（内核报 ${vs.first}x${vs.second}）")
+                    }
+                }
+            }
+            /* 尺寸要等第一帧才准，所以每秒复核一次，把分辨率补进标题 */
             val base = webTitleBase
             if (base.isNotEmpty()) {
                 val nt = base + resSuffix()
