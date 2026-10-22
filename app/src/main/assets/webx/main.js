@@ -1994,17 +1994,18 @@
    * 由原生在"让位回网页"那一步调用（见 WebPageHub.clearSlotsHandler）。
    */
   window.__b0bClearSlots = function () {
+    /*
+     * 【2026-10-22 11:40 父亲改口：按 B 回网页**不清**】
+     *
+     * 原话：「我按 B 键返回就不用清掉，因为有可能我还要全屏。」
+     * 之前（10-20）定的是回网页清三槽，防串台；现在改成只靠"换页清理 + 交付时片号校验"
+     * 来防，同一集回网页再全屏仍然能用手里这份地址。
+     */
     try {
-      var keys = ['zcmax', '4k', 'zc1080'];
-      for (var i = 0; i < keys.length; i++) {
-        qqBucket[keys[i]] = null;
-        try { localStorage.removeItem(qqSlotStoreKey(keys[i])); } catch (e) {}
-      }
-      qqHlsPend = null;
-      pendingQq = null;
-      console.log('[b0b] 回网页：三槽已清空');
+      console.log('[b0b] 回网页：保留已抓地址（同一集还要再全屏）');
     } catch (e) {}
   };
+
   /*
    * 【2026-10-20 08:46 现场定案：槽必须是**跨窗口共用**的】
    *
@@ -4660,7 +4661,16 @@
             }
             pendingQq = null;
             qqHlsPend = null;
-            console.log('[b0b] 换页：三槽已清空');
+            /*
+             * 【2026-10-22 11:38 父亲：切到别的集，结果播的是上一集】
+             * 三槽清了还不够 —— 手里那份"待交载荷"（pendingPlay）也是上一集的，
+             * 递交时没有片号校验就会照交。换页一律清掉待交状态，按新页重新拿。
+             */
+            pendingPlay = null;
+            lastPlaySig = '';
+            lastPlaySigAt = 0;
+            try { biliCid = 0; biliEp = ''; biliSeason = ''; } catch (eB) {}
+            console.log('[b0b] 换页：三槽 + 待交地址已清空');
           } catch (eC) {}
         }
       } catch (e) {}
