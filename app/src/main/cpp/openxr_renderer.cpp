@@ -1199,6 +1199,26 @@ void updateViewerAnchor(const XrPosef &head) {
         LOGI("观影位锚点 → 起点记为 x=%.2f z=%.2f（后续所有走动都相对这个点）",
              (double) hx, (double) hz);
     }
+    /*
+     * 【2026-10-22 10:57 父亲：按圆圈键必须还能回到原来位置】
+     *
+     * 圆圈键是系统的"重新居中"：按下后头显把自己的追踪原点重置到当前站位，
+     * 原来记录的锚点就作废了 —— 如果我们还按老锚点算前后位移，
+     * 坡度补偿会把整间影厅顶歪（人回原位、画面却不在原位）。
+     * 这里检测"位置突然跳变"（一次超过 1.5 米）判定为重新居中，重设锚点、位移归零。
+     */
+    {
+        const float dx = hx - gViewerOriginX.load();
+        const float dz = hz - gViewerOriginZ.load();
+        if (dx * dx + dz * dz > 1.5f * 1.5f) {
+            gViewerOriginX.store(hx);
+            gViewerOriginZ.store(hz);
+            gViewerX.store(0.f);
+            gViewerZ.store(0.f);
+            LOGI("重新居中：锚点已重设（x=%.2f z=%.2f），坡度补偿归零", (double) hx, (double) hz);
+            return;
+        }
+    }
     // 低通平滑（0.25）：位姿有轻微抖动，直接跟随会让控制条抖
     const float px = gViewerX.load(), pz = gViewerZ.load();
     const float sx = px + ((hx - gViewerOriginX.load()) - px) * 0.25f;
