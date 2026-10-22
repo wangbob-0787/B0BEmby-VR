@@ -1293,6 +1293,26 @@
       fetch(url, { credentials: 'include' }).then(function (r) { return r.json(); }).then(function (j) {
         var d = (j && (j.data || (j.result && (j.result.data || j.result)))) || null;
         if (!d) { console.log('[b0b] 主动取流：没有数据（' + (j && j.message ? j.message : '?') + '）'); return; }
+        /*
+         * 片号校验（2026-10-22 11:45 父亲指出的"播错集"）：接口回来的这份必须属于当前这一集。
+         * 番剧看 ep_id，普通视频看 cid；对不上就当没取到（宁可这一次不接管，也不播错集）。
+         */
+        try {
+          var wantEp = (/\/ep(\d+)/.exec(String(location.pathname || '')) || [])[1] || '';
+          var gotEp = String((j && j.result && j.result.ep_id) || d.ep_id || '');
+          var wantCid = 0;
+          try { wantCid = biliCid || (window.__INITIAL_STATE__ && window.__INITIAL_STATE__.videoData &&
+                window.__INITIAL_STATE__.videoData.cid) || 0; } catch (eC) {}
+          var gotCid = String(d.cid || (j && j.result && j.result.cid) || '');
+          if (wantEp && gotEp && wantEp !== gotEp) {
+            console.log('[b0b] 主动取流：回来的不是这一集（要 ep' + wantEp + '，回了 ep' + gotEp + '）→ 丢弃');
+            return;
+          }
+          if (wantCid && gotCid && String(wantCid) !== gotCid) {
+            console.log('[b0b] 主动取流：回来的不是这一集（要 cid' + wantCid + '，回了 cid' + gotCid + '）→ 丢弃');
+            return;
+          }
+        } catch (eG) {}
         applyPlayinfo(d);
         if (pendingPlay) {
           console.log('[b0b] 主动取流成功：' + ((pendingPlay.streams || [])[0].video || '').slice(-40));
