@@ -659,7 +659,16 @@ private object WebRuntime {
                 " 段、" + obj.optInt("height", 0) + "p、文本 " + text.length + " 字符",
         )
         /* 内容特征：换集/换档必须让去重判据看到不同的地址，所以把签名挂在查询串上 */
-        val sig = obj.optString("tier", "x") + "-" + obj.optInt("segs", 0) + "-" + obj.optInt("first", 0)
+        /*
+         * 【2026-10-22 12:34 换集接管不了的真凶：去重签名撞车】
+         *
+         * 本机片单地址是 `…/list.m3u8?sig=<档>-<段数>-<首段>`，同一档、同样段数（这部是 700）
+         * 的另一集算出来的地址**一模一样**；而 onBridgePlayable 的去重是"地址末 80 字符相同就不起播"
+         * → 换集那次被当成重复丢掉（日志停在「整集清单就绪」后面什么都没有）。
+         * 把片号（epKey）并进签名，换一集就必然不同。
+         */
+        val sig = obj.optString("tier", "x") + "-" + obj.optInt("segs", 0) + "-" + obj.optInt("first", 0) +
+            "-" + obj.optString("epKey", "")
         /*
          * 【2026-10-22 10:10 实测翻案：文本片单必须走**本机服务**，不能给 file://】
          *
@@ -1496,6 +1505,8 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                         play.put("tier", "iq" + res!!.bid)
                                                         play.put("segs", res.segs)
                                                         play.put("durSec", res.durationSec)
+                                                        /* 片号：让"这一集"进入去重签名，换集不会被误判为重复 */
+                                                        play.put("epKey", tvid)
                                                         play.put("height", if (res.bid >= 600) 1080 else 720)
                                                         play.put("first", 0)
                                                         play.put("frame", "https://www.iqiyi.com/")
