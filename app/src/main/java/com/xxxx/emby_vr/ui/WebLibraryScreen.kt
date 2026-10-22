@@ -661,28 +661,32 @@ private object WebRuntime {
         /* 内容特征：换集/换档必须让去重判据看到不同的地址，所以把签名挂在查询串上 */
         val sig = obj.optString("tier", "x") + "-" + obj.optInt("segs", 0) + "-" + obj.optInt("first", 0)
         /*
-         * 【2026-10-22 07:45 父亲问对了一件事：为什么不直接把文件给内核？】
+         * 【2026-10-22 10:10 实测翻案：文本片单必须走**本机服务**，不能给 file://】
          *
-         * 因为片单里的分片是**绝对地址**（`https://pcw-data.video.iqiyi.com/…ts`），
-         * 内核拿到本地文件后自己按这些地址去 CDN 拉，不需要我们转发。
-         * 本机小服务当初是为腾讯那种"分片要我们自己记账/代理"的场景加的，爱奇艺这条用不上。
-         * 所以改成：**先落盘成文件交内核**，文件写失败才退回小服务。
+         * 父 07:45 问「为什么不起小服务、直接把文件给内核」，我改了 file-first，实测两条路都不行：
+         *   ① 不强制解复用器：mpv 的"播放列表"解复用器抢走，只播一段就循环（4 秒）；
+         *   ② 强制 `demuxer-lavf-format=hls`：`lavfFound 'hls' … size=0 (forced)` 之后
+         *      `avformat_open_input() failed` → 「unrecognized file format」→ 进度条 0、放不出来。
+         * 结论：ffmpeg 的 hls 解复用器要的是**URL 语义**（它要按基址拼分片），本地文件不给这套上下文。
+         * 所以文本片单仍然交本机服务（127.0.0.1），落盘只作兜底。
          */
         var target = ""
-        val f = runCatching {
-            val dir = java.io.File(c.cacheDir, "vr-hls").apply { mkdirs() }
-            java.io.File(dir, "list-$sig.m3u8").also { it.writeText(text) }
-        }.getOrNull()
-        if (f != null) {
-            target = "file://" + f.absolutePath
-            android.util.Log.i("B0BEmbyVR", "整集清单落盘 → " + f.absolutePath)
+        val srv = hlsServer ?: com.xxxx.emby_vr.web.PlaylistServer().also { hlsServer = it }
+        runCatching {
+            val base = srv.start(text)
+            if (!base.isNullOrBlank()) target = "$base?sig=$sig"
+        }
+        if (target.isNotBlank()) {
+            android.util.Log.i("B0BEmbyVR", "整集清单交本机服务 → " + target)
         } else {
-            val srv = hlsServer ?: com.xxxx.emby_vr.web.PlaylistServer().also { hlsServer = it }
-            runCatching {
-                val base = srv.start(text)
-                if (!base.isNullOrBlank()) target = "$base?sig=$sig"
+            val f = runCatching {
+                val dir = java.io.File(c.cacheDir, "vr-hls").apply { mkdirs() }
+                java.io.File(dir, "list-$sig.m3u8").also { it.writeText(text) }
+            }.getOrNull()
+            if (f != null) {
+                target = "file://" + f.absolutePath
+                android.util.Log.w("B0BEmbyVR", "整集清单：本机服务起不来，改走文件 " + f.absolutePath)
             }
-            android.util.Log.i("B0BEmbyVR", "整集清单：落盘失败，改走本机服务 " + target)
         }
         if (target.isBlank()) {
             android.util.Log.w("B0BEmbyVR", "整集清单：落盘与本机服务都失败，放弃")
