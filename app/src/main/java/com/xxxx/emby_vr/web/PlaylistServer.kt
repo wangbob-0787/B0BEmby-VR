@@ -40,6 +40,8 @@ class PlaylistServer {
     private val bodies = java.util.concurrent.ConcurrentHashMap<String, String>()
     private val seq = java.util.concurrent.atomic.AtomicLong(0)
     private val order = java.util.concurrent.ConcurrentLinkedQueue<String>()
+    /** 最近交付的那一份（老调用方/兜底用；ConcurrentLinkedQueue 没有 peekLast） */
+    @Volatile private var lastId: String? = null
 
     @Volatile private var server: ServerSocket? = null
     @Volatile private var thread: Thread? = null
@@ -48,6 +50,7 @@ class PlaylistServer {
     fun start(m3u8: String): String? {
         val id = "l" + seq.incrementAndGet()
         bodies[id] = m3u8
+        lastId = id
         order.add(id)
         /* 只留最近 6 份：够"上一集还要复读一次"用，不占内存 */
         while (order.size > 6) {
@@ -113,8 +116,8 @@ class PlaylistServer {
              */
             val path = if (line.startsWith("GET ")) line.substring(4).trim().split(' ', '?')[0] else ""
             val id = path.trimStart('/').substringBefore('.')
-            val lastId = order.peekLast()
-            val hit = bodies[id] ?: (if (lastId != null) bodies[lastId] else null)
+            val h = lastId
+            val hit = bodies[id] ?: (if (h != null) bodies[h] else null)
             if (line.startsWith("GET ") && hit != null) {
                 val payload = hit.toByteArray(Charsets.UTF_8)
                 val head = "HTTP/1.1 200 OK\r\n" +
@@ -140,8 +143,8 @@ class PlaylistServer {
 
     /** 调试用：把落盘的文件与内存里的内容对照（父亲要看"清单到底是不是给的这份"）。 */
     fun dumpTo(f: File): Boolean = runCatching {
-        val lastId = order.peekLast()
-        f.writeText((if (lastId != null) bodies[lastId] else null) ?: "")
+        val h = lastId
+        f.writeText((if (h != null) bodies[h] else null) ?: "")
         true
     }.getOrDefault(false)
 }
