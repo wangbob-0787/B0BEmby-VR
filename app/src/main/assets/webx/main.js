@@ -4314,6 +4314,15 @@
         cid: biliCid,
         ep: biliEp,
         season: biliSeason,
+        /*
+         * 【2026-10-23 00:48 父亲纠正：集号不能按位数猜】
+         * 3124079 是 B站 的内部编号，而剧集本来就有几十上百集，"位数<=3"这种猜法不成立。
+         * 正解：身份(ep)只用来判断是不是同一集，显示用的集序单独给一个 epNo ——
+         * 取自页面元数据里的"第几集"，取不到就是 0（显示层就只用片名/页面上那句"第N集"）。
+         */
+        epNo: (function () {
+          try { var mi = b0bMetaInfo(); return (mi && mi.ep > 0) ? mi.ep : 0; } catch (eN) { return 0; }
+        })(),
         title: '', kind: 'play', t: Date.now(), frame: location.href, winId: poolWin,
         durSec: 0, quality: 0, site: '', width: pageVideoSize().w, height: pageVideoSize().h,
         streams: cands

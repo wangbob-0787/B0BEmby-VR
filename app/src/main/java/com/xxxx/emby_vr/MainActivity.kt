@@ -1595,16 +1595,16 @@ class MainActivity : ComponentActivity() {
      * 剧集 = 剧名 + 第X集 + 集名；电影 = 片名。前缀由调用方给。
      */
     /**
-     * 【2026-10-23 00:45 父亲报"B站 集号变成 3124079"】
+     * 【2026-10-23 00:48 父亲纠正"按位数猜集号也不对"】
      *
-     * 网页报的 `ep` 有两种东西：B站 普通视频/影视给的是**平台内部编号**（ep_id，7 位上下，
-     * 如 3124079），番剧给的是 ep_id 也是这种长号；真正的"第几集"是页面文字里的集序。
-     * 拿内部编号当集号显示，控制条上就会出现"第 3124079 集"。
-     * 这里只把 1~3 位纯数字当集序用，长号一律不当集号（标题里已经有"第N集"就不缺这块）。
+     * 剧集本来就有几十上百集，靠"数字位数"分辨"内部编号 vs 集序"根本不成立。
+     * 正解：网页载荷里 **身份 ep 一律不当集号显示**；显示用的集序单独走 `epNo`
+     * （页面元数据里的"第几集"）。epNo 取不到就只显示片名 —— 宁可不显示集号，
+     * 也不能把内部编号当集号摆给父亲看。
      */
-    private fun looksLikeEpisodeNumber(ep: String): Boolean {
-        val d = ep.filter { it.isDigit() }
-        return d.isNotEmpty() && d.length <= 3
+    private fun webEpisodeNumber(obj: org.json.JSONObject): Int {
+        val n = obj.optInt("epNo", 0)
+        return if (n in 1..2000) n else 0
     }
 
     private fun itemTitleOf(item: com.xxxx.emby_vr.data.model.BaseItemDto?): String {
@@ -3402,15 +3402,16 @@ class MainActivity : ComponentActivity() {
          * 标题与集号：网页报了片名就用片名，否则用"第 N 集"。
          * hasPlayback 置上，控制条上的播放按钮才是可用的 —— 父亲要按的就是它。
          */
+        val epNo = webEpisodeNumber(obj)
         osdState.title = when {
             title.isNotBlank() -> title
-            ep.isNotBlank() && looksLikeEpisodeNumber(ep) -> "第 $ep 集"
+            epNo > 0 -> "第 $epNo 集"
             else -> osdState.title
         }
-        if (ep.isNotBlank() && !looksLikeEpisodeNumber(ep)) {
+        if (epNo <= 0) {
             android.util.Log.i(
                 "B0BEmbyVR",
-                "◆集号 网页报的 ep=$ep 是平台内部编号，不当集号显示（标题用片名/页面文字）",
+                "◆集号 网页没给集序（身份 ep=$ep 只用于判断是不是同一集）→ 标题只用片名/页面文字，不把内部编号当集号",
             )
         }
         osdState.hasPlayback = true
