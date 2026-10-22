@@ -1175,8 +1175,7 @@
         var auds = (d.dash.audio || []).slice().sort(function (a, b) {
           return (b.bandwidth || 0) - (a.bandwidth || 0);
         });
-        var audioUrl = auds.length ? (auds[0].baseUrl || auds[0].base_url ||
-          (auds[0].backupUrl && auds[0].backupUrl[0]) || '') : '';
+        var audioUrl = auds.length ? (auds[0].baseUrl || auds[0].base_url || '') : '';
         var vids = (d.dash.video || []).slice().sort(function (a, b) {
           var sa = codecRank(a.codecs) * 100000 + (a.height || 0) * 10 + (a.bandwidth || 0) / 1000000;
           var sb = codecRank(b.codecs) * 100000 + (b.height || 0) * 10 + (b.bandwidth || 0) / 1000000;
@@ -1184,9 +1183,8 @@
         });
         for (var i = 0; i < vids.length; i++) {
           var v = vids[i];
-          /* 有些片子只给 backupUrl（2026-10-22 实测：主地址空着 → 交上去长度 0，客户端没法起播） */
-          var u = v.baseUrl || v.base_url ||
-                  (v.backupUrl && v.backupUrl[0]) || (v.backup_url && v.backup_url[0]) || '';
+          /* 只认主地址；为空就走"主动问一次接口"那条路（父亲 2026-10-22 11:39：不用备用地址） */
+          var u = v.baseUrl || v.base_url || '';
           if (!u) continue;
           streams.push({
             id: v.id || 0, height: v.height || 0, width: v.width || 0,
