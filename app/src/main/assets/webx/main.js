@@ -979,8 +979,11 @@
             quality: 0, site: '', width: pageVideoSize().w, height: pageVideoSize().h,
             streams: [{ id: 0, video: sv.v, audio: sv.a || '', width: 0, height: 0, bw: 0, vcodec: 'h264' }]
           };
-          console.log('[b0b] 手里没有新地址 → 用 B站槽里那份（' +
-            Math.round((Date.now() - (sv.at || Date.now())) / 1000) + ' 秒前抓的，编号 ' + sv.cid + '）');
+          console.log('[b0b] 手里没有新地址 → 用 B站槽里那份〔身份=' +
+            (sv.ep ? 'ep' + sv.ep : ('cid' + (sv.cid || '?'))) +
+            '｜标题「' + String(sv.title || '').slice(0, 24) + '」｜抓于' +
+            Math.round((Date.now() - (sv.at || Date.now())) / 1000) + '秒前｜地址尾=' +
+            String(sv.v || '').slice(-24) + '〕');
         } else {
           console.log('[b0b] B站槽里那份不是这一集（槽 ' + sv.cid + ' / 现在 ' + (biliCid || '?') + '）→ 不用');
         }
@@ -2839,10 +2842,10 @@
     for (var i = 0; i < keys.length; i++) {
       var b = qqSlotGet(keys[i]);
       if (!b) { parts.push(qqSlotName(keys[i]) + '=空'); continue; }
-      parts.push(qqSlotName(keys[i]) + '=有〔尾46=…' + String(b.u).slice(-46) +
-        '｜抓于' + Math.round((Date.now() - b.at) / 1000) + '秒前' +
-        '｜集=' + (b.vid || '?') +
+      parts.push(qqSlotName(keys[i]) + '=有〔身份=' + (b.vid || '?') +
         '｜标题「' + String(b.title || '').slice(0, 24) + '」来源=' + b.from +
+        '｜抓于' + Math.round((Date.now() - b.at) / 1000) + '秒前' +
+        '｜地址尾46=…' + String(b.u).slice(-46) +
         '｜离线日志页=' + (qqIsOfflineSlot(b) ? '是（不交）' : '否') + '〕');
     }
     console.log('[b0b] 三槽现状（' + tag + '）：' + parts.join(' ／ '));
@@ -3901,7 +3904,13 @@
      * 原来的写法把「两边都空」当成「不是同一集」。两边都没有身份时改用「是不是同一个页面」判 ——
      * 同一页就是同一次播放（换集/换片必然换页）。
      */
-    if (ae === '' && be === '' && !a.cid && !b.cid) return samePageUrl(a.frame, b.href);
+    /*
+     * 【2026-10-22 17:36 父亲定：核对只认身份，缺一格不能判死】
+     * 原来这里要求"两边 cid 都没有"才按页面判；普通视频页的 cid 忽有忽无，
+     * 槽里记了 cid、判定时读到 0 → 被判成"不是这一集"→ 地址刚抓到就被丢掉。
+     * 改成：两边都没有集号（ep）时，只要在同一页就算同一集。
+     */
+    if (ae === '' && be === '') return samePageUrl(a.frame, b.href);
     return false;
   }
   var candTried = 0;
@@ -4138,9 +4147,16 @@
         durSec: 0, quality: 0, site: '', width: pageVideoSize().w, height: pageVideoSize().h,
         streams: cands
       };
+      /*
+       * 【2026-10-22 17:36 父亲定：三家槽统一四格 —— 身份、标题、时刻、地址】
+       * B站 这格原来标题是空的（交付时才现取）。现在入槽时也存一份快照，
+       * 交付时仍按当前指纹现取一次；两份不一致就以身份为准重取标题。
+       */
       biSlotSave({
         v: String(cands[0].video || ''), a: String(cands[0].audio || ''),
-        cid: biliCid, ep: biliEp, season: biliSeason, title: '', dur: 0, at: Date.now()
+        cid: biliCid, ep: biliEp, season: biliSeason,
+        title: (function () { try { return String(b0bBuildTitle() || ''); } catch (eT) { return ''; } })(),
+        dur: 0, at: Date.now()
       });
       console.log('[b0b]③ 交给客户端 ' + cands.length + ' 条候选：' +
         cands.map(function (c, i) {
