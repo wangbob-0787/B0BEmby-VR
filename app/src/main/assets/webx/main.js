@@ -1498,9 +1498,18 @@
       var _last = {};
       _last = JSON.parse(localStorage.getItem('b0b_sub') || '{}');
     } catch (e) { _last = {}; }
+    /*
+     * 【2026-10-23 11:05 按 r933 实测改】父亲同一集连按真全屏时，这条 20 秒去重把后面几次全挡了
+     * （日志：10:56:12、10:56:13 两次"没交出"，槽里明明有、身份也一致）。
+     * 规矩：只有**这一次是按 B 回来的**才去重；父亲主动再按真全屏 = 他想再来一次，必须放行。
+     */
     if (_last && _last.s === subSig && Date.now() - (_last.t || 0) < 20000) {
-      console.log('[b0b]③同一条地址 20 秒内已交过（防按B回来被再顶走），不重复接');
-      return;
+      var pressedAgain = (Date.now() - (b0bRoundAt || 0)) < 3000;
+      if (!pressedAgain) {
+        console.log('[b0b]③同一条地址 20 秒内已交过（没重新按全屏，不重复接）');
+        return;
+      }
+      console.log('[b0b]③同一条地址，但这一次是你重新按的真全屏 → 放行');
     }
     try { localStorage.setItem('b0b_sub', JSON.stringify({ s: subSig, t: Date.now() })); } catch (e) {}
     /*
