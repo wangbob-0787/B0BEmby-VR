@@ -839,9 +839,55 @@ private object WebRuntime {
         }
     }
 
+    /**
+     * 【2026-10-23 11:15 父亲定：判定放原生，网页只负责监控与汇报】
+     *
+     * 三站交上来的东西统一过这一道闸门，规则只在这里维护一处：
+     *   ① 时长已知且不到 5 分钟 → 这是分片/预告，不是整集，不交
+     *   ② 同一份地址在 8 秒内重复 → 不重复起播
+     *   ③ 身份一个都没有 → 记日志（暂不拦，等网页侧身份补齐后再收紧）
+     * 网页侧的脚本只做"看到什么报什么"，不再各自写一套能不能交。
+     */
+    private var gateLastSig = ""
+    private var gateLastAt = 0L
+
+    private fun gatePlayable(obj: org.json.JSONObject): Boolean {
+        val dur = obj.optInt("durSec", 0)
+        if (dur in 1..299) {
+            android.util.Log.w(
+                "B0BEmbyVR",
+                "◆闸门 拒收：时长只有 " + dur + " 秒（分片/预告，不是整集） 标题「" +
+                    obj.optString("title").take(24) + "」",
+            )
+            return false
+        }
+        var addr = obj.optString("u", "")
+        if (addr.isBlank()) {
+            val streams = obj.optJSONArray("streams")
+            if (streams != null && streams.length() > 0) {
+                addr = streams.optJSONObject(0)?.optString("video", "") ?: ""
+            }
+        }
+        if (addr.isBlank()) addr = obj.optString("text", "").take(200)
+        val sig = obj.optString("epKey") + "|" + obj.optString("vid") + "|" + addr.takeLast(60)
+        val now = System.currentTimeMillis()
+        if (sig == gateLastSig && now - gateLastAt < 8000) {
+            android.util.Log.i("B0BEmbyVR", "◆闸门 拒收：同一份地址 8 秒内交过，不重复起播")
+            return false
+        }
+        gateLastSig = sig
+        gateLastAt = now
+        val ident = obj.optString("epKey").ifBlank { obj.optString("vid") }
+        if (ident.isBlank()) {
+            android.util.Log.i("B0BEmbyVR", "◆闸门 提示：这一份没有身份（暂放行，等网页侧补齐）")
+        }
+        return true
+    }
+
     private fun onBridgeMessage(message: Any?) {
         val obj = message as? org.json.JSONObject ?: return
         if (obj.optString("kind") == "hls") {
+            if (!gatePlayable(obj)) return
             onBridgeHls(obj)
             return
         }
@@ -854,6 +900,7 @@ private object WebRuntime {
                 previewSink?.invoke(obj)
                 return
             }
+            if (!gatePlayable(obj)) return
             onBridgePlayable(obj)
             return
         }
