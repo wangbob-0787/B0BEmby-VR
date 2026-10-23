@@ -885,11 +885,18 @@
           (svc && svc.v ? ('有(身份' + (svc.ep || svc.cid || '?') + '，' +
             Math.round((Date.now() - (svc.at || 0)) / 1000) + '秒前抓)') : '空'));
       } catch (eDump2) {}
+      /*
+       * 【2026-10-23 09:05 父亲的问题：切集是"检测到之后才抓地址"，为什么旧地址还会回来】
+       * 因为抓地址不是"按需去要"，而是常驻监听页面发出的所有媒体请求 + 从已下载分片里配对。
+       * 切集那一刻：上一集还有几秒分片在下载；切换前进入队列的条目也还在池子里。
+       * 以前清场只清"槽"，没清"池子" → 旧条目被当成新集的地址。这里补上：池子一起清。
+       */
       if (!b0bSwitchAt && String(reason).indexOf('换页') >= 0) {
         b0bMark('清场跳过', '站=' + b0bSite() + ' 层=' + b0bLayer() + ' 原因=' + reason +
           '（本层没有切换动作，不清） 时刻=' + (since || Date.now()));
         return;
       }
+      try { resetCollection('清场：' + reason); } catch (eRst) {}
       var t = since || Date.now();
       var ks = ['zcmax', '4k', 'zc1080'];
       var cleared = 0;
@@ -4024,6 +4031,18 @@
      * 串片风险由两道关卡挡住：挑组认"当前编号"、递交核"同一集"。
      */
     if (!pageIsPlaying()) return;
+    /*
+     * 【2026-10-23 09:05】B站：分片地址里带这一集自己的编号。页面正在播的那条编号
+     * （当前 video 的 src 里解出来的）跟它对不上，就说明这是上一集残留的下载 → 不收。
+     * 这一条比"清槽"更硬：旧流尾巴再多，也进不了池子。
+     */
+    try {
+      if (/(^|\.)bilibili\.com$/i.test(String(location.hostname || ''))) {
+        var cidHit = b0bCidFromUrl(u);
+        var cidLive = b0bPlayingCid();
+        if (cidHit && cidLive && cidHit !== cidLive) return;
+      }
+    } catch (eCid) {}
     var key = u.split('?')[0];
     if (mediaKeys[key]) return;            /* 同一条主干只记一次（分片换参数也算一条） */
     /* 值要存完整地址：分片带时效 token，丢了参数就播不了（2026-10-16） */
