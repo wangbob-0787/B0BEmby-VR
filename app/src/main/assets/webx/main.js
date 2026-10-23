@@ -4505,7 +4505,29 @@
        * B站 这格原来标题是空的（交付时才现取）。现在入槽时也存一份快照，
        * 交付时仍按当前指纹现取一次；两份不一致就以身份为准重取标题。
        */
-      var cidUrl = b0bCidFromUrl(cands[0].video) || String(biliCid || '');
+      var cidUrl = b0bCidFromUrl(cands[0].video) || '';
+      /*
+       * 【2026-10-23 09:48 父亲记录出的规律：换片是"两段过程"】
+       *
+       * 他那几条连切：
+       *   579.7s BV 已换成 BV1gSt66uExe，分片号还是上一个 41541766178
+       *   581.5s 分片号才变成 41584496376（隔了 1.8 秒）
+       *   587.5s / 589.4s、596.1s / 598.9s 也都是同样的"先换 BV，约 2 秒后才换分片号"。
+       * 也就是说这 2 秒里"页面身份已新、地址还是旧"，此时收地址必收错。
+       * 规矩：分片号刚变不到 1.8 秒、或地址里的编号与页面分片号不一致 → 一律不收。
+       */
+      var cidPageNow = String(biliCid || '');
+      if (cidPageNow) {
+        var sinceCid = Date.now() - (window.__b0bCidChangedAt || 0);
+        if (sinceCid < 1800) {
+          console.log('[b0b] 分片号刚变（+' + sinceCid + 'ms，还没稳定）→ 这条地址先不收');
+          return;
+        }
+        if (cidUrl && cidUrl !== cidPageNow) {
+          console.log('[b0b] 地址编号 ' + cidUrl + ' ≠ 页面分片号 ' + cidPageNow + ' → 丢，等这一集的地址');
+          return;
+        }
+      }
       /*
        * 【2026-10-23 08:55 父亲指出的真根源：清是清了，旧地址又回来了】
        *
@@ -5362,6 +5384,7 @@
       var cidNow = String(biliCid || '');
       if (cidNow && cidNow !== '0') {
         if (window.__b0bLastCid && window.__b0bLastCid !== cidNow) {
+          window.__b0bCidChangedAt = Date.now();   /* 分片号刚变，地址要过约 2 秒才跟上 */
           var cidWanted = cidNow;
           if (window.__b0bCidTimer) clearTimeout(window.__b0bCidTimer);
           window.__b0bCidTimer = setTimeout(function () {
