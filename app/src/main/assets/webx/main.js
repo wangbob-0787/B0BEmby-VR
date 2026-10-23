@@ -860,71 +860,100 @@
    * 切集切片时才记基线、进入"等变化"；关键项（身份/集号）相对基线变了（旧→新、无→有）
    * 才一次性把六项全重写；没变就继续等，不交。按 B 回网页不动基线。
    */
+  /*
+   * 【2026-10-23 23:55 父亲定稿 v2：地址自带身份，记录只管"变化"和"成套"】
+   *
+   * 总原则（一次说死，后面不再变）：
+   *   ①交付身份 = 地址自带的编号（B站分片路径/腾讯槽vid），页面变量只负责"判断变了"与显示。
+   *   ②切换事件只有一个触发源：页面身份变化（含 B站 同页分片号变）。选集点击不算切换事件。
+   *   ③切换时记基线 = 上一次记录；等待期间基线冻结，任何重复触发不得重置。
+   *   ④解除等待的判据只有一条：页面身份 ≠ 基线（旧→新、无→有都算）。
+   *   ⑤解除时件地址按"地址身份 == 新身份"去挑；挑不到就继续等，绝不用别人的地址凑数。
+   *   ⑥标题/集号/季在变化确认那一刻写死进记录，交付时原样带走 → 控制条与大屏必然同源。
+   */
+  /*
+   * 【2026-10-23 23:58 状态机走查表（评审对照用；与 diff 一起送审）】
+   *
+   * 场景1 首页→详情→真全屏：无切换事件 → 记录为空 → 交付点"从无变有"认地址自带编号 →
+   *       pid=地址编号 → 原生复核（pid==地址编号，时长≥5min）→ 放行。不依赖切换事件。
+   * 场景2 选集第N集→真全屏：唯一切换源（指纹变化/同页分片号变）→ 基线=旧记录 → 等待；
+   *       页面身份变新 → 记录整体重写 → 地址按身份挑，挑到才"成套"并解除等待；
+   *       地址没到：waiting 保持，槽核对各自等"这一集自己的地址"，新地址入槽即成套 → 放行。
+   * 场景3 连按两次真全屏（同集）：RecSwitch 检查"记录已同步到当前身份"→ 忽略，基线不动 → 继续同份。✔
+   * 场景4 按B回来再真全屏：无切换事件；记录仍是该集且已同步 → 不进入等待 → 原份放行。✔
+   * 场景5 播放中换片：整页重建 → 同场景1；同页换片（B站分P）→ 分片号变 → 同场景2。
+   * 场景6 宽银幕↔16:9：无新切换，只换内容 → 同场景4/1；银幕比例由内核真实尺寸纠偏。
+   * 场景7 每次真全屏一行结论：announceFullscreen 打 ◆真全屏；没交出由 ◆本轮 给出原因候选（等待中=是）。
+   * 死锁自查：解除判据只有"页面身份≠基线"+地址到位两件事；b0bClearStale 不触碰记录；无时间条件。
+   */
   var b0bRec = {
     id: '', ep: '', season: '', title: '', dur: 0, addr: '',
     baseId: '', baseEp: '', waiting: false,
   };
-  function b0bRecSnapshot() {
-    var addr = '';
+  function b0bPageIdentity() {
+    return String((b0bSite() === 'qq') ? (pageVidNow() || '') : (biliCid || ''));
+  }
+  function b0bPageEp() { return String(biliEp || ''); }
+  function b0bPageTitleNow() {
+    try { return String(b0bBuildTitle() || ''); } catch (e) { return ''; }
+  }
+  /** 按身份在地址槽里挑一份；挑不到返回 ''（绝不拿别人的地址凑数） */
+  function b0bPickAddrById(id) {
+    if (!id) return '';
     try {
       if (b0bSite() === 'qq') {
-        var p = qqSlotPick();
-        if (p && p.b) addr = String(p.b.u || '');
-      } else {
-        var sv = biSlotRead();
-        if (sv) {
-          addr = String(sv.v || '');
-          if (sv.a) addr += ' + ' + String(sv.a);
+        var keys = ['zcmax', '4k', 'zc1080'];
+        for (var i = 0; i < keys.length; i++) {
+          var b = qqSlotGet(keys[i]);
+          if (b && b.u && String(b.vid || '') === String(id)) return String(b.u);
         }
+        return '';
       }
-    } catch (eSnap) {}
-    return {
-      id: String((b0bSite() === 'qq') ? (pageVidNow() || '') : (biliCid || '')),
-      ep: String(biliEp || ''),
-      season: String(biliSeason || ''),
-      title: String((function () { try { return b0bBuildTitle() || ''; } catch (e) { return ''; } })()),
-      dur: 0,
-      addr: addr,
-    };
+      var sv = biSlotRead();
+      if (sv && sv.v && String(sv.cid || '') === String(id)) {
+        return String(sv.v) + (sv.a ? ' + ' + String(sv.a) : '');
+      }
+    } catch (e) {}
+    return '';
   }
-  /** 切集切片：记基线 + 进等待（不碰按 B 回网页那条路） */
+  /** 切换事件（唯一来源）：记基线=上一次记录，进入等待；等待期间基线冻结 */
   function b0bRecSwitch(what) {
-    var snap = b0bRecSnapshot();
-    /*
-     * 【2026-10-23 23:35 r939 实测修正】切换动作常常**发生在值已经变了之后**
-     * （腾讯点选集时片号已经换好，我们再记"基线=当前"就永远等不到变化 → 永不交付）。
-     * 所以：若当前值已经不同于上一次记录 → 变化已发生，直接整体重写并放行；
-     * 只有"值还没变"（B站 普通视频那种先换 BV、分片号晚 1.4~2.3 秒）才记基线进等待。
-     */
-    var changedAlready = (!!snap.id && snap.id !== b0bRec.id) || (!!snap.ep && snap.ep !== b0bRec.ep);
-    if (changedAlready) {
-      b0bRec.id = snap.id; b0bRec.ep = snap.ep; b0bRec.season = snap.season;
-      b0bRec.title = snap.title; b0bRec.dur = snap.dur; b0bRec.addr = snap.addr;
-      b0bRec.baseId = snap.id; b0bRec.baseEp = snap.ep;
-      b0bRec.waiting = false;
-      console.log('[b0b]◆记录 切换动作时代已经变了（身份 ' + (snap.id || '?') +
-        '）→ 六项整体重写，直接放行');
+    var curId = b0bPageIdentity(), curEp = b0bPageEp();
+    /* 已同步到当前身份（重复触发 / 事件迟到）→ 忽略，绝不重置基线 */
+    if (b0bRec.id && b0bRec.id === curId && (!curEp || b0bRec.ep === curEp)) {
+      if (b0bRec.waiting) {
+        /* 等待中但记录已是当前值：说明变化已确认，走一次 Tick 解除 */
+        b0bRecTick();
+      }
       return;
     }
-    b0bRec.baseId = snap.id;
-    b0bRec.baseEp = snap.ep;
+    b0bRec.baseId = b0bRec.id;
+    b0bRec.baseEp = b0bRec.ep;
     b0bRec.waiting = true;
-    console.log('[b0b]◆记录 基线已记：身份=' + (snap.id || '?') + ' 集号=' + (snap.ep || '?') +
-      '（切换动作：' + (what || '?') + '）→ 等关键项变化');
+    console.log('[b0b]◆记录 基线已记：身份=' + (b0bRec.baseId || '无') +
+      ' 集号=' + (b0bRec.baseEp || '无') + '（触发：' + String(what || '?').slice(-28) + '）→ 等页面身份变化');
+    b0bRecTick();
   }
-  /** 每轮采样：关键项变了才整体重写，变了才放行交付 */
+  /** 每轮扫曲股推进：只有页面身份 ≠ 基线 才能解除；解除后件地址按身份挑，挑不到继续等 */
   function b0bRecTick() {
     if (!b0bRec.waiting) return;
-    var snap = b0bRecSnapshot();
-    var idChanged = !!snap.id && snap.id !== b0bRec.baseId;
-    var epChanged = !!snap.ep && snap.ep !== b0bRec.baseEp;
-    if (!idChanged && !epChanged) return;
-    b0bRec.id = snap.id; b0bRec.ep = snap.ep; b0bRec.season = snap.season;
-    b0bRec.title = snap.title; b0bRec.dur = snap.dur; b0bRec.addr = snap.addr;
+    var curId = b0bPageIdentity(), curEp = b0bPageEp();
+    var changed = !!curId && curId !== b0bRec.baseId;
+    if (!changed) return;
+    b0bRec.id = curId;
+    b0bRec.ep = curEp;
+    b0bRec.season = String(biliSeason || '');
+    b0bRec.title = b0bPageTitleNow();
+    b0bRec.dur = 0;
+    b0bRec.addr = b0bPickAddrById(curId);
+    if (!b0bRec.addr) {
+      console.log('[b0b]◆记录 变化确认（身份 ' + (b0bRec.baseId || '无') + ' → ' + curId +
+        '）但对应的地址还没到 → 继续等');
+      return;
+    }
     b0bRec.waiting = false;
-    console.log('[b0b]◆记录 关键项变了（身份 ' + (b0bRec.baseId || '无') + ' → ' + (snap.id || '无') +
-      '，集号 ' + (b0bRec.baseEp || '无') + ' → ' + (snap.ep || '无') + '）→ 六项已整体重写：' +
-      '标题「' + String(snap.title).slice(0, 22) + '」 地址尾=' + String(snap.addr).slice(-24));
+    console.log('[b0b]◆记录 成套：身份=' + curId + ' 集号=' + (curEp || '?') +
+      ' 标题「' + String(b0bRec.title).slice(0, 22) + '」 地址尾=…' + String(b0bRec.addr).slice(-24));
   }
 
   function b0bMarkSwitch(what, src) {
@@ -1196,25 +1225,14 @@
       var pickF = qqSlotPick();
       if (pickF) {
         /*
-         * 【2026-10-23 09:06 父亲"三家要用不同的比较方法"】
-         * 腾讯这里原来比的是 pageVideoKey(网址) —— 可腾讯剧集页换集时**网址一动不动**，
-         * 所以这个比较恒等于"一致"，等于没核。
-         * 改成比"页面此刻的片号"（pageVidNow，一集一个，从网址里第二段取）。
+         * 【2026-10-23 23:57 按总规矩 v2 改】槽必须属于"记录里的当前身份"。
+         * 记录身份是变化确认那一刻写死的；页面现值在单页多集时必然含糊（如腾讯地址不动）。
+         * 对不上就这一槽不用，等对的那一条。
          */
-        /* 规矩表 §3.1：片号读不到就不交（原来 !keyKnown 直接放行，是错集的入口） */
-        /*
-         * 【2026-10-23 09:22 DeepSeek P2-2 成立：去掉兜底】
-         * 身份只能有一个来源（规矩表 §2）；原来 pageVidNow 取不到就退回 pageVideoKey，
-         * 那个是"整部剧的编号"，换集不变 → 会让"两槽混用"被当成一致。取不到就不交。
-         */
-        var vNow4 = pageVidNow();
-        var same4 = !!pickF.b.vid && !!keyKnown(vNow4) && pickF.b.vid === vNow4;
-        if (!same4 && (!pickF.b.vid || !keyKnown(vNow4))) {
-          console.log('[b0b] 腾讯片号读不到（槽=' + (pickF.b.vid || '?') +
-            ' 页面=' + (vNow4 || '?') + '）→ 这次不交');
-        }
+        var same4 = !!pickF.b.vid && !!b0bRec.id && (String(pickF.b.vid) === String(b0bRec.id));
         if (!same4) {
-          console.log('[b0b] 腾讯：槽里片号 ' + pickF.b.vid + ' ≠ 页面此刻片号 ' + vNow4 + ' → 这一槽不能用');
+          console.log('[b0b] 腾讯槽（片号 ' + (pickF.b.vid || '?') +
+            '）≠ 记录身份（' + (b0bRec.id || '?') + '）→ 这一槽不用');
         }
         if (same4) {
           pendingQq = pickF.b.u; qqAt = pickF.b.at;
@@ -1305,35 +1323,16 @@
       /* 【2026-10-22 15:35】手里没有新地址 → 用 B站槽里存的那份（页面重建后就靠它）。 */
       var sv = biSlotRead();
       if (sv && sv.v && (!sv.at || Date.now() - sv.at < 30 * 60 * 1000)) {
-        var sameEp = true;
-        try {
-          sameEp = sameEpisode({ ep: sv.ep, season: sv.season, cid: sv.cid },
-            { ep: biliEp, season: biliSeason, cid: biliCid });
-        } catch (eS0) {}
         /*
-         * 【2026-10-23 00:40 父亲日志实证】B站 这一段原来是"对不上就丢"，
-         * 但整晚日志反复出现「B站槽里那份不是这一集（槽 3124079 / 现在 ?）」——
-         * 现在=? 说明页面这一层根本没取到当前集号，于是槽里明明有地址也不交，
-         * 这就是 B站 六成接管失败的直接原因。
-         * 改：只有"两边身份都已知且真的不同"才算不是这一集；未知一律放行（宁可播这一份，
-         * 也不因为读不到编号就整晚不接管）。
+         * 【2026-10-23 23:57 按总规矩 v2 改】槽必须属于"记录里的当前身份"。
+         * sv.cid 是地址自己带的编号（分片路径里的），与记录身份同源可比。
          */
-        /*
-         * 【2026-10-23 09:15 按规矩表收口：删掉"读不到就放行"】
-         * 规矩表 §3.1：读不到身份 = 不知道，不知道就不交。
-         * 原来这里读不到就放行，正是"播错集"的入口之一。
-         */
-        if (!sameEp) {
-          var cidSlot2 = String(sv.cid || '');
-          /* MSE 页面里 currentSrc 是 blob:，解不出来就用页面自己报的分片号 */
-          var cidLive2 = b0bPlayingCid() || String(biliCid || '');
-          if (!cidSlot2 || !cidLive2) {
-            b0bBeginWait('B站身份读不到（槽编号=' + (cidSlot2 || '?') +
-              '，页面在播编号=' + (cidLive2 || '?') + '）');
-            b0bGiveUp('B站身份读不到（槽=' + (cidSlot2 || '?') + ' 在播=' + (cidLive2 || '?') + '）');
-          }
+        var sameRec = !!sv.cid && !!b0bRec.id && (String(sv.cid) === String(b0bRec.id));
+        if (!sameRec) {
+          console.log('[b0b] B站槽（编号 ' + (sv.cid || '?') +
+            '）≠ 记录身份（' + (b0bRec.id || '?') + '）→ 等这一集自己的地址');
         }
-        if (sameEp) {
+        if (sameRec) {
           pendingPlay = {
             cid: sv.cid, ep: sv.ep, season: sv.season, title: sv.title || '',
             kind: 'play', t: sv.at || Date.now(), frame: location.href, durSec: sv.dur || 0,
@@ -1345,11 +1344,6 @@
             '｜标题「' + String(sv.title || '').slice(0, 24) + '」｜抓于' +
             Math.round((Date.now() - (sv.at || Date.now())) / 1000) + '秒前｜地址尾=' +
             String(sv.v || '').slice(-24) + '〕');
-        } else {
-          b0bBeginWait('B站槽里那份不是这一集（槽 ' + (sv.ep || sv.cid || '?') +
-            ' / 现在 ' + (biliEp || biliCid || '?') + '）');
-          b0bGiveUp('B站槽身份与当前不符（槽 ' + (sv.cid || sv.ep || '?') + '，当前 ' +
-            (b0bPlayingCid() || biliCid || '?') + '）');
         }
       }
       if (!pendingPlay) return;
@@ -1497,10 +1491,29 @@
      */
     try {
       if (obj) {
+        /*
+         * 【2026-10-23 23:59 首次进入页面（还没有切换事件）→ 记录为空】
+         * 此时"从无变有"也成立：身份直接认地址自己的编号（B站 解地址、腾讯用载荷 vid），
+         * 标题记当前页面文字 —— 让第一次全屏就能按同一套规则走通。
+         */
+        if (!String(b0bRec.id || '')) {
+          var selfId = String(obj.cid || '') || String(obj.vid || '') ||
+            String(b0bCidFromUrl(String((obj.streams && obj.streams[0] ? obj.streams[0].video : '') || '')));
+          if (selfId) {
+            b0bRec.id = selfId;
+            b0bRec.title = b0bRec.title || String(pageTitle() || '');
+            b0bRec.ep = String(biliEp || '');
+            b0bRec.season = String(biliSeason || '');
+          }
+        }
         obj.pid = String(b0bRec.id || '');
         obj.epNo = String(b0bRec.ep || '');
         obj.season = String(b0bRec.season || '');
-        if (!obj.title) obj.title = String(b0bRec.title || '');
+        /*
+         * 【2026-10-23 23:57 文案绑定交付对象】title 一律取记录里那份（变化确认时的快照），
+         * 绝不在交付这一刻再取页面文字 —— 否则控制条与大屏就又不同源了。
+         */
+        obj.title = String(b0bRec.title || obj.title || '');
         var durFromPage = 0;
         try {
           var vEl = document.querySelector('video');
@@ -1521,27 +1534,12 @@
         return;
       }
     } catch (eG) {}
-    /* 身份里带上当前页面地址：腾讯那种没有集号的情况靠它判同一次播放（2026-10-17） */
-    var nowId = { ep: biliEp, season: biliSeason, cid: biliCid, href: location.href };
-    /* 【2026-10-23 00:40】当前身份读不到（现在 ep?）时不判死 —— 与下面槽那段同一口径 */
     /*
-     * 放宽只对 B站 生效（腾讯/其它站点不能跟着松：它们没有集号，这一关是唯一的同一集判据）
+     * 【2026-10-23 23:57 总规矩 v2】旧的一段段"现值对账"撤掉；判定只剩两道：
+     *   ① b0bRec.waiting == false（网页端"变化确认 + 成套地址"状态机）
+     *   ② 原生最后一道复核（地址自带编号 == 上报身份、时长 ≥ 5 分钟）
      */
-    /*
-     * 【2026-10-23 09:15 规矩表 §3.1】读不到身份不再放行；B站 用"地址里解出的编号"当身份，
-     * 两侧都要有、且相等，才算同一集。
-     */
-    var isBiliPage = /(^|\.)bilibili\.com$/i.test(String(location.hostname || ''));
-    var cidObjB = isBiliPage ? b0bCidFromUrl(obj && obj.streams && obj.streams[0] ? obj.streams[0].video : '') : '';
-    var cidLiveB = isBiliPage ? (b0bPlayingCid() || String(biliCid || '')) : '';
-    var identOk = isBiliPage ? (!!cidObjB && !!cidLiveB && cidObjB === cidLiveB) : sameEpisode(obj, nowId);
-    if (obj && !identOk) {
-      console.log('[b0b]③手里那份不是当前这一集（它 ' + (obj.ep || obj.cid || '?') +
-        '，现在 ep' + (biliEp || '?') + '）→ 丢掉，重新攒');
-      pendingPlay = null;
-      obj = null;
-    }
-    var objFrom = '手里那份';
+   var objFrom = '手里那份';
     /*
      * 【2026-10-17 04:36 审读发现】播放接口的响应（playurl / __playinfo__）是页面
      * 自己报的标准答案：画面+声音成对、带清晰度和时长。手里那份若**没有声音**
@@ -1551,8 +1549,7 @@
     try {
       var apiHasAudio = !!(playable && playable.streams && playable.streams[0] &&
                            playable.streams[0].audio);
-      var apiUsable = !!(playable && playable.streams && playable.streams.length &&
-                         sameEpisode(playable, nowId));
+      var apiUsable = !!(playable && playable.streams && playable.streams.length);
       var mineHasAudio = !!(obj && obj.streams && obj.streams[0] && obj.streams[0].audio);
       if (apiUsable && apiHasAudio && (!obj || !mineHasAudio)) {
         if (obj) console.log('[b0b]③手里那份没有声音，改用播放接口那份（成对，' +
@@ -1626,8 +1623,11 @@
      */
     try { localStorage.removeItem('b0b:fullAt'); } catch (e) {}
     fullState = false;
-    /* 标题在交出去这一刻现取（抓取时页面标题可能还没更新） */
-    try { obj.title = pageTitle(); } catch (e) {}
+    /*
+     * 【2026-10-23 23:57 文案绑定交付对象】不再现取页面文字；一律用记录快照
+     * （变化确认那一刻写死的），保证控制条与大屏同源。
+     */
+    try { obj.title = String(b0bRec.title || obj.title || pageTitle()); } catch (e) {}
     /*
      * 画面宽高也在这刻现取（2026-10-18 00:24 父亲实测：从 Emby 片切到 B站 片后比例不对）。
      *
@@ -4496,7 +4496,14 @@
      * 这样"留着"就没有串片风险。
      */
     var curKey = '';
-    try { if (biliCid && g[String(biliCid)]) curKey = String(biliCid); } catch (e) {}
+    try {
+      /*
+       * 【2026-10-23 23:57 总规矩 v2】选组按"记录里的当前身份"，页面现值只作回退。
+       * 记录身份是变化确认那一刻写死的，比页面现值稳。
+       */
+      if (b0bRec.id && g[String(b0bRec.id)]) curKey = String(b0bRec.id);
+      else if (biliCid && g[String(biliCid)]) curKey = String(biliCid);
+    } catch (e) {}
     var useKey = curKey || wholeKey || bestKey;
     /*
      * 【2026-10-17 00:10 只做观测、不改行为】
