@@ -877,10 +877,39 @@ private object WebRuntime {
         }
         gateLastSig = sig
         gateLastAt = now
-        val ident = obj.optString("epKey").ifBlank { obj.optString("vid") }
-        if (ident.isBlank()) {
-            android.util.Log.i("B0BEmbyVR", "◆闸门 提示：这一份没有身份（暂放行，等网页侧补齐）")
+        /*
+         * 【2026-10-23 11:47 父亲定：网页交来"六项一体"，原生做一次互相匹配的复核，匹配才给 MP4/MPV】
+         * 复核三条：①身份必须有 ②地址里的编号必须等于身份 ③时长必须 ≥5 分钟。
+         * 任何一条不满足 → 不交，并写明哪一个字段对不上。
+         */
+        val identify = obj.optString("pid").ifBlank {
+            obj.optString("epKey").ifBlank { obj.optString("vid") }
         }
+        if (identify.isBlank()) {
+            android.util.Log.w("B0BEmbyVR", "◆复核 不匹配：身份为空 → 不交")
+            return false
+        }
+        val mch = Regex("/(\\d{6,})[-_/]").find(addr)
+        val addrId = mch?.groupValues?.get(1) ?: ""
+        if (addrId.isNotBlank() && !identify.contains(addrId) && !addrId.contains(identify)) {
+            android.util.Log.w(
+                "B0BEmbyVR",
+                "◆复核 不匹配：地址里的编号 $addrId ≠ 记录身份 $identify → 不交",
+            )
+            return false
+        }
+        val d2 = obj.optInt("durSec", 0)
+        if (d2 in 1..299) {
+            android.util.Log.w("B0BEmbyVR", "◆复核 不匹配：时长 $d2 秒 < 5 分钟 → 不交")
+            return false
+        }
+        android.util.Log.i(
+            "B0BEmbyVR",
+            "◆复核 通过：身份=$identify 集号=" + obj.optString("epNo", "?") +
+                " 季=" + obj.optString("season", "?") +
+                " 时长=" + (if (d2 > 0) "$d2 秒" else "未报") +
+                " 标题「" + obj.optString("title").take(22) + "」",
+        )
         return true
     }
 

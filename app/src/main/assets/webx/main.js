@@ -1476,6 +1476,24 @@
     }
     var obj = pendingPlay;
     /*
+     * 【2026-10-23 11:45 父亲定：网页把"六项一体"的记录整份交给原生，原生复核是否互相匹配】
+     * 所以交付载荷里必须显式带上：身份 pid、集号 epNo、季 season、标题 title、时长 durSec。
+     */
+    try {
+      if (obj) {
+        obj.pid = String(b0bRec.id || '');
+        obj.epNo = String(b0bRec.ep || '');
+        obj.season = String(b0bRec.season || '');
+        if (!obj.title) obj.title = String(b0bRec.title || '');
+        var durFromPage = 0;
+        try {
+          var vEl = document.querySelector('video');
+          if (vEl && vEl.duration > 0) durFromPage = Math.round(vEl.duration);
+        } catch (eDur) {}
+        obj.durSec = durFromPage || obj.durSec || b0bRec.dur || 0;
+      }
+    } catch (eRec2) {}
+    /*
      * 【2026-10-21 23:50 爱奇艺：原生交了整集片单后，页面这条一律不交】
      * 它交的是"当前这一段的裸地址"，只能播 6 分钟，却会把整集片单顶掉。
      */
