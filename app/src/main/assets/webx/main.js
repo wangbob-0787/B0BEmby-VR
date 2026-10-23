@@ -1092,8 +1092,17 @@
     if (!pendingPlay && /(^|\.)qq\.com$/i.test(String(location.hostname || ''))) {
       var pickF = qqSlotPick();
       if (pickF) {
-        var vNow4 = pageVideoKey(location.href);
+        /*
+         * 【2026-10-23 09:06 父亲"三家要用不同的比较方法"】
+         * 腾讯这里原来比的是 pageVideoKey(网址) —— 可腾讯剧集页换集时**网址一动不动**，
+         * 所以这个比较恒等于"一致"，等于没核。
+         * 改成比"页面此刻的片号"（pageVidNow，一集一个，从网址里第二段取）。
+         */
+        var vNow4 = pageVidNow() || pageVideoKey(location.href);
         var same4 = !pickF.b.vid || !keyKnown(vNow4) || pickF.b.vid === vNow4;
+        if (!same4) {
+          console.log('[b0b] 腾讯：槽里片号 ' + pickF.b.vid + ' ≠ 页面此刻片号 ' + vNow4 + ' → 这一槽不能用');
+        }
         if (same4) {
           pendingQq = pickF.b.u; qqAt = pickF.b.at;
           console.log('[b0b] 按全屏：交「' + qqSlotName(pickF.k) + '」那一槽（' +

@@ -1656,9 +1656,39 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                     return@Thread
                                                 }
                                             }
-                                            val res = runCatching {
+                                            var res = runCatching {
                                                 com.xxxx.emby_vr.web.IqiyiDash2.fetch(useTvid, uid, kuid, dfp, "600", ckAll, ua)
                                             }.getOrNull()
+                                            /*
+                                             * 【2026-10-23 09:06 父亲"爱奇艺播错片最多"→ 取流后再确认一次】
+                                             *
+                                             * 取流要几百毫秒，这一小段里页面可能又切了一集；原来是"取完就交"，
+                                             * 交出去的那份属于上一集。现在取完再读一次页面片号：
+                                             *   · 变了 → 用新片号重取一次（只重取一次，避免来回抖）
+                                             *   · 重取后又变了 → 这次不交（宁可这次不接管，也不播错片）
+                                             */
+                                            try {
+                                                val chk = askPageIdentity(webRef)
+                                                if (chk.first.isNotBlank() && chk.first != useTvid) {
+                                                    android.util.Log.i(
+                                                        "B0BEmbyVR",
+                                                        "◆复检 站=iq 取流用的是 " + useTvid + "，页面已经变成 " + chk.first + " → 用新片号重取一次",
+                                                    )
+                                                    useTvid = chk.first
+                                                    if (chk.second.isNotBlank()) pageV = chk.second
+                                                    res = runCatching {
+                                                        com.xxxx.emby_vr.web.IqiyiDash2.fetch(useTvid, uid, kuid, dfp, "600", ckAll, ua)
+                                                    }.getOrNull()
+                                                    val chk2 = askPageIdentity(webRef)
+                                                    if (chk2.first.isNotBlank() && chk2.first != useTvid) {
+                                                        android.util.Log.w(
+                                                            "B0BEmbyVR",
+                                                            "◆不交 站=iq 重取期间页面又变了（" + useTvid + " → " + chk2.first + "）→ 这次不接管",
+                                                        )
+                                                        return@Thread
+                                                    }
+                                                }
+                                            } catch (eChk) {}
                                             if (res == null) {
                                                 android.util.Log.w(
                                                     "B0BEmbyVR",
