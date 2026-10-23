@@ -1701,6 +1701,30 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                     "爱奇艺自取：dash 没拿到可用片单（见上一条日志里的原因）",
                                                 )
                                             }
+                                            /*
+                                             * 【2026-10-23 11:10 父亲实测：比例不对的那些，时长都只有一分多钟
+                                             * —— 说明抓到的是某个分片/预告，不是整集】
+                                             * 拿到片单先看时长：不到 5 分钟就当"这不是整集"，重取一次；
+                                             * 还是短的就这次不交（宁可这次不接管，也不把一段几十秒的东西当整集播）。
+                                             */
+                                            if (res != null && res.durationSec in 1..299) {
+                                                android.util.Log.w(
+                                                    "B0BEmbyVR",
+                                                    "◆重取 站=iq 拿到的是短片段（" + res.durationSec + " 秒 / " +
+                                                        res.segs + " 段），不是整集 → 重取一次",
+                                                )
+                                                try { Thread.sleep(1500) } catch (eSl: InterruptedException) {}
+                                                res = runCatching {
+                                                    com.xxxx.emby_vr.web.IqiyiDash2.fetch(useTvid, uid, kuid, dfp, "600", ckAll, ua)
+                                                }.getOrNull()
+                                                if (res == null || res!!.durationSec in 1..299) {
+                                                    android.util.Log.w(
+                                                        "B0BEmbyVR",
+                                                        "◆不交 站=iq 重取后仍是短片段 → 这次不接管",
+                                                    )
+                                                    return@Thread
+                                                }
+                                            }
                                             if (res != null) {
                                                 android.util.Log.i(
                                                     "B0BEmbyVR",
