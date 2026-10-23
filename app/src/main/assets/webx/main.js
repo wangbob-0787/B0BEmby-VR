@@ -772,6 +772,9 @@
    *   ◆等待      核对没过、进入等待窗口（从何时到何时、为什么）
    * 这样出问题时不用父亲复述，直接对时间线。
    */
+  /* 清场时扔掉的那条地址（B站/腾讯各记一份）：旧流的分片会在清场后继续到达，得认出来 */
+  var b0bClearedBi = '';
+  var b0bClearedQq = '';
   var b0bSeq = 0;
   var b0bSwitchAt = 0;
   var b0bSwitchWhat = '';
@@ -867,6 +870,14 @@
        * 于是每次页面翻动都把别的层抓到的新地址清掉。
        * 这类只记日志、不动槽。
        */
+      try {
+        var svPre = biSlotRead();
+        if (svPre && svPre.v) b0bClearedBi = String(svPre.v);
+      } catch (ePre) {}
+      try {
+        var pPre = qqSlotPick();
+        if (pPre && pPre.b && pPre.b.u) b0bClearedQq = String(pPre.b.u);
+      } catch (ePre2) {}
       try { qqBucketDump('清场前'); } catch (eDump) {}
       try {
         var svc = biSlotRead();
@@ -1806,6 +1817,10 @@
           if (!bt) continue;
           var prevB = qqSlotGet(bt);
           if (prevB && prevB.u === bu) continue;
+          if (b0bClearedQq && bu === b0bClearedQq) {
+            console.log('[b0b] 腾讯：清场后旧地址又回来了（尾…' + bu.slice(-26) + '）→ 丢掉');
+            continue;
+          }
           qqSlotSet(bt, { u: bu, at: Date.now(), vid: pageVidNow(), from: 'resp',
                           title: String(qqRemoteTitle || '') });
           b0bMark('新址', '层=' + b0bLayer() + ' 站=qq 槽=' + bt + ' 身份=' + (pageVidNow() || '?') +
@@ -4420,6 +4435,20 @@
        * 交付时仍按当前指纹现取一次；两份不一致就以身份为准重取标题。
        */
       var cidUrl = b0bCidFromUrl(cands[0].video) || String(biliCid || '');
+      /*
+       * 【2026-10-23 08:55 父亲指出的真根源：清是清了，旧地址又回来了】
+       *
+       * 现场（08:29:20 → 08:29:21 点选集2 清场 → 08:29:27）：两条"新地址"的尾巴一模一样
+       * （…0010ad416adaaa62&orderid=0,4），说明旧流的分片在清场之后还在继续到达，
+       * 我们把它当成新集的地址收进槽 —— 于是槽里"身份=第2集、标题=第2集、地址=第10集那条"
+       * 三者看着自洽，核对必然放行，播出去就是错集。
+       * 判据：清场时扔掉的那条地址，在清场后再次出现 → 一律丢。
+       */
+      if (b0bClearedBi && String(cands[0].video || '') === b0bClearedBi) {
+        console.log('[b0b] 清场后同一条旧地址又回来了（尾…' + String(cands[0].video).slice(-26) + '）→ 丢掉，等这一集自己的地址');
+        return;
+      }
+      b0bClearedBi = '';
       b0bMark('新址', '层=' + b0bLayer() + ' 站=bi 槽=B站 身份=cid' + (cidUrl || '?') +
         '（来自地址） 页面集号=' + (biliEp ? 'ep' + biliEp : '?') +
         ' 标题「' + String(b0bBuildTitle() || '').slice(0, 24) + '」' +
