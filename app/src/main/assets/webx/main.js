@@ -67,7 +67,12 @@
         var sameD = true;
         if (idPayD && idNowD) {
           sameD = (idPayD === idNowD) || (idPayD.indexOf(idNowD) >= 0) || (idNowD.indexOf(idPayD) >= 0);
-          if (!sameD) {
+          /*
+           * 【2026-10-23 08:50】原来对不上就退一步"是不是同一个页面"，于是
+           * 08:27:10 那笔（身份 bi:42927456530 vs 当前 bi:BV1ohn163EVp）也被判成"一致"——
+           * 核对形同虚设。现在只有腾讯（本来就没有集号）才用页面兜底，B站/爱奇艺必须身份真一致。
+           */
+          if (!sameD && b0bSite() === 'qq') {
             try { sameD = samePageUrl(o.frame || '', location.href); } catch (eD2) {}
           }
         }
@@ -800,6 +805,42 @@
    * 2026-10-23 00:40：整晚日志里 iq:/ 和 iq:/tv/ 都被当成换集 → 每次翻页清一次槽，
    * 清场次数 105 次、真正的切换只有 46 次。列表页/首页这种"…/ 结尾"的身份不算。
    */
+  /**
+   * 【2026-10-23 08:50 B站 播错集的根因】
+   *
+   * 现场（08:29:54 → 08:30:19）：槽里记的集号是 ep5852933（第 2 集），标题已经变成第 3 集，
+   * 交出去的地址还是第 2 集那份 → 播错集。
+   * 根因：槽里的"身份"取的是**抓取那一刻的页面变量**，而地址来自分片 URL，
+   * B站 分片 URL 里自带这一集自己的编号（…/upgcxcode/65/64/<cid>/<cid>-1-<xxx>.m4s）。
+   * 所以身份必须从地址里解，不能借用页面变量。
+   */
+  function b0bCidFromUrl(u) {
+    var t = String(u || '');
+    var m = /\/upgcxcode\/[0-9a-f]+\/[0-9a-f]+\/(\d{6,})\//i.exec(t);
+    if (m) return m[1];
+    var m2 = /\/(\d{6,})-[0-9a-z]*-?1-\d+\.(?:m4s|mp4)/i.exec(t);
+    if (m2) return m2[1];
+    var m3 = /\/(\d{6,})_sr\d+/i.exec(t);
+    if (m3) return m3[1];
+    return '';
+  }
+  /** 页面此刻正在播的那条地址属于哪一集（拿不到返回空） */
+  function b0bPlayingCid() {
+    try {
+      var best = null, bestA = 0;
+      var vs = document.querySelectorAll('video');
+      for (var i = 0; i < vs.length; i++) {
+        var v = vs[i];
+        var r = v.getBoundingClientRect();
+        var a = (r.width || 0) * (r.height || 0);
+        var src = String(v.currentSrc || v.src || '');
+        var c = b0bCidFromUrl(src);
+        if (!c) continue;
+        if (a > bestA) { bestA = a; best = c; }
+      }
+      return best || '';
+    } catch (e) { return ''; }
+  }
   function b0bIsPlayIdentity(k) {
     var t = String(k || '');
     if (!t || t === '?' || t.indexOf(':') < 0) return false;
@@ -4378,12 +4419,14 @@
        * B站 这格原来标题是空的（交付时才现取）。现在入槽时也存一份快照，
        * 交付时仍按当前指纹现取一次；两份不一致就以身份为准重取标题。
        */
-      b0bMark('新址', '层=' + b0bLayer() + ' 站=bi 槽=B站 身份=' + (biliEp ? 'ep' + biliEp : ('cid' + (biliCid || '?'))) +
+      var cidUrl = b0bCidFromUrl(cands[0].video) || String(biliCid || '');
+      b0bMark('新址', '层=' + b0bLayer() + ' 站=bi 槽=B站 身份=cid' + (cidUrl || '?') +
+        '（来自地址） 页面集号=' + (biliEp ? 'ep' + biliEp : '?') +
         ' 标题「' + String(b0bBuildTitle() || '').slice(0, 24) + '」' +
         ' 地址尾=…' + String(cands[0].video || '').slice(-28) + ' 距切换=' + b0bSince());
       biSlotSave({
         v: String(cands[0].video || ''), a: String(cands[0].audio || ''),
-        cid: biliCid, ep: biliEp, season: biliSeason,
+        cid: cidUrl, ep: biliEp, season: biliSeason,
         title: (function () { try { return String(b0bBuildTitle() || ''); } catch (eT) { return ''; } })(),
         dur: 0, at: Date.now()
       });

@@ -3473,6 +3473,16 @@ class MainActivity : ComponentActivity() {
 
     private fun playWebStream(obj: org.json.JSONObject) {
         lastWebDeliverAt = System.currentTimeMillis()
+        /*
+         * 【2026-10-23 08:52 父亲报"爱奇艺比例很多时候不对"】
+         * 上一部是 2.4:1 宽银幕、这一部是 16:9（或反过来）时，银幕会带着上一部的比例起播，
+         * 要等内核报出真实尺寸才纠正 —— 这一两秒就是"看着比例不对"。
+         * 交付新片时先把银幕复位成 16:9（中性值），再等内核按真实画面覆盖。
+         */
+        /* 上一部已经报过真实尺寸 → 先把银幕复位成中性比例，避免带着上一部比例起播 */
+        if (webSizeKnown) {
+            applyScreenAspect(16f / 9f, "新片起播：银幕先复位 16:9，等内核报真实尺寸")
+        }
         webSizeKnown = false   /* 新一集：尺寸重新等（2026-10-20） */
         /* 真的开始接管了：标题行从「即将播放」转成「正在播放」（父亲 2026-10-19 定） */
         osdState.upcoming = false
