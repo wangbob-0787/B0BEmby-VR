@@ -5350,6 +5350,32 @@
      * 父亲翻季/翻集时，如果这个地址一直不动，就说明"换集没换页"，
      * 我们按页面地址判断的两处（播放页判据、交给客户端时记的页面）都会跟着钝掉。
      */
+    /*
+     * 【2026-10-23 09:45 父亲电脑实测：同一 BV、网址不变，页面自己换了内容】
+     * 他切集前后各打了一次：BV 一直是 BV1LHta6xEo4，网址尾也不变，
+     * 只有"分片号"（videoData.cid）在 277.1s 从 41370126390 变成 41471839618。
+     * 也就是说 B站 普通视频页换片，唯一可靠的信号就是分片号。
+     * 这里加一条：分片号变了（两个值都非 0 且不同）→ 等 800 毫秒确认稳定 → 立即清场。
+     * 用 800 毫秒是因为换片瞬间它会先抖一下（父亲看到的第 1、2 条就是旧值）。
+     */
+    try {
+      var cidNow = String(biliCid || '');
+      if (cidNow && cidNow !== '0') {
+        if (window.__b0bLastCid && window.__b0bLastCid !== cidNow) {
+          var cidWanted = cidNow;
+          if (window.__b0bCidTimer) clearTimeout(window.__b0bCidTimer);
+          window.__b0bCidTimer = setTimeout(function () {
+            try {
+              if (String(biliCid || '') === cidWanted) {
+                b0bMarkSwitch('分片号 ' + cidWanted, '分片号变了（同页换片）');
+                b0bClearStale('分片号变了（同页换片）', Date.now());
+              }
+            } catch (eCid2) {}
+          }, 800);
+        }
+        window.__b0bLastCid = cidNow;
+      }
+    } catch (eCidBlk) {}
     var epKeyNow = b0bEpisodeKey();
     /*
      * 【2026-10-23 00:50 父亲定：把"读到什么"本身记下来】
