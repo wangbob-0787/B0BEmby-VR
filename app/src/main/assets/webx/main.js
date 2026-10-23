@@ -1240,7 +1240,8 @@
          */
         if (!sameEp) {
           var cidSlot2 = String(sv.cid || '');
-          var cidLive2 = b0bPlayingCid();
+          /* MSE 页面里 currentSrc 是 blob:，解不出来就用页面自己报的分片号 */
+          var cidLive2 = b0bPlayingCid() || String(biliCid || '');
           if (!cidSlot2 || !cidLive2) {
             b0bBeginWait('B站身份读不到（槽编号=' + (cidSlot2 || '?') +
               '，页面在播编号=' + (cidLive2 || '?') + '）');
@@ -1418,7 +1419,7 @@
      */
     var isBiliPage = /(^|\.)bilibili\.com$/i.test(String(location.hostname || ''));
     var cidObjB = isBiliPage ? b0bCidFromUrl(obj && obj.streams && obj.streams[0] ? obj.streams[0].video : '') : '';
-    var cidLiveB = isBiliPage ? b0bPlayingCid() : '';
+    var cidLiveB = isBiliPage ? (b0bPlayingCid() || String(biliCid || '')) : '';
     var identOk = isBiliPage ? (!!cidObjB && !!cidLiveB && cidObjB === cidLiveB) : sameEpisode(obj, nowId);
     if (obj && !identOk) {
       console.log('[b0b]③手里那份不是当前这一集（它 ' + (obj.ep || obj.cid || '?') +
