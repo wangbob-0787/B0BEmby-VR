@@ -904,17 +904,47 @@
    */
   function b0bPageIdentity() {
     if (b0bSite() === 'qq') return String(pageVidNow() || '');
-    /* B站：以分片下载为准 */
-    var best = '', bestT = 0, now = Date.now();
+    /*
+     * 【2026-10-24 02:18 实测：身份会在"在播视频"和"预取的别的视频"之间来回翻】
+     * 现场：槽在 42974449414 与 40649691123 之间每 0.3~0.9 秒翻一次，连翻 20 多秒。
+     * B站 会预取推荐视频的分片，"最近 3 秒还有下载"不足以区分谁在播。
+     *
+     * 判据改成两条：
+     *  ①最近 2 秒内**分片条数最多**的编号（在播的持续每几秒一条；预取只有一两条突发）；
+     *  ②迟滞：当前身份仍在窗口内、且条数不低于新候选的一半，就不换（要超过 2 倍才抢走）。
+     */
+    /*
+     * 【2026-10-24 03:05 实测定案】窗口不能太短：视频缓冲满后几十秒没有新分片请求，
+     * 2 秒窗口里一条都没有 → 身份被判成空 → 写槽整段跳过（这正是"槽一直空"的最后一层）。
+     * 改：窗口 10 秒；且窗口内无请求时**保持上一次的身份**（不因为没有新请求就清空）。
+     */
+    var now = Date.now(), WIN = 10000;
+    var cnt = {}, lastT = {};
     try {
       for (var i = candPool.length - 1; i >= 0; i--) {
         var e = candPool[i];
-        if (!e) continue;
-        if (!e.key || !/^[0-9]{6,}$/.test(String(e.key))) continue;
-        if (e.t > bestT) { bestT = e.t; best = String(e.key); }
+        if (!e || !e.key) continue;
+        var k = String(e.cid || e.key || '');
+        if (!/^[0-9]{6,}$/.test(k)) continue;
+        if (now - (e.t || 0) > WIN) continue;
+        cnt[k] = (cnt[k] || 0) + 1;
+        if ((e.t || 0) > (lastT[k] || 0)) lastT[k] = e.t;
       }
     } catch (eN) {}
-    return best;
+    var best = '', bestN = 0, bestT = 0;
+    for (var kk in cnt) {
+      if (cnt[kk] > bestN || (cnt[kk] === bestN && (lastT[kk] || 0) > bestT)) {
+        best = kk; bestN = cnt[kk]; bestT = lastT[kk] || 0;
+      }
+    }
+    var cur = String(window.__b0bIdCur || '');
+    if (cur && cnt[cur] && best && cur !== best) {
+      /* 迟滞：旧身份没落后到一半就保持 */
+      if (cnt[cur] * 2 >= cnt[best]) best = cur;
+    }
+    if (best) window.__b0bIdCur = best;
+    /* 窗口内没有任何分片请求 → 保持上一次身份（缓冲满时就是这样） */
+    return best || cur;
   }
   function b0bPageEp() { return String(biliEp || ''); }
   function b0bPageTitleNow() {
@@ -4478,7 +4508,11 @@
     if (candSeen[k]) return;
     candSeen[k] = 1;
     var key = candKeyOf(u);
-    candPool.push({ u: u, t: Date.now(), key: key });
+    /* 【2026-10-24 02:56 身份取不稳的根：candKeyOf 对相当多分片返回 'x'。
+       这里另存一份"从地址里解析出的编号"，身份统计只认它。】 */
+    var cidUrl = '';
+    try { cidUrl = String(b0bCidFromUrl(u) || ''); } catch (eC0) {}
+    candPool.push({ u: u, t: Date.now(), key: key, cid: cidUrl });
     /*
      * 【2026-10-17 00:12 观测：池子里出现过哪些"片子编号"】
      * 只在出现新的编号时打一行 —— 用来回答"我翻到第 5 集了，池子里有没有第 5 集的编号"。
@@ -4576,6 +4610,65 @@
     return out;
   }
 
+  /*
+   * 【2026-10-24 01:56 结构性修正：槽 = 网页的"持续报告"，与"要不要交付"解耦】
+   *
+   * .18 实测铁证：`③配对跳过：手里那份就是当前这一集（编号 0）` —— pendingPlay 一旦建立，
+   * 后续候选全被跳过，而写槽的代码挂在那条被跳过的路上 → 槽永远是空的（B站/腾讯两站全空）。
+   * 于是：
+   *   · 写槽：每 400ms 一次，只要有"当前身份"的画面+声音成对候选就刷新四格（身份/标题/时刻/地址）；
+   *   · 交付：真全屏时才读槽 + 核对（与写槽互不影响）。
+   * B站 任何清晰度都收（父亲定）；腾讯三档由 qqSlotSet 那边按档收（不变）。
+   */
+  function b0bSlotRefresh() {
+    try {
+      if (b0bSite() !== 'bi') return;              /* 腾讯/爱奇艺各有各的收法 */
+      if (!pageIsPlaying()) return;
+      var idNow = b0bPageIdentity();                /* 网络事实：最近仍在下分片的编号 */
+      if (!idNow) return;
+      /*
+       * 【2026-10-24 02:08 父亲定：B站 不靠延时，靠四格值变化】
+       * 原来"这一集已收好就跳过"会把'先画面单条、后声音到齐'这次变化吞掉 →
+       * 改成：同一身份下，从"单条"变成"成对"也必须更新槽（这是值变了）。
+       */
+      var svPrev = biSlotRead();
+      var prevHasAudio = !!(svPrev && svPrev.a);
+      if (svPrev && String(svPrev.cid || '') === idNow && svPrev.v && prevHasAudio) return;
+      var cands = pickCandidates(6);
+      if (!cands.length) return;
+      /* 只取"属于当前身份"的那条，且必须画面+声音成对（或整片） */
+      var pickC = null, pickCid = '';
+      for (var i = 0; i < cands.length; i++) {
+        var cidOf = b0bCidFromUrl(cands[i].video);
+        if (cidOf && cidOf === idNow && cands[i].audio) { pickC = cands[i]; pickCid = cidOf; break; }
+      }
+      /* 没有成对：单条也先收（整片/单轨/声音晚到都靠这条）；成对到了会按变化覆盖）*/
+      if (!pickC) {
+        for (var j = 0; j < cands.length; j++) {
+          var cidJ = b0bCidFromUrl(cands[j].video);
+          if (cidJ && cidJ === idNow) { pickC = cands[j]; pickCid = cidJ; break; }
+        }
+      }
+      if (!pickC) return;
+      biSlotSave({
+        v: String(pickC.video || ''), a: String(pickC.audio || ''),
+        cid: pickCid, ep: biliEp, season: biliSeason,
+        title: String(b0bPageTitleNow() || ''), dur: Math.round(pageClipDur() || 0),
+        at: Date.now()
+      });
+      if (!String(b0bRec.id || '')) {
+        b0bRec.id = pickCid; b0bRec.ep = String(biliEp || '');
+        b0bRec.season = String(biliSeason || ''); b0bRec.title = String(b0bPageTitleNow() || '');
+        b0bRec.addr = String(pickC.video || '');
+        console.log('[b0b]◆记录 从无变有：身份=' + pickCid + '（首份地址，直接入记录）');
+      }
+      b0bMark('新址', '站=bi 槽=B站 身份=cid' + pickCid + '（来自地址） 标题「' +
+        String(b0bPageTitleNow() || '').slice(0, 22) + '」 地址尾=…' +
+        String(pickC.video || '').slice(-26) + (pickC.audio ? ' ＋声音' : '（单条）'));
+      b0bRecTick();
+    } catch (e) {}
+  }
+
   function tryPairFromHits(keysAll) {
     try {
       if (pendingPlay) {
@@ -4610,26 +4703,12 @@
       var cands = pickCandidates(6);
       if (!cands.length) return;
       /*
-       * 【2026-10-17 04:19 父亲报的'没有接管'根因（r622 日志）】
-       *
-       * 池子里刚有**画面那一条**就交出去了（日志 `1)单条`），声音那条晚一秒到，
-       * 结果交出去的还是"有画无声"。所以：B站 这种音视频分轨的站点，
-       * **必须等到画面+声音成对才交**；实在等不到（整片 mp4 / HLS 自带声音 / 等太久）
-       * 才退回"单条"。
+       * 【2026-10-24 02:09 父亲定：B站 不靠延时，靠四格值的变化】
+       * 旧的"只有画面就先不交、最多等 8 秒"是计时闸门 —— 已删。
+       * 现在槽是权威：画面单条先入槽，声音到了按"值变化"覆盖槽；
+       * 交付侧只做一件事：候选与上次完全相同就不再重复产载荷。
        */
       var pairSig = String(cands[0].video) + '|' + String(cands[0].audio || '');
-      var isWhole = !!findWholeFile([cands[0].video]) || /\.m3u8/i.test(String(cands[0].video));
-      if (!cands[0].audio && !isWhole) {
-        var waitedMs = 0;
-        if (liveSince) waitedMs = Date.now() - liveSince;
-        else if (fullState) waitedMs = Date.now() - (lastFullAt || (Date.now() - 3000));
-        if (waitedMs < 8000) {
-          console.log('[b0b]③先不交：现在只有画面那条，等声音那条（已等 ' +
-            Math.round(waitedMs / 1000) + ' 秒，最多 8 秒）');
-          return;
-        }
-        console.log('[b0b]③等了 ' + Math.round(waitedMs / 1000) + ' 秒还没有声音那条 → 先按单条交（有画无声）');
-      }
       if (pairSig === lastPairedVideo) {
         console.log('[b0b]③配对跳过：候选与上次完全相同');
         return;
@@ -5311,6 +5390,23 @@
   }
 
   function scan() {
+    /* 调试钩子：仅在控制台执行 window.__b0bDebugOn() 后，暴露内部状态供排查（默认关闭） */
+    try {
+      if (window.__b0bDbgWanted && !window.__b0bDbg) {
+        window.__b0bDbg = function () {
+          var ids = {};
+          try { for (var i = 0; i < candPool.length; i++) { var e = candPool[i]; var c = String(e.cid || e.key || ''); if (/^[0-9]{6,}$/.test(c)) ids[c] = (ids[c] || 0) + 1; } } catch (eD) {}
+          return { playing: (function(){ try { return pageIsPlaying(); } catch(e){ return 'err'; } })(),
+                   site: b0bSite(), idNow: (function(){ try { return b0bPageIdentity(); } catch(e){ return 'err'; } })(),
+                   pool: (function(){ try { return candPool.length; } catch(e){ return -1; } })(),
+                   ids: ids,
+                   recId: b0bRec.id, waiting: b0bRec.waiting,
+                   slot: (function(){ try { return biSlotRead(); } catch(e){ return null; } })() };
+        };
+        window.__b0bDebugOn = function () { window.__b0bDbgWanted = 1; };
+      }
+    } catch (eDbg) {}
+    try { b0bSlotRefresh(); } catch (eSlot) {}
     try { scanPerfForHls(); } catch (e) {}
     /* 腾讯那条路：没有播放列表，只能按顺序攒分片（2026-10-18） */
     try { scanPerfForFrags(); } catch (e) {}
@@ -5563,6 +5659,13 @@
           if (String(biliCid || '') !== b0bPageIdentity()) {
             console.log('[b0b] 分片号 ' + String(biliCid) + ' 与网络实况（' +
               (b0bPageIdentity() || '?') + '）不一致 → 当闪变忽略，不触发切换');
+          } else if (!String(b0bRec.id || '')) {
+            /*
+             * 【2026-10-24 02:10 首片实测：第一次出现分片编号不是"换片"】
+             * 原来这里会当切换 → 清场 → 刚写进槽的地址被当场清掉（首片槽永远空）。
+             * 第一次拿到编号只认作记录起点。
+             */
+            console.log('[b0b]◆记录 首次拿到分片号 ' + cidNow + '（不算切换，只记起点）');
           } else {
             b0bMarkSwitch('分片号 ' + cidNow, '分片号变了（同页换片）');
             b0bClearStale('分片号变了（同页换片）', Date.now());
