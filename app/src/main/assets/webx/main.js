@@ -852,10 +852,70 @@
     if (tail.charAt(tail.length - 1) === '/') return false;
     return true;
   }
+  /*
+   * 【2026-10-23 11:40 父亲定稿：六项一体，只认变化】
+   *
+   * 一份记录 = 身份 + 集号 + 季 + 标题 + 时长 + 地址，要么整体是上一集，要么整体是新一集，
+   * 不允许新旧混在一份里交给原生。
+   * 切集切片时才记基线、进入"等变化"；关键项（身份/集号）相对基线变了（旧→新、无→有）
+   * 才一次性把六项全重写；没变就继续等，不交。按 B 回网页不动基线。
+   */
+  var b0bRec = {
+    id: '', ep: '', season: '', title: '', dur: 0, addr: '',
+    baseId: '', baseEp: '', waiting: false,
+  };
+  function b0bRecSnapshot() {
+    var addr = '';
+    try {
+      if (b0bSite() === 'qq') {
+        var p = qqSlotPick();
+        if (p && p.b) addr = String(p.b.u || '');
+      } else {
+        var sv = biSlotRead();
+        if (sv) {
+          addr = String(sv.v || '');
+          if (sv.a) addr += ' + ' + String(sv.a);
+        }
+      }
+    } catch (eSnap) {}
+    return {
+      id: String((b0bSite() === 'qq') ? (pageVidNow() || '') : (biliCid || '')),
+      ep: String(biliEp || ''),
+      season: String(biliSeason || ''),
+      title: String((function () { try { return b0bBuildTitle() || ''; } catch (e) { return ''; } })()),
+      dur: 0,
+      addr: addr,
+    };
+  }
+  /** 切集切片：记基线 + 进等待（不碰按 B 回网页那条路） */
+  function b0bRecSwitch(what) {
+    var snap = b0bRecSnapshot();
+    b0bRec.baseId = snap.id;
+    b0bRec.baseEp = snap.ep;
+    b0bRec.waiting = true;
+    console.log('[b0b]◆记录 基线已记：身份=' + (snap.id || '?') + ' 集号=' + (snap.ep || '?') +
+      '（切换动作：' + (what || '?') + '）→ 等关键项变化');
+  }
+  /** 每轮采样：关键项变了才整体重写，变了才放行交付 */
+  function b0bRecTick() {
+    if (!b0bRec.waiting) return;
+    var snap = b0bRecSnapshot();
+    var idChanged = !!snap.id && snap.id !== b0bRec.baseId;
+    var epChanged = !!snap.ep && snap.ep !== b0bRec.baseEp;
+    if (!idChanged && !epChanged) return;
+    b0bRec.id = snap.id; b0bRec.ep = snap.ep; b0bRec.season = snap.season;
+    b0bRec.title = snap.title; b0bRec.dur = snap.dur; b0bRec.addr = snap.addr;
+    b0bRec.waiting = false;
+    console.log('[b0b]◆记录 关键项变了（身份 ' + (b0bRec.baseId || '无') + ' → ' + (snap.id || '无') +
+      '，集号 ' + (b0bRec.baseEp || '无') + ' → ' + (snap.ep || '无') + '）→ 六项已整体重写：' +
+      '标题「' + String(snap.title).slice(0, 22) + '」 地址尾=' + String(snap.addr).slice(-24));
+  }
+
   function b0bMarkSwitch(what, src) {
     b0bSeq++;
     b0bSwitchAt = Date.now();
     b0bSwitchWhat = String(what || '?');
+    try { b0bRecSwitch(b0bSwitchWhat); } catch (eRec) {}
     try { window.__b0bSwitchAt = b0bSwitchAt; } catch (eW) {}
     /*
      * 【2026-10-23 09:50 父亲定】点了切集按钮那一刻的时刻是可靠的；
@@ -1403,6 +1463,17 @@
      * 【2026-10-17 03:54 简化】只有一个门槛之后，手里的那份必定属于这一次放大，
      * 所以只做一件事：它是不是当前这一集？是就交，不是就丢掉重新攒。
      */
+    /*
+     * 【2026-10-23 11:40】规矩：切集切片之后、关键项还没变之前，一份都不交。
+     * 这是"六项一体"的闸门 —— 不允许把上一集的地址配新一集的标题交出去。
+     */
+    if (b0bRec.waiting) {
+      if (b0bLogGate('recwait')) {
+        console.log('[b0b]◆记录 还在等关键项变化（身份 ' + (b0bRec.baseId || '?') +
+          '，集号 ' + (b0bRec.baseEp || '?') + '）→ 这一份不交');
+      }
+      return;
+    }
     var obj = pendingPlay;
     /*
      * 【2026-10-21 23:50 爱奇艺：原生交了整集片单后，页面这条一律不交】
@@ -5418,6 +5489,7 @@
      * 【2026-10-23 00:50 父亲定：把"读到什么"本身记下来】
      * 今晚 B站 连续出现"现在 ?"，从日志看不出是读不到、还是读错了、还是读到了别的层。
      */
+    try { b0bRecTick(); } catch (eTick) {}
     try {
       var idSig = String(epKeyNow) + '|' + biliEp + '|' + biliCid + '|' + biliSeason;
       if (idSig !== window.__b0bIdSig) {

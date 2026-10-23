@@ -1676,20 +1676,34 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                 android.util.Log.i(
                                                     "B0BEmbyVR",
                                                     "◆等待 站=iq 网址已换（v_" + IqSlot.v + " → v_" + pageV +
-                                                        "）但片号还是上一集的 " + useTvid + "，等它真的变（最多 5 分钟）",
+                                                        "）但片号还是上一集的 " + useTvid + "，等它真的变（不看时间）",
                                                 )
+                                                /*
+                                                 * 【2026-10-23 11:45 父亲定：只认变化，不做时间兜底】
+                                                 * 网址已换而片号没变 → 一直等，直到片号相对基线发生变化（旧→新、无→有）。
+                                                 * 唯一的退出条件不是时间，而是"页面读不出身份"连续失败（人可能已经离开）。
+                                                 */
                                                 var caught = false
-                                                for (attempt in 0 until 150) {
-                                                    Thread.sleep(2000)
+                                                var readFails = 0
+                                                var waitedMs = 0
+                                                while (true) {
+                                                    Thread.sleep(1500)
+                                                    waitedMs += 1500
                                                     val again = askPageIdentity(webRef)
-                                                    if (again.first.isNotBlank() && again.first != useTvid) {
+                                                    if (again.first.isBlank()) {
+                                                        readFails++
+                                                        if (readFails >= 40) break
+                                                        continue
+                                                    }
+                                                    readFails = 0
+                                                    if (again.first != useTvid) {
                                                         useTvid = again.first
                                                         if (again.second.isNotBlank()) pageV = again.second
                                                         caught = true
                                                         android.util.Log.i(
                                                             "B0BEmbyVR",
                                                             "◆等待 站=iq 片号跟上了 → " + useTvid +
-                                                                "（等了 " + (attempt + 1) * 2 + " 秒）",
+                                                                "（等了 " + (waitedMs / 1000) + " 秒）",
                                                         )
                                                         break
                                                     }
@@ -1697,8 +1711,8 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                 if (!caught) {
                                                     android.util.Log.w(
                                                         "B0BEmbyVR",
-                                                        "◆不交 站=iq 等了 5 分钟片号仍是 " + useTvid +
-                                                            "（网址已换到 v_" + pageV + "）→ 这次不接管，避免播错集",
+                                                        "◆不交 站=iq 页面身份读不到了（片号仍是 " + useTvid +
+                                                            "）→ 这次不接管",
                                                     )
                                                     return@Thread
                                                 }
