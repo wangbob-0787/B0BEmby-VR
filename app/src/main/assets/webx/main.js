@@ -857,6 +857,15 @@
     b0bSwitchAt = Date.now();
     b0bSwitchWhat = String(what || '?');
     try { window.__b0bSwitchAt = b0bSwitchAt; } catch (eW) {}
+    /*
+     * 【2026-10-23 09:50 父亲定】点了切集按钮那一刻的时刻是可靠的；
+     * 记下"那一刻的分片号"，之后只有**分片号相对它变过**，收到的那份地址才算这一集的。
+     */
+    try {
+      window.__b0bSwitchAtMs = b0bSwitchAt;
+      window.__b0bCidAtSwitch = String(biliCid || '');
+      console.log('[b0b] 切换时刻已记：' + b0bSwitchAt + '，当时分片号=' + (window.__b0bCidAtSwitch || '?'));
+    } catch (eW2) {}
     b0bMark('切换#' + b0bSeq, '站=' + b0bSite() + ' 层=' + b0bLayer() + ' 来源=' + src + ' 动作=『' + b0bSwitchWhat + '』' +
       ' 页面身份=' + String(b0bEpisodeKey() || '?').slice(-32) +
       ' 网址=' + String(location.href).slice(-46) + ' 时刻=' + b0bSwitchAt);
@@ -4518,9 +4527,14 @@
        */
       var cidPageNow = String(biliCid || '');
       if (cidPageNow) {
+        var cidAtSw = String(window.__b0bCidAtSwitch || '');
+        if (cidAtSw && cidPageNow === cidAtSw) {
+          console.log('[b0b] 分片号相对切换时刻还没变（仍 ' + cidPageNow + '）→ 这条地址属于切之前那一片，不收');
+          return;
+        }
         var sinceCid = Date.now() - (window.__b0bCidChangedAt || 0);
-        if (sinceCid < 1800) {
-          console.log('[b0b] 分片号刚变（+' + sinceCid + 'ms，还没稳定）→ 这条地址先不收');
+        if (sinceCid < 800) {
+          console.log('[b0b] 分片号刚变（+' + sinceCid + 'ms，还在抖）→ 先不收');
           return;
         }
         if (cidUrl && cidUrl !== cidPageNow) {
