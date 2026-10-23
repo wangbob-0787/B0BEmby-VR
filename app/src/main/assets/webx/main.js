@@ -4532,11 +4532,6 @@
           console.log('[b0b] 分片号相对切换时刻还没变（仍 ' + cidPageNow + '）→ 这条地址属于切之前那一片，不收');
           return;
         }
-        var sinceCid = Date.now() - (window.__b0bCidChangedAt || 0);
-        if (sinceCid < 800) {
-          console.log('[b0b] 分片号刚变（+' + sinceCid + 'ms，还在抖）→ 先不收');
-          return;
-        }
         if (cidUrl && cidUrl !== cidPageNow) {
           console.log('[b0b] 地址编号 ' + cidUrl + ' ≠ 页面分片号 ' + cidPageNow + ' → 丢，等这一集的地址');
           return;
@@ -5398,17 +5393,13 @@
       var cidNow = String(biliCid || '');
       if (cidNow && cidNow !== '0') {
         if (window.__b0bLastCid && window.__b0bLastCid !== cidNow) {
-          window.__b0bCidChangedAt = Date.now();   /* 分片号刚变，地址要过约 2 秒才跟上 */
-          var cidWanted = cidNow;
-          if (window.__b0bCidTimer) clearTimeout(window.__b0bCidTimer);
-          window.__b0bCidTimer = setTimeout(function () {
-            try {
-              if (String(biliCid || '') === cidWanted) {
-                b0bMarkSwitch('分片号 ' + cidWanted, '分片号变了（同页换片）');
-                b0bClearStale('分片号变了（同页换片）', Date.now());
-              }
-            } catch (eCid2) {}
-          }, 800);
+          /*
+           * 【2026-10-23 09:55 父亲定】分片号一变就说明换成新的了，不需要再等 0.8 秒：
+           * 变了就是正确的；只有空的/0 那种抖动值忽略（它是页面重建时的占位）。
+           */
+          window.__b0bCidChangedAt = Date.now();
+          b0bMarkSwitch('分片号 ' + cidNow, '分片号变了（同页换片）');
+          b0bClearStale('分片号变了（同页换片）', Date.now());
         }
         window.__b0bLastCid = cidNow;
       }
