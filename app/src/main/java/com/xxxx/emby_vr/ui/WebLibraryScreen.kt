@@ -1688,7 +1688,7 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                         return@Thread
                                                     }
                                                 }
-                                            } catch (eChk) {}
+                                            } catch (eChk: Throwable) {}
                                             if (res == null) {
                                                 android.util.Log.w(
                                                     "B0BEmbyVR",

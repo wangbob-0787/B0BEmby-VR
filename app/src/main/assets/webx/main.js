@@ -1098,8 +1098,13 @@
          * 所以这个比较恒等于"一致"，等于没核。
          * 改成比"页面此刻的片号"（pageVidNow，一集一个，从网址里第二段取）。
          */
+        /* 规矩表 §3.1：片号读不到就不交（原来 !keyKnown 直接放行，是错集的入口） */
         var vNow4 = pageVidNow() || pageVideoKey(location.href);
-        var same4 = !pickF.b.vid || !keyKnown(vNow4) || pickF.b.vid === vNow4;
+        var same4 = !!pickF.b.vid && !!keyKnown(vNow4) && pickF.b.vid === vNow4;
+        if (!same4 && (!pickF.b.vid || !keyKnown(vNow4))) {
+          console.log('[b0b] 腾讯片号读不到（槽=' + (pickF.b.vid || '?') +
+            ' 页面=' + (vNow4 || '?') + '）→ 这次不交');
+        }
         if (!same4) {
           console.log('[b0b] 腾讯：槽里片号 ' + pickF.b.vid + ' ≠ 页面此刻片号 ' + vNow4 + ' → 这一槽不能用');
         }
@@ -1205,12 +1210,18 @@
          * 改：只有"两边身份都已知且真的不同"才算不是这一集；未知一律放行（宁可播这一份，
          * 也不因为读不到编号就整晚不接管）。
          */
+        /*
+         * 【2026-10-23 09:15 按规矩表收口：删掉"读不到就放行"】
+         * 规矩表 §3.1：读不到身份 = 不知道，不知道就不交。
+         * 原来这里读不到就放行，正是"播错集"的入口之一。
+         */
         if (!sameEp) {
-          var idA = String(sv.ep || ''), idB = String(biliEp || '');
-          var cidA = String(sv.cid || ''), cidB = String(biliCid || '');
-          if (!idB && !cidB) {
-            sameEp = true;
-            console.log('[b0b] B站当前集号读不到（现在=?）→ 不判死，照用槽里那份');
+          var cidSlot2 = String(sv.cid || '');
+          var cidLive2 = b0bPlayingCid();
+          if (!cidSlot2 || !cidLive2) {
+            b0bBeginWait('B站身份读不到（槽编号=' + (cidSlot2 || '?') +
+              '，页面在播编号=' + (cidLive2 || '?') + '）');
+            console.log('[b0b] B站身份读不到 → 这次不交（规矩表：不知道就不交）');
           }
         }
         if (sameEp) {
@@ -1376,9 +1387,15 @@
     /*
      * 放宽只对 B站 生效（腾讯/其它站点不能跟着松：它们没有集号，这一关是唯一的同一集判据）
      */
+    /*
+     * 【2026-10-23 09:15 规矩表 §3.1】读不到身份不再放行；B站 用"地址里解出的编号"当身份，
+     * 两侧都要有、且相等，才算同一集。
+     */
     var isBiliPage = /(^|\.)bilibili\.com$/i.test(String(location.hostname || ''));
-    var nowIdUnknown = isBiliPage && !biliEp && !biliCid;
-    if (obj && !nowIdUnknown && !sameEpisode(obj, nowId)) {
+    var cidObjB = isBiliPage ? b0bCidFromUrl(obj && obj.streams && obj.streams[0] ? obj.streams[0].video : '') : '';
+    var cidLiveB = isBiliPage ? b0bPlayingCid() : '';
+    var identOk = isBiliPage ? (!!cidObjB && !!cidLiveB && cidObjB === cidLiveB) : sameEpisode(obj, nowId);
+    if (obj && !identOk) {
       console.log('[b0b]③手里那份不是当前这一集（它 ' + (obj.ep || obj.cid || '?') +
         '，现在 ep' + (biliEp || '?') + '）→ 丢掉，重新攒');
       pendingPlay = null;
