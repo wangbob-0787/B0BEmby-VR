@@ -889,8 +889,16 @@ private object WebRuntime {
             android.util.Log.w("B0BEmbyVR", "◆复核 不匹配：身份为空 → 不交")
             return false
         }
-        val mch = Regex("/(\\d{6,})[-_/]").find(addr)
-        val addrId = mch?.groupValues?.get(1) ?: ""
+        /*
+         * 【2026-10-23 23:36 r939 实测修正】通用正则把爱奇艺 .ts 地址里的日期（20261021）当成编号，
+         * 于是"地址编号 ≠ 身份"误判、一集都不交。只认 B站/腾讯 分片地址的写法：
+         *   …/upgcxcode/aa/bb/<编号>/…  或  <编号>[-_][…]-1-<code>.m4s
+         */
+        val addrId = (
+            Regex("/upgcxcode/[0-9a-f]+/[0-9a-f]+/(\\d{6,})/").find(addr)?.groupValues?.get(1)
+                ?: Regex("/(\\d{6,})[-_][0-9a-z]*-?1-\\d+\\.(?:m4s|mp4)").find(addr)?.groupValues?.get(1)
+                ?: ""
+            )
         if (addrId.isNotBlank() && !identify.contains(addrId) && !addrId.contains(identify)) {
             android.util.Log.w(
                 "B0BEmbyVR",

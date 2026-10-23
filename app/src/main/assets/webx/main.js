@@ -890,6 +890,22 @@
   /** 切集切片：记基线 + 进等待（不碰按 B 回网页那条路） */
   function b0bRecSwitch(what) {
     var snap = b0bRecSnapshot();
+    /*
+     * 【2026-10-23 23:35 r939 实测修正】切换动作常常**发生在值已经变了之后**
+     * （腾讯点选集时片号已经换好，我们再记"基线=当前"就永远等不到变化 → 永不交付）。
+     * 所以：若当前值已经不同于上一次记录 → 变化已发生，直接整体重写并放行；
+     * 只有"值还没变"（B站 普通视频那种先换 BV、分片号晚 1.4~2.3 秒）才记基线进等待。
+     */
+    var changedAlready = (!!snap.id && snap.id !== b0bRec.id) || (!!snap.ep && snap.ep !== b0bRec.ep);
+    if (changedAlready) {
+      b0bRec.id = snap.id; b0bRec.ep = snap.ep; b0bRec.season = snap.season;
+      b0bRec.title = snap.title; b0bRec.dur = snap.dur; b0bRec.addr = snap.addr;
+      b0bRec.baseId = snap.id; b0bRec.baseEp = snap.ep;
+      b0bRec.waiting = false;
+      console.log('[b0b]◆记录 切换动作时代已经变了（身份 ' + (snap.id || '?') +
+        '）→ 六项整体重写，直接放行');
+      return;
+    }
     b0bRec.baseId = snap.id;
     b0bRec.baseEp = snap.ep;
     b0bRec.waiting = true;
