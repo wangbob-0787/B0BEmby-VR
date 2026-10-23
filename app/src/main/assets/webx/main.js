@@ -1117,7 +1117,12 @@
          * 改成比"页面此刻的片号"（pageVidNow，一集一个，从网址里第二段取）。
          */
         /* 规矩表 §3.1：片号读不到就不交（原来 !keyKnown 直接放行，是错集的入口） */
-        var vNow4 = pageVidNow() || pageVideoKey(location.href);
+        /*
+         * 【2026-10-23 09:22 DeepSeek P2-2 成立：去掉兜底】
+         * 身份只能有一个来源（规矩表 §2）；原来 pageVidNow 取不到就退回 pageVideoKey，
+         * 那个是"整部剧的编号"，换集不变 → 会让"两槽混用"被当成一致。取不到就不交。
+         */
+        var vNow4 = pageVidNow();
         var same4 = !!pickF.b.vid && !!keyKnown(vNow4) && pickF.b.vid === vNow4;
         if (!same4 && (!pickF.b.vid || !keyKnown(vNow4))) {
           console.log('[b0b] 腾讯片号读不到（槽=' + (pickF.b.vid || '?') +
