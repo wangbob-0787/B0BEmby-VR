@@ -4699,6 +4699,17 @@
         '（来自地址） 页面集号=' + (biliEp ? 'ep' + biliEp : '?') +
         ' 标题「' + String(b0bBuildTitle() || '').slice(0, 24) + '」' +
         ' 地址尾=…' + String(cands[0].video || '').slice(-28) + ' 距切换=' + b0bSince());
+      /*
+       * 【2026-10-24 01:25 从无变有】记录还是空的（首进页面/整页重建后第一个地址）→
+       * 直接认这份地址自带的编号为记录身份，标题一并落格 —— 别让"记录空"挡住首集全屏。
+       */
+      if (!String(b0bRec.id || '')) {
+        b0bRec.id = cidUrl;
+        b0bRec.title = String(b0bBuildTitle() || '');
+        b0bRec.ep = String(biliEp || '');
+        b0bRec.season = String(biliSeason || '');
+        console.log('[b0b]◆记录 从无变有：身份=' + cidUrl + '（首份地址，直接入记录）');
+      }
       biSlotSave({
         v: String(cands[0].video || ''), a: String(cands[0].audio || ''),
         cid: cidUrl, ep: biliEp, season: biliSeason,
