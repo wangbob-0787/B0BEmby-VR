@@ -2148,12 +2148,17 @@ class MainActivity : ComponentActivity() {
                      * 网页流第一次报出真实尺寸就是"真的出画面了"，把耗时和比例一起记下来。
                      */
                     val costMs = if (lastWebDeliverAt > 0) System.currentTimeMillis() - lastWebDeliverAt else -1
-                    android.util.Log.i(
-                        "B0BEmbyVR",
-                        "◆起播 站=网页流 分辨率=${vw}x${vh}" +
-                            " 比例=" + String.format("%.3f", vw.toFloat() / vh.toFloat()) +
-                            " 交付到出画=" + (if (costMs >= 0) costMs.toString() + "ms" else "未记录"),
-                    )
+                    /* 只在分辨率/比例变化时打一行；这个循环每秒跑一次，否则日志被刷满 */
+                    if (vw != lastWebSizeW || vh != lastWebSizeH) {
+                        lastWebSizeW = vw
+                        lastWebSizeH = vh
+                        android.util.Log.i(
+                            "B0BEmbyVR",
+                            "◆起播 站=网页流 分辨率=${vw}x${vh}" +
+                                " 比例=" + String.format("%.3f", vw.toFloat() / vh.toFloat()) +
+                                " 交付到出画=" + (if (costMs >= 0) costMs.toString() + "ms" else "未记录"),
+                        )
+                    }
                 }
                 kotlinx.coroutines.delay(1000)
             }
@@ -3462,6 +3467,9 @@ class MainActivity : ComponentActivity() {
 
     /** 最近一次把网页流交给内核的时刻（用来算"交出去多久才出画面"） */
     private var lastWebDeliverAt = 0L
+    /** 上一次记过的网页流分辨率（◆起播只在变化时打一行） */
+    private var lastWebSizeW = 0
+    private var lastWebSizeH = 0
 
     private fun playWebStream(obj: org.json.JSONObject) {
         lastWebDeliverAt = System.currentTimeMillis()

@@ -1624,16 +1624,16 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                  * 2026-10-23 00:29 日志实证：点选集 13 后网址已换（v_11wu39wzl6c），
                                                  * 页面片号仍是第 16 集，等 3 秒没跟上就照交 → 交出去的是第 16 集片单
                                                  * （324 段 / 2749 秒），标题却是第 13 集。父亲口径：宁可这次不接管，
-                                                 * 也不能播错集。所以：网址已换而片号没变 → 最多等 15 秒，仍不跟上就不交。
+                                                 * 也不能播错集。所以：网址已换而片号没变 → 最多等 40 秒（每 2 秒查一次），仍不跟上就不交。
                                                  */
                                                 android.util.Log.i(
                                                     "B0BEmbyVR",
                                                     "◆等待 站=iq 网址已换（v_" + IqSlot.v + " → v_" + pageV +
-                                                        "）但片号还是上一集的 " + useTvid + "，最多等 15 秒",
+                                                        "）但片号还是上一集的 " + useTvid + "，最多等 40 秒",
                                                 )
                                                 var caught = false
-                                                for (attempt in 0 until 15) {
-                                                    Thread.sleep(1000)
+                                                for (attempt in 0 until 20) {
+                                                    Thread.sleep(2000)
                                                     val again = askPageIdentity(webRef)
                                                     if (again.first.isNotBlank() && again.first != useTvid) {
                                                         useTvid = again.first
@@ -1642,7 +1642,7 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                         android.util.Log.i(
                                                             "B0BEmbyVR",
                                                             "◆等待 站=iq 片号跟上了 → " + useTvid +
-                                                                "（等了 " + (attempt + 1) + " 秒）",
+                                                                "（等了 " + (attempt + 1) * 2 + " 秒）",
                                                         )
                                                         break
                                                     }
@@ -1650,7 +1650,7 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                 if (!caught) {
                                                     android.util.Log.w(
                                                         "B0BEmbyVR",
-                                                        "◆不交 站=iq 等满 15 秒片号仍是 " + useTvid +
+                                                        "◆不交 站=iq 等满 40 秒片号仍是 " + useTvid +
                                                             "（网址已换到 v_" + pageV + "）→ 这次不接管，避免播错集",
                                                     )
                                                     return@Thread
