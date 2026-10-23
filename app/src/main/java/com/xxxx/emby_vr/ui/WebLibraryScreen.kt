@@ -1688,7 +1688,13 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                         return@Thread
                                                     }
                                                 }
-                                            } catch (eChk: Throwable) {}
+                                            } catch (eChk: Throwable) {
+                                                if (eChk is kotlinx.coroutines.CancellationException) throw eChk
+                                                android.util.Log.w(
+                                                    "B0BEmbyVR",
+                                                    "◆复检 站=iq 读页面身份失败：" + eChk,
+                                                )
+                                            }
                                             if (res == null) {
                                                 android.util.Log.w(
                                                     "B0BEmbyVR",

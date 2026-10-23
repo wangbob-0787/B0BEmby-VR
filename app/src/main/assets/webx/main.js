@@ -990,6 +990,24 @@
    * 【2026-10-22 17:40 父亲定：身份和标题对不上，就重新抓一次标题】
    * 两次都对不上 → 按身份显示（比如「第 3 集」），地址照交，不因为标题卡住接管。
    */
+  /**
+   * 【2026-10-23 09:20 按 DeepSeek 审读意见补】所有"不交"的出口都走这里：
+   * 打一条 ◆本轮 结果=放弃 并写明卡在哪一步（原来只有部分出口有日志，事后看不出原因）。
+   */
+  function b0bGiveUp(reason) {
+    b0bMark('本轮', '站=' + b0bSite() + ' 层=' + b0bLayer() + ' 结果=放弃 原因=' + reason);
+    b0bWaitUntil = 0;
+    b0bWaitWhy = '';
+  }
+  /** 等待有没有超时（超时就算这一轮放弃，不能让"等"变成永远不交） */
+  function b0bWaitExpired() {
+    if (b0bWaitUntil && Date.now() > b0bWaitUntil) {
+      b0bGiveUp('等待超时（原等因：' + (b0bWaitWhy || '?') + '）');
+      b0bWaitUntil = 0;
+      return true;
+    }
+    return false;
+  }
   function b0bTitleChecked(build, epNo) {
     var ep = String(epNo || '');
     var t1 = '';
@@ -1221,7 +1239,7 @@
           if (!cidSlot2 || !cidLive2) {
             b0bBeginWait('B站身份读不到（槽编号=' + (cidSlot2 || '?') +
               '，页面在播编号=' + (cidLive2 || '?') + '）');
-            console.log('[b0b] B站身份读不到 → 这次不交（规矩表：不知道就不交）');
+            b0bGiveUp('B站身份读不到（槽=' + (cidSlot2 || '?') + ' 在播=' + (cidLive2 || '?') + '）');
           }
         }
         if (sameEp) {
@@ -1239,6 +1257,8 @@
         } else {
           b0bBeginWait('B站槽里那份不是这一集（槽 ' + (sv.ep || sv.cid || '?') +
             ' / 现在 ' + (biliEp || biliCid || '?') + '）');
+          b0bGiveUp('B站槽身份与当前不符（槽 ' + (sv.cid || sv.ep || '?') + '，当前 ' +
+            (b0bPlayingCid() || biliCid || '?') + '）');
         }
       }
       if (!pendingPlay) return;
