@@ -885,13 +885,36 @@
    * 场景6 宽银幕↔16:9：无新切换，只换内容 → 同场景4/1；银幕比例由内核真实尺寸纠偏。
    * 场景7 每次真全屏一行结论：announceFullscreen 打 ◆真全屏；没交出由 ◆本轮 给出原因候选（等待中=是）。
    * 死锁自查：解除判据只有"页面身份≠基线"+地址到位两件事；b0bClearStale 不触碰记录；无时间条件。
+   * 场景8 B站切片后闪变：页面变量被推荐预取抢写、在多个编号间横跳 → 一切判定用"网络里最近3秒仍在下分片"的编号（b0bPageIdentity）；闪变值对不上网络实况 → 触发/核对全部忽略。【00:57 实测定案】
    */
   var b0bRec = {
     id: '', ep: '', season: '', title: '', dur: 0, addr: '',
     baseId: '', baseEp: '', waiting: false,
   };
+  /**
+   * 【2026-10-24 00:55 r941 实测定案：B站 页面变量在切集后闪变（推荐预取进来抢写）】
+   *
+   * 日志实证：biliCid 在 42978771523 / 42972610800 / 42955181598 之间横跳（单向闪变就有 18 次），
+   * 状态机被闪变反复触发、正经地址被"编号≠页面分片号"全丢 —— 首次能接管是因为
+   * 页面刚载入只有一次接口请求；一切片推荐预取进来就闪。
+   *
+   * 所以 B站 的"页面当前身份"改用**网络事实**：地址池里最近 3 秒仍在下载分片的那个编号
+   * （正在播的集才会持续要分片；推荐预取只是要接口、不发分片 → 天然不闪）。
+   * 页面变量留给弹幕，不再参与接管判定。
+   */
   function b0bPageIdentity() {
-    return String((b0bSite() === 'qq') ? (pageVidNow() || '') : (biliCid || ''));
+    if (b0bSite() === 'qq') return String(pageVidNow() || '');
+    /* B站：以分片下载为准 */
+    var best = '', bestT = 0, now = Date.now();
+    try {
+      for (var i = candPool.length - 1; i >= 0; i--) {
+        var e = candPool[i];
+        if (!e) continue;
+        if (!e.key || !/^[0-9]{6,}$/.test(String(e.key))) continue;
+        if (e.t > bestT) { bestT = e.t; best = String(e.key); }
+      }
+    } catch (eN) {}
+    return best;
   }
   function b0bPageEp() { return String(biliEp || ''); }
   function b0bPageTitleNow() {
@@ -4646,7 +4669,7 @@
        * 也就是说这 2 秒里"页面身份已新、地址还是旧"，此时收地址必收错。
        * 规矩：分片号刚变不到 1.8 秒、或地址里的编号与页面分片号不一致 → 一律不收。
        */
-      var cidPageNow = String(biliCid || '');
+      var cidPageNow = b0bPageIdentity();   /* 网络事实，不用闪变的页面变量 */
       if (cidPageNow) {
         var cidAtSw = String(window.__b0bCidAtSwitch || '');
         if (cidAtSw && cidPageNow === cidAtSw) {
@@ -5512,6 +5535,9 @@
      */
     try {
       var cidNow = String(biliCid || '');
+      /* 【2026-10-24 00:57】闪变过滤：只认"网络里最近仍在下"的编号作为变化触发 */
+      var netId = b0bPageIdentity();
+      if (netId) cidNow = netId;
       if (cidNow && cidNow !== '0') {
         if (window.__b0bLastCid && window.__b0bLastCid !== cidNow) {
           /*
@@ -5519,8 +5545,17 @@
            * 变了就是正确的；只有空的/0 那种抖动值忽略（它是页面重建时的占位）。
            */
           window.__b0bCidChangedAt = Date.now();
-          b0bMarkSwitch('分片号 ' + cidNow, '分片号变了（同页换片）');
-          b0bClearStale('分片号变了（同页换片）', Date.now());
+          /*
+           * 【2026-10-24 00:57】触发前先核对：变化的这个编号必须是"网络里正在下"的那个；
+           * 不一致就是页面变量闪变，忽略（不算切换）。用 if/else，不能 return（会跳过本轮扫描剩余工作）。
+           */
+          if (String(biliCid || '') !== b0bPageIdentity()) {
+            console.log('[b0b] 分片号 ' + String(biliCid) + ' 与网络实况（' +
+              (b0bPageIdentity() || '?') + '）不一致 → 当闪变忽略，不触发切换');
+          } else {
+            b0bMarkSwitch('分片号 ' + cidNow, '分片号变了（同页换片）');
+            b0bClearStale('分片号变了（同页换片）', Date.now());
+          }
         }
         window.__b0bLastCid = cidNow;
       }
