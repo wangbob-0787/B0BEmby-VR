@@ -668,55 +668,67 @@
   /*
    * 【2026-10-24 17:50 父亲定：B站 的集名去「播放小窗口左上角」那行字取】
    *
-   * 实测（r944 日志 17:43）：B站 电视剧交付时 `集号ep=?`，标题只能拿到整部片名，
-   * 因为剧集页把「第N话 集名」只写在播放器左上角那行叠加字里，元数据和选集列表都不给。
-   * 所以这里直接读播放器左上角，解析出集号与集名。
+   * 取法与 2026-10-24 15:05 在页面上验证过的那套一致（notes/inbox/bili-slotpanel-2026-10-24.js）：
+   *   剧名与季 → document.title（砍营销尾巴、剥掉「第N季/第N集」）
+   *   集号与集名 → 播放器左上角 `.bpx-player-top-title`（形如「第18集 尘埃未落，再战一局」）
+   * r944 日志（17:43）里 `集号ep=?`、标题只有整部片名，就是因为没读这行。
    */
-  function biliOverlayTitle() {
-    var sels = [
-      '.bpx-player-top-title', '.bpx-player-video-top-title',
-      '.bpx-player-top-title-text', '.bilibili-player-video-top-title',
-      '.bpx-player-top-wrap .bpx-player-top-title',
-      '[class*="player-top-title"]'
-    ];
-    for (var i = 0; i < sels.length; i++) {
-      var es = document.querySelectorAll(sels[i]);
-      for (var j = 0; j < es.length; j++) {
-        var t = String(es[j].textContent || '').replace(/\s+/g, ' ').trim();
-        if (t && t.length >= 2 && !/^哔哩哔哩/.test(t)) return t;
-      }
+  var BILI_CN = { '零': 0, '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10 };
+  function biliCn2Num(s2) {
+    if (/^\d+$/.test(s2)) return String(parseInt(s2, 10));
+    var tot = 0, cur = 0;
+    for (var i = 0; i < s2.length; i++) {
+      var c = s2.charAt(i);
+      if (BILI_CN[c] !== undefined) { cur = BILI_CN[c]; continue; }
+      if (c === '十') { tot += (cur || 1) * 10; cur = 0; continue; }
+      return s2;
     }
-    return '';
+    return String(tot + cur);
+  }
+  function biliOverlayTitle() {
+    var e = document.querySelector('.bpx-player-top-title');
+    if (!e) {
+      var alt = document.querySelectorAll('[class*="player-top-title"]');
+      for (var i = 0; i < alt.length; i++) { if (alt[i].textContent) { e = alt[i]; break; } }
+    }
+    return e ? String(e.textContent || '').replace(/\s+/g, ' ').trim() : '';
+  }
+  function biliCleanTitle() {
+    var raw = String(document.title || '');
+    var t = raw.replace(/\s*[_|]\s*哔哩哔哩\s*[_|]?\s*bilibili\s*$/i, '').trim();
+    var cut = t.search(/[-_|]\s*(电视剧|电影|纪录片|番剧|综艺|国创|动画|全集|高清|正版|独家|bilibili)/i);
+    if (cut > 0) t = t.slice(0, cut).trim();
+    var ov = biliOverlayTitle();
+    var season = (t.match(/第\s*([零一二三四五六七八九十\d]+)\s*季/) || [])[1];
+    var titleNoEp = t.replace(/第\s*[零一二三四五六七八九十\d]+\s*[季集期话][^-_|]*/g, '').replace(/\s{2,}/g, ' ').trim();
+    var series = titleNoEp || t;
+    var mOv = /第\s*([零一二三四五六七八九十\d]+)\s*([集期话])\s*(.*)$/.exec(ov);
+    if (mOv) {
+      var ep = biliCn2Num(mOv[1]);
+      var epName = String(mOv[3] || '').trim();
+      var out = series;
+      if (season) out += ' 第' + biliCn2Num(season) + '季';
+      out += ' 第' + ep + mOv[2];
+      if (epName) out += ' ' + epName;
+      try { biliEp = parseInt(ep, 10) || biliEp; } catch (eBE) {}
+      console.log('[b0b] B站 左上角取到：「' + ov + '」→ 「' + out + '」');
+      return out.replace(/\s{2,}/g, ' ').trim();
+    }
+    if (/^(正片|预告|花絮|片段|特辑|彩蛋)$/.test(ov)) ov = '';
+    if (ov && series && ov.indexOf(series) < 0 && series.indexOf(ov) < 0) {
+      return (series + '(' + ov + ')').replace(/\s{2,}/g, ' ').trim();
+    }
+    t = t.replace(/第\s*([零一二三四五六七八九十\d]+)\s*季/g, function (m, d) { return ' 第' + biliCn2Num(d) + '季'; });
+    t = t.replace(/第\s*([零一二三四五六七八九十\d]+)\s*([集期话])/g, function (m, d, u) { return ' 第' + biliCn2Num(d) + u; });
+    return t.replace(/\s{2,}/g, ' ').trim();
   }
 
   function b0bBuildTitle() {
     /* ⓿ B站：集号与集名只认播放器左上角那行（父亲 2026-10-24 17:50 定） */
     try {
       if (/(^|\.)bilibili\.com$/i.test(String(location.hostname || ''))) {
-        var ov = biliOverlayTitle();
-        if (ov) {
-          var m1 = /第\s*(\d{1,4})\s*([话話集期])/.exec(ov);
-          var epNo = m1 ? parseInt(m1[1], 10) : 0;
-          var epName = m1 ? ov.replace(m1[0], '').replace(/^[\s\-—·:：]+/, '').trim() : ov;
-          /* 整部片名：页面标题去掉尾巴，别把「第N话」再拼一次 */
-          var series = stripTitleTail(String(document.title || '').replace(/_哔哩哔哩.*$/, ''));
-          series = b0bCleanName(series || '');
-          if (series && epName && series.indexOf(epName) >= 0) {
-            series = series.split(epName).join(' ').replace(/\s{2,}/g, ' ').trim();
-          }
-          if (epNo > 0) {
-            var outB = (series ? series + ' ' : '') + '第' + epNo + (m1 ? m1[2] : '集');
-            if (epName && !isJunkTitle(epName)) outB += ' ' + epName;
-            try { biliEp = epNo; } catch (eB1) {}
-            console.log('[b0b] B站 左上角取到集名：「' + outB.slice(0, 60) + '」');
-            return outB.trim().slice(0, 80);
-          }
-          if (epName && !isJunkTitle(epName)) {
-            var only = (series && series.indexOf(epName) < 0 ? series + ' ' : '') + epName;
-            console.log('[b0b] B站 左上角只有集名：「' + only.slice(0, 60) + '」');
-            return only.trim().slice(0, 80);
-          }
-        }
+        var bt2 = biliCleanTitle();
+        if (bt2) return bt2.slice(0, 80);
       }
     } catch (eOv) {}
     /* ① 先问该站自己的元数据（最准），取不到再啃可见文字 */
