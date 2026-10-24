@@ -363,7 +363,8 @@
             tvid: tvid, ep: ep, playlist: r.playlist, segs: r.segs, dur: r.dur,
             bid: r.bid, wh: r.wh, title: iqHeadTitle(), at: Date.now()
           };
-          console.log('[b0b] 爱奇艺入槽：片号=' + tvid + ' 第' + ep + '集 ' + r.segs + ' 段 / ' + r.dur + ' 秒');
+          CH('②槽变', { 站: 'iq', 片号: tvid, 集: ep, 段: r.segs, 时长: r.dur + 's', at: iqSlot.at, bid: r.bid, 标题: String(iqSlot.title).slice(0, 24) });
+          try { deliver(); } catch (e) {}
         } catch (e) { console.log('[b0b] 爱奇艺解析出错：' + e); }
       };
       x.onerror = function () { console.log('[b0b] 爱奇艺：请求清单失败'); };

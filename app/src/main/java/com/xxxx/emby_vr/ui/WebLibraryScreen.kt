@@ -949,20 +949,8 @@ private object WebRuntime {
         }
     }
 
-    /**
-     * 【2026-10-23 11:15 父亲定：判定放原生，网页只负责监控与汇报】
-     *
-     * 三站交上来的东西统一过这一道闸门，规则只在这里维护一处：
-     *   ① 时长已知且不到 5 分钟 → 这是分片/预告，不是整集，不交
-     *   ② 同一份地址在 8 秒内重复 → 不重复起播
-     *   ③ 身份一个都没有 → 记日志（暂不拦，等网页侧身份补齐后再收紧）
-     * 网页侧的脚本只做"看到什么报什么"，不再各自写一套能不能交。
-     */
     /** 爱奇艺本机转发服务（2026-10-24 起用；腾讯那份清单不需要它） */
     private var iqProxy: com.xxxx.emby_vr.web.IqProxyServer? = null
-
-    private var gateLastSig = ""
-    private var gateLastAt = 0L
 
 
     private fun onBridgeMessage(message: Any?) {
