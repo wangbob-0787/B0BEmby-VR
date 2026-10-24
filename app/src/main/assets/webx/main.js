@@ -3066,109 +3066,285 @@
    * 判据只看几何关系（scrollHeight vs clientHeight），与站点、类名、页面都无关。
    */
   /*
-   * 【2026-10-21 爱奇艺接管（父亲定：按 1080P，按"真正的全屏"就交给大银幕）】
+   * 【2026-10-24 16:30 爱奇艺改成「网页交整集清单 + 原生本机转发」】
    *
-   * 事实（本次实测）：
-   *  1) 爱奇艺正片是**一个整集 .ts 大文件**，播放器用 `?start=&end=&contentlength=&sd=` 按字节区间取；
-   *     把这几项去掉后，服务器照常认（HTTP Range 206），内核能直接播、能跳到 40 分钟。
-   *  2) 取流请求（/dash?）发在播放器的后台线程里，**页面脚本看不到**；
-   *     但**分片请求**在页面的资源表里能读到（performance.getEntriesByType('resource')）。
-   *  3) 所以不需要片单：从分片地址里剥出裸地址，就是整集。
+   * 今天的实测定案（台账 docs/ledger/3站取地址测试及槽内各格内容获取方法.md §3）：
+   *  1) 整集清单能在网页里自己签出来：`/dash?…&vf=md5("/dash?"+参数串+固定盐)`，
+   *     响应里 `data.program.video[i].m3u8` 就是整集（剧 702 段 / 45 分，电影 1119 段 / 160 分）。
+   *  2) 但这份清单**不能直接交给内核**：清单里每段都会 302 跳到不同 CDN 节点，
+   *     mpv 复用长连接后全段失败（ffmpeg 关掉长连接才能播）。所以原生要起本机转发。
+   *  3) 片号 `tvid` 不能取 `QiyiPlayerProphetData.tvid`（会滞后到别的集，实测页面第 1 集它给第 7 集），
+   *     电视剧必须按剧名查分集表；电影没有集号，才用播放器数据里的那个。
    *
-   * 触发：网页进入全屏（父亲按"真正的全屏"）时，把这条地址按既有的
-   * `kind:'play'` 契约交给原生，走已经跑通的那条接管路。
+   * 分工（父亲 2026-10-24 16:01 定）：网页只负责把槽填准（身份/标题/时刻/清单），
+   * 时长与重复这两条判断在原生。所以这里只交清单，不做能不能播的判断。
    */
-  var b0bIqLastBare = '';
-  function b0bIqCaptureBare() {
+  var IQ_SALT = 'ulc2h7tka0mdrf2lkb1n6m6mulc2htbn';
+  var IQ_CONST = {
+    src: '01010031010000000000', ori: 'pcw', ps: '0', pt: '0', d: '0', s: '', lid: 'undefined',
+    cf: '0', ct: '0', k_tag: '1', locale: 'zh_cn', up: '', qd_v: 'a1', ppt: '0',
+    k_ft1: '704237197590532', k_ft4: '1170017878024196', k_ft5: '17592337039361',
+    k_ft7: '26422940794880', k_ftx2: 'g',
+    fr_300: '120_120_120_120_120_120', fr_500: '120_120_120_120_120_120',
+    fr_600: '120_120_120_120_120_120', fr_800: '120_120_120_120_120_120',
+    bop: '%7B%22version%22%3A%2210.0%22%2C%22dfp%22%3A%22a084c6039f4f1d4c7da12402b0c503665e7087da9b29304c06de5fdddb79fd744c%22%2C%22b_ft1%22%3A60%7D',
+    sr: '1', ost: '0', ut: '58', vt: '0', rs: '1'
+  };
+
+  /* md5（签名要它；main.js 里没有现成的） */
+  function iqMd5(str) {
+    function rl(n, c) { return (n << c) | (n >>> (32 - c)); }
+    function au(x, y) { var l = (x & 0xFFFF) + (y & 0xFFFF), m = (x >> 16) + (y >> 16) + (l >> 16); return (m << 16) | (l & 0xFFFF); }
+    function cmn(q, a, b, x, s2, t) { return au(rl(au(au(a, q), au(x, t)), s2), b); }
+    function ff(a, b, c, d, x, s2, t) { return cmn((b & c) | ((~b) & d), a, b, x, s2, t); }
+    function gg(a, b, c, d, x, s2, t) { return cmn((b & d) | (c & (~d)), a, b, x, s2, t); }
+    function hh(a, b, c, d, x, s2, t) { return cmn(b ^ c ^ d, a, b, x, s2, t); }
+    function ii(a, b, c, d, x, s2, t) { return cmn(c ^ (b | (~d)), a, b, x, s2, t); }
+    var i, j, res = '', x = [], bl = str.length * 8;
+    for (i = 0; i < str.length; i++) x[i >> 2] |= str.charCodeAt(i) << ((i % 4) * 8);
+    x[bl >> 5] |= 0x80 << (bl % 32);
+    x[(((bl + 64) >>> 9) << 4) + 14] = bl;
+    var a = 1732584193, b = -271733879, c = -1732584194, d = 271733878;
+    for (i = 0; i < x.length; i += 16) {
+      var oa = a, ob = b, oc = c, od = d;
+      a = ff(a, b, c, d, x[i], 7, -680876936); d = ff(d, a, b, c, x[i + 1], 12, -389564586);
+      c = ff(c, d, a, b, x[i + 2], 17, 606105819); b = ff(b, c, d, a, x[i + 3], 22, -1044525330);
+      a = ff(a, b, c, d, x[i + 4], 7, -176418897); d = ff(d, a, b, c, x[i + 5], 12, 1200080426);
+      c = ff(c, d, a, b, x[i + 6], 17, -1473231341); b = ff(b, c, d, a, x[i + 7], 22, -45705983);
+      a = ff(a, b, c, d, x[i + 8], 7, 1770035416); d = ff(d, a, b, c, x[i + 9], 12, -1958414417);
+      c = ff(c, d, a, b, x[i + 10], 17, -42063); b = ff(b, c, d, a, x[i + 11], 22, -1990404162);
+      a = ff(a, b, c, d, x[i + 12], 7, 1804603682); d = ff(d, a, b, c, x[i + 13], 12, -40341101);
+      c = ff(c, d, a, b, x[i + 14], 17, -1502002290); b = ff(b, c, d, a, x[i + 15], 22, 1236535329);
+      a = gg(a, b, c, d, x[i + 1], 5, -165796510); d = gg(d, a, b, c, x[i + 6], 9, -1069501632);
+      c = gg(c, d, a, b, x[i + 11], 14, 643717713); b = gg(b, c, d, a, x[i], 20, -373897302);
+      a = gg(a, b, c, d, x[i + 5], 5, -701558691); d = gg(d, a, b, c, x[i + 10], 9, 38016083);
+      c = gg(c, d, a, b, x[i + 15], 14, -660478335); b = gg(b, c, d, a, x[i + 4], 20, -405537848);
+      a = gg(a, b, c, d, x[i + 9], 5, 568446438); d = gg(d, a, b, c, x[i + 14], 9, -1019803690);
+      c = gg(c, d, a, b, x[i + 3], 14, -187363961); b = gg(b, c, d, a, x[i + 8], 20, 1163531501);
+      a = gg(a, b, c, d, x[i + 13], 5, -1444681467); d = gg(d, a, b, c, x[i + 2], 9, -51403784);
+      c = gg(c, d, a, b, x[i + 7], 14, 1735328473); b = gg(b, c, d, a, x[i + 12], 20, -1926607734);
+      a = hh(a, b, c, d, x[i + 5], 4, -378558); d = hh(d, a, b, c, x[i + 8], 11, -2022574463);
+      c = hh(c, d, a, b, x[i + 11], 16, 1839030562); b = hh(b, c, d, a, x[i + 14], 23, -35309556);
+      a = hh(a, b, c, d, x[i + 1], 4, -1530992060); d = hh(d, a, b, c, x[i + 4], 11, 1272893353);
+      c = hh(c, d, a, b, x[i + 7], 16, -155497632); b = hh(b, c, d, a, x[i + 10], 23, -1094730640);
+      a = hh(a, b, c, d, x[i + 13], 4, 681279174); d = hh(d, a, b, c, x[i], 11, -358537222);
+      c = hh(c, d, a, b, x[i + 3], 16, -722521979); b = hh(b, c, d, a, x[i + 6], 23, 76029189);
+      a = hh(a, b, c, d, x[i + 9], 4, -640364487); d = hh(d, a, b, c, x[i + 12], 11, -421815835);
+      c = hh(c, d, a, b, x[i + 15], 16, 530742520); b = hh(b, c, d, a, x[i + 2], 23, -995338651);
+      a = ii(a, b, c, d, x[i], 6, -198630844); d = ii(d, a, b, c, x[i + 7], 10, 1126891415);
+      c = ii(c, d, a, b, x[i + 14], 15, -1416354905); b = ii(b, c, d, a, x[i + 5], 21, -57434055);
+      a = ii(a, b, c, d, x[i + 12], 6, 1700485571); d = ii(d, a, b, c, x[i + 3], 10, -1894986606);
+      c = ii(c, d, a, b, x[i + 10], 15, -1051523); b = ii(b, c, d, a, x[i + 1], 21, -2054922799);
+      a = ii(a, b, c, d, x[i + 8], 6, 1873313359); d = ii(d, a, b, c, x[i + 15], 10, -30611744);
+      c = ii(c, d, a, b, x[i + 6], 15, -1560198380); b = ii(b, c, d, a, x[i + 13], 21, 1309151649);
+      a = ii(a, b, c, d, x[i + 4], 6, -145523070); d = ii(d, a, b, c, x[i + 11], 10, -1120210379);
+      c = ii(c, d, a, b, x[i + 2], 15, 718787259); b = ii(b, c, d, a, x[i + 9], 21, -343485551);
+      a = au(a, oa); b = au(b, ob); c = au(c, oc); d = au(d, od);
+    }
+    var hex = '0123456789abcdef';
+    [a, b, c, d].forEach(function (n) {
+      for (var k = 0; k < 4; k++) { var by = (n >>> (k * 8)) & 0xFF; res += hex.charAt(by >> 4) + hex.charAt(by & 15); }
+    });
+    return res;
+  }
+
+  function iqCookie(name) {
+    var m = new RegExp('(?:^|;\\s*)' + name + '=([^;]*)').exec(String(document.cookie || ''));
+    return m ? m[1] : '';
+  }
+  function iqIsPage() { return /(^|\.)iqiyi\.com$/i.test(String(location.hostname || '')); }
+
+  /* 标题只认播放器头部那行（`蒸蒸日上 第1集 精英女律师澡堂创业`）；
+     `QiyiPlayerProphetData.videoInfo.title` 是别的片子名（实测「婚礼现场老赖显形」），不能用。 */
+  function iqHeadTitle() {
     try {
-      if (!/(^|\.)iqiyi\.com$/i.test(String(location.hostname || ''))) return '';
-      var rs = performance.getEntriesByType('resource');
-      for (var i = rs.length - 1; i >= 0; i--) {
-        var u = String(rs[i].name || '');
-        if (u.indexOf('.ts?') < 0) continue;
-        var q = u.split('?')[1] || '';
-        var keep = [];
-        var parts = q.split('&');
-        for (var j = 0; j < parts.length; j++) {
-          var k = parts[j].split('=')[0];
-          if (k === 'start' || k === 'end' || k === 'contentlength' || k === 'sd') continue;
-          if (parts[j]) keep.push(parts[j]);
-        }
-        b0bIqLastBare = u.split('?')[0] + '?' + keep.join('&');
-        return b0bIqLastBare;
+      var hs = document.querySelectorAll('[class*=webHead_title__]');
+      for (var i = 0; i < hs.length; i++) {
+        var t = String(hs[i].textContent || '').replace(/\s+/g, ' ').trim();
+        if (t) return t;
       }
     } catch (e) {}
-    return b0bIqLastBare;
+    return '';
   }
-  /* 每秒扫一次资源表，记住最后一条裸地址（分片在播时一直在来） */
-  /* 点击选集：立刻清旧地址（父亲 2026-10-22 11:48 指出的两处切集入口） */
-  try {
-    document.addEventListener('click', function (ev) {
-      try {
-        var el = ev && ev.target;
-        for (var d = 0; el && d < 5; d++, el = el.parentElement) {
-          var txt = String((el.textContent || '')).replace(/\s+/g, ' ').trim();
-          var cls = String(el.className || '');
-          var hitEp = (txt.length <= 14 && /第\s*\d+\s*[集话期]/.test(txt));
-          var hitPanel = (/episode|ep-list|select-list|选集|series-list/i.test(cls) && /\d/.test(txt) && txt.length <= 14);
-          if (hitEp || hitPanel) {
-            /*
-             * 【2026-10-22 11:49 父亲提醒：别把刚进来的新地址清掉】
-             * 两个保护：① 1.2 秒内刚拿到过新地址 → 这次点击不清（大概率就是这次切换产生的）；
-             *          ② 点的就是当前这一集（文本与当前集号一致）→ 不清。
-             */
-            var curEpTxt = '';
-            try { var ci = b0bEpiInfo(String(document.title || '')); curEpTxt = ci.ep ? ('第' + ci.ep + '集') : ''; } catch (e3) {}
-            if (curEpTxt && txt.indexOf(curEpTxt) >= 0) {
-              console.log('[b0b] 点的就是当前这一集 → 不清理（' + txt + '）');
-              return;
-            }
-            b0bMarkSwitch(txt, '选集面板/播放器菜单');
-            b0bClearStale('点了选集 ' + txt, Date.now());
-            return;
-          }
-        }
-      } catch (e1) {}
-    }, true);
-  } catch (e2) {}
+  function iqEpNo() {
+    var m = /第\s*(\d{1,4})\s*集/.exec(iqHeadTitle());
+    return m ? parseInt(m[1], 10) : 0;
+  }
+  function iqSeriesName() {
+    var t = iqHeadTitle();
+    if (!/第\s*\d+\s*集/.test(t)) return t;                       /* 电影：页头就是片名 */
+    return t.replace(/第\s*\d+\s*集[^]*$/, '').replace(/\s+/g, ' ').trim();
+  }
 
-  try { setInterval(b0bIqCaptureBare, 1000); } catch (e) {}
+  /* 分集表：按剧名校验，取当集的片号（电视剧唯一可靠来源） */
+  var iqEpTable = { aid: '', list: [] };
+  var iqEpsBusy = false;
+  function iqAlbumCands() {
+    var out = [];
+    try {
+      var vi = ((window.QiyiPlayerProphetData || {}).videoInfo) || {};
+      if (vi.albumId) out.push(String(vi.albumId));
+      if (vi.album && vi.album.id && out.indexOf(String(vi.album.id)) < 0) out.push(String(vi.album.id));
+    } catch (e) {}
+    try {
+      var m = /"albumId"\s*:\s*"?(\d{6,})/.exec(document.documentElement.innerHTML);
+      if (m && out.indexOf(m[1]) < 0) out.push(m[1]);
+    } catch (e2) {}
+    return out;
+  }
+  function iqFetchEps(aid) {
+    return fetch('https://pcw-api.iqiyi.com/albums/album/avlistinfo?aid=' + aid + '&page=1&size=200', { credentials: 'include' })
+      .then(function (r) { return r.json(); })
+      .then(function (j) { return (((j || {}).data || {}).epsodelist) || []; })
+      .catch(function () { return []; });
+  }
+  function iqLoadEps() {
+    if (iqEpTable.list.length) return Promise.resolve(iqEpTable.list);
+    var cands = iqAlbumCands(), sn = iqSeriesName(), i = 0;
+    function next() {
+      if (i >= cands.length) return Promise.resolve([]);
+      var aid = cands[i++];
+      return iqFetchEps(aid).then(function (list) {
+        var n0 = list.length ? String(list[0].name || '') : '';
+        if (n0 && sn && n0.indexOf(sn) === 0) {
+          iqEpTable = { aid: aid, list: list };
+          console.log('[b0b] 爱奇艺分集表到手：' + list.length + ' 集（' + n0 + '）');
+          return list;
+        }
+        return next();
+      });
+    }
+    return next();
+  }
+  function iqTvidOf(ep) {
+    var l = iqEpTable.list;
+    if (!ep) {
+      try { var v = ((window.QiyiPlayerProphetData || {}).videoInfo) || {}; if (v.tvId) return String(v.tvId); } catch (e) {}
+      return l.length ? String(l[0].tvId || '') : '';
+    }
+    if (!l.length) return '';
+    var it = l[ep - 1];
+    return it ? String(it.tvId || '') : '';
+  }
+  function iqBuildUrl(tvid, bid) {
+    var sb = '';
+    for (var k in IQ_CONST) sb += k + '=' + IQ_CONST[k] + '&';
+    sb += 'tvid=' + tvid + '&bid=' + bid + '&vid=&uid=' + iqCookie('P00003') + '&k_uid=' + iqCookie('QC005') +
+      '&dfp=' + (String(localStorage.getItem('__dfp') || '').split('@')[0]) + '&authKey=&tm=' + Date.now();
+    var path = '/dash?' + sb;
+    return 'https://cache.video.iqiyi.com' + path + '&vf=' + iqMd5(path + IQ_SALT);
+  }
+  function iqParse(body) {
+    var j = JSON.parse(body);
+    var data = j.data || {};
+    if (data.boss_ts && data.boss_ts.code && data.boss_ts.code !== 'A00000') {
+      return { err: '鉴权 ' + data.boss_ts.code };
+    }
+    var vids = ((data.program || {}).video) || [];
+    var best = null, bestN = 0;
+    for (var i = 0; i < vids.length; i++) {
+      var v = vids[i] || {}, pl = String(v.m3u8 || '');
+      if (!pl) continue;
+      var n = pl.split('#EXTINF').length - 1;
+      if (n > bestN) { bestN = n; best = v; }
+    }
+    if (!best) return { err: '返回里没有 m3u8' };
+    var pl2 = String(best.m3u8 || '');
+    if (pl2.indexOf('#EXT-X-PLAYLIST-TYPE') < 0) pl2 = pl2.replace('#EXTM3U', '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-PLAYLIST-TYPE:VOD');
+    if (pl2.indexOf('#EXT-X-ENDLIST') < 0) pl2 = pl2.replace(/\s+$/, '') + '\n#EXT-X-ENDLIST\n';
+    return { playlist: pl2, segs: bestN, dur: parseInt(best.duration || 0, 10) || 0, bid: parseInt(best.bid || 0, 10) || 0 };
+  }
+
+  /* 单槽：身份/标题/时刻/清单，换集整份覆盖（localStorage 跨窗口共用，与腾讯同一套做法） */
+  var IQ_SLOT_KEY = 'b0b:iqslot';
+  function iqSlotSet(v) {
+    try { localStorage.setItem(IQ_SLOT_KEY, JSON.stringify(v)); } catch (e) {}
+  }
+  function iqSlotGet() {
+    try {
+      var raw = localStorage.getItem(IQ_SLOT_KEY);
+      if (!raw) return null;
+      var o = JSON.parse(raw);
+      if (!o || !o.playlist) return null;
+      if (Date.now() - (o.at || 0) > 10 * 60 * 1000) return null;      /* 十分钟作废 */
+      return o;
+    } catch (e) { return null; }
+  }
+
+  var iqBusy = false;
+  function iqGrab(tag) {
+    if (!iqIsPage()) return Promise.resolve(null);
+    if (iqBusy) return Promise.resolve(iqSlotGet());
+    iqBusy = true;
+    var ep = iqEpNo();
+    return iqLoadEps().then(function () {
+      var tvid = iqTvidOf(ep);
+      if (!tvid) { console.log('[b0b] 爱奇艺：拿不到这一集的片号（第' + ep + '集）'); return null; }
+      var title = iqHeadTitle();
+      var cur = iqSlotGet();
+      if (cur && cur.tvid === tvid && cur.title === title) return cur;   /* 同一集不重复要 */
+      return fetch(iqBuildUrl(tvid, '600'), { credentials: 'include' })
+        .then(function (r) { return r.text(); })
+        .then(function (txt) {
+          var r2 = iqParse(txt);
+          if (r2.err) { console.log('[b0b] 爱奇艺取清单失败：' + r2.err); return null; }
+          var slot = { tvid: tvid, title: title, at: Date.now(), ep: ep, playlist: r2.playlist,
+            segs: r2.segs, dur: r2.dur, bid: r2.bid };
+          iqSlotSet(slot);
+          console.log('[b0b] 爱奇艺入槽（' + tag + '）：身份=' + tvid + ' 第' + ep + '集 标题「' + title +
+            '」清单 ' + r2.segs + ' 段 / ' + r2.dur + ' 秒 / bid=' + r2.bid);
+          return slot;
+        });
+    }).catch(function (e) { console.log('[b0b] 爱奇艺取清单出错：' + e); return null; })
+      .then(function (v) { iqBusy = false; return v; });
+  }
+
+  /* 换集就重取（页头那行一变就动） */
+  var iqLastHead = '';
+  try {
+    setInterval(function () {
+      if (!iqIsPage()) return;
+      var h = iqHeadTitle();
+      if (h && h !== iqLastHead) {
+        iqLastHead = h;
+        /* 换集先把旧清单作废，免得新集还没取到时把上一集的清单交出去 */
+        try { localStorage.removeItem(IQ_SLOT_KEY); } catch (eC) {}
+        iqGrab('换集');
+      }
+    }, 1500);
+  } catch (eIqTick) {}
 
   function b0bIqSubmit(tag) {
     try {
-      if (!/(^|\.)iqiyi\.com$/i.test(String(location.hostname || ''))) return false;
-      /*
-       * 【2026-10-22 07:36 父亲定：页面这条路整个不用了】
-       *
-       * 爱奇艺的地址一律由原生签 dash 自取。页面交的那份只是"当前这一段的裸地址"，
-       * 只能播 6 分钟 —— 交上去也没有意义，父亲原话：「我去看那 6 分钟的有什么意义呢」。
-       * 所以页面**在任何触发源下都不交**（DOM 全屏、网络钩子、原生喊它 —— 全不交）。
-       */
-      console.log('[b0b] 爱奇艺：地址由原生自取，页面不递交（' + tag + '）');
-      return false;
-      var bare = b0bIqCaptureBare();
-      if (!bare) { console.log('[b0b] 爱奇艺接管：还没有分片地址，等一秒再按'); return false; }
-      var sz = { w: 0, h: 0, dur: 0 };
-      try {
-        var v = document.querySelector('video');
-        if (v) { sz.w = v.videoWidth || 0; sz.h = v.videoHeight || 0; sz.dur = Math.round(v.duration || 0); }
-      } catch (e) {}
-      var obj = {
-        kind: 'play',
-        frame: location.href,
-        cookie: String(document.cookie || ''),
-        title: (typeof pageTitle === 'function' ? pageTitle() : document.title) || '',
-        width: sz.w, height: sz.h, durSec: sz.dur, quality: '1080P',
-        streams: [{ id: 0, video: bare, audio: '', width: sz.w, height: sz.h, vcodec: 'h264', bw: 0 }],
-      };
-      b0bSendOut(obj);
-      console.log('[b0b] 爱奇艺接管已递交（' + tag + '）：' + sz.w + 'x' + sz.h + ' 时长 ' + sz.dur + 's 地址长 ' + bare.length);
+      if (!iqIsPage()) return false;
+      /* 网页只负责把槽填准；能不能播、重复不重复，由原生判断（父亲 2026-10-24 16:01） */
+      iqGrab('交付前核对').then(function (slot) {
+        if (!slot) { console.log('[b0b] 爱奇艺：槽里没有清单，这次不交（' + tag + '）'); return; }
+        /* 槽里的集号必须与页面此刻一致（网页侧自己的准确性由网页保证，父亲 2026-10-24 16:01） */
+        var epNow = iqEpNo();
+        if (epNow && slot.ep && epNow !== slot.ep) {
+          console.log('[b0b] 爱奇艺：槽里是第' + slot.ep + '集，页面已是第' + epNow + '集，这次不交');
+          return;
+        }
+        var obj = {
+          kind: 'play', site: 'iq', frame: location.href,
+          title: slot.title, ep: String(slot.ep || ''), durSec: slot.dur,
+          pid: slot.tvid, epNo: String(slot.ep || ''),
+          quality: '1080P', width: 0, height: 0, cookie: '',
+          needProxy: 1,
+          streams: [{ id: 0, height: 0, width: 0, bw: 0, vcodec: 'h264', video: '', audio: '', playlist: slot.playlist }]
+        };
+        b0bSendOut(obj);
+        console.log('[b0b] 爱奇艺交清单（' + tag + '）：身份=' + slot.tvid + ' 标题「' + slot.title +
+          '」' + slot.segs + ' 段 / ' + slot.dur + ' 秒，清单 ' + slot.playlist.length + ' 字符');
+      });
       return true;
     } catch (e) {
-      console.log('[b0b] 爱奇艺接管递交出错：' + e);
+      console.log('[b0b] 爱奇艺交付出错：' + e);
       return false;
     }
   }
+
   /* 原生在"网页要全屏"时直接调它（爱奇艺的全屏走的是自定义视图，不一定触发 DOM 全屏事件） */
   window.__b0bIqTakeover = function () { return b0bIqSubmit('原生调用'); };
   /* 原生要在递交标题时现取页面标题（父亲 13:17：控制条上「正在播放」名字不准） */

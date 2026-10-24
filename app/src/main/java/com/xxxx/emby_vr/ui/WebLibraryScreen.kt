@@ -706,6 +706,27 @@ private object WebRuntime {
             } catch (e: Exception) {
             }
         }
+        /*
+         * 【2026-10-24 爱奇艺：清单先经本机转发，再交给内核】
+         *
+         * 清单里每段都会 302 跳到不同 CDN 节点，mpv 复用长连接后全段失败（实测）。
+         * 这里起本机转发服务，把 streams[0].video 换成 127.0.0.1 的清单地址。
+         */
+        val s0 = streams.optJSONObject(0)
+        val pl = s0?.optString("playlist", "") ?: ""
+        if (pl.isNotBlank()) {
+            val srv = iqProxy ?: com.xxxx.emby_vr.web.IqProxyServer().also { iqProxy = it }
+            val local = runCatching { srv.start(pl) }.getOrNull()
+            if (local.isNullOrBlank()) {
+                android.util.Log.w("B0BEmbyVR", "爱奇艺：本机转发没起来，这次不交")
+                return
+            }
+            runCatching { s0.put("video", local) }
+            android.util.Log.i(
+                "B0BEmbyVR",
+                "爱奇艺：清单 " + pl.length + " 字符 → 本机转发 " + local,
+            )
+        }
         streamSink?.invoke(obj)
     }
 
@@ -767,6 +788,47 @@ private object WebRuntime {
          * 所以文本片单仍然交本机服务（127.0.0.1），落盘只作兜底。
          */
         var target = ""
+        /*
+         * 【2026-10-24 爱奇艺必须走转发，腾讯不需要】
+         *
+         * 腾讯的分片地址自带 token、内核直接能取，所以走 PlaylistServer 只吐文本即可。
+         * 爱奇艺的清单里每段都会 302 跳到不同 CDN 节点，mpv 复用长连接后全段失败
+         * （实测 ffmpeg 加 -http_persistent 0 才能播，mpv 没有这个开关）→ 必须经 IqProxyServer 逐段转发。
+         */
+        val needIqProxy = text.contains("iqiyi.com") || text.contains("71edge.com")
+        if (needIqProxy) {
+            val iqSrv = iqProxy ?: com.xxxx.emby_vr.web.IqProxyServer().also { iqProxy = it }
+            val local = runCatching { iqSrv.start(text) }.getOrNull()
+            if (local.isNullOrBlank()) {
+                android.util.Log.w("B0BEmbyVR", "整集清单：爱奇艺转发没起来，放弃")
+                return
+            }
+            android.util.Log.i("B0BEmbyVR", "整集清单：爱奇艺 → 本机转发 " + local)
+            if (target.isBlank()) target = local
+            val payload = org.json.JSONObject()
+            payload.put("kind", "play")
+            payload.put("frame", obj.optString("frame"))
+            payload.put("title", obj.optString("title"))
+            payload.put("ep", obj.optString("epKey"))
+            payload.put("pid", obj.optString("epKey"))
+            payload.put("durSec", obj.optInt("durSec"))
+            payload.put("quality", "1080P")
+            val st = org.json.JSONArray()
+            st.put(
+                org.json.JSONObject().apply {
+                    put("id", 0)
+                    put("video", local)
+                    put("audio", "")
+                    put("height", obj.optInt("height", 0))
+                    put("width", obj.optInt("width", 0))
+                    put("bw", 0)
+                    put("vcodec", "h264")
+                },
+            )
+            payload.put("streams", st)
+            if (gatePlayable(payload)) onBridgePlayable(payload)
+            return
+        }
         val srv = hlsServer ?: com.xxxx.emby_vr.web.PlaylistServer().also { hlsServer = it }
         runCatching {
             val base = srv.start(text)
@@ -848,6 +910,9 @@ private object WebRuntime {
      *   ③ 身份一个都没有 → 记日志（暂不拦，等网页侧身份补齐后再收紧）
      * 网页侧的脚本只做"看到什么报什么"，不再各自写一套能不能交。
      */
+    /** 爱奇艺本机转发服务（2026-10-24 起用；腾讯那份清单不需要它） */
+    private var iqProxy: com.xxxx.emby_vr.web.IqProxyServer? = null
+
     private var gateLastSig = ""
     private var gateLastAt = 0L
 
@@ -869,6 +934,14 @@ private object WebRuntime {
             }
         }
         if (addr.isBlank()) addr = obj.optString("text", "").take(200)
+        /*
+         * 【2026-10-24】爱奇艺交的是整集清单文本（streams[0].playlist），没有地址可看。
+         * 去重指纹用清单尾部（每集的分片签名不同）顶上，否则换集会被当成重复。
+         */
+        if (addr.isBlank()) {
+            val pl0 = obj.optJSONArray("streams")?.optJSONObject(0)?.optString("playlist", "") ?: ""
+            if (pl0.isNotBlank()) addr = "iq-playlist:" + pl0.takeLast(120)
+        }
         val sig = obj.optString("epKey") + "|" + obj.optString("vid") + "|" + addr.takeLast(60)
         val now = System.currentTimeMillis()
         if (sig == gateLastSig && now - gateLastAt < 8000) {
