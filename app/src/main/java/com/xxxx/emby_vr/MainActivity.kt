@@ -2137,6 +2137,29 @@ class MainActivity : ComponentActivity() {
                 mpvBackend?.videoSize()?.let { (vw, vh) ->
                     com.xxxx.emby_vr.vr.VrNative.setVideoSize(vw, vh)
                     /*
+                     * 【2026-10-24 17:55 父亲报「爱奇艺拉扁了」——真凶在这里】
+                     *
+                     * 原来按真实尺寸重设**内核画布**的那段代码只挂在 `webPlayingNow` 分支里
+                     * （refreshOsdTitleFromItem 的网页流段）。爱奇艺这次走的是「原生自取 + 本机转发」，
+                     * 那条分支没进：内核画布停在起播时的 1920x1080，而银幕比例按真实画面改成了
+                     * 2.353:1（1920x816）→ 1080 高的画面被压进 2.35:1 的银幕，就是"拉扁"。
+                     * 现在把"按真实尺寸重设画布"搬到这个每秒一次的通用位置，与比例同源同拍，
+                     * 三个站和 Emby 都吃这一条，不再看是谁交的地址。
+                     */
+                    /* 只对网页交来的流做这一步：Emby 片子的内核画布由它自己的起播逻辑定，别插手 */
+                    if (webPlayingNow || webStreamSite != null) run {
+                        val cap = 1920
+                        val bw = if (vw > cap) cap else vw
+                        val bh = (vh.toLong() * bw / vw).toInt().coerceAtLeast(64)
+                        if (bw != webCanvasW || bh != webCanvasH) {
+                            webCanvasW = bw
+                            webCanvasH = bh
+                            runCatching { renderer.setVideoBufferSize(bw, bh) }
+                            runCatching { mpvBackend?.setSurfaceSize(bw, bh) }
+                            Log.i(TAG, "内核画布按真实尺寸重设 → ${bw}x$bh（内核报 ${vw}x$vh）")
+                        }
+                    }
+                    /*
                      * 尺寸到手就标记"已知"：揭幕要等这个标记（2026-10-20，
                      * 免得第一次接管时把"先按 16:9 建的画面"揭给人看，看着是拉扁的）。
                      */
