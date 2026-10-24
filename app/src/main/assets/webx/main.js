@@ -4776,6 +4776,80 @@
    */
   var BI_SLOT_KEY = 'b0b:biSlot';
   function biSlotSave(o) { try { localStorage.setItem(BI_SLOT_KEY, JSON.stringify(o)); } catch (e) {} }
+  /*
+   * 【2026-10-24 22:50 父亲定：B站不分档、不分组，直接配对写槽】
+   *
+   * 照搬 Mac 上实测通过的那套（notes/inbox/bili-slotpanel-2026-10-24.js）：
+   *   · 只认 /upgcxcode/<a>/<b>/<cid>/ 下的真分片，埋点请求一律不认；
+   *   · 画面与声音各一条、同一个 cid，配对成功立刻写槽，不攒、不分档、不留备用；
+   *   · 当前是哪一片，只看"最新下载的那条分片"的 cid（旧片残留的 cid 一律丢）。
+   * 这样池子里另一条视频的分片永远进不了槽，也就不会再把别的片交出去。
+   */
+  var biNewest = { cid: '', at: 0 };
+  var biDirectSeen = {}, biDirectPend = {}, biDirectLast = '', biDirectLastAt = 0;
+  var biDirectFloor = 0, biDirectSig = '';
+  function biNewestCid() { return biNewest.cid; }
+  function biDirectScanNewest() {
+    try {
+      var es = performance.getEntriesByType('resource') || [];
+      for (var i = es.length - 1; i >= biDirectFloor; i--) {
+        var nm = es[i].name || '';
+        if (nm.indexOf('.m4s') < 0) continue;
+        var m = /\/upgcxcode\/\d+\/\d+\/(\d+)\//.exec(nm);
+        if (m) { biNewest.cid = m[1]; biNewest.at = Date.now(); return m[1]; }
+      }
+    } catch (e) {}
+    return biNewest.cid;
+  }
+  function biDirectNote(url) {
+    try {
+      var pu = new URL(url, location.href);
+      if (/^(data|api|s?\.?message)\.bilibili\.com$/.test(pu.hostname)) return;
+      if (pu.pathname.indexOf('/upgcxcode/') < 0) return;
+    } catch (e) { return; }
+    var m = /\/upgcxcode\/\d+\/\d+\/(\d+)\//.exec(url);
+    if (!m) return;
+    var cid = m[1];
+    var mq = /-1-(\d+)\.m4s/.exec(url);
+    if (!mq) return;
+    var isAudio = /^(?:302|303)\d{2}$/.test(mq[1]);
+    var newest = biDirectScanNewest();
+    if (newest && newest !== cid) return;          /* 不是当前这一片：丢 */
+    if (!biDirectPend[cid]) biDirectPend[cid] = { v: '', a: '' };
+    var cur = biDirectPend[cid];
+    if (isAudio) { if (cur.a === url) return; cur.a = url; }
+    else { if (cur.v === url) return; cur.v = url; }
+    if (!cur.v || !cur.a) return;                   /* 成对才写槽 */
+    var now = Date.now();
+    if (cid === biDirectLast && now - biDirectLastAt < 5000) return;
+    biDirectLast = cid; biDirectLastAt = now;
+    biSlotSave({
+      v: cur.v, a: cur.a, cid: cid,
+      ep: biliEp, season: biliSeason,
+      title: String(b0bPageTitleNow() || ''), dur: Math.round(pageClipDur() || 0),
+      at: now
+    });
+    try { b0bRec.id = cid; b0bRec.ep = String(biliEp || ''); b0bRec.season = String(biliSeason || '');
+      b0bRec.title = String(b0bPageTitleNow() || ''); b0bRec.addr = cur.v; } catch (eR) {}
+    console.log('[b0b]◆直接配对写槽：cid=' + cid + ' 画面尾=…' + cur.v.slice(-26) +
+      ' ＋声音 标题「' + String(b0bPageTitleNow() || '').slice(0, 20) + '」');
+  }
+  function biDirectTick() {
+    try {
+      var es = performance.getEntriesByType('resource') || [];
+      var sig = String(location.href) + '|' + String(document.title || '');
+      if (sig !== biDirectSig) {
+        if (biNewest.cid) biDirectFloor = es.length;   /* 换片：之前的旧分片不算 */
+        biDirectSig = sig; biDirectSeen = {}; biDirectPend = {};
+      }
+      for (var i = biDirectFloor; i < es.length; i++) {
+        var u = es[i].name || '';
+        if (u.indexOf('.m4s') > 0 && u.indexOf('/upgcxcode/') > 0) biDirectNote(u);
+      }
+    } catch (e) {}
+  }
+  try { setInterval(biDirectTick, 1200); } catch (eBT) {}
+
   function biSlotRead() {
     try { var s = localStorage.getItem(BI_SLOT_KEY); return s ? JSON.parse(s) : null; } catch (e) { return null; }
   }
@@ -5080,7 +5154,9 @@
         }
       }
       if (!pickC) return;
-      biSlotSave({
+      if (biNewestCid() && String(pickCid) !== String(biNewestCid())) {
+        console.log('[b0b]池子这组不是当前这一片（' + pickCid + ' ≠ ' + biNewestCid() + '）→ 不写槽，等当前这片的分片');
+      } else biSlotSave({
         v: String(pickC.video || ''), a: String(pickC.audio || ''),
         cid: pickCid, ep: biliEp, season: biliSeason,
         title: String(b0bPageTitleNow() || ''), dur: Math.round(pageClipDur() || 0),
