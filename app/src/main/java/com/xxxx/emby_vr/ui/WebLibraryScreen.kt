@@ -606,6 +606,12 @@ private object WebRuntime {
     /* 扩展每轮扫描都会带 location.href 上来 —— 这是"此刻页面在哪"的最新事实（2026-10-17） */
     private var bridgeLastFrame = ""
 
+    /* 接收槽：网页交来的最新一份，整份覆盖，不判断。全屏跳变时消费一次。
+       逻辑见 docs/ledger/native-side-spec-2026-10-25.md */
+    private var slotAny: org.json.JSONObject? = null
+    private var slotRecvAt = 0L
+    private var slotRecvAtWall = 0L
+
     /** 最近一次拿到的可播地址（网页播放接口的完整返回），供"用自己的播放器播"用 */
     private var bridgePlayable: org.json.JSONObject? = null
 
@@ -640,6 +646,51 @@ private object WebRuntime {
      * 新内核走「页面里执行脚本 + 原生接口回传」，入口见 WebPageBridge（2026-10-20）。
      */
 
+    /* 链路日志：统一前缀 B0B链，便于按时间线核对两份文档 */
+    fun chain(step: String, kv: String) {
+        android.util.Log.i("B0B链", step + " " + kv)
+    }
+
+    private fun slotBrief(o: org.json.JSONObject?): String {
+        if (o == null) return "无"
+        val st = o.optJSONArray("streams")?.optJSONObject(0)
+        val addr = st?.optString("video").orEmpty().ifBlank { st?.optString("playlist").orEmpty() }
+        return "站=" + o.optString("site") +
+            " 集=" + o.optString("ep").ifBlank { o.optString("vid") } +
+            " 季=" + o.optString("season", "-") +
+            " 时长=" + o.optInt("durSec", 0) + "s" +
+            " at=" + o.optLong("at", 0L) +
+            " 尾=…" + addr.takeLast(26) +
+            " 标题「" + o.optString("title").take(24) + "」"
+    }
+
+    /* 入槽：整份覆盖，不做任何判断 */
+    private fun takeSlot(obj: org.json.JSONObject, kind: String) {
+        slotAny = obj
+        slotRecvAt = android.os.SystemClock.uptimeMillis()
+        slotRecvAtWall = System.currentTimeMillis()
+        chain("⑥原生入槽", "（$kind）" + slotBrief(obj))
+    }
+
+    /* 消费：只在"非真全屏 → 真全屏"跳变时调用一次 */
+    fun consumeSlot(tag: String) {
+        val s = slotAny
+        if (s == null) {
+            android.util.Log.w("B0BEmbyVR", "◆消费($tag) 拒收：接收槽里还没有数据")
+            return
+        }
+        val dur = s.optInt("durSec", 0)
+        val now = System.currentTimeMillis()
+        val atWeb = s.optLong("at", 0L)
+        val lag = if (atWeb > 0) "网页变化→原生收到 " + (slotRecvAtWall - atWeb) + "ms，收到→消费 " + (now - slotRecvAtWall) + "ms" else "缺 at"
+        if (dur < 300) {
+            chain("⑧消费-拒收", "（$tag）时长只有 $dur 秒（不足五分钟） $lag " + slotBrief(s))
+            return
+        }
+        chain("⑧消费-起播", "（$tag）$lag " + slotBrief(s))
+        if (s.optString("kind") == "hls") onBridgeHls(s) else onBridgePlayable(s)
+    }
+
     private fun onBridgePlayable(obj: org.json.JSONObject) {
         val streams = obj.optJSONArray("streams") ?: return
         val lines = StringBuilder()
@@ -673,9 +724,6 @@ private object WebRuntime {
         val fp = (streams.optJSONObject(0)?.optString("video") ?: "").takeLast(80)
         val sig = "$dur|$lines|$ck|$fp"
         /* 3 秒内同一指纹算重复（页面每 0.4 秒扫一次）；过了窗口就认它是新一次接管 */
-        if (sig == bridgeLastPlaySig &&
-            android.os.SystemClock.uptimeMillis() - bridgeLastPlaySigAt < 3000L
-        ) return
         bridgeLastPlaySig = sig
         bridgeLastPlaySigAt = android.os.SystemClock.uptimeMillis()
         bridgePlayable = obj
@@ -826,7 +874,7 @@ private object WebRuntime {
                 },
             )
             payload.put("streams", st)
-            if (gatePlayable(payload)) onBridgePlayable(payload)
+            takeSlot(payload, "hls")
             return
         }
         val srv = hlsServer ?: com.xxxx.emby_vr.web.PlaylistServer().also { hlsServer = it }
@@ -916,89 +964,11 @@ private object WebRuntime {
     private var gateLastSig = ""
     private var gateLastAt = 0L
 
-    private fun gatePlayable(obj: org.json.JSONObject): Boolean {
-        val dur = obj.optInt("durSec", 0)
-        if (dur in 1..299) {
-            android.util.Log.w(
-                "B0BEmbyVR",
-                "◆闸门 拒收：时长只有 " + dur + " 秒（分片/预告，不是整集） 标题「" +
-                    obj.optString("title").take(24) + "」",
-            )
-            return false
-        }
-        var addr = obj.optString("u", "")
-        if (addr.isBlank()) {
-            val streams = obj.optJSONArray("streams")
-            if (streams != null && streams.length() > 0) {
-                addr = streams.optJSONObject(0)?.optString("video", "") ?: ""
-            }
-        }
-        if (addr.isBlank()) addr = obj.optString("text", "").take(200)
-        /*
-         * 【2026-10-24】爱奇艺交的是整集清单文本（streams[0].playlist），没有地址可看。
-         * 去重指纹用清单尾部（每集的分片签名不同）顶上，否则换集会被当成重复。
-         */
-        if (addr.isBlank()) {
-            val pl0 = obj.optJSONArray("streams")?.optJSONObject(0)?.optString("playlist", "") ?: ""
-            if (pl0.isNotBlank()) addr = "iq-playlist:" + pl0.takeLast(120)
-        }
-        val sig = obj.optString("epKey") + "|" + obj.optString("vid") + "|" + addr.takeLast(60)
-        val now = System.currentTimeMillis()
-        if (sig == gateLastSig && now - gateLastAt < 8000) {
-            android.util.Log.i("B0BEmbyVR", "◆闸门 拒收：同一份地址 8 秒内交过，不重复起播")
-            return false
-        }
-        gateLastSig = sig
-        gateLastAt = now
-        /*
-         * 【2026-10-23 11:47 父亲定：网页交来"六项一体"，原生做一次互相匹配的复核，匹配才给 MP4/MPV】
-         * 复核三条：①身份必须有 ②地址里的编号必须等于身份 ③时长必须 ≥5 分钟。
-         * 任何一条不满足 → 不交，并写明哪一个字段对不上。
-         */
-        val identify = obj.optString("pid").ifBlank {
-            obj.optString("epKey").ifBlank { obj.optString("vid") }
-        }
-        if (identify.isBlank()) {
-            android.util.Log.w("B0BEmbyVR", "◆复核 不匹配：身份为空 → 不交")
-            return false
-        }
-        /*
-         * 【2026-10-23 23:36 r939 实测修正】通用正则把爱奇艺 .ts 地址里的日期（20261021）当成编号，
-         * 于是"地址编号 ≠ 身份"误判、一集都不交。只认 B站/腾讯 分片地址的写法：
-         *   …/upgcxcode/aa/bb/<编号>/…  或  <编号>[-_][…]-1-<code>.m4s
-         */
-        val addrId = (
-            Regex("/upgcxcode/[0-9a-f]+/[0-9a-f]+/(\\d{6,})/").find(addr)?.groupValues?.get(1)
-                ?: Regex("/(\\d{6,})[-_][0-9a-z]*-?1-\\d+\\.(?:m4s|mp4)").find(addr)?.groupValues?.get(1)
-                ?: ""
-            )
-        if (addrId.isNotBlank() && !identify.contains(addrId) && !addrId.contains(identify)) {
-            android.util.Log.w(
-                "B0BEmbyVR",
-                "◆复核 不匹配：地址里的编号 $addrId ≠ 记录身份 $identify → 不交",
-            )
-            return false
-        }
-        val d2 = obj.optInt("durSec", 0)
-        if (d2 in 1..299) {
-            android.util.Log.w("B0BEmbyVR", "◆复核 不匹配：时长 $d2 秒 < 5 分钟 → 不交")
-            return false
-        }
-        android.util.Log.i(
-            "B0BEmbyVR",
-            "◆复核 通过：身份=$identify 集号=" + obj.optString("epNo", "?") +
-                " 季=" + obj.optString("season", "?") +
-                " 时长=" + (if (d2 > 0) "$d2 秒" else "未报") +
-                " 标题「" + obj.optString("title").take(22) + "」",
-        )
-        return true
-    }
 
     private fun onBridgeMessage(message: Any?) {
         val obj = message as? org.json.JSONObject ?: return
         if (obj.optString("kind") == "hls") {
-            if (!gatePlayable(obj)) return
-            onBridgeHls(obj)
+            takeSlot(obj, "hls")
             return
         }
         if (obj.optString("kind") == "play") {
@@ -1010,8 +980,7 @@ private object WebRuntime {
                 previewSink?.invoke(obj)
                 return
             }
-            if (!gatePlayable(obj)) return
-            onBridgePlayable(obj)
+            takeSlot(obj, "play")
             return
         }
         if (obj.optString("kind") == "frags") {
@@ -2060,6 +2029,10 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                     )
                                 }
                                 android.util.Log.i("WebLib", "网页全屏：已接管播放视图")
+                                runCatching {
+                                    WebRuntime.chain("⑦跳变", "非真全屏 → 真全屏（进入侧，只触发一次消费）")
+                                    WebRuntime.consumeSlot("真全屏")
+                                }
                             }
 
                             override fun onHideCustomView() {
@@ -2074,6 +2047,7 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                 fullscreen = false
                                 WebPageHub.setFullscreen(false)
                                 android.util.Log.i("WebLib", "网页全屏：已退出")
+                                runCatching { WebRuntime.chain("⑦跳变", "真全屏 → 非真全屏") }
                             }
 
                             override fun onConsoleMessage(m: org.chromium.android_crwebview.webkit.ConsoleMessage): Boolean {
@@ -2140,12 +2114,13 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
          * 走 evaluateJavascript，调用页面里注册的 window.__b0bClearSlots。
          */
         WebPageHub.clearSlotsHandler = {
+            slotAny = null
             runCatching {
                 webRef?.evaluateJavascript(
                     "window.__b0bClearSlots && window.__b0bClearSlots();",
                     null,
                 )
-                android.util.Log.i("B0BEmbyVR", "回网页：已通知页面清空三槽")
+                WebRuntime.chain("⑨回网页", "清空接收槽 + 通知网页清槽并真退出全屏")
             }
         }
         WebPageHub.tapHandler = handler@{ px, py ->

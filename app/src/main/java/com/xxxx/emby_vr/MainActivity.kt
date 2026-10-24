@@ -1031,6 +1031,7 @@ class MainActivity : ComponentActivity() {
                      */
                     if (onScreen && webStreamSite != null) {
                         Log.i(TAG, "光柱 B 键 → 播放器让位，银幕交回网页（光柱指着银幕）")
+                        chainLog("⑨按B回网页", "站=" + webStreamSite + "（接下来网页应真退出全屏、接收槽清空）")
                         returnFromStreamToWeb()
                     } else if (!onScreen) {
                         Log.i(TAG, "光柱 B 键忽略：光柱没指在银幕上（接管后只认指着银幕那一按）")
@@ -2639,6 +2640,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
             if (track == null) {
+                chainLog("⑧弹幕", "空（这部片子可能没开弹幕，或编号不对）")
                 Log.w(TAG, "⑦ 弹幕是空的（这部片子可能没开弹幕，或编号不对）")
                 return@launch
             }
@@ -3495,8 +3497,19 @@ class MainActivity : ComponentActivity() {
     private var lastWebSizeW = 0
     private var lastWebSizeH = 0
 
+    private fun chainLog(step: String, kv: String) {
+        Log.i("B0B链", step + " " + kv)
+    }
+
     private fun playWebStream(obj: org.json.JSONObject) {
         lastWebDeliverAt = System.currentTimeMillis()
+        chainLog(
+            "⑧起播",
+            "站=" + obj.optString("site") + " 集=" + obj.optString("ep").ifBlank { obj.optString("vid") } +
+                " 时长=" + obj.optInt("durSec", 0) + "s at=" + obj.optLong("at", 0L) +
+                " needProxy=" + obj.optInt("needProxy", 0) +
+                " 标题「" + obj.optString("title").take(24) + "」",
+        )
         /*
          * 【2026-10-23 08:52 父亲报"爱奇艺比例很多时候不对"】
          * 上一部是 2.4:1 宽银幕、这一部是 16:9（或反过来）时，银幕会带着上一部的比例起播，
