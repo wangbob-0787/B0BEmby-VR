@@ -5696,7 +5696,7 @@ class MainActivity : ComponentActivity() {
         year: Int,
         isMovie: Boolean,
     ): com.xxxx.emby_vr.danmaku.DanmakuTrack? {
-        val base = "http://192.168.150.18:8790/danmaku"
+        val base = "http://192.168.150.15:8790/danmaku"   /* 父亲 2026-10-24 18:27 定：跟 Emby 放一起，常开的是 .15 */
         val q = buildString {
             append("?title=").append(java.net.URLEncoder.encode(title, "UTF-8"))
             if (ep > 0) append("&ep=").append(ep)
