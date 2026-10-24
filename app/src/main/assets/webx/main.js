@@ -4,6 +4,30 @@
   'use strict';
 
   
+  function hookNet(onUrl) {
+    try {
+      var oF = window.fetch;
+      if (oF && !oF.__b0bHooked) {
+        window.fetch = function () {
+          try { var a = [].slice.call(arguments); var u = (typeof a[0] === 'string') ? a[0] : (a[0] && a[0].url); if (u) onUrl(u); } catch (e) {}
+          return oF.apply(this, arguments);
+        };
+        window.fetch.__b0bHooked = 1;
+      }
+    } catch (e) {}
+    try {
+      var oO = XMLHttpRequest.prototype.open, oS = XMLHttpRequest.prototype.send;
+      if (!XMLHttpRequest.prototype.open.__b0bHooked) {
+        XMLHttpRequest.prototype.open = function (m, u) { try { this.__b0bU = u; } catch (e) {} return oO.apply(this, arguments); };
+        XMLHttpRequest.prototype.open.__b0bHooked = 1;
+        XMLHttpRequest.prototype.send = function () {
+          try { if (this.__b0bU) onUrl(this.__b0bU); } catch (e) {}
+          return oS.apply(this, arguments);
+        };
+      }
+    } catch (e) {}
+  }
+
   function CH(step, kv) {
     try {
       var parts = [];
@@ -260,21 +284,18 @@
     return m ? parseInt(m[1], 10) : 0;
   }
   function iqTvidNow() {
-    try {
-      var v = ((window.QiyiPlayerProphetData || {}).videoInfo) || {};
-      if (v.tvId) return String(v.tvId);
-    } catch (e) {}
-    var l = iqEpList();
+    var ep = iqHeadEp();
+    var l = iqEpTable.list;
+    if (!ep) {
+      try {
+        var v = ((window.QiyiPlayerProphetData || {}).videoInfo) || {};
+        if (v.tvId) return String(v.tvId);
+      } catch (e) {}
+      return l.length ? String(l[0].tvId || l[0].tvid || '') : '';
+    }
     if (!l.length) return '';
-    var ep = iqHeadEp() || 1;
     var it = l[ep - 1];
     return it ? String(it.tvId || it.tvid || '') : '';
-  }
-  function iqEpList() {
-    try {
-      var s = window.__IQ_EP_LIST__;
-      return Array.isArray(s) ? s : [];
-    } catch (e) { return []; }
   }
   function md5(s) {
     function rl(n, c) { return (n << c) | (n >>> (32 - c)); }
@@ -346,6 +367,54 @@
     });
     return { playlist: String(best.vs), segs: segs, dur: dur || parseInt(best.duration || 0, 10) || 0, bid: parseInt(best.bid || 0, 10) || 0, wh: wh };
   }
+  var iqEpTable = { aid: '', list: [] };
+  function iqAlbumCands() {
+    var out = [];
+    try {
+      var vi = ((window.QiyiPlayerProphetData || {}).videoInfo) || {};
+      if (vi.albumId) out.push(String(vi.albumId));
+      if (vi.album && vi.album.id && out.indexOf(String(vi.album.id)) < 0) out.push(String(vi.album.id));
+    } catch (e) {}
+    try {
+      var es = performance.getEntriesByType('resource');
+      for (var i = es.length - 1; i >= 0; i--) {
+        var m = /[?&]album_id=(\d{6,})/.exec(es[i].name || '');
+        if (m && out.indexOf(m[1]) < 0) out.push(m[1]);
+      }
+    } catch (e) {}
+    try {
+      var m2 = /"albumId"\s*:\s*"?(\d{6,})/.exec(document.documentElement.innerHTML);
+      if (m2 && out.indexOf(m2[1]) < 0) out.push(m2[1]);
+    } catch (e) {}
+    try { var d = window.QiyiPlayerProphetData || {}; if (d.albumId && out.indexOf(String(d.albumId)) < 0) out.push(String(d.albumId)); } catch (e) {}
+    return out;
+  }
+  function iqSeriesName() {
+    var t = iqHeadTitle();
+    if (!/第\s*\d+\s*集/.test(t)) return t.replace(/\s+/g, ' ').trim();
+    return t.replace(/第\s*\d+\s*集[^]*$/, '').replace(/\s+/g, ' ').trim();
+  }
+  function iqLoadEps() {
+    if (iqEpTable.list.length) return;
+    var cands = iqAlbumCands(), sn = iqSeriesName(), i = 0;
+    function next() {
+      if (i >= cands.length) return;
+      var aid = cands[i++];
+      fetch('https://pcw-api.iqiyi.com/albums/album/avlistinfo?aid=' + aid + '&page=1&size=200', { credentials: 'include' })
+        .then(function (r) { return r.json(); })
+        .then(function (j) {
+          var list = (((j || {}).data || {}).epsodelist) || [];
+          var n0 = list.length ? String(list[0].name || '') : '';
+          if (n0 && sn && n0.indexOf(sn) === 0) {
+            iqEpTable = { aid: aid, list: list };
+            CH('②分集表', { 站: 'iq', aid: aid, 集数: list.length, 首集: n0.slice(0, 18) });
+          } else { next(); }
+        })
+        .catch(function () { next(); });
+    }
+    next();
+  }
+
   function iqGrab(tag) {
     var ep = iqHeadEp();
     var tvid = iqTvidNow();
@@ -518,10 +587,19 @@
   }
 
   
+  hookNet(function (u) {
+    var st = site();
+    if (st === 'bi') { if (u.indexOf('.m4s') > 0) biNote(u); }
+    else if (st === 'qq') { if (u.indexOf('.m3u8') > 0) qqTake(u); }
+  });
   setInterval(biTick, 1200);
   setInterval(biScanNewest, 1500);
   setInterval(qqTick, 1200);
-  setInterval(function () { if (site() === 'iq') iqGrab('定时'); }, 4000);
+  setInterval(function () {
+    if (site() !== 'iq') return;
+    iqLoadEps();
+    iqGrab('定时');
+  }, 4000);
   try { document.addEventListener('fullscreenchange', deliver); } catch (e) {}
   try { window.addEventListener('b0b-full', deliver); } catch (e2) {}
 
