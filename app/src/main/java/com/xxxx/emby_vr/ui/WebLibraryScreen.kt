@@ -664,6 +664,8 @@ private object WebRuntime {
             " 标题「" + o.optString("title").take(24) + "」"
     }
 
+    fun clearSlot() { slotAny = null }
+
     /* 入槽：整份覆盖，不做任何判断 */
     private fun takeSlot(obj: org.json.JSONObject, kind: String) {
         slotAny = obj
@@ -2102,7 +2104,7 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
          * 走 evaluateJavascript，调用页面里注册的 window.__b0bClearSlots。
          */
         WebPageHub.clearSlotsHandler = {
-            slotAny = null
+            WebRuntime.clearSlot()
             runCatching {
                 webRef?.evaluateJavascript(
                     "window.__b0bClearSlots && window.__b0bClearSlots();",
