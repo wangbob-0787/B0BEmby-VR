@@ -1146,11 +1146,48 @@
   function b0bNoteSlotBaseline() {
     try {
       b0bSlotBaseline = b0bSlotSig();
+      b0bLatchAddr = false;          /* 新一次切换：地址信号清零 */
+      b0bLatchFired = false;         /* 这一次切换还没补交过 */
+      window.__b0bLatchAddr = 0;
       window.__b0bSlotBaseline = b0bSlotBaseline;
       console.log('[b0b] 切换基线已记：槽里地址=' + (b0bSlotBaseline ? '有' : '空') +
         '（之后地址变过才允许交付）');
     } catch (e) {}
   }
+  /*
+   * 【2026-10-24 19:55 父亲定的门闩：两个信号都到才接管，谁先谁后都算】
+   *
+   * 原话：「我点了真全屏就置 1，地址槽数据发生变化也置 1，只有两个位置全部为一你才接管；
+   *       我先点真全屏、地址还没变，你就不接管，直到第二个信号来了，我不用再点真全屏。」
+   * 所以不再要求"按全屏那一刻地址已经变了"，而是两个信号各自记住：先到的那个等着，
+   * 后一个到齐了就补交一次（flushPendingPlay 走的是同一条交付链，规矩不变）。
+   */
+  var b0bLatchAddr = false;
+  var b0bLatchFired = false;
+  function b0bLatchTick() {
+    try {
+      var rf = 0;
+      try { rf = parseInt(String(window.__b0bRealFull || 0), 10) || 0; } catch (eRf) {}
+      try {
+        var ls = parseInt(localStorage.getItem('b0b:realFullAt') || '0', 10) || 0;
+        if (ls > rf) rf = ls;
+      } catch (eRf2) {}
+      var aOk = rf > 0 && Date.now() - rf < 10 * 60 * 1000;   /* 信号一：按过真全屏 */
+      var bOk = b0bSlotChangedSinceSwitch();                   /* 信号二：槽里地址变过 */
+      if (bOk && !b0bLatchAddr) {
+        b0bLatchAddr = true;
+        try { window.__b0bLatchAddr = 1; } catch (eW) {}
+        console.log('[b0b] 信号二到：槽里地址已是新一集');
+      }
+      if (!aOk || !b0bLatchAddr || b0bLatchFired) return;
+      b0bLatchFired = true;
+      console.log('[b0b] 两个信号都到（真全屏=1 地址已变=1）→ 补交这一次');
+      try { flushPendingPlay(); } catch (eF) {
+        console.log('[b0b] 补交失败：' + eF);
+      }
+    } catch (e) {}
+  }
+
   /** 地址相对切换那一刻变过没有；没切过（没基线）时一律算"变过" */
   function b0bSlotChangedSinceSwitch() {
     try {
@@ -6289,5 +6326,6 @@
   try { window.__b0bInjectedAt = Date.now(); } catch (eIA) {}
 
   setInterval(scan, 400);
+  try { setInterval(b0bLatchTick, 500); } catch (eLT) {}
   scan();
 })();
