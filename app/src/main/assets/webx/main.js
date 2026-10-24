@@ -1112,6 +1112,57 @@
       ' 网址=' + String(location.href).slice(-46) + ' 时刻=' + b0bSwitchAt);
   }
 
+  /*
+   * 【2026-10-24 19:52 父亲定的新规矩：切集切片不清槽，改成"看地址变没变"】
+   *
+   * 原话：「切集切片不清槽，切集切片后，新的数据来了，槽内数据会变，通过判断是否改变，
+   *       就知道新的数据是否到了。应该只判断地址槽的数据是否变了。如果没变，我点了真全屏
+   *       也不接管，直到变了后，我点真全屏才接管。」
+   *
+   * 为什么原来那套不行：清场按"抓取时刻早于切换时刻"清，旧集的地址只要在切换后又抓到一次
+   * 就留在槽里；而交付那头从来不验"这份是否属于当前这一集"，于是旧地址一路交出去 → 播错集。
+   * 新规矩把判据从"时刻"换成"内容"：切换那一刻把槽里的地址记成基线，之后只有槽里地址
+   * 相对基线变过，才允许交付。地址没变 = 新一集还没到，按真全屏也先不接管。
+   */
+  var b0bSlotBaseline = null;
+  function b0bSlotSig() {
+    try {
+      var site = b0bSite();
+      if (site === 'bi') {
+        var sv = biSlotRead();
+        return sv && sv.v ? ('bi|' + String(sv.v)) : '';
+      }
+      if (site === 'qq') {
+        var q = qqSlotPick();
+        return q && q.b && q.b.u ? ('qq|' + String(q.b.u)) : '';
+      }
+      if (site === 'iq') {
+        var iq = iqSlotGet();
+        return iq && iq.playlist ? ('iq|' + String(iq.playlist).length + '|' + String(iq.title || '')) : '';
+      }
+    } catch (e) {}
+    return '';
+  }
+  function b0bNoteSlotBaseline() {
+    try {
+      b0bSlotBaseline = b0bSlotSig();
+      window.__b0bSlotBaseline = b0bSlotBaseline;
+      console.log('[b0b] 切换基线已记：槽里地址=' + (b0bSlotBaseline ? '有' : '空') +
+        '（之后地址变过才允许交付）');
+    } catch (e) {}
+  }
+  /** 地址相对切换那一刻变过没有；没切过（没基线）时一律算"变过" */
+  function b0bSlotChangedSinceSwitch() {
+    try {
+      var base = (typeof b0bSlotBaseline === 'string') ? b0bSlotBaseline
+        : String(window.__b0bSlotBaseline || '');
+      var now = b0bSlotSig();
+      if (!now) return false;              /* 槽里没地址：新一集还没到，不交 */
+      if (!base) return true;              /* 没有基线：第一次抓到的就是当前的，放行 */
+      return now !== base;
+    } catch (e) { return true; }
+  }
+
   function b0bClearStale(reason, since) {
     try {
       /*
@@ -1563,6 +1614,15 @@
     if (!fsOk) {
       if (b0bLogGate('nofull')) console.log('[b0b] 没交出去：你还没按全屏按钮（本层=' + (fullState ? 1 : 0) +
         ' 本地存=' + (fsShared ? 1 : 0) + ' 别层报=' + (peerFullAt ? 1 : 0) + '）');
+      return;
+    }
+    /*
+     * 【2026-10-24 19:52 父亲定的第二道】按了真全屏也要看"地址是不是新一集的"：
+     * 切集切片之后槽里地址没变过 = 新一集还没到 → 这次不接管，等变了再按。
+     */
+    if (!b0bSlotChangedSinceSwitch()) {
+      if (b0bLogGate('slotold')) console.log('[b0b] 没交出去：切集后槽里地址还没变（新一集还没到），' +
+        '等新地址到了再按全屏');
       return;
     }
     /*
@@ -5927,7 +5987,7 @@
             console.log('[b0b]◆记录 首次拿到分片号 ' + cidNow + '（不算切换，只记起点）');
           } else {
             b0bMarkSwitch('分片号 ' + cidNow, '分片号变了（同页换片）');
-            b0bClearStale('分片号变了（同页换片）', Date.now());
+            b0bNoteSlotBaseline();   /* 2026-10-24 19:52 父亲定：切集切片不清槽，只记基线，等地址变过才放行 */
           }
         }
         window.__b0bLastCid = cidNow;
@@ -5975,7 +6035,7 @@
               String(epKeyNow).slice(-24) + '）→ 不算换集、不清槽');
           } else {
             b0bMarkSwitch(String(epKeyNow).slice(-32), '页面自己换（指纹变化）');
-            b0bClearStale('片号变了（换集）', Date.now());
+            b0bNoteSlotBaseline();   /* 2026-10-24 19:52 父亲定：切集切片不清槽，只记基线，等地址变过才放行 */
           }
         }
       }
@@ -5995,7 +6055,7 @@
        */
       try {
         if (window.self === window.top) {
-          b0bClearStale('换页/换集', Date.now());
+          b0bNoteSlotBaseline();   /* 同上：换页也不再清槽 */
           localStorage.removeItem('b0b:fullAt');
           /* 真换页了，"这一部在播"的记账也要清（2026-10-18）：新片子得重新按全屏 */
           localStorage.removeItem('b0b:fragLive');
