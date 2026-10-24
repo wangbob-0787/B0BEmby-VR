@@ -1146,9 +1146,7 @@
   function b0bNoteSlotBaseline() {
     try {
       b0bSlotBaseline = b0bSlotSig();
-      b0bLatchAddr = false;          /* 新一次切换：地址信号清零 */
-      b0bLatchFired = false;         /* 这一次切换还没补交过 */
-      window.__b0bLatchAddr = 0;
+      b0bLatchReset();              /* 新一次切换：三个门栓清零，重新凑 */
       window.__b0bSlotBaseline = b0bSlotBaseline;
       console.log('[b0b] 切换基线已记：槽里地址=' + (b0bSlotBaseline ? '有' : '空') +
         '（之后地址变过才允许交付）');
@@ -1162,8 +1160,62 @@
    * 所以不再要求"按全屏那一刻地址已经变了"，而是两个信号各自记住：先到的那个等着，
    * 后一个到齐了就补交一次（flushPendingPlay 走的是同一条交付链，规矩不变）。
    */
-  var b0bLatchAddr = false;
+  /*
+   * 【2026-10-24 20:19 父亲定稿：三个门栓 + 一道去重】
+   *
+   *   ① 按过真全屏   ② 槽里这条地址属于当前这一集   ③ 时长够五分钟
+   * 外加一条保护（不算门栓）：同一份地址 20 秒内不重复交，否则每半秒检查一次会把同一集反复起播。
+   *
+   * 「属于当前这一集」= 拿地址里自带的编号去比页面此刻的编号，三站各比各的：
+   *   B站：地址路径段 /upgcxcode/xx/xx/<cid>/ 里的 cid  ==  页面正在播那片的 cid（拿不到 cid 时退成比集号）
+   *   腾讯：槽里记的集号/片号 == 网址里那段片号
+   *   爱奇艺：槽里的集号 == 页面播放器此刻的集号
+   * 比不出来（页面身份还没读到）→ 不交，等读到再交（台账第 1 条：读不到身份 = 不知道，不知道就不交）。
+   */
+  function b0bSlotBelongsToCurrent() {
+    try {
+      var site = b0bSite();
+      if (site === 'bi') {
+        var sv = biSlotRead();
+        if (!sv || !sv.v) return '槽里没有地址';
+        var m = String(sv.v).match(/\/upgcxcode\/[^/]+\/[^/]+\/(\d{6,})\//);
+        var addrCid = m ? m[1] : '';
+        var pageCid = String(biliCid || '');
+        if (addrCid && pageCid) return addrCid === pageCid ? '' : ('地址是 ' + addrCid + '，页面在播 ' + pageCid);
+        if (sv.ep && biliEp) return String(sv.ep) === String(biliEp) ? '' : ('地址是第' + sv.ep + '集，页面是第' + biliEp + '集');
+        return '页面身份还没读到（不交，等读到）';
+      }
+      if (site === 'qq') {
+        var q = qqSlotPick();
+        if (!q || !q.b || !q.b.u) return '槽里没有地址';
+        var mv = String(location.href).match(/\/x\/cover\/[^/]+\/([^/.?]+)/);
+        var pageVid = mv ? mv[1] : '';
+        var slotVid = String((q.rec && (q.rec.vid || q.rec.ep)) || q.vid || '');
+        if (slotVid && pageVid) return slotVid === pageVid ? '' : ('槽里是 ' + slotVid + '，页面是 ' + pageVid);
+        return '页面身份还没读到（不交，等读到）';
+      }
+      if (site === 'iq') {
+        var iq = iqSlotGet();
+        if (!iq || !iq.playlist) return '槽里没有清单';
+        var pageEp = 0;
+        try { pageEp = iqEpNo(); } catch (eEp) {}
+        if (!pageEp) return '页面集号还没读到（不交，等读到）';
+        if (iq.ep && Number(iq.ep) !== Number(pageEp)) return ('槽里是第' + iq.ep + '集，页面是第' + pageEp + '集');
+        return '';
+      }
+    } catch (e) { return '判断出错：' + e; }
+    return '这个站点没有比对规则（不交）';
+  }
+
+  var b0bLatch = { full: false, own: false, dur: false };
   var b0bLatchFired = false;
+  var b0bLastSig = '';
+  var b0bLastSigAt = 0;
+  function b0bLatchReset() {
+    b0bLatch = { full: false, own: false, dur: false };
+    b0bLatchFired = false;
+    try { window.__b0bLatch = '000'; } catch (e) {}
+  }
   function b0bLatchTick() {
     try {
       var rf = 0;
@@ -1172,19 +1224,39 @@
         var ls = parseInt(localStorage.getItem('b0b:realFullAt') || '0', 10) || 0;
         if (ls > rf) rf = ls;
       } catch (eRf2) {}
-      var aOk = rf > 0 && Date.now() - rf < 10 * 60 * 1000;   /* 信号一：按过真全屏 */
-      var bOk = b0bSlotChangedSinceSwitch();                   /* 信号二：槽里地址变过 */
-      if (bOk && !b0bLatchAddr) {
-        b0bLatchAddr = true;
-        try { window.__b0bLatchAddr = 1; } catch (eW) {}
-        console.log('[b0b] 信号二到：槽里地址已是新一集');
+      if (rf > 0 && Date.now() - rf < 10 * 60 * 1000) b0bLatch.full = true;
+
+      var ownWhy = '';
+      if (b0bLatch.full) {
+        ownWhy = b0bSlotBelongsToCurrent();
+        if (!ownWhy) b0bLatch.own = true;
       }
-      if (!aOk || !b0bLatchAddr || b0bLatchFired) return;
+
+      var dur = 0;
+      try { if (pendingPlay && pendingPlay.durSec > 0) dur = pendingPlay.durSec; } catch (eD1) {}
+      if (!dur) { try { if (b0bRec && b0bRec.dur > 0) dur = b0bRec.dur; } catch (eD2) {} }
+      if (!dur) {
+        try {
+          var vEl = document.querySelector('video');
+          if (vEl && vEl.duration > 0) dur = Math.round(vEl.duration);
+        } catch (eD3) {}
+      }
+      if (dur >= 300) b0bLatch.dur = true;
+
+      var bits = (b0bLatch.full ? '1' : '0') + (b0bLatch.own ? '1' : '0') + (b0bLatch.dur ? '1' : '0');
+      try { if (window.__b0bLatch !== bits) window.__b0bLatch = bits; } catch (eW) {}
+      if (bits !== '111' || b0bLatchFired) return;
+
+      var sig = b0bSlotSig();
+      if (sig && sig === b0bLastSig && Date.now() - b0bLastSigAt < 20000) {
+        if (b0bLogGate('latesame')) console.log('[b0b] 三个门栓齐了，但这份地址刚交过（20 秒内），不重复起播');
+        return;
+      }
       b0bLatchFired = true;
-      console.log('[b0b] 两个信号都到（真全屏=1 地址已变=1）→ 补交这一次');
-      try { flushPendingPlay(); } catch (eF) {
-        console.log('[b0b] 补交失败：' + eF);
-      }
+      b0bLastSig = sig;
+      b0bLastSigAt = Date.now();
+      console.log('[b0b] 三个门栓齐（真全屏/属于这一集/时长够）→ 接管这一次');
+      try { flushPendingPlay(); } catch (eF) { console.log('[b0b] 补交失败：' + eF); }
     } catch (e) {}
   }
 
@@ -1657,11 +1729,13 @@
      * 【2026-10-24 19:52 父亲定的第二道】按了真全屏也要看"地址是不是新一集的"：
      * 切集切片之后槽里地址没变过 = 新一集还没到 → 这次不接管，等变了再按。
      */
-    if (!b0bSlotChangedSinceSwitch()) {
-      if (b0bLogGate('slotold')) console.log('[b0b] 没交出去：切集后槽里地址还没变（新一集还没到），' +
-        '等新地址到了再按全屏');
-      return;
-    }
+    try {
+      var ownWhy2 = b0bSlotBelongsToCurrent();
+      if (ownWhy2) {
+        if (b0bLogGate('slotold')) console.log('[b0b] 没交出去：槽里这份不属于当前这一集 → ' + ownWhy2);
+        return;
+      }
+    } catch (eOwn) {}
     /*
      * 【2026-10-19 14:08 父亲实测：第一次按全屏播错了（不是他选的那一集），第二次才对】
      *
