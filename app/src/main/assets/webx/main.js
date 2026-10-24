@@ -665,7 +665,60 @@
     return '';
   }
 
+  /*
+   * 【2026-10-24 17:50 父亲定：B站 的集名去「播放小窗口左上角」那行字取】
+   *
+   * 实测（r944 日志 17:43）：B站 电视剧交付时 `集号ep=?`，标题只能拿到整部片名，
+   * 因为剧集页把「第N话 集名」只写在播放器左上角那行叠加字里，元数据和选集列表都不给。
+   * 所以这里直接读播放器左上角，解析出集号与集名。
+   */
+  function biliOverlayTitle() {
+    var sels = [
+      '.bpx-player-top-title', '.bpx-player-video-top-title',
+      '.bpx-player-top-title-text', '.bilibili-player-video-top-title',
+      '.bpx-player-top-wrap .bpx-player-top-title',
+      '[class*="player-top-title"]'
+    ];
+    for (var i = 0; i < sels.length; i++) {
+      var es = document.querySelectorAll(sels[i]);
+      for (var j = 0; j < es.length; j++) {
+        var t = String(es[j].textContent || '').replace(/\s+/g, ' ').trim();
+        if (t && t.length >= 2 && !/^哔哩哔哩/.test(t)) return t;
+      }
+    }
+    return '';
+  }
+
   function b0bBuildTitle() {
+    /* ⓿ B站：集号与集名只认播放器左上角那行（父亲 2026-10-24 17:50 定） */
+    try {
+      if (/(^|\.)bilibili\.com$/i.test(String(location.hostname || ''))) {
+        var ov = biliOverlayTitle();
+        if (ov) {
+          var m1 = /第\s*(\d{1,4})\s*([话話集期])/.exec(ov);
+          var epNo = m1 ? parseInt(m1[1], 10) : 0;
+          var epName = m1 ? ov.replace(m1[0], '').replace(/^[\s\-—·:：]+/, '').trim() : ov;
+          /* 整部片名：页面标题去掉尾巴，别把「第N话」再拼一次 */
+          var series = stripTitleTail(String(document.title || '').replace(/_哔哩哔哩.*$/, ''));
+          series = b0bCleanName(series || '');
+          if (series && epName && series.indexOf(epName) >= 0) {
+            series = series.split(epName).join(' ').replace(/\s{2,}/g, ' ').trim();
+          }
+          if (epNo > 0) {
+            var outB = (series ? series + ' ' : '') + '第' + epNo + (m1 ? m1[2] : '集');
+            if (epName && !isJunkTitle(epName)) outB += ' ' + epName;
+            try { biliEp = epNo; } catch (eB1) {}
+            console.log('[b0b] B站 左上角取到集名：「' + outB.slice(0, 60) + '」');
+            return outB.trim().slice(0, 80);
+          }
+          if (epName && !isJunkTitle(epName)) {
+            var only = (series && series.indexOf(epName) < 0 ? series + ' ' : '') + epName;
+            console.log('[b0b] B站 左上角只有集名：「' + only.slice(0, 60) + '」');
+            return only.trim().slice(0, 80);
+          }
+        }
+      }
+    } catch (eOv) {}
     /* ① 先问该站自己的元数据（最准），取不到再啃可见文字 */
     try {
       var mt = b0bMetaInfo();
