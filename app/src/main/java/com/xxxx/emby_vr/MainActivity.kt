@@ -2760,12 +2760,13 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun httpGetText(url: String): String {
+    /* 超时可调：弹幕现拉接口第一次可能要拉几十秒（优酷逐段拉），那边给 40 秒；其余调用仍用 10 秒 */
+    private fun httpGetText(url: String, timeoutMs: Int = 10000): String {
         val conn = java.net.URL(url).openConnection()
         conn.setRequestProperty("Referer", "https://v.qq.com/")
         conn.setRequestProperty("User-Agent", "Mozilla/5.0")
-        conn.connectTimeout = 10000
-        conn.readTimeout = 10000
+        conn.connectTimeout = timeoutMs
+        conn.readTimeout = timeoutMs
         return conn.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
     }
 
@@ -5639,7 +5640,90 @@ class MainActivity : ComponentActivity() {
      *
      * 任何一步失败都退化成「这一集没有弹幕」，绝不影响播放。
      */
+    /**
+     * 【2026-10-24 18:20 父亲定：Emby 片也改成「现拉」，不再读服务端下载的弹幕文件】
+     *
+     * 原因：弹幕原来是 `.弹幕.ass` 放在视频旁边，小雅换目录（当天凌晨《无可替代》从
+     * 国产剧/ 挪到 115/）时视频重建、弹幕留在老目录 → 二刷时几集没弹幕。
+     * 现在起播时按「剧名 + 集号」向 .18 的按需接口要一份：
+     *   http://192.168.150.18:8790/danmaku?title=剧名&ep=1&year=2026&kind=tv
+     * 接口那头还是先查腾讯 / 爱奇艺 / 优酷，只是不再落盘。
+     * 拿不到（接口不通、源里没有这一集）就退回原来的文件那条路，不影响播放。
+     */
     private fun loadDanmaku() {
+        danmakuTrack = null
+        danmakuView?.setTrack(null)
+        com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(true)
+        val item = currentItem
+        if (item == null) {
+            loadDanmakuFromEmbyFile()
+            return
+        }
+        val series = item.seriesName
+        val isMovie = series.isNullOrBlank()
+        val title = if (isMovie) item.name else series
+        if (title.isNullOrBlank()) {
+            loadDanmakuFromEmbyFile()
+            return
+        }
+        val ep = if (isMovie) 0 else (item.indexNumber ?: 0)
+        val year = item.productionYear ?: 0
+        val mediaId0 = currentMediaId
+        scope.launch {
+            val track = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching { fetchLiveDanmaku(title, ep, year, isMovie) }.getOrNull()
+            }
+            if (mediaId0 != currentMediaId) return@launch      /* 中途换集，这份作废 */
+            if (track != null) {
+                danmakuTrack = track
+                danmakuView?.setTrack(if (danmakuOn) track else null)
+                Log.i(
+                    TAG,
+                    "⑦ 现拉弹幕已挂到弹幕层（" + track.items.size + " 条，剧名「" +
+                        title.take(20) + "」第 " + ep + " 集）",
+                )
+            } else {
+                Log.i(TAG, "⑦ 现拉没拿到，退回读服务端弹幕文件")
+                loadDanmakuFromEmbyFile()
+            }
+        }
+    }
+
+    /** 向 .18 的按需弹幕接口要一份；成功返回轨道，失败返回 null */
+    private fun fetchLiveDanmaku(
+        title: String,
+        ep: Int,
+        year: Int,
+        isMovie: Boolean,
+    ): com.xxxx.emby_vr.danmaku.DanmakuTrack? {
+        val base = "http://192.168.150.18:8790/danmaku"
+        val q = buildString {
+            append("?title=").append(java.net.URLEncoder.encode(title, "UTF-8"))
+            if (ep > 0) append("&ep=").append(ep)
+            if (year > 0) append("&year=").append(year)
+            append("&kind=").append(if (isMovie) "movie" else "tv")
+        }
+        val txt = httpGetText(base + q, timeoutMs = 40000) ?: return null
+        val obj = runCatching { org.json.JSONObject(txt) }.getOrNull() ?: return null
+        if (!obj.optBoolean("ok")) {
+            Log.i(TAG, "⑦ 现拉接口说没有：" + obj.optString("error"))
+            return null
+        }
+        val arr = obj.optJSONArray("items") ?: return null
+        val parsed = ArrayList<Triple<Long, String, Long>>(arr.length())
+        for (i in 0 until arr.length()) {
+            val one = arr.optJSONArray(i) ?: continue
+            val ms = one.optLong(0, -1L)
+            val t = one.optString(1, "").trim()
+            if (ms < 0L || t.isEmpty()) continue
+            parsed.add(Triple(ms, t, one.optLong(2, 16777215L)))
+        }
+        if (parsed.isEmpty()) return null
+        Log.i(TAG, "⑦ 现拉拿到 " + parsed.size + " 条（源 " + obj.optString("source") + "）")
+        return buildDanmakuTrack(parsed)
+    }
+
+    private fun loadDanmakuFromEmbyFile() {
         danmakuTrack = null
         danmakuView?.setTrack(null)
         // 只清弹幕内容，不收整层：这一层还承载提示文字 / 片名 logo（父亲 2026-10-07）
