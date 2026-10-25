@@ -561,6 +561,11 @@
         iqBusy = false;
         try {
           var r = iqParse(x.responseText);
+          /* 自签这一步以前失败是静默的，槽一直空却查不到原因；这里把结果亮出来 */
+          CH('②自签', {
+            站: 'iq', 状态: x.status, 长度: String(x.responseText || '').length,
+            有清单: (r && r.playlist) ? 1 : 0, 时长: (r && r.dur) || 0
+          });
           if (!r || !r.playlist) return;
           iqDone = { tvid: tvid, at: Date.now() };
           commit('iq', {
@@ -570,7 +575,7 @@
           });
         } catch (e) { console.log('[b0b] 爱奇艺解析出错：' + e); }
       };
-      x.onerror = function () { iqBusy = false; };
+      x.onerror = function () { iqBusy = false; CH('②自签', { 站: 'iq', 结果: '请求失败' }); };
       x.send();
     } catch (e) { iqBusy = false; }
   }
