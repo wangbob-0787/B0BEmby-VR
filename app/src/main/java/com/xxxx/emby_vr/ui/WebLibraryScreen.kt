@@ -391,6 +391,25 @@ private fun scrollFallbackJs(u: Float, v: Float, sy: Float): String {
         "})(${u},${v},${d});"
 }
 
+/** 问页面"现在是第几集"（取不到就沿用标题里的）。 */
+private fun askPageEpNo(w: WebView?): Int {
+    if (w == null) return 0
+    var v = ""
+    val latch = java.util.concurrent.CountDownLatch(1)
+    android.os.Handler(android.os.Looper.getMainLooper()).post {
+        runCatching {
+            w.evaluateJavascript(
+                "String((window.__b0bIqEpNo&&window.__b0bIqEpNo())||'')",
+            ) { raw ->
+                v = (raw ?: "").trim('"')
+                latch.countDown()
+            }
+        }.onFailure { latch.countDown() }
+    }
+    runCatching { latch.await(2, java.util.concurrent.TimeUnit.SECONDS) }
+    return v.toIntOrNull() ?: 0
+}
+
 /** 问页面自己那份分集表：第 n 集的片号。 */
 private fun askPageEpTvId(w: WebView?, n: Int): String {
     if (w == null || n <= 0) return ""
@@ -1854,12 +1873,14 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                  * 分集表里每集都带自己的片号，按集号直接取，最准。
                                                  */
                                                 runCatching {
-                                                    val epNo = run {
+                                                    var epNo = run {
                                                         val m = java.util.regex.Pattern
                                                             .compile("第\\s*([0-9]{1,4})\\s*集")
                                                             .matcher(pageFullTitle + " " + pageEpTitle)
                                                         if (m.find()) m.group(1)?.toIntOrNull() ?: 0 else 0
                                                     }
+                                                    /* 标题里没有"第N集"就问页面（播放器标题栏那一串） */
+                                                    if (epNo <= 0) epNo = askPageEpNo(webRef)
                                                     if (epNo > 0) {
                                                         /* 优先问页面自己那份分集表（已经拉好了，最省事），问不到再自己查 */
                                                         val fromPage = askPageEpTvId(webRef, epNo)
