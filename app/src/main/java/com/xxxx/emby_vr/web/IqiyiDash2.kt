@@ -107,6 +107,37 @@ object IqiyiDash2 {
         }.getOrNull()
     }
 
+    /**
+     * 按专辑号取分集表里第 epNo 集的片号。
+     *
+     * 为什么需要它：页面切集后 `QiyiPlayerProphetData` 里的片号会滞后到上一集，
+     * 而播放器常常吃缓存、不再重发取流请求，钩子也拿不到新的片号；
+     * 结果就是"画面已经在新一集播着，我们读到还是旧片号"，只能干等。
+     * 分集表里每集都带自己的片号，按集号直接取，不用等页面。
+     */
+    fun tvIdByEpisode(albumId: String, epNo: Int, cookie: String?, userAgent: String?): String? {
+        if (albumId.isBlank() || epNo <= 0) return null
+        val body = runCatching {
+            get(
+                "https://pcw-api.iqiyi.com/albums/album/avlistinfo?aid=" + albumId + "&page=1&size=200",
+                cookie,
+                userAgent,
+            )
+        }.onFailure {
+            Log.w(TAG, "爱奇艺分集表：请求失败 " + it.javaClass.simpleName + " " + it.message)
+        }.getOrNull() ?: return null
+        return runCatching {
+            val d = org.json.JSONObject(body).optJSONObject("data") ?: return null
+            val eps = d.optJSONArray("epsodelist") ?: return null
+            if (epNo > eps.length()) return null
+            val one = eps.optJSONObject(epNo - 1) ?: return null
+            val id = one.optString("tvId")
+            if (id.isBlank()) return null
+            Log.i(TAG, "爱奇艺分集表：第 " + epNo + " 集片号=" + id + "（共 " + eps.length() + " 集）")
+            id
+        }.getOrNull()
+    }
+
     private fun md5(s: String): String {
         val d = MessageDigest.getInstance("MD5").digest(s.toByteArray(Charsets.UTF_8))
         val sb = StringBuilder()

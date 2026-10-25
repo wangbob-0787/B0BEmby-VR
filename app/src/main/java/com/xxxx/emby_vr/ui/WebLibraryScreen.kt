@@ -391,6 +391,26 @@ private fun scrollFallbackJs(u: Float, v: Float, sy: Float): String {
         "})(${u},${v},${d});"
 }
 
+/** 读页面上的专辑号（分集表要它才能查）。 */
+private fun askPageAlbum(w: WebView?): String {
+    if (w == null) return ""
+    var a = ""
+    val latch = java.util.concurrent.CountDownLatch(1)
+    android.os.Handler(android.os.Looper.getMainLooper()).post {
+        runCatching {
+            w.evaluateJavascript(
+                "String((window.QiyiPlayerProphetData&&QiyiPlayerProphetData.videoInfo&&" +
+                    "QiyiPlayerProphetData.videoInfo.albumId)||'')",
+            ) { raw ->
+                a = (raw ?: "").trim('"')
+                latch.countDown()
+            }
+        }.onFailure { latch.countDown() }
+    }
+    runCatching { latch.await(2, java.util.concurrent.TimeUnit.SECONDS) }
+    return a
+}
+
 private fun askPageIdentity(w: WebView?): Pair<String, String> {
     if (w == null) return "" to ""
     var t = ""
@@ -1807,9 +1827,38 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                  * 唯一的退出条件不是时间，而是"页面读不出身份"连续失败（人可能已经离开）。
                                                  */
                                                 var caught = false
+                                                /*
+                                                 * 先按分集表查一次，别干等页面。
+                                                 * 页面切集后片号会滞后，播放器又常吃缓存不重发取流请求，
+                                                 * 光等只能等到超时（父亲 2026-10-26 00:30 现场：
+                                                 * 等 13 秒仍没跟上，按 B 重进才成功）。
+                                                 * 分集表里每集都带自己的片号，按集号直接取，最准。
+                                                 */
+                                                runCatching {
+                                                    val epNo = run {
+                                                        val m = java.util.regex.Pattern
+                                                            .compile("第\\s*([0-9]{1,4})\\s*集")
+                                                            .matcher(pageFullTitle + " " + pageEpTitle)
+                                                        if (m.find()) m.group(1)?.toIntOrNull() ?: 0 else 0
+                                                    }
+                                                    val album = askPageAlbum(webRef)
+                                                    if (epNo > 0 && album.isNotBlank()) {
+                                                        val fromAlbum = com.xxxx.emby_vr.web.IqiyiDash2
+                                                            .tvIdByEpisode(album, epNo, ckAll, ua)
+                                                        if (!fromAlbum.isNullOrBlank() && fromAlbum != useTvid) {
+                                                            useTvid = fromAlbum
+                                                            caught = true
+                                                            android.util.Log.i(
+                                                                "B0BEmbyVR",
+                                                                "◆分集表 站=iq 第 " + epNo + " 集片号=" + fromAlbum +
+                                                                    "（不用再等页面片号）",
+                                                            )
+                                                        }
+                                                    }
+                                                }
                                                 var readFails = 0
                                                 var waitedMs = 0
-                                                while (true) {
+                                                while (!caught) {
                                                     Thread.sleep(1500)
                                                     waitedMs += 1500
                                                     val again = askPageIdentity(webRef)
