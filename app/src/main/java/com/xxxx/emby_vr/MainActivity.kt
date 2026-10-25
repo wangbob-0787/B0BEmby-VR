@@ -3530,19 +3530,33 @@ class MainActivity : ComponentActivity() {
          * 宽银幕的片子就一直按 16:9 挂着 = 画面被压扁（第二次接管时出现过）。
          * 这里在起播后几个时间点各纠正一次，内核还没出帧就等下一个点。
          */
-        listOf(1200L, 3000L, 6000L, 10000L, 15000L, 20000L).forEach { delayMs ->
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                runCatching {
-                    mpvBackend?.videoSize()?.let { (vw, vh) ->
-                        if (vw > 0 && vh > 0) {
-                            applyScreenAspect(
-                                vw.toFloat() / vh.toFloat(),
-                                "起播兜底纠正（内核报 ${vw}x$vh，起播后 ${delayMs}ms）",
-                            )
+        /*
+         * 起播后每 0.5 秒问一次内核"这一部到底多大"，报出来就把银幕比例改成它，连问 30 秒。
+         *
+         * 不能只在几个固定时间点各做一次：切集/换档时内核要重建输出窗口，报尺寸的时刻不定。
+         * 实测出现过"内核 23:59:01 就报了 1920x800，银幕到 23:59:17 才改"，
+         * 中间十几秒画面就是被 16:9 拉扁的样子（父亲 2026-10-26 00:01 报）。
+         */
+        run {
+            val h = android.os.Handler(android.os.Looper.getMainLooper())
+            var left = 60
+            val tick = object : Runnable {
+                override fun run() {
+                    runCatching {
+                        mpvBackend?.videoSize()?.let { (vw, vh) ->
+                            if (vw > 0 && vh > 0) {
+                                applyScreenAspect(
+                                    vw.toFloat() / vh.toFloat(),
+                                    "起播兜底纠正（内核报 ${vw}x$vh）",
+                                )
+                            }
                         }
                     }
+                    left--
+                    if (left > 0) h.postDelayed(this, 500L)
                 }
-            }, delayMs)
+            }
+            h.postDelayed(tick, 500L)
         }
         /* 真的开始接管了：标题行从「即将播放」转成「正在播放」（父亲 2026-10-19 定） */
         osdState.upcoming = false
