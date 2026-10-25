@@ -3524,6 +3524,26 @@ class MainActivity : ComponentActivity() {
          */
         val ar = obj.optDouble("ar", 0.0).toFloat()
         if (ar > 0f) applyScreenAspect(ar, "网页交来的画幅比 $ar")
+        /*
+         * 兜底纠正（父亲 2026-10-25 要）：起播后让内核再报一次真实尺寸。
+         * 换源清场会把银幕复位成 16:9，若内核没在下一拍之前报出真实尺寸，
+         * 宽银幕的片子就一直按 16:9 挂着 = 画面被压扁（第二次接管时出现过）。
+         * 这里在起播后几个时间点各纠正一次，内核还没出帧就等下一个点。
+         */
+        listOf(1200L, 3000L, 6000L, 10000L).forEach { delayMs ->
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                runCatching {
+                    mpvBackend?.videoSize()?.let { (vw, vh) ->
+                        if (vw > 0 && vh > 0) {
+                            applyScreenAspect(
+                                vw.toFloat() / vh.toFloat(),
+                                "起播兜底纠正（内核报 ${vw}x$vh，起播后 ${delayMs}ms）",
+                            )
+                        }
+                    }
+                }
+            }, delayMs)
+        }
         /* 真的开始接管了：标题行从「即将播放」转成「正在播放」（父亲 2026-10-19 定） */
         osdState.upcoming = false
         /*

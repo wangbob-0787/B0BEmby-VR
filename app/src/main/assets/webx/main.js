@@ -690,9 +690,21 @@
      只改请求不看回复就永远收不到 —— 所以把回复里带档位号的地址全抠出来。 */
   function qqScanText(t) {
     try {
-      var s = String(t || ''), m, n = 0;
-      var re = /[^"'\s]+?\.f\d{6}\.(?:ts\.)?m3u8[^"'\s]*/g;
-      while ((m = re.exec(s))) { n++; qqTake(m[0]); }
+      var s = String(t || ''), n = 0, from = 0, idx;
+      /* 用 indexOf 逐段找，不用带惰性量词的正则：回复常有几 MB，
+         那种正则在这上面会疯狂回溯，整条 JS 线程卡住，页面就"卡死"（父亲 2026-10-25 报）。 */
+      var tail = /\.f\d{6}\.(?:ts\.)?m3u8$/;
+      while ((idx = s.indexOf('m3u8', from)) >= 0) {
+        from = idx + 4;
+        var start = idx;
+        while (start > 0 && idx - start < 700) {
+          var ch = s.charAt(start - 1);
+          if (ch === '"' || ch === "'" || ch === ',' || ch === ' ' || ch === '\n' || ch === '\\') break;
+          start--;
+        }
+        var cand = s.slice(start, idx + 4);
+        if (tail.test(cand)) { n++; qqTake(cand); }
+      }
       /* 时长就在这条回复里（td 是秒）。清单地址是跨域的，脚本自己再取一次会被挡，
          所以时长必须从这条回复拿，否则槽永远缺"时长"这一格、按钮一直灰。 */
       var td = /"(?:td|duration)"\s*:\s*(\d{2,6})/.exec(s);
@@ -710,11 +722,13 @@
       if (oF && !oF.__b0bHooked) {
         var nf = function () {
           var a = [].slice.call(arguments);
+          var qqRead = false;
           try {
             var u = (typeof a[0] === 'string') ? a[0] : (a[0] && a[0].url), us = String(u || '');
             if (site() === 'qq') {
               if (us.indexOf('qq.com') >= 0 && a[1]) {
-                a[1] = Object.assign({}, a[1], { body: qqPatchBody(a[1].body, us) });
+                var nb = qqPatchBody(a[1].body, us);
+                if (nb !== a[1].body) { a[1] = Object.assign({}, a[1], { body: nb }); qqRead = true; }
               }
               if (us.indexOf('.m3u8') > 0) qqTake(us);
             } else if (site() === 'bi' && us.indexOf('.m4s') > 0) {
@@ -724,7 +738,7 @@
           var pr = oF.apply(window, a);
           try {
             var uq = String((typeof a[0] === 'string') ? a[0] : (a[0] && a[0].url) || '');
-            if (site() === 'qq' && uq.indexOf('qq.com') >= 0 && pr && pr.then) {
+            if (qqRead && pr && pr.then) {
               pr.then(function (r) {
                 try {
                   r.clone().text().then(qqScanText).catch(function (e4) {
@@ -751,10 +765,13 @@
             var u = String(this.__b0bU || '');
             if (site() === 'qq') {
               if (u.indexOf('qq.com') >= 0) {
-                b = qqPatchBody(b, u);
-                this.addEventListener('load', function () {
-                  try { qqScanText(this.responseText); } catch (e4) {}
-                });
+                var nb2 = qqPatchBody(b, u);
+                if (nb2 !== b) {
+                  b = nb2;
+                  this.addEventListener('load', function () {
+                    try { qqScanText(this.responseText); } catch (e4) {}
+                  });
+                }
               }
               if (u.indexOf('.m3u8') > 0) this.addEventListener('load', function () { qqTake(u); });
             } else if (site() === 'bi' && u.indexOf('.m4s') > 0) {
