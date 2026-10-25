@@ -2397,10 +2397,20 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                     now, now, MotionEvent.ACTION_SCROLL, 1, props, coords,
                     0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_MOUSE, 0,
                 )
-                val eaten = runCatching { wv.dispatchGenericMotionEvent(ev) }.getOrDefault(false)
-                ev.recycle()
-                if (!eaten) runCatching { wv.scrollBy(0, if (sy > 0f) -60 else 60) }
-                else runCatching { (wv as? WebView)?.evaluateJavascript(scrollFallbackJs(u, v, sy), null) }
+                /*
+                 * 爱奇艺播放窗口把落在视频上的滚轮当成音量：光柱压在播放器上时
+                 * 上下推摇杆只调音量、页面一动不动（父亲 2026-10-25 实测）。
+                 * 所以爱奇艺不走"先派发给网页"这条：直接顺着 DOM 找会滚的容器滚。
+                 */
+                if (site == 2) {
+                    ev.recycle()
+                    runCatching { (wv as? WebView)?.evaluateJavascript(scrollFallbackJs(u, v, sy), null) }
+                } else {
+                    val eaten = runCatching { wv.dispatchGenericMotionEvent(ev) }.getOrDefault(false)
+                    ev.recycle()
+                    if (!eaten) runCatching { wv.scrollBy(0, if (sy > 0f) -60 else 60) }
+                    else runCatching { (wv as? WebView)?.evaluateJavascript(scrollFallbackJs(u, v, sy), null) }
+                }
             }
         }
         onDispose {
