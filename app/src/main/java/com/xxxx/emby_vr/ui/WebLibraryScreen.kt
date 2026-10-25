@@ -1098,8 +1098,10 @@ private object WebRuntime {
                                     "，画面块 " + "%.3f".format(b[2]) + "x" + "%.3f".format(b[3]) +
                                     "，位置 " + "%.3f".format(b[0]) + "," + "%.3f".format(b[1]),
                             )
-                            /* 下发实际比例，按实际裁剪不拉伸（2026-10-25 父亲报：网页视频铺满银幕时直接拉伸） */
-                            com.xxxx.emby_vr.vr.VrNative.setWebVideoRect(0f, 0f, 1f, 1f, b[4])
+                            /* 下发的必须是页面里那块视频自己的矩形（x/y/宽/高 + 画幅比）：
+                               渲染侧按这个矩形做纹理裁剪，只把视频那一块贴到银幕上。
+                               传整张 0,0,1,1 等于不裁，画面就被拉成银幕比例（父亲 2026-10-25 报）。 */
+                            com.xxxx.emby_vr.vr.VrNative.setWebVideoRect(b[0], b[1], b[2], b[3], b[4])
                         } else {
                             android.util.Log.i("B0BEmbyVR", "网页视频画面：没有了（银幕本来就不跟着变）")
                         }

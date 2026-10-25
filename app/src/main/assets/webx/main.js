@@ -170,8 +170,14 @@
 
   /* 三、槽与交付 */
 
-  var slot = { bi: null, qq: null, iq: null };
-  var lastSent = '';
+  /* 页面刚加载时内核会重试注入，脚本因此可能被 eval 多遍；腾讯一条片只请求一次清单，
+     收集到的数据必须挂在 window 上，否则重新 eval 一次就清空，槽永远空着、按钮永远灰。 */
+  var S = window.__b0bState || (window.__b0bState = {
+    slot: { bi: null, qq: null, iq: null },
+    lastSent: '',
+    qqCtx: { url: '', name: '', dur: 0 },
+  });
+  var slot = S.slot;
 
   function fingerprint(c) { return [c.id, c.title, c.dur, noQuery(c.v), noQuery(c.a)].join('|'); }
   function whyNotReady() {
@@ -203,8 +209,8 @@
   function deliver() {
     if (!slotReady()) return;
     var s = site(), c = slot[s], sig = s + '|' + c.fp;
-    if (sig === lastSent) return;
-    lastSent = sig;
+    if (sig === S.lastSent) return;
+    S.lastSent = sig;
     var payload = {
       kind: 'play', site: s, frame: location.href,
       title: c.title, ep: String(c.ep || ''), season: String(c.season || ''),
@@ -232,7 +238,7 @@
 
   /* 四、B站 */
 
-  var biCtx = { key: '', cid: '', dur: 0, v: '', a: '', quality: '' };
+  var biCtx = S.biCtx || (S.biCtx = { key: '', cid: '', dur: 0, v: '', a: '', quality: '' });
   var biSegs = [];
 
   function biId() {
@@ -338,7 +344,7 @@
   /* 五、腾讯 */
 
   var QQ_TIERS = { 'f322100': '臻彩MAX', 'f322104': '臻彩MAX', 'f322093': '4K', 'f322150': '臻彩1080P' };
-  var qqCtx = { url: '', name: '', dur: 0 };
+  var qqCtx = S.qqCtx;
 
   function qqId() {
     var m = String(location.pathname).match(/\/x\/cover\/[A-Za-z0-9]+\/([A-Za-z0-9]+)\.html/i);
@@ -373,7 +379,7 @@
     if (/smtcdns|subtitle|\.vtt\./.test(one)) return;
     if (!qqId()) return;
     if (qqCtx.url === one) return;
-    qqCtx = { url: one, name: name, dur: 0 };
+    qqCtx.url = one; qqCtx.name = name; qqCtx.dur = 0;
     CH('②取址', { 站: 'qq', 档: name + '(' + m[1] + ')', 地址尾: '…' + one.slice(-24) });
     qqPlaylistDur(one);
   }
@@ -395,7 +401,7 @@
   var IQ_CONST = { t: '0', us: '', kuid: '', kt: '0', vf: '', hevc: '0', qd: '0', r: '1', s: '1', cp: '14', p: '1', pn: '0', p1: '1', q: '1', o: '0', cmd: '0' };
   var iqEps = { aid: '', list: [] };
   var iqBusy = false;
-  var iqDone = { tvid: '', at: 0 };
+  var iqDone = S.iqDone || (S.iqDone = { tvid: '', at: 0 });
 
   function iqCookie(name) {
     try { var m = String(document.cookie || '').match(new RegExp('(?:^|; )' + name + '=([^;]*)')); return m ? decodeURIComponent(m[1]) : ''; } catch (e) { return ''; }
@@ -641,7 +647,6 @@
 
   /* 只补腾讯：命中判据是请求地址里的 qq.com，B站 与爱奇艺一律不碰。 */
   var QQ_CAPS = '&spvvc=3&sphevcfps=52776560265087';
-  var QQ_WANT_DEFN = 'uhd';
   /* 重写前（dc9912a）的写法：解析 JSON，修改 vinfoparam 字段，重新序列化。
      直接拼接字符串不会生效，因为 vinfoparam 是 JSON 里的一个字段。 */
   function qqPatchBody(b, u) {
@@ -654,10 +659,6 @@
         var p = o.vinfoparam;
         var changed = false;
         if (p.indexOf('spvvc=') < 0) { p += QQ_CAPS; changed = true; }
-        if (QQ_WANT_DEFN && /defn=[A-Za-z0-9]+/.test(p) && p.indexOf('defn=' + QQ_WANT_DEFN) < 0) {
-          p = p.replace(/defn=[A-Za-z0-9]+/, 'defn=' + QQ_WANT_DEFN);
-          changed = true;
-        }
         if (!changed) return b;
         o.vinfoparam = p;
         CH('⑩能力位', { 站: 'qq', 通道: 'JSON', url: String(u).slice(0, 64) });
@@ -678,6 +679,15 @@
     } catch (e) {}
     return b;
   }
+  /* 整集地址在那条播放信息请求的**回复**里（页面不会另发一条 m3u8 请求），
+     只改请求不看回复就永远收不到 —— 所以把回复里带档位号的地址全抠出来。 */
+  function qqScanText(t) {
+    try {
+      var s = String(t || ''), m;
+      var re = /[^"'\s]+?\.f\d{6}\.(?:ts\.)?m3u8[^"'\s]*/g;
+      while ((m = re.exec(s))) qqTake(m[0]);
+    } catch (e) {}
+  }
   function hookNet() {
     try {
       var oF = window.fetch;
@@ -695,7 +705,16 @@
               biSeg(us);
             }
           } catch (e) {}
-          return oF.apply(window, a);
+          var pr = oF.apply(window, a);
+          try {
+            var uq = String((typeof a[0] === 'string') ? a[0] : (a[0] && a[0].url) || '');
+            if (site() === 'qq' && uq.indexOf('qq.com') >= 0 && pr && pr.then) {
+              pr.then(function (r) {
+                try { r.clone().text().then(qqScanText).catch(function () {}); } catch (e2) {}
+              }).catch(function () {});
+            }
+          } catch (e3) {}
+          return pr;
         };
         nf.__b0bHooked = 1;
         window.fetch = nf;
@@ -711,7 +730,12 @@
           try {
             var u = String(this.__b0bU || '');
             if (site() === 'qq') {
-              if (u.indexOf('qq.com') >= 0) b = qqPatchBody(b, u);
+              if (u.indexOf('qq.com') >= 0) {
+                b = qqPatchBody(b, u);
+                this.addEventListener('load', function () {
+                  try { qqScanText(this.responseText); } catch (e4) {}
+                });
+              }
               if (u.indexOf('.m3u8') > 0) this.addEventListener('load', function () { qqTake(u); });
             } else if (site() === 'bi' && u.indexOf('.m4s') > 0) {
               biSeg(u);
@@ -762,11 +786,12 @@
   }
 
   window.__b0bClearSlots = function (why) {
-    slot = { bi: null, qq: null, iq: null };
-    lastSent = ''; fsState = -1; fsPend = 0;
-    biCtx = { key: '', cid: '', dur: 0, v: '', a: '', quality: '' }; biSegs = [];
-    qqCtx = { url: '', name: '', dur: 0 };
-    iqDone = { tvid: '', at: 0 };
+    slot.bi = null; slot.qq = null; slot.iq = null;
+    S.lastSent = ''; fsState = -1; fsPend = 0;
+    biCtx.key = ''; biCtx.cid = ''; biCtx.dur = 0; biCtx.v = ''; biCtx.a = ''; biCtx.quality = '';
+    biSegs = [];
+    qqCtx.url = ''; qqCtx.name = ''; qqCtx.dur = 0;
+    iqDone.tvid = ''; iqDone.at = 0;
     try { if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen(); } catch (e) {}
     try { window.__b0bRealFull = 0; } catch (e2) {}
     try { localStorage.removeItem('b0b:realFullAt'); } catch (e3) {}
@@ -784,10 +809,17 @@
 
   hookNet();
   guardFullscreen();
-  setInterval(tick, 1200);
-  setInterval(markFs, 700);
-  setInterval(iqFixHeight, 800);
-  setInterval(reportRect, 400);
-  setInterval(scanQQ, 1500);
+  /* 注入会被重试，重试等于把整段脚本再跑一遍；旧定时器先收掉，
+     否则同一条链每秒跑好几遍。 */
+  try { (window.__b0bTimers || []).forEach(clearInterval); } catch (e) {}
+  window.__b0bTimers = [
+    setInterval(tick, 1200),
+    setInterval(markFs, 700),
+    setInterval(iqFixHeight, 800),
+    setInterval(reportRect, 400),
+    setInterval(scanQQ, 1500)
+  ];
+  /* 内核注入后回读这个时间戳判断"装上了没有"，缺了它内核会一直重试注入 */
+  window.__b0bInjectedAt = Date.now();
   console.log('[b0b] 网页脚本已就绪（2026-10-25 版）：站=' + (site() || '其他'));
 })();
