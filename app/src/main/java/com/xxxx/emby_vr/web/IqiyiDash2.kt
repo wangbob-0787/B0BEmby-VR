@@ -127,9 +127,25 @@ object IqiyiDash2 {
             Log.w(TAG, "爱奇艺分集表：请求失败 " + it.javaClass.simpleName + " " + it.message)
         }.getOrNull() ?: return null
         return runCatching {
-            val d = org.json.JSONObject(body).optJSONObject("data") ?: return null
-            val eps = d.optJSONArray("epsodelist") ?: return null
-            if (epNo > eps.length()) return null
+            val d = org.json.JSONObject(body).optJSONObject("data")
+            if (d == null) {
+                Log.w(TAG, "爱奇艺分集表：没有 data，正文前 80 字=" + body.take(80))
+                return null
+            }
+            /* 综艺/剧集/电影的字段名不完全一样，几个常见键都试一遍 */
+            val eps = d.optJSONArray("epsodelist") ?: d.optJSONArray("epsodeList")
+                ?: d.optJSONArray("videos") ?: d.optJSONArray("video")
+            if (eps == null) {
+                val keys = ArrayList<String>()
+                val it = d.keys()
+                while (it.hasNext()) keys.add(it.next())
+                Log.w(TAG, "爱奇艺分集表：没有集数组，data 里的键=" + keys.joinToString(","))
+                return null
+            }
+            if (epNo > eps.length()) {
+                Log.w(TAG, "爱奇艺分集表：只有 " + eps.length() + " 条，取不到第 " + epNo + " 集")
+                return null
+            }
             val one = eps.optJSONObject(epNo - 1) ?: return null
             val id = one.optString("tvId")
             if (id.isBlank()) return null
