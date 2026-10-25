@@ -690,9 +690,14 @@
      只改请求不看回复就永远收不到 —— 所以把回复里带档位号的地址全抠出来。 */
   function qqScanText(t) {
     try {
-      var s = String(t || ''), m;
+      var s = String(t || ''), m, n = 0;
       var re = /[^"'\s]+?\.f\d{6}\.(?:ts\.)?m3u8[^"'\s]*/g;
-      while ((m = re.exec(s))) qqTake(m[0]);
+      while ((m = re.exec(s))) { n++; qqTake(m[0]); }
+      /* 抠不到就是"只补了能力位、没抓到地址"那种空转，必须留下回复的样子给人看 */
+      if (!n) {
+        var i = s.indexOf('m3u8');
+        CH('⑩回复没地址', { 长度: s.length, 有m3u8: i >= 0 ? 1 : 0, 片段: i >= 0 ? s.slice(Math.max(0, i - 60), i + 40) : s.slice(0, 60) });
+      }
     } catch (e) {}
   }
   function hookNet() {
@@ -717,7 +722,11 @@
             var uq = String((typeof a[0] === 'string') ? a[0] : (a[0] && a[0].url) || '');
             if (site() === 'qq' && uq.indexOf('qq.com') >= 0 && pr && pr.then) {
               pr.then(function (r) {
-                try { r.clone().text().then(qqScanText).catch(function () {}); } catch (e2) {}
+                try {
+                  r.clone().text().then(qqScanText).catch(function (e4) {
+                    CH('⑩回复读不到', { 原因: String(e4).slice(0, 60) });
+                  });
+                } catch (e2) { CH('⑩回复读不到', { 原因: 'clone失败' }); }
               }).catch(function () {});
             }
           } catch (e3) {}
