@@ -1593,9 +1593,20 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                 callback: CustomViewCallback,
                             ) {
                                 val box = customContainer ?: run { callback.onCustomViewHidden(); return }
+                                /*
+                                 * 上一次的全屏回调没被清掉时，原来直接让这次作废 ——
+                                 * 表现就是"按了真全屏不接管，按 B 退出去再来一次才行"
+                                 * （父亲 2026-10-26 00:01 报）。这里改成先把上一次收干净再继续。
+                                 */
                                 if (customViewCallback != null) {
-                                    callback.onCustomViewHidden()
-                                    return
+                                    runCatching { customViewCallback?.onCustomViewHidden() }
+                                    customViewCallback = null
+                                    runCatching {
+                                        customView?.let { (it.parent as? android.view.ViewGroup)?.removeView(it) }
+                                    }
+                                    customView = null
+                                    fullscreen = false
+                                    android.util.Log.i("WebLib", "上一次全屏残留 → 已收干净，接着进这一次")
                                 }
                                 customViewCallback = callback
                                 (view.parent as? android.view.ViewGroup)?.removeView(view)

@@ -3530,7 +3530,7 @@ class MainActivity : ComponentActivity() {
          * 宽银幕的片子就一直按 16:9 挂着 = 画面被压扁（第二次接管时出现过）。
          * 这里在起播后几个时间点各纠正一次，内核还没出帧就等下一个点。
          */
-        listOf(1200L, 3000L, 6000L, 10000L).forEach { delayMs ->
+        listOf(1200L, 3000L, 6000L, 10000L, 15000L, 20000L).forEach { delayMs ->
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                 runCatching {
                     mpvBackend?.videoSize()?.let { (vw, vh) ->
