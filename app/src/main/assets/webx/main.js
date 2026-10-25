@@ -544,10 +544,29 @@
 
   /* 九、网络钩子 */
 
-  function qqPatchBody(b) {
+  /* 只补腾讯：命中判据是请求地址里的 qq.com，B站 与爱奇艺一律不碰。 */
+  var QQ_CAPS = '&spvvc=3&sphevcfps=52776560265087';
+  /* body 有三种形态：字符串、URLSearchParams、FormData。
+     切清晰度那次请求带的不是字符串，只认字符串会漏掉。 */
+  function qqPatchBody(b, u) {
+    if (b == null || String(u || '').indexOf('qq.com') < 0) return b;
     try {
-      if (typeof b === 'string' && b.indexOf('vinfoparam') >= 0 && b.indexOf('spvvc') < 0) {
-        return b + '&spvvc=3&sphevcfps=52776560265087';
+      if (typeof b === 'string') {
+        if (b.indexOf('vinfoparam') < 0 || b.indexOf('spvvc') >= 0) return b;
+        CH('⑩能力位', { 站: 'qq', 通道: '字符串', url: String(u).slice(0, 64) });
+        return b + QQ_CAPS;
+      }
+      if (typeof URLSearchParams !== 'undefined' && b instanceof URLSearchParams) {
+        if (b.get('spvvc') || !b.get('vinfoparam')) return b;
+        b.set('spvvc', '3'); b.set('sphevcfps', '52776560265087');
+        CH('⑩能力位', { 站: 'qq', 通道: '表单串', url: String(u).slice(0, 64) });
+        return b;
+      }
+      if (typeof FormData !== 'undefined' && b instanceof FormData) {
+        if (b.getAll('spvvc').length > 0 || !b.get('vinfoparam')) return b;
+        b.append('spvvc', '3'); b.append('sphevcfps', '52776560265087');
+        CH('⑩能力位', { 站: 'qq', 通道: '表单', url: String(u).slice(0, 64) });
+        return b;
       }
     } catch (e) {}
     return b;
@@ -561,8 +580,8 @@
           try {
             var u = (typeof a[0] === 'string') ? a[0] : (a[0] && a[0].url), us = String(u || '');
             if (site() === 'qq') {
-              if (us.indexOf('qq.com') >= 0 && a[1] && typeof a[1].body === 'string') {
-                a[1] = Object.assign({}, a[1], { body: qqPatchBody(a[1].body) });
+              if (us.indexOf('qq.com') >= 0 && a[1]) {
+                a[1] = Object.assign({}, a[1], { body: qqPatchBody(a[1].body, us) });
               }
               if (us.indexOf('.m3u8') > 0) qqTake(us);
             } else if (site() === 'bi' && us.indexOf('.m4s') > 0) {
@@ -585,7 +604,7 @@
           try {
             var u = String(this.__b0bU || '');
             if (site() === 'qq') {
-              if (u.indexOf('qq.com') >= 0) b = qqPatchBody(b);
+              if (u.indexOf('qq.com') >= 0) b = qqPatchBody(b, u);
               if (u.indexOf('.m3u8') > 0) this.addEventListener('load', function () { qqTake(u); });
             } else if (site() === 'bi' && u.indexOf('.m4s') > 0) {
               biSeg(u);
