@@ -784,6 +784,15 @@
 
   hookNet();
   guardFullscreen();
+  /* 爱奇艺播放窗口把手柄上下键当成音量调节，页面滚不动。
+     拦截上下键，不让它传给播放器（2026-10-25 父亲报）。 */
+  document.addEventListener('keydown', function (e) {
+    if (site() === 'iq' && (e.keyCode === 38 || e.keyCode === 40)) {
+      e.preventDefault();
+      e.stopPropagation();
+      return false;
+    }
+  }, true);
   setInterval(tick, 1200);
   setInterval(markFs, 700);
   setInterval(iqFixHeight, 800);
