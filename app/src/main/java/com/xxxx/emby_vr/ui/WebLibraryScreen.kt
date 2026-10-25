@@ -1974,8 +1974,22 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                          * （QiyiPlayerProphetData.videoInfo.title）。
                                                          * 拼法：剧名[ 第X季] 第X集 [集名]
                                                          */
+                                                        /*
+                                                         * 这个接口要发网络请求，必须离开主线程：
+                                                         * 原来直接在 UI 线程调，抛 NetworkOnMainThreadException 被 runCatching 吞掉，
+                                                         * epi 恒为空 → 文案只剩剧名、没有第几集、没有集名，弹幕也因此对不上集
+                                                         * （父亲 2026-10-26 00:01 报）。
+                                                         */
                                                         val epi = runCatching {
-                                                            com.xxxx.emby_vr.web.IqiyiDash2.episodeInfo(tvid, ckAll, ua)
+                                                            var r: com.xxxx.emby_vr.web.IqiyiDash2.EpInfo? = null
+                                                            val th = Thread {
+                                                                r = runCatching {
+                                                                    com.xxxx.emby_vr.web.IqiyiDash2.episodeInfo(tvid, ckAll, ua)
+                                                                }.getOrNull()
+                                                            }
+                                                            th.start()
+                                                            th.join(2500)
+                                                            r
                                                         }.getOrNull()
                                                         android.util.Log.i(
                                                             "B0BEmbyVR",
@@ -2002,6 +2016,10 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                             sb.toString().trim()
                                                         }.getOrNull().orEmpty()
                                                         play.put("title", composed)
+                                                        /* 集号与片号一起带上：控制条要显示"第几集"，弹幕也要按集去查 */
+                                                        play.put("vid", useTvid)
+                                                        if (epi != null && epi.episode > 0) play.put("ep", epi.episode.toString())
+                                                        play.put("durSec", res.durationSec)
                                                         android.util.Log.i(
                                                             "B0BEmbyVR",
                                                             "爱奇艺自取：交整集片单（" + res.segs + " 段，" +
