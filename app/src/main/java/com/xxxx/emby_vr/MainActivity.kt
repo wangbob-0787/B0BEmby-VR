@@ -2672,16 +2672,12 @@ class MainActivity : ComponentActivity() {
          * —— 日志里就是"保留 6 条，行满丢弃 1854 条"，画面上等于没有弹幕
          * （父亲 2026-10-26 01:07 现场）。
          */
-        val lanes = when {
-            parsed.size >= 1500 -> 8
-            parsed.size >= 700 -> 6
-            parsed.size >= 250 -> 4
-            else -> 2
-        }
-        val gapMs = (spanMs * 0.15).toLong()
-        val laneY = FloatArray(lanes) { topMargin + it * lineH }
+        /* 父亲 2026-10-26 定：只留两行。行数不动，改的是"满了不丢" */
+        val gapMs = 1200L
+        val laneY = floatArrayOf(topMargin, topMargin + lineH)
         val laneFree = LongArray(laneY.size)
         var dropped = 0
+        var overlapped = 0
         val items = ArrayList<com.xxxx.emby_vr.danmaku.DanmakuItem>()
         for (p in parsed) {
             /* 选一条空着的行；两行都占着 → 这条丢掉（同 Emby 的"轨道满则丢弃"） */
@@ -2692,9 +2688,16 @@ class MainActivity : ComponentActivity() {
                     break
                 }
             }
+            /*
+             * 两行都占着也不丢：挑"最早空出来的那一行"接着放。
+             * 固定两行 + 满则丢弃时，一部电影近两千条会只留 6 条，
+             * 画面上等于没有弹幕（父亲 2026-10-26 01:07 现场）。
+             * 允许偶尔重叠，比丢掉 99% 强。
+             */
             if (lane < 0) {
-                dropped++
-                continue
+                lane = 0
+                for (i in laneY.indices) if (laneFree[i] < laneFree[lane]) lane = i
+                overlapped++
             }
             laneFree[lane] = p.first + gapMs
             val y = laneY[lane]
@@ -2720,7 +2723,7 @@ class MainActivity : ComponentActivity() {
         Log.i(
             TAG,
             "⑦ 弹幕按 Emby 那套排成 " + laneY.size + " 行：保留 " + items.size +
-                " 条，行满丢弃 " + dropped + " 条（共解析 " + parsed.size + " 条）",
+                " 条，行满重叠 " + overlapped + " 条、丢弃 " + dropped + " 条（共解析 " + parsed.size + " 条）",
         )
         return com.xxxx.emby_vr.danmaku.DanmakuTrack(1920f, 1080f, items)
     }
