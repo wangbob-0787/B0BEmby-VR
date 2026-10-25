@@ -912,6 +912,13 @@
   /* 原生要片号时优先问这里：这里的号来自页面自己那条 dash 请求、并按页面地址防串集，
      比 QiyiPlayerProphetData 那个常常慢一拍的字段新（父亲 2026-10-25 报切集后一直等待）。 */
   window.__b0bIqTvid = function () { try { return String(iqTvid() || ''); } catch (e) { return ''; } };
+  /* 分集表里第 n 集的片号：页面自己的分集表已经拉好了，原生直接问它最省事 */
+  window.__b0bIqEpTvId = function (n) {
+    try {
+      var l = (S.iqEps && S.iqEps.list) || [], it = l[(Number(n) || 0) - 1];
+      return it ? String(it.tvId || '') : '';
+    } catch (e) { return ''; }
+  };
 
   hookNet();
   guardFullscreen();

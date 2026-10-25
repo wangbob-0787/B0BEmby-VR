@@ -391,6 +391,25 @@ private fun scrollFallbackJs(u: Float, v: Float, sy: Float): String {
         "})(${u},${v},${d});"
 }
 
+/** 问页面自己那份分集表：第 n 集的片号。 */
+private fun askPageEpTvId(w: WebView?, n: Int): String {
+    if (w == null || n <= 0) return ""
+    var id = ""
+    val latch = java.util.concurrent.CountDownLatch(1)
+    android.os.Handler(android.os.Looper.getMainLooper()).post {
+        runCatching {
+            w.evaluateJavascript(
+                "String((window.__b0bIqEpTvId&&window.__b0bIqEpTvId(" + n + "))||'')",
+            ) { raw ->
+                id = (raw ?: "").trim('"')
+                latch.countDown()
+            }
+        }.onFailure { latch.countDown() }
+    }
+    runCatching { latch.await(2, java.util.concurrent.TimeUnit.SECONDS) }
+    return id
+}
+
 /** 读页面上的专辑号（分集表要它才能查）。 */
 private fun askPageAlbum(w: WebView?): String {
     if (w == null) return ""
@@ -1841,17 +1860,31 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                             .matcher(pageFullTitle + " " + pageEpTitle)
                                                         if (m.find()) m.group(1)?.toIntOrNull() ?: 0 else 0
                                                     }
-                                                    val album = askPageAlbum(webRef)
-                                                    if (epNo > 0 && album.isNotBlank()) {
-                                                        val fromAlbum = com.xxxx.emby_vr.web.IqiyiDash2
-                                                            .tvIdByEpisode(album, epNo, ckAll, ua)
+                                                    if (epNo > 0) {
+                                                        /* 优先问页面自己那份分集表（已经拉好了，最省事），问不到再自己查 */
+                                                        val fromPage = askPageEpTvId(webRef, epNo)
+                                                        val album = if (fromPage.isBlank()) askPageAlbum(webRef) else ""
+                                                        val fromAlbum = when {
+                                                            fromPage.isNotBlank() -> fromPage
+                                                            album.isNotBlank() -> com.xxxx.emby_vr.web.IqiyiDash2
+                                                                .tvIdByEpisode(album, epNo, ckAll, ua)
+                                                            else -> null
+                                                        }
                                                         if (!fromAlbum.isNullOrBlank() && fromAlbum != useTvid) {
                                                             useTvid = fromAlbum
                                                             caught = true
                                                             android.util.Log.i(
                                                                 "B0BEmbyVR",
                                                                 "◆分集表 站=iq 第 " + epNo + " 集片号=" + fromAlbum +
-                                                                    "（不用再等页面片号）",
+                                                                    "（来源=" + (if (fromPage.isNotBlank()) "页面分集表" else "专辑分集表") +
+                                                                    "，不用再等页面片号）",
+                                                            )
+                                                        } else {
+                                                            android.util.Log.i(
+                                                                "B0BEmbyVR",
+                                                                "◆分集表 站=iq 第 " + epNo + " 集没取到片号（页面=" +
+                                                                    (if (fromPage.isBlank()) "空" else fromPage) +
+                                                                    " 专辑=" + album.take(20) + "），转去等页面",
                                                             )
                                                         }
                                                     }
