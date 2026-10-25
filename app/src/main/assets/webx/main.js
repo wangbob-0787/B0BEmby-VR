@@ -456,7 +456,15 @@
      * 按单位列举永远漏（父亲 2026-10-26 02:28 提醒）。
      */
     var t = clean(iqHeaderText() + ' ' + String(document.title || ''));
-    var m = /第\s*([零一二三四五六七八九十百\d]+)/.exec(t);
+    /*
+     * 取**最后一个**"第N"。左上角那行/网页标题里常同时出现别的集号
+     * （"第2集 分集"、上一集的集名等），取第一个会取到隔壁那集 ——
+     * 表现就是"正在播第3集、控制条写第2集"（父亲 2026-10-26 02:45）。
+     */
+    var all = t.match(/第\s*([零一二三四五六七八九十百\d]+)/g);
+    if (!all || !all.length) return '';
+    var last = all[all.length - 1];
+    var m = /第\s*([零一二三四五六七八九十百\d]+)/.exec(last);
     return m ? cn2num(m[1]) : '';
   }
   function md5(s) {
