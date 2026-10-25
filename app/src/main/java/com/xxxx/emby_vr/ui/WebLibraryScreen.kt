@@ -1742,14 +1742,6 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                  */
                                 if (com.xxxx.emby_vr.vr.VrTuning.webIqiyi == 1 && site == 2) {
                                     /*
-                                     * 先等半秒再读页面（父亲 2026-10-26 02:46：点了真全屏之后
-                                     * 播放窗口左上角那行字才是准的）。
-                                     * 原来在按键那一刻立刻读，读到的还是切集前的旧值，
-                                     * 表现就是"在播第3集、控制条写第2集"。
-                                     * 这一段本身跑在后台线程，睡在这里不影响界面。
-                                     */
-                                    runCatching { Thread.sleep(600) }
-                                    /*
                                      * 【2026-10-21 15:55 修两处】
                                      * ① 片号提取原来写成 JS 正则（`/qd_tvid=(\\d+)/`），经过 Kotlin 字符串后
                                      *    变成"反斜杠+d"，一条都匹配不到 → 日志里"片号="是空的。
