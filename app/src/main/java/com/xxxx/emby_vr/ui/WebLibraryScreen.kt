@@ -1058,10 +1058,12 @@ private object WebRuntime {
                  */
                 if (!bridgeAspectCleared) {
                     bridgeAspectCleared = true
-                    com.xxxx.emby_vr.vr.VrNative.setWebVideoRect(0f, 0f, 1f, 1f, 0f)
+                    /* 按实际比例裁剪，不拉伸（2026-10-25 父亲报：网页视频铺满银幕时直接拉伸） */
+                    val aspect = 16f / 9f  /* 默认 16:9，后续扫描到实际比例再更新 */
+                    com.xxxx.emby_vr.vr.VrNative.setWebVideoRect(0f, 0f, 1f, 1f, aspect)
                     android.util.Log.i(
                         "B0BEmbyVR",
-                        "网页显示不再改银幕比例（银幕固定，网页只当选片器）",
+                        "网页显示按 16:9 比例裁剪（不拉伸）",
                     )
                 }
                 val b = best
