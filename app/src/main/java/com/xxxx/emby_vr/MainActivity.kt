@@ -3522,7 +3522,7 @@ class MainActivity : ComponentActivity() {
          * 上一部是宽银幕、这一部是 16:9 时，复位 16:9 到内核报尺寸之间那两三秒
          * （父亲 2026-10-23 报「爱奇艺比例很多时候不对」）就靠它填。
          */
-        val ar = src.optDouble("ar", 0.0).toFloat()
+        val ar = obj.optDouble("ar", 0.0).toFloat()
         if (ar > 0f) applyScreenAspect(ar, "网页交来的画幅比 $ar")
         /* 真的开始接管了：标题行从「即将播放」转成「正在播放」（父亲 2026-10-19 定） */
         osdState.upcoming = false

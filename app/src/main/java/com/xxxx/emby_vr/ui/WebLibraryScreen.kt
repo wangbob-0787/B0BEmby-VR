@@ -2398,7 +2398,7 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                 val eaten = runCatching { wv.dispatchGenericMotionEvent(ev) }.getOrDefault(false)
                 ev.recycle()
                 if (!eaten) runCatching { wv.scrollBy(0, if (sy > 0f) -60 else 60) }
-                else runCatching { wv.evaluateJavascript(scrollFallbackJs(u, v, sy), null) }
+                else runCatching { (wv as? WebView)?.evaluateJavascript(scrollFallbackJs(u, v, sy), null) }
             }
         }
         onDispose {
