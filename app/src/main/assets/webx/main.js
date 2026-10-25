@@ -641,15 +641,27 @@
 
   /* 只补腾讯：命中判据是请求地址里的 qq.com，B站 与爱奇艺一律不碰。 */
   var QQ_CAPS = '&spvvc=3&sphevcfps=52776560265087';
-  /* body 有三种形态：字符串、URLSearchParams、FormData。
-     切清晰度那次请求带的不是字符串，只认字符串会漏掉。 */
+  var QQ_WANT_DEFN = 'uhd';
+  /* 重写前（dc9912a）的写法：解析 JSON，修改 vinfoparam 字段，重新序列化。
+     直接拼接字符串不会生效，因为 vinfoparam 是 JSON 里的一个字段。 */
   function qqPatchBody(b, u) {
     if (b == null || String(u || '').indexOf('qq.com') < 0) return b;
     try {
       if (typeof b === 'string') {
         if (b.indexOf('vinfoparam') < 0 || b.indexOf('spvvc') >= 0) return b;
-        CH('⑩能力位', { 站: 'qq', 通道: '字符串', url: String(u).slice(0, 64) });
-        return b + QQ_CAPS;
+        var o = JSON.parse(b);
+        if (!o || typeof o.vinfoparam !== 'string') return b;
+        var p = o.vinfoparam;
+        var changed = false;
+        if (p.indexOf('spvvc=') < 0) { p += QQ_CAPS; changed = true; }
+        if (QQ_WANT_DEFN && /defn=[A-Za-z0-9]+/.test(p) && p.indexOf('defn=' + QQ_WANT_DEFN) < 0) {
+          p = p.replace(/defn=[A-Za-z0-9]+/, 'defn=' + QQ_WANT_DEFN);
+          changed = true;
+        }
+        if (!changed) return b;
+        o.vinfoparam = p;
+        CH('⑩能力位', { 站: 'qq', 通道: 'JSON', url: String(u).slice(0, 64) });
+        return JSON.stringify(o);
       }
       if (typeof URLSearchParams !== 'undefined' && b instanceof URLSearchParams) {
         if (b.get('spvvc') || !b.get('vinfoparam')) return b;
