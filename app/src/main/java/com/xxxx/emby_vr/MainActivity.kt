@@ -2659,7 +2659,9 @@ class MainActivity : ComponentActivity() {
 
     /**
      * 把 (时间, 文字, 颜色) 列表排成弹幕轨道（2026-10-20 从 B站 那段抽出来，腾讯共用）。
-     * 规则照 Emby 那条路：2 行、行满丢弃、长 8 秒、同轨下一条等 0.35 倍时长。
+     * 规则：**固定两行**；整部片的弹幕按"两行总容量"均匀抽稀后全部排进去，
+     * 行满时挑最早空出的那一行接上（允许偶尔重叠，绝不整段丢弃）。
+     * 每条 8 秒、同轨下一条间隔 1.2 秒 —— 这两行每秒约能容纳 1.6 条。
      */
     private fun buildDanmakuTrack(parsed: List<Triple<Long, String, Long>>): com.xxxx.emby_vr.danmaku.DanmakuTrack? {
         val fs = 52f
@@ -2667,20 +2669,26 @@ class MainActivity : ComponentActivity() {
         val topMargin = 15f
         val spanMs = 8000L
         /*
-         * 行数与间距按量走，不能固定 2 行。
-         * 固定 2 行 + 2.8 秒间隔时，一部电影近两千条弹幕会被"行满丢弃"扔掉 99%
-         * —— 日志里就是"保留 6 条，行满丢弃 1854 条"，画面上等于没有弹幕
-         * （父亲 2026-10-26 01:07 现场）。
+         * 父亲 2026-10-26 定：只留两行；要"从全部弹幕里挑"，不是从头部截。
+         * 做法：先算这两行在整个时长里最多放得下多少条（capacity），
+         * 超过就按比例均匀抽稀 —— 整部片从头到尾都有弹幕，不再出现"前几分钟几十条、后面全丢"。
          */
-        /* 父亲 2026-10-26 定：只留两行。行数不动，改的是"满了不丢" */
         val gapMs = 1200L
         val laneY = floatArrayOf(topMargin, topMargin + lineH)
+        val spanMsAll = (parsed.maxOfOrNull { it.first } ?: 0L).coerceAtLeast(1L)
+        val capacity = ((spanMsAll / gapMs) * laneY.size).toInt().coerceAtLeast(1)
+        val picked: List<Triple<Long, String, Long>> =
+            if (parsed.size <= capacity) parsed
+            else {
+                val step = parsed.size.toDouble() / capacity
+                (0 until capacity).mapNotNull { i -> parsed.getOrNull((i * step).toInt()) }
+            }
         val laneFree = LongArray(laneY.size)
         var dropped = 0
         var overlapped = 0
         val items = ArrayList<com.xxxx.emby_vr.danmaku.DanmakuItem>()
-        for (p in parsed) {
-            /* 选一条空着的行；两行都占着 → 这条丢掉（同 Emby 的"轨道满则丢弃"） */
+        for (p in picked) {
+            /* 选一条空着的行 */
             var lane = -1
             for (i in laneY.indices) {
                 if (laneFree[i] <= p.first) {
@@ -2723,7 +2731,8 @@ class MainActivity : ComponentActivity() {
         Log.i(
             TAG,
             "⑦ 弹幕按 Emby 那套排成 " + laneY.size + " 行：保留 " + items.size +
-                " 条，行满重叠 " + overlapped + " 条、丢弃 " + dropped + " 条（共解析 " + parsed.size + " 条）",
+                " 条（两行容量 " + capacity + "），行满重叠 " + overlapped + " 条、丢弃 " + dropped +
+                    " 条（共解析 " + parsed.size + " 条）",
         )
         return com.xxxx.emby_vr.danmaku.DanmakuTrack(1920f, 1080f, items)
     }
