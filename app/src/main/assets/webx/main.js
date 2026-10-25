@@ -1,69 +1,20 @@
 
-/* 逻辑见 docs/ledger/web-side-spec-2026-10-25.md，代码里不再写注释 */
+/* 逻辑见 docs/slot-spec-2026-10-25/3-网页侧逻辑.md */
 (function () {
   'use strict';
 
-  
-  function hookNet(onUrl) {
-    try {
-      var oF = window.fetch;
-      if (oF && !oF.__b0bHooked) {
-        window.fetch = function () {
-          try { var a = [].slice.call(arguments); var u = (typeof a[0] === 'string') ? a[0] : (a[0] && a[0].url); if (u) onUrl(u); } catch (e) {}
-          return oF.apply(this, arguments);
-        };
-        window.fetch.__b0bHooked = 1;
-      }
-    } catch (e) {}
-    try {
-      var oO = XMLHttpRequest.prototype.open, oS = XMLHttpRequest.prototype.send;
-      if (!XMLHttpRequest.prototype.open.__b0bHooked) {
-        XMLHttpRequest.prototype.open = function (m, u) { try { this.__b0bU = u; } catch (e) {} return oO.apply(this, arguments); };
-        XMLHttpRequest.prototype.open.__b0bHooked = 1;
-        XMLHttpRequest.prototype.send = function () {
-          try { if (this.__b0bU) onUrl(this.__b0bU); } catch (e) {}
-          return oS.apply(this, arguments);
-        };
-      }
-    } catch (e) {}
-  }
+  /* 一、工具 */
 
   function CH(step, kv) {
     try {
-      var parts = [];
-      for (var k in (kv || {})) parts.push(k + '=' + kv[k]);
-      console.log('[链]' + step + ' ' + parts.join(' '));
+      var p = [];
+      for (var k in (kv || {})) p.push(k + '=' + kv[k]);
+      console.log('[链]' + step + ' ' + p.join(' '));
     } catch (e) {}
   }
-  function nowMs() { return Date.now(); }
   function send(o) {
-    try {
-      if (window.b0bHost && window.b0bHost.post) {
-        window.b0bHost.post(JSON.stringify(o));
-        return;
-      }
-    } catch (e) {}
+    try { if (window.b0bHost && window.b0bHost.post) { window.b0bHost.post(JSON.stringify(o)); return; } } catch (e) {}
     try { (window.__b0bOutbox = window.__b0bOutbox || []).push(JSON.stringify(o)); } catch (e2) {}
-  }
-
-  
-  var CN = { '零': 0, '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9 };
-  function cn2num(s) {
-    if (/^\d+$/.test(s)) return parseInt(s, 10);
-    var t = 0, cur = 0;
-    for (var i = 0; i < s.length; i++) {
-      var c = s.charAt(i);
-      if (CN[c] !== undefined) { cur = CN[c]; continue; }
-      if (c === '十') { t += (cur || 1) * 10; cur = 0; continue; }
-      return s;
-    }
-    return String(t + cur);
-  }
-  function txt(sel) {
-    try {
-      var el = document.querySelector(sel);
-      return el ? String(el.textContent || '').replace(/\s+/g, ' ').trim() : '';
-    } catch (e) { return ''; }
   }
   function site() {
     var h = String(location.hostname || '');
@@ -72,230 +23,298 @@
     if (/iqiyi\.com$/.test(h)) return 'iq';
     return '';
   }
-  function realFull() {
-    var a = 0, b = 0;
-    try { a = parseInt(String(window.__b0bRealFull || 0), 10) || 0; } catch (e) {}
-    try { b = parseInt(localStorage.getItem('b0b:realFullAt') || '0', 10) || 0; } catch (e2) {}
-    var t = Math.max(a, b);
-    return t > 0 && (Date.now() - t) < 10 * 60 * 1000;
+  function clean(t) { return String(t || '').replace(/\s+/g, ' ').trim(); }
+  function txt(sel) {
+    try { var el = document.querySelector(sel); return el ? clean(el.textContent) : ''; } catch (e) { return ''; }
   }
+  function noQuery(u) { var s = String(u || ''), i = s.indexOf('?'); return i > 0 ? s.slice(0, i) : s; }
+  function mainVideo() {
+    var vs = document.querySelectorAll('video'), best = null, bestA = 0;
+    for (var i = 0; i < vs.length; i++) {
+      var r = vs[i].getBoundingClientRect(), a = Math.max(0, r.width) * Math.max(0, r.height);
+      if (a > bestA) { bestA = a; best = vs[i]; }
+    }
+    return best || document.querySelector('video');
+  }
+  function pageDur() {
+    try { var v = mainVideo(); return v && v.duration > 0 && isFinite(v.duration) ? Math.round(v.duration) : 0; } catch (e) { return 0; }
+  }
+  var CN = { '零': 0, '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9 };
+  function cn2num(s) {
+    var str = String(s);
+    if (/^\d+$/.test(str)) return String(parseInt(str, 10));
+    var t = 0, cur = 0;
+    for (var i = 0; i < str.length; i++) {
+      var c = str.charAt(i);
+      if (CN[c] !== undefined) { cur = CN[c]; continue; }
+      if (c === '十') { t += (cur || 1) * 10; cur = 0; continue; }
+      return str;
+    }
+    return String(t + cur);
+  }
+
+  /* 二、播放页判据 */
+
+  var PAGES = {
+    bi: /\/(video\/BV[0-9A-Za-z]+|bangumi\/play\/(?:ep|ss)\d+)/,
+    qq: /\/x\/cover\/[A-Za-z0-9]+\/[A-Za-z0-9]+\.html/,
+    iq: /\/v_[A-Za-z0-9]+\.html/
+  };
+  function onPlayPage() {
+    var s = site();
+    return !!(s && PAGES[s] && PAGES[s].test(String(location.pathname || '')));
+  }
+
+  /* 三、槽与交付 */
+
+  var slot = { bi: null, qq: null, iq: null };
+  var lastSent = '';
+
+  function fingerprint(c) { return [c.id, c.title, c.dur, noQuery(c.v), noQuery(c.a)].join('|'); }
+  function whyNotReady() {
+    var s = site();
+    if (!s) return '不在三站';
+    if (!onPlayPage()) return '不是播放页';
+    var c = slot[s];
+    if (!c) return '槽空';
+    if (!c.id) return '没有身份';
+    if (!c.title) return '没有标题';
+    if (!c.dur) return '时长还没读到';
+    if (!c.v) return '没有画面地址';
+    if (!c.a) return '没有声音地址';
+    return '就绪';
+  }
+  function slotReady() { return whyNotReady() === '就绪'; }
   function pausePage(reason) {
     try {
       var vs = document.querySelectorAll('video'), n = 0;
-      for (var i = 0; i < vs.length; i++) {
-        if (vs[i] && !vs[i].paused) { try { vs[i].pause(); n++; } catch (e) {} }
-      }
+      for (var i = 0; i < vs.length; i++) { if (vs[i] && !vs[i].paused) { try { vs[i].pause(); n++; } catch (e) {} } }
       console.log('[b0b] 已交给内核，网页视频停下（' + reason + '，' + n + ' 个）');
     } catch (e) {}
   }
-  function clipDur() {
-    try {
-      var v = document.querySelector('video');
-      return v && v.duration > 0 ? Math.round(v.duration) : 0;
-    } catch (e) { return 0; }
+  function streamsOf(s, c) {
+    if (s === 'bi') return [{ video: c.v, audio: c.a }];
+    if (s === 'qq') return [{ video: c.v, audio: '' }];
+    return [{ video: '', audio: '', playlist: c.v, needProxy: 1 }];
+  }
+  function deliver() {
+    if (!slotReady()) return;
+    var s = site(), c = slot[s], sig = s + '|' + c.fp;
+    if (sig === lastSent) return;
+    lastSent = sig;
+    var payload = {
+      kind: 'play', site: s, frame: location.href,
+      title: c.title, ep: String(c.ep || ''), season: String(c.season || ''),
+      durSec: c.dur, quality: c.quality || '', cookie: '', at: c.at,
+      streams: streamsOf(s, c)
+    };
+    if (s === 'iq') payload.needProxy = 1;
+    CH('⑤交原生', { 站: s, 身份: c.id, 集: c.ep || '-', 时长: c.dur + 's', at: payload.at, 地址尾: '…' + String(c.v).slice(-24), 标题: String(c.title).slice(0, 24) });
+    send(payload);
+    pausePage('已交付');
+  }
+  function commit(s, cand) {
+    if (!cand || !cand.id || !cand.title || !cand.dur || !cand.v || !cand.a) return;
+    var fp = fingerprint(cand);
+    if (slot[s] && slot[s].fp === fp) return;
+    cand.fp = fp; cand.at = Date.now();
+    slot[s] = cand;
+    CH('②槽变', { 站: s, 身份: cand.id, 集: cand.ep || '-', 时长: cand.dur + 's', 档: cand.quality || '-', at: cand.at, 地址尾: '…' + String(cand.v).slice(-24), 标题: String(cand.title).slice(0, 24) });
+    deliver();
   }
 
-  
-  setInterval(function () {
-    try {
-      var vs = document.querySelectorAll('video'), best = null, bestArea = 0;
-      for (var i = 0; i < vs.length; i++) {
-        var v = vs[i], r = v.getBoundingClientRect();
-        var area = Math.max(0, r.width) * Math.max(0, r.height);
-        if (area > bestArea) { bestArea = area; best = { v: v, r: r }; }
-      }
-      if (!best || bestArea <= 0) return;
-      var r2 = best.r, W = window.innerWidth || 1, H = window.innerHeight || 1;
-      send({
-        kind: 'rect', frame: location.href, cookie: String(document.cookie || ''),
-        urls: [],
-        rect: {
-          x: r2.left / W, y: r2.top / H, w: r2.width / W, h: r2.height / H,
-          ar: best.v.videoHeight > 0 ? (best.v.videoWidth / best.v.videoHeight) : 0,
-          area: bestArea / (W * H)
-        }
-      });
-    } catch (e) {}
-  }, 400);
+  /* 四、B站 */
 
-  
-  var biSlot = null, biPend = {}, biNewest = '', biFloor = 0, biSig = '';
+  var biCtx = { key: '', cid: '', dur: 0, v: '', a: '', quality: '' };
+  var biSegs = [];
 
-  function biPage() {
-    var m = /\/(bangumi\/play\/(?:ep|ss)\d+|video\/BV[0-9A-Za-z]+)/.exec(location.pathname || '');
-    return m ? m[1] : String(location.pathname || '');
+  function biId() {
+    var p = String(location.pathname || '');
+    var m = /\/video\/(BV[0-9A-Za-z]+)/.exec(p);
+    if (m) return m[1];
+    m = /\/bangumi\/play\/(ep\d+)/.exec(p);
+    return m ? m[1] : '';
   }
   function biTitle() {
-    var t = String(document.title || '').replace(/\s*[_|]\s*哔哩哔哩\s*[_|]?\s*bilibili\s*$/i, '').trim();
-    var cut = t.search(/[-_|]\s*(电视剧|电影|纪录片|番剧|综艺|国创|动画|全集|高清|正版|独家|bilibili)/i);
+    var t = clean(document.title).replace(/\s*[_|]\s*哔哩哔哩\s*[_|]?\s*bilibili\s*$/i, '');
+    var cut = t.search(/[-_|]\s*(电视剧|电影|纪录片|番剧|综艺|国创|动画|全集|高清|正版|独家)\s*$/);
     if (cut > 0) t = t.slice(0, cut).trim();
+    var seasonM = /第\s*([零一二三四五六七八九十\d]+)\s*季/.exec(t);
+    var series = clean(t.replace(/第\s*[零一二三四五六七八九十\d]+\s*[季集期话][^-_|]*/g, '')) || t;
     var ov = txt('.bpx-player-top-title') || txt('[class*="player-top-title"]');
-    var season = (t.match(/第\s*([零一二三四五六七八九十\d]+)\s*季/) || [])[1];
-    var series = t.replace(/第\s*[零一二三四五六七八九十\d]+\s*[季集期话][^-_|]*/g, '').replace(/\s{2,}/g, ' ').trim() || t;
     var mOv = /第\s*([零一二三四五六七八九十\d]+)\s*([集期话])\s*(.*)$/.exec(ov);
     if (mOv) {
       var out = series;
-      if (season) out += ' 第' + cn2num(season) + '季';
+      if (seasonM) out += ' 第' + cn2num(seasonM[1]) + '季';
       out += ' 第' + cn2num(mOv[1]) + mOv[2];
-      var epName = String(mOv[3] || '').trim();
-      if (epName) out += ' ' + epName;
-      return out.replace(/\s{2,}/g, ' ').trim();
+      var nm = clean(mOv[3]);
+      if (nm) out += ' ' + nm;
+      return clean(out);
     }
     if (/^(正片|预告|花絮|片段|特辑|彩蛋)$/.test(ov)) ov = '';
-    if (ov && series && ov.indexOf(series) < 0 && series.indexOf(ov) < 0) {
-      return (series + '(' + ov + ')').replace(/\s{2,}/g, ' ').trim();
-    }
-    t = t.replace(/第\s*([零一二三四五六七八九十\d]+)\s*季/g, function (m, d) { return ' 第' + cn2num(d) + '季'; });
-    t = t.replace(/第\s*([零一二三四五六七八九十\d]+)\s*([集期话])/g, function (m, d, u) { return ' 第' + cn2num(d) + u; });
-    return t.replace(/\s{2,}/g, ' ').trim() || String(document.title || '');
+    if (ov && series && ov.indexOf(series) < 0 && series.indexOf(ov) < 0) return clean(series + '(' + ov + ')');
+    t = t.replace(/第\s*([零一二三四五六七八九十\d]+)\s*季/g, function (x, d) { return ' 第' + cn2num(d) + '季'; });
+    t = t.replace(/第\s*([零一二三四五六七八九十\d]+)\s*([集期话])/g, function (x, d, u) { return ' 第' + cn2num(d) + u; });
+    return clean(t);
   }
   function biEpNo() {
     var ov = txt('.bpx-player-top-title') || txt('[class*="player-top-title"]');
     var m = /第\s*([零一二三四五六七八九十\d]+)\s*[集期话]/.exec(ov) || /第\s*([零一二三四五六七八九十\d]+)\s*[集期话]/.exec(biTitle());
-    return m ? String(cn2num(m[1])) : '';
+    return m ? cn2num(m[1]) : '';
   }
   function biSeasonNo() {
     var m = /第\s*([零一二三四五六七八九十\d]+)\s*季/.exec(String(document.title || ''));
-    return m ? String(cn2num(m[1])) : '';
+    return m ? cn2num(m[1]) : '';
   }
-  function biScanNewest() {
-    try {
-      var es = performance.getEntriesByType('resource') || [];
-      for (var i = es.length - 1; i >= biFloor; i--) {
-        var nm = es[i].name || '';
-        if (nm.indexOf('.m4s') < 0) continue;
-        var m = /\/upgcxcode\/\d+\/\d+\/(\d+)\//.exec(nm);
-        if (m) { biNewest = m[1]; return biNewest; }
+  function biSeg(u) {
+    var one = String(u || '');
+    if (one.indexOf('/upgcxcode/') < 0 || one.indexOf('.m4s') < 0) return;
+    biSegs.push(one);
+    if (biSegs.length > 80) biSegs.shift();
+  }
+  function biSegPair() {
+    var v = '', a = '';
+    for (var i = 0; i < biSegs.length; i++) {
+      var nm = biSegs[i];
+      var mDir = /\/upgcxcode\/\d+\/\d+\/(\d+)\//.exec(nm);
+      if (!mDir) continue;
+      if (biCtx.cid && mDir[1] !== biCtx.cid) continue;
+      var mq = /-1-(\d+)\.m4s/.exec(nm);
+      if (!mq) continue;
+      if (/^(?:302|303)\d{2}$/.test(mq[1])) a = nm; else v = nm;
+    }
+    return { v: v, a: a };
+  }
+  function biAsk(id, cid) {
+    var u;
+    if (/^ep\d+$/.test(id)) u = 'https://api.bilibili.com/pgc/player/web/playurl?ep_id=' + id.slice(2) + '&qn=80&fnver=0&fnval=4048&fourk=1';
+    else if (cid) u = 'https://api.bilibili.com/x/player/playurl?bvid=' + id + '&cid=' + cid + '&qn=80&fnver=0&fnval=4048&fourk=1';
+    else return;
+    fetch(u, { credentials: 'include' }).then(function (r) { return r.json(); }).then(function (j) {
+      var d = (j && (j.result || j.data)) || {}, dash = d.dash || {};
+      var vs = dash.video || [], as = dash.audio || [];
+      if (!vs.length) return;
+      var best = vs[0], bq = -1;
+      for (var i = 0; i < vs.length; i++) {
+        var q = (vs[i].id || 0) * 1e6 + (vs[i].bandwidth || 0);
+        if (q > bq) { bq = q; best = vs[i]; }
       }
-    } catch (e) {}
-    return biNewest;
+      var au = as[0], ab = -1;
+      for (var k = 0; k < as.length; k++) { if ((as[k].bandwidth || 0) > ab) { ab = as[k].bandwidth || 0; au = as[k]; } }
+      biCtx.v = String(best.baseUrl || best.base_url || '');
+      biCtx.a = au ? String(au.baseUrl || au.base_url || '') : '';
+      biCtx.quality = String(best.id || '');
+      var ms = Number(d.timelength || 0);
+      biCtx.dur = ms > 0 ? Math.round(ms / 1000) : Math.round(Number(dash.duration || 0));
+      CH('②取址', { 站: 'bi', 身份: id, 档: biCtx.quality || '-', 时长: biCtx.dur + 's' });
+    }).catch(function (e) { console.log('[b0b] B站 播放信息请求失败：' + e); });
   }
-  function biNote(url) {
-    try {
-      var pu = new URL(url, location.href);
-      if (/^(data|api|s?\.?message)\.bilibili\.com$/.test(pu.hostname)) return;
-      if (pu.pathname.indexOf('/upgcxcode/') < 0) return;
-    } catch (e) { return; }
-    var m = /\/upgcxcode\/\d+\/\d+\/(\d+)\//.exec(url);
-    if (!m) return;
-    var cid = m[1];
-    var mq = /-1-(\d+)\.m4s/.exec(url);
-    if (!mq) return;
-    var isAudio = /^(?:302|303)\d{2}$/.test(mq[1]);
-    var newest = biScanNewest();
-    if (newest && newest !== cid) return;                 
-    if (!biPend[cid]) biPend[cid] = { v: '', a: '' };
-    var cur = biPend[cid];
-    if (isAudio) { if (cur.a === url) return; cur.a = url; }
-    else { if (cur.v === url) return; cur.v = url; }
-    if (!cur.v || !cur.a) return;                          
-    biSlot = {
-      cid: cid, v: cur.v, a: cur.a, title: biTitle(),
-      ep: biEpNo(), season: biSeasonNo(), dur: clipDur(), at: Date.now(), page: biPage()
-    };
-    CH('②槽变', { 站: 'bi', cid: cid, 集: biSlot.ep || '-', 季: biSlot.season || '-', 时长: biSlot.dur + 's', at: biSlot.at, 画面尾: '…' + cur.v.slice(-24), 声音尾: '…' + cur.a.slice(-20), 标题: String(biSlot.title).slice(0, 24) });
-    try { deliver(); } catch (e) {}
+  function biSync() {
+    var id = biId(), key = String(location.pathname);
+    if (!id || key === biCtx.key) return;
+    biCtx = { key: key, cid: '', dur: 0, v: '', a: '', quality: '' };
+    biSegs = [];
+    CH('①页面变化', { 站: 'bi', 身份: id });
+    if (/^ep\d+$/.test(id)) { biAsk(id, ''); return; }
+    fetch('https://api.bilibili.com/x/web-interface/view?bvid=' + id, { credentials: 'include' })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        var d = (j && j.data) || {};
+        biCtx.cid = String(d.cid || '');
+        biCtx.dur = parseInt(d.duration || 0, 10) || 0;
+        biAsk(id, biCtx.cid);
+      }).catch(function (e) { console.log('[b0b] B站 取编号失败：' + e); });
   }
   function biTick() {
-    try {
-      var es = performance.getEntriesByType('resource') || [];
-      var sig = String(location.href) + '|' + String(document.title || '');
-      if (sig !== biSig) {
-        CH('①页面变化', { 站: 'bi', 页: String(location.href).slice(-60), 标题: String(document.title || '').slice(0, 30) });
-        if (biNewest) biFloor = es.length;
-        biSig = sig; biPend = {};
-      }
-      for (var i = biFloor; i < es.length; i++) {
-        var u = es[i].name || '';
-        if (u.indexOf('.m4s') > 0 && u.indexOf('/upgcxcode/') > 0) biNote(u);
-      }
-    } catch (e) {}
+    if (site() !== 'bi' || !onPlayPage()) return;
+    biSync();
+    var id = biId();
+    if (!id) return;
+    var seg = biSegPair();
+    commit('bi', {
+      id: id, ep: biEpNo(), season: biSeasonNo(), title: biTitle(),
+      dur: biCtx.dur || pageDur(),
+      v: seg.v || biCtx.v, a: seg.a || biCtx.a, quality: biCtx.quality
+    });
   }
 
-  
-  var QQ_NAMES = { 'f322100': '臻彩MAX', 'f322104': '臻彩MAX', 'f322093': '4K', 'f322150': '臻彩1080P' };
-  var qqSlot = null;
+  /* 五、腾讯 */
 
-  function qqVid() {
-    var m = String(location.pathname).match(/\/x\/cover\/[a-z0-9]+\/([a-z0-9]+)\.html/i);
+  var QQ_TIERS = { 'f322100': '臻彩MAX', 'f322104': '臻彩MAX', 'f322093': '4K', 'f322150': '臻彩1080P' };
+  var qqCtx = { url: '', name: '', dur: 0 };
+
+  function qqId() {
+    var m = String(location.pathname).match(/\/x\/cover\/[A-Za-z0-9]+\/([A-Za-z0-9]+)\.html/i);
     return m ? m[1] : '';
   }
   function qqTitle() {
-    var tt = String(document.title || '');
-    var ov = txt('.player-play-title__title');
-    var sub = txt('.player-play-title__sub-title');
-    var series = (tt.split('_')[0] || '').trim();
+    var ov = txt('.player-play-title__title'), sub = txt('.player-play-title__sub-title');
+    var series = clean(String(document.title || '').split('_')[0]);
     if (/^\s*第\s*\d+\s*[集期话]/.test(series)) series = '';
     var mOv = /第\s*(\d{1,4})\s*([集期话])\s*[：:]?\s*(.*)$/.exec(ov);
     if (mOv) {
-      var ep = parseInt(mOv[1], 10) || 0, unit = mOv[2] || '集';
-      var epName = String(mOv[3] || '').trim() || sub;
-      if (!series) return ov;
+      var ep = parseInt(mOv[1], 10) || 0, unit = mOv[2] || '集', nm = clean(mOv[3]) || sub;
+      if (!series) return clean(ov);
       var out = series + (ep ? ' 第' + ep + unit : '');
-      if (epName && ep) out += ' ' + epName;
-      return out;
+      if (nm && ep) out += ' ' + nm;
+      return clean(out);
     }
-    if (ov) return sub && sub !== ov ? (ov + ' ' + sub) : ov;
-    return series || tt;
+    if (ov) return sub && sub !== ov ? clean(ov + ' ' + sub) : clean(ov);
+    return clean(series);
+  }
+  function qqEpNo() {
+    var m = /第\s*(\d{1,4})\s*[集期话]/.exec(txt('.player-play-title__title') || qqTitle());
+    return m ? String(parseInt(m[1], 10)) : '';
+  }
+  function qqPlaylistDur(url) {
+    if (!url) return;
+    fetch(url, { credentials: 'include' }).then(function (r) { return r.text(); }).then(function (t) {
+      var n = 0;
+      String(t).replace(/#EXTINF:([\d.]+)/g, function (m, d) { n += parseFloat(d) || 0; return m; });
+      if (n > 0) qqCtx.dur = Math.round(n);
+    }).catch(function () {});
   }
   function qqTake(u) {
-    if (!u) return;
-    var one = String(u).replace(/\\\//g, '/');
+    var one = String(u || '').replace(/\\\//g, '/');
     var m = one.match(/\.(f\d{6})\.(?:ts\.)?m3u8/);
     if (!m) return;
-    var tier = m[1];
-    var name = QQ_NAMES[tier];
-    if (!name) return;                                   
+    var name = QQ_TIERS[m[1]];
+    if (!name) return;
     if (/smtcdns|subtitle|\.vtt\./.test(one)) return;
-    var vid = qqVid();
-    if (!vid) return;                                    
-    if (qqSlot && qqSlot.url === one && qqSlot.vid === vid) return;
-    qqSlot = { vid: vid, url: one, tier: tier, name: name, title: qqTitle(), dur: clipDur(), at: Date.now() };
-    CH('②槽变', { 站: 'qq', 片号: vid, 档: name + '(' + tier + ')', 时长: qqSlot.dur + 's', at: qqSlot.at, 地址尾: '…' + one.slice(-26), 标题: String(qqSlot.title).slice(0, 24) });
-    try { deliver(); } catch (e) {}
+    if (!qqId()) return;
+    if (qqCtx.url === one) return;
+    qqCtx = { url: one, name: name, dur: 0 };
+    CH('②取址', { 站: 'qq', 档: name + '(' + m[1] + ')', 地址尾: '…' + one.slice(-24) });
+    qqPlaylistDur(one);
   }
   function qqTick() {
-    try {
-      var arr = (window.__qq18 && window.__qq18.hits && window.__qq18.hits()) || [];
-      for (var i = 0; i < Math.min(arr.length, 4); i++) qqTake(arr[i].url);
-    } catch (e) {}
+    if (site() !== 'qq' || !onPlayPage()) return;
+    var id = qqId();
+    if (!id) return;
+    commit('qq', {
+      id: id, ep: qqEpNo(), title: qqTitle(),
+      dur: qqCtx.dur || pageDur(),
+      v: qqCtx.url, a: qqCtx.url, quality: qqCtx.name
+    });
   }
 
-  
+  /* 六、爱奇艺 */
+
   var IQ_SALT = 'ulc2h7tka0mdrf2lkb1n6m6mulc2htbn';
-  var IQ_CONST = {
-    t: '0', us: '', kuid: '', kt: '0', vf: '', hevc: '0', qd: '0', r: '1', s: '1',
-    cp: '14', p: '1', pn: '0', p1: '1', q: '1', o: '0', cmd: '0'
-  };
-  var iqSlot = null;
+  var IQ_CONST = { t: '0', us: '', kuid: '', kt: '0', vf: '', hevc: '0', qd: '0', r: '1', s: '1', cp: '14', p: '1', pn: '0', p1: '1', q: '1', o: '0', cmd: '0' };
+  var iqEps = { aid: '', list: [] };
+  var iqBusy = false;
 
   function iqCookie(name) {
-    try {
-      var m = String(document.cookie || '').match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
-      return m ? decodeURIComponent(m[1]) : '';
-    } catch (e) { return ''; }
+    try { var m = String(document.cookie || '').match(new RegExp('(?:^|; )' + name + '=([^;]*)')); return m ? decodeURIComponent(m[1]) : ''; } catch (e) { return ''; }
   }
-  function iqHeadTitle() {
-    var t = txt('.iqp-title_left') || txt('[class*="play_title"]') || String(document.title || '');
-    return t.replace(/[-_]\s*爱奇艺.*$/, '').replace(/【.*?】/g, '').trim();
+  function iqTitle() {
+    var t = txt('.iqp-title_left') || txt('[class*="play_title"]') || clean(document.title);
+    return clean(t.replace(/[-_]\s*爱奇艺.*$/, '').replace(/【.*?】/g, ''));
   }
-  function iqHeadEp() {
-    var m = /第\s*(\d{1,4})\s*集/.exec(iqHeadTitle());
-    return m ? parseInt(m[1], 10) : 0;
-  }
-  function iqTvidNow() {
-    var ep = iqHeadEp();
-    var l = iqEpTable.list;
-    if (!ep) {
-      try {
-        var v = ((window.QiyiPlayerProphetData || {}).videoInfo) || {};
-        if (v.tvId) return String(v.tvId);
-      } catch (e) {}
-      return l.length ? String(l[0].tvId || l[0].tvid || '') : '';
-    }
-    if (!l.length) return '';
-    var it = l[ep - 1];
-    return it ? String(it.tvId || it.tvid || '') : '';
+  function iqEpNo() {
+    var m = /第\s*(\d{1,4})\s*集/.exec(iqTitle());
+    return m ? String(parseInt(m[1], 10)) : '';
   }
   function md5(s) {
     function rl(n, c) { return (n << c) | (n >>> (32 - c)); }
@@ -339,25 +358,24 @@
     }
     return out;
   }
-  function iqBuildUrl(tvid, bid) {
+  function iqUrl(tvid) {
     var sb = '';
     for (var k in IQ_CONST) sb += k + '=' + IQ_CONST[k] + '&';
-    sb += 'tvid=' + tvid + '&bid=' + bid + '&vid=&uid=' + iqCookie('P00003') + '&k_uid=' + iqCookie('QC005') +
-      '&dfp=' + (String(localStorage.getItem('__dfp') || '').split('@')[0]) + '&authKey=&tm=' + Date.now();
+    sb += 'tvid=' + tvid + '&bid=600&vid=&uid=' + iqCookie('P00003') + '&k_uid=' + iqCookie('QC005') +
+      '&dfp=' + String(localStorage.getItem('__dfp') || '').split('@')[0] + '&authKey=&tm=' + Date.now();
     var path = '/dash?' + sb;
     return 'https://cache.video.iqiyi.com' + path + '&vf=' + md5(path + IQ_SALT);
   }
   function iqParse(body) {
     var j = JSON.parse(body), data = j.data || {};
     var vlist = (data.vidl || [])[0] || {};
-    var pl = vlist._bl || (data.vidl && data.vidl[0] && data.vidl[0]._bl) || {};
-    var list = (pl ? (pl['2'] || pl) : null);
-    var best = null, bestN = 0, wh = '';
-    for (var k in (pl || {})) {
+    var pl = vlist._bl || {};
+    var best = null, bestN = 0;
+    for (var k in pl) {
       var cand = pl[k];
-      if (!cand || !cand.vs || !cand.vs.length) continue;
+      if (!cand || !cand.vs) continue;
       var n = String(cand.vs).length;
-      if (n > bestN) { bestN = n; best = cand; wh = k; }
+      if (n > bestN) { bestN = n; best = cand; }
     }
     if (!best) return null;
     var segs = 0, dur = 0;
@@ -365,38 +383,33 @@
       var parts = x.split('.');
       if (parts.length >= 3) { segs++; dur += parseInt(parts[2], 10) || 0; }
     });
-    return { playlist: String(best.vs), segs: segs, dur: dur || parseInt(best.duration || 0, 10) || 0, bid: parseInt(best.bid || 0, 10) || 0, wh: wh };
+    return { playlist: String(best.vs), segs: segs, dur: dur || parseInt(best.duration || 0, 10) || 0, bid: parseInt(best.bid || 0, 10) || 0 };
   }
-  var iqEpTable = { aid: '', list: [] };
-  function iqAlbumCands() {
+  function iqAlbumIds() {
     var out = [];
+    function add(v) { var s = String(v || ''); if (s && out.indexOf(s) < 0) out.push(s); }
     try {
       var vi = ((window.QiyiPlayerProphetData || {}).videoInfo) || {};
-      if (vi.albumId) out.push(String(vi.albumId));
-      if (vi.album && vi.album.id && out.indexOf(String(vi.album.id)) < 0) out.push(String(vi.album.id));
+      add(vi.albumId);
+      if (vi.album) add(vi.album.id);
     } catch (e) {}
     try {
       var es = performance.getEntriesByType('resource');
       for (var i = es.length - 1; i >= 0; i--) {
         var m = /[?&]album_id=(\d{6,})/.exec(es[i].name || '');
-        if (m && out.indexOf(m[1]) < 0) out.push(m[1]);
+        if (m) add(m[1]);
       }
-    } catch (e) {}
-    try {
-      var m2 = /"albumId"\s*:\s*"?(\d{6,})/.exec(document.documentElement.innerHTML);
-      if (m2 && out.indexOf(m2[1]) < 0) out.push(m2[1]);
-    } catch (e) {}
-    try { var d = window.QiyiPlayerProphetData || {}; if (d.albumId && out.indexOf(String(d.albumId)) < 0) out.push(String(d.albumId)); } catch (e) {}
+    } catch (e2) {}
+    try { add((window.QiyiPlayerProphetData || {}).albumId); } catch (e3) {}
     return out;
   }
   function iqSeriesName() {
-    var t = iqHeadTitle();
-    if (!/第\s*\d+\s*集/.test(t)) return t.replace(/\s+/g, ' ').trim();
-    return t.replace(/第\s*\d+\s*集[^]*$/, '').replace(/\s+/g, ' ').trim();
+    var t = iqTitle();
+    return /第\s*\d+\s*集/.test(t) ? clean(t.replace(/第\s*\d+\s*集[^]*$/, '')) : t;
   }
   function iqLoadEps() {
-    if (iqEpTable.list.length) return;
-    var cands = iqAlbumCands(), sn = iqSeriesName(), i = 0;
+    if (iqEps.list.length) return;
+    var cands = iqAlbumIds(), sn = iqSeriesName(), i = 0;
     function next() {
       if (i >= cands.length) return;
       var aid = cands[i++];
@@ -404,113 +417,107 @@
         .then(function (r) { return r.json(); })
         .then(function (j) {
           var list = (((j || {}).data || {}).epsodelist) || [];
-          var n0 = list.length ? String(list[0].name || '') : '';
-          if (n0 && sn && n0.indexOf(sn) === 0) {
-            iqEpTable = { aid: aid, list: list };
-            CH('②分集表', { 站: 'iq', aid: aid, 集数: list.length, 首集: n0.slice(0, 18) });
-          } else { next(); }
-        })
-        .catch(function () { next(); });
+          var n0 = list.length ? clean(list[0].name) : '';
+          if (n0 && sn && n0.indexOf(sn) === 0) { iqEps = { aid: aid, list: list }; CH('②分集表', { 站: 'iq', 集数: list.length }); }
+          else next();
+        }).catch(function () { next(); });
     }
     next();
   }
-
-  function iqGrab(tag) {
-    var ep = iqHeadEp();
-    var tvid = iqTvidNow();
-    if (!tvid) { console.log('[b0b] 爱奇艺：片号还没读到（第' + ep + '集）→ 等'); return; }
-    var url = iqBuildUrl(tvid, '600');
-    console.log('[b0b] 爱奇艺：要清单 ' + tag + '，第' + ep + '集，片号=' + tvid);
+  function iqTvid() {
+    var ep = parseInt(iqEpNo() || '0', 10), l = iqEps.list;
+    if (!ep) {
+      try {
+        var vi = ((window.QiyiPlayerProphetData || {}).videoInfo) || {};
+        if (vi.tvId) return String(vi.tvId);
+      } catch (e) {}
+      return l.length ? String(l[0].tvId || '') : '';
+    }
+    var it = l[ep - 1];
+    return it ? String(it.tvId || '') : '';
+  }
+  function iqGrab() {
+    if (iqBusy) return;
+    var tvid = iqTvid();
+    if (!tvid) return;
+    iqBusy = true;
     try {
       var x = new XMLHttpRequest();
-      x.open('GET', url, true);
+      x.open('GET', iqUrl(tvid), true);
       x.onload = function () {
+        iqBusy = false;
         try {
           var r = iqParse(x.responseText);
-          if (!r || !r.playlist) { console.log('[b0b] 爱奇艺：清单没拿到'); return; }
-          iqSlot = {
-            tvid: tvid, ep: ep, playlist: r.playlist, segs: r.segs, dur: r.dur,
-            bid: r.bid, wh: r.wh, title: iqHeadTitle(), at: Date.now()
-          };
-          CH('②槽变', { 站: 'iq', 片号: tvid, 集: ep, 段: r.segs, 时长: r.dur + 's', at: iqSlot.at, bid: r.bid, 标题: String(iqSlot.title).slice(0, 24) });
-          try { deliver(); } catch (e) {}
+          if (!r || !r.playlist) return;
+          commit('iq', {
+            id: tvid, ep: iqEpNo(), title: iqTitle(), dur: r.dur,
+            v: r.playlist, a: r.playlist, quality: r.bid === 600 ? '1080P' : ''
+          });
         } catch (e) { console.log('[b0b] 爱奇艺解析出错：' + e); }
       };
-      x.onerror = function () { console.log('[b0b] 爱奇艺：请求清单失败'); };
+      x.onerror = function () { iqBusy = false; };
       x.send();
-    } catch (e) { console.log('[b0b] 爱奇艺清单请求异常：' + e); }
+    } catch (e) { iqBusy = false; }
+  }
+  function iqTick() {
+    if (site() !== 'iq' || !onPlayPage()) return;
+    iqLoadEps();
+    iqGrab();
   }
 
-  
-  var FS_BTN_SEL = [
-    '.bpx-player-ctrl-full',                    
-    '.txp_btn_fullscreen', '.txp_btn_fscreen',  
-    '.iqp-btn-fullscreen', '.iqp-player-icon-fullscreen' 
-  ].join(',');
-  function whyNotReady() {
-    var s = site();
-    if (s === 'bi') {
-      if (!biSlot) return '槽空';
-      if (!biSlot.v || !biSlot.a) return '画面/声音未成对';
-      if (!biSlot.dur) return '时长还没读到';
-      var c = biScanNewest();
-      if (c && String(biSlot.cid) !== String(c)) return '槽里是上一片(cid ' + biSlot.cid + ' ≠ 页面 ' + c + ')';
-      return '就绪';
+  /* 七、爱奇艺网页高度 */
+
+  var IQ_BOX = ['#root', '[class*="app_App"]', '[class*="pages_pages"]', '[class*="pages_page__"]', '[class*="pages_container"]'];
+
+  function iqFixHeight() {
+    if (site() !== 'iq') return;
+    var H = window.innerHeight || document.documentElement.clientHeight || 0;
+    if (!H) return;
+    var n = 0, names = [];
+    for (var i = 0; i < IQ_BOX.length; i++) {
+      var els = document.querySelectorAll(IQ_BOX[i]);
+      for (var k = 0; k < els.length; k++) {
+        var el = els[k];
+        if (el.clientHeight >= H) continue;
+        el.style.height = H + 'px';
+        el.style.minHeight = H + 'px';
+        el.style.overflowY = 'auto';
+        n++;
+        if (names.length < 5) names.push(IQ_BOX[i]);
+      }
     }
-    if (s === 'qq') {
-      if (!qqSlot) return '槽空';
-      if (!qqSlot.url) return '地址未到';
-      if (!qqSlot.dur) return '时长还没读到';
-      if (qqSlot.vid && qqVid() && qqSlot.vid !== qqVid()) return '槽里是上一片';
-      return '就绪';
+    var all = document.body ? document.body.querySelectorAll('*') : [], m = 0;
+    for (var q = 0; q < all.length && m < 12; q++) {
+      var e2 = all[q];
+      if (e2.clientHeight > 8 || !e2.scrollHeight || e2.scrollHeight < H / 2) continue;
+      var st = window.getComputedStyle(e2);
+      if (st.display === 'none' || st.visibility === 'hidden') continue;
+      e2.style.height = H + 'px';
+      e2.style.minHeight = H + 'px';
+      m++;
+      if (names.length < 5) names.push(e2.className ? '.' + String(e2.className).split(' ')[0] : e2.tagName);
     }
-    if (s === 'iq') {
-      if (!iqSlot) return '槽空';
-      if (!iqSlot.playlist) return '清单未到';
-      if (!iqSlot.dur) return '时长还没读到';
-      if (iqSlot.ep && iqHeadEp() && Number(iqSlot.ep) !== Number(iqHeadEp())) return '槽里是上一集';
-      return '就绪';
-    }
-    return '不在三站';
+    if (n + m > 0) console.log('[链]⑦撑高 根链=' + n + ' 空高=' + m + ' ' + names.join(','));
   }
-  function slotReady() {
-    var s = site();
-    if (s === 'bi') {
-      if (!(biSlot && biSlot.v && biSlot.a && biSlot.dur)) return false;
-      var cidNow = biScanNewest();
-      if (cidNow) return String(biSlot.cid) === String(cidNow);
-      return true;
-    }
-    if (s === 'qq') {
-      if (!(qqSlot && qqSlot.url && qqSlot.dur)) return false;
-      var vidNow = qqVid();
-      if (vidNow) return String(qqSlot.vid) === String(vidNow);
-      return true;
-    }
-    if (s === 'iq') {
-      if (!(iqSlot && iqSlot.playlist && iqSlot.dur)) return false;
-      var epNow = iqHeadEp();
-      if (epNow) return String(iqSlot.ep) === String(epNow);
-      return true;
-    }
-    return false;
-  }
-  var fsBtnLast = null;
-  function markFullscreenBtn() {
+
+  /* 八、按钮灰/实 */
+
+  var FS_SEL = '.bpx-player-ctrl-full, .txp_btn_fullscreen, .txp_btn_fscreen, .iqp-btn-fullscreen, .iqp-player-icon-fullscreen';
+  var fsState = -1, fsPend = 0;
+
+  function markFs() {
     try {
-      var btns = document.querySelectorAll(FS_BTN_SEL);
-      var ok = slotReady();
-      if (fsBtnLast !== ok) {
-        fsBtnLast = ok;
-        CH(ok ? '③按钮变实' : '③按钮变灰', { 站: site(), 原因: ok ? '槽里这一份已就绪' : whyNotReady(), 按钮数: btns.length });
+      var ok = slotReady() ? 1 : 0, btns = document.querySelectorAll(FS_SEL);
+      if (ok !== fsState) {
+        if (fsPend !== ok) { fsPend = ok; return; }
+        fsState = ok;
+        CH(ok ? '③按钮变实' : '③按钮变灰', { 站: site(), 原因: ok ? '槽里这份齐了' : whyNotReady(), 按钮数: btns.length });
       }
       for (var i = 0; i < btns.length; i++) {
         var b = btns[i];
         if (ok) {
-          b.style.pointerEvents = '';
-          b.style.opacity = '';
-          b.removeAttribute('data-b0b-gray');
-        } else {
+          if (b.getAttribute('data-b0b-gray')) { b.style.pointerEvents = ''; b.style.opacity = ''; b.removeAttribute('data-b0b-gray'); }
+        } else if (b.getAttribute('data-b0b-gray') !== '1') {
           b.style.pointerEvents = 'none';
           b.style.opacity = '0.35';
           b.setAttribute('data-b0b-gray', '1');
@@ -518,114 +525,139 @@
       }
     } catch (e) {}
   }
-  
-  try {
-    var rawRFS = Element.prototype.requestFullscreen;
-    if (rawRFS) {
-      Element.prototype.requestFullscreen = function () {
-        if (!slotReady()) {
-          CH('④点全屏-拦下', { 站: site(), 原因: whyNotReady() });
-          return Promise.reject(new Error('b0b-slot-not-ready'));
-        }
-        CH('④点全屏-放行', { 站: site(), 时长: (payloadDurHint() || 0) + 's' });
-        return rawRFS.apply(this, arguments);
-      };
-    }
-  } catch (eRF) {}
-  setInterval(markFullscreenBtn, 700);
-
-  
-  var lastSent = '';
-  function payloadDurHint() {
-    var s = site();
-    if (s === 'bi') return biSlot && biSlot.dur;
-    if (s === 'qq') return qqSlot && qqSlot.dur;
-    if (s === 'iq') return iqSlot && iqSlot.dur;
-    return 0;
-  }
-  function deliver() {
-    var s = site(), payload = null;
-    if (s && !slotReady()) return;
-    
-    if (s === 'bi') {
-      var b = biSlot;                                            
-      if (!b || !b.v || !b.a || !b.dur) return;
-      payload = {
-        kind: 'play', site: 'bi', frame: location.href, title: b.title || biTitle(),
-        ep: String(b.ep || ''), season: String(b.season || ''),
-        durSec: b.dur || clipDur(), quality: '', width: 0, height: 0, cookie: '', at: b.at || 0,
-        streams: [{ id: 0, height: 0, width: 0, bw: 0, vcodec: 'h264', video: b.v, audio: b.a }]
-      };
-    } else if (s === 'qq') {
-      var q = qqSlot;
-      if (!q || !q.url || !q.dur) return;
-      payload = {
-        kind: 'play', site: 'qq', frame: location.href, title: q.title || qqTitle(),
-        ep: String(q.vid || ''), season: '', durSec: q.dur || clipDur(), at: q.at || 0,
-        quality: q.name || '', width: 0, height: 0, cookie: '',
-        streams: [{ id: 0, height: 0, width: 0, bw: 0, vcodec: 'h264', video: q.url, audio: '' }]
-      };
-    } else if (s === 'iq') {
-      var i = iqSlot;
-      if (!i || !i.playlist || !i.dur) return;
-      payload = {
-        kind: 'play', site: 'iq', frame: location.href, title: i.title || iqHeadTitle(),
-        ep: String(i.ep || ''), season: '', durSec: i.dur || clipDur(), at: i.at || 0,
-        quality: i.bid === 600 ? '1080P' : '', width: 0, height: 0, cookie: '',
-        needProxy: 1,
-        streams: [{ id: 0, height: 0, width: 0, bw: 0, vcodec: 'h264', video: '', audio: '', playlist: i.playlist, needProxy: 1 }]
-      };
-    }
-    if (!payload) return;
-    var sig = (payload.site || '') + '|' + String(payload.at || 0) + '|' +
-      (payload.streams[0].video || payload.streams[0].playlist || '').slice(-90);
-    if (sig === lastSent) return;                                 
-    lastSent = sig;
-    CH('⑤交原生', { 站: payload.site, 身份: (payload.ep || '?'), 集: payload.ep || '-', 时长: payload.durSec + 's', at: payload.at, 地址尾: '…' + String(payload.streams[0].video || payload.streams[0].playlist || '').slice(-26), 标题: String(payload.title || '').slice(0, 24) });
-    send(payload);
-    pausePage('已交付');
-  }
-
-  
-  hookNet(function (u) {
-    var st = site();
-    if (st === 'bi') { if (u.indexOf('.m4s') > 0) biNote(u); }
-    else if (st === 'qq') { if (u.indexOf('.m3u8') > 0) qqTake(u); }
-  });
-  setInterval(biTick, 1200);
-  setInterval(biScanNewest, 1500);
-  setInterval(qqTick, 1200);
-  setInterval(function () {
-    if (site() !== 'iq') return;
-    iqLoadEps();
-    iqGrab('定时');
-  }, 4000);
-  try { document.addEventListener('fullscreenchange', deliver); } catch (e) {}
-  try { window.addEventListener('b0b-full', deliver); } catch (e2) {}
-
-  
-  
-  window.__b0bClearSlots = function (why) {
-    biSlot = null; qqSlot = null; iqSlot = null; biPend = {}; lastSent = '';
-    
+  function guardFullscreen() {
     try {
-      if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen();
+      var raw = Element.prototype.requestFullscreen;
+      if (!raw || raw.__b0bGuarded) return;
+      var patched = function () {
+        if (!slotReady()) { CH('④点全屏-拦下', { 站: site(), 原因: whyNotReady() }); return Promise.reject(new Error('b0b-slot-not-ready')); }
+        CH('④点全屏-放行', { 站: site(), 时长: ((slot[site()] && slot[site()].dur) || 0) + 's' });
+        return raw.apply(this, arguments);
+      };
+      patched.__b0bGuarded = 1;
+      Element.prototype.requestFullscreen = patched;
     } catch (e) {}
+  }
+
+  /* 九、网络钩子 */
+
+  function qqPatchBody(b) {
+    try {
+      if (typeof b === 'string' && b.indexOf('vinfoparam') >= 0 && b.indexOf('spvvc') < 0) {
+        return b + '&spvvc=3&sphevcfps=52776560265087';
+      }
+    } catch (e) {}
+    return b;
+  }
+  function hookNet() {
+    try {
+      var oF = window.fetch;
+      if (oF && !oF.__b0bHooked) {
+        var nf = function () {
+          var a = [].slice.call(arguments);
+          try {
+            var u = (typeof a[0] === 'string') ? a[0] : (a[0] && a[0].url), us = String(u || '');
+            if (site() === 'qq') {
+              if (us.indexOf('qq.com') >= 0 && a[1] && typeof a[1].body === 'string') {
+                a[1] = Object.assign({}, a[1], { body: qqPatchBody(a[1].body) });
+              }
+              if (us.indexOf('.m3u8') > 0) qqTake(us);
+            } else if (site() === 'bi' && us.indexOf('.m4s') > 0) {
+              biSeg(us);
+            }
+          } catch (e) {}
+          return oF.apply(window, a);
+        };
+        nf.__b0bHooked = 1;
+        window.fetch = nf;
+      }
+    } catch (e) {}
+    try {
+      var oOpen = XMLHttpRequest.prototype.open, oSend = XMLHttpRequest.prototype.send;
+      if (oOpen && !oOpen.__b0bHooked) {
+        var np = function () { try { this.__b0bU = arguments[1]; } catch (e) {} return oOpen.apply(this, arguments); };
+        np.__b0bHooked = 1;
+        XMLHttpRequest.prototype.open = np;
+        XMLHttpRequest.prototype.send = function (b) {
+          try {
+            var u = String(this.__b0bU || '');
+            if (site() === 'qq') {
+              if (u.indexOf('qq.com') >= 0) b = qqPatchBody(b);
+              if (u.indexOf('.m3u8') > 0) this.addEventListener('load', function () { qqTake(u); });
+            } else if (site() === 'bi' && u.indexOf('.m4s') > 0) {
+              biSeg(u);
+            }
+          } catch (e2) {}
+          return oSend.call(this, b);
+        };
+      }
+    } catch (e3) {}
+  }
+
+  /* 十、定时与对外接口 */
+
+  function tick() {
+    var s = site();
+    if (!s) return;
+    if (s === 'bi') biTick();
+    else if (s === 'qq') qqTick();
+    else iqTick();
+    markFs();
+  }
+  function reportRect() {
+    try {
+      var v = mainVideo();
+      if (!v) return;
+      var r = v.getBoundingClientRect(), W = window.innerWidth || 1, H = window.innerHeight || 1;
+      var area = Math.max(0, r.width) * Math.max(0, r.height);
+      if (area <= 0) return;
+      send({
+        kind: 'rect', frame: location.href, cookie: String(document.cookie || ''), urls: [],
+        rect: {
+          x: r.left / W, y: r.top / H, w: r.width / W, h: r.height / H,
+          ar: v.videoHeight > 0 ? (v.videoWidth / v.videoHeight) : 0,
+          area: area / (W * H)
+        }
+      });
+    } catch (e) {}
+  }
+  function scanQQ() {
+    if (site() !== 'qq') return;
+    try {
+      var es = performance.getEntriesByType('resource');
+      for (var i = es.length - 1; i >= 0; i--) {
+        var nm = es[i].name || '';
+        if (nm.indexOf('.m3u8') > 0) { qqTake(nm); return; }
+      }
+    } catch (e) {}
+  }
+
+  window.__b0bClearSlots = function (why) {
+    slot = { bi: null, qq: null, iq: null };
+    lastSent = ''; fsState = -1; fsPend = 0;
+    biCtx = { key: '', cid: '', dur: 0, v: '', a: '', quality: '' }; biSegs = [];
+    qqCtx = { url: '', name: '', dur: 0 };
+    try { if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen(); } catch (e) {}
     try { window.__b0bRealFull = 0; } catch (e2) {}
     try { localStorage.removeItem('b0b:realFullAt'); } catch (e3) {}
-    CH('⑨回网页', { 原因: why || '-', 站: site(), 真全屏: realFull() ? '真' : '非真', 时刻: nowMs() });
-    markFullscreenBtn();
+    CH('⑨回网页', { 原因: why || '-', 站: site(), 时刻: Date.now() });
+    markFs();
   };
-  
   window.__b0bPageTitle = function () {
-    var s2 = site();
-    if (s2 === 'bi') return biTitle();
-    if (s2 === 'qq') return qqTitle();
-    if (s2 === 'iq') return iqHeadTitle();
-    return String(document.title || '');
+    var s = site();
+    if (s === 'bi') return biTitle();
+    if (s === 'qq') return qqTitle();
+    if (s === 'iq') return iqTitle();
+    return clean(document.title);
   };
-  
-  window.__b0bIqTakeover = function () { try { deliver(); } catch (e) {} };
+  window.__b0bIqTakeover = function () { deliver(); };
 
-  console.log('[b0b] 网页脚本已就绪（2026-10-24 重写版）：站=' + (site() || '其他'));
+  hookNet();
+  guardFullscreen();
+  setInterval(tick, 1200);
+  setInterval(markFs, 700);
+  setInterval(iqFixHeight, 800);
+  setInterval(reportRect, 400);
+  setInterval(scanQQ, 1500);
+  console.log('[b0b] 网页脚本已就绪（2026-10-25 版）：站=' + (site() || '其他'));
 })();
