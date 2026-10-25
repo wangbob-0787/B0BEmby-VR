@@ -411,7 +411,7 @@
   var IQ_SALT = 'ulc2h7tka0mdrf2lkb1n6m6mulc2htbn';
   var IQ_CONST = { t: '0', us: '', kuid: '', kt: '0', vf: '', hevc: '0', qd: '0', r: '1', s: '1', cp: '14', p: '1', pn: '0', p1: '1', q: '1', o: '0', cmd: '0' };
   var iqEps = { aid: '', list: [] };
-  var iqBusy = false;
+  var iqBusy = false, iqTvidHint = null;
   var iqDone = S.iqDone || (S.iqDone = { tvid: '', at: 0 });
 
   function iqCookie(name) {
@@ -536,7 +536,17 @@
     }
     next();
   }
+  /* 页面自己那条 dash 请求里带着 tvid，这是最可靠的片号来源；
+     页面有时不重发，那就先记下来备用。 */
+  function iqRememberTvid(u) {
+    try {
+      var m = /[?&]tvid=(\d+)/.exec(String(u || ''));
+      /* 带上当时的页面地址：换集/换片后旧片号不能再用 */
+      if (m) iqTvidHint = { t: m[1], p: String(location.pathname) };
+    } catch (e) {}
+  }
   function iqTvid() {
+    if (iqTvidHint && iqTvidHint.p === String(location.pathname)) return iqTvidHint.t;
     var ep = parseInt(iqEpNo() || '0', 10), l = iqEps.list;
     if (!ep) {
       try {
@@ -551,7 +561,10 @@
   function iqGrab() {
     if (iqBusy) return;
     var tvid = iqTvid();
-    if (!tvid) return;
+    if (!tvid) {
+      CH('②无片号', { 站: 'iq', 集: iqEpNo() || '-', 表长: iqEps.list.length, 提示: (iqTvidHint && iqTvidHint.t) || '-' });
+      return;
+    }
     if (iqDone.tvid === tvid && Date.now() - iqDone.at < 15000) return;
     iqBusy = true;
     try {
@@ -753,6 +766,8 @@
               if (us.indexOf('.m3u8') > 0) qqTake(us);
             } else if (site() === 'bi' && us.indexOf('.m4s') > 0) {
               biSeg(us);
+            } else if (site() === 'iq' && us.indexOf('/dash?') > 0) {
+              iqRememberTvid(us);
             }
           } catch (e) {}
           var pr = oF.apply(window, a);
@@ -796,6 +811,8 @@
               if (u.indexOf('.m3u8') > 0) this.addEventListener('load', function () { qqTake(u); });
             } else if (site() === 'bi' && u.indexOf('.m4s') > 0) {
               biSeg(u);
+            } else if (site() === 'iq' && u.indexOf('/dash?') > 0) {
+              iqRememberTvid(u);
             }
           } catch (e2) {}
           return oSend.call(this, b);
