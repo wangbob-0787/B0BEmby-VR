@@ -2029,6 +2029,12 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                             }
                                                             sb.toString().trim()
                                                         }.getOrNull().orEmpty()
+                                                        /*
+                                                         * 弹幕按 tvid 取（cmts.iqiyi.com/bullet/…），发起处读的是
+                                                         * IqiyiDash.tvid。这条路径以前没人给它赋值，所以爱奇艺接管后
+                                                         * 一条弹幕都进不来（父亲 2026-10-26 00:45 报）。
+                                                         */
+                                                        runCatching { com.xxxx.emby_vr.web.IqiyiDash.tvid = useTvid }
                                                         play.put("title", composed)
                                                         /* 集号与片号一起带上：控制条要显示"第几集"，弹幕也要按集去查 */
                                                         play.put("vid", useTvid)
