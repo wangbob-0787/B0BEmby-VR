@@ -380,7 +380,7 @@ private fun scrollFallbackJs(u: Float, v: Float, sy: Float): String {
         "while(n){if(n.scrollHeight>n.clientHeight+2){sc=n;break;}n=n.parentElement;}" +
         "if(!sc)sc=document.scrollingElement||document.documentElement;" +
         "var before=sc.scrollTop;" +
-        "setTimeout(function(){if(sc.scrollTop!==before)sc.scrollBy(0,d);},80);" +
+        "setTimeout(function(){if(sc.scrollTop===before)sc.scrollBy(0,d);},80);" +
         "})(${u},${v},${d});"
 }
 
