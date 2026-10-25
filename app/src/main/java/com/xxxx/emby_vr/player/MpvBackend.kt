@@ -424,6 +424,15 @@ class MpvBackend(private val context: Context) {
     private var surfaceAttached = false
 
     /**
+     * 当前接住的画面输出 Surface。
+     *
+     * vo 一旦激活，改 `android-surface-size` 只更新记录、不重建窗口——mpv 会继续按连接时的
+     * 旧尺寸输出（4K 2.35:1 的片就在这个点上被信箱进 16:9 的窗口）。要真正换窗口，
+     * 得把 wid 重新 attach 一次，vo 才会按新表面重建。
+     */
+    private var currentSurface: Surface? = null
+
+    /**
      * 把画面输出接到这块 Surface（背后是原生层 OES 纹理 → VR 银幕）。
      */
     /**
@@ -446,6 +455,7 @@ class MpvBackend(private val context: Context) {
 
     fun attachSurface(surface: Surface?) {
         ensureCreated(context)
+        currentSurface = surface
         try {
             if (surface == null) {
                 MPVLib.detachSurface()
@@ -698,20 +708,25 @@ class MpvBackend(private val context: Context) {
     }
 
     /**
-     * 告诉内核「画布多大」（父亲 2026-10-08）。
+     * 告诉内核「画布多大」。
      *
-     * 这是本轮画面变成纯色块的根因：我们的画面纹理从来没有设置过缓冲尺寸。
-     * 硬解时解码器自己按视频尺寸设，所以一直没暴露；换成内核自己渲染之后，
-     * 内核按默认尺寸画，屏幕上就是整屏拉伸的色块。
-     *
-     * 这里给内核报尺寸，配合 VrRenderer.setVideoBufferSize 给纹理设缓冲尺寸，
-     * 两边一致才画得对。
+     * 内核自己渲染时按这个尺寸决定输出窗口；不报的话它按默认尺寸画，
+     * 屏幕上就是整屏拉伸的色块。要与 VrRenderer.setVideoBufferSize 给纹理设的
+     * 缓冲尺寸一致，两边一致才画得对。
      */
     fun setSurfaceSize(w: Int, h: Int) {
         if (w < 64 || h < 64) return
         post {
             MPVLib.setPropertyString("android-surface-size", "${w}x$h")
-            Log.i(TAG, "内核画布尺寸 → ${w}x$h")
+            // vo 已激活时只设属性不会重建窗口，必须把 wid 摘掉再装回去，
+            // vo 才会按新表面重建输出窗口。detach 顺带释放上一次 attach 拿的引用。
+            val s = currentSurface
+            if (s != null) {
+                MPVLib.detachSurface()
+                MPVLib.attachSurface(s)
+            }
+            val dims = MPVLib.getPropertyString("osd-dimensions")
+            Log.i(TAG, "内核画布尺寸 → ${w}x$h（重建后 mpv 窗口=${dims}）")
         }
     }
 
