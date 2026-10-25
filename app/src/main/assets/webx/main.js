@@ -651,13 +651,11 @@
           var raw = Element.prototype[nm];
           if (!raw || raw.__b0bGuarded) return;
           var patched = function () {
-            var ok = slotReady();
-            CH(ok ? '④点全屏-放行' : '④点全屏-未齐', {
-              站: site(), 接口: nm,
-              时长: ((slot[site()] && slot[site()].dur) || 0) + 's',
-              原因: ok ? '槽里这份齐了' : whyNotReady()
-            });
-            /* 槽没齐也让它过：拦下来网页自己连全屏都进不去，按钮亮着却没反应最难用 */
+            if (!slotReady()) {
+              CH('④点全屏-拦下', { 站: site(), 接口: nm, 原因: whyNotReady() });
+              return Promise.reject(new Error('b0b-slot-not-ready'));
+            }
+            CH('④点全屏-放行', { 站: site(), 接口: nm, 时长: ((slot[site()] && slot[site()].dur) || 0) + 's' });
             return raw.apply(this, arguments);
           };
           patched.__b0bGuarded = 1;
