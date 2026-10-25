@@ -160,7 +160,7 @@
 
   var PAGES = {
     bi: /\/(video\/BV[0-9A-Za-z]+|bangumi\/play\/(?:ep|ss)\d+)/,
-    qq: /\/x\/cover\/[A-Za-z0-9]+\/[A-Za-z0-9]+\.html/,
+    qq: /\/x\/cover\/[A-Za-z0-9]+(?:\/[A-Za-z0-9]+)?\.html/,
     iq: /\/v_[A-Za-z0-9]+\.html/
   };
   function onPlayPage() {
@@ -355,7 +355,11 @@
 
   function qqId() {
     var m = String(location.pathname).match(/\/x\/cover\/[A-Za-z0-9]+\/([A-Za-z0-9]+)\.html/i);
-    return m ? m[1] : '';
+    if (m) return m[1];
+    /* 专辑页（/x/cover/<合集号>.html）地址里没有每集号，但清单文件名里带着：
+       形如 gzc_1000102_<每集号>.f322093.ts.m3u8，就用它当身份。 */
+    var f = /_([A-Za-z0-9]{6,})\.f\d{6}\.(?:ts\.)?m3u8/.exec(String(qqCtx.url || ''));
+    return f ? f[1] : '';
   }
   function qqTitle() {
     var ov = clean(txt('.player-play-title__title') || txt('.txp_title'));
@@ -384,7 +388,7 @@
     var name = QQ_TIERS[m[1]];
     if (!name) return;
     if (/smtcdns|subtitle|\.vtt\./.test(one)) return;
-    if (!qqId()) return;
+    /* 这里不能先要求身份：专辑页的身份正是从这条地址里取的，先要求就互相卡死 */
     if (qqCtx.url === one) return;
     qqCtx.url = one; qqCtx.name = name; qqCtx.dur = 0;
     CH('②取址', { 站: 'qq', 档: name + '(' + m[1] + ')', 地址尾: '…' + one.slice(-24) });
