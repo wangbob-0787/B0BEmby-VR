@@ -225,8 +225,15 @@
     CH('⑤交原生', { 站: s, 身份: c.id, 集: c.ep || '-', 时长: c.dur + 's', at: payload.at, 地址尾: '…' + String(c.v).slice(-24), 标题: String(c.title).slice(0, 24) });
     send(payload);
   }
+  /* 只认真地址：钩子偶尔会把夹着 JSON 片段的长串当成地址，
+     交给内核就是"时长对、进度永远 0:00"（父亲 2026-10-25 报）。 */
+  function looksUrl(u) {
+    var t = String(u || '');
+    return /^https?:\/\//.test(t) && t.indexOf('{') < 0 && t.indexOf('"') < 0 && t.indexOf(' ') < 0;
+  }
   function commit(s, cand) {
     if (!cand || !cand.id || !cand.dur || !cand.v || !cand.a) return;
+    if (!looksUrl(cand.v) || !looksUrl(cand.a)) return;
     if (isJunkTitle(cand.title || '')) return;   /* 频道页标题剥完只剩站点名或分类词，不入槽 */
     var fp = fingerprint(cand);
     if (slot[s] && slot[s].fp === fp) return;
