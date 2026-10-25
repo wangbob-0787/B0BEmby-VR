@@ -418,14 +418,40 @@
     try { var m = String(document.cookie || '').match(new RegExp('(?:^|; )' + name + '=([^;]*)')); return m ? decodeURIComponent(m[1]) : ''; } catch (e) { return ''; }
   }
   function iqTitle() {
-    var ov = clean(txt('.iqp-title_left') || txt('[class*="play_title"]') || txt('.player-title') || txt('.mediainfo_mediaTitle'));
+    var ov = clean(iqHeaderText());
     var series = fTitle(document.title) || fTitle(ov);
     var m = /第\s*([零一二三四五六七八九十\d]+)\s*([集话期])\s*[:：]?\s*(.*)$/.exec(ov);
     if (m) return buildTitle(series || clean(ov), cn2num(m[1]), m[2], '', m[3]);
     return isJunkTitle(series) ? '' : series;
   }
+  /*
+   * 播放窗口左上角那行字（"剧名 第N集 集名"）。类名会改，所以按几个候选类找，
+   * 再退一步：在画面左上角区域里找带"第N集"的元素（父亲 2026-10-26 指出那里一定有）。
+   */
+  function iqHeaderText() {
+    var sels = ['.iqp-title_left', '[class*="webHead_title"]', '[class*="play_title"]',
+      '.player-title', '.mediainfo_mediaTitle', 'h1'];
+    for (var i = 0; i < sels.length; i++) {
+      var t = txt(sels[i]);
+      if (t) return t;
+    }
+    try {
+      var all = document.querySelectorAll('*'), H = window.innerHeight || 720;
+      for (var k = 0; k < all.length; k++) {
+        var e = all[k];
+        if (e.children.length) continue;
+        var t2 = clean(e.textContent || '');
+        if (t2.length < 4 || t2.length > 60) continue;
+        if (!/第\s*[零一二三四五六七八九十\d]+\s*[集话期]/.test(t2)) continue;
+        var r = e.getBoundingClientRect();
+        if (r.top >= 0 && r.top < H * 0.35 && r.left < (window.innerWidth || 1280) * 0.6) return t2;
+      }
+    } catch (e3) {}
+    return '';
+  }
   function iqEpNo() {
-    var m = /第\s*([零一二三四五六七八九十\d]+)\s*[集话期]/.exec(clean(txt('.iqp-title_left') || txt('[class*="play_title"]') || txt('.player-title')));
+    var t = clean(iqHeaderText() + ' ' + String(document.title || ''));
+    var m = /第\s*([零一二三四五六七八九十\d]+)\s*[集话期]/.exec(t);
     return m ? cn2num(m[1]) : '';
   }
   function md5(s) {
