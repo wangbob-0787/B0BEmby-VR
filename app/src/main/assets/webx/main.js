@@ -378,7 +378,7 @@
     }).catch(function () {});
   }
   function qqTake(u) {
-    var one = String(u || '').replace(/\\\//g, '/');
+    var one = String(u || '').replace(/\\\//g, '/').replace(/\\+$/, '');
     var m = one.match(/\.(f\d{6})\.(?:ts\.)?m3u8/);
     if (!m) return;
     var name = QQ_TIERS[m[1]];
@@ -693,6 +693,10 @@
       var s = String(t || ''), m, n = 0;
       var re = /[^"'\s]+?\.f\d{6}\.(?:ts\.)?m3u8[^"'\s]*/g;
       while ((m = re.exec(s))) { n++; qqTake(m[0]); }
+      /* 时长就在这条回复里（td 是秒）。清单地址是跨域的，脚本自己再取一次会被挡，
+         所以时长必须从这条回复拿，否则槽永远缺"时长"这一格、按钮一直灰。 */
+      var td = /"(?:td|duration)"\s*:\s*(\d{2,6})/.exec(s);
+      if (td && Number(td[1]) > 60 && !qqCtx.dur) qqCtx.dur = Number(td[1]);
       /* 抠不到就是"只补了能力位、没抓到地址"那种空转，必须留下回复的样子给人看 */
       if (!n) {
         var i = s.indexOf('m3u8');
