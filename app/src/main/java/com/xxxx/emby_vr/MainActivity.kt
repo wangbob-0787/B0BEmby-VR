@@ -2666,8 +2666,20 @@ class MainActivity : ComponentActivity() {
         val lineH = fs * 1.35f
         val topMargin = 15f
         val spanMs = 8000L
-        val gapMs = (spanMs * 0.35).toLong()
-        val laneY = floatArrayOf(topMargin, topMargin + lineH)
+        /*
+         * 行数与间距按量走，不能固定 2 行。
+         * 固定 2 行 + 2.8 秒间隔时，一部电影近两千条弹幕会被"行满丢弃"扔掉 99%
+         * —— 日志里就是"保留 6 条，行满丢弃 1854 条"，画面上等于没有弹幕
+         * （父亲 2026-10-26 01:07 现场）。
+         */
+        val lanes = when {
+            parsed.size >= 1500 -> 8
+            parsed.size >= 700 -> 6
+            parsed.size >= 250 -> 4
+            else -> 2
+        }
+        val gapMs = (spanMs * 0.15).toLong()
+        val laneY = FloatArray(lanes) { topMargin + it * lineH }
         val laneFree = LongArray(laneY.size)
         var dropped = 0
         val items = ArrayList<com.xxxx.emby_vr.danmaku.DanmakuItem>()
