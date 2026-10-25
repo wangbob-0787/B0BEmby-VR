@@ -1059,11 +1059,10 @@ private object WebRuntime {
                 if (!bridgeAspectCleared) {
                     bridgeAspectCleared = true
                     /* 按实际比例裁剪，不拉伸（2026-10-25 父亲报：网页视频铺满银幕时直接拉伸） */
-                    val aspect = 16f / 9f  /* 默认 16:9，后续扫描到实际比例再更新 */
-                    com.xxxx.emby_vr.vr.VrNative.setWebVideoRect(0f, 0f, 1f, 1f, aspect)
+                    com.xxxx.emby_vr.vr.VrNative.setWebVideoRect(0f, 0f, 1f, 1f, 0f)  /* 0 = 不裁剪，等扫描到实际比例 */
                     android.util.Log.i(
                         "B0BEmbyVR",
-                        "网页显示按 16:9 比例裁剪（不拉伸）",
+                        "网页显示等扫描到实际比例再裁剪（不拉伸）",
                     )
                 }
                 val b = best
@@ -1099,7 +1098,8 @@ private object WebRuntime {
                                     "，画面块 " + "%.3f".format(b[2]) + "x" + "%.3f".format(b[3]) +
                                     "，位置 " + "%.3f".format(b[0]) + "," + "%.3f".format(b[1]),
                             )
-                            /* 不再下发比例（父亲 08:09）—— 上面的日志仅作排查记录 */
+                            /* 下发实际比例，按实际裁剪不拉伸（2026-10-25 父亲报：网页视频铺满银幕时直接拉伸） */
+                            com.xxxx.emby_vr.vr.VrNative.setWebVideoRect(0f, 0f, 1f, 1f, b[4])
                         } else {
                             android.util.Log.i("B0BEmbyVR", "网页视频画面：没有了（银幕本来就不跟着变）")
                         }
