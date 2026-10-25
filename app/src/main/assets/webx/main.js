@@ -641,17 +641,30 @@
     } catch (e) {}
   }
   function guardFullscreen() {
-    try {
-      var raw = Element.prototype.requestFullscreen;
-      if (!raw || raw.__b0bGuarded) return;
-      var patched = function () {
-        if (!slotReady()) { CH('④点全屏-拦下', { 站: site(), 原因: whyNotReady() }); return Promise.reject(new Error('b0b-slot-not-ready')); }
-        CH('④点全屏-放行', { 站: site(), 时长: ((slot[site()] && slot[site()].dur) || 0) + 's' });
-        return raw.apply(this, arguments);
-      };
-      patched.__b0bGuarded = 1;
-      Element.prototype.requestFullscreen = patched;
-    } catch (e) {}
+    /* 播放器不只调标准接口：爱奇艺这类常走带前缀的那几个，
+       只包 requestFullscreen 等于没包 —— 它的调用照样出去、我们一条日志都没有，
+       表现就是"按钮形状变了、画面没全屏"（父亲 2026-10-25 报）。 */
+    var NAMES = ['requestFullscreen', 'webkitRequestFullscreen', 'mozRequestFullScreen', 'msRequestFullscreen'];
+    for (var i = 0; i < NAMES.length; i++) {
+      (function (nm) {
+        try {
+          var raw = Element.prototype[nm];
+          if (!raw || raw.__b0bGuarded) return;
+          var patched = function () {
+            var ok = slotReady();
+            CH(ok ? '④点全屏-放行' : '④点全屏-未齐', {
+              站: site(), 接口: nm,
+              时长: ((slot[site()] && slot[site()].dur) || 0) + 's',
+              原因: ok ? '槽里这份齐了' : whyNotReady()
+            });
+            /* 槽没齐也让它过：拦下来网页自己连全屏都进不去，按钮亮着却没反应最难用 */
+            return raw.apply(this, arguments);
+          };
+          patched.__b0bGuarded = 1;
+          Element.prototype[nm] = patched;
+        } catch (e) {}
+      })(NAMES[i]);
+    }
   }
 
   /* 九、网络钩子 */
