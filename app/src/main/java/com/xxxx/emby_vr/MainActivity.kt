@@ -3545,6 +3545,25 @@ class MainActivity : ComponentActivity() {
                     runCatching {
                         mpvBackend?.videoSize()?.let { (vw, vh) ->
                             if (vw > 0 && vh > 0) {
+                                /*
+                                 * 画布必须跟着真实尺寸一起改。
+                                 * 只改银幕比例、画布还停在 1920x1080 时，mpv 会在 16:9 的画布
+                                 * 里给 1920x800 的画面上下补黑边，再整块贴到 2.4:1 的银幕上 ——
+                                 * 看着就是被拉宽/拉扁（父亲 2026-10-26 00:15 现场：比例改了、画布没改）。
+                                 */
+                                val cap = 1920
+                                val bw = if (vw > cap) cap else vw
+                                val bh = (vh.toLong() * bw / vw).toInt().coerceAtLeast(64)
+                                if (bw != webCanvasW || bh != webCanvasH) {
+                                    webCanvasW = bw
+                                    webCanvasH = bh
+                                    runCatching { renderer.setVideoBufferSize(bw, bh) }
+                                    runCatching { mpvBackend?.setSurfaceSize(bw, bh) }
+                                    android.util.Log.i(
+                                        TAG,
+                                        "起播兜底纠正：画布跟着真实尺寸重设 → ${bw}x$bh（内核报 ${vw}x$vh）",
+                                    )
+                                }
                                 applyScreenAspect(
                                     vw.toFloat() / vh.toFloat(),
                                     "起播兜底纠正（内核报 ${vw}x$vh）",
