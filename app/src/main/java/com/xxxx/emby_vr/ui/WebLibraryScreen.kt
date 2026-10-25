@@ -830,6 +830,16 @@ private object WebRuntime {
      * mpv 打开它就是一个普通 HLS，整集时长、拖动、逐段取流全由内核自己处理。
      * 文件名里带上档位与段号范围 —— 客户端的换源去重是按地址尾部判的，文件名不同才算新内容。
      */
+    /**
+     * 立刻播放这一份（不走接收槽）。
+     *
+     * 爱奇艺的片单是我们自己在"真全屏"处理里签出来的，而那次跳变已经被这次处理消耗掉；
+     * 再丢进接收槽就永远等不到下一次跳变 —— 表现为"签成功、也交付了，画面却不动"。
+     */
+    fun playNow(obj: org.json.JSONObject) {
+        onBridgeHls(obj)
+    }
+
     private fun onBridgeHls(obj: org.json.JSONObject) {
         val text = obj.optString("text")
         if (text.isBlank()) return
@@ -1994,7 +2004,14 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                             "爱奇艺自取：交整集片单（" + res.segs + " 段，" +
                                                                 (if (res.bid >= 600) "1080P" else "720P") + "）",
                                                         )
-                                                        WebRuntime.acceptFromPage(play.toString())
+                                                        /*
+                                                         * 直接开播，不要再进"接收槽"等下一次跳变：
+                                                         * 这一份是我们自己在"真全屏"处理里签出来的，
+                                                         * 而那次跳变已经被这次处理消耗掉了；再丢进槽里等，
+                                                         * 就永远等不到下一次，表现为"签成功、也交付了，但画面没动"
+                                                         * （父亲 2026-10-25 23:32 实测）。
+                                                         */
+                                                        com.xxxx.emby_vr.ui.WebRuntime.playNow(play)
                                                     }
                                                 } else {
                                                     /* 自取失败就让网页继续放，不再去要页面那份 6 分钟地址（父亲 07:36 定） */
