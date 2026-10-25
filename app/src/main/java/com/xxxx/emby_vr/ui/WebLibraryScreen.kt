@@ -400,7 +400,9 @@ private fun askPageIdentity(w: WebView?): Pair<String, String> {
         runCatching {
             w.evaluateJavascript(
                 "(function(){try{var pd=window.QiyiPlayerProphetData||{};" +
-                    "var t=String(pd.tvid||pd.tvId||(pd.videoInfo||{}).tvId||'');" +
+                    /* 页面脚本那份更新（取自页面自己的取流请求），优先用它 */
+                    "var j=String((window.__b0bIqTvid&&window.__b0bIqTvid())||'');" +
+                    "var t=j||String(pd.tvid||pd.tvId||(pd.videoInfo||{}).tvId||'');" +
                     "var m=/\\/v_([0-9A-Za-z]+)/.exec(location.pathname||'');" +
                     "return {t:t,v:m?m[1]:''};}catch(e){return {};}})()"
             ) { raw ->

@@ -909,6 +909,9 @@
     return clean(document.title);
   };
   window.__b0bIqTakeover = function () { deliver(); };
+  /* 原生要片号时优先问这里：这里的号来自页面自己那条 dash 请求、并按页面地址防串集，
+     比 QiyiPlayerProphetData 那个常常慢一拍的字段新（父亲 2026-10-25 报切集后一直等待）。 */
+  window.__b0bIqTvid = function () { try { return String(iqTvid() || ''); } catch (e) { return ''; } };
 
   hookNet();
   guardFullscreen();
