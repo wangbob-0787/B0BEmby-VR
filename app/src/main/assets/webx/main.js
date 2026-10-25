@@ -43,14 +43,117 @@
   function cn2num(s) {
     var str = String(s);
     if (/^\d+$/.test(str)) return String(parseInt(str, 10));
-    var t = 0, cur = 0;
+    var n = 0, cur = 0, c;
     for (var i = 0; i < str.length; i++) {
-      var c = str.charAt(i);
+      c = str.charAt(i);
       if (CN[c] !== undefined) { cur = CN[c]; continue; }
-      if (c === '十') { t += (cur || 1) * 10; cur = 0; continue; }
+      if (c === '十') { n += (cur || 1) * 10; cur = 0; continue; }
+      if (c === '百') { n += (cur || 1) * 100; cur = 0; continue; }
       return str;
     }
-    return String(t + cur);
+    return String(n + cur);
+  }
+
+  /* 标题过滤（三站共用；口径见 docs/slot-spec-2026-10-25/3-网页侧逻辑.md 第 3 节）
+
+     一条页面标题常叠着多层尾巴：站点后缀、分类词、画质、版本、语言、括号注解。
+     所以按词表剥，剥到剥不动为止，再收尾。分隔符只认这几个：- _ | · — 以及空格。 */
+
+  var T_SEP = /[-_|·—]/;
+  var T_WORDS = [
+    /* 站点名 */ '哔哩哔哩', 'bilibili', '腾讯视频', '爱奇艺', '优酷', '芒果tv',
+    /* 分类词 */ '电视剧', '连续剧', '电影', '综艺', '动漫', '纪录片', '番剧', '国创', '少儿', '影视', '全集',
+    /* 画质与版本 */ '杜比视界', '1080p', '4k', 'hdr', '高清', '超清', '蓝光', '完整版', '正版', '独播', '独家', '加长版', '会员版', '免费', 'vip',
+    /* 花絮类 */ '预告', '花絮', '片段', '正片', '抢先看', '特辑', '彩蛋',
+    /* 语言版本 */ '普通话', '粤语', '潮汕话', '客家话', '闽南语', '国语', '原声', '中配', '台配', '日语', '英语'
+  ];
+  var T_LANG = ['普通话', '粤语', '潮汕话', '客家话', '闽南语', '国语', '原声', '中配', '台配', '日语', '英语'];
+  var T_JUNK = ['选集', '选集列表', '播放列表', '相关推荐', '猜你喜欢'];
+  /* 营销尾巴是一整段：画质 + 版本 + 视频 + 在线观看，中间没有分隔符 */
+  var T_TAIL = /^(高清|超清|蓝光|4k|1080p|hdr|杜比视界)?(完整版|正版|独播|独家|免费|vip|会员版|加长版)?(视频)?(在线观看|在线播放|观看地址|观看|播放)版?$/;
+
+  function lk(s) { return clean(String(s || '')).toLowerCase(); }
+
+  /* 最后一段是垃圾尾巴：词表里的一个词、词加「版」、营销尾巴整段，或若干词表词连在一起（如「电视剧全集」） */
+  function isWord(s) {
+    var x = lk(s), left, hit, i;
+    if (!x || x.length > 24) return false;
+    if (T_TAIL.test(x)) return true;
+    for (i = 0; i < T_WORDS.length; i++) {
+      if (x === T_WORDS[i] || x === T_WORDS[i] + '版') return true;
+    }
+    left = x;
+    while (left) {
+      hit = '';
+      for (i = 0; i < T_WORDS.length; i++) {
+        if (left.indexOf(T_WORDS[i] + '版') === 0 && T_WORDS[i].length + 1 > hit.length) hit = T_WORDS[i] + '版';
+        else if (left.indexOf(T_WORDS[i]) === 0 && T_WORDS[i].length > hit.length) hit = T_WORDS[i];
+      }
+      if (!hit) return false;
+      left = left.slice(hit.length);
+    }
+    return true;
+  }
+
+  /* 剥一次：结尾是括号注解、或最后一段是词表里的词，就砍掉。剥不动返回 null */
+  function cutTail(t) {
+    var s = clean(t), p, pre, last = -1, i;
+    if (!s) return null;
+    p = /\s*[（(][^（）()]{1,16}[）)]\s*$/.exec(s);
+    if (p) {
+      pre = clean(s.slice(0, p.index));
+      if (pre.length >= 2) return pre;
+    }
+    for (i = 0; i < s.length; i++) { if (T_SEP.test(s.charAt(i))) last = i; }
+    if (last < 0) return null;
+    var left = clean(s.slice(0, last)), right = clean(s.slice(last).replace(/^[-_|·—\s]+/, ''));
+    if (left.length < 2 || !isWord(right)) return null;
+    return left;
+  }
+
+  /* 循环剥尾，一轮剥不动就停，上限 6 轮；再收尾三步 */
+  function fTitle(t) {
+    var s = clean(t), n = 0, c;
+    while (n++ < 6) { c = cutTail(s); if (c === null) break; s = c; }
+    s = s.replace(/\[[^\]]{0,4}\]|【[^】]{0,4}】|[（）()\[\]【】]{2}/g, '');
+    s = clean(s).replace(/\s{2,}/g, ' ').replace(/^[-_|·—\s]+|[-_|·—\s]+$/g, '');
+    return s.length > 80 ? s.slice(0, 80) : s;
+  }
+
+  /* 整段不要、退回下一个取值来源的四条。
+     第一条加了「不含中日文汉字」的例外：「刺马」「霸王」这类两字片名要留住。 */
+  function isJunkTitle(t) {
+    var s = lk(t), m;
+    if (s.length <= 2 && !/[\u4e00-\u9fa5]/.test(s)) return true;
+    if (/^第\s*[零一二三四五六七八九十\d]+\s*[集话期]/.test(s)) return true;
+    m = /([\u4e00-\u9fa5a-z]+)版\s*$/.exec(s);
+    if (m && T_LANG.indexOf(m[1]) >= 0) return true;
+    return T_JUNK.indexOf(s) >= 0;
+  }
+
+  /* 拼装：单集片只给片名；分集片「剧名 第X季 第X集 集名」。季号抽不到就不写季。
+     剧名里若已含集名先摘掉，否则会拼成「剧名 集名 第X集 集名」。 */
+  function buildTitle(series, ep, unit, season, epName) {
+    var s = fTitle(series);
+    if (isJunkTitle(s)) return '';
+    if (!ep) return s;
+    var nm = fTitle(epName);
+    var keep = nm && nm.length > 1 && nm.length <= 40 && nm.indexOf('第') < 0;
+    s = s.replace(/第\s*[零一二三四五六七八九十\d]+\s*[季集话期]/g, ' ');
+    if (keep) s = s.replace(nm, ' ');
+    s = clean(s).replace(/\s{2,}/g, ' ');
+    if (s.length < 2) return s;
+    var out = s + (season ? ' 第' + cn2num(season) + '季' : '') + ' 第' + cn2num(ep) + (unit || '集');
+    if (keep) out += ' ' + nm;
+    return out.length > 80 ? out.slice(0, 80) : out;
+  }
+
+  /* 页面当前画幅比：起播前就交给原生，不必等内核解出第一帧 */
+  function pageAr() {
+    try {
+      var v = mainVideo();
+      return v && v.videoWidth > 0 ? v.videoWidth / v.videoHeight : 0;
+    } catch (e) { return 0; }
   }
 
   /* 二、播放页判据 */
@@ -106,15 +209,20 @@
       kind: 'play', site: s, frame: location.href,
       title: c.title, ep: String(c.ep || ''), season: String(c.season || ''),
       durSec: c.dur, quality: c.quality || '', cookie: '', at: c.at,
+      ar: c.ar || 0,
       streams: streamsOf(s, c)
     };
+    /* 弹幕编号：B站 走 cid、腾讯走 vid。爱奇艺的片号在取流时就记下了，不从交付里拿 */
     if (s === 'iq') payload.needProxy = 1;
+    else if (s === 'qq') payload.vid = c.id;
+    else if (c.cid) payload.cid = String(c.cid);
     CH('⑤交原生', { 站: s, 身份: c.id, 集: c.ep || '-', 时长: c.dur + 's', at: payload.at, 地址尾: '…' + String(c.v).slice(-24), 标题: String(c.title).slice(0, 24) });
     send(payload);
     pausePage('已交付');
   }
   function commit(s, cand) {
-    if (!cand || !cand.id || !cand.title || !cand.dur || !cand.v || !cand.a) return;
+    if (!cand || !cand.id || !cand.dur || !cand.v || !cand.a) return;
+    if (isJunkTitle(cand.title || '')) return;   /* 频道页标题剥完只剩站点名或分类词，不入槽 */
     var fp = fingerprint(cand);
     if (slot[s] && slot[s].fp === fp) return;
     cand.fp = fp; cand.at = Date.now();
@@ -136,30 +244,14 @@
     return m ? m[1] : '';
   }
   function biTitle() {
-    var t = clean(document.title).replace(/\s*[_|]\s*哔哩哔哩\s*[_|]?\s*bilibili\s*$/i, '');
-    var cut = t.search(/[-_|]\s*(电视剧|电影|纪录片|番剧|综艺|国创|动画|全集|高清|正版|独家)\s*$/);
-    if (cut > 0) t = t.slice(0, cut).trim();
-    var seasonM = /第\s*([零一二三四五六七八九十\d]+)\s*季/.exec(t);
-    var series = clean(t.replace(/第\s*[零一二三四五六七八九十\d]+\s*[季集期话][^-_|]*/g, '')) || t;
-    var ov = txt('.bpx-player-top-title') || txt('[class*="player-top-title"]');
-    var mOv = /第\s*([零一二三四五六七八九十\d]+)\s*([集期话])\s*(.*)$/.exec(ov);
-    if (mOv) {
-      var out = series;
-      if (seasonM) out += ' 第' + cn2num(seasonM[1]) + '季';
-      out += ' 第' + cn2num(mOv[1]) + mOv[2];
-      var nm = clean(mOv[3]);
-      if (nm) out += ' ' + nm;
-      return clean(out);
-    }
-    if (/^(正片|预告|花絮|片段|特辑|彩蛋)$/.test(ov)) ov = '';
-    if (ov && series && ov.indexOf(series) < 0 && series.indexOf(ov) < 0) return clean(series + '(' + ov + ')');
-    t = t.replace(/第\s*([零一二三四五六七八九十\d]+)\s*季/g, function (x, d) { return ' 第' + cn2num(d) + '季'; });
-    t = t.replace(/第\s*([零一二三四五六七八九十\d]+)\s*([集期话])/g, function (x, d, u) { return ' 第' + cn2num(d) + u; });
-    return clean(t);
+    var ov = clean(txt('.bpx-player-top-title') || txt('[class*="player-top-title"]'));
+    var series = fTitle(document.title) || fTitle(txt('.video-title') || txt('h1.video-title'));
+    var m = /第\s*([零一二三四五六七八九十\d]+)\s*([集话期])\s*[:：]?\s*(.*)$/.exec(ov);
+    if (m) return buildTitle(series || clean(ov), cn2num(m[1]), m[2], biSeasonNo(), m[3]);
+    return isJunkTitle(series) ? '' : series;
   }
   function biEpNo() {
-    var ov = txt('.bpx-player-top-title') || txt('[class*="player-top-title"]');
-    var m = /第\s*([零一二三四五六七八九十\d]+)\s*[集期话]/.exec(ov) || /第\s*([零一二三四五六七八九十\d]+)\s*[集期话]/.exec(biTitle());
+    var m = /第\s*([零一二三四五六七八九十\d]+)\s*[集话期]/.exec(clean(txt('.bpx-player-top-title') || txt('[class*="player-top-title"]')));
     return m ? cn2num(m[1]) : '';
   }
   function biSeasonNo() {
@@ -234,7 +326,8 @@
     commit('bi', {
       id: id, ep: biEpNo(), season: biSeasonNo(), title: biTitle(),
       dur: biCtx.dur || pageDur(),
-      v: seg.v || biCtx.v, a: seg.a || biCtx.a, quality: biCtx.quality
+      v: seg.v || biCtx.v, a: seg.a || biCtx.a, quality: biCtx.quality,
+      cid: biCtx.cid, ar: pageAr()
     });
   }
 
@@ -248,23 +341,16 @@
     return m ? m[1] : '';
   }
   function qqTitle() {
-    var ov = txt('.player-play-title__title'), sub = txt('.player-play-title__sub-title');
-    var series = clean(String(document.title || '').split('_')[0]);
-    if (/^\s*第\s*\d+\s*[集期话]/.test(series)) series = '';
-    var mOv = /第\s*(\d{1,4})\s*([集期话])\s*[：:]?\s*(.*)$/.exec(ov);
-    if (mOv) {
-      var ep = parseInt(mOv[1], 10) || 0, unit = mOv[2] || '集', nm = clean(mOv[3]) || sub;
-      if (!series) return clean(ov);
-      var out = series + (ep ? ' 第' + ep + unit : '');
-      if (nm && ep) out += ' ' + nm;
-      return clean(out);
-    }
-    if (ov) return sub && sub !== ov ? clean(ov + ' ' + sub) : clean(ov);
-    return clean(series);
+    var ov = clean(txt('.player-play-title__title') || txt('.txp_title'));
+    var sub = clean(txt('.player-play-title__sub-title'));
+    var series = fTitle(document.title) || fTitle(ov);
+    var m = /第\s*([零一二三四五六七八九十\d]+)\s*([集话期])\s*[:：]?\s*(.*)$/.exec(ov);
+    if (m) return buildTitle(series || clean(ov), cn2num(m[1]), m[2], '', m[3] || sub);
+    return buildTitle(series || ov, '', '', '', sub);
   }
   function qqEpNo() {
-    var m = /第\s*(\d{1,4})\s*[集期话]/.exec(txt('.player-play-title__title') || qqTitle());
-    return m ? String(parseInt(m[1], 10)) : '';
+    var m = /第\s*([零一二三四五六七八九十\d]+)\s*[集话期]/.exec(clean(txt('.player-play-title__title') || txt('.txp_title')));
+    return m ? cn2num(m[1]) : '';
   }
   function qqPlaylistDur(url) {
     if (!url) return;
@@ -294,7 +380,8 @@
     commit('qq', {
       id: id, ep: qqEpNo(), title: qqTitle(),
       dur: qqCtx.dur || pageDur(),
-      v: qqCtx.url, a: qqCtx.url, quality: qqCtx.name
+      v: qqCtx.url, a: qqCtx.url, quality: qqCtx.name,
+      ar: pageAr()
     });
   }
 
@@ -310,12 +397,15 @@
     try { var m = String(document.cookie || '').match(new RegExp('(?:^|; )' + name + '=([^;]*)')); return m ? decodeURIComponent(m[1]) : ''; } catch (e) { return ''; }
   }
   function iqTitle() {
-    var t = txt('.iqp-title_left') || txt('[class*="play_title"]') || clean(document.title);
-    return clean(t.replace(/[-_]\s*爱奇艺.*$/, '').replace(/【.*?】/g, ''));
+    var ov = clean(txt('.iqp-title_left') || txt('[class*="play_title"]') || txt('.player-title') || txt('.mediainfo_mediaTitle'));
+    var series = fTitle(document.title) || fTitle(ov);
+    var m = /第\s*([零一二三四五六七八九十\d]+)\s*([集话期])\s*[:：]?\s*(.*)$/.exec(ov);
+    if (m) return buildTitle(series || clean(ov), cn2num(m[1]), m[2], '', m[3]);
+    return isJunkTitle(series) ? '' : series;
   }
   function iqEpNo() {
-    var m = /第\s*(\d{1,4})\s*集/.exec(iqTitle());
-    return m ? String(parseInt(m[1], 10)) : '';
+    var m = /第\s*([零一二三四五六七八九十\d]+)\s*[集话期]/.exec(clean(txt('.iqp-title_left') || txt('[class*="play_title"]') || txt('.player-title')));
+    return m ? cn2num(m[1]) : '';
   }
   function md5(s) {
     function rl(n, c) { return (n << c) | (n >>> (32 - c)); }
@@ -454,7 +544,8 @@
           iqDone = { tvid: tvid, at: Date.now() };
           commit('iq', {
             id: tvid, ep: iqEpNo(), title: iqTitle(), dur: r.dur,
-            v: r.playlist, a: r.playlist, quality: r.bid === 600 ? '1080P' : ''
+            v: r.playlist, a: r.playlist, quality: r.bid === 600 ? '1080P' : '',
+            ar: pageAr()
           });
         } catch (e) { console.log('[b0b] 爱奇艺解析出错：' + e); }
       };

@@ -367,6 +367,23 @@ private object IqSlot {
  * 问页面此刻是哪一集：返回（播放器对象上的片号, 网址里的 v_ 编号）。
  * 在后台线程调用，内部把取值动作投回主线程，避免跨线程碰 WebView。
  */
+/**
+ * 滚动黑洞兜底：光柱落在视频、画布这类元素上时，它们会把滚轮事件吃掉却不滚任何东西，
+ * 整块区域就滚不动了。这段 JS 顺着命中元素的父链找真正会滚的那个容器；
+ * 事件派发后 80ms 那个容器还没滚动，就说明落进了黑洞，直接补滚它。
+ */
+private fun scrollFallbackJs(u: Float, v: Float, sy: Float): String {
+    val d = if (sy > 0f) -60 else 60
+    return "(function(u,v,d){" +
+        "var cx=Math.round(u*window.innerWidth),cy=Math.round(v*window.innerHeight);" +
+        "var n=document.elementFromPoint(cx,cy),sc=null;" +
+        "while(n){if(n.scrollHeight>n.clientHeight+2){sc=n;break;}n=n.parentElement;}" +
+        "if(!sc)sc=document.scrollingElement||document.documentElement;" +
+        "var before=sc.scrollTop;" +
+        "setTimeout(function(){if(sc.scrollTop!==before)sc.scrollBy(0,d);},80);" +
+        "})(${u},${v},${d});"
+}
+
 private fun askPageIdentity(w: WebView?): Pair<String, String> {
     if (w == null) return "" to ""
     var t = ""
@@ -2283,7 +2300,12 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
          * 之前用 scrollBy 三个网站都滚不动 —— 网页的滚动容器不是文档本身，
          * scrollBy 滚的是文档，所以没反应；滚轮事件按坐标做命中测试，
          * 落点在哪一块就滚哪一块，网页自己会把它滚起来）。
-         * 滚轮量吃掉了就不管；万一没吃掉（网页没接），再用 scrollBy 兜一下。
+         *
+         * 两种兜底：事件没人接（网页没监听）→ scrollBy 滚文档；
+         * 事件被接了但落点是视频这类不吃滚动的元素 → 黑洞，
+         * 用 scrollFallbackJs 顺着 DOM 找真正会滚的容器补一滚。
+         * 爱奇艺详情页的播放窗口特别大，光柱常落在视频上，没有这个兜底整块滚不动
+         * （父亲 2026-10-25 实测）。
          */
         /* 网页内返回（B 键）：只在网页的历史里退，退不动就什么都不做 */
         WebPageHub.backHandler = back@{
@@ -2376,6 +2398,7 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                 val eaten = runCatching { wv.dispatchGenericMotionEvent(ev) }.getOrDefault(false)
                 ev.recycle()
                 if (!eaten) runCatching { wv.scrollBy(0, if (sy > 0f) -60 else 60) }
+                else runCatching { wv.evaluateJavascript(scrollFallbackJs(u, v, sy), null) }
             }
         }
         onDispose {
