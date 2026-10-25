@@ -439,12 +439,14 @@
       var all = document.querySelectorAll('*'), H = window.innerHeight || 720;
       for (var k = 0; k < all.length; k++) {
         var e = all[k];
-        if (e.children.length) continue;
         var t2 = clean(e.textContent || '');
         if (t2.length < 4 || t2.length > 60) continue;
-        if (!/第\s*[零一二三四五六七八九十\d]+\s*[集话期]/.test(t2)) continue;
+        /* 不要求"没有子元素"：综艺那行的标题常是 <span> 拼出来的，要求叶子节点会全漏掉 */
+        if (!/第\s*[零一二三四五六七八九十\d]+/.test(t2)) continue;
         var r = e.getBoundingClientRect();
-        if (r.top >= 0 && r.top < H * 0.35 && r.left < (window.innerWidth || 1280) * 0.6) return t2;
+        if (r.top >= 0 && r.top < H * 0.40 && r.left < (window.innerWidth || 1280) * 0.7 && r.width > 40) {
+          return t2;
+        }
       }
     } catch (e3) {}
     return '';

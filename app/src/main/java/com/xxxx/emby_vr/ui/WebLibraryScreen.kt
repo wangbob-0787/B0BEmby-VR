@@ -2160,6 +2160,11 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                         /* 控制条"正在播放"统一取播放窗口左上那行字（父亲 2026-10-26 02:26 定），
                                                            取不到才用拼出来的那份 */
                                                         val headerText = askPageHeader(webRef)
+                                                        android.util.Log.i(
+                                                            "B0BEmbyVR",
+                                                            "爱奇艺标题：左上角读到「" + headerText.take(40) + "」" +
+                                                                (if (headerText.isBlank()) "→ 空，退回拼出来的那份" else ""),
+                                                        )
                                                         play.put("title", headerText.ifBlank { composed })
                                                         /* 集号与片号一起带上：控制条要显示"第几集"，弹幕也要按集去查 */
                                                         play.put("vid", useTvid)
