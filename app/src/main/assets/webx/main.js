@@ -450,8 +450,13 @@
     return '';
   }
   function iqEpNo() {
+    /*
+     * 不穷举单位。左上角那行是"剧名 第N集/期/话/回/部…集名"，
+     * 只要认"第 + 数字"，后面跟什么字都不影响 —— 综艺、纪录片、动漫的写法各不一样，
+     * 按单位列举永远漏（父亲 2026-10-26 02:28 提醒）。
+     */
     var t = clean(iqHeaderText() + ' ' + String(document.title || ''));
-    var m = /第\s*([零一二三四五六七八九十\d]+)\s*[集话期]/.exec(t);
+    var m = /第\s*([零一二三四五六七八九十百\d]+)/.exec(t);
     return m ? cn2num(m[1]) : '';
   }
   function md5(s) {

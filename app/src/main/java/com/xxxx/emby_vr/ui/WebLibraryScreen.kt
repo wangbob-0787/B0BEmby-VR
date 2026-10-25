@@ -1894,7 +1894,7 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                 runCatching {
                                                     var epNo = run {
                                                         val m = java.util.regex.Pattern
-                                                            .compile("第\\s*([0-9]{1,4})\\s*[集话期]")
+                                                            .compile("第\\s*([0-9]{1,4})")
                                                             .matcher(pageFullTitle + " " + pageEpTitle)
                                                         if (m.find()) m.group(1)?.toIntOrNull() ?: 0 else 0
                                                     }
