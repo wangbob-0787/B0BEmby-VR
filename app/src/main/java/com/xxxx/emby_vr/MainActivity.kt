@@ -2495,7 +2495,14 @@ class MainActivity : ComponentActivity() {
                                     .find(blk)?.groupValues?.get(1)?.toLongOrNull() ?: continue
                                 val txt = mc.trim()
                                 if (txt.isEmpty()) continue
-                                parsedIq.add(Triple(mt, txt, 16777215L))
+                                /*
+                                 * 爱奇艺的 <showTime> 是**秒**，不是毫秒（2026-10-26 实测：
+                                 * 第1段 7~297、第2段 302~600、第5段 1202~1498，是整片的绝对秒数）。
+                                 * 按毫秒用的话全片弹幕会被挤在前 0.3 秒内，两行只排进 6 条、
+                                 * 其余 1854 条被当"行满"丢掉 —— 这就是爱奇艺看不见弹幕的原因。
+                                 */
+                                val ms = if (mt < 10000L) mt * 1000L else mt
+                                parsedIq.add(Triple(ms, txt, 16777215L))
                                 got++
                             }
                             if (got > 0) segsOk++
