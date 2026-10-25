@@ -304,6 +304,7 @@
   var IQ_CONST = { t: '0', us: '', kuid: '', kt: '0', vf: '', hevc: '0', qd: '0', r: '1', s: '1', cp: '14', p: '1', pn: '0', p1: '1', q: '1', o: '0', cmd: '0' };
   var iqEps = { aid: '', list: [] };
   var iqBusy = false;
+  var iqDone = { tvid: '', at: 0 };
 
   function iqCookie(name) {
     try { var m = String(document.cookie || '').match(new RegExp('(?:^|; )' + name + '=([^;]*)')); return m ? decodeURIComponent(m[1]) : ''; } catch (e) { return ''; }
@@ -440,6 +441,7 @@
     if (iqBusy) return;
     var tvid = iqTvid();
     if (!tvid) return;
+    if (iqDone.tvid === tvid && Date.now() - iqDone.at < 15000) return;
     iqBusy = true;
     try {
       var x = new XMLHttpRequest();
@@ -449,6 +451,7 @@
         try {
           var r = iqParse(x.responseText);
           if (!r || !r.playlist) return;
+          iqDone = { tvid: tvid, at: Date.now() };
           commit('iq', {
             id: tvid, ep: iqEpNo(), title: iqTitle(), dur: r.dur,
             v: r.playlist, a: r.playlist, quality: r.bid === 600 ? '1080P' : ''
@@ -622,7 +625,7 @@
     } catch (e) {}
   }
   function scanQQ() {
-    if (site() !== 'qq') return;
+    if (site() !== 'qq' || qqCtx.url) return;
     try {
       var es = performance.getEntriesByType('resource');
       for (var i = es.length - 1; i >= 0; i--) {
@@ -637,6 +640,7 @@
     lastSent = ''; fsState = -1; fsPend = 0;
     biCtx = { key: '', cid: '', dur: 0, v: '', a: '', quality: '' }; biSegs = [];
     qqCtx = { url: '', name: '', dur: 0 };
+    iqDone = { tvid: '', at: 0 };
     try { if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen(); } catch (e) {}
     try { window.__b0bRealFull = 0; } catch (e2) {}
     try { localStorage.removeItem('b0b:realFullAt'); } catch (e3) {}
