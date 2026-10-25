@@ -391,6 +391,25 @@ private fun scrollFallbackJs(u: Float, v: Float, sy: Float): String {
         "})(${u},${v},${d});"
 }
 
+/** 取播放窗口左上角那行字。 */
+private fun askPageHeader(w: WebView?): String {
+    if (w == null) return ""
+    var t = ""
+    val latch = java.util.concurrent.CountDownLatch(1)
+    android.os.Handler(android.os.Looper.getMainLooper()).post {
+        runCatching {
+            w.evaluateJavascript(
+                "String((window.__b0bIqHeader&&window.__b0bIqHeader())||'')",
+            ) { raw ->
+                t = (raw ?: "").trim('"')
+                latch.countDown()
+            }
+        }.onFailure { latch.countDown() }
+    }
+    runCatching { latch.await(2, java.util.concurrent.TimeUnit.SECONDS) }
+    return t
+}
+
 /** 问页面"现在是第几集"（取不到就沿用标题里的）。 */
 private fun askPageEpNo(w: WebView?): Int {
     if (w == null) return 0
@@ -1875,7 +1894,7 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                 runCatching {
                                                     var epNo = run {
                                                         val m = java.util.regex.Pattern
-                                                            .compile("第\\s*([0-9]{1,4})\\s*集")
+                                                            .compile("第\\s*([0-9]{1,4})\\s*[集话期]")
                                                             .matcher(pageFullTitle + " " + pageEpTitle)
                                                         if (m.find()) m.group(1)?.toIntOrNull() ?: 0 else 0
                                                     }
@@ -2138,7 +2157,10 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                          * 一条弹幕都进不来（父亲 2026-10-26 00:45 报）。
                                                          */
                                                         runCatching { com.xxxx.emby_vr.web.IqiyiDash.setTvid(useTvid) }
-                                                        play.put("title", composed)
+                                                        /* 控制条"正在播放"统一取播放窗口左上那行字（父亲 2026-10-26 02:26 定），
+                                                           取不到才用拼出来的那份 */
+                                                        val headerText = askPageHeader(webRef)
+                                                        play.put("title", headerText.ifBlank { composed })
                                                         /* 集号与片号一起带上：控制条要显示"第几集"，弹幕也要按集去查 */
                                                         play.put("vid", useTvid)
                                                         if (epi != null && epi.episode > 0) play.put("ep", epi.episode.toString())

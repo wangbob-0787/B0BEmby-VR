@@ -941,6 +941,8 @@
   /* 分集表里第 n 集的片号：页面自己的分集表已经拉好了，原生直接问它最省事 */
   /* 当前是第几集（页面标题里那串"第N集"），原生拿不到就靠这个 */
   window.__b0bIqEpNo = function () { try { return String(iqEpNo() || ''); } catch (e) { return ''; } };
+  /* 播放窗口左上角那一整行字（父亲 2026-10-26 02:26 定：控制条"正在播放"统一取它） */
+  window.__b0bIqHeader = function () { try { return String(iqHeaderText() || ''); } catch (e) { return ''; } };
   window.__b0bIqEpTvId = function (n) {
     try {
       var l = (S.iqEps && S.iqEps.list) || [], it = l[(Number(n) || 0) - 1];
