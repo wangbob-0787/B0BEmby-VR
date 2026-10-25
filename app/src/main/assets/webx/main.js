@@ -638,6 +638,29 @@
   var FS_SEL = '.bpx-player-ctrl-full, .txp_btn_fullscreen, .txp_btn_fscreen, .iqp-btn-fullscreen, .iqp-player-icon-fullscreen';
   var fsState = -1, fsPend = 0;
 
+  /* 爱奇艺的全屏按钮选择器一个都匹配不到（日志里"按钮数=0"），
+     所以它从来没被变灰过。这里把页面上跟全屏有关的元素摸一遍，一次就够。 */
+  var iqFsDumped = '';
+  function iqDumpFsButtons() {
+    if (site() !== 'iq' || !onPlayPage()) return;
+    var key = String(location.pathname);
+    if (iqFsDumped === key) return;
+    iqFsDumped = key;
+    try {
+      var all = document.querySelectorAll('*'), out = [], seen = {};
+      for (var i = 0; i < all.length && out.length < 6; i++) {
+        var e = all[i], h = '';
+        try { h = String(e.outerHTML || '').slice(0, 160); } catch (x) { continue; }
+        if (!/fullscreen|全屏/i.test(h)) continue;
+        var sig = e.tagName + '.' + String(e.className || '').slice(0, 50) + '|' + (e.title || '') + '|' + (e.getAttribute('data-pb') || '');
+        if (seen[sig]) continue;
+        seen[sig] = 1;
+        out.push(sig);
+      }
+      CH('④爱奇艺全屏按钮候选', { 个数: out.length, 清单: out.join(' ;; ').slice(0, 300) });
+    } catch (e) {}
+  }
+
   function markFs() {
     try {
       var ok = slotReady() ? 1 : 0, btns = document.querySelectorAll(FS_SEL);
@@ -889,6 +912,7 @@
   window.__b0bTimers = [
     setInterval(tick, 1200),
     setInterval(markFs, 700),
+    setInterval(iqDumpFsButtons, 3000),
     setInterval(iqFixHeight, 800),
     setInterval(reportRect, 400),
     setInterval(scanQQ, 1500)
