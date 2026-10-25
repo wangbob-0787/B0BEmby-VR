@@ -2640,6 +2640,15 @@ class MainActivity : ComponentActivity() {
                 Log.w(TAG, "⑦ 弹幕是空的（这部片子可能没开弹幕，或编号不对）")
                 return@launch
             }
+            /*
+             * 不许"小的顶掉大的"：爱奇艺按片号能拉到上千条，网页那一路按标题查常常只回几条。
+             * 两条路都在跑，后到的小轨会把已经挂好的大轨换掉 ——
+             * 表现就是"弹幕明明拉到了却不显示"（父亲 2026-10-26 01:07：1860 条被 6 条顶掉）。
+             */
+            if (danmakuTrack != null && danmakuTrack!!.items.size >= 100 && track.items.size <= 30) {
+                Log.i(TAG, "⑦ 小轨跳过：已有 " + danmakuTrack!!.items.size + " 条，这次只有 " + track.items.size + " 条")
+                return@launch
+            }
             danmakuTrack = track
             webDanmakuLoaded = true
             applyDanmakuSetting()
