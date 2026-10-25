@@ -912,7 +912,10 @@ private object WebRuntime {
                 },
             )
             payload.put("streams", st)
-            takeSlot(payload, "hls")
+            /* 爱奇艺不走接收槽：签完直接开播（父亲 2026-10-25 23:36 定）。
+               放进槽里等下一次"非全屏→真全屏"跳变，可那次跳变已经被签名这一段用掉了，
+               槽里这份永远没人取 —— 表现就是"转发就绪了，画面不动"。 */
+            onBridgePlayable(payload)
             return
         }
         val srv = hlsServer ?: com.xxxx.emby_vr.web.PlaylistServer().also { hlsServer = it }
