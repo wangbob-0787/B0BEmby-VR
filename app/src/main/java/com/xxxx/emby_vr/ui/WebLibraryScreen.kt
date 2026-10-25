@@ -2011,7 +2011,10 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                                             val sb = StringBuilder()
                                                             if (epi != null && epi.series.isNotBlank()) {
                                                                 sb.append(epi.series)
-                                                                if (epi.episode > 0) sb.append(" 第").append(epi.episode).append("集")
+                                                                /* 电影没有集号：接口也会回 episode=1，照抄就变成"片名 第1集"（父亲 2026-10-26 报） */
+                                                                if (epi.episode > 0 && epi.total > 1) {
+                                                                    sb.append(" 第").append(epi.episode).append("集")
+                                                                }
                                                                 if (pageEpTitle.isNotBlank() &&
                                                                     !pageEpTitle.contains("第") &&
                                                                     !epi.series.contains(pageEpTitle)

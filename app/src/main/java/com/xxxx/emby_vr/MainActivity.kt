@@ -3588,6 +3588,15 @@ class MainActivity : ComponentActivity() {
         /* 真的开始接管了：标题行从「即将播放」转成「正在播放」（父亲 2026-10-19 定） */
         osdState.upcoming = false
         /*
+         * 网页流也接弹幕：用交付里带的标题/集号去要一份。
+         * 电影没有集号（ep<=0）按单片查，剧集带上集号。
+         */
+        runCatching {
+            val t = obj.optString("title", "")
+            val e = obj.optInt("ep", 0)
+            loadDanmakuForWeb(t, if (e > 0) e else 0, e <= 0)
+        }
+        /*
          * 这条地址是**网页用浏览器自己的身份**要来的（2026-10-18 晚，扩展加了这条路）。
          * 浏览器带票，服务器才给整集；我们自己发的那条请求没身份、只给试看，
          * 所以这里记下来，分片路那边就不要再问一遍、把好地址顶掉了。
@@ -5762,6 +5771,39 @@ class MainActivity : ComponentActivity() {
             } else {
                 Log.i(TAG, "⑦ 现拉没拿到，退回读服务端弹幕文件")
                 loadDanmakuFromEmbyFile()
+            }
+        }
+    }
+
+    /**
+     * 网页流（三站）起播后按标题/集号拉一份弹幕。
+     *
+     * 原来弹幕只在 Emby 片子那条路上拉（loadDanmaku 用的是 Emby 的 item），
+     * 网页接管这条根本没有 item，于是三站接管后一条弹幕都进不来
+     * （父亲 2026-10-26 00:45 报「弹幕没有接进来」）。
+     */
+    private fun loadDanmakuForWeb(titleRaw: String, epNo: Int, isMovie: Boolean) {
+        val title = titleRaw.trim()
+        if (title.isEmpty()) {
+            Log.i(TAG, "⑦ 网页流弹幕：标题为空，跳过")
+            return
+        }
+        val key = currentMediaId
+        scope.launch {
+            val track = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching { fetchLiveDanmaku(title, epNo, 0, isMovie) }.getOrNull()
+            }
+            if (key != currentMediaId) return@launch
+            if (track != null) {
+                danmakuTrack = track
+                danmakuView?.setTrack(if (danmakuOn) track else null)
+                Log.i(
+                    TAG,
+                    "⑦ 网页流弹幕已挂上（" + track.items.size + " 条，" +
+                        "「" + title.take(20) + "」" + (if (isMovie) "" else " 第 " + epNo + " 集") + "）",
+                )
+            } else {
+                Log.i(TAG, "⑦ 网页流弹幕没拉到（" + title.take(20) + "）")
             }
         }
     }
