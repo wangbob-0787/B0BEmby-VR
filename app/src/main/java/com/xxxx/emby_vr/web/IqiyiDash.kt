@@ -65,6 +65,14 @@ object IqiyiDash {
     var tvid: String = ""
         private set
 
+    /** 直接写入当前这一集的片号（自签那条路拿到片号后调它，弹幕接口按它取）。 */
+    fun setTvid(v: String) {
+        if (v.isNotBlank() && v != tvid) {
+            tvid = v
+            android.util.Log.i(TAG, "爱奇艺片号（自签写入）：" + v)
+        }
+    }
+
     fun noteTvid(u: String) {
         val m = Regex("tvid=(\\d{6,})").find(u) ?: return
         val v = m.groupValues[1]
