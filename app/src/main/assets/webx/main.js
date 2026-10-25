@@ -692,6 +692,12 @@
           var raw = Element.prototype[nm];
           if (!raw || raw.__b0bGuarded) return;
           var patched = function () {
+            /* 爱奇艺例外：它的整集片单由原生自签（页面只能给六分钟的裸地址），
+               所以不需要槽；这里必须放行，否则页面进不了真全屏，原生那条路也起不来。 */
+            if (site() === 'iq') {
+              CH('④点全屏-放行', { 站: 'iq', 接口: nm, 原因: '地址由原生自签，不看槽' });
+              return raw.apply(this, arguments);
+            }
             if (!slotReady()) {
               CH('④点全屏-拦下', { 站: site(), 接口: nm, 原因: whyNotReady() });
               return Promise.reject(new Error('b0b-slot-not-ready'));
