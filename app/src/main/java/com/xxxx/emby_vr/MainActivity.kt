@@ -5391,7 +5391,13 @@ class MainActivity : ComponentActivity() {
              * 【2026-10-20 19:58 父亲实测：弹幕出来了，但字幕菜单里没有「弹幕」那一行】
              * 原来只认 B站 的片号（webCid），腾讯走的是 webVid，条件永远不成立。
              */
-            subtitleDanmakuRow = hasDanmakuTrack ||
+            /*
+             * 判据统一成"有没有弹幕轨"。
+             * 原来还要看片号（webCid/webVid），爱奇艺那条没有这两个变量，
+             * 于是弹幕已经显示出来了、字幕菜单里却没有「弹幕」这一行
+             * （父亲 2026-10-26 01:51 报）。有轨就该有这一行，三站一致。
+             */
+            subtitleDanmakuRow = hasDanmakuTrack || danmakuTrack != null ||
                 ((webCid > 0L || webVid.isNotBlank()) && webDanmakuLoaded)
         /*
          * 图形字幕（PGS 等）分两条路对待（父亲 2026-10-09 定）：
