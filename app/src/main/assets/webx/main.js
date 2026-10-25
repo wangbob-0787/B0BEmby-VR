@@ -218,7 +218,6 @@
     else if (c.cid) payload.cid = String(c.cid);
     CH('⑤交原生', { 站: s, 身份: c.id, 集: c.ep || '-', 时长: c.dur + 's', at: payload.at, 地址尾: '…' + String(c.v).slice(-24), 标题: String(c.title).slice(0, 24) });
     send(payload);
-    pausePage('已交付');
   }
   function commit(s, cand) {
     if (!cand || !cand.id || !cand.dur || !cand.v || !cand.a) return;
@@ -285,7 +284,7 @@
     fetch(u, { credentials: 'include' }).then(function (r) { return r.json(); }).then(function (j) {
       var d = (j && (j.result || j.data)) || {}, dash = d.dash || {};
       var vs = dash.video || [], as = dash.audio || [];
-      if (!vs.length) return;
+      if (!vs.length) { biCtx.askFailed = Date.now(); return; }
       var best = vs[0], bq = -1;
       for (var i = 0; i < vs.length; i++) {
         var q = (vs[i].id || 0) * 1e6 + (vs[i].bandwidth || 0);
@@ -299,15 +298,15 @@
       var ms = Number(d.timelength || 0);
       biCtx.dur = ms > 0 ? Math.round(ms / 1000) : Math.round(Number(dash.duration || 0));
       CH('②取址', { 站: 'bi', 身份: id, 档: biCtx.quality || '-', 时长: biCtx.dur + 's' });
-    }).catch(function (e) { console.log('[b0b] B站 播放信息请求失败：' + e); });
+    }).catch(function (e) { biCtx.askFailed = Date.now(); console.log('[b0b] B站 播放信息请求失败：' + e); });
   }
   function biSync() {
     var id = biId(), key = String(location.pathname);
     if (!id || key === biCtx.key) return;
-    biCtx = { key: key, cid: '', dur: 0, v: '', a: '', quality: '' };
+    biCtx = { key: key, cid: '', dur: 0, v: '', a: '', quality: '', askFailed: 0 };
     biSegs = [];
     CH('①页面变化', { 站: 'bi', 身份: id });
-    if (/^ep\d+$/.test(id)) { biAsk(id, ''); return; }
+    if (/^ep\d+$/.test(id)) { biCtx.cid = id; biAsk(id, ''); return; }
     fetch('https://api.bilibili.com/x/web-interface/view?bvid=' + id, { credentials: 'include' })
       .then(function (r) { return r.json(); })
       .then(function (j) {
@@ -322,6 +321,11 @@
     biSync();
     var id = biId();
     if (!id) return;
+    /* 重试：取址失败 5 秒后且地址仍为空，重新取 */
+    if (biCtx.askFailed && !biCtx.v && Date.now() - biCtx.askFailed > 5000) {
+      biCtx.askFailed = 0;
+      biAsk(id, biCtx.cid || '');
+    }
     var seg = biSegPair();
     commit('bi', {
       id: id, ep: biEpNo(), season: biSeasonNo(), title: biTitle(),
