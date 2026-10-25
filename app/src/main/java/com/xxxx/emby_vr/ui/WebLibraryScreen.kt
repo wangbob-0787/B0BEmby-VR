@@ -376,11 +376,18 @@ private fun scrollFallbackJs(u: Float, v: Float, sy: Float): String {
     val d = if (sy > 0f) -60 else 60
     return "(function(u,v,d){" +
         "var cx=Math.round(u*window.innerWidth),cy=Math.round(v*window.innerHeight);" +
-        "var n=document.elementFromPoint(cx,cy),sc=null;" +
-        "while(n){if(n.scrollHeight>n.clientHeight+2){sc=n;break;}n=n.parentElement;}" +
-        "if(!sc)sc=document.scrollingElement||document.documentElement;" +
-        "var before=sc.scrollTop;" +
-        "setTimeout(function(){if(sc.scrollTop===before)sc.scrollBy(0,d);},80);" +
+        "var need=window.innerHeight*0.25,cands=[],n=document.elementFromPoint(cx,cy);" +
+        /* 光点落点往上每一层都收进来：不能只认第一个"能滚"的，
+           播放器里面常有一层又小又能滚的覆盖层，滚它等于没滚。 */
+        "while(n){if(n.scrollHeight>n.clientHeight+2&&n.clientHeight>need)cands.push(n);n=n.parentElement;}" +
+        "cands.push(document.scrollingElement||document.documentElement);cands.push(document.body);" +
+        "setTimeout(function(){" +
+        "for(var i=0;i<cands.length;i++){var s=cands[i];if(!s)continue;var b=s.scrollTop;" +
+        "try{if(s.scrollBy)s.scrollBy(0,d);if(s.scrollTop===b)s.scrollTop=b+d;}catch(e){}" +
+        "if(Math.abs(s.scrollTop-b)>1){console.log('[b0b] 网页滚了 '+(s.tagName||'?')+" +
+        "' 高'+s.clientHeight+'/'+s.scrollHeight+' '+b+'→'+s.scrollTop);return;}}" +
+        "console.log('[b0b] 网页滚不动：候选'+cands.length+'个，点'+cx+','+cy);" +
+        "},80);" +
         "})(${u},${v},${d});"
 }
 
