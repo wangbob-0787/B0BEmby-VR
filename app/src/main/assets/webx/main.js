@@ -61,7 +61,7 @@
       kind = m[2];
       name = clean(String(raw).slice(raw.indexOf(m[0]) + m[0].length));
     } else {
-      var m2 = /^0*(\d{1,3})(?:\s|$)/.exec(raw);
+      var m2 = /^0*(\d{1,3})(?:\s|$|[集话期回部])/.exec(raw);
       if (m2) no = String(parseInt(m2[1], 10));
       name = clean(raw.replace(/^0*\d{1,3}\s*/, ''));
     }
@@ -485,9 +485,16 @@
     /* 剧名只从页面标题拿，且先摘掉 "_02_" 这种集号尾巴（腾讯标题格式：剧名_集号_分类_…） */
     var series = fTitle(String(document.title || '').replace(/_\d{1,3}_/g, '_'));
     if (!series) series = fTitle(clean(txt('.player-play-title__title') || txt('.txp_title')));
+    /* 集号与集名分开补（父亲 2026-10-26 报：只出剧名）：
+       面板那一项可能只抽出集名没抽出集号，这时集号从播放器左上角那行补；
+       任一边抽不到都不能让整条标题退化成只有剧名。 */
     var p = qqPanelPick();
-    if (p && p.no) return buildTitle(series, cn2num(p.no), p.kind, '', p.name);
-    if (p && p.name) return buildTitle(series, '', '', '', p.name);
+    var no = (p && p.no) || qqEpNo();
+    var nm = (p && p.name) || '';
+    if (!nm) nm = clean(txt('.player-play-title__sub-title'));
+    if (nm && (nm === String(no) || /^0*\d{1,3}[集话期回部]?$/.test(nm))) nm = '';
+    if (no) return buildTitle(series, cn2num(no), (p && p.kind) || '集', '', nm);
+    if (nm) return buildTitle(series, '', '', '', nm);
     /* 面板还没渲染出来（刚进页那几秒）才退回播放器那行 */
     var ov = clean(txt('.player-play-title__title') || txt('.txp_title'));
     var sub = clean(txt('.player-play-title__sub-title'));
