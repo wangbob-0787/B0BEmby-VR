@@ -100,7 +100,7 @@ object VrTuning {
      * 现场改 `vr-tuning.txt` 的 `danmaku_gap=1.5` 即可，一秒内生效、不用重装。
      */
     @Volatile
-    var danmakuGapSec: Float = 2.0f
+    var danmakuGapSec: Float = 2.5f
 
     /**
      * 网页禁用缓存（2026-10-21 12:50）。
