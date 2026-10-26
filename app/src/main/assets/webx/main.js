@@ -176,7 +176,7 @@
   var S = window.__b0bState || (window.__b0bState = {
     slot: { bi: null, qq: null, iq: null },
     lastSent: '',
-    qqCtx: { url: '', name: '', dur: 0 },
+    qqCtx: { url: '', name: '', dur: 0, ep: '' },
   });
   var slot = S.slot;
 
@@ -249,11 +249,27 @@
   var biCtx = S.biCtx || (S.biCtx = { key: '', cid: '', dur: 0, v: '', a: '', quality: '' });
   var biSegs = [];
 
+  /*
+   * B站的身份必须带页码（父亲 2026-10-26 报：同一视频切第 2P 后控制条与画面不符）。
+   * 多P 视频是不同的片子，但网址里只有 ?p=N 不同 —— 只认 BV 号会把它们当成同一份，
+   * 地址永远停在第 1P。ep 号本身唯一，不需要附加。
+   */
+  function biPageNo() {
+    var m = /[?&]p=(\d+)/.exec(String(location.search || ''));
+    var n = m ? parseInt(m[1], 10) : 1;
+    return n > 0 ? n : 1;
+  }
+  function biBv() {
+    var m = /\/video\/(BV[0-9A-Za-z]+)/.exec(String(location.pathname || ''));
+    return m ? m[1] : '';
+  }
   function biId() {
-    var p = String(location.pathname || '');
-    var m = /\/video\/(BV[0-9A-Za-z]+)/.exec(p);
-    if (m) return m[1];
-    m = /\/bangumi\/play\/(ep\d+)/.exec(p);
+    var bv = biBv();
+    if (bv) {
+      var n = biPageNo();
+      return n > 1 ? bv + '#p' + n : bv;
+    }
+    var m = /\/bangumi\/play\/(ep\d+)/.exec(String(location.pathname || ''));
     return m ? m[1] : '';
   }
   function biTitle() {
@@ -315,19 +331,21 @@
     }).catch(function (e) { biCtx.askFailed = Date.now(); console.log('[b0b] B站 播放信息请求失败：' + e); });
   }
   function biSync() {
-    var id = biId(), key = String(location.pathname);
-    if (!id || key === biCtx.key) return;
-    biCtx = { key: key, cid: '', dur: 0, v: '', a: '', quality: '', askFailed: 0 };
+    var id = biId();
+    if (!id || id === biCtx.key) return;
+    biCtx = { key: id, cid: '', dur: 0, v: '', a: '', quality: '', askFailed: 0 };
     biSegs = [];
     CH('①页面变化', { 站: 'bi', 身份: id });
     if (/^ep\d+$/.test(id)) { biCtx.cid = id; biAsk(id, ''); return; }
-    fetch('https://api.bilibili.com/x/web-interface/view?bvid=' + id, { credentials: 'include' })
+    /* 多P：第 N 页的 cid 与时长在 pages[] 里，主 cid 只代表第 1P */
+    var bv = biBv(), no = biPageNo();
+    fetch('https://api.bilibili.com/x/web-interface/view?bvid=' + bv, { credentials: 'include' })
       .then(function (r) { return r.json(); })
       .then(function (j) {
-        var d = (j && j.data) || {};
-        biCtx.cid = String(d.cid || '');
-        biCtx.dur = parseInt(d.duration || 0, 10) || 0;
-        biAsk(id, biCtx.cid);
+        var d = (j && j.data) || {}, pg = (d.pages || [])[no - 1] || {};
+        biCtx.cid = String(pg.cid || d.cid || '');
+        biCtx.dur = parseInt(pg.duration || d.duration || 0, 10) || 0;
+        biAsk(bv, biCtx.cid);
       }).catch(function (e) { console.log('[b0b] B站 取编号失败：' + e); });
   }
   function biTick() {
@@ -389,16 +407,29 @@
     var name = QQ_TIERS[m[1]];
     if (!name) return;
     if (/smtcdns|subtitle|\.vtt\./.test(one)) return;
-    /* 这里不能先要求身份：专辑页的身份正是从这条地址里取的，先要求就互相卡死 */
+    /* 这里不能先要求身份：专辑页的身份正是从这条地址里取的，先要求就互相卡死。
+       但已经知道当前集号时，抓到别的集的清单要丢掉 —— 那是切集之后迟到的上一份。 */
+    var nowEp = qqId();
+    if (nowEp && qqCtx.ep && qqCtx.ep !== nowEp) return;
     if (qqCtx.url === one) return;
     qqCtx.url = one; qqCtx.name = name; qqCtx.dur = 0;
     CH('②取址', { 站: 'qq', 档: name + '(' + m[1] + ')', 地址尾: '…' + one.slice(-24) });
     qqPlaylistDur(one);
   }
+  /*
+   * 腾讯的网址会跟着换集变，但页面自己那份数据不会（见网页侧规格 9.3）。
+   * 所以地址必须"跟着集号走"：集号一变，先前抓到的那份 m3u8 属于上一集，留着会出现
+   * "身份是第 3 集、地址是第 2 集"，播出来还是上一集（父亲 2026-10-26 报的接管问题）。
+   */
   function qqTick() {
     if (site() !== 'qq' || !onPlayPage()) return;
     var id = qqId();
     if (!id) return;
+    if (qqCtx.ep && qqCtx.ep !== id) {
+      CH('①页面变化', { 站: 'qq', 身份: id, 上一集: qqCtx.ep });
+      qqCtx.url = ''; qqCtx.name = ''; qqCtx.dur = 0;
+    }
+    qqCtx.ep = id;
     commit('qq', {
       id: id, ep: qqEpNo(), title: qqTitle(),
       dur: qqCtx.dur || pageDur(),
@@ -924,7 +955,7 @@
     S.lastSent = ''; fsState = -1; fsPend = 0;
     biCtx.key = ''; biCtx.cid = ''; biCtx.dur = 0; biCtx.v = ''; biCtx.a = ''; biCtx.quality = '';
     biSegs = [];
-    qqCtx.url = ''; qqCtx.name = ''; qqCtx.dur = 0;
+    qqCtx.url = ''; qqCtx.name = ''; qqCtx.dur = 0; qqCtx.ep = '';
     try { if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen(); } catch (e) {}
     try { window.__b0bRealFull = 0; } catch (e2) {}
     try { localStorage.removeItem('b0b:realFullAt'); } catch (e3) {}
