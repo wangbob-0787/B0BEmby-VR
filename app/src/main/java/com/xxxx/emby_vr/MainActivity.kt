@@ -5802,22 +5802,37 @@ class MainActivity : ComponentActivity() {
         danmakuTrack = null
         danmakuView?.setTrack(null)
         com.xxxx.emby_vr.vr.VrNative.setDanmakuVisible(true)
-        val item = currentItem
-        if (item == null) {
-            loadDanmakuFromEmbyFile()
-            return
-        }
-        val series = item.seriesName
-        val isMovie = series.isNullOrBlank()
-        val title = if (isMovie) item.name else series
-        if (title.isNullOrBlank()) {
-            loadDanmakuFromEmbyFile()
-            return
-        }
-        val ep = if (isMovie) 0 else (item.indexNumber ?: 0)
-        val year = item.productionYear ?: 0
         val mediaId0 = currentMediaId
+        if (mediaId0.isBlank()) {
+            loadDanmakuFromEmbyFile()
+            return
+        }
         scope.launch {
+            /*
+             * 一定要按**正在播的这一集**取条目，不能直接读 currentItem。
+             *
+             * currentItem 是 loadItemDetail() 拉完详情才赋值的（异步、比起播晚），
+             * 而起播那一刻它还是上一部/上一集的条目 —— 直接用它会把上一集的集号
+             * 当成这一集的（实测：画面已经切到第 10 集，却按第 11 集拉了弹幕，
+             * 父亲 2026-10-26 14:22 报「弹幕和剧情对不上」）。
+             */
+            val item = currentItem?.takeIf { it.id == mediaId0 }
+                ?: withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    runCatching { fetchItemDetailWithRetry(mediaId0) }.getOrNull()
+                }
+            if (item == null) {
+                loadDanmakuFromEmbyFile()
+                return@launch
+            }
+            val series = item.seriesName
+            val isMovie = series.isNullOrBlank()
+            val title = if (isMovie) item.name else series
+            if (title.isNullOrBlank()) {
+                loadDanmakuFromEmbyFile()
+                return@launch
+            }
+            val ep = if (isMovie) 0 else (item.indexNumber ?: 0)
+            val year = item.productionYear ?: 0
             val track = withContext(kotlinx.coroutines.Dispatchers.IO) {
                 runCatching { fetchLiveDanmaku(title, ep, year, isMovie) }.getOrNull()
             }
