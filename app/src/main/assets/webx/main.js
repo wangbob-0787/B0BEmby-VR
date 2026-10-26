@@ -271,14 +271,19 @@
    * 认不出身份 → 槽一直是空的 → 真全屏按钮一直是灰的，整条接管卡死。
    * 取法：播放窗口下面那块分集面板里，正在播的那一项带 cur/active 类，它的链接里就有集号。
    */
+  /*
+   * 实证（2026-10-26，.18 Chrome 打开 /bangumi/play/ss38561 现场读 DOM）：
+   *   分集面板是 CSS Modules，类名带哈希 —— 普通项 EpVirtList_listItem__xxx、
+   *   正在播的那项 EpVirtList_activeItem__xxx；而且这类页面**没有** __INITIAL_STATE__。
+   * 所以只按「class 里带 activeItem」这一条取，其余候选留着兜老版与别的页型。
+   */
   var BI_EP_LINK_SEL = [
-    '.eplist_ep_list .ep-item.cur a[href*="/play/ep"]',
-    '.eplist_ep_list li.cur a[href*="/play/ep"]',
-    '.eplist_ep_item.cur a[href*="/play/ep"]',
-    '.ep-list .ep-item.cur a[href*="/play/ep"]',
-    '#eplist_module a[href*="/play/ep"][class*="cur"]',
+    'a[href*="/play/ep"][class*="activeItem"]',
     'a[href*="/play/ep"][class*="cur"]',
-    'a[href*="/play/ep"][class*="active"]'
+    'a[href*="/play/ep"][class*="active"]',
+    '.eplist_ep_list .ep-item.cur a[href*="/play/ep"]',
+    '.eplist_ep_item.cur a[href*="/play/ep"]',
+    '.ep-list .ep-item.cur a[href*="/play/ep"]'
   ];
   function biEpFromDom() {
     for (var i = 0; i < BI_EP_LINK_SEL.length; i++) {
@@ -309,6 +314,14 @@
     if (/\/bangumi\/play\/ss\d+/.test(String(location.pathname || ''))) {
       return biEpFromDom() || biEpFromState();
     }
+    /*
+     * 兜底：没见过的页型（课程 /cheese/…、收藏列表 /medialist/… 等）也要给出身份。
+     * 不给身份的后果不是"少认一次"，而是**整条接管死锁**：槽一直空 → 真全屏按钮一直灰，
+     * 用户再也点不动（2026-10-26 实测卡在季页面就是这样）。用规范化路径当身份，
+     * 换片能被发现；取不到播放地址时槽自然不填，也不会误交。
+     */
+    var p2 = String(location.pathname || '');
+    if (p2 && p2 !== '/' && p2.length > 1) return 'p:' + p2;
     return '';
   }
   function biTitle() {
