@@ -442,7 +442,11 @@
     var headEp = iqEpParts(head);
     var ep = pickedEp || headEp;
     var out;
-    if (ep) {
+    if (!pickedEp && !headEp && picked) {
+      /* 单片：电影、剧场版这类没有集号，海报上写的就是全名（父亲 2026-10-26 定）。
+         剧集不会走到这里 —— 两路都拆不出"第N集/期"才认为是单片。 */
+      out = picked;
+    } else if (ep) {
       /* 集号以点选为准；集名两路各取一半时也不丢 —— 卡片常只写"第4期"，名字在头部那行 */
       var no = (pickedEp && pickedEp.no) || (headEp && headEp.no) || ep.no;
       var kind = (pickedEp && pickedEp.kind) || (headEp && headEp.kind) || ep.kind;
@@ -602,11 +606,12 @@
             f = el[k];
             for (j = 0; j < 12 && f; j++) {
               mp = f.memoizedProps || {};
-              d = mp.data || mp.item;
-              if (d && (d.qipu_id || d.tvId || d.tvid)) {
+              d = mp.data || mp.item || mp.cardData || mp.video || mp.info;
+              var tv = d && (d.qipu_id || d.tvId || d.tvid || d.qipuId || d.videoId);
+              if (tv) {
                 iqClick = {
-                  tv: String(d.qipu_id || d.tvId || d.tvid),
-                  t: clean(d.title || d.short_title || ''),
+                  tv: String(tv),
+                  t: clean(d.title || d.short_title || d.name || d.albumTitle || ''),
                   u: String(d.page_url || ''),
                   at: Date.now(),
                   path: String(location.pathname)
