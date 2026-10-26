@@ -42,10 +42,8 @@ import com.xxxx.emby_vr.ui.theme.ThemeColor
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
 fun MenuDialog(
-    needUpdate: Boolean,
     onDismiss: () -> Unit,
     onLogout: () -> Unit,
-    onUpdate: () -> Unit,
     onThemeChange: (ThemeColor) -> Unit,
     onSwitchAccount: (() -> Unit)? = null,
     onSearch: (() -> Unit)? = null,
@@ -181,19 +179,6 @@ fun MenuDialog(
                                 onClick = { showThemeSelection.value = true },
                                 primaryColor = currentPrimaryColor
                             )
-                        }
-
-                        // 更新项
-                        if (needUpdate) {
-                            menuItems.add {
-                                MenuListItem(
-                                    vrKey = "menu:update",
-                                    text = stringResource(R.string.download_latest_version),
-                                    icon = Icons.Filled.SystemUpdate,
-                                    onClick = { onUpdate(); onDismiss() },
-                                    primaryColor = currentPrimaryColor
-                                )
-                            }
                         }
 
                         // 渲染列表并添加间距

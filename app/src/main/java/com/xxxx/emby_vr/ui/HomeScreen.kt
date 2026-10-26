@@ -265,8 +265,10 @@ fun HomeScreen(
         // 顶部状态栏
         TopStatusBar(
             currentVersion = mainViewModel.currentVersion,
-            newVersion = mainViewModel.newVersion,
-            needUpdate = mainViewModel.needUpdate,
+            updatePhase = mainViewModel.updatePhase,
+            updateProgress = mainViewModel.updateProgress,
+            updateNote = mainViewModel.updateNote,
+            onVersionClick = { mainViewModel.onVersionClick() },
             userInfo = userInfo,
             /*
              * 放大镜放**右边、头像的左边**（父亲 2026-10-12：原来在左上角，

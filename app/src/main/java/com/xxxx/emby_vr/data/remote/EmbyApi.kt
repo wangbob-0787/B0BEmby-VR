@@ -912,25 +912,6 @@ object EmbyApi {
         return httpAsBaseItemDtoList(context, serverUrl, apiKey, deviceId, url)
     }
 
-    // ==================== 版本更新 ====================
-
-    /**
-     * 获取最新版本信息
-     */
-    /**
-     * 获取最新版本信息 —— 【已关闭】应用内更新检查（个人自用改造版，2026-09-29）
-     *
-     * 关闭原因:
-     *   1) 本仓库为私有仓库,未鉴权访问 releases/latest 必然返回 404,留着只会白发请求;
-     *   2) 该功能原本会提示安装上游 release,装上即覆盖本机的弹幕层/直通/播放页改造。
-     *
-     * 如需恢复:在此实现 GET https://api.github.com/repos/wangbob-0787/B0BEmby/releases/latest
-     * (URL 已指向本仓库),并保留请求失败时静默返回空对象的行为。
-     */
-    suspend fun getNewVersion(context: Context): JsonObject = withContext(Dispatchers.IO) {
-        JsonObject()
-    }
-
     // ==================== HTTP 辅助方法 ====================
 
     private fun isConnectionError(e: Throwable): Boolean {

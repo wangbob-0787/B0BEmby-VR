@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  应用内更新用：只暴露 cacheDir 下的 update 目录，其它缓存不对外。
+  安装包本身就是从内网源下载的 release 包，交给系统安装器读一次即可。
+-->
+<paths>
+    <cache-path name="update" path="update/" />
+</paths>

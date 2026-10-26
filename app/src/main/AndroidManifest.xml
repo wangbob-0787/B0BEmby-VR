@@ -10,6 +10,8 @@
       → 某些面板层建不起来（菜单会打不开），见 2026-10-07 实测日志。
     -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- 应用内更新：下载完要交给系统安装器，没有这条权限 startActivity 会被拒 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!--
       VR 头显能力声明。
@@ -157,6 +159,33 @@
             -->
 
         </activity>
+
+        <!--
+          应用内更新（父亲 2026-10-26 定：只做「检查更新」，点版本号才更新）。
+          安装包放在 cacheDir/update 下，交给系统安装器时必须走 FileProvider —
+          Android 7 起 file:// 直接抛 FileUriExposedException。
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <!--
+          装完之后系统会发 MY_PACKAGE_REPLACED。老进程在装包那一刻已被系统结束，
+          这条广播是新版本自己收到 —— 用它把界面重新拉起来，用户不必去桌面找。
+        -->
+        <receiver
+            android:name=".update.UpdateInstalledReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
     </application>
 
 </manifest>

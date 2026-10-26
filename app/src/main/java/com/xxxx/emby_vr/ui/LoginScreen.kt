@@ -198,8 +198,10 @@ fun LoginScreen(
         // 顶部状态栏
         TopStatusBar(
             currentVersion = mainViewModel.currentVersion,
-            newVersion = mainViewModel.newVersion,
-            needUpdate = mainViewModel.needUpdate,
+            updatePhase = mainViewModel.updatePhase,
+            updateProgress = mainViewModel.updateProgress,
+            updateNote = mainViewModel.updateNote,
+            onVersionClick = { mainViewModel.onVersionClick() },
             onMenuClick = { showMenu = true }
         )
         Row(
@@ -401,16 +403,10 @@ fun LoginScreen(
 
     if (showMenu) {
         MenuDialog(
-            needUpdate = mainViewModel.needUpdate,
             onDismiss = { showMenu = false },
             onLogout = {
                 loginViewModel.logout()
                 showMenu = false
-            },
-            onUpdate = {
-                mainViewModel.checkUpdate()
-                showMenu = false
-                navController.navigate("update")
             },
             onThemeChange = { themeColor ->
                 mainViewModel.saveThemeId(themeColor.id)

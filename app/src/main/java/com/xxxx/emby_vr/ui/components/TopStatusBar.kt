@@ -1,5 +1,10 @@
 package com.xxxx.emby_vr.ui.components
 
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -9,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -46,6 +52,7 @@ import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import com.xxxx.emby_vr.R
 import com.xxxx.emby_vr.data.local.PreferencesManager
+import com.xxxx.emby_vr.ui.viewmodel.UpdatePhase
 
 /**
  * 顶栏元素之间的统一间距（父亲 2026-10-10 定）。
@@ -60,8 +67,14 @@ private val TopBarGap = 24.dp
 @Composable
 fun TopStatusBar(
     currentVersion: String,
-    newVersion: String,
-    needUpdate: Boolean,
+    /**
+     * 更新流程阶段（父亲 2026-10-26：只做「检查更新」，点版本号才更新）。
+     * 只有这里不是 Idle 时版本号才可点；点下去开始下载并闪烁，装包阶段不再响应。
+     */
+    updatePhase: UpdatePhase = UpdatePhase.Idle,
+    updateProgress: Int = 0,
+    updateNote: String = "",
+    onVersionClick: () -> Unit = {},
     showSearchButton: Boolean = false,
     userInfo: String? = null,
     onMenuClick: (() -> Unit)? = null,
@@ -78,6 +91,7 @@ fun TopStatusBar(
     val leadingSearchFocusRequester = remember { FocusRequester() }
     val searchFocusRequester = remember { FocusRequester() }
     val userInfoFocusRequester = remember { FocusRequester() }
+    val versionFocusRequester = remember { FocusRequester() }
 
     Box(
         modifier = Modifier
@@ -201,18 +215,67 @@ fun TopStatusBar(
                     Spacer(modifier = Modifier.width(TopBarGap))
                 }
 
+                /*
+                 * 版本号就是更新入口（父亲 2026-10-26 定）：
+                 *   没有新版 —— 一行说明文字，点不动；
+                 *   有新版   —— 后面加括号，整块可点，点了开始下载并闪烁，再点一次取消；
+                 *   装包阶段 —— 文字换成「正在安装…」，不再响应点击。
+                 */
+                val blink by rememberInfiniteTransition(label = "version-blink").animateFloat(
+                    initialValue = 1f,
+                    targetValue = 0.25f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(600),
+                        repeatMode = RepeatMode.Reverse
+                    ),
+                    label = "version-alpha"
+                )
+                val clickable = updatePhase == UpdatePhase.Available ||
+                        updatePhase == UpdatePhase.Failed ||
+                        updatePhase == UpdatePhase.Downloading
+                val suffix = when (updatePhase) {
+                    UpdatePhase.Available, UpdatePhase.Failed -> "（有新版本）"
+                    UpdatePhase.Downloading -> "（正在下载 $updateProgress%）"
+                    UpdatePhase.Installing -> "（正在安装…）"
+                    UpdatePhase.Idle -> ""
+                }
+                val alphaValue = if (updatePhase == UpdatePhase.Downloading) blink else 1f
+                val versionModifier = if (clickable) {
+                    Modifier
+                        .focusRequester(versionFocusRequester)
+                        .vrClickTarget(
+                            key = "top:version",
+                            focusRequester = versionFocusRequester,
+                            hoverRadius = 8.dp,
+                            onActivate = onVersionClick,
+                        )
+                } else {
+                    Modifier
+                }
+
                 Text(
-                    text ="B0BEmby "+ currentVersion,
+                    text = "B0BEmby " + currentVersion,
                     color = Color.White,
                     fontSize = 18.sp,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    modifier = versionModifier.alpha(alphaValue)
                 )
 
-                if (needUpdate) {
+                if (suffix.isNotEmpty()) {
                     Text(
-                        text = " ( ${stringResource(R.string.new_version_available, newVersion)} )",
+                        text = suffix,
                         color = MaterialTheme.colorScheme.secondary,
                         fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.alpha(alphaValue)
+                    )
+                }
+
+                if (updatePhase == UpdatePhase.Failed && updateNote.isNotEmpty()) {
+                    Text(
+                        text = " $updateNote",
+                        color = MaterialTheme.colorScheme.error,
+                        fontSize = 16.sp,
                         fontWeight = FontWeight.Bold
                     )
                 }
