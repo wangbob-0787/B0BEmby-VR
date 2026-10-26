@@ -263,6 +263,41 @@
     var m = /\/video\/(BV[0-9A-Za-z]+)/.exec(String(location.pathname || ''));
     return m ? m[1] : '';
   }
+  /*
+   * 季页面（/bangumi/play/ss<季号>）也要认得出正在播哪一集。
+   *
+   * B站 的推荐位很多是指向「整部片的入口」，点下去地址变成 ss 开头、里面没有集号
+   * （实测：从《魔方小姐》点《10间赶死队》→ ss38561；再点《唐探1900》同样进季页）。
+   * 认不出身份 → 槽一直是空的 → 真全屏按钮一直是灰的，整条接管卡死。
+   * 取法：播放窗口下面那块分集面板里，正在播的那一项带 cur/active 类，它的链接里就有集号。
+   */
+  var BI_EP_LINK_SEL = [
+    '.eplist_ep_list .ep-item.cur a[href*="/play/ep"]',
+    '.eplist_ep_list li.cur a[href*="/play/ep"]',
+    '.eplist_ep_item.cur a[href*="/play/ep"]',
+    '.ep-list .ep-item.cur a[href*="/play/ep"]',
+    '#eplist_module a[href*="/play/ep"][class*="cur"]',
+    'a[href*="/play/ep"][class*="cur"]',
+    'a[href*="/play/ep"][class*="active"]'
+  ];
+  function biEpFromDom() {
+    for (var i = 0; i < BI_EP_LINK_SEL.length; i++) {
+      var a = null;
+      try { a = document.querySelector(BI_EP_LINK_SEL[i]); } catch (e) { a = null; }
+      if (!a) continue;
+      var m = /\/play\/(ep\d+)/.exec(String(a.getAttribute('href') || ''));
+      if (m) return m[1];
+    }
+    return '';
+  }
+  function biEpFromState() {
+    try {
+      var st = window.__INITIAL_STATE__;
+      var ep = st && st.epInfo && st.epInfo.episode_id;
+      if (ep) return 'ep' + ep;
+    } catch (e) {}
+    return '';
+  }
   function biId() {
     var bv = biBv();
     if (bv) {
@@ -270,7 +305,11 @@
       return n > 1 ? bv + '#p' + n : bv;
     }
     var m = /\/bangumi\/play\/(ep\d+)/.exec(String(location.pathname || ''));
-    return m ? m[1] : '';
+    if (m) return m[1];
+    if (/\/bangumi\/play\/ss\d+/.test(String(location.pathname || ''))) {
+      return biEpFromDom() || biEpFromState();
+    }
+    return '';
   }
   function biTitle() {
     var ov = clean(txt('.bpx-player-top-title') || txt('[class*="player-top-title"]'));
