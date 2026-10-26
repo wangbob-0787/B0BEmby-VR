@@ -1101,6 +1101,55 @@
     } catch (e) {}
   }
 
+  /*
+   * 清掉腾讯播放器自己的本地资源库（父亲 2026-10-26 定：按 B 回网页后就逼它重新要一次）。
+   *
+   * 为什么需要：腾讯播放器把播放清单存进本地（Cache Storage、IndexedDB 里的 thumbplayer
+   * 资源库、以及几个 TP_RESOURCE_* 标记）。回网页后它直接从本地起播，一条网络请求都不发，
+   * 于是页面资源表里没有 m3u8、我们抓不到地址，真全屏按钮就一直灰（实测：同时刻 B站 回网页
+   * 两秒就恢复，腾讯四分钟不动，差别就在于 B站 每次都是真发请求）。
+   *
+   * 只清资源缓存相关的键，不动登录票据（登录在 cookie 里，与这些键无关），不会掉登录。
+   * IndexedDB 的库可能被页面自己占着删不掉，那种会记一笔日志，不影响后续流程。
+   */
+  function clearQqResourceCache() {
+    if (site() !== 'qq') return;
+    var stat = { cache: 0, idb: 0, ls: 0 };
+    try {
+      if (window.caches && window.caches.keys) {
+        window.caches.keys().then(function (ks) {
+          stat.cache = (ks || []).length;
+          (ks || []).forEach(function (k) { try { window.caches.delete(k); } catch (e) {} });
+          CH('⑨清腾讯资源库', { 缓存库: stat.cache, 库清单: (ks || []).join(',') });
+        }).catch(function () {});
+      }
+    } catch (e) {}
+    try {
+      Object.keys(localStorage).forEach(function (k) {
+        if (/thumbplayer|TP_RESOURCE|offline-db|tenvideo_player|TVPLAYER.*cache/i.test(k)) {
+          try { localStorage.removeItem(k); stat.ls++; } catch (e) {}
+        }
+      });
+    } catch (e) {}
+    try {
+      if (window.indexedDB && indexedDB.databases) {
+        indexedDB.databases().then(function (ds) {
+          var n = 0;
+          (ds || []).forEach(function (d) {
+            if (!d || !d.name) return;
+            try {
+              var rq = indexedDB.deleteDatabase(d.name);
+              rq.onsuccess = function () { n++; };
+              rq.onblocked = function () { CH('⑨资源库被占用', { 库: d.name }); };
+            } catch (e) {}
+          });
+          stat.idb = (ds || []).length;
+          CH('⑨清腾讯资源库', { 数据库: stat.idb, 本地键: stat.ls });
+        }).catch(function () {});
+      }
+    } catch (e) {}
+  }
+
   window.__b0bClearSlots = function (why) {
     slot.bi = null; slot.qq = null; slot.iq = null;
     S.lastSent = ''; fsState = -1; fsPend = 0;
@@ -1110,6 +1159,8 @@
     try { if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen(); } catch (e) {}
     try { window.__b0bRealFull = 0; } catch (e2) {}
     try { localStorage.removeItem('b0b:realFullAt'); } catch (e3) {}
+    /* 回网页先把腾讯的本地资源库清掉：它不清就会拿本地缓存起播、一条请求都不发（见函数注释） */
+    clearQqResourceCache();
     CH('⑨回网页', { 原因: why || '-', 站: site(), 时刻: Date.now() });
     markFs();
   };
