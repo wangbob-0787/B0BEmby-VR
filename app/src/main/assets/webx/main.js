@@ -416,12 +416,27 @@
      只有点击那一刻拿到的才准（见 docs/slot-spec-2026-10-25/3-网页侧逻辑.md 第 9 节）。 */
   var iqClick = S.iqClick || (S.iqClick = { tv: '', t: '', u: '', at: 0, path: '' });
 
+  /*
+   * 片名以"点中的那一集"为准（父亲 2026-10-26 定）。
+   *
+   * 播放窗口左上角那行字在切集后经常滞后 —— 综艺尤其明显，它没有"当前集"的样式差分，
+   * 头部元素又是缓存的，于是出现"标题写着第3期、画面在放第4期"。点选那一刻记下来的
+   * 卡片标题是唯一确定的东西（和取片号同一次点击、同一张卡），所以优先用它，头部只兜底。
+   * 卡片标题常常只有"第4期：……"没有剧名，剧名仍从页面标题取，拼完整。
+   */
   function iqTitle() {
-    var ov = clean(iqHeaderText()) || clean(iqClick.t);
+    var picked = (iqClick.t && Date.now() - (iqClick.at || 0) < 60000) ? clean(iqClick.t) : '';
+    var ov = picked || clean(iqHeaderText());
     var series = fTitle(document.title) || fTitle(ov);
     var m = /第\s*([零一二三四五六七八九十\d]+)\s*([集话期])\s*[:：]?\s*(.*)$/.exec(ov);
-    if (m) return buildTitle(series || clean(ov), cn2num(m[1]), m[2], '', m[3]);
-    return isJunkTitle(series) ? '' : series;
+    var out = m ? buildTitle(series || clean(ov), cn2num(m[1]), m[2], '', m[3])
+      : (isJunkTitle(series) ? '' : series);
+    /* 只在标题变化时记一条，便于对照"标题对不对得上画面"（父亲排查用） */
+    if (out && out !== S.iqTitleLast) {
+      S.iqTitleLast = out;
+      CH('③片名', { 来源: picked ? '点击' : '头部', 值: out });
+    }
+    return out;
   }
   /*
    * 播放窗口左上角那行字（"剧名 第N集 集名"）。类名会改，所以按几个候选类找，
