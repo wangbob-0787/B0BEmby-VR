@@ -61,9 +61,13 @@
       kind = m[2];
       name = clean(String(raw).slice(raw.indexOf(m[0]) + m[0].length));
     } else {
-      var m2 = /^0*(\d{1,3})(?:\s|$|[集话期回部])/.exec(raw);
+      /* 选集项的文字可能是「2VIP」「2 集名」这类写法：数字开头就算集号 */
+      var m2 = /^0*(\d{1,3})/.exec(raw);
       if (m2) no = String(parseInt(m2[1], 10));
       name = clean(raw.replace(/^0*\d{1,3}\s*/, ''));
+      /* 文字里只剩会员/独播这类标记时它不是集名 —— 集名在 title 属性里（腾讯选集项就是这样） */
+      if (/^(vip|svip|会员|独播|独家|超前|付费|点播|预告|正片|花絮|片段|特辑|彩蛋)$/i.test(name) ||
+          /vip|会员专享|独播|超前点播/i.test(name)) name = '';
     }
     if (!name) name = ttl;
     return (no || name) ? { no: no, kind: kind, name: name } : null;
