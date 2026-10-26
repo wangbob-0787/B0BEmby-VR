@@ -2666,9 +2666,9 @@ class MainActivity : ComponentActivity() {
 
     /**
      * 把 (时间, 文字, 颜色) 列表排成弹幕轨道（2026-10-20 从 B站 那段抽出来，腾讯共用）。
-     * 规则：**固定两行**；整部片的弹幕按"两行总容量"均匀抽稀后全部排进去，
-     * 行满时挑最早空出的那一行接上（允许偶尔重叠，绝不整段丢弃）。
-     * 每条 8 秒、同轨下一条间隔 1.2 秒 —— 这两行每秒约能容纳 1.6 条。
+     * 规则：**固定两行**；整部片的弹幕按"两行总容量"均匀抽稀，超过容量就按比例取样。
+     * 每条 8 秒、同轨下一条间隔取调参文件里的 `danmaku_gap`（默认 2.0 秒）；
+     * 该出现时两行都占着，这一条直接丢掉，不排队（父亲 2026-10-26 09:44 定）。
      */
     private fun buildDanmakuTrack(parsed: List<Triple<Long, String, Long>>): com.xxxx.emby_vr.danmaku.DanmakuTrack? {
         val fs = 52f
@@ -2680,7 +2680,9 @@ class MainActivity : ComponentActivity() {
          * 做法：先算这两行在整个时长里最多放得下多少条（capacity），
          * 超过就按比例均匀抽稀 —— 整部片从头到尾都有弹幕，不再出现"前几分钟几十条、后面全丢"。
          */
-        val gapMs = 1200L
+        /* 间隔走调参文件（vr-tuning.txt 的 danmaku_gap，单位秒）：现场改、不用重装。
+           默认 2.0 秒 —— 1.2 秒时同屏两条会挤在一起（父亲 2026-10-26 09:44 定）。 */
+        val gapMs = (com.xxxx.emby_vr.vr.VrTuning.danmakuGapSec * 1000f).toLong().coerceIn(600L, 6000L)
         val laneY = floatArrayOf(topMargin, topMargin + lineH)
         val spanMsAll = (parsed.maxOfOrNull { it.first } ?: 0L).coerceAtLeast(1L)
         val capacity = ((spanMsAll / gapMs) * laneY.size).toInt().coerceAtLeast(1)
@@ -2692,7 +2694,6 @@ class MainActivity : ComponentActivity() {
             }
         val laneFree = LongArray(laneY.size)
         var dropped = 0
-        var overlapped = 0
         val items = ArrayList<com.xxxx.emby_vr.danmaku.DanmakuItem>()
         for (p in picked) {
             /* 选一条空着的行 */
@@ -2704,15 +2705,13 @@ class MainActivity : ComponentActivity() {
                 }
             }
             /*
-             * 两行都占着也不丢：挑"最早空出来的那一行"接着放。
-             * 固定两行 + 满则丢弃时，一部电影近两千条会只留 6 条，
-             * 画面上等于没有弹幕（父亲 2026-10-26 01:07 现场）。
-             * 允许偶尔重叠，比丢掉 99% 强。
+             * 行满就丢，不排队（父亲 2026-10-26 09:44 定："丢几条也没关系"）。
+             * 挑一行硬接会让后面的弹幕整体往后拖，比丢几条更难接受；
+             * 容量那一步（capacity）已经把整片摊平，丢的是局部密集段。
              */
             if (lane < 0) {
-                lane = 0
-                for (i in laneY.indices) if (laneFree[i] < laneFree[lane]) lane = i
-                overlapped++
+                dropped++
+                continue
             }
             laneFree[lane] = p.first + gapMs
             val y = laneY[lane]
@@ -2738,8 +2737,8 @@ class MainActivity : ComponentActivity() {
         Log.i(
             TAG,
             "⑦ 弹幕按 Emby 那套排成 " + laneY.size + " 行：保留 " + items.size +
-                " 条（两行容量 " + capacity + "），行满重叠 " + overlapped + " 条、丢弃 " + dropped +
-                    " 条（共解析 " + parsed.size + " 条）",
+                " 条（两行容量 " + capacity + "），行满丢弃 " + dropped +
+                " 条（共解析 " + parsed.size + " 条，间隔 " + (gapMs / 1000f) + "s）",
         )
         return com.xxxx.emby_vr.danmaku.DanmakuTrack(1920f, 1080f, items)
     }
@@ -3537,11 +3536,28 @@ class MainActivity : ComponentActivity() {
         Log.i("B0B链", step + " " + kv)
     }
 
+    /**
+     * 起播日志里的站点标识兜底（2026-10-26 父亲报"站= 是空的"）。
+     * 这个字段本该由网页交付带过来，但原生自己重新拼播放参数的两条路（腾讯攒分片、
+     * 爱奇艺本机转发）没把它带上；用交付里的页面地址反推，日志才看得懂是哪一站。
+     */
+    private fun siteTagOf(obj: org.json.JSONObject): String {
+        val direct = obj.optString("site")
+        if (direct.isNotBlank()) return direct
+        val u = obj.optString("frame")
+        return when {
+            u.contains("iqiyi") -> "iq"
+            u.contains("qq.com") -> "qq"
+            u.contains("bilibili") -> "bi"
+            else -> "-"
+        }
+    }
+
     private fun playWebStream(obj: org.json.JSONObject) {
         lastWebDeliverAt = System.currentTimeMillis()
         chainLog(
             "⑧起播",
-            "站=" + obj.optString("site") + " 集=" + obj.optString("ep").ifBlank { obj.optString("vid") } +
+            "站=" + siteTagOf(obj) + " 集=" + obj.optString("ep").ifBlank { obj.optString("vid") } +
                 " 时长=" + obj.optInt("durSec", 0) + "s at=" + obj.optLong("at", 0L) +
                 " needProxy=" + obj.optInt("needProxy", 0) +
                 " 标题「" + obj.optString("title").take(24) + "」",

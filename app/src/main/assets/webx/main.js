@@ -63,6 +63,7 @@
   var T_WORDS = [
     /* 站点名 */ '哔哩哔哩', 'bilibili', '腾讯视频', '爱奇艺', '优酷', '芒果tv',
     /* 分类词 */ '电视剧', '连续剧', '电影', '综艺', '动漫', '纪录片', '番剧', '国创', '少儿', '影视', '全集',
+    /* 类型词（带「节目」二字） */ '综艺节目', '真人秀', '脱口秀', '体育节目', '娱乐节目', '资讯', '晚会',
     /* 画质与版本 */ '杜比视界', '1080p', '4k', 'hdr', '高清', '超清', '蓝光', '完整版', '正版', '独播', '独家', '加长版', '会员版', '免费', 'vip',
     /* 花絮类 */ '预告', '花絮', '片段', '正片', '抢先看', '特辑', '彩蛋',
     /* 语言版本 */ '普通话', '粤语', '潮汕话', '客家话', '闽南语', '国语', '原声', '中配', '台配', '日语', '英语'
@@ -408,17 +409,15 @@
 
   /* 六、爱奇艺 */
 
-  var IQ_SALT = 'ulc2h7tka0mdrf2lkb1n6m6mulc2htbn';
-  var IQ_CONST = { t: '0', us: '', kuid: '', kt: '0', vf: '', hevc: '0', qd: '0', r: '1', s: '1', cp: '14', p: '1', pn: '0', p1: '1', q: '1', o: '0', cmd: '0' };
   var iqEps = { aid: '', list: [] };
-  var iqBusy = false, iqTvidHint = null;
-  var iqDone = S.iqDone || (S.iqDone = { tvid: '', at: 0 });
+  var iqTvidHint = null;
+  /* 点击取号：点在哪张集/期卡片上，就把那张卡片的片号、集号、集名记下来。
+     爱奇艺综艺切集后页面自己的片号不跟着换（实测 40 秒还停在上一期），
+     只有点击那一刻拿到的才准（见 docs/slot-spec-2026-10-25/3-网页侧逻辑.md 第 9 节）。 */
+  var iqClick = S.iqClick || (S.iqClick = { tv: '', t: '', u: '', at: 0, path: '' });
 
-  function iqCookie(name) {
-    try { var m = String(document.cookie || '').match(new RegExp('(?:^|; )' + name + '=([^;]*)')); return m ? decodeURIComponent(m[1]) : ''; } catch (e) { return ''; }
-  }
   function iqTitle() {
-    var ov = clean(iqHeaderText());
+    var ov = clean(iqHeaderText()) || clean(iqClick.t);
     var series = fTitle(document.title) || fTitle(ov);
     var m = /第\s*([零一二三四五六七八九十\d]+)\s*([集话期])\s*[:：]?\s*(.*)$/.exec(ov);
     if (m) return buildTitle(series || clean(ov), cn2num(m[1]), m[2], '', m[3]);
@@ -453,6 +452,18 @@
   }
   function iqEpNo() {
     /*
+     * 点的那张卡片上就写着"第4期 喻言《灼》…"，比左上角那行早三秒到手，优先用它。
+     * 60 秒内有效：换片/换集都靠这一次点击，再久就对不上现在播的是哪一个了。
+     */
+    var cp = String(iqClick.t || '');
+    if (cp && Date.now() - (iqClick.at || 0) < 60000) {
+      var ca = cp.match(/第\s*([零一二三四五六七八九十百\d]+)/g);
+      if (ca && ca.length) {
+        var cm = /第\s*([零一二三四五六七八九十百\d]+)/.exec(ca[ca.length - 1]);
+        if (cm) return cn2num(cm[1]);
+      }
+    }
+    /*
      * 不穷举单位。左上角那行是"剧名 第N集/期/话/回/部…集名"，
      * 只要认"第 + 数字"，后面跟什么字都不影响 —— 综艺、纪录片、动漫的写法各不一样，
      * 按单位列举永远漏（父亲 2026-10-26 02:28 提醒）。
@@ -468,75 +479,6 @@
     var last = all[all.length - 1];
     var m = /第\s*([零一二三四五六七八九十百\d]+)/.exec(last);
     return m ? cn2num(m[1]) : '';
-  }
-  function md5(s) {
-    function rl(n, c) { return (n << c) | (n >>> (32 - c)); }
-    function au(x, y) { var l = (x & 0xFFFF) + (y & 0xFFFF), m = (x >> 16) + (y >> 16) + (l >> 16); return (m << 16) | (l & 0xFFFF); }
-    function cmn(q, a, b, x, s2, t) { return au(rl(au(au(a, q), au(x, t)), s2), b); }
-    function ff(a, b, c, d, x, s2, t) { return cmn((b & c) | ((~b) & d), a, b, x, s2, t); }
-    function gg(a, b, c, d, x, s2, t) { return cmn((b & d) | (c & (~d)), a, b, x, s2, t); }
-    function hh(a, b, c, d, x, s2, t) { return cmn(b ^ c ^ d, a, b, x, s2, t); }
-    function ii(a, b, c, d, x, s2, t) { return cmn(c ^ (b | (~d)), a, b, x, s2, t); }
-    return hex(md5core(String(s)));
-  }
-  function md5core(str) {
-    var n = str.length, w = [], i;
-    for (i = 0; i < n * 8; i += 32) w[i >> 5] = (w[i >> 5] || 0) | ((str.charCodeAt(i >> 3) | 0) << (i % 32));
-    var a = 1732584193, b = -271733879, c = -1732584194, d = 271733878;
-    var s = [7, 12, 17, 22, 5, 9, 14, 20, 4, 11, 16, 23, 6, 10, 15, 21];
-    var kk = [], L = ((n + 8) >> 6) + 1;
-    for (i = 0; i < L * 16; i++) kk[i] = w[i] || 0;
-    kk[n >> 2] |= 128 << ((n % 4) * 8);
-    kk[L * 16 - 2] = n * 8;
-    for (i = 0; i < L * 16; i += 16) {
-      var A = a, B = b, C = c, D = d;
-      for (var j = 0; j < 64; j++) {
-        var f, g2;
-        if (j < 16) { f = (B & C) | ((~B) & D); g2 = j; }
-        else if (j < 32) { f = (D & B) | ((~D) & C); g2 = (5 * j + 1) % 16; }
-        else if (j < 48) { f = B ^ C ^ D; g2 = (3 * j + 5) % 16; }
-        else { f = C ^ (B | (~D)); g2 = (7 * j) % 16; }
-        var tmp = D; D = C; C = B;
-        B = au(B, rl(au(au(A, f), au(kk[i + g2], 0)), s[((j >> 4) * 4) + (j % 4)]));
-        A = tmp;
-      }
-      a = au(a, A); b = au(b, B); c = au(c, C); d = au(d, D);
-    }
-    return [a, b, c, d];
-  }
-  function hex(arr) {
-    var h = '0123456789abcdef', out = '';
-    for (var i = 0; i < arr.length * 4; i++) {
-      out += h.charAt((arr[i >> 2] >> ((i % 4) * 8 + 4)) & 0xF) + h.charAt((arr[i >> 2] >> ((i % 4) * 8)) & 0xF);
-    }
-    return out;
-  }
-  function iqUrl(tvid) {
-    var sb = '';
-    for (var k in IQ_CONST) sb += k + '=' + IQ_CONST[k] + '&';
-    sb += 'tvid=' + tvid + '&bid=600&vid=&uid=' + iqCookie('P00003') + '&k_uid=' + iqCookie('QC005') +
-      '&dfp=' + String(localStorage.getItem('__dfp') || '').split('@')[0] + '&authKey=&tm=' + Date.now();
-    var path = '/dash?' + sb;
-    return 'https://cache.video.iqiyi.com' + path + '&vf=' + md5(path + IQ_SALT);
-  }
-  function iqParse(body) {
-    var j = JSON.parse(body), data = j.data || {};
-    var vlist = (data.vidl || [])[0] || {};
-    var pl = vlist._bl || {};
-    var best = null, bestN = 0;
-    for (var k in pl) {
-      var cand = pl[k];
-      if (!cand || !cand.vs) continue;
-      var n = String(cand.vs).length;
-      if (n > bestN) { bestN = n; best = cand; }
-    }
-    if (!best) return null;
-    var segs = 0, dur = 0;
-    String(best.vs).split('-').forEach(function (x) {
-      var parts = x.split('.');
-      if (parts.length >= 3) { segs++; dur += parseInt(parts[2], 10) || 0; }
-    });
-    return { playlist: String(best.vs), segs: segs, dur: dur || parseInt(best.duration || 0, 10) || 0, bid: parseInt(best.bid || 0, 10) || 0 };
   }
   function iqAlbumIds() {
     var out = [];
@@ -587,6 +529,9 @@
     } catch (e) {}
   }
   function iqTvid() {
+    /* 先用"点的那一张"：切集/换片那一刻页面自己的号还没换（综艺实测 40 秒不动），
+       点到的卡片上的号才是这一集/这一期的。换片后整页重载，脚本重跑，这份记录自然清空。 */
+    if (iqClick.tv && Date.now() - (iqClick.at || 0) < 60000) return String(iqClick.tv);
     if (iqTvidHint && iqTvidHint.p === String(location.pathname)) return iqTvidHint.t;
     var ep = parseInt(iqEpNo() || '0', 10), l = iqEps.list;
     if (!ep) {
@@ -599,44 +544,48 @@
     var it = l[ep - 1];
     return it ? String(it.tvId || '') : '';
   }
-  function iqGrab() {
-    if (iqBusy) return;
-    var tvid = iqTvid();
-    if (!tvid) {
-      CH('②无片号', { 站: 'iq', 集: iqEpNo() || '-', 表长: iqEps.list.length, 提示: (iqTvidHint && iqTvidHint.t) || '-' });
-      return;
-    }
-    if (iqDone.tvid === tvid && Date.now() - iqDone.at < 15000) return;
-    iqBusy = true;
-    try {
-      var x = new XMLHttpRequest();
-      x.open('GET', iqUrl(tvid), true);
-      x.onload = function () {
-        iqBusy = false;
-        try {
-          var r = iqParse(x.responseText);
-          /* 自签这一步以前失败是静默的，槽一直空却查不到原因；这里把结果亮出来 */
-          CH('②自签', {
-            站: 'iq', 状态: x.status, 长度: String(x.responseText || '').length,
-            有清单: (r && r.playlist) ? 1 : 0, 时长: (r && r.dur) || 0
-          });
-          if (!r || !r.playlist) return;
-          iqDone = { tvid: tvid, at: Date.now() };
-          commit('iq', {
-            id: tvid, ep: iqEpNo(), title: iqTitle(), dur: r.dur,
-            v: r.playlist, a: r.playlist, quality: r.bid === 600 ? '1080P' : '',
-            ar: pageAr()
-          });
-        } catch (e) { console.log('[b0b] 爱奇艺解析出错：' + e); }
-      };
-      x.onerror = function () { iqBusy = false; CH('②自签', { 站: 'iq', 结果: '请求失败' }); };
-      x.send();
-    } catch (e) { iqBusy = false; }
-  }
   function iqTick() {
     if (site() !== 'iq' || !onPlayPage()) return;
     iqLoadEps();
-    iqGrab();
+  }
+
+  /*
+   * 点击取号（父亲 2026-10-26 定）：点在哪张集/期卡片上，就把那张卡片的片号记下来。
+   * 页面自己的片号在切集后不更新，只有点击当刻拿到的才准；原生投进来的点击与手点
+   * 都会冒泡到这里。绑定只做一次 —— 脚本会被反复注入，重绑会让一条点击记好几遍。
+   */
+  function iqWatchClick() {
+    if (window.__b0bClickBound) return;
+    window.__b0bClickBound = 1;
+    document.addEventListener('click', function (ev) {
+      try {
+        var el = ev.target, i, j, k, f, mp, d;
+        for (i = 0; i < 12 && el; i++) {
+          k = Object.keys(el).filter(function (x) { return x.indexOf('__reactFiber') === 0; })[0];
+          if (k) {
+            f = el[k];
+            for (j = 0; j < 12 && f; j++) {
+              mp = f.memoizedProps || {};
+              d = mp.data || mp.item;
+              if (d && (d.qipu_id || d.tvId || d.tvid)) {
+                iqClick = {
+                  tv: String(d.qipu_id || d.tvId || d.tvid),
+                  t: clean(d.title || d.short_title || ''),
+                  u: String(d.page_url || ''),
+                  at: Date.now(),
+                  path: String(location.pathname)
+                };
+                S.iqClick = iqClick;
+                CH('②点击取号', { 站: site(), 片号: iqClick.tv, 卡片: iqClick.t.slice(0, 20) });
+                return;
+              }
+              f = f.return;
+            }
+          }
+          el = el.parentElement;
+        }
+      } catch (e) {}
+    }, true);
   }
 
   /* 七、爱奇艺网页高度 */
@@ -935,7 +884,6 @@
     biCtx.key = ''; biCtx.cid = ''; biCtx.dur = 0; biCtx.v = ''; biCtx.a = ''; biCtx.quality = '';
     biSegs = [];
     qqCtx.url = ''; qqCtx.name = ''; qqCtx.dur = 0;
-    iqDone.tvid = ''; iqDone.at = 0;
     try { if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen(); } catch (e) {}
     try { window.__b0bRealFull = 0; } catch (e2) {}
     try { localStorage.removeItem('b0b:realFullAt'); } catch (e3) {}
@@ -966,6 +914,7 @@
   };
 
   hookNet();
+  iqWatchClick();
   guardFullscreen();
   /* 注入会被重试，重试等于把整段脚本再跑一遍；旧定时器先收掉，
      否则同一条链每秒跑好几遍。 */

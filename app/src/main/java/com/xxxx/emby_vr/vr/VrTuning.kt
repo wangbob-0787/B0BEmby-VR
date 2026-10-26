@@ -93,6 +93,16 @@ object VrTuning {
     var webZeroCopy: Int = 1
 
     /**
+     * 弹幕同轨最小间隔（秒，2026-10-26 父亲定）。
+     *
+     * 固定两行时，1.2 秒会让同屏两条弹幕挤在一起看不清；拉大到 2 秒后同一条轨道
+     * 空出一段再放下一条。取舍已定：**宁可丢几条，也不要叠在一起**。
+     * 现场改 `vr-tuning.txt` 的 `danmaku_gap=1.5` 即可，一秒内生效、不用重装。
+     */
+    @Volatile
+    var danmakuGapSec: Float = 2.0f
+
+    /**
      * 网页禁用缓存（2026-10-21 12:50）。
      * 1 = 每次请求都走网络 —— 爱奇艺的正片取流请求被缓存住时不发，导致截不到整集片单；
      * 戴着改 `web_nocache=1` 就能让它重新发（代价是页面加载变慢）。
@@ -370,6 +380,13 @@ object VrTuning {
             if (it != webZeroCopy) {
                 webZeroCopy = it
                 applied += "网页零拷贝=" + it
+            }
+        }
+        raw["danmaku_gap"]?.toFloatOrNull()?.let {
+            val v = it.coerceIn(0.6f, 6f)
+            if (v != danmakuGapSec) {
+                danmakuGapSec = v
+                applied += "弹幕间隔=" + v + "s"
             }
         }
         return applied

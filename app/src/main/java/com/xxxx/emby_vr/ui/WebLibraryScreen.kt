@@ -758,7 +758,16 @@ private object WebRuntime {
         if (o == null) return "无"
         val st = o.optJSONArray("streams")?.optJSONObject(0)
         val addr = st?.optString("video").orEmpty().ifBlank { st?.optString("playlist").orEmpty() }
-        return "站=" + o.optString("site") +
+        val siteTag = o.optString("site").ifBlank {
+            val u = o.optString("frame")
+            when {
+                u.contains("iqiyi") -> "iq"
+                u.contains("qq.com") -> "qq"
+                u.contains("bilibili") -> "bi"
+                else -> "-"
+            }
+        }
+        return "站=" + siteTag +
             " 集=" + o.optString("ep").ifBlank { o.optString("vid") } +
             " 季=" + o.optString("season", "-") +
             " 时长=" + o.optInt("durSec", 0) + "s" +
