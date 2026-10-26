@@ -432,7 +432,13 @@
   function biSync() {
     var id = biId();
     if (!id || id === biCtx.key) return;
-    biCtx = { key: id, cid: '', dur: 0, v: '', a: '', quality: '', askFailed: 0 };
+    /*
+     * 换集只换身份、重开分片账，不清已到手的地址与时长（父亲 2026-10-26 定，
+     * 与腾讯同一口径）：新地址没来之前旧的先在手里顶着，新数据一到整份覆盖。
+     * 分片账必须清 —— 那是"这一集下载了哪些分片"的流水，跨集混在一起会配错。
+     * 地址与集号的对齐由 biSegPair 的目录号过滤与 biCtx.cid 共同保证。
+     */
+    biCtx.key = id; biCtx.cid = ''; biCtx.askFailed = 0;
     biSegs = [];
     CH('①页面变化', { 站: 'bi', 身份: id });
     if (/^ep\d+$/.test(id)) { biCtx.cid = id; biAsk(id, ''); return; }
