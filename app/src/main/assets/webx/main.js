@@ -416,28 +416,49 @@
      只有点击那一刻拿到的才准（见 docs/slot-spec-2026-10-25/3-网页侧逻辑.md 第 9 节）。 */
   var iqClick = S.iqClick || (S.iqClick = { tv: '', t: '', u: '', at: 0, path: '' });
 
+  /* "第4期：名字" 这种串的拆解：给片名、集号、集名各取所需 */
+  var IQ_EP_RE = /第\s*([零一二三四五六七八九十\d]+)\s*([集话期])\s*[:：]?\s*(.*)$/;
+  function iqEpParts(text) {
+    var t = clean(text);
+    if (!t) return null;
+    var m = IQ_EP_RE.exec(t);
+    if (!m) return null;
+    return { no: m[1], kind: m[2], name: clean(m[3]) };
+  }
+
   /*
-   * 片名以"点中的那一集"为准（父亲 2026-10-26 定）。
+   * 拼"正在播放"的片名（父亲 2026-10-26 定的分工）。
    *
-   * 播放窗口左上角那行字在切集后经常滞后 —— 综艺尤其明显，它没有"当前集"的样式差分，
-   * 头部元素又是缓存的，于是出现"标题写着第3期、画面在放第4期"。点选那一刻记下来的
-   * 卡片标题是唯一确定的东西（和取片号同一次点击、同一张卡），所以优先用它，头部只兜底。
-   * 卡片标题常常只有"第4期：……"没有剧名，剧名仍从页面标题取，拼完整。
+   * 剧名/综艺名走页面标题那一路：那一行是整部剧的名字，稳定、不受切集影响。
+   * 集号与集名走点选的那一张卡：和取片号同一次点击、同一张卡，切到哪一集就是哪一集。
+   * 之所以要分两路 —— 播放窗口左上角那行字在切集后经常滞后（综艺没有"当前集"样式差分，
+   * 头部元素是缓存的），拿它当集号来源就会出现"标题第3期、画面放第4期"。
    */
   function iqTitle() {
     var picked = (iqClick.t && Date.now() - (iqClick.at || 0) < 60000) ? clean(iqClick.t) : '';
-    var ov = picked || clean(iqHeaderText());
-    var series = fTitle(document.title) || fTitle(ov);
-    var m = /第\s*([零一二三四五六七八九十\d]+)\s*([集话期])\s*[:：]?\s*(.*)$/.exec(ov);
-    var out = m ? buildTitle(series || clean(ov), cn2num(m[1]), m[2], '', m[3])
-      : (isJunkTitle(series) ? '' : series);
-    /* 只在标题变化时记一条，便于对照"标题对不对得上画面"（父亲排查用） */
+    var head = clean(iqHeaderText());
+    var series = fTitle(document.title) || fTitle(head) || fTitle(picked);
+    var pickedEp = iqEpParts(picked);
+    var headEp = iqEpParts(head);
+    var ep = pickedEp || headEp;
+    var out;
+    if (ep) {
+      /* 集号以点选为准；集名两路各取一半时也不丢 —— 卡片常只写"第4期"，名字在头部那行 */
+      var no = (pickedEp && pickedEp.no) || (headEp && headEp.no) || ep.no;
+      var kind = (pickedEp && pickedEp.kind) || (headEp && headEp.kind) || ep.kind;
+      var name = (pickedEp && pickedEp.name) || (headEp && headEp.name) || '';
+      out = buildTitle(series || clean(head) || clean(picked), cn2num(no), kind, '', name);
+    } else {
+      out = isJunkTitle(series) ? '' : series;
+    }
+    /* 只在变化时记一条，便于核对"标题对不对得上画面" */
     if (out && out !== S.iqTitleLast) {
       S.iqTitleLast = out;
-      CH('③片名', { 来源: picked ? '点击' : '头部', 值: out });
+      CH('③片名', { 剧名来源: '标题', 集号来源: pickedEp ? '点击' : '头部', 值: out });
     }
     return out;
   }
+
   /*
    * 播放窗口左上角那行字（"剧名 第N集 集名"）。类名会改，所以按几个候选类找，
    * 再退一步：在画面左上角区域里找带"第N集"的元素（父亲 2026-10-26 指出那里一定有）。
