@@ -493,6 +493,8 @@
     var nm = (p && p.name) || '';
     if (!nm) nm = clean(txt('.player-play-title__sub-title'));
     if (nm && (nm === String(no) || /^0*\d{1,3}[集话期回部]?$/.test(nm))) nm = '';
+    /* 副标题那格常被会员标识占着（实测「尚公主 第3集VIP」），这类标记不是集名 */
+    if (nm && /vip|会员|独播|独家|超前|付费|点播|预告|正片|花絮|片段|特辑|彩蛋/i.test(nm)) nm = '';
     if (no) return buildTitle(series, cn2num(no), (p && p.kind) || '集', '', nm);
     if (nm) return buildTitle(series, '', '', '', nm);
     /* 面板还没渲染出来（刚进页那几秒）才退回播放器那行 */
