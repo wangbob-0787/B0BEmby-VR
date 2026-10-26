@@ -40,6 +40,43 @@
     try { var v = mainVideo(); return v && v.duration > 0 && isFinite(v.duration) ? Math.round(v.duration) : 0; } catch (e) { return 0; }
   }
   var CN = { '零': 0, '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9 };
+  /*
+   * 集号与集名的唯一来源 = 选集面板里"正在播的那一项"（父亲 2026-10-26 定）。
+   * 页面标题只能拿剧名：切集后它常还挂着上一集（实测《小城良方》播第 2 集、标题写第 1 集），
+   * 而面板选中项是页面自己维护的当前位置，点哪一集它就是哪一集。
+   * 实测（2026-10-26 .18 Chrome 现场读 DOM）：
+   *   腾讯 容器 .episode-list、项 .episode-item、当前项多一个 selected；
+   *        文本是集号（"1"），title 属性是集名（"厂长横尸铁轨！癫狂命案重现"）。
+   *   爱奇艺 电视剧项带 episodes_playingItem 类；综艺没有类名差分，靠期号文字颜色区分。
+   *   B站 CSS Modules，当前项类名带 activeItem；老版是 .ep-item.cur。
+   */
+  function parsePanelEl(el) {
+    if (!el) return null;
+    var raw = clean(el.textContent || '');
+    var ttl = clean(el.getAttribute('title') || '');
+    var no = '', kind = '集', name = '';
+    var m = /第\s*([零一二三四五六七八九十百\d]+)\s*([集话期回部])/.exec(raw);
+    if (m) {
+      no = cn2num(m[1]);
+      kind = m[2];
+      name = clean(String(raw).slice(raw.indexOf(m[0]) + m[0].length));
+    } else {
+      var m2 = /^0*(\d{1,3})(?:\s|$)/.exec(raw);
+      if (m2) no = String(parseInt(m2[1], 10));
+      name = clean(raw.replace(/^0*\d{1,3}\s*/, ''));
+    }
+    if (!name) name = ttl;
+    return (no || name) ? { no: no, kind: kind, name: name } : null;
+  }
+  function pickPanelEp(sels) {
+    for (var i = 0; i < sels.length; i++) {
+      var el = null;
+      try { el = document.querySelector(sels[i]); } catch (e) { el = null; }
+      var r = parsePanelEl(el);
+      if (r) return r;
+    }
+    return null;
+  }
   function cn2num(s) {
     var str = String(s);
     if (/^\d+$/.test(str)) return String(parseInt(str, 10));
@@ -324,9 +361,19 @@
     if (p2 && p2 !== '/' && p2.length > 1) return 'p:' + p2;
     return '';
   }
+  var BI_PANEL_SEL = [
+    'a[href*="/play/ep"][class*="activeItem"]',
+    '.eplist_ep_list .ep-item.cur',
+    '.eplist_ep_item.cur',
+    '.ep-list .ep-item.cur',
+    '.video-pod__item.active',
+    '.list-box .list-item.active'
+  ];
   function biTitle() {
-    var ov = clean(txt('.bpx-player-top-title') || txt('[class*="player-top-title"]'));
     var series = fTitle(document.title) || fTitle(txt('.video-title') || txt('h1.video-title'));
+    var p = pickPanelEp(BI_PANEL_SEL);
+    if (p && p.no) return buildTitle(series, cn2num(p.no), p.kind, biSeasonNo(), p.name);
+    var ov = clean(txt('.bpx-player-top-title') || txt('[class*="player-top-title"]'));
     var m = /第\s*([零一二三四五六七八九十\d]+)\s*([集话期])\s*[:：]?\s*(.*)$/.exec(ov);
     if (m) return buildTitle(series || clean(ov), cn2num(m[1]), m[2], biSeasonNo(), m[3]);
     return isJunkTitle(series) ? '' : series;
@@ -432,15 +479,25 @@
     var f = /_([A-Za-z0-9]{6,})\.f\d{6}\.(?:ts\.)?m3u8/.exec(String(qqCtx.url || ''));
     return f ? f[1] : '';
   }
+  var QQ_PANEL_SEL = ['.episode-list .episode-item.selected', '.episode-item.selected'];
+  function qqPanelPick() { return pickPanelEp(QQ_PANEL_SEL); }
   function qqTitle() {
+    /* 剧名只从页面标题拿，且先摘掉 "_02_" 这种集号尾巴（腾讯标题格式：剧名_集号_分类_…） */
+    var series = fTitle(String(document.title || '').replace(/_\d{1,3}_/g, '_'));
+    if (!series) series = fTitle(clean(txt('.player-play-title__title') || txt('.txp_title')));
+    var p = qqPanelPick();
+    if (p && p.no) return buildTitle(series, cn2num(p.no), p.kind, '', p.name);
+    if (p && p.name) return buildTitle(series, '', '', '', p.name);
+    /* 面板还没渲染出来（刚进页那几秒）才退回播放器那行 */
     var ov = clean(txt('.player-play-title__title') || txt('.txp_title'));
     var sub = clean(txt('.player-play-title__sub-title'));
-    var series = fTitle(document.title) || fTitle(ov);
     var m = /第\s*([零一二三四五六七八九十\d]+)\s*([集话期])\s*[:：]?\s*(.*)$/.exec(ov);
     if (m) return buildTitle(series || clean(ov), cn2num(m[1]), m[2], '', m[3] || sub);
     return buildTitle(series || ov, '', '', '', sub);
   }
   function qqEpNo() {
+    var p = qqPanelPick();
+    if (p && p.no) return String(p.no);
     var m = /第\s*([零一二三四五六七八九十\d]+)\s*[集话期]/.exec(clean(txt('.player-play-title__title') || txt('.txp_title')));
     return m ? cn2num(m[1]) : '';
   }
@@ -517,13 +574,45 @@
    * 之所以要分两路 —— 播放窗口左上角那行字在切集后经常滞后（综艺没有"当前集"样式差分，
    * 头部元素是缓存的），拿它当集号来源就会出现"标题第3期、画面放第4期"。
    */
+  /*
+   * 爱奇艺的"正在播那一项"：电视剧项带 episodes_playingItem 类；
+   * 综艺没有类名差分 —— 当前期的期号文字变色（其余同色），所以按"与其他项不同色"找，
+   * 不写死颜色值（主题一换就失效）。
+   */
+  function iqPanelPick() {
+    var r = pickPanelEp(['[class*="episodes_playingItem"]', '.episodesNew_item.episodes_playingItem']);
+    if (r) return r;
+    var arr = [];
+    try { arr = [].slice.call(document.querySelectorAll('[class*="episodesNew_item"]')); } catch (e) { arr = []; }
+    if (arr.length < 2) return null;
+    var cnt = {}, best = '';
+    arr.forEach(function (e) {
+      var c = '';
+      try { c = window.getComputedStyle(e).color || ''; } catch (e2) { c = ''; }
+      if (!c) return;
+      cnt[c] = (cnt[c] || 0) + 1;
+      if (!best || cnt[c] > cnt[best]) best = c;
+    });
+    if (!best) return null;
+    for (var i = 0; i < arr.length; i++) {
+      var mine = '';
+      try { mine = window.getComputedStyle(arr[i]).color || ''; } catch (e3) { mine = ''; }
+      if (mine && mine !== best) {
+        var r2 = parsePanelEl(arr[i]);
+        if (r2) return r2;
+      }
+    }
+    return null;
+  }
   function iqTitle() {
     var picked = (iqClick.t && Date.now() - (iqClick.at || 0) < 60000) ? clean(iqClick.t) : '';
     var head = clean(iqHeaderText());
+    /* 面板选中项排在最前：它才是"正在播哪一期"的权威，点选与头部那行都只作兜底 */
+    var panel = iqPanelPick();
     var series = fTitle(document.title) || fTitle(head) || fTitle(picked);
     var pickedEp = iqEpParts(picked);
     var headEp = iqEpParts(head);
-    var ep = pickedEp || headEp;
+    var ep = (panel && panel.no ? { no: panel.no, kind: panel.kind, name: panel.name } : null) || pickedEp || headEp;
     var out;
     if (!pickedEp && !headEp && picked) {
       /* 单片：电影、剧场版这类没有集号，海报上写的就是全名（父亲 2026-10-26 定）。
@@ -531,9 +620,9 @@
       out = picked;
     } else if (ep) {
       /* 集号以点选为准；集名两路各取一半时也不丢 —— 卡片常只写"第4期"，名字在头部那行 */
-      var no = (pickedEp && pickedEp.no) || (headEp && headEp.no) || ep.no;
-      var kind = (pickedEp && pickedEp.kind) || (headEp && headEp.kind) || ep.kind;
-      var name = (pickedEp && pickedEp.name) || (headEp && headEp.name) || '';
+      var no = (panel && panel.no) || (pickedEp && pickedEp.no) || (headEp && headEp.no) || ep.no;
+      var kind = (panel && panel.no ? panel.kind : '') || (pickedEp && pickedEp.kind) || (headEp && headEp.kind) || ep.kind;
+      var name = (panel && panel.name) || (pickedEp && pickedEp.name) || (headEp && headEp.name) || '';
       out = buildTitle(series || clean(head) || clean(picked), cn2num(no), kind, '', name);
     } else {
       out = isJunkTitle(series) ? '' : series;
@@ -574,8 +663,11 @@
     return '';
   }
   function iqEpNo() {
+    /* 面板选中项第一顺位：它随页面切换即时更新，不依赖有没有点到卡片 */
+    var pn = iqPanelPick();
+    if (pn && pn.no) return String(pn.no);
     /*
-     * 点的那张卡片上就写着"第4期 喻言《灼》…"，比左上角那行早三秒到手，优先用它。
+     * 其次点的那张卡片上就写着"第4期 喻言《灼》…"，比左上角那行早三秒到手。
      * 60 秒内有效：换片/换集都靠这一次点击，再久就对不上现在播的是哪一个了。
      */
     var cp = String(iqClick.t || '');
