@@ -651,8 +651,25 @@
       if (m) iqTvidHint = { t: m[1], p: String(location.pathname) };
     } catch (e) {}
   }
+  /*
+   * 地址栏里的片子号：爱奇艺一集一个地址（`/v_xxx.html`），切集与切片都会立刻换，
+   * 是全场最快、最不会滞后的一个来源（2026-10-26 父亲逐入口实测：电视剧、电影、
+   * 综艺、动漫切集切片的都是这一段在变）。
+   *
+   * 优先于"点的那一张"的理由：点击记录只在真的点到卡片时才有（原生投进来的点击
+   * 有时落在播放器上），拿不到就退回分集表；而综艺的分集表没有"当前集"标记，
+   * 于是片号取空 → 原生等不到号 → 第一次按真全屏不交（2026-10-26 03:02 现场）。
+   * 地址不依赖任何点击，页面一换就在这里。
+   */
+  function iqUrlId() {
+    var m = /\/(v|a)_([0-9A-Za-z]+)\.html/.exec(String(location.pathname || ''));
+    return m ? m[1] + '_' + m[2] : '';
+  }
   function iqTvid() {
-    /* 先用"点的那一张"：切集/换片那一刻页面自己的号还没换（综艺实测 40 秒不动），
+    /* 地址第一顺位：它变就等于换片/换集，且与点击无关。 */
+    var u = iqUrlId();
+    if (u) return u;
+    /* 其次"点的那一张"：切集/换片那一刻页面自己的号还没换（综艺实测 40 秒不动），
        点到的卡片上的号才是这一集/这一期的。换片后整页重载，脚本重跑，这份记录自然清空。 */
     if (iqClick.tv && Date.now() - (iqClick.at || 0) < 60000) return String(iqClick.tv);
     if (iqTvidHint && iqTvidHint.p === String(location.pathname)) return iqTvidHint.t;
