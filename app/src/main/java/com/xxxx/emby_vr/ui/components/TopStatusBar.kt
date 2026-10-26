@@ -221,7 +221,7 @@ fun TopStatusBar(
                  *   有新版   —— 后面加括号，整块可点，点了开始下载并闪烁，再点一次取消；
                  *   装包阶段 —— 文字换成「正在安装…」，不再响应点击。
                  */
-                val blink by rememberInfiniteTransition(label = "version-blink").animateFloat(
+                val blink = rememberInfiniteTransition(label = "version-blink").animateFloat(
                     initialValue = 1f,
                     targetValue = 0.25f,
                     animationSpec = infiniteRepeatable(
@@ -239,7 +239,7 @@ fun TopStatusBar(
                     UpdatePhase.Installing -> "（正在安装…）"
                     UpdatePhase.Idle -> ""
                 }
-                val alphaValue = if (updatePhase == UpdatePhase.Downloading) blink else 1f
+                val alphaValue = if (updatePhase == UpdatePhase.Downloading) blink.value else 1f
                 val versionModifier = if (clickable) {
                     Modifier
                         .focusRequester(versionFocusRequester)
