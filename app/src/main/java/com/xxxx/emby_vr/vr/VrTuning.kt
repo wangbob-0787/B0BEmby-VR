@@ -103,6 +103,17 @@ object VrTuning {
     var danmakuGapSec: Float = 2.5f
 
     /**
+     * 网页接管的最低片长门槛（秒，2026-10-26 父亲定）。
+     *
+     * 原来写死 300 秒（防预告/花絮被接管），结果 B站 大量一两分钟的普通视频全被挡在外面
+     * （实测：112 秒的短视频，槽里地址已经齐了，原生仍拒收）。
+     * 现在地址取得够准，不需要靠片长兜底，改成参数、默认 0 = 不挡。
+     * 想恢复过滤就在 `vr-tuning.txt` 写 `web_min_dur=300`，一秒内生效、不用重装。
+     */
+    @Volatile
+    var webMinDurSec: Int = 0
+
+    /**
      * 网页禁用缓存（2026-10-21 12:50）。
      * 1 = 每次请求都走网络 —— 爱奇艺的正片取流请求被缓存住时不发，导致截不到整集片单；
      * 戴着改 `web_nocache=1` 就能让它重新发（代价是页面加载变慢）。
@@ -380,6 +391,13 @@ object VrTuning {
             if (it != webZeroCopy) {
                 webZeroCopy = it
                 applied += "网页零拷贝=" + it
+            }
+        }
+        raw["web_min_dur"]?.toIntOrNull()?.let {
+            val v = it.coerceIn(0, 7200)
+            if (v != webMinDurSec) {
+                webMinDurSec = v
+                applied += "网页最低片长=" + v + "s"
             }
         }
         raw["danmaku_gap"]?.toFloatOrNull()?.let {

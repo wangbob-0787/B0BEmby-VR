@@ -797,8 +797,11 @@ private object WebRuntime {
         val now = System.currentTimeMillis()
         val atWeb = s.optLong("at", 0L)
         val lag = if (atWeb > 0) "网页变化→原生收到 " + (slotRecvAtWall - atWeb) + "ms，收到→消费 " + (now - slotRecvAtWall) + "ms" else "缺 at"
-        if (dur < 300) {
-            chain("⑧消费-拒收", "（$tag）时长只有 $dur 秒（不足五分钟） $lag " + slotBrief(s))
+        /* 片长门槛是参数（默认 0 = 不挡）。原来写死 300 秒，把 B站 一两分钟的普通视频
+           全挡在门外；地址取得够准之后不需要靠片长兜底了（父亲 2026-10-26 定）。 */
+        val minDur = com.xxxx.emby_vr.vr.VrTuning.webMinDurSec
+        if (dur < minDur) {
+            chain("⑧消费-拒收", "（$tag）时长只有 $dur 秒（低于门槛 ${minDur}s） $lag " + slotBrief(s))
             return
         }
         chain("⑧消费-起播", "（$tag）$lag " + slotBrief(s))
