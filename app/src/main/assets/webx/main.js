@@ -476,9 +476,16 @@
   /* 档位号位数不固定：电视剧 6 位（f322093），电影是 9 位（f322100001，同一档 322100 的变体后缀），
      综艺页面也不定。档位语义只看前 6 位，多出来的位数是同一档的变体号。
      没登记过的档位不丢弃：丢掉等于整条回复作废、槽空、按钮变灰，比选到低清更糟。 */
+  /* 服务器每次回包都自带一张档位表（fl.fi：编号 → 中文档名），档名以它为准：
+     编号本身会换（臻彩MAX 见过 322100、322104、322458），任何写死的表迟早对不上。 */
+  var qqTierMap = {};
+  function qqLearnTiers(text) {
+    var s = String(text || ''), re = /"id":(\d{6})[^{}]*?"sname":"([^"]{1,20})"/g, m;
+    while ((m = re.exec(s))) { if (!qqTierMap[m[1]]) qqTierMap[m[1]] = m[2]; }
+  }
   function qqTierName(code) {
-    var d = String(code || '').replace(/^f/, '');
-    return QQ_TIERS['f' + d.slice(0, 6)] || ('档' + d);
+    var d = String(code || '').replace(/^f/, ''), k = d.slice(0, 6);
+    return qqTierMap[k] || QQ_TIERS['f' + k] || ('档' + d);
   }
   var qqCtx = S.qqCtx;
 
@@ -1003,6 +1010,7 @@
   function qqScanText(t, owner) {
     try {
       var s = String(t || ''), n = 0, from = 0, idx;
+      qqLearnTiers(s);
       /* 用 indexOf 逐段找，不用带惰性量词的正则：回复常有几 MB，
          那种正则在这上面会疯狂回溯，整条 JS 线程卡住，页面就"卡死"（父亲 2026-10-25 报）。 */
       var tail = /\.f\d{6,12}\.(?:ts\.)?m3u8$/;
