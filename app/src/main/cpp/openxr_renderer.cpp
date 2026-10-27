@@ -677,9 +677,11 @@ static float hallFloorDy(float z) { return -(hallFloorY(z) - hallFloorY(0.f)); }
 
 /* 观影位的前后位移在本文件后半段才定义（drawCinema 比它早），这里先声明一下 */
 extern std::atomic<float> gViewerZ;
-/* 累计前后位移（米，不随「重新居中」归零）。地形补偿必须用它：
-   归零过的相对量只能反映最近 1.5 米，走过去看不出高低变化（父亲 2026-10-27 报）。 */
-extern std::atomic<float> gFloorWalkZ;
+/* 累计走动量（米，不随「重新居中」归零）。凡是"人相对固定世界几何在哪"的判断都必须用它：
+   归零过的相对量只反映最近 1.5 米 —— 地形补偿会因此看不出高低变化，
+   「人是否走到面板背面」也会因此判成正面，背面效果直接消失（父亲 2026-10-27 报的两次都是这个根子）。 */
+extern std::atomic<float> gWalkX;
+extern std::atomic<float> gWalkZ;
 
 // ------------------------------------------------- 影厅环境（父亲 2026-10-10）
 /*
@@ -995,7 +997,7 @@ void drawCinema(const Mat4 &proj, const Mat4 &view, const XrVector3f &eyePos) {
     Mat4 model = identity();
     model.m[12] = kCinemaShiftX;                              // 横向：让座位中心正对观影位
     /* 坡度补偿：人往后走（gViewerZ 增大）→ 影厅整体下移，脚底那格地面始终在眼睛下方 */
-    const float slopeDy = hallFloorDy(gFloorWalkZ.load() + gViewerZ.load());
+    const float slopeDy = hallFloorDy(gWalkZ.load() + gViewerZ.load());
     model.m[13] = s.dy + (1.65f - gCinemaEyeHeight.load()) + gSeatUp.load() + slopeDy;
     model.m[14] = s.dz - gSeatFwd.load();                     // 前/后：正数 = 人往椅子前部坐
     const Mat4 mvp = multiply(multiply(proj, view), model);
@@ -1197,7 +1199,8 @@ std::atomic<float> gWebAspect{0.f};
  */
 std::atomic<float> gViewerX{0.f};        // 平滑后的相对左右位移（相对起点）
 std::atomic<float> gViewerZ{0.f};        // 平滑后的相对前后位移（相对起点）
-std::atomic<float> gFloorWalkZ{0.f};     // 累计前后位移（重新居中也不清零，供地形补偿）
+std::atomic<float> gWalkX{0.f};          // 累计左右位移（重新居中不清零）
+std::atomic<float> gWalkZ{0.f};          // 累计前后位移（重新居中不清零）
 std::atomic<float> gScenePush{0.f};      // 防穿越：场景整体往远处推多少米
 std::atomic<float> gMinScreenGap{1.0f};  // 最近允许走到离银幕多远
 /*
@@ -1240,10 +1243,11 @@ void updateViewerAnchor(const XrPosef &head) {
         if (dx * dx + dz * dz > 1.5f * 1.5f) {
             gViewerOriginX.store(hx);
             gViewerOriginZ.store(hz);
-            gFloorWalkZ.store(gFloorWalkZ.load() + gViewerZ.load());
+            gWalkX.store(gWalkX.load() + gViewerX.load());
+            gWalkZ.store(gWalkZ.load() + gViewerZ.load());
             gViewerX.store(0.f);
             gViewerZ.store(0.f);
-            LOGI("重新居中：锚点已重设（x=%.2f z=%.2f），累计走动 %.2f 米", (double) hx, (double) hz, (double) gFloorWalkZ.load());
+            LOGI("重新居中：锚点已重设（x=%.2f z=%.2f），累计走动 %.2f 米", (double) hx, (double) hz, (double) gWalkZ.load());
             return;
         }
     }
@@ -1313,12 +1317,12 @@ bool viewerBehindPanel(float yawDeg, float pitchDeg, float cx, float cy, float c
     const float ny = -sinf(pitchRad);
     const float nz = cosf(yawRad) * cosf(pitchRad);
     /*
-     * 观影位取走动量 gViewerX/Z（与面板摆位同一套坐标假设：起点在原点）。
-     * 不能用 viewerOffsetX() —— 那是"跟随开关"的输出，固定摆位时恒为 0。
+     * 观影位必须取累计走动量（gWalk + gViewer），不能用 viewerOffsetX()（跟随开关的输出，
+     * 固定摆位时恒为 0），也不能只用 gViewerX/Z —— 那对量在「重新居中」时会被清零。
      */
-    const float vx = gViewerX.load() - cx;
+    const float vx = gWalkX.load() + gViewerX.load() - cx;
     const float vy = -cy;
-    const float vz = gViewerZ.load() - cz;
+    const float vz = gWalkZ.load() + gViewerZ.load() - cz;
     return (nx * vx + ny * vy + nz * vz) < -kBackFaceBias;
 }
 
@@ -1371,7 +1375,7 @@ float hallScreenFitWidth(float aspect) {
 float hallScreenCenterY() {
     const int seat = gSeat.load();
     const CinemaSeat &s = kCinemaSeats[seat];
-    return (kHallScreenModelY - kHallRefEyeY) + s.dy + (1.65f - gCinemaEyeHeight.load()) + hallFloorDy(gFloorWalkZ.load() + gViewerZ.load()) +
+    return (kHallScreenModelY - kHallRefEyeY) + s.dy + (1.65f - gCinemaEyeHeight.load()) + hallFloorDy(gWalkZ.load() + gViewerZ.load()) +
            gScreenUp.load();
 }
 
@@ -1385,7 +1389,7 @@ float hallScreenCenterY() {
 float hallScreenBottomY() {
     const int seat = gSeat.load();
     const CinemaSeat &s = kCinemaSeats[seat];
-    return (kHallScreenBottomY - kHallRefEyeY) + s.dy + (1.65f - gCinemaEyeHeight.load()) + hallFloorDy(gFloorWalkZ.load() + gViewerZ.load()) +
+    return (kHallScreenBottomY - kHallRefEyeY) + s.dy + (1.65f - gCinemaEyeHeight.load()) + hallFloorDy(gWalkZ.load() + gViewerZ.load()) +
            gScreenUp.load();
 }
 
