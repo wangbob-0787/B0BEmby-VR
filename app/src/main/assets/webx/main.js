@@ -514,25 +514,6 @@
     var m = /第\s*([零一二三四五六七八九十\d]+)\s*[集话期]/.exec(clean(txt('.player-play-title__title') || txt('.txp_title')));
     return m ? cn2num(m[1]) : '';
   }
-  /* 清单自己再取一次，累加每段时长。回复里读不到时长时全靠这条路补上，
-     但它只跑一次、失败也不留痕迹，于是同一部剧这集能亮、那集一直灰，查不出原因。
-     现在失败重试两次，并且把失败原因记下来（是拿不到还是清单里没时长）。 */
-  function qqPlaylistDur(url, tries) {
-    if (!url) return;
-    tries = tries || 0;
-    fetch(url, { credentials: 'include' }).then(function (r) {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      return r.text();
-    }).then(function (t) {
-      var n = 0;
-      String(t).replace(/#EXTINF:([\d.]+)/g, function (m, d) { n += parseFloat(d) || 0; return m; });
-      if (n > 0) { qqCtx.dur = Math.round(n); return; }
-      throw new Error('清单里没有时长');
-    }).catch(function (e) {
-      if (tries < 2) { setTimeout(function () { qqPlaylistDur(url, tries + 1); }, 600); return; }
-      CH('⑩清单算时长失败', { 次数: tries + 1, 原因: String((e && e.message) || e).slice(0, 40), 地址尾: '…' + String(url).slice(-20) });
-    });
-  }
   /* 请求体里带着这条地址属于哪一集（`vinfoparam` 的 vid）。
      切集瞬间页面地址常常还没换过来，拿地址贴标签会把新集的清单记成旧集的，
      随后被"集号变了就清空"擦掉 —— 表现就是回网页后切下一集按钮一直灰，
@@ -570,7 +551,6 @@
     if (qqCtx.url === one) return;
     qqCtx.url = one; qqCtx.name = name; qqCtx.dur = 0; qqCtx.pend = null;
     CH('②取址', { 站: 'qq', 档: name + '(' + m[1] + ')', 地址尾: '…' + one.slice(-24) });
-    qqPlaylistDur(one);
   }
   /*
    * 腾讯的网址会跟着换集变，但页面自己那份数据不会（见网页侧规格 9.3）。
