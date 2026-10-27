@@ -1046,6 +1046,12 @@
         var i = s.indexOf('m3u8');
         CH('⑩回复没地址', { 长度: s.length, 有m3u8: i >= 0 ? 1 : 0, 片段: i >= 0 ? s.slice(Math.max(0, i - 60), i + 40) : s.slice(0, 60) });
       }
+      /* 有地址却没有时长：槽就差这一格，按钮会一直是灰的。把时长那一段的原文留下来，
+         查的时候不用再猜字段是怎么写的。 */
+      if (n && !(td && Number(td[1]) > 60)) {
+        var k = s.indexOf('td');
+        CH('⑩时长没读到', { 长度: s.length, 片段: k >= 0 ? s.slice(Math.max(0, k - 40), k + 40) : s.slice(0, 80) });
+      }
     } catch (e) {}
   }
   function hookNet() {
