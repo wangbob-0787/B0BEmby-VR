@@ -652,11 +652,34 @@ std::atomic<float> gCinemaEyeHeight{1.65f};
  * 现在按 gViewerZ 把整间影厅上下平移 -斜率×前后位移 —— 走到哪儿，脚下那一块地面
  * 始终在眼睛下方 1.65 米（坐姿眼高另算），观感就是"顺着坡道走"。
  * 系数运行时可调（调参键 32，`floor_slope`）。
+ *
+ * 2026-10-27 修正：补偿不能是一条直线。从 assets/cinema.b0bcin 中间通道量出来的地板高度是
+ * 分段地形 —— 银幕前（z ≤ -7）平地，之后 14.5 米连续坡道（抬高 2.6 米，坡度 0.18），
+ * 坡顶（z ≥ 7.5）又是平地。原来按单一斜率 0.35 平移整间影厅，两个毛病：
+ * 平地段走动时地面也跟着上下动，坡道段又按近两倍的坡度翻，脚下对不上。
+ * 现在按地形曲线补偿：平地段高度恒定（走过去地面不动），只有坡道段才升降。
  */
-std::atomic<float> gFloorSlope{0.35f};
+std::atomic<float> gFloorSlope{0.18f};   // 实测坡度：2.6 米 / 14.5 米
+
+/* 影厅地板在「观众前后位置 z」处的高度（相对第一排，单位米） */
+static const float kHallFloorZ0 = -7.0f;    // 坡道起点（银幕前的平地到此为止）
+static const float kHallFloorZ1 = 7.5f;     // 坡道终点（再往后是后排过道平地）
+
+static float hallFloorY(float z) {
+    const float k = gFloorSlope.load();
+    if (z <= kHallFloorZ0) return 0.f;
+    if (z >= kHallFloorZ1) return k * (kHallFloorZ1 - kHallFloorZ0);
+    return k * (z - kHallFloorZ0);
+}
+
+/** 走动时要给整间影厅加的升降量：脚下那块地面始终贴着脚，平地段恒为常数 */
+static float hallFloorDy(float z) { return -(hallFloorY(z) - hallFloorY(0.f)); }
 
 /* 观影位的前后位移在本文件后半段才定义（drawCinema 比它早），这里先声明一下 */
 extern std::atomic<float> gViewerZ;
+/* 累计前后位移（米，不随「重新居中」归零）。地形补偿必须用它：
+   归零过的相对量只能反映最近 1.5 米，走过去看不出高低变化（父亲 2026-10-27 报）。 */
+extern std::atomic<float> gFloorWalkZ;
 
 // ------------------------------------------------- 影厅环境（父亲 2026-10-10）
 /*
@@ -972,7 +995,7 @@ void drawCinema(const Mat4 &proj, const Mat4 &view, const XrVector3f &eyePos) {
     Mat4 model = identity();
     model.m[12] = kCinemaShiftX;                              // 横向：让座位中心正对观影位
     /* 坡度补偿：人往后走（gViewerZ 增大）→ 影厅整体下移，脚底那格地面始终在眼睛下方 */
-    const float slopeDy = -gFloorSlope.load() * gViewerZ.load();
+    const float slopeDy = hallFloorDy(gFloorWalkZ.load() + gViewerZ.load());
     model.m[13] = s.dy + (1.65f - gCinemaEyeHeight.load()) + gSeatUp.load() + slopeDy;
     model.m[14] = s.dz - gSeatFwd.load();                     // 前/后：正数 = 人往椅子前部坐
     const Mat4 mvp = multiply(multiply(proj, view), model);
@@ -1174,6 +1197,7 @@ std::atomic<float> gWebAspect{0.f};
  */
 std::atomic<float> gViewerX{0.f};        // 平滑后的相对左右位移（相对起点）
 std::atomic<float> gViewerZ{0.f};        // 平滑后的相对前后位移（相对起点）
+std::atomic<float> gFloorWalkZ{0.f};     // 累计前后位移（重新居中也不清零，供地形补偿）
 std::atomic<float> gScenePush{0.f};      // 防穿越：场景整体往远处推多少米
 std::atomic<float> gMinScreenGap{1.0f};  // 最近允许走到离银幕多远
 /*
@@ -1216,9 +1240,10 @@ void updateViewerAnchor(const XrPosef &head) {
         if (dx * dx + dz * dz > 1.5f * 1.5f) {
             gViewerOriginX.store(hx);
             gViewerOriginZ.store(hz);
+            gFloorWalkZ.store(gFloorWalkZ.load() + gViewerZ.load());
             gViewerX.store(0.f);
             gViewerZ.store(0.f);
-            LOGI("重新居中：锚点已重设（x=%.2f z=%.2f），坡度补偿归零", (double) hx, (double) hz);
+            LOGI("重新居中：锚点已重设（x=%.2f z=%.2f），累计走动 %.2f 米", (double) hx, (double) hz, (double) gFloorWalkZ.load());
             return;
         }
     }
@@ -1346,7 +1371,7 @@ float hallScreenFitWidth(float aspect) {
 float hallScreenCenterY() {
     const int seat = gSeat.load();
     const CinemaSeat &s = kCinemaSeats[seat];
-    return (kHallScreenModelY - kHallRefEyeY) + s.dy + (1.65f - gCinemaEyeHeight.load()) + (-gFloorSlope.load() * gViewerZ.load()) +
+    return (kHallScreenModelY - kHallRefEyeY) + s.dy + (1.65f - gCinemaEyeHeight.load()) + hallFloorDy(gFloorWalkZ.load() + gViewerZ.load()) +
            gScreenUp.load();
 }
 
@@ -1360,7 +1385,7 @@ float hallScreenCenterY() {
 float hallScreenBottomY() {
     const int seat = gSeat.load();
     const CinemaSeat &s = kCinemaSeats[seat];
-    return (kHallScreenBottomY - kHallRefEyeY) + s.dy + (1.65f - gCinemaEyeHeight.load()) + (-gFloorSlope.load() * gViewerZ.load()) +
+    return (kHallScreenBottomY - kHallRefEyeY) + s.dy + (1.65f - gCinemaEyeHeight.load()) + hallFloorDy(gFloorWalkZ.load() + gViewerZ.load()) +
            gScreenUp.load();
 }
 
