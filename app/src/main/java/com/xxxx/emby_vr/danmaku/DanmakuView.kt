@@ -178,6 +178,8 @@ class DanmakuView(context: Context) : View(context) {
      * Skia/Minikin 的定点加法溢出，线程直接 abort、整个 App 被杀。
      * 字号夹在 10~200，文本截到 400 字；被夹过就打一行日志，方便下次复盘。
      */
+    private val MAX_TEXT_CHARS = 200
+
     private fun safeTextSize(px: Float, tag: String): Float {
         if (!px.isFinite()) {
             android.util.Log.w("B0BEmbyVR", "弹幕：$tag 字号不是有效数字 → 用 24")
@@ -190,9 +192,26 @@ class DanmakuView(context: Context) : View(context) {
         return v
     }
 
+    /* 系统字体排版库（libminikin）对"半个表情符号"和不可显示字符没有防护：文本里
+       一旦出现孤立代理对或控制字符，它算长度会整数溢出并 abort 整个进程（2026-10-27
+       实测：弹幕绘制线程 SIGABRT，abort message = ubsan: add-overflow，栈顶是
+       doLayoutWord → LayoutCache::getOrCreate）。旧实现按字符个数硬截 400，正好可能
+       切在表情符号中间。所以进画布前先规整成安全形态：跳过代理残片与控制字符，
+       按完整码点截断。 */
     private fun safeText(t: String?): String {
         if (t == null) return ""
-        return if (t.length > 400) t.substring(0, 400) else t
+        val out = StringBuilder(minOf(t.length, MAX_TEXT_CHARS))
+        var i = 0
+        while (i < t.length && out.length < MAX_TEXT_CHARS) {
+            val cp = t.codePointAt(i)
+            val step = Character.charCount(cp)
+            val usable = cp !in 0xD800..0xDFFF &&        // 孤立代理（被切开的半个表情）
+                cp >= 0x20 && cp != 0x7F &&               // 控制字符
+                cp != 0x2028 && cp != 0x2029              // 行/段分隔符
+            if (usable) out.appendCodePoint(cp)
+            i += step
+        }
+        return out.toString()
     }
 
     private fun effectiveEndMs(item: DanmakuItem, scale: Float): Long {
