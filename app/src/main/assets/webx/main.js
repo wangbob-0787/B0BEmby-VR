@@ -1014,10 +1014,20 @@
         var start = idx;
         while (start > 0 && idx - start < 700) {
           var ch = s.charAt(start - 1);
-          if (ch === '"' || ch === "'" || ch === ',' || ch === ' ' || ch === '\n' || ch === '\\') break;
+          /* 反斜杠不是分隔符：`https:\/\/…` 里它就是地址的一部分，遇到就停会把地址截成半截 */
+          if (ch === '"' || ch === "'" || ch === ',' || ch === ' ' || ch === '\n') break;
           start--;
         }
         var cand = s.slice(start, idx + 4);
+        /* 回复里的地址有两种写法：直接 `https://…`，以及 JSON 里转义过的 `https:\/\/…`。
+           转义那种在往回找开头时会被反斜杠截断，收下的是半截地址，后面 looksUrl 一挡就
+           永远进不了槽 —— 表现是"切这一集按钮灰、再切一集才实"（父亲 2026-10-27 反复复现）。
+           所以这里统一找回 http 开头并还原转义斜杠，两种写法都交出完整地址。 */
+        cand = cand.replace(/\\\//g, '/');
+        if (!/^https?:\/\//.test(cand)) {
+          var h = cand.lastIndexOf('http');
+          if (h >= 0) cand = cand.slice(h);
+        }
         if (tail.test(cand)) { n++; qqTake(cand, owner); }
       }
       /* 时长就在这条回复里（td 是秒）。清单地址是跨域的，脚本自己再取一次会被挡，
