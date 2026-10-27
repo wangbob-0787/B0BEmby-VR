@@ -522,19 +522,42 @@
       if (n > 0) qqCtx.dur = Math.round(n);
     }).catch(function () {});
   }
-  function qqTake(u) {
+  /* 请求体里带着这条地址属于哪一集（`vinfoparam` 的 vid）。
+     切集瞬间页面地址常常还没换过来，拿地址贴标签会把新集的清单记成旧集的，
+     随后被"集号变了就清空"擦掉 —— 表现就是回网页后切下一集按钮一直灰，
+     再切一集才变实（父亲 2026-10-27 实测）。所以归属一律以请求里的片号为准。 */
+  function qqReqVid(b) {
+    try {
+      var p = '';
+      if (typeof b === 'string') {
+        var m = /"vinfoparam"\s*:\s*"([^"]+)"/.exec(b);
+        if (m) p = m[1].replace(/\\u0026/g, '&').replace(/\\\//g, '/');
+      } else if (b && typeof b.get === 'function') {
+        p = String(b.get('vinfoparam') || '');
+      }
+      var v = /[?&]vid=([A-Za-z0-9]+)/.exec(p);
+      return v ? v[1] : '';
+    } catch (e) { return ''; }
+  }
+  function qqTake(u, owner) {
     var one = String(u || '').replace(/\\\//g, '/').replace(/\\+$/, '');
     var m = one.match(/\.(f\d{6})\.(?:ts\.)?m3u8/);
     if (!m) return;
     var name = QQ_TIERS[m[1]];
     if (!name) return;
     if (/smtcdns|subtitle|\.vtt\./.test(one)) return;
-    /* 这里不能先要求身份：专辑页的身份正是从这条地址里取的，先要求就互相卡死。
-       但已经知道当前集号时，抓到别的集的清单要丢掉 —— 那是切集之后迟到的上一份。 */
+    /* 这里不能先要求身份：专辑页的身份正是从这条地址里取的，先要求就互相卡死。 */
     var nowEp = qqId();
-    if (nowEp && qqCtx.ep && qqCtx.ep !== nowEp) return;
+    if (owner && owner !== nowEp) {
+      /* 归属明确但页面还没切到那一集：先挂起，等页面身份对上了直接换上。
+         挂起不写槽，槽里仍是上一集的地址，不会交出去播错集。 */
+      qqCtx.pend = { vid: owner, url: one, name: name, dur: 0 };
+      CH('②取址-待配对', { 站: 'qq', 归属: owner, 页面: nowEp || '-', 档: name + '(' + m[1] + ')' });
+      return;
+    }
+    if (!owner && nowEp && qqCtx.ep && qqCtx.ep !== nowEp) return;
     if (qqCtx.url === one) return;
-    qqCtx.url = one; qqCtx.name = name; qqCtx.dur = 0;
+    qqCtx.url = one; qqCtx.name = name; qqCtx.dur = 0; qqCtx.pend = null;
     CH('②取址', { 站: 'qq', 档: name + '(' + m[1] + ')', 地址尾: '…' + one.slice(-24) });
     qqPlaylistDur(one);
   }
@@ -547,11 +570,22 @@
     if (site() !== 'qq' || !onPlayPage()) return;
     var id = qqId();
     if (!id) return;
+    /* 挂起的那份地址是不是正好属于这一集：是就直接换上，不等页面再发一次请求
+       （父亲 2026-10-27 报的"切一集灰、再切一集才实"就是少了这一步）。 */
+    var pend = qqCtx.pend;
+    var pendHit = !!(pend && pend.vid === id);
     if (qqCtx.ep && qqCtx.ep !== id) {
       CH('①页面变化', { 站: 'qq', 身份: id, 上一集: qqCtx.ep });
-      qqCtx.url = ''; qqCtx.name = ''; qqCtx.dur = 0;
+      if (!pendHit) { qqCtx.url = ''; qqCtx.name = ''; qqCtx.dur = 0; }
     }
     qqCtx.ep = id;
+    if (pendHit) {
+      if (qqCtx.url !== pend.url) {
+        qqCtx.url = pend.url; qqCtx.name = pend.name; qqCtx.dur = pend.dur || 0;
+        CH('②取址-对上', { 站: 'qq', 身份: id, 档: pend.name, 地址尾: '…' + String(pend.url).slice(-24) });
+      }
+      qqCtx.pend = null;
+    }
     commit('qq', {
       id: id, ep: qqEpNo(), title: qqTitle(),
       dur: qqCtx.dur || pageDur(),
@@ -969,7 +1003,7 @@
   }
   /* 整集地址在那条播放信息请求的**回复**里（页面不会另发一条 m3u8 请求），
      只改请求不看回复就永远收不到 —— 所以把回复里带档位号的地址全抠出来。 */
-  function qqScanText(t) {
+  function qqScanText(t, owner) {
     try {
       var s = String(t || ''), n = 0, from = 0, idx;
       /* 用 indexOf 逐段找，不用带惰性量词的正则：回复常有几 MB，
@@ -984,12 +1018,16 @@
           start--;
         }
         var cand = s.slice(start, idx + 4);
-        if (tail.test(cand)) { n++; qqTake(cand); }
+        if (tail.test(cand)) { n++; qqTake(cand, owner); }
       }
       /* 时长就在这条回复里（td 是秒）。清单地址是跨域的，脚本自己再取一次会被挡，
          所以时长必须从这条回复拿，否则槽永远缺"时长"这一格、按钮一直灰。 */
       var td = /"(?:td|duration)"\s*:\s*(\d{2,6})/.exec(s);
-      if (td && Number(td[1]) > 60 && !qqCtx.dur) qqCtx.dur = Number(td[1]);
+      if (td && Number(td[1]) > 60) {
+        var d = Number(td[1]);
+        if (owner && qqCtx.pend && qqCtx.pend.vid === owner) qqCtx.pend.dur = d;
+        else if (!qqCtx.dur) qqCtx.dur = d;
+      }
       /* 抠不到就是"只补了能力位、没抓到地址"那种空转，必须留下回复的样子给人看 */
       if (!n) {
         var i = s.indexOf('m3u8');
@@ -1003,13 +1041,14 @@
       if (oF && !oF.__b0bHooked) {
         var nf = function () {
           var a = [].slice.call(arguments);
-          var qqRead = false;
+          var qqRead = false, qqOwner = '';
           try {
             var u = (typeof a[0] === 'string') ? a[0] : (a[0] && a[0].url), us = String(u || '');
             if (site() === 'qq') {
               if (us.indexOf('qq.com') >= 0 && a[1]) {
                 var nb = qqPatchBody(a[1].body, us);
                 if (nb !== a[1].body) { a[1] = Object.assign({}, a[1], { body: nb }); qqRead = true; }
+                qqOwner = qqReqVid(nb);
               }
               if (us.indexOf('.m3u8') > 0) qqTake(us);
             } else if (site() === 'bi' && us.indexOf('.m4s') > 0) {
@@ -1022,9 +1061,10 @@
           try {
             var uq = String((typeof a[0] === 'string') ? a[0] : (a[0] && a[0].url) || '');
             if (qqRead && pr && pr.then) {
+              var ov = qqOwner;
               pr.then(function (r) {
                 try {
-                  r.clone().text().then(qqScanText).catch(function (e4) {
+                  r.clone().text().then(function (t2) { qqScanText(t2, ov); }).catch(function (e4) {
                     CH('⑩回复读不到', { 原因: String(e4).slice(0, 60) });
                   });
                 } catch (e2) { CH('⑩回复读不到', { 原因: 'clone失败' }); }
@@ -1049,11 +1089,11 @@
             if (site() === 'qq') {
               if (u.indexOf('qq.com') >= 0) {
                 var nb2 = qqPatchBody(b, u);
+                var ox = qqReqVid(nb2);
                 if (nb2 !== b) {
                   b = nb2;
-                  this.addEventListener('load', function () {
-                    try { qqScanText(this.responseText); } catch (e4) {}
-                  });
+                  var self = this;
+                  this.addEventListener('load', function () { try { qqScanText(self.responseText, ox); } catch (e4) {} });
                 }
               }
               if (u.indexOf('.m3u8') > 0) this.addEventListener('load', function () { qqTake(u); });
