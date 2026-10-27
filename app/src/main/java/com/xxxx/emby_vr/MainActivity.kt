@@ -2684,8 +2684,24 @@ class MainActivity : ComponentActivity() {
            默认 2.0 秒 —— 1.2 秒时同屏两条会挤在一起（父亲 2026-10-26 09:44 定）。 */
         val gapMs = (com.xxxx.emby_vr.vr.VrTuning.danmakuGapSec * 1000f).toLong().coerceIn(600L, 6000L)
         val laneY = floatArrayOf(topMargin, topMargin + lineH)
+        /*
+         * 一条弹幕从右边缘外飞到左边缘外共用 spanMs，横跨 1920+400 像素，速度固定。
+         * 同一条轨道上，后一条要等前一条的**整个身子**走出右边缘才能进，否则就是贴上去（追尾重叠）。
+         * 所以真正要等的时长由"前一条有多宽"决定：长弹幕后面天然多等，短弹幕后面少等。
+         * 只按固定间隔排（原来 2.5 秒）时，超过约 13 个字的弹幕一定会和后面那条叠在一起
+         * （父亲 2026-10-27 报「还是有很多重叠」）。
+         */
+        val speedPx = (1920f + 400f) / (spanMs / 1000f)          // 像素/秒
+        fun textW(t: String): Float {
+            var w = 0f
+            for (ch in t) w += if (ch.code < 128) fs * 0.45f else fs
+            return w
+        }
+        fun needMs(t: String): Long = maxOf(gapMs, (textW(t) / speedPx * 1000f).toLong())
         val spanMsAll = (parsed.maxOfOrNull { it.first } ?: 0L).coerceAtLeast(1L)
-        val capacity = ((spanMsAll / gapMs) * laneY.size).toInt().coerceAtLeast(1)
+        val avgNeed = if (parsed.isEmpty()) gapMs
+                      else parsed.take(3000).map { needMs(it.second) }.average().toLong()
+        val capacity = ((spanMsAll / avgNeed) * laneY.size).toInt().coerceAtLeast(1)
         val picked: List<Triple<Long, String, Long>> =
             if (parsed.size <= capacity) parsed
             else {
@@ -2713,7 +2729,7 @@ class MainActivity : ComponentActivity() {
                 dropped++
                 continue
             }
-            laneFree[lane] = p.first + gapMs
+            laneFree[lane] = p.first + needMs(p.second)
             val y = laneY[lane]
             items.add(
                 com.xxxx.emby_vr.danmaku.DanmakuItem(
