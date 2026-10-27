@@ -514,13 +514,24 @@
     var m = /第\s*([零一二三四五六七八九十\d]+)\s*[集话期]/.exec(clean(txt('.player-play-title__title') || txt('.txp_title')));
     return m ? cn2num(m[1]) : '';
   }
-  function qqPlaylistDur(url) {
+  /* 清单自己再取一次，累加每段时长。回复里读不到时长时全靠这条路补上，
+     但它只跑一次、失败也不留痕迹，于是同一部剧这集能亮、那集一直灰，查不出原因。
+     现在失败重试两次，并且把失败原因记下来（是拿不到还是清单里没时长）。 */
+  function qqPlaylistDur(url, tries) {
     if (!url) return;
-    fetch(url, { credentials: 'include' }).then(function (r) { return r.text(); }).then(function (t) {
+    tries = tries || 0;
+    fetch(url, { credentials: 'include' }).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.text();
+    }).then(function (t) {
       var n = 0;
       String(t).replace(/#EXTINF:([\d.]+)/g, function (m, d) { n += parseFloat(d) || 0; return m; });
-      if (n > 0) qqCtx.dur = Math.round(n);
-    }).catch(function () {});
+      if (n > 0) { qqCtx.dur = Math.round(n); return; }
+      throw new Error('清单里没有时长');
+    }).catch(function (e) {
+      if (tries < 2) { setTimeout(function () { qqPlaylistDur(url, tries + 1); }, 600); return; }
+      CH('⑩清单算时长失败', { 次数: tries + 1, 原因: String((e && e.message) || e).slice(0, 40), 地址尾: '…' + String(url).slice(-20) });
+    });
   }
   /* 请求体里带着这条地址属于哪一集（`vinfoparam` 的 vid）。
      切集瞬间页面地址常常还没换过来，拿地址贴标签会把新集的清单记成旧集的，
@@ -1049,8 +1060,13 @@
       /* 有地址却没有时长：槽就差这一格，按钮会一直是灰的。把时长那一段的原文留下来，
          查的时候不用再猜字段是怎么写的。 */
       if (n && !(td && Number(td[1]) > 60)) {
-        var k = s.indexOf('td');
-        CH('⑩时长没读到', { 长度: s.length, 片段: k >= 0 ? s.slice(Math.max(0, k - 40), k + 40) : s.slice(0, 80) });
+        /* 把回复里所有"键名:数字"的键名列出来：时长到底是哪个字段，一次就能看清，
+           不用再猜字段怎么写。只列键名，不带数值。 */
+        var keys = [], seen = {}, re2 = /\\?"([a-z][a-z0-9_]{1,14})\\?"\s*:\s*\d{2,6}/g, m2;
+        while ((m2 = re2.exec(s)) && keys.length < 30) {
+          if (!seen[m2[1]]) { seen[m2[1]] = 1; keys.push(m2[1]); }
+        }
+        CH('⑩时长没读到', { 长度: s.length, 数字字段: keys.join(',') });
       }
     } catch (e) {}
   }
