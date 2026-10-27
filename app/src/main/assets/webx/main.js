@@ -473,6 +473,13 @@
   /* 五、腾讯 */
 
   var QQ_TIERS = { 'f322100': '臻彩MAX', 'f322104': '臻彩MAX', 'f322093': '4K', 'f322150': '臻彩1080P' };
+  /* 档位号位数不固定：电视剧 6 位（f322093），电影是 9 位（f322100001，同一档 322100 的变体后缀），
+     综艺页面也不定。档位语义只看前 6 位，多出来的位数是同一档的变体号。
+     没登记过的档位不丢弃：丢掉等于整条回复作废、槽空、按钮变灰，比选到低清更糟。 */
+  function qqTierName(code) {
+    var d = String(code || '').replace(/^f/, '');
+    return QQ_TIERS['f' + d.slice(0, 6)] || ('档' + d);
+  }
   var qqCtx = S.qqCtx;
 
   function qqId() {
@@ -480,7 +487,7 @@
     if (m) return m[1];
     /* 专辑页（/x/cover/<合集号>.html）地址里没有每集号，但清单文件名里带着：
        形如 gzc_1000102_<每集号>.f322093.ts.m3u8，就用它当身份。 */
-    var f = /_([A-Za-z0-9]{6,})\.f\d{6}\.(?:ts\.)?m3u8/.exec(String(qqCtx.url || ''));
+    var f = /_([A-Za-z0-9]{6,})\.f\d{6,12}\.(?:ts\.)?m3u8/.exec(String(qqCtx.url || ''));
     return f ? f[1] : '';
   }
   var QQ_PANEL_SEL = ['.episode-list .episode-item.selected', '.episode-item.selected'];
@@ -533,10 +540,9 @@
   }
   function qqTake(u, owner) {
     var one = String(u || '').replace(/\\\//g, '/').replace(/\\+$/, '');
-    var m = one.match(/\.(f\d{6})\.(?:ts\.)?m3u8/);
+    var m = one.match(/\.(f\d{6,12})\.(?:ts\.)?m3u8/);
     if (!m) return;
-    var name = QQ_TIERS[m[1]];
-    if (!name) return;
+    var name = qqTierName(m[1]);
     if (/smtcdns|subtitle|\.vtt\./.test(one)) return;
     /* 这里不能先要求身份：专辑页的身份正是从这条地址里取的，先要求就互相卡死。 */
     var nowEp = qqId();
@@ -999,7 +1005,7 @@
       var s = String(t || ''), n = 0, from = 0, idx;
       /* 用 indexOf 逐段找，不用带惰性量词的正则：回复常有几 MB，
          那种正则在这上面会疯狂回溯，整条 JS 线程卡住，页面就"卡死"（父亲 2026-10-25 报）。 */
-      var tail = /\.f\d{6}\.(?:ts\.)?m3u8$/;
+      var tail = /\.f\d{6,12}\.(?:ts\.)?m3u8$/;
       while ((idx = s.indexOf('m3u8', from)) >= 0) {
         from = idx + 4;
         var start = idx;
