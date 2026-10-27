@@ -121,6 +121,11 @@
     var x = lk(s), left, hit, i;
     if (!x || x.length > 24) return false;
     if (T_TAIL.test(x)) return true;
+    /* 集号段：腾讯的页面标题常是「剧名_01」「剧名_第3集：天津·上」，这一截属于集信息，不是片名 */
+    if (/^\d{1,3}$/.test(x) || /^ep?\s*\d{1,3}$/.test(x)) return true;
+    if (/^第?\s*[零一二三四五六七八九十百\d]{1,4}\s*[集话期回部]/.test(x)) return true;
+    /* 栏目尾巴：动画片大全 / 纪录片频道 / 电影专区，这一层是站点的栏目名 */
+    if (/(大全|频道|专区|排行榜|片库)$/.test(x)) return true;
     for (i = 0; i < T_WORDS.length; i++) {
       if (x === T_WORDS[i] || x === T_WORDS[i] + '版') return true;
     }
@@ -146,17 +151,22 @@
       pre = clean(s.slice(0, p.index));
       if (pre.length >= 2) return pre;
     }
-    for (i = 0; i < s.length; i++) { if (T_SEP.test(s.charAt(i))) last = i; }
-    if (last < 0) return null;
-    var left = clean(s.slice(0, last)), right = clean(s.slice(last).replace(/^[-_|·—\s]+/, ''));
-    if (left.length < 2 || !isWord(right)) return null;
-    return left;
+    /* 从右往左逐个分隔符试：集名里也常有「·」（天津·上），只看最右那个会被它挡死，
+       真正该砍的那一段在更左边（父亲 2026-10-27 报纪录片标题残留就是这个）。 */
+    for (i = s.length - 1; i >= 0; i--) {
+      if (!T_SEP.test(s.charAt(i))) continue;
+      var lf = clean(s.slice(0, i)), rt = clean(s.slice(i + 1));
+      if (lf.length < 2) return null;
+      if (isWord(rt)) return lf;
+    }
+    return null;
   }
 
   /* 循环剥尾，一轮剥不动就停，上限 6 轮；再收尾三步 */
   function fTitle(t) {
     var s = clean(t), n = 0, c;
     while (n++ < 6) { c = cutTail(s); if (c === null) break; s = c; }
+    s = s.replace(/\s*第\s*[零一二三四五六七八九十百\d]{1,4}\s*[集话期回部]\s*[上下中]?\s*$/, '');
     s = s.replace(/\[[^\]]{0,4}\]|【[^】]{0,4}】|[（）()\[\]【】]{2}/g, '');
     s = clean(s).replace(/\s{2,}/g, ' ').replace(/^[-_|·—\s]+|[-_|·—\s]+$/g, '');
     return s.length > 80 ? s.slice(0, 80) : s;
@@ -478,10 +488,13 @@
      没登记过的档位不丢弃：丢掉等于整条回复作废、槽空、按钮变灰，比选到低清更糟。 */
   /* 服务器每次回包都自带一张档位表（fl.fi：编号 → 中文档名），档名以它为准：
      编号本身会换（臻彩MAX 见过 322100、322104、322458），任何写死的表迟早对不上。 */
-  var qqTierMap = {};
+  var qqTierMap = {};   /* 编号前 6 位 → 档位名（臻彩MAX / 超高清SDR …），只作显示 */
+  var qqTierDef = {};   /* 编号前 6 位 → 画质档 hd/shd/fhd/uhd，用来决定收不收 */
   function qqLearnTiers(text) {
-    var s = String(text || ''), re = /"id":(\d{6})[^{}]*?"sname":"([^"]{1,20})"/g, m;
-    while ((m = re.exec(s))) { if (!qqTierMap[m[1]]) qqTierMap[m[1]] = m[2]; }
+    var s = String(text || ''), m, re = /"id":(\d{6})[^{}]*?"formatdefn":"([a-z0-9]{2,6})"[^{}]*?"sname":"([^"]{1,20})"/g;
+    while ((m = re.exec(s))) {
+      if (!qqTierDef[m[1]]) { qqTierDef[m[1]] = m[2]; qqTierMap[m[1]] = m[3]; }
+    }
   }
   function qqTierName(code) {
     var d = String(code || '').replace(/^f/, ''), k = d.slice(0, 6);
@@ -510,6 +523,10 @@
     var no = (p && p.no) || qqEpNo();
     var nm = (p && p.name) || '';
     if (!nm) nm = clean(txt('.player-play-title__sub-title'));
+    if (!nm) {
+      var mv = /第\s*[零一二三四五六七八九十\d]+\s*[集话期回]\s*[:：]\s*(.+)$/.exec(clean(txt('.player-play-title__title') || txt('.txp_title')));
+      if (mv) nm = clean(mv[1]);
+    }
     if (nm && (nm === String(no) || /^0*\d{1,3}[集话期回部]?$/.test(nm))) nm = '';
     /* 副标题那格常被会员标识占着（实测「尚公主 第3集VIP」），这类标记不是集名 */
     if (nm && /vip|会员|独播|独家|超前|付费|点播|预告|正片|花絮|片段|特辑|彩蛋/i.test(nm)) nm = '';
@@ -549,6 +566,11 @@
     var one = String(u || '').replace(/\\\//g, '/').replace(/\\+$/, '');
     var m = one.match(/\.(f\d{6,12})\.(?:ts\.)?m3u8/);
     if (!m) return;
+    /* 入槽只认四档：臻彩MAX、超高清SDR(4K)、臻彩视听、高清SDR(1080P)。
+       它们共同点就是画质档 fhd / uhd；准高清(720P)、标清(480P) 属于 shd / hd，丢掉。
+       档位表里查不到该编号时照收（宁可多，不可因为认不出来把整条回复作废）。 */
+    var def = qqTierDef[m[1].slice(0, 6)];
+    if (def && def !== 'fhd' && def !== 'uhd') return;
     var name = qqTierName(m[1]);
     if (/smtcdns|subtitle|\.vtt\./.test(one)) return;
     /* 这里不能先要求身份：专辑页的身份正是从这条地址里取的，先要求就互相卡死。 */
@@ -1174,55 +1196,6 @@
     } catch (e) {}
   }
 
-  /*
-   * 清掉腾讯播放器自己的本地资源库（父亲 2026-10-26 定：按 B 回网页后就逼它重新要一次）。
-   *
-   * 为什么需要：腾讯播放器把播放清单存进本地（Cache Storage、IndexedDB 里的 thumbplayer
-   * 资源库、以及几个 TP_RESOURCE_* 标记）。回网页后它直接从本地起播，一条网络请求都不发，
-   * 于是页面资源表里没有 m3u8、我们抓不到地址，真全屏按钮就一直灰（实测：同时刻 B站 回网页
-   * 两秒就恢复，腾讯四分钟不动，差别就在于 B站 每次都是真发请求）。
-   *
-   * 只清资源缓存相关的键，不动登录票据（登录在 cookie 里，与这些键无关），不会掉登录。
-   * IndexedDB 的库可能被页面自己占着删不掉，那种会记一笔日志，不影响后续流程。
-   */
-  function clearQqResourceCache() {
-    if (site() !== 'qq') return;
-    var stat = { cache: 0, idb: 0, ls: 0 };
-    try {
-      if (window.caches && window.caches.keys) {
-        window.caches.keys().then(function (ks) {
-          stat.cache = (ks || []).length;
-          (ks || []).forEach(function (k) { try { window.caches.delete(k); } catch (e) {} });
-          CH('⑨清腾讯资源库', { 缓存库: stat.cache, 库清单: (ks || []).join(',') });
-        }).catch(function () {});
-      }
-    } catch (e) {}
-    try {
-      Object.keys(localStorage).forEach(function (k) {
-        if (/thumbplayer|TP_RESOURCE|offline-db|tenvideo_player|TVPLAYER.*cache/i.test(k)) {
-          try { localStorage.removeItem(k); stat.ls++; } catch (e) {}
-        }
-      });
-    } catch (e) {}
-    try {
-      if (window.indexedDB && indexedDB.databases) {
-        indexedDB.databases().then(function (ds) {
-          var n = 0;
-          (ds || []).forEach(function (d) {
-            if (!d || !d.name) return;
-            try {
-              var rq = indexedDB.deleteDatabase(d.name);
-              rq.onsuccess = function () { n++; };
-              rq.onblocked = function () { CH('⑨资源库被占用', { 库: d.name }); };
-            } catch (e) {}
-          });
-          stat.idb = (ds || []).length;
-          CH('⑨清腾讯资源库', { 数据库: stat.idb, 本地键: stat.ls });
-        }).catch(function () {});
-      }
-    } catch (e) {}
-  }
-
   window.__b0bClearSlots = function (why) {
     slot.bi = null; slot.qq = null; slot.iq = null;
     S.lastSent = ''; fsState = -1; fsPend = 0;
@@ -1232,8 +1205,9 @@
     try { if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen(); } catch (e) {}
     try { window.__b0bRealFull = 0; } catch (e2) {}
     try { localStorage.removeItem('b0b:realFullAt'); } catch (e3) {}
-    /* 回网页先把腾讯的本地资源库清掉：它不清就会拿本地缓存起播、一条请求都不发（见函数注释） */
-    clearQqResourceCache();
+    /* 回网页不再清腾讯的本地资源库（父亲 2026-10-27 报：清了之后清晰度菜单里
+       臻彩MAX / 4K / 臻彩1080P 这三项就没了）。代价是偶尔它拿本地清单直接起播、
+       不发新请求，那种情况在菜单里手动切一次清晰度就能要来新地址。 */
     CH('⑨回网页', { 原因: why || '-', 站: site(), 时刻: Date.now() });
     markFs();
   };
