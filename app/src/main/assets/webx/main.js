@@ -1041,19 +1041,13 @@
         }
         if (tail.test(cand)) { n++; qqTake(cand, owner); }
       }
-      /* 时长必须从这条回复拿：清单地址是跨域的，脚本自己再取一次常被挡（日志里
-         「⑩清单算时长失败 原因=Failed to fetch」），拿不到槽就永远缺这一格、按钮一直灰。
-         回复是转义写法（`\"bandwidth\":…`），时长族有三个：`td`/`duration` 是旧名、
-         `tm` 是整集总时长、`ct` 是当前位置。实测 83199 字节的那条回复里没有 td，
-         只有 tm/ct —— 所以 td 缺失时用 tm 兜，且要求大于 10 分钟，免得把位置时间当
-         整集长度。只在带地址的回复里取，广告回复的同名字段语义不同。 */
-      var st = {
-        td: /\\?"(?:td|duration)\\?"\s*:\s*(\d{2,6})/.exec(s),
-        tm: /\\?"tm\\?"\s*:\s*(\d{2,6})/.exec(s),
-        ct: /\\?"ct\\?"\s*:\s*(\d{2,6})/.exec(s)
-      };
-      var d = st.td ? Number(st.td[1]) : 0;
-      if (n && !(d > 60) && st.tm && Number(st.tm[1]) > 600) d = Number(st.tm[1]);
+      /* 时长必须从这条回复拿：清单地址是跨域的，脚本自己再取一次常被挡，拿不到槽就
+         永远缺这一格、按钮一直灰。字段是 td，值是带引号的字符串且带小数：
+         实测 `"td": "2761.41"`（2026-10-27 在 Mac Chrome 上抓到的真实回复）。
+         只认裸整数的规则因此从来没命中过 —— 日志里的"数字字段"列表也没有 td，
+         因为它的值不是裸数字，差点被误判成别的字段。 */
+      var td = /\\?"(?:td|duration)\\?"\s*:\s*\\?"(\d+(?:\.\d+)?)/.exec(s);
+      var d = td ? Math.round(Number(td[1])) : 0;
       if (d > 60) {
         if (owner && qqCtx.pend && qqCtx.pend.vid === owner) qqCtx.pend.dur = d;
         else if (!qqCtx.dur) qqCtx.dur = d;
@@ -1066,6 +1060,11 @@
       /* 有地址却没拿到时长：把三个候选字段各自的值留下来，下一次一眼看清是哪个、差多少。 */
       if (n && !(d > 60)) {
         CH('⑩时长没读到', { 长度: s.length, td: st.td ? st.td[1] : '-', tm: st.tm ? st.tm[1] : '-', ct: st.ct ? st.ct[1] : '-' });
+      }
+      /* 有地址却没拿到时长：把 td 那段原文留下来，下次一眼看清值是怎么写的。 */
+      if (n && !(d > 60)) {
+        var kt = s.search(/\\?"td\\?"/);
+        CH('⑩时长没读到', { 长度: s.length, 片段: kt >= 0 ? s.slice(kt, kt + 40) : s.slice(0, 60) });
       }
     } catch (e) {}
   }
