@@ -1086,7 +1086,7 @@ private object WebRuntime {
      * 而且 YouTube 一改版就得重装包；放服务端改脚本就行，还带 25 分钟缓存。
      * 失败只打日志不打断网页：用户还在网页里，可以换个视频再点。
      */
-    private fun resolveYoutubeAndPlay(obj: org.json.JSONObject) {
+    fun resolveYoutubeAndPlay(obj: org.json.JSONObject) {
         val vid = obj.optString("vid")
         if (vid.isBlank()) return
         android.util.Log.i("B0BEmbyVR", "YouTube：向 .18 解析视频 $vid")
@@ -1771,6 +1771,44 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                     "真全屏进入：站点=$site 爱奇艺开关=" +
                                         com.xxxx.emby_vr.vr.VrTuning.webIqiyi,
                                 )
+                                /*
+                                 * YouTube 的真全屏由原生自己取号，不等网页交（2026-10-28）。
+                                 *
+                                 * 这一站开着 Trusted Types（require-trusted-types-for 'script'），
+                                 * evaluateJavascript 一律被拒 —— 日志原话：
+                                 * "Refused to evaluate a string as JavaScript because this document
+                                 * requires 'Trusted Type' assignment"。结果是 main.js 在 YouTube 页里
+                                 * 根本装不上，页面既不会报画面尺寸也不会交视频编号，点真全屏自然没人接。
+                                 * 不跟 CSP 硬碰：视频编号就在当前地址里，原生取出来直接去 .18 解析。
+                                 */
+                                if (site == 3) {
+                                    val ytUrl = runCatching { webRef?.url.orEmpty() }.getOrDefault("")
+                                    val ytVid = Regex("[?&]v=([A-Za-z0-9_-]{6,})")
+                                        .find(ytUrl)?.groupValues?.getOrNull(1).orEmpty()
+                                    if (ytVid.isNotBlank()) {
+                                        android.util.Log.i("B0BEmbyVR", "YouTube 接管：原生取号 $ytVid")
+                                        runCatching {
+                                            WebRuntime.resolveYoutubeAndPlay(
+                                                org.json.JSONObject()
+                                                    .put("kind", "play")
+                                                    .put("site", "yt")
+                                                    .put("vid", ytVid)
+                                                    .put("frame", ytUrl)
+                                                    .put("at", System.currentTimeMillis()),
+                                            )
+                                        }.onFailure {
+                                            android.util.Log.w(
+                                                "B0BEmbyVR",
+                                                "YouTube 接管发起失败：${it.message}",
+                                            )
+                                        }
+                                    } else {
+                                        android.util.Log.w(
+                                            "B0BEmbyVR",
+                                            "YouTube 接管：地址里没有视频编号 → $ytUrl",
+                                        )
+                                    }
+                                }
                                 /*
                                  * 【2026-10-21 爱奇艺接管】父亲按"真正的全屏"= 把 1080P 整集地址交给大银幕。
                                  *
