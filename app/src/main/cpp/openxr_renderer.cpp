@@ -1225,6 +1225,18 @@ std::atomic<float> gViewerOriginZ{0.f};
 std::atomic<float> gViewerOriginY{0.f};
 std::atomic<float> gEyeY{0.f};
 std::atomic<float> gLastHeadY{0.f};
+/*
+ * 眼高的两级记账（父亲 2026-10-28 实测"站起来按圆圈后眼高算成 -0.41"）：
+ *
+ * 系统每次重新居中都会把追踪原点搬到当前头位，Y 归零。所以"当前头显 Y"只能表示
+ * 相对**上一次重居中**的位移，不是相对开应用时的高度。
+ * 只拿它当眼高，第一次按圆圈就会把之前的高度差丢掉，甚至因为两套坐标系相减算出负数。
+ *
+ * 正确记法：base = 历次重居中保住的累计高度差，raw = 当前原点下的位移，
+ * 真实眼高 = base + raw。重居中时把 raw 并入 base 再换原点。
+ */
+std::atomic<float> gEyeBase{0.f};
+std::atomic<float> gLastRawEyeY{0.f};
 /** 参考空间是不是 STAGE（1 = 原点在地面，Y 是真实离地高度） */
 std::atomic<int> gStageSpace{0};
 std::atomic<bool> gViewerOriginSet{false};
@@ -1240,6 +1252,8 @@ void updateViewerAnchor(const XrPosef &head) {
         gViewerOriginZ.store(hz);
         gViewerOriginY.store(head.position.y);
         gLastHeadY.store(head.position.y);
+        gEyeBase.store(0.f);
+        gLastRawEyeY.store(0.f);
         gViewerOriginSet.store(true);
         LOGI("观影位锚点 → 起点记为 x=%.2f y=%.2f z=%.2f（后续所有走动与身高都相对这个点）",
              (double) hx, (double) head.position.y, (double) hz);
@@ -1276,12 +1290,17 @@ void updateViewerAnchor(const XrPosef &head) {
              * 站着按 → 面板整体抬高；坐着按 → 回到坐姿高度；之后走动不受影响。
              */
             {
+                /* 把重居中前那段位移并入累计基准，再采样一次眼高（这就是按下圆圈那一刻的眼睛高度） */
+                const float base = gEyeBase.load() + gLastRawEyeY.load();
+                gEyeBase.store(base);
                 /* 夹在 ±1 米内：异常读数（追踪抖动、重新居中没被识别）不至于把面板甩上天 */
-                const float sampled = gLastHeadY.load() - gViewerOriginY.load();
-                gEyeY.store(fmaxf(-1.f, fminf(1.f, sampled)));
+                gEyeY.store(fmaxf(-1.f, fminf(1.f, base)));
+                LOGI("圆圈键采样眼高：累计 %.2f + 位移 %.2f → %.2f 米",
+                     (double) gLastRawEyeY.load(), (double) base, (double) gEyeY.load());
             }
             gViewerOriginY.store(headY);
             gLastHeadY.store(headY);
+            gLastRawEyeY.store(0.f);
             LOGI("重新居中：锚点已重设（x=%.2f z=%.2f），累计走动 %.2f 米，眼高保持 %.2f 米",
                  (double) hx, (double) hz, (double) gWalkZ.load(), (double) gEyeY.load());
             return;
@@ -1309,6 +1328,7 @@ void updateViewerAnchor(const XrPosef &head) {
      * 采样发生在下面的"重新居中"分支（圆圈键会让头显把手里的追踪原点搬到当前头位）。
      */
     gLastHeadY.store(head.position.y);
+    gLastRawEyeY.store(head.position.y - gViewerOriginY.load());
 
     // 1 秒一次的位置日志：诊断"走动到底有没有被头显报出来"就靠它
     const auto now = std::chrono::steady_clock::now();
