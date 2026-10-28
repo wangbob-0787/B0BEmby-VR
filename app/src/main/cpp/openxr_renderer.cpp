@@ -1290,13 +1290,31 @@ void updateViewerAnchor(const XrPosef &head) {
              * 站着按 → 面板整体抬高；坐着按 → 回到坐姿高度；之后走动不受影响。
              */
             {
-                /* 把重居中前那段位移并入累计基准，再采样一次眼高（这就是按下圆圈那一刻的眼睛高度） */
+                /*
+                 * 按圆圈采样眼高（父亲 2026-10-28 定的校准规则）：
+                 *
+                 *   坐下按一次 = 把当前高度定成零点，面板回到"眼睛下方 0.62 米"的默认位置；
+                 *   站起按一次 = 只把站坐差加上去，面板保持原地，人就有站起来的感觉。
+                 *
+                 * 判据用"这次比上次低 0.15 米以上"，只有坐下（或蹲下）才算校准，
+                 * 站起来和走动不会被误判。这样累计漂移每次坐下都被清零，
+                 * 不会越按越偏 —— 这是纯相对坐标系下唯一能自校准的办法。
+                 */
                 const float base = gEyeBase.load() + gLastRawEyeY.load();
-                gEyeBase.store(base);
-                /* 夹在 ±1 米内：异常读数（追踪抖动、重新居中没被识别）不至于把面板甩上天 */
-                gEyeY.store(fmaxf(-1.f, fminf(1.f, base)));
-                LOGI("圆圈键采样眼高：累计 %.2f + 位移 %.2f → %.2f 米",
-                     (double) gLastRawEyeY.load(), (double) base, (double) gEyeY.load());
+                const float prev = gEyeY.load();
+                float next;
+                if (base < prev - 0.15f) {
+                    gEyeBase.store(0.f);
+                    next = 0.f;
+                } else {
+                    gEyeBase.store(base);
+                    /* 夹在 ±1 米内：异常读数（追踪抖动、重新居中没被识别）不至于把面板甩上天 */
+                    next = fmaxf(-1.f, fminf(1.f, base));
+                }
+                gEyeY.store(next);
+                LOGI("圆圈键采样眼高：上次 %.2f，本次累计 %.2f → %.2f 米%s",
+                     (double) prev, (double) base, (double) next,
+                     next == 0.f ? "（坐下校准为零点）" : "");
             }
             gViewerOriginY.store(headY);
             gLastHeadY.store(headY);
