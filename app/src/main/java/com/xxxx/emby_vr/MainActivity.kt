@@ -345,9 +345,6 @@ class MainActivity : ComponentActivity() {
     /** 每集上次看到的位置（tick）：选集换片也从那儿接着播（父亲 2026-10-06 晚定） */
     private var episodePositions: List<Long> = emptyList()
 
-    /** 字幕菜单第一行是不是「弹幕」开关（有弹幕轨才有，决定点击下标要不要左移一位） */
-    private var subtitleDanmakuRow = false
-
     /** 当前该显示的字幕文字（画笔后启动时补上） */
     private var subtitleNow = ""
 
@@ -4872,18 +4869,7 @@ class MainActivity : ComponentActivity() {
                 Log.i(TAG, "弹幕设置 → ${if (danmakuOn) "开" else "关"}，字号 ${danmakuScale}")
             }
             com.xxxx.emby_vr.panel.MenuKind.SUBTITLE -> {
-                var i = index
-                if (subtitleDanmakuRow) {
-                    if (i == 0) {
-                        // 第一行是弹幕开关：只动弹幕，字幕选择原样保留
-                        danmakuOn = !danmakuOn
-                        applyDanmakuSetting()
-                        refreshMenuRows(com.xxxx.emby_vr.panel.MenuKind.SUBTITLE)
-                        Log.i(TAG, "字幕菜单里切弹幕 → ${if (danmakuOn) "开" else "关"}（字幕不动）")
-                        return
-                    }
-                    i -= 1
-                }
+                val i = index
                 /*
                  * 点已勾上的那一条 = 取消勾选（父亲 2026-10-06 晚：不再单列「关闭字幕」，
                  * 取消勾选就起到关闭字幕的作用）。
@@ -5401,44 +5387,24 @@ class MainActivity : ComponentActivity() {
     /** 字幕列表：第 0 项固定是「关闭字幕」 */
     private fun buildSubtitleRows(): List<com.xxxx.emby_vr.panel.MenuRowItem> {
         /*
-         * 字幕菜单里弹幕与字幕**可以同时勾**（父亲 2026-10-06 晚）。
+         * 字幕菜单只列字幕，**不出现弹幕**（父亲 2026-10-28 定）。
          *
-         * 弹幕与字幕是两套并行通道：弹幕那条 ASS 轨由我们自己下载、自绘在弹幕层；
-         * 普通字幕由播放器回调交给弹幕层底部。菜单形态（父亲 2026-10-06 晚定稿）：
-         *   · 有弹幕轨时第一行是「弹幕」，勾选态 = 弹幕开关，点一下切换；
-         *   · 之后是各条文本字幕，只能选一条；
-         *   · 没有「关闭字幕」这一项 —— 点已勾上的那一条就是取消勾选（关字幕），
-         *     弹幕同理，点一下勾上、再点一下取消。
-         * 两者互不覆盖，一屏里可以同时看到两个勾。
+         * 弹幕不走字幕这条通道：它由我们现拉、自绘在独立弹幕层，开关与字号在「弹幕设置」菜单里
+         * （panel/PlayerMenuPanel.kt 的 DanmakuMenu 第一行就是「显示弹幕：开/关」）。
+         * 以前为了能在字幕菜单里开关弹幕，把「弹幕」塞成第 0 行，结果两处受伤：
+         *   1) 菜单下标整体右移一位，`i - 1` 一旦对不上就落到别的字幕轨上；
+         *   2) 弹幕本来就是独立层，混进字幕清单语义上也错。
+         *
+         * 顺序照官方 Emby 客户端（父亲 2026-10-28 明确）：**内嵌轨在前，Emby 下载的外挂字幕依次列在后**，
+         * 组内按 Emby 流序号升序。菜单行与 subtitleStreamIndices 由同一个列表生成，
+         * 保证「菜单第几条」与「Emby 流 index」一一对应。
+         *
+         * 图形字幕（PGS 等）不过滤（父亲 2026-10-09 定）：内核路径能直接画，普通路径选它会转走内核；
+         * 这里只留一行日志说明哪几条是图形字幕。
          */
-        val hasDanmakuTrack = currentStreams.any {
-            it.type.equals("Subtitle", ignoreCase = true) && isDanmakuStream(it)
-        }
-        /*
-         * 【2026-10-17 16:46 父亲定稿：接入弹幕 + 字幕菜单里可开关】
-         * 网页流（B站）的弹幕拉的也是 danmakuTrack（loadWebDanmaku 走同一个画笔/开关/字号/偏移），
-         * 所以"有无弹幕"这里把网页弹幕也纳入 —— 字幕菜单第一行在网页流里同样会出现。
-         */
-        /*
-             * 【2026-10-20 19:58 父亲实测：弹幕出来了，但字幕菜单里没有「弹幕」那一行】
-             * 原来只认 B站 的片号（webCid），腾讯走的是 webVid，条件永远不成立。
-             */
-            /*
-             * 判据统一成"有没有弹幕轨"。
-             * 原来还要看片号（webCid/webVid），爱奇艺那条没有这两个变量，
-             * 于是弹幕已经显示出来了、字幕菜单里却没有「弹幕」这一行
-             * （父亲 2026-10-26 01:51 报）。有轨就该有这一行，三站一致。
-             */
-            subtitleDanmakuRow = hasDanmakuTrack || danmakuTrack != null ||
-                ((webCid > 0L || webVid.isNotBlank()) && webDanmakuLoaded)
-        /*
-         * 图形字幕（PGS 等）分两条路对待（父亲 2026-10-09 定）：
-         *   · 内核路径（Profile 5）：**列出来**，内核画得了图片字幕，选中就能显示；
-         *   · 普通路径：也列出来，选中后自动请服务端把字幕烧进画面（见 EmbyApi 的
-         *     选它会改走内核播放（内核自己画图片字幕）。
-         * 所以这里不再过滤，只留一行日志说明这条轨是图形字幕。
-         */
-        val subs = currentStreams.filter { it.type == "Subtitle" && !isDanmakuStream(it) }
+        val subs = currentStreams
+            .filter { it.type == "Subtitle" && !isDanmakuStream(it) }
+            .sortedWith(compareBy({ it.isExternal == true }, { it.index ?: Int.MAX_VALUE }))
         val images = subs.filter { isImageSubtitle(it) }
         if (images.isNotEmpty()) {
             Log.i(TAG, "字幕菜单：图形字幕 ${images.size} 条 → " +
@@ -5448,15 +5414,12 @@ class MainActivity : ComponentActivity() {
         subtitleStreamIndices = subs.mapNotNull { it.index }
         val rows = mutableListOf<com.xxxx.emby_vr.panel.MenuRowItem>()
         /*
-         * 【2026-10-17 18:12 父亲现场：字幕菜单里看不到「弹幕」那行】
-         *
-         * 上面那句 `subtitleDanmakuRow` 已经把网页流的弹幕算进去了（点击处理也按它分派），
-         * 但这里放行那一行时还只看 Emby 自己的弹幕轨（hasDanmakuTrack）——
-         * 网页播片时 Emby 侧没有任何字幕流，于是这行**从来没被生成**，
-         * 菜单里自然看不到。两处口径要一致：用同一个判断。
+         * 一条字幕都没有时给一行占位，免得菜单整块空白让人以为菜单坏了。
+         * 点它等于「不开字幕」（subtitleStreamIndices 为空 → getOrNull 拿不到 → 取消选中），无害。
          */
-        if (subtitleDanmakuRow) {
-            rows += com.xxxx.emby_vr.panel.MenuRowItem("弹幕", danmakuOn)
+        if (subs.isEmpty()) {
+            rows += com.xxxx.emby_vr.panel.MenuRowItem("（这部片没有字幕）", false)
+            return rows
         }
         subs.forEachIndexed { i, s ->
             val label = s.displayTitle?.takeIf { it.isNotBlank() }
