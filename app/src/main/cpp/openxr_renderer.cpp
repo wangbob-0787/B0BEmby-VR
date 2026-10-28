@@ -697,6 +697,20 @@ static float hallFloorY(float z) {
 /** 走动时要给整间影厅加的升降量：脚下那块地面始终贴着脚，平地段恒为常数 */
 static float hallFloorDy(float z) { return -(hallFloorY(z) - hallFloorY(0.f)); }
 
+/**
+ * 影厅纵向基准高度。
+ *
+ * STAGE（地面基准）：资产里 z=0 处地板在 y=-0.82（从 cinema.b0bcin 实测），
+ * 抬 0.82 米整间影厅的地面就与头显标定的真实地面重合 —— 起身、坐下、往前走全部由系统带。
+ * LOCAL（退化分支）：沿用老的"眼高采样 + 世界补偿"那套。
+ */
+extern std::atomic<int> gStageSpace;
+static float hallBaseLift() {
+    return gStageSpace.load() != 0
+           ? 0.82f
+           : (1.65f - gCinemaEyeHeight.load()) + gWorldShiftY.load();
+}
+
 /** 地形补偿用的前后位移：头显的相对 z 与影厅 z 轴方向相反，取反后再查地形曲线 */
 extern std::atomic<float> gViewerZ;
 extern std::atomic<float> gWalkZ;
@@ -1025,6 +1039,7 @@ void drawCinema(const Mat4 &proj, const Mat4 &view, const XrVector3f &eyePos) {
     model.m[12] = kCinemaShiftX;                              // 横向：让座位中心正对观影位
     /* 坡度补偿：人往后走（gViewerZ 增大）→ 影厅整体下移，脚底那格地面始终在眼睛下方 */
     const float slopeDy = hallFloorDy(viewerZForFloor());
+    const float baseLift = hallBaseLift();
     {
         // 地形体检：约每两秒一行，必要时拿它核对走动方向与补偿正负
         static int tick = 0;
@@ -1033,8 +1048,7 @@ void drawCinema(const Mat4 &proj, const Mat4 &view, const XrVector3f &eyePos) {
                  (double) viewerZForFloor(), (double) slopeDy);
         }
     }
-    model.m[13] = s.dy + (1.65f - gCinemaEyeHeight.load()) + gSeatUp.load() + slopeDy +
-                  gWorldShiftY.load();
+    model.m[13] = s.dy + baseLift + gSeatUp.load() + slopeDy;
     model.m[14] = s.dz - gSeatFwd.load();                     // 前/后：正数 = 人往椅子前部坐
     const Mat4 mvp = multiply(multiply(proj, view), model);
 
@@ -1528,8 +1542,7 @@ float hallScreenFitWidth(float aspect) {
 float hallScreenCenterY() {
     const int seat = gSeat.load();
     const CinemaSeat &s = kCinemaSeats[seat];
-    return (kHallScreenModelY - kHallRefEyeY) + s.dy + (1.65f - gCinemaEyeHeight.load()) + hallFloorDy(viewerZForFloor()) +
-           gWorldShiftY.load() +
+    return (kHallScreenModelY - kHallRefEyeY) + s.dy + hallBaseLift() + hallFloorDy(viewerZForFloor()) +
            gScreenUp.load();
 }
 
@@ -1543,8 +1556,7 @@ float hallScreenCenterY() {
 float hallScreenBottomY() {
     const int seat = gSeat.load();
     const CinemaSeat &s = kCinemaSeats[seat];
-    return (kHallScreenBottomY - kHallRefEyeY) + s.dy + (1.65f - gCinemaEyeHeight.load()) + hallFloorDy(viewerZForFloor()) +
-           gWorldShiftY.load() +
+    return (kHallScreenBottomY - kHallRefEyeY) + s.dy + hallBaseLift() + hallFloorDy(viewerZForFloor()) +
            gScreenUp.load();
 }
 
@@ -2592,15 +2604,18 @@ bool createSession(VrContext &c) {
      * 结果整个厅沉到脚下，人就像飘在半空。
      * 要换 STAGE 就必须同时把所有几何上移一个眼高，那是另一件事，不在这一版里做。
      */
-    rsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+    /*
+     * 先要 STAGE：头显在进入 VR 时标定过地面，STAGE 的原点就在那块地面上（Y=0 = 地面，
+     * -Z = 正前方），起身、坐下、往前走都由系统给出真实离地高度与位移，不必采样眼高猜
+     * （父亲 2026-10-29 定的口径）。拿不到才退回 LOCAL（原点 = 启动那一刻的头位）。
+     */
+    rsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_STAGE;
     rsci.poseInReferenceSpace = {{0, 0, 0, 1}, {0, 0, 0}};
     r = api.CreateReferenceSpace(c.session, &rsci, &c.localSpace);
-    gStageSpace.store(0);
+    gStageSpace.store(XR_SUCCEEDED(r) ? 1 : 0);
     if (XR_FAILED(r)) {
-        // 退一步用 STAGE（有些运行时只给 STAGE），此时高度是离地值，只做兜底
-        rsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_STAGE;
+        rsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
         r = api.CreateReferenceSpace(c.session, &rsci, &c.localSpace);
-        gStageSpace.store(XR_SUCCEEDED(r) ? 1 : 0);
         if (XR_FAILED(r)) {
             LOGE("xrCreateReferenceSpace 失败：%d", (int) r);
             return false;
