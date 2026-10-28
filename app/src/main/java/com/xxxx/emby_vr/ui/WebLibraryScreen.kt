@@ -1108,14 +1108,14 @@ private object WebRuntime {
                 return@Thread
             }
             val filled = org.json.JSONObject(obj.toString())
-            res.optString("title").takeIf { it.isNotBlank() }?.let { filled.put("title", it) }
-            filled.put("durSec", res.optInt("duration", 0))
+            res?.optString("title")?.takeIf { it.isNotBlank() }?.let { filled.put("title", it) }
+            filled.put("durSec", res?.optInt("duration", 0) ?: 0)
             filled.put(
                 "streams",
                 org.json.JSONArray().put(
                     org.json.JSONObject()
                         .put("video", video)
-                        .put("audio", res.optString("audio"))
+                        .put("audio", res?.optString("audio").orEmpty())
                 ),
             )
             android.os.Handler(android.os.Looper.getMainLooper()).post {
