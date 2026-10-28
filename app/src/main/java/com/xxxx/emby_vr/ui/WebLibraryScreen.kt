@@ -735,6 +735,9 @@ private object WebRuntime {
      * 表现是"新站第一下接不过去"。换站时清一次，新站自己会再报上来。
      */
     fun resetForSite() {
+        /* 换站必须把接收槽也清掉：留着上一站的载荷，下一个站按真全屏时会把它当自己的接走
+           —— 父亲 2026-10-28 22:57 实测"YouTube 接管成先前 B站 那个视频"就是这个 */
+        slotAny = null
         bridgeCookie = ""
         bridgeLastFrame = ""
         bridgeLastPlaySig = ""
@@ -796,8 +799,25 @@ private object WebRuntime {
             android.util.Log.w("B0BEmbyVR", "◆消费($tag) 拒收：接收槽里还没有数据")
             return
         }
-        val dur = s.optInt("durSec", 0)
         val now = System.currentTimeMillis()
+        /*
+         * 串台防线（2026-10-28）：槽里这一份必须是**当前这个站**交的，而且不能放太久。
+         * 站点对不上说明是上一站残留 —— 直接拒收并打日志，不要拿别的站的片子去起播。
+         */
+        val slotSite = s.optString("site")
+        val openSite = when (com.xxxx.emby_vr.web.WebPageHub.navSite) {
+            0 -> "bi"; 1 -> "qq"; 2 -> "iq"; 3 -> "yt"; else -> ""
+        }
+        if (slotSite.isNotBlank() && openSite.isNotBlank() && slotSite != openSite) {
+            chain("⑧消费-拒收", "（$tag）站不符：槽=$slotSite 当前页=$openSite " + slotBrief(s))
+            return
+        }
+        val atSlot = s.optLong("at", 0L)
+        if (atSlot > 0 && now - atSlot > 180_000L) {
+            chain("⑧消费-拒收", "（$tag）这份放了 ${(now - atSlot) / 1000} 秒，判过期 " + slotBrief(s))
+            return
+        }
+        val dur = s.optInt("durSec", 0)
         val atWeb = s.optLong("at", 0L)
         val lag = if (atWeb > 0) "网页变化→原生收到 " + (slotRecvAtWall - atWeb) + "ms，收到→消费 " + (now - slotRecvAtWall) + "ms" else "缺 at"
         /* 片长门槛是参数（默认 0 = 不挡）。原来写死 300 秒，把 B站 一两分钟的普通视频
