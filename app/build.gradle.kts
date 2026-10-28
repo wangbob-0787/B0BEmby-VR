@@ -96,8 +96,15 @@ android {
          */
         val buildNo = propOrEnv("BUILD_NUMBER", "1").toIntOrNull() ?: 1
         versionCode = buildNo
-        /* 父亲 2026-10-28：主版本号从 0.1 提到 1.0，末段仍是每次编译的 run 号 */
-        versionName = "1.0.$buildNo"
+        /*
+         * 版本号形态（父亲 2026-10-28 定）：1.0.0001，每编译一次末段 +1。
+         *
+         * 末段不是直接写 run 号，而是从 0.1 时代的最后一版（run 1045）起算的序号：
+         * run 1046 → 1.0.0001，1047 → 1.0.0002……这样版本号从 1 开始数、看着顺，
+         * 同时又始终递增（versionCode 仍是 run 号，安装器靠它判断新旧，不受这里影响）。
+         */
+        val versionSeq = (buildNo - 1045).coerceAtLeast(1)
+        versionName = "1.0." + versionSeq.toString().padStart(4, '0')
 
         ndk {
             abiFilters += listOf("arm64-v8a")
