@@ -96,7 +96,8 @@ android {
          */
         val buildNo = propOrEnv("BUILD_NUMBER", "1").toIntOrNull() ?: 1
         versionCode = buildNo
-        versionName = "0.1.$buildNo"
+        /* 父亲 2026-10-28：主版本号从 0.1 提到 1.0，末段仍是每次编译的 run 号 */
+        versionName = "1.0.$buildNo"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
