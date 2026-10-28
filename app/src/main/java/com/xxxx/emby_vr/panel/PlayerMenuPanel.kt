@@ -96,8 +96,18 @@ val MenuKind.isSubMenu: Boolean
         this == MenuKind.MODE || this == MenuKind.BUFFER || this == MenuKind.CINEMA_LIGHT ||
         this == MenuKind.SEAT_ADJUST
 
-/** 菜单里的一行（轨道 / 集数这类：显示名 + 是否当前选中） */
-data class MenuRowItem(val label: String, val selected: Boolean, val payload: Int = -1)
+/**
+ * 菜单里的一行（轨道 / 集数这类：显示名 + 是否当前选中）。
+ *
+ * `sub` 是副行，只用于字幕这类需要"英文名 + 母语名"两行表达的项
+ * （官方 Emby 客户端同款：第一行 Chinese Simplified (默认 SUBRIP)，第二行 中文（简体））。
+ */
+data class MenuRowItem(
+    val label: String,
+    val selected: Boolean,
+    val payload: Int = -1,
+    val sub: String = "",
+)
 
 /** 演职人员一项 */
 data class PersonItem(val name: String, val role: String, val avatarUrl: String?)
@@ -805,6 +815,7 @@ private fun TrackMenu(menu: MenuState, rows: List<MenuRowItem>, kind: MenuKind) 
                 label = row.label,
                 value = "",
                 selected = row.selected,
+                sub = row.sub,
                 onClick = { menu.onSelect?.invoke(kind, i) },
             )
         }
@@ -1061,6 +1072,8 @@ private fun MenuRow(
     label: String,
     value: String,
     selected: Boolean,
+    /** 副行（母语名等）；空串不占位 */
+    sub: String = "",
     hasSub: Boolean = false,
     /** false = 灰掉且点不动（父亲 2026-10-10：没播放时「更多」里只留选座与影厅亮度） */
     enabled: Boolean = true,
@@ -1081,13 +1094,22 @@ private fun MenuRow(
             .padding(horizontal = 22.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            text = label,
-            color = if (enabled) Color.White else Color(0x59FFFFFF),
-            fontSize = 24.sp,
-            modifier = Modifier.weight(1f),
-            maxLines = 1,
-        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = label,
+                color = if (enabled) Color.White else Color(0x59FFFFFF),
+                fontSize = 24.sp,
+                maxLines = 1,
+            )
+            if (sub.isNotBlank()) {
+                Text(
+                    text = sub,
+                    color = if (enabled) Color(0x99FFFFFF) else Color(0x40FFFFFF),
+                    fontSize = 17.sp,
+                    maxLines = 1,
+                )
+            }
+        }
         if (value.isNotBlank()) {
             Text(
                 text = value,

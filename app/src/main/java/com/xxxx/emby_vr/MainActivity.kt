@@ -5426,7 +5426,17 @@ class MainActivity : ComponentActivity() {
                 ?: s.language?.takeIf { it.isNotBlank() }
                 ?: s.codec?.uppercase()
                 ?: "字幕 ${i + 1}"
-            rows += com.xxxx.emby_vr.panel.MenuRowItem(label, s.index == selectedSubtitleIndex)
+            /*
+             * 两行显示（父亲 2026-10-28，与官方客户端一致）：
+             * 主行 = Emby 的 DisplayTitle（如 "Chinese Simplified (默认 SUBRIP)"），
+             * 副行 = Emby 的 Title（母语名，如 "中文（简体）"）。
+             * 只有一行时中文轨认不出来，看着像全是英文字幕。
+             */
+            rows += com.xxxx.emby_vr.panel.MenuRowItem(
+                label = label,
+                selected = s.index == selectedSubtitleIndex,
+                sub = s.title?.takeIf { it.isNotBlank() && it != label }.orEmpty(),
+            )
         }
         return rows
     }
