@@ -1275,7 +1275,11 @@ void updateViewerAnchor(const XrPosef &head) {
              * 眼睛的高度（相对开应用时的位置）。这一枪之后就定死了：
              * 站着按 → 面板整体抬高；坐着按 → 回到坐姿高度；之后走动不受影响。
              */
-            gEyeY.store(gLastHeadY.load() - gViewerOriginY.load());
+            {
+                /* 夹在 ±1 米内：异常读数（追踪抖动、重新居中没被识别）不至于把面板甩上天 */
+                const float sampled = gLastHeadY.load() - gViewerOriginY.load();
+                gEyeY.store(fmaxf(-1.f, fminf(1.f, sampled)));
+            }
             gViewerOriginY.store(headY);
             gLastHeadY.store(headY);
             LOGI("重新居中：锚点已重设（x=%.2f z=%.2f），累计走动 %.2f 米，眼高保持 %.2f 米",
@@ -2472,21 +2476,21 @@ bool createSession(VrContext &c) {
 
     XrReferenceSpaceCreateInfo rsci{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
     /*
-     * 优先用 STAGE：它的原点在**地面**，头显报出的 Y 就是真实离地高度
-     * （父亲 2026-10-28：坐着、站着、走动时，眼高和离地距离都要对得上）。
-     * LOCAL 的原点只是"开应用那一刻的头部位置"，拿不到离地高度；
-     * 运行时不给 STAGE（没做地面校准等）才退回去，此时高度只能是相对值。
+     * 必须用 LOCAL，不能用 STAGE（父亲 2026-10-28 实测"人悬在半空"）：
+     * 整间影厅、座椅、银幕、面板的几何都是按"原点 = 观看者眼睛位置"建的，
+     * STAGE 的原点在地面，Y 变成离地高度，几何却没跟着抬高 1.2 米 ——
+     * 结果整个厅沉到脚下，人就像飘在半空。
+     * 要换 STAGE 就必须同时把所有几何上移一个眼高，那是另一件事，不在这一版里做。
      */
-    rsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_STAGE;
+    rsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
     rsci.poseInReferenceSpace = {{0, 0, 0, 1}, {0, 0, 0}};
     r = api.CreateReferenceSpace(c.session, &rsci, &c.localSpace);
-    gStageSpace.store(XR_SUCCEEDED(r) ? 1 : 0);
-    if (XR_SUCCEEDED(r)) {
-        LOGI("参考空间：STAGE（原点在地面，头显 Y = 真实离地高度）");
-    } else {
-        LOGI("参考空间：运行时不支持 STAGE（xrResult=%d）→ 退回 LOCAL，高度只能是相对值", (int) r);
-        rsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+    gStageSpace.store(0);
+    if (XR_FAILED(r)) {
+        // 退一步用 STAGE（有些运行时只给 STAGE），此时高度是离地值，只做兜底
+        rsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_STAGE;
         r = api.CreateReferenceSpace(c.session, &rsci, &c.localSpace);
+        gStageSpace.store(XR_SUCCEEDED(r) ? 1 : 0);
         if (XR_FAILED(r)) {
             LOGE("xrCreateReferenceSpace 失败：%d", (int) r);
             return false;
