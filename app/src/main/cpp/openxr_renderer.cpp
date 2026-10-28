@@ -998,7 +998,8 @@ void drawCinema(const Mat4 &proj, const Mat4 &view, const XrVector3f &eyePos) {
     model.m[12] = kCinemaShiftX;                              // 横向：让座位中心正对观影位
     /* 坡度补偿：人往后走（gViewerZ 增大）→ 影厅整体下移，脚底那格地面始终在眼睛下方 */
     const float slopeDy = hallFloorDy(gWalkZ.load() + gViewerZ.load());
-    model.m[13] = s.dy + (1.65f - gCinemaEyeHeight.load()) + gSeatUp.load() + slopeDy;
+    model.m[13] = s.dy + (1.65f - gCinemaEyeHeight.load()) + gSeatUp.load() + slopeDy +
+                  gWorldShiftY.load();
     model.m[14] = s.dz - gSeatFwd.load();                     // 前/后：正数 = 人往椅子前部坐
     const Mat4 mvp = multiply(multiply(proj, view), model);
 
@@ -1235,6 +1236,17 @@ std::atomic<float> gLastHeadY{0.f};
  * 正确记法：base = 历次重居中保住的累计高度差，raw = 当前原点下的位移，
  * 真实眼高 = base + raw。重居中时把 raw 并入 base 再换原点。
  */
+/*
+ * 世界整体竖直补偿（父亲 2026-10-28 实测"站起来按圆圈，地面和座椅也一起往上跑"）：
+ *
+ * 圆圈键会让系统把头位原点搬到当前头位，头显报出的高度瞬间归零 —— 但我们画的影厅、银幕
+ * 一直钉在世界坐标里没动，于是"世界相对人"凭空升高了那段高差（实测 0.38 米），
+ * 人看到的就是地面和座椅一起抬到胸口。
+ *
+ * 所以重居中时把这段跳变补进世界：影厅与银幕按这个量反向平移，人相对世界的观感不变；
+ * 控制条 / 海报墙 / 菜单**不参与**这个补偿，它们只按眼高采样值上抬（父亲要的"跟着站姿变"）。
+ */
+std::atomic<float> gWorldShiftY{0.f};
 std::atomic<float> gEyeBase{0.f};
 std::atomic<float> gLastRawEyeY{0.f};
 /** 参考空间是不是 STAGE（1 = 原点在地面，Y 是真实离地高度） */
@@ -1316,6 +1328,8 @@ void updateViewerAnchor(const XrPosef &head) {
                      (double) prev, (double) base, (double) next,
                      next == 0.f ? "（坐下校准为零点）" : "");
             }
+            /* 世界补偿：头显高度从 oldY 掉到 headY，世界就跟着下移同样的量，人看着场景不跳 */
+            gWorldShiftY.store(gWorldShiftY.load() + (headY - gLastHeadY.load()));
             gViewerOriginY.store(headY);
             gLastHeadY.store(headY);
             gLastRawEyeY.store(0.f);
@@ -1459,6 +1473,7 @@ float hallScreenCenterY() {
     const int seat = gSeat.load();
     const CinemaSeat &s = kCinemaSeats[seat];
     return (kHallScreenModelY - kHallRefEyeY) + s.dy + (1.65f - gCinemaEyeHeight.load()) + hallFloorDy(gWalkZ.load() + gViewerZ.load()) +
+           gWorldShiftY.load() +
            gScreenUp.load();
 }
 
@@ -1473,6 +1488,7 @@ float hallScreenBottomY() {
     const int seat = gSeat.load();
     const CinemaSeat &s = kCinemaSeats[seat];
     return (kHallScreenBottomY - kHallRefEyeY) + s.dy + (1.65f - gCinemaEyeHeight.load()) + hallFloorDy(gWalkZ.load() + gViewerZ.load()) +
+           gWorldShiftY.load() +
            gScreenUp.load();
 }
 
