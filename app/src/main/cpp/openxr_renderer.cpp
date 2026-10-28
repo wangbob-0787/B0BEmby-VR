@@ -1254,7 +1254,12 @@ std::atomic<float> gEyeY{0.f};
  * 系数留成全局量，现场还能调。
  */
 std::atomic<float> gPanelLiftK{0.5f};
-static inline float panelLift() { return gEyeY.load() * gPanelLiftK.load(); }
+/*
+ * 符号是负的：原点是"当前眼睛"，站着时原点已经比坐姿高了整个高差，
+ * 要让面板落在"坐姿世界高度 + 半个高差"，相对当前眼睛就得**减去**半个高差。
+ * 写成加号会得到"坐姿高度 + 一个半高差"，实测就是比眼睛还高（父亲 2026-10-28 报的现象）。
+ */
+static inline float panelLift() { return -gEyeY.load() * gPanelLiftK.load(); }
 std::atomic<float> gLastHeadY{0.f};
 /*
  * 眼高的两级记账（父亲 2026-10-28 实测"站起来按圆圈后眼高算成 -0.41"）：

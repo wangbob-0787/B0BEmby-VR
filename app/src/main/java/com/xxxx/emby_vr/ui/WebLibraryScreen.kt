@@ -147,6 +147,35 @@ private const val VIDEO_RECT_JS = """
 /* 已经向后端预热过解析的 YouTube 视频编号（同一页只热一次） */
 private var lastYtWarmedVid = ""
 
+/** 从网页地址里取 YouTube 视频编号；不是视频页返回空串 */
+private fun ytVidOf(url: String?): String =
+    Regex("[?&]v=([A-Za-z0-9_-]{6,})").find(url.orEmpty())?.groupValues?.getOrNull(1).orEmpty()
+
+/**
+ * 让服务端先把这部片的地址解析好（服务端缓存 25 分钟），按真全屏时直接命中。
+ *
+ * YouTube 点开一个视频走的是站内跳转（history.pushState），**不会触发页面加载完成回调**，
+ * 所以预热不能挂在加载完成上（挂那儿一次也没跑过，父亲 2026-10-28 23:51 报"接管很慢"）。
+ * 现在由每 250ms 的视频区域轮询顺带查地址变化，站内跳转也能立刻热一份。
+ */
+private fun warmYoutubeIfNeeded(url: String?) {
+    val vid = ytVidOf(url)
+    if (vid.isBlank() || vid == lastYtWarmedVid) return
+    lastYtWarmedVid = vid
+    android.util.Log.i("B0BEmbyVR", "YouTube 预热解析：$vid")
+    Thread {
+        runCatching {
+            (java.net.URL("http://192.168.150.18:8792/resolve?id=$vid")
+                .openConnection() as java.net.HttpURLConnection)
+                .apply {
+                    connectTimeout = 8000
+                    readTimeout = 150000
+                }
+                .inputStream.close()
+        }
+    }.start()
+}
+
 private fun parseVideoRect(raw: String?): FloatArray? {
     val s = raw?.trim()?.trim('"') ?: return null
     if (s.isEmpty() || s == "null") return null
@@ -1451,6 +1480,7 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
             val js = VIDEO_RECT_JS
             run {
                 val w = webRef
+                if (site == 3) warmYoutubeIfNeeded(w?.url)
                 if (w == null) {
                     pushVideoRect(null)
                 } else {
@@ -1714,26 +1744,7 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                  * 等他按真全屏时直接命中缓存（服务端缓存 25 分钟）。
                                  * 只按视频编号去重：同一页反复触发不重复打后端。
                                  */
-                                if (site == 3) {
-                                    val warmVid = Regex("[?&]v=([A-Za-z0-9_-]{6,})")
-                                        .find(u)?.groupValues?.getOrNull(1).orEmpty()
-                                    if (warmVid.isNotBlank() && warmVid != lastYtWarmedVid) {
-                                        lastYtWarmedVid = warmVid
-                                        android.util.Log.i("B0BEmbyVR", "YouTube 预热解析：$warmVid")
-                                        Thread {
-                                            runCatching {
-                                                (java.net.URL(
-                                                    "http://192.168.150.18:8792/resolve?id=$warmVid"
-                                                ).openConnection() as java.net.HttpURLConnection)
-                                                    .apply {
-                                                        connectTimeout = 8000
-                                                        readTimeout = 150000
-                                                    }
-                                                    .inputStream.close()
-                                            }
-                                        }.start()
-                                    }
-                                }
+                                if (site == 3) warmYoutubeIfNeeded(u)
                             }
 
                             /*
