@@ -76,8 +76,6 @@ enum class MenuKind(val title: String) {
     QUALITY("视频质量"),
     MODE("播放模式"),
     BUFFER("缓冲设置"),
-    /** 播放版本：同一部片库里有多个文件时，每个版本自带的字幕/音轨清单不同 */
-    VERSION("播放版本"),
     SUBTITLE("字幕"),
     DANMAKU("弹幕设置"),
     SPEED("播放速度"),
@@ -96,7 +94,7 @@ enum class MenuKind(val title: String) {
 val MenuKind.isSubMenu: Boolean
     get() = this == MenuKind.AUDIO || this == MenuKind.QUALITY ||
         this == MenuKind.MODE || this == MenuKind.BUFFER || this == MenuKind.CINEMA_LIGHT ||
-        this == MenuKind.SEAT_ADJUST || this == MenuKind.VERSION
+        this == MenuKind.SEAT_ADJUST
 
 /**
  * 菜单里的一行（轨道 / 集数这类：显示名 + 是否当前选中）。
@@ -227,10 +225,6 @@ class MenuState {
     var seatFwd by mutableStateOf(0f)
     var seatUpBar by mutableStateOf<androidx.compose.ui.geometry.Rect?>(null)
     var seatFwdBar by mutableStateOf<androidx.compose.ui.geometry.Rect?>(null)
-
-    /** 播放版本（多版本片才有多行）；versionLabel 是「更多」那行行尾显示的当前版本 */
-    var versionRows by mutableStateOf<List<MenuRowItem>>(emptyList())
-    var versionLabel by mutableStateOf("")
 
     var subtitleTracks by mutableStateOf<List<MenuRowItem>>(emptyList())
     var audioTracks by mutableStateOf<List<MenuRowItem>>(emptyList())
@@ -445,7 +439,6 @@ fun PlayerMenuPanel(menu: MenuState, osd: OsdState) {
                 MenuKind.SEAT_ADJUST -> SeatAdjustMenu(menu)
                 MenuKind.DANMAKU -> DanmakuMenu(menu)
                 MenuKind.SUBTITLE -> TrackMenu(menu, menu.subtitleTracks, MenuKind.SUBTITLE)
-                MenuKind.VERSION -> TrackMenu(menu, menu.versionRows, MenuKind.VERSION)
                 MenuKind.AUDIO -> TrackMenu(menu, menu.audioTracks, MenuKind.AUDIO)
                 MenuKind.EPISODES -> EpisodeMenu(menu)
                 MenuKind.INFO -> InfoMenu(menu)
@@ -527,21 +520,6 @@ private fun MoreMenu(menu: MenuState, playing: Boolean) {
          * 与上面四条一样是二级菜单（右箭头箭头表示还能进去），行号固定 = 5。
          * 管的是影厅的环境光线（影院 HDRI 环境光 + 底光），不是影片画面亮度。
          */
-        /*
-         * 播放版本（父亲 2026-10-28）：同一部片在库里有多个文件时，每个版本自带一份
-         * 字幕/音轨清单。只列当前实际会播的那一份已经不成立，要让用户自己选 ——
-         * 选完按新版本重取流，字幕菜单跟着换这一份。
-         * 只有一个版本时不出现（没什么可选的）。
-         */
-        if (menu.versionRows.size > 1) {
-            MenuRow(
-                label = "播放版本",
-                value = menu.versionLabel,
-                selected = false,
-                hasSub = true,
-                onClick = { menu.onSelect?.invoke(MenuKind.MORE, 7) },
-            )
-        }
         MenuRow(
             label = "影厅亮度",
             value = "${(menu.cinemaBright * 100).toInt()}%",

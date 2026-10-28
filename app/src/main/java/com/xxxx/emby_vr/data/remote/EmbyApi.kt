@@ -433,7 +433,14 @@ object EmbyApi {
     ): BaseItemDto {
         return httpAsBaseItemDto(
             context, serverUrl, apiKey, deviceId,
-            "/Users/$userId/Items/$mediaId?fields=ShareLevel&ExcludeFields=VideoChapters,VideoMediaSources,MediaStreams&X-Emby-Token=$apiKey"
+            /*
+             * 带回 MediaSources（父亲 2026-10-28）：详情页要按"版本"选片。
+             * 同一部片在库里可能有多个文件，每个版本自带的字幕/音轨清单不同，
+             * 版本选择放在详情页，播放页只负责按这个选择取流。
+             * 流清单不再排除：版本行要显示每个版本的分辨率与字幕条数（父亲 2026-10-28）。
+             */
+            "/Users/$userId/Items/$mediaId?fields=ShareLevel,MediaSources" +
+                "&ExcludeFields=VideoChapters&X-Emby-Token=$apiKey"
         )
     }
 

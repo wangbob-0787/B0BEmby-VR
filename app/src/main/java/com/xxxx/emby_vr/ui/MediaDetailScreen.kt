@@ -1,5 +1,6 @@
 package com.xxxx.emby_vr.ui
 
+import android.content.Context
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.*
@@ -24,6 +25,8 @@ import com.xxxx.emby_vr.ui.components.BuildItem
 import com.xxxx.emby_vr.ui.components.requestFocusRetry
 import com.xxxx.emby_vr.Utils
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -181,6 +184,23 @@ fun MediaDetailScreen(
             CircularProgressIndicator(color = Color.White)
         }
     } else {
+        /*
+         * 版本（父亲 2026-10-28 定）：同一部片在库里有多个文件时，**在这里选**，
+         * 播放页只显示用的是哪一份。每个版本自带一份字幕/音轨清单，
+         * 记忆与播放页共用（同一个 prefs 名与 key），点播放后取流就按这一份。
+         * 只有一个版本时整行不出现。
+         */
+        val versionPrefs = remember { context.getSharedPreferences("b0bemby_vr", Context.MODE_PRIVATE) }
+        val versionSources = mediaInfo.mediaSources.orEmpty()
+        var versionMenuOpen by remember(mediaInfo.id) {
+            androidx.compose.runtime.mutableStateOf(false)
+        }
+        var versionIndex by remember(mediaInfo.id, versionSources.size) {
+            val saved = versionPrefs.getString("ver_choice_${mediaInfo.id}", null)
+            androidx.compose.runtime.mutableIntStateOf(
+                versionSources.indexOfFirst { it.id == saved }.takeIf { it >= 0 } ?: 0
+            )
+        }
         // Construct Backdrop URL
         val backdropTags = mediaInfo.backdropImageTags
         val parentBackdropTags = mediaInfo.parentBackdropImageTags
@@ -344,6 +364,73 @@ fun MediaDetailScreen(
                                 maxLines = 5,
                                 overflow = TextOverflow.Ellipsis
                             )
+                        }
+
+                        /*
+                         * 版本下拉（父亲 2026-10-28 定）：点这一行展开全部版本，每行写明
+                         * 文件名要点 + 分辨率 + 字幕条数；选中后详情页按该版本刷新（下面那行
+                         * 显示所选版本的技术信息），播放时按它取流。
+                         * 不同版本本质上是不同文件，语言、分辨率、字幕条数都可能不同。
+                         */
+                        if (versionSources.size > 1) {
+                            val cur = versionSources.getOrNull(versionIndex)
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(
+                                    text = "版本 ${versionIndex + 1}/${versionSources.size}　" +
+                                        (cur?.name ?: "").take(40) + "  ▾",
+                                    color = Color(0xFF2FD57C),
+                                    fontSize = 15.sp,
+                                    maxLines = 1,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable { versionMenuOpen = !versionMenuOpen }
+                                        .padding(vertical = 4.dp, horizontal = 8.dp)
+                                )
+                                if (versionMenuOpen) {
+                                    Column(
+                                        modifier = Modifier
+                                            .heightIn(max = 200.dp)
+                                            .verticalScroll(rememberScrollState())
+                                    ) {
+                                        versionSources.forEachIndexed { vi, src ->
+                                            val vh = src.mediaStreams
+                                                ?.firstOrNull { it.type.equals("Video", true) }?.height
+                                            val vsubs = src.mediaStreams
+                                                ?.count { it.type.equals("Subtitle", true) } ?: 0
+                                            val vlangs = src.mediaStreams
+                                                ?.filter { it.type.equals("Audio", true) }
+                                                ?.mapNotNull { it.language }
+                                                ?.distinct()?.take(4)?.joinToString("/")
+                                                .orEmpty()
+                                            Text(
+                                                text = (if (vi == versionIndex) "✓ " else "　") +
+                                                    (src.name ?: "版本 ${vi + 1}").take(38) +
+                                                    buildString {
+                                                        if (vh != null && vh > 0) append("　${vh}p")
+                                                        if (vlangs.isNotBlank()) append("　$vlangs")
+                                                        append("　字幕 $vsubs 条")
+                                                    },
+                                                color = if (vi == versionIndex) Color(0xFF2FD57C)
+                                                else Color.White.copy(alpha = 0.82f),
+                                                fontSize = 14.sp,
+                                                maxLines = 1,
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(8.dp))
+                                                    .clickable {
+                                                        versionIndex = vi
+                                                        versionMenuOpen = false
+                                                        versionPrefs.edit()
+                                                            .putString(
+                                                                "ver_choice_${mediaInfo.id}",
+                                                                src.id,
+                                                            ).apply()
+                                                    }
+                                                    .padding(vertical = 3.dp, horizontal = 8.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                         }
 
                         // 动作按钮（父亲 2026-10-02 定：只要两个，方块图标 + 下方文字）
