@@ -681,7 +681,7 @@ std::atomic<int> gRecenterEvent{0};
  * 平地段走动时地面也跟着上下动，坡道段又按近两倍的坡度翻，脚下对不上。
  * 现在按地形曲线补偿：平地段高度恒定（走过去地面不动），只有坡道段才升降。
  */
-std::atomic<float> gFloorSlope{0.18f};   // 实测坡度：2.6 米 / 14.5 米
+std::atomic<float> gFloorSlope{0.205f};  // 实测坡度：地板从 z=-7 的 -1.96 米升到 z=7.5 的 +1.01 米 ⇒ 2.97/14.5
 
 /* 影厅地板在「观众前后位置 z」处的高度（相对第一排，单位米） */
 static const float kHallFloorZ0 = -7.0f;    // 坡道起点（银幕前的平地到此为止）
@@ -1312,7 +1312,14 @@ void updateViewerAnchor(const XrPosef &head) {
          * 而 Y 恰好就是要采样的眼高。所以竖直方向的跳变也当作重新居中。
          */
         const bool jumpedEvent = gRecenterEvent.exchange(0) == 1;
-        const bool jumped = jumpedEvent ||
+        /*
+         * 事件本身不算数：必须姿态真的跟着跳了才算重新居中。
+         * 只有事件、姿态没动的那种，是运行时在重复通告，照它处理就会把累计走动清零。
+         */
+        const bool eventWithJump = jumpedEvent &&
+                                   (dx * dx + dz * dz > 0.02f ||
+                                    fabsf(headY - gLastHeadY.load()) > 0.12f);
+        const bool jumped = eventWithJump ||
                             dx * dx + dz * dz > 1.5f * 1.5f ||
                             fabsf(headY - gLastHeadY.load()) > 0.3f;
         if (jumped) {
@@ -3847,9 +3854,20 @@ void pumpEvents(VrContext &c) {
     XrEventDataBuffer ev{XR_TYPE_EVENT_DATA_BUFFER};
     while (api.PollEvent(c.instance, &ev) == XR_SUCCESS) {
         if (ev.type == XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING) {
-            /* 圆圈键重新居中：下一帧采样时按新原点重建，世界不跳（处理在采样那段） */
-            gRecenterEvent.store(1);
-            LOGI("系统重新居中（参考空间变更事件）");
+            /*
+             * 参考空间变更 = 重新居中。运行时会连发一串（实测 2026-10-29 凌晨每秒数次），
+             * 每次处理都会把锚点搬到当前头位、累计走动清零 —— 父亲往前走时累计值永远是 0，
+             * 地形补偿算不出位移，脚下地面不跟着抬，人就悬在半空。
+             * 只认一秒半内的第一次，后面的连发丢掉。
+             */
+            const auto nowMs = (long long) std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count();
+            static long long lastMs = 0;
+            if (nowMs - lastMs > 1500) {
+                lastMs = nowMs;
+                gRecenterEvent.store(1);
+                LOGI("系统重新居中（参考空间变更事件）");
+            }
             continue;
         }
         if (ev.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED) {
