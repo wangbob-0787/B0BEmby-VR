@@ -1162,9 +1162,7 @@ class MainActivity : ComponentActivity() {
          * `Sequence contains no matching element` → 返回 0 字节 → 字幕空。
          * 所以先按集号核对，对不上就退回标准命名（单版本片源就是 mediasource_<集号>）。
          */
-        val sourceId = (pendingMediaSourceId ?: reportedMediaSourceId)
-            ?.takeIf { it.endsWith(mediaId) }
-            ?: "mediasource_$mediaId"
+        val sourceId = currentSourceId() ?: "mediasource_$mediaId"
         if (mediaId.isBlank()) return
         /*
          * 弹幕轨永远不当普通字幕画（2026-10-10 父亲明确：弹幕的 ASS 文件名里带「弹幕」，
@@ -5459,6 +5457,26 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
+     * 当前这次播放**真正在用的**媒体源 id（Emby 的 MediaSourceId）。
+     *
+     * 字幕、弹幕这些按流序号取内容的地址都要带它 —— 带错就是「HTTP 200 但 0 字节」，
+     * 表现为"选了字幕不出字"（2026-10-28 实测《蜘蛛侠》流 22：地址里写的是
+     * mediasource_1841404，实际源是 mediasource_2193097，服务端返回空）。
+     *
+     * 取法按可靠性排序：本次播放缓存的源清单里选中的那个 → 服务端回报的源 →
+     * 历史字段（仅当它属于当前这部片）。都不成立才退回标准命名。
+     */
+    private fun currentSourceId(): String? {
+        pickMediaSource(currentSources)?.id?.takeIf { it.isNotBlank() }?.let { return it }
+        val sameItem = pendingItemId == currentMediaId
+        if (sameItem) {
+            pendingMediaSourceId?.takeIf { it.isNotBlank() }?.let { return it }
+            reportedMediaSourceId?.takeIf { it.isNotBlank() }?.let { return it }
+        }
+        return null
+    }
+
+    /**
      * 从服务端返回的媒体源清单里挑出"这次要播的那个版本"。
      *
      * 用户选过就用选过的（按 id 精确匹配）；没选过、或那个版本已经不在库里，
@@ -5571,9 +5589,7 @@ class MainActivity : ComponentActivity() {
                 return
             }
             if (mediaId.isNotBlank()) {
-                val sourceId = (pendingMediaSourceId ?: reportedMediaSourceId)
-                    ?.takeIf { it.endsWith(mediaId) }
-                    ?: "mediasource_$mediaId"
+                val sourceId = currentSourceId() ?: "mediasource_$mediaId"
                 val url = "${userServer()}/emby/Videos/$mediaId/$sourceId/Subtitles/$index" +
                     "/Stream.srt?api_key=${userToken()}"
                 m.addSubtitleUrl(url)
@@ -5785,8 +5801,7 @@ class MainActivity : ComponentActivity() {
     private fun probeExternalAssForDanmaku() {
         val mediaId = currentMediaId
         if (mediaId.isBlank()) return
-        val sourceId = (pendingMediaSourceId ?: reportedMediaSourceId)
-            ?.takeIf { it.endsWith(mediaId) } ?: "mediasource_$mediaId"
+        val sourceId = currentSourceId() ?: "mediasource_$mediaId"
         val candidates = currentStreams.filter {
             val c = (it.codec ?: "").lowercase()
             it.type.equals("Subtitle", true) && it.isExternal == true &&
@@ -6032,9 +6047,7 @@ class MainActivity : ComponentActivity() {
         }
         val index = sub.index
         // 片源编号要属于当前这一集（理由同 loadSubtitleTrack，2026-10-09）
-        val sourceId = (pendingMediaSourceId ?: reportedMediaSourceId)
-            ?.takeIf { it.endsWith(mediaId) }
-            ?: "mediasource_$mediaId"
+        val sourceId = currentSourceId() ?: "mediasource_$mediaId"
         Log.i(TAG, "弹幕诊断：挑中弹幕轨 index=$index source=$sourceId")
         if (index == null || sourceId.isNullOrBlank()) {
             Log.w(TAG, "弹幕轨信息不全，跳过（index=$index source=$sourceId）")
