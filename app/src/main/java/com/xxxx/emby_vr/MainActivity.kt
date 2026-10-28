@@ -3029,6 +3029,18 @@ class MainActivity : ComponentActivity() {
          * forceKernelForImageSubs 来决定用系统播放器还是内核 —— 上次选的是图片字幕，
          * 这一部就得直接走内核，否则又要手动去字幕菜单点一次才触发。
          */
+        /*
+         * 详情页选过的音轨（父亲 2026-10-28）：key 里带版本 id，
+         * 不同版本文件音轨不同，不能互相串。
+         */
+        runCatching {
+            val srcKey = com.xxxx.emby_vr.player.PlaybackFlags.mediaSourceId.orEmpty()
+            val savedAudio = placePrefs.getInt("aud_choice_${mediaId}_$srcKey", -1)
+            if (savedAudio >= 0) {
+                selectedAudioIndex = savedAudio
+                Log.i(TAG, "起播应用记住的音轨：流 $savedAudio（版本 $srcKey）")
+            }
+        }
         runCatching {
             val mem = restoreSubtitleChoice(mediaId)
             if (mem != null) {
@@ -5512,8 +5524,9 @@ class MainActivity : ComponentActivity() {
      */
     private fun rememberSubtitleChoice(mediaId: String, index: Int?, isImage: Boolean) {
         if (mediaId.isBlank()) return
+        val srcKey = com.xxxx.emby_vr.player.PlaybackFlags.mediaSourceId.orEmpty()
         placePrefs.edit()
-            .putString("sub_choice_$mediaId", "${index ?: -1}|$isImage")
+            .putString("sub_choice_${mediaId}_$srcKey", "${index ?: -1}|$isImage")
             .apply()
     }
 
@@ -5523,7 +5536,15 @@ class MainActivity : ComponentActivity() {
      */
     private fun restoreSubtitleChoice(mediaId: String): Pair<Int?, Boolean>? {
         if (mediaId.isBlank()) return null
-        val raw = placePrefs.getString("sub_choice_$mediaId", null) ?: return null
+        /*
+         * key 带版本 id（详情页写入的就是这个）：不同版本文件字幕条数不同，
+         * 同一个流序号在不同版本里指向的字幕完全不一样，不能串。
+         * 读不到再退回旧的、不带版本的 key（老记忆继续有效）。
+         */
+        val srcKey = com.xxxx.emby_vr.player.PlaybackFlags.mediaSourceId.orEmpty()
+        val raw = placePrefs.getString("sub_choice_${mediaId}_$srcKey", null)
+            ?: placePrefs.getString("sub_choice_$mediaId", null)
+            ?: return null
         val parts = raw.split("|")
         val idx = parts.getOrNull(0)?.toIntOrNull() ?: return null
         val isImage = parts.getOrNull(1)?.equals("true", ignoreCase = true) == true

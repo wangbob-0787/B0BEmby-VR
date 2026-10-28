@@ -195,6 +195,36 @@ fun MediaDetailScreen(
         var versionMenuOpen by remember(mediaInfo.id) {
             androidx.compose.runtime.mutableStateOf(false)
         }
+        /*
+         * 视频 / 音频 / 字幕（父亲 2026-10-28 截图，照官方详情页）：
+         * 这三行跟着**当前选中的版本**走 —— 不同版本的文件，音轨与字幕本来就不同。
+         * 选过的音频/字幕按「条目 + 版本」记住，播放时按这份记忆取流。
+         */
+        val curSourceStreams = versionSources.getOrNull(versionIndex)?.mediaStreams.orEmpty()
+        val versionKey = versionSources.getOrNull(versionIndex)?.id.orEmpty()
+        val videoStream = curSourceStreams.firstOrNull { it.type.equals("Video", true) }
+        val audioList = curSourceStreams.filter { it.type.equals("Audio", true) }
+        val subList = curSourceStreams.filter { it.type.equals("Subtitle", true) }
+        var audioMenuOpen by remember(mediaInfo.id) {
+            androidx.compose.runtime.mutableStateOf(false)
+        }
+        var subMenuOpen by remember(mediaInfo.id) {
+            androidx.compose.runtime.mutableStateOf(false)
+        }
+        var audioIndex by remember(mediaInfo.id, versionKey, audioList.size) {
+            val saved = versionPrefs.getInt("aud_choice_${mediaInfo.id}_$versionKey", -1)
+            androidx.compose.runtime.mutableIntStateOf(
+                saved.takeIf { v -> audioList.any { it.index == v } }
+                    ?: audioList.firstOrNull { it.isDefault == true }?.index
+                    ?: (audioList.firstOrNull()?.index ?: -1)
+            )
+        }
+        var subIndex by remember(mediaInfo.id, versionKey, subList.size) {
+            val raw = versionPrefs.getString("sub_choice_${mediaInfo.id}_$versionKey", null)
+            androidx.compose.runtime.mutableIntStateOf(
+                raw?.split("|")?.firstOrNull()?.toIntOrNull() ?: -1
+            )
+        }
         var versionIndex by remember(mediaInfo.id, versionSources.size) {
             val saved = versionPrefs.getString("ver_choice_${mediaInfo.id}", null)
             androidx.compose.runtime.mutableIntStateOf(
@@ -375,17 +405,31 @@ fun MediaDetailScreen(
                         if (versionSources.size > 1) {
                             val cur = versionSources.getOrNull(versionIndex)
                             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                Text(
-                                    text = "版本 ${versionIndex + 1}/${versionSources.size}　" +
-                                        (cur?.name ?: "").take(40) + "  ▾",
-                                    color = Color(0xFF2FD57C),
-                                    fontSize = 15.sp,
-                                    maxLines = 1,
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .clickable { versionMenuOpen = !versionMenuOpen }
-                                        .padding(vertical = 4.dp, horizontal = 8.dp)
-                                )
+                                /*
+                                 * 形态对齐官方客户端（父亲 2026-10-28 截图）：左边「版本」标签，
+                                 * 右边一个带底色的下拉按钮显示当前版本名，点开是版本列表。
+                                 */
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                ) {
+                                    Text(
+                                        text = "版本",
+                                        color = Color.White.copy(alpha = 0.72f),
+                                        fontSize = 15.sp,
+                                    )
+                                    Text(
+                                        text = (cur?.name ?: "默认版本") + "  ▾",
+                                        color = Color.White,
+                                        fontSize = 15.sp,
+                                        maxLines = 1,
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(18.dp))
+                                            .background(Color(0x1FFFFFFF))
+                                            .clickable { versionMenuOpen = !versionMenuOpen }
+                                            .padding(vertical = 7.dp, horizontal = 16.dp)
+                                    )
+                                }
                                 if (versionMenuOpen) {
                                     Column(
                                         modifier = Modifier
@@ -423,6 +467,166 @@ fun MediaDetailScreen(
                                                             .putString(
                                                                 "ver_choice_${mediaInfo.id}",
                                                                 src.id,
+                                                            ).apply()
+                                                    }
+                                                    .padding(vertical = 3.dp, horizontal = 8.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        /*
+                         * 视频 / 音频 / 字幕（照官方详情页，父亲 2026-10-28）：
+                         * 视频只读显示当前版本的分辨率与编码；音频、字幕是下拉，选完记住，
+                         * 播放时按这份选择取流（字幕另存 isImage，决定要不要走内核）。
+                         */
+                        val labelColor = Color.White.copy(alpha = 0.72f)
+                        val chipBg = Color(0x1FFFFFFF)
+                        videoStream?.let { vs ->
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                Text(text = "视频", color = labelColor, fontSize = 15.sp)
+                                Text(
+                                    text = buildString {
+                                        if ((vs.height ?: 0) > 0) append("${vs.height}p")
+                                        vs.codec?.takeIf { it.isNotBlank() }?.let {
+                                            if (isNotEmpty()) append(" ")
+                                            append(it.uppercase())
+                                        }
+                                    },
+                                    color = Color.White,
+                                    fontSize = 15.sp,
+                                )
+                            }
+                        }
+                        if (audioList.isNotEmpty()) {
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                ) {
+                                    Text(text = "音频", color = labelColor, fontSize = 15.sp)
+                                    val curAudio = audioList.firstOrNull { it.index == audioIndex }
+                                        ?: audioList.firstOrNull()
+                                    Text(
+                                        text = (curAudio?.displayTitle ?: curAudio?.language ?: "默认")
+                                            .take(38) + "  ▾",
+                                        color = Color.White,
+                                        fontSize = 15.sp,
+                                        maxLines = 1,
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(18.dp))
+                                            .background(chipBg)
+                                            .clickable { audioMenuOpen = !audioMenuOpen }
+                                            .padding(vertical = 7.dp, horizontal = 16.dp)
+                                    )
+                                }
+                                if (audioMenuOpen) {
+                                    Column(
+                                        modifier = Modifier
+                                            .heightIn(max = 180.dp)
+                                            .verticalScroll(rememberScrollState())
+                                    ) {
+                                        audioList.forEach { st ->
+                                            Text(
+                                                text = (if (st.index == audioIndex) "✓ " else "　") +
+                                                    (st.displayTitle ?: st.language ?: "音轨").take(42) +
+                                                    (st.title?.takeIf { t -> t.isNotBlank() }?.let { "　$it" } ?: ""),
+                                                color = if (st.index == audioIndex) Color(0xFF2FD57C)
+                                                else Color.White.copy(alpha = 0.82f),
+                                                fontSize = 14.sp,
+                                                maxLines = 1,
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(8.dp))
+                                                    .clickable {
+                                                        audioIndex = st.index ?: -1
+                                                        audioMenuOpen = false
+                                                        versionPrefs.edit()
+                                                            .putInt(
+                                                                "aud_choice_${mediaInfo.id}_$versionKey",
+                                                                audioIndex,
+                                                            )
+                                                            .putString(
+                                                                "ver_choice_${mediaInfo.id}",
+                                                                versionKey,
+                                                            )
+                                                            .apply()
+                                                    }
+                                                    .padding(vertical = 3.dp, horizontal = 8.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if (subList.isNotEmpty()) {
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                ) {
+                                    Text(text = "字幕", color = labelColor, fontSize = 15.sp)
+                                    val curSub = subList.firstOrNull { it.index == subIndex }
+                                    Text(
+                                        text = (curSub?.title ?: curSub?.displayTitle ?: "关").take(38) + "  ▾",
+                                        color = Color.White,
+                                        fontSize = 15.sp,
+                                        maxLines = 1,
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(18.dp))
+                                            .background(chipBg)
+                                            .clickable { subMenuOpen = !subMenuOpen }
+                                            .padding(vertical = 7.dp, horizontal = 16.dp)
+                                    )
+                                }
+                                if (subMenuOpen) {
+                                    Column(
+                                        modifier = Modifier
+                                            .heightIn(max = 200.dp)
+                                            .verticalScroll(rememberScrollState())
+                                    ) {
+                                        // 第一项「关」（官方形态）
+                                        Text(
+                                            text = (if (subIndex < 0) "✓ " else "　") + "关",
+                                            color = if (subIndex < 0) Color(0xFF2FD57C)
+                                            else Color.White.copy(alpha = 0.82f),
+                                            fontSize = 14.sp,
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .clickable {
+                                                    subIndex = -1
+                                                    subMenuOpen = false
+                                                    versionPrefs.edit()
+                                                        .putString(
+                                                            "sub_choice_${mediaInfo.id}_$versionKey",
+                                                            "-1|false",
+                                                        ).apply()
+                                                }
+                                                .padding(vertical = 3.dp, horizontal = 8.dp)
+                                        )
+                                        subList.forEach { st ->
+                                            val isImage = isImageSubtitleStream(st.codec)
+                                            Text(
+                                                text = (if (st.index == subIndex) "✓ " else "　") +
+                                                    (st.displayTitle ?: st.language ?: "字幕").take(34) +
+                                                    (st.title?.takeIf { t -> t.isNotBlank() }?.let { "　$it" } ?: ""),
+                                                color = if (st.index == subIndex) Color(0xFF2FD57C)
+                                                else Color.White.copy(alpha = 0.82f),
+                                                fontSize = 14.sp,
+                                                maxLines = 1,
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(8.dp))
+                                                    .clickable {
+                                                        subIndex = st.index ?: -1
+                                                        subMenuOpen = false
+                                                        versionPrefs.edit()
+                                                            .putString(
+                                                                "sub_choice_${mediaInfo.id}_$versionKey",
+                                                                "$subIndex|$isImage",
                                                             ).apply()
                                                     }
                                                     .padding(vertical = 3.dp, horizontal = 8.dp)
@@ -1193,4 +1397,11 @@ private fun EpisodeRow(
             }
         }
     }
+}
+
+/** 图片型字幕（PGS / VobSub / DVDSub）：服务端转不出文字，选它要走内核自渲染 */
+private fun isImageSubtitleStream(codec: String?): Boolean {
+    val c = (codec ?: "").lowercase()
+    return c.contains("pgs") || c.contains("pgssub") || c.contains("dvdsub") ||
+        c.contains("vobsub") || c.contains("dvbsub")
 }
