@@ -144,6 +144,9 @@ private const val VIDEO_RECT_JS = """
 """
 
 /** 把 [VIDEO_RECT_JS] 的返回值解析成 x/y/w/h/aspect；读不到返回 null */
+/* 已经向后端预热过解析的 YouTube 视频编号（同一页只热一次） */
+private var lastYtWarmedVid = ""
+
 private fun parseVideoRect(raw: String?): FloatArray? {
     val s = raw?.trim()?.trim('"') ?: return null
     if (s.isEmpty() || s == "null") return null
@@ -1685,6 +1688,32 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
                                     { view.evaluateJavascript(HIDE_APP_BANNER_JS, null) },
                                     1500,
                                 )
+                                /*
+                                 * YouTube 的解析第一次要三十多秒（要过播放令牌与签名），父亲 2026-10-28
+                                 * 20:38 报"拿地址时间有点长"。页面一停到某个视频上就先去后端热一份，
+                                 * 等他按真全屏时直接命中缓存（服务端缓存 25 分钟）。
+                                 * 只按视频编号去重：同一页反复触发不重复打后端。
+                                 */
+                                if (site == 3) {
+                                    val warmVid = Regex("[?&]v=([A-Za-z0-9_-]{6,})")
+                                        .find(u)?.groupValues?.getOrNull(1).orEmpty()
+                                    if (warmVid.isNotBlank() && warmVid != lastYtWarmedVid) {
+                                        lastYtWarmedVid = warmVid
+                                        android.util.Log.i("B0BEmbyVR", "YouTube 预热解析：$warmVid")
+                                        Thread {
+                                            runCatching {
+                                                (java.net.URL(
+                                                    "http://192.168.150.18:8792/resolve?id=$warmVid"
+                                                ).openConnection() as java.net.HttpURLConnection)
+                                                    .apply {
+                                                        connectTimeout = 8000
+                                                        readTimeout = 150000
+                                                    }
+                                                    .inputStream.close()
+                                            }
+                                        }.start()
+                                    }
+                                }
                             }
 
                             /*
