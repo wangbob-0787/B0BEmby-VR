@@ -82,6 +82,7 @@ PICO 4 上的 Emby 客户端，VR 虚拟影院版本。家庭自用。
 | 自写弹幕层 | 弹幕与普通字幕分属两层，互不干扰；每帧按播放时间重算坐标，不累加位移 | `danmaku/DanmakuView.kt`、`danmaku/DanmakuSurfacePainter.kt` |
 | ASS 解析 | 自己解析，因为 Media3 内置 SSA 解析器不支持 `\move`（滚动弹幕会被堆到底部） | `danmaku/AssDanmakuParser.kt` |
 | 弹幕轨识别 | 按文件名（含「弹幕 / danmaku / danmu」）或内容（大量位移标记）判定，避免把普通字幕当弹幕 | `MainActivity.kt` |
+| 弹幕来源 | 起播时按「剧名 + 集号 + 年份」向 `.15:8790/danmaku` 现拉，解析后直接挂自绘层，不落文件、不在 Emby 登记字幕轨；拿不到就静默跳过，不影响出画面 | `scripts/danmaku/live_server.py`（.18） |
 | 时间偏移 | 弹幕整体提前 / 延后，最多 ±2 分半，画面与真实进度不受影响 | `MainActivity.kt` |
 | 暂停与快进 | 暂停时弹幕停在原地，快进快退期间弹幕位置冻结 | `MainActivity.kt` |
 | 画笔随影片比例 | 弹幕画布比例跟影片走，弹幕 / 字幕 / logo 不被拉伸 | `MainActivity.kt` |
