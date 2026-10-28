@@ -195,6 +195,12 @@ fun MediaDetailScreen(
         var versionMenuOpen by remember(mediaInfo.id) {
             androidx.compose.runtime.mutableStateOf(false)
         }
+        var versionIndex by remember(mediaInfo.id, versionSources.size) {
+            val saved = versionPrefs.getString("ver_choice_${mediaInfo.id}", null)
+            androidx.compose.runtime.mutableIntStateOf(
+                versionSources.indexOfFirst { it.id == saved }.takeIf { it >= 0 } ?: 0
+            )
+        }
         /*
          * 视频 / 音频 / 字幕（父亲 2026-10-28 截图，照官方详情页）：
          * 这三行跟着**当前选中的版本**走 —— 不同版本的文件，音轨与字幕本来就不同。
@@ -223,12 +229,6 @@ fun MediaDetailScreen(
             val raw = versionPrefs.getString("sub_choice_${mediaInfo.id}_$versionKey", null)
             androidx.compose.runtime.mutableIntStateOf(
                 raw?.split("|")?.firstOrNull()?.toIntOrNull() ?: -1
-            )
-        }
-        var versionIndex by remember(mediaInfo.id, versionSources.size) {
-            val saved = versionPrefs.getString("ver_choice_${mediaInfo.id}", null)
-            androidx.compose.runtime.mutableIntStateOf(
-                versionSources.indexOfFirst { it.id == saved }.takeIf { it >= 0 } ?: 0
             )
         }
         // Construct Backdrop URL
@@ -483,7 +483,7 @@ fun MediaDetailScreen(
                          * 播放时按这份选择取流（字幕另存 isImage，决定要不要走内核）。
                          */
                         val labelColor = Color.White.copy(alpha = 0.72f)
-                        val chipBg = Color(0x1FFFFFFF)
+                        val chipBg = Color(0x1AFFFFFF)
                         videoStream?.let { vs ->
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
@@ -521,6 +521,7 @@ fun MediaDetailScreen(
                                         modifier = Modifier
                                             .clip(RoundedCornerShape(18.dp))
                                             .background(chipBg)
+                                            .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(18.dp))
                                             .clickable { audioMenuOpen = !audioMenuOpen }
                                             .padding(vertical = 7.dp, horizontal = 16.dp)
                                     )
@@ -579,6 +580,7 @@ fun MediaDetailScreen(
                                         modifier = Modifier
                                             .clip(RoundedCornerShape(18.dp))
                                             .background(chipBg)
+                                            .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(18.dp))
                                             .clickable { subMenuOpen = !subMenuOpen }
                                             .padding(vertical = 7.dp, horizontal = 16.dp)
                                     )
