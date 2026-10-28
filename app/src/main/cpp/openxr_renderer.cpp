@@ -1225,6 +1225,8 @@ std::atomic<float> gViewerOriginZ{0.f};
 std::atomic<float> gViewerOriginY{0.f};
 std::atomic<float> gEyeY{0.f};
 std::atomic<float> gLastHeadY{0.f};
+/** 参考空间是不是 STAGE（1 = 原点在地面，Y 是真实离地高度） */
+std::atomic<int> gStageSpace{0};
 std::atomic<bool> gViewerOriginSet{false};
 /** 头部位置读数日志的节流（~1 秒一次），诊断用 */
 std::chrono::steady_clock::time_point gLastHeadLog{};
@@ -1253,7 +1255,15 @@ void updateViewerAnchor(const XrPosef &head) {
     {
         const float dx = hx - gViewerOriginX.load();
         const float dz = hz - gViewerOriginZ.load();
-        if (dx * dx + dz * dz > 1.5f * 1.5f) {
+        const float headY = head.position.y;
+        /*
+         * 圆圈键是系统的"重新居中"：头显把追踪原点搬到当前头位，三个轴一起跳。
+         * 只按 x/z 判定会漏掉"原地坐着/站着不挪窝就按圆圈"这种情况 —— 那时只有 Y 跳，
+         * 而 Y 恰好就是要采样的眼高。所以竖直方向的跳变也当作重新居中。
+         */
+        const bool jumped = dx * dx + dz * dz > 1.5f * 1.5f ||
+                            fabsf(headY - gLastHeadY.load()) > 0.3f;
+        if (jumped) {
             gViewerOriginX.store(hx);
             gViewerOriginZ.store(hz);
             gWalkX.store(gWalkX.load() + gViewerX.load());
@@ -1261,13 +1271,13 @@ void updateViewerAnchor(const XrPosef &head) {
             gViewerX.store(0.f);
             gViewerZ.store(0.f);
             /*
-             * 重新居中会把追踪原点搬到当前头位，Y 也跟着归零。
-             * 眼高是按"相对起点"算的，这里把新旧原点的差值补回去，
-             * 否则按一次圆圈键，已经抬上去的面板会突然掉回坐姿高度。
+             * 眼高采样：跳变前那一帧的头部高度相对起点的高度差，就是按下圆圈那一刻
+             * 眼睛的高度（相对开应用时的位置）。这一枪之后就定死了：
+             * 站着按 → 面板整体抬高；坐着按 → 回到坐姿高度；之后走动不受影响。
              */
-            gEyeY.store(gEyeY.load() + (gLastHeadY.load() - head.position.y));
-            gViewerOriginY.store(head.position.y);
-            gLastHeadY.store(head.position.y);
+            gEyeY.store(gLastHeadY.load() - gViewerOriginY.load());
+            gViewerOriginY.store(headY);
+            gLastHeadY.store(headY);
             LOGI("重新居中：锚点已重设（x=%.2f z=%.2f），累计走动 %.2f 米，眼高保持 %.2f 米",
                  (double) hx, (double) hz, (double) gWalkZ.load(), (double) gEyeY.load());
             return;
@@ -1289,19 +1299,12 @@ void updateViewerAnchor(const XrPosef &head) {
     gScenePush.store(dist < gap ? gap - dist : 0.f);
 
     /*
-     * 眼高跟随（父亲 2026-10-28）：站着 / 坐着都能让控制条与菜单落在眼前下方，
-     * 不用管圆圈键。死区 5cm 以内的上下一跳不动它（呼吸、轻微点头），
-     * 超过就按 0.12 的低通往目标慢慢靠，视觉上是"慢慢抬到位"。
+     * 眼高只在按圆圈键那一刻采样（父亲 2026-10-28）：站起来或坐下去，按一下圆圈，
+     * 控制条与海报墙的高度就按那一刻的眼睛高度定死；之后在影厅里走动、点头、蹲下站起，
+     * 它们都不再动 —— 定死的东西跟着人动会晃眼。
+     * 采样发生在下面的"重新居中"分支（圆圈键会让头显把手里的追踪原点搬到当前头位）。
      */
-    {
-        const float rawY = head.position.y - gViewerOriginY.load();
-        const float curY = gEyeY.load();
-        const float dY = rawY - curY;
-        if (fabsf(dY) > 0.05f) {
-            gEyeY.store(curY + dY * 0.12f);
-        }
-        gLastHeadY.store(head.position.y);
-    }
+    gLastHeadY.store(head.position.y);
 
     // 1 秒一次的位置日志：诊断"走动到底有没有被头显报出来"就靠它
     const auto now = std::chrono::steady_clock::now();
@@ -2468,12 +2471,21 @@ bool createSession(VrContext &c) {
     }
 
     XrReferenceSpaceCreateInfo rsci{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
-    rsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+    /*
+     * 优先用 STAGE：它的原点在**地面**，头显报出的 Y 就是真实离地高度
+     * （父亲 2026-10-28：坐着、站着、走动时，眼高和离地距离都要对得上）。
+     * LOCAL 的原点只是"开应用那一刻的头部位置"，拿不到离地高度；
+     * 运行时不给 STAGE（没做地面校准等）才退回去，此时高度只能是相对值。
+     */
+    rsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_STAGE;
     rsci.poseInReferenceSpace = {{0, 0, 0, 1}, {0, 0, 0}};
     r = api.CreateReferenceSpace(c.session, &rsci, &c.localSpace);
-    if (XR_FAILED(r)) {
-        // 退一步用 STAGE（有些运行时只给 STAGE）
-        rsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_STAGE;
+    gStageSpace.store(XR_SUCCEEDED(r) ? 1 : 0);
+    if (XR_SUCCEEDED(r)) {
+        LOGI("参考空间：STAGE（原点在地面，头显 Y = 真实离地高度）");
+    } else {
+        LOGI("参考空间：运行时不支持 STAGE（xrResult=%d）→ 退回 LOCAL，高度只能是相对值", (int) r);
+        rsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
         r = api.CreateReferenceSpace(c.session, &rsci, &c.localSpace);
         if (XR_FAILED(r)) {
             LOGE("xrCreateReferenceSpace 失败：%d", (int) r);
@@ -2801,7 +2813,8 @@ ScreenPlacement panelPlacement(const VrContext &c) {
     ScreenPlacement p = kSideScreen;
     // 跟随观影位（父亲 2026-10-10：走近银幕时控制条/菜单不能留在身后）
     p.cx = c.panelPosX.load() + viewerOffsetX();
-    p.cy = c.panelPosY.load();
+    /* 海报墙高度也跟眼高（父亲 2026-10-28）：站着看、坐下看都在合适高度 */
+    p.cy = c.panelPosY.load() + gEyeY.load();
     p.cz = c.panelPosZ.load() + viewerOffsetZ();
     p.yawDeg = c.panelYawDeg.load();
     p.pitchDeg = c.panelPitchDeg.load();
@@ -3427,11 +3440,11 @@ void pushInput(VrContext &c) {
                 c.panelDragActive[h] = true;
                 c.panelDragMoved[h] = false;
                 const float dx = c.panelPosX.load() - hand.x;
-                const float dy = c.panelPosY.load() - hand.y;
+                const float dy = (c.panelPosY.load() + gEyeY.load()) - hand.y;
                 const float dz = c.panelPosZ.load() - hand.z;
                 c.panelDragRadius[h] = sqrtf(dx * dx + dy * dy + dz * dz);
                 c.panelDragStartX[h] = c.panelPosX.load();
-                c.panelDragStartY[h] = c.panelPosY.load();
+                c.panelDragStartY[h] = c.panelPosY.load() + gEyeY.load();
                 c.panelDragStartZ[h] = c.panelPosZ.load();
                 c.panelAdjustAt[h] = t;
                 LOGI("海报墙：%s 握把键按住 → 抓住（半径 %.2f 米）", handName[h],
@@ -3456,7 +3469,7 @@ void pushInput(VrContext &c) {
                 }
                 if (c.panelDragMoved[h]) {
                     c.panelPosX = tx;
-                    c.panelPosY = ty;
+                    c.panelPosY = ty - gEyeY.load();
                     c.panelPosZ = tz;
                     // 法线指回球心（= 手柄指向的反向），反解偏航与仰角
                     const float kRad2Deg = 180.f / 3.14159265358979f;
@@ -3480,7 +3493,7 @@ void pushInput(VrContext &c) {
                     aimDirection(c.aimPose[h], &ndx, &ndy, &ndz);
                     const float rr = c.panelDragRadius[h];
                     c.panelPosX = hand.x + ndx * rr;
-                    c.panelPosY = hand.y + ndy * rr;
+                    c.panelPosY = hand.y + ndy * rr - gEyeY.load();
                     c.panelPosZ = hand.z + ndz * rr;
                     LOGI("海报墙：摇杆远近 → 半径 %.2f 米", (double) rr);
                 }
