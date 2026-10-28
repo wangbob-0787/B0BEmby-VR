@@ -2322,6 +2322,13 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
         /* 换站点把提示复位回"正在加载"，别把上一个站点的失败提示带过来 */
         loading = true
         loadFailed = false
+        /*
+         * YouTube 先把登录态灌进去再加载（父亲 2026-10-28）。
+         * VR 里没有输入法，邮箱密码根本输不进去；不登录连视频卡片都不渲染。
+         * 凭据来自 .18 服务端的 /cookies（导的是那台浏览器已登录的 YouTube/Google cookie），
+         * 必须在 loadUrl 之前写完，页面首帧就是登录态。
+         */
+        if (site == 3) injectYoutubeCookies()
         webRef?.loadUrl(url)
     }
 
@@ -2931,5 +2938,48 @@ class WebPageBridge {
     fun post(json: String?): String {
         if (json.isNullOrBlank()) return "empty"
         return WebRuntime.acceptFromPage(json)
+    }
+}
+
+/**
+ * 把 .18 浏览器里的 YouTube 登录态写进网页视图的 cookie 库。
+ *
+ * 为什么必须这么做：VR 里没有输入法，YouTube 的登录页要输邮箱密码，走不通；
+ * 而不登录时 YouTube 连视频卡片都不渲染，页面等于空白。
+ * 凭据由 `http://192.168.150.18:8792/cookies` 提供（服务端从浏览器调试接口取明文），
+ * 这里逐条写进 CookieManager，写完 flush 再让调用方 loadUrl。
+ *
+ * 失败不阻断加载：拿不到凭据就照常打开网页（未登录可用部分功能）。
+ */
+private suspend fun injectYoutubeCookies() {
+    runCatching {
+        val text = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            java.net.URL("http://192.168.150.18:8792/cookies").readText()
+        }
+        val arr = org.json.JSONObject(text).optJSONArray("cookies") ?: return@runCatching
+        val cm = org.chromium.android_crwebview.webkit.CookieManager.getInstance()
+        var n = 0
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+            for (i in 0 until arr.length()) {
+                val c = arr.getJSONObject(i)
+                val name = c.optString("name")
+                val value = c.optString("value")
+                if (name.isBlank()) continue
+                val sb = StringBuilder()
+                sb.append(name).append('=').append(value)
+                sb.append("; domain=").append(c.optString("domain"))
+                sb.append("; path=").append(c.optString("path").ifBlank { "/" })
+                if (c.optBoolean("secure")) sb.append("; Secure")
+                val exp = c.optLong("expires", -1L)
+                if (exp > 0) sb.append("; Max-Age=").append(exp - System.currentTimeMillis() / 1000)
+                /* HttpOnly 由 setCookie 忽略（脚本本来也读不到它），这里不写，避免造出无效属性 */
+                cm.setCookie("https://www.youtube.com", sb.toString())
+                n++
+            }
+            cm.flush()
+        }
+        android.util.Log.i("B0BEmbyVR", "YouTube 登录态已注入 $n 条")
+    }.onFailure {
+        android.util.Log.w("B0BEmbyVR", "YouTube 登录态注入失败（照常打开网页）：${it.message}")
     }
 }
