@@ -1352,6 +1352,10 @@ void updateViewerAnchor(const XrPosef &head) {
             gViewerOriginY.store(headY);
             gLastHeadY.store(headY);
             gLastRawEyeY.store(0.f);
+            /* 定位"站起来按圆圈后面板太高"用：把三项实际生效的高度一次打全（2026-10-28 晚） */
+            LOGI("面板高度体检：眼高 %.2f｜控制条中心 %.2f｜世界补偿 %.2f",
+                 (double) gEyeY.load(), (double) (kOsdCenterY + gEyeY.load()),
+                 (double) gWorldShiftY.load());
             LOGI("重新居中：锚点已重设（x=%.2f z=%.2f），累计走动 %.2f 米，眼高保持 %.2f 米",
                  (double) hx, (double) hz, (double) gWalkZ.load(), (double) gEyeY.load());
             return;
