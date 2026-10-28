@@ -1159,6 +1159,27 @@ private object WebRuntime {
                 )
                 return@Thread
             }
+            /*
+             * 多连接取流（父亲 2026-10-29 00:52：向网页版那种下载方式学，别降档、至少 1080P）。
+             *
+             * 实测差距不在地址本身，在取法：网页版每 15 秒发 70 多个小请求、手里常备 40 秒缓冲，
+             * 而 googlevideo 对**单条连接**限速很狠 —— .18 上同一地址单连接 190KB/s，
+             * 8 路并行聚合 1.4MB/s，而这条 1080p60 要 396KB/s 才喂得动。
+             * 所以把解析出来的视频地址交给 ParallelHttpProxy（腾讯那套现成的多路代理）：
+             * 播放器连本机 127.0.0.1，代理在后台开 8 条 Range 连接分块拉同一份文件，
+             * 播放器要哪段就从本地临时文件喂哪段，全程单连接变多连接。
+             */
+            val playUrl = runCatching {
+                com.xxxx.emby_vr.web.ParallelHttpProxy.start(
+                    remoteUrl = video,
+                    headers = emptyMap(),
+                    cacheDir = context.cacheDir,
+                    connections = 8,
+                )
+            }.getOrNull() ?: video
+            if (playUrl != video) {
+                android.util.Log.i("B0BEmbyVR", "YouTube：视频地址已改走多路代理 $playUrl")
+            }
             val filled = org.json.JSONObject(obj.toString())
             res?.optString("title")?.takeIf { it.isNotBlank() }?.let { filled.put("title", it) }
             filled.put("durSec", res?.optInt("duration", 0) ?: 0)
@@ -1166,7 +1187,7 @@ private object WebRuntime {
                 "streams",
                 org.json.JSONArray().put(
                     org.json.JSONObject()
-                        .put("video", video)
+                        .put("video", playUrl)
                         .put("audio", res?.optString("audio").orEmpty())
                 ),
             )
