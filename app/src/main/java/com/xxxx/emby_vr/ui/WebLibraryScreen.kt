@@ -1170,10 +1170,11 @@ private object WebRuntime {
              * 播放器要哪段就从本地临时文件喂哪段，全程单连接变多连接。
              */
             val playUrl = runCatching {
+                val dir = appCtx?.cacheDir ?: throw IllegalStateException("没有应用上下文")
                 com.xxxx.emby_vr.web.ParallelHttpProxy.start(
                     remoteUrl = video,
                     headers = emptyMap(),
-                    cacheDir = context.cacheDir,
+                    cacheDir = dir,
                     connections = 8,
                 )
             }.getOrNull() ?: video
