@@ -21,6 +21,7 @@
     if (/bilibili\.com$/.test(h)) return 'bi';
     if (/qq\.com$/.test(h)) return 'qq';
     if (/iqiyi\.com$/.test(h)) return 'iq';
+    if (/youtube\.com$/.test(h) || /youtu\.be$/.test(h)) return 'yt';
     return '';
   }
   function clean(t) { return String(t || '').replace(/\s+/g, ' ').trim(); }
@@ -277,6 +278,39 @@
     CH('⑤交原生', { 站: s, 身份: c.id, 集: c.ep || '-', 时长: c.dur + 's', at: payload.at, 地址尾: '…' + String(c.v).slice(-24), 标题: String(c.title).slice(0, 24) });
     send(payload);
   }
+  /* 五、YouTube（父亲 2026-10-28）
+   *
+   * 这站和前三站不同：网页播放器走的是加密的 MSE 流，页面里根本抓不到可播地址，
+   * 所以只把**视频编号**交上去，地址由原生请求 .18 的解析服务现取（那边带着登录态）。
+   * 触发条件与三站一致：必须点过真全屏（原生写 __b0bRealFull），网页全屏不算。
+   */
+  var ytState = S.ytState || (S.ytState = { vid: '', at: 0 });
+  function commitYt() {
+    var m = String(location.href).match(/[?&]v=([A-Za-z0-9_-]{6,})/);
+    if (!m) return;
+    var vid = m[1];
+    var stamp = window.__b0bRealFull || 0;
+    if (!stamp || (Date.now() - stamp) > 30 * 60 * 1000) return;
+    if (ytState.vid === vid && (Date.now() - ytState.at) < 10000) return;
+    var t = String(document.title || '').replace(/\s*-\s*YouTube\s*$/, '').trim();
+    ytState.vid = vid; ytState.at = Date.now();
+    var payload = {
+      kind: 'play', site: 'yt', vid: vid, title: t, ep: '', season: '',
+      durSec: 0, quality: '', cookie: '', at: Date.now(), ar: 0,
+      frame: location.href,
+      /* 地址留空：原生拿到编号后自己去 .18 解析（这站网页侧拿不到地址） */
+      streams: [{ video: '', audio: '' }]
+    };
+    CH('⑤交原生', { 站: 'yt', 视频编号: vid, 标题: t.slice(0, 24) });
+    send(payload);
+  }
+  /* 每秒看一次：YouTube 点了真全屏之后 URL 与全屏状态都可能晚一拍才稳定 */
+  if (!window.__b0bYtTimer) {
+    window.__b0bYtTimer = setInterval(function () {
+      try { if (site() === 'yt') commitYt(); } catch (e) {}
+    }, 1000);
+  }
+
   /* 只认真地址：钩子偶尔会把夹着 JSON 片段的长串当成地址，
      交给内核就是"时长对、进度永远 0:00"（父亲 2026-10-25 报）。 */
   function looksUrl(u) {

@@ -1079,6 +1079,51 @@ private object WebRuntime {
         }
     }
 
+    /**
+     * YouTube：拿视频编号去 .18 要地址，回来填进同一条消息再起播。
+     *
+     * 解析在服务端做而不是头显上做 —— 那套要登录态、播放令牌、JS 签名求解，
+     * 而且 YouTube 一改版就得重装包；放服务端改脚本就行，还带 25 分钟缓存。
+     * 失败只打日志不打断网页：用户还在网页里，可以换个视频再点。
+     */
+    private fun resolveYoutubeAndPlay(obj: org.json.JSONObject) {
+        val vid = obj.optString("vid")
+        if (vid.isBlank()) return
+        android.util.Log.i("B0BEmbyVR", "YouTube：向 .18 解析视频 $vid")
+        Thread {
+            val res = runCatching {
+                val conn = java.net.URL("http://192.168.150.18:8792/resolve?id=$vid")
+                    .openConnection() as java.net.HttpURLConnection
+                conn.connectTimeout = 8000
+                /* 服务端首次解析可能要十几秒（要过令牌与签名），给足读超时 */
+                conn.readTimeout = 120000
+                org.json.JSONObject(conn.inputStream.bufferedReader().readText())
+            }.getOrNull()
+            val video = res?.optString("video").orEmpty()
+            if (video.isBlank()) {
+                android.util.Log.w(
+                    "B0BEmbyVR",
+                    "YouTube 解析失败：${res?.optString("error").orEmpty().take(160)}",
+                )
+                return@Thread
+            }
+            val filled = org.json.JSONObject(obj.toString())
+            res.optString("title").takeIf { it.isNotBlank() }?.let { filled.put("title", it) }
+            filled.put("durSec", res.optInt("duration", 0))
+            filled.put(
+                "streams",
+                org.json.JSONArray().put(
+                    org.json.JSONObject()
+                        .put("video", video)
+                        .put("audio", res.optString("audio"))
+                ),
+            )
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                runCatching { takeSlot(filled, "play") }
+            }
+        }.start()
+    }
+
     /** 爱奇艺本机转发服务（2026-10-24 起用；腾讯那份清单不需要它） */
     private var iqProxy: com.xxxx.emby_vr.web.IqProxyServer? = null
 
@@ -1087,6 +1132,15 @@ private object WebRuntime {
         val obj = message as? org.json.JSONObject ?: return
         if (obj.optString("kind") == "hls") {
             takeSlot(obj, "hls")
+            return
+        }
+        /*
+         * YouTube（父亲 2026-10-28）：这站网页侧拿不到可播地址（播放器是加密的 MSE 流），
+         * 只交视频编号；地址由 .18 的解析服务现取（那边带登录态，能出 4K）。
+         * 取到之后填回同一条消息，再走三站共用的入槽/起播逻辑。
+         */
+        if (obj.optString("site") == "yt") {
+            resolveYoutubeAndPlay(obj)
             return
         }
         if (obj.optString("kind") == "play") {
