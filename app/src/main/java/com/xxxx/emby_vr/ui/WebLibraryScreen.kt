@@ -1119,7 +1119,18 @@ private object WebRuntime {
                 ),
             )
             android.os.Handler(android.os.Looper.getMainLooper()).post {
-                runCatching { takeSlot(filled, "play") }
+                /*
+                 * 入槽之后要立刻消费，不能等下一次"真全屏跳变"（2026-10-28 20:29 实测）。
+                 *
+                 * 真全屏那一刻就触发过一次消费，那时地址还没解析回来（YouTube 首次解析要
+                 * 三十多秒），那次必然"拒收：接收槽里还没有数据"；而全屏已经进去了，
+                 * 不会再有第二次跳变 —— 于是地址到手却没人起播，表现就是"点了真全屏没反应"。
+                 * 这和爱奇艺自签那条路是同一个坑，处理方式也一致：自己取到的自己开播。
+                 */
+                runCatching {
+                    takeSlot(filled, "play")
+                    consumeSlot("YouTube 取到地址")
+                }
             }
         }.start()
     }
