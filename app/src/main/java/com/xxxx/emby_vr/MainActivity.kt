@@ -338,6 +338,12 @@ class MainActivity : ComponentActivity() {
     private var currentSeasonId: String? = null
     private var currentItem: com.xxxx.emby_vr.data.model.BaseItemDto? = null
     private var currentStreams: List<com.xxxx.emby_vr.data.model.MediaStreamDto> = emptyList()
+
+    /**
+     * 当前这部片的**全部版本**（Emby 的 MediaSources，一部片可能有多份文件）。
+     * 字幕、音轨菜单只跟「选中的那份」走；「更多 → 播放版本」用它列可选版本。
+     */
+    private var currentSources: List<com.xxxx.emby_vr.data.model.MediaSourceInfoDto> = emptyList()
     private var audioStreamIndices: List<Int> = emptyList()
     private var subtitleStreamIndices: List<Int> = emptyList()
     private var episodeIds: List<String> = emptyList()
@@ -3044,6 +3050,13 @@ class MainActivity : ComponentActivity() {
          */
         scope.launch {
             try {
+                /*
+                 * 版本记忆（父亲 2026-10-28）：同一部片在库里有多个版本文件，
+                 * 每个版本自带一份字幕/音轨清单（实测《蜘蛛侠》12 个版本，字幕 0～11 条）。
+                 * 取流时带上 MediaSourceId，服务端按这个版本出流，客户端拿到的清单也就是这一份 ——
+                 * 否则菜单按默认源排，播的却是别的文件，序号必然错位。
+                 */
+                com.xxxx.emby_vr.player.PlaybackFlags.mediaSourceId = versionChoice(mediaId)
                 var media = EmbyApi.getPlaybackInfo(
                     context = this@MainActivity,
                     serverUrl = userServer(),
@@ -3056,8 +3069,10 @@ class MainActivity : ComponentActivity() {
                     selectedSubtitleIndex = selectedSubtitleIndex,
                     maxStreamingBitrate = bitrateForQuality(),
                     disableHevc = forceH264,
+                    mediaSourceId = com.xxxx.emby_vr.player.PlaybackFlags.mediaSourceId,
                 )
-                var source = media.mediaSources?.firstOrNull()
+                currentSources = media.mediaSources.orEmpty()
+                var source = pickMediaSource(currentSources)
                 /*
                  * 自动挑一条头显能放的原声音轨（父亲 2026-10-07：音画不同步）。
                  *
@@ -3084,8 +3099,10 @@ class MainActivity : ComponentActivity() {
                             selectedSubtitleIndex = selectedSubtitleIndex,
                             maxStreamingBitrate = bitrateForQuality(),
                             disableHevc = forceH264,
+                            mediaSourceId = com.xxxx.emby_vr.player.PlaybackFlags.mediaSourceId,
                         )
-                        source = media.mediaSources?.firstOrNull()
+                        currentSources = media.mediaSources.orEmpty()
+                        source = pickMediaSource(currentSources)
                     }
                 }
                 // 记下这次播放的身份，供服务端上报（播放历史/继续观看靠它）
@@ -4816,6 +4833,7 @@ class MainActivity : ComponentActivity() {
                     0 -> com.xxxx.emby_vr.panel.MenuKind.AUDIO
                     1 -> com.xxxx.emby_vr.panel.MenuKind.QUALITY
                     2 -> com.xxxx.emby_vr.panel.MenuKind.MODE
+                    7 -> com.xxxx.emby_vr.panel.MenuKind.VERSION
                     else -> com.xxxx.emby_vr.panel.MenuKind.BUFFER
                 }
                 // 二级菜单仍停在「更多」按钮正上方
@@ -4867,6 +4885,23 @@ class MainActivity : ComponentActivity() {
                 }
                 applyDanmakuSetting()
                 Log.i(TAG, "弹幕设置 → ${if (danmakuOn) "开" else "关"}，字号 ${danmakuScale}")
+            }
+            com.xxxx.emby_vr.panel.MenuKind.VERSION -> {
+                /*
+                 * 换版本 = 换一份文件，字幕与音轨清单都会跟着变（每个版本自带一份）。
+                 * 重取流时带 MediaSourceId，服务端按这个版本出流；位置沿用现在的，
+                 * 不用从头看（与切字幕/音轨同一个重播口径：回退 10 秒）。
+                 */
+                val pick = currentSources.getOrNull(index)
+                if (pick?.id.isNullOrBlank()) {
+                    Log.w(TAG, "版本 $index 无效（源清单共 ${currentSources.size} 个）")
+                    return
+                }
+                Log.i(TAG, "切换播放版本 → ${pick?.name ?: pick?.id}")
+                rememberVersionChoice(currentMediaId, pick?.id)
+                com.xxxx.emby_vr.player.PlaybackFlags.mediaSourceId = pick?.id
+                closeMenu()
+                playMedia(currentMediaId, 0L, keepPosition = true)
             }
             com.xxxx.emby_vr.panel.MenuKind.SUBTITLE -> {
                 val i = index
@@ -5345,6 +5380,8 @@ class MainActivity : ComponentActivity() {
              * 所以不会出现"一级菜单显示的值和子菜单勾的不是一回事"。
              */
             com.xxxx.emby_vr.panel.MenuKind.MORE -> {
+                menuState.versionRows = buildVersionRows()
+                menuState.versionLabel = currentVersionName()
                 menuState.quality = qualityIndex
                 menuState.playMode = playModeIndex
                 menuState.audioTracks = buildAudioRows()
@@ -5439,6 +5476,69 @@ class MainActivity : ComponentActivity() {
             )
         }
         return rows
+    }
+
+    /**
+     * 从服务端返回的媒体源清单里挑出"这次要播的那个版本"。
+     *
+     * 用户选过就用选过的（按 id 精确匹配）；没选过、或那个版本已经不在库里，
+     * 退回第一个源（Emby 的默认排序）。
+     */
+    private fun pickMediaSource(
+        sources: List<com.xxxx.emby_vr.data.model.MediaSourceInfoDto>?
+    ): com.xxxx.emby_vr.data.model.MediaSourceInfoDto? {
+        val list = sources.orEmpty()
+        if (list.isEmpty()) return null
+        val wanted = com.xxxx.emby_vr.player.PlaybackFlags.mediaSourceId
+        return wanted?.let { w -> list.firstOrNull { it.id == w } } ?: list.firstOrNull()
+    }
+
+    /**
+     * 「播放版本」菜单的行：每个版本一行，主行是版本名，副行写明分辨率与字幕条数
+     * （父亲 2026-10-28：判断该选哪个版本，靠的就是文件名与这两个信息）。
+     * 只有一个版本时返回空表，「更多」里那一行也就不出现。
+     */
+    private fun buildVersionRows(): List<com.xxxx.emby_vr.panel.MenuRowItem> {
+        if (currentSources.size <= 1) return emptyList()
+        val curId = com.xxxx.emby_vr.player.PlaybackFlags.mediaSourceId
+            ?: currentSources.firstOrNull()?.id
+        return currentSources.map { src ->
+            val height = src.mediaStreams
+                ?.firstOrNull { it.type.equals("Video", true) }?.height
+            val subs = src.mediaStreams
+                ?.count { it.type.equals("Subtitle", true) } ?: 0
+            val tag = buildString {
+                if (height != null && height > 0) append("${height}p · ")
+                append("字幕 $subs 条")
+            }
+            com.xxxx.emby_vr.panel.MenuRowItem(
+                label = (src.name ?: src.id ?: "版本").take(46),
+                selected = src.id != null && src.id == curId,
+                sub = tag,
+            )
+        }
+    }
+
+    /** 「更多」里「播放版本」行尾显示的当前版本名 */
+    private fun currentVersionName(): String {
+        if (currentSources.size <= 1) return ""
+        val curId = com.xxxx.emby_vr.player.PlaybackFlags.mediaSourceId
+            ?: currentSources.firstOrNull()?.id
+        val cur = currentSources.firstOrNull { it.id == curId } ?: currentSources.firstOrNull()
+        return (cur?.name ?: "").take(26)
+    }
+
+    /** 这部片上次选的版本（媒体源 id）；没选过返回 null */
+    private fun versionChoice(mediaId: String): String? =
+        if (mediaId.isBlank()) null else placePrefs.getString("ver_choice_$mediaId", null)
+
+    /** 记住这部片选的版本；sourceId = null 表示恢复默认 */
+    private fun rememberVersionChoice(mediaId: String, sourceId: String?) {
+        if (mediaId.isBlank()) return
+        placePrefs.edit().apply {
+            if (sourceId.isNullOrBlank()) remove("ver_choice_$mediaId")
+            else putString("ver_choice_$mediaId", sourceId)
+        }.apply()
     }
 
     /**

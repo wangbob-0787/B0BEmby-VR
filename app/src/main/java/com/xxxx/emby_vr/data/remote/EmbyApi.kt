@@ -523,7 +523,9 @@ object EmbyApi {
         selectedAudioIndex: Int? = null,
         selectedSubtitleIndex: Int? = null,
         disableHevc: Boolean = false,
-        maxStreamingBitrate: Int = 200_000_000
+        maxStreamingBitrate: Int = 200_000_000,
+        /** 指定版本（媒体源）；null = 由服务端给第一个 */
+        mediaSourceId: String? = null,
     ): MediaDto = withContext(Dispatchers.IO) {
         var targetId = mediaId
         try {
@@ -566,7 +568,13 @@ object EmbyApi {
                     "&X-Emby-Language=zh-cn" +
                     "&reqformat=json" +
                     (selectedAudioIndex?.let { "&AudioStreamIndex=$it" } ?: "") +
-                    (selectedSubtitleIndex?.let { "&SubtitleStreamIndex=$it" } ?: "")
+                    (selectedSubtitleIndex?.let { "&SubtitleStreamIndex=$it" } ?: "") +
+                    /*
+                     * 指定版本：同一部片在库里有多个文件时，每个文件自带一份字幕/音轨清单。
+                     * 不带这个参数，服务端按默认顺序回第一个源，菜单就用错清单 —— 
+                     * 少字幕、选了中文出英文都是这么来的。
+                     */
+                    (mediaSourceId?.let { "&MediaSourceId=$it" } ?: "")
 
             var result = httpAsJsonObject(context, serverUrl, apiKey, deviceId, url, "POST", body)
             var dto = gson.fromJson(result, MediaDto::class.java)

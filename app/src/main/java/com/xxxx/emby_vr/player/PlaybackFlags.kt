@@ -69,6 +69,16 @@ object PlaybackFlags {
     @Volatile
     var forceKernelForImageSubs: Boolean = false
 
+    /**
+     * 用户为当前这部片选定的**媒体源**（同一部片在库里有多个版本文件，每个版本自带一份
+     * 字幕/音轨清单，条数与语言都可能不同）。
+     *
+     * null = 用服务端返回的第一个源（Emby 默认排序，通常是最佳版本）。
+     * 取流时把它传给 PlaybackInfo 的 MediaSourceId，服务端就会按这个版本出流，
+     * 客户端拿到的 MediaStreams 也就是这个版本的清单 —— 字幕菜单才不会串版本。
+     */
+    var mediaSourceId: String? = null
+
     fun reset() {
         forceKernelForImageSubs = false
         dolbyVisionSource = false
