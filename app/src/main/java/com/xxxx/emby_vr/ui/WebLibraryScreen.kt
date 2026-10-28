@@ -3125,7 +3125,21 @@ private suspend fun injectYoutubeCookies() {
             }
             cm.flush()
         }
-        android.util.Log.i("B0BEmbyVR", "YouTube 登录态已注入 $n 条")
+        /*
+         * 回读一遍再打日志（2026-10-28 父亲报"右上角还是没有头像"）。
+         * 只报"注入了 N 条"说明不了问题：写进去被拒也是 N 条。
+         * 回读能看出 youtube 侧 / google 侧各留下多少条 —— 零条就是被拒，有 SID 说明写进去了，
+         * 那时候还是未登录就是页面缓存或凭据本身失效。
+         */
+        val ytJar = cm.getCookie("https://www.youtube.com") ?: ""
+        val ggJar = cm.getCookie("https://google.com") ?: ""
+        fun countOf(jar: String) = if (jar.isBlank()) 0 else jar.split(';').count { it.isNotBlank() }
+        android.util.Log.i(
+            "B0BEmbyVR",
+            "YouTube 登录态已注入 $n 条；回读 youtube=${countOf(ytJar)} 条 " +
+                "google=${countOf(ggJar)} 条，youtube 侧含 SID=${ytJar.contains("SID=")} " +
+                "含 LOGIN_INFO=${ytJar.contains("LOGIN_INFO=")}",
+        )
     }.onFailure {
         android.util.Log.w("B0BEmbyVR", "YouTube 登录态注入失败（照常打开网页）：${it.message}")
     }
