@@ -4412,7 +4412,14 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             const float th = kOsdTiltDeg * 3.14159265358979f / 180.f;
             XrPosef osdPose{};
-            osdPose.position = {0.f, kOsdCenterY, -kOsdDistance};
+            /*
+             * 控制条的高度必须与命中侧同源（2026-10-28 父亲实测）。
+             *
+             * 命中侧（nativeGetOsdPlace）一直按 kOsdCenterY + 眼高 算，渲染这两处却只用
+             * kOsdCenterY —— 站着按圆圈把眼高抬起来之后，可点的范围升上去了、画出来的控制条
+             * 还留在原处，于是"光点穿过控制条不亮，往上挪一点才亮"。
+             */
+            osdPose.position = {0.f, kOsdCenterY + gEyeY.load(), -kOsdDistance};
             osdPose.orientation = {sinf(th * 0.5f), 0.f, 0.f, cosf(th * 0.5f)};
             const Mat4 osdModel = poseScaleModel(osdPose, kOsdWidth, kOsdHeight, 1.f);
             const Mat4 osdMvp = multiply(multiply(proj, view4), osdModel);
@@ -5739,7 +5746,8 @@ void frameLoop(VrContext &c) {
         if (rendered && c.osdLayer.submitted) {
             /* 位置恒固定（父亲 2026-10-12：控制条不许跟着走动变位置） */
             const float ocx = viewerOffsetX();
-            const float ocy = kOsdCenterY;
+            /* 同上：与 nativeGetOsdPlace 同一套高度，别再各算一份 */
+            const float ocy = kOsdCenterY + gEyeY.load();
             const float ocz = -kOsdDistance + viewerOffsetZ();
             osdQuad.pose.position = {ocx, ocy, ocz};
             quadOrientation(0.f, kOsdTiltDeg, ocx, ocy, ocz, &osdQuad.pose.orientation);
