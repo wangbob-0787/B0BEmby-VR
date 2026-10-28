@@ -1320,12 +1320,14 @@ private fun WebPageForSite(site: Int, startUrl: String? = null) {
         ?: when (site) {
             0 -> "https://www.bilibili.com/"
             1 -> "https://v.qq.com/"
-            else -> "https://www.iqiyi.com/"
+            2 -> "https://www.iqiyi.com/"
+            else -> "https://www.youtube.com/"
         }
     val title = when (site) {
         0 -> "哔哩哔哩"
         1 -> "腾讯视频"
-        else -> "爱奇艺"
+        2 -> "爱奇艺"
+        else -> "YouTube"
     }
 
     var webRef by remember { mutableStateOf<WebView?>(null) }
@@ -2667,6 +2669,8 @@ fun WebSiteDetailScreen(onOpen: (Int) -> Unit, onBack: () -> Unit) {
         "哔哩哔哩" to R.drawable.web_bilibili_icon,
         "腾讯视频" to R.drawable.web_tencent_icon,
         "爱奇艺" to R.drawable.web_iqiyi_icon,
+        // 第四站（父亲 2026-10-28）：YouTube。网页只当选片器，播放走 .18 的解析服务。
+        "YouTube" to R.drawable.web_youtube_icon,
     )
     /* 底色用全站暗色体系的底（0xFF0B0C0F），不再走原来那条"详情页专用"的渐变 */
     Box(

@@ -77,7 +77,7 @@ class MainActivity : ComponentActivity() {
      * 下标与 `ui/WebLibraryScreen.kt` 里的站点顺序一致（0 = 哔哩哔哩）。
      * 银幕在放网页时，控制条标题行用它显示「正在播放：哔哩哔哩」。
      */
-    private val WEB_SITE_NAMES = arrayOf("哔哩哔哩", "腾讯视频", "爱奇艺")
+    private val WEB_SITE_NAMES = arrayOf("哔哩哔哩", "腾讯视频", "爱奇艺", "YouTube")
 
     // ── 片头跳过（父亲 2026-10-12）──────────────────────────────────────────
     /**
@@ -3586,6 +3586,7 @@ class MainActivity : ComponentActivity() {
         if (direct.isNotBlank()) return direct
         val u = obj.optString("frame")
         return when {
+            u.contains("youtube") || u.contains("youtu.be") -> "yt"
             u.contains("iqiyi") -> "iq"
             u.contains("qq.com") -> "qq"
             u.contains("bilibili") -> "bi"
