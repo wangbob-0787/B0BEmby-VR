@@ -655,6 +655,16 @@ std::atomic<float> gCinemaEyeHeight{1.65f};
  * 控制条 / 海报墙 / 菜单**不参与**这个补偿，它们只按眼高采样值上抬（父亲要的"跟着站姿变"）。
  */
 std::atomic<float> gWorldShiftY{0.f};
+/*
+ * 头显自己发了"参考空间变更"（按圆圈键重新居中）的事件（2026-10-28 立）。
+ *
+ * 以前只靠猜：位置突然跳 1.5 米、或高度突然跳 0.3 米才算重新居中。
+ * 实测（父亲 2026-10-28 21:08-21:10 日志，累计走动在 1.04 / -0.17 / 0.67 / 1.85 / 0.62 / -0.26
+ * 之间乱跳）证明猜不准：走得不够远、或同一姿势连按两次时判不出来，累计走动记错，
+ * 地形补偿按错的位移整间影厅升降 —— 父亲的原话是"地面高度乱套"。
+ * 系统本来就会告诉我们，不用猜。
+ */
+std::atomic<int> gRecenterEvent{0};
 
 /*
  * 【2026-10-22 10:55 父亲定：走坡道，按前后位置补高度】
@@ -1288,13 +1298,21 @@ void updateViewerAnchor(const XrPosef &head) {
          * 只按 x/z 判定会漏掉"原地坐着/站着不挪窝就按圆圈"这种情况 —— 那时只有 Y 跳，
          * 而 Y 恰好就是要采样的眼高。所以竖直方向的跳变也当作重新居中。
          */
-        const bool jumped = dx * dx + dz * dz > 1.5f * 1.5f ||
+        const bool jumpedEvent = gRecenterEvent.exchange(0) == 1;
+        const bool jumped = jumpedEvent ||
+                            dx * dx + dz * dz > 1.5f * 1.5f ||
                             fabsf(headY - gLastHeadY.load()) > 0.3f;
         if (jumped) {
             gViewerOriginX.store(hx);
             gViewerOriginZ.store(hz);
-            gWalkX.store(gWalkX.load() + gViewerX.load());
-            gWalkZ.store(gWalkZ.load() + gViewerZ.load());
+            /*
+             * 累计走动必须用"真实位移"（此刻头位 - 旧锚点），不能用 gViewerX/Z ——
+             * 那是低通平滑后的值（系数 0.25，滞后好几帧），拿它记账每次按圆圈都少记一截，
+             * 几次下来累计值就乱跳（实测 21:08-21:10 那一串）。地形补偿吃这个值，
+             * 错多少，地面就升降多少。
+             */
+            gWalkX.store(gWalkX.load() + (hx - gViewerOriginX.load()));
+            gWalkZ.store(gWalkZ.load() + (hz - gViewerOriginZ.load()));
             gViewerX.store(0.f);
             gViewerZ.store(0.f);
             /*
@@ -3811,6 +3829,12 @@ void pushInput(VrContext &c) {
 void pumpEvents(VrContext &c) {
     XrEventDataBuffer ev{XR_TYPE_EVENT_DATA_BUFFER};
     while (api.PollEvent(c.instance, &ev) == XR_SUCCESS) {
+        if (ev.type == XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING) {
+            /* 圆圈键重新居中：下一帧采样时按新原点重建，世界不跳（处理在采样那段） */
+            gRecenterEvent.store(1);
+            LOGI("系统重新居中（参考空间变更事件）");
+            continue;
+        }
         if (ev.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED) {
             auto *sc = reinterpret_cast<XrEventDataSessionStateChanged *>(&ev);
             c.state = sc->state;
