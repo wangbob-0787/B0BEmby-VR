@@ -697,6 +697,11 @@ static float hallFloorY(float z) {
 /** 走动时要给整间影厅加的升降量：脚下那块地面始终贴着脚，平地段恒为常数 */
 static float hallFloorDy(float z) { return -(hallFloorY(z) - hallFloorY(0.f)); }
 
+/** 地形补偿用的前后位移：头显的相对 z 与影厅 z 轴方向相反，取反后再查地形曲线 */
+extern std::atomic<float> gViewerZ;
+extern std::atomic<float> gWalkZ;
+static float viewerZForFloor() { return -(gWalkZ.load() + gViewerZ.load()); }
+
 /* 观影位的前后位移在本文件后半段才定义（drawCinema 比它早），这里先声明一下 */
 extern std::atomic<float> gViewerZ;
 /* 累计走动量（米，不随「重新居中」归零）。凡是"人相对固定世界几何在哪"的判断都必须用它：
@@ -1019,7 +1024,15 @@ void drawCinema(const Mat4 &proj, const Mat4 &view, const XrVector3f &eyePos) {
     Mat4 model = identity();
     model.m[12] = kCinemaShiftX;                              // 横向：让座位中心正对观影位
     /* 坡度补偿：人往后走（gViewerZ 增大）→ 影厅整体下移，脚底那格地面始终在眼睛下方 */
-    const float slopeDy = hallFloorDy(gWalkZ.load() + gViewerZ.load());
+    const float slopeDy = hallFloorDy(viewerZForFloor());
+    {
+        // 地形体检：约每两秒一行，必要时拿它核对走动方向与补偿正负
+        static int tick = 0;
+        if ((tick++ % 120) == 0) {
+            LOGI("地形体检：走动 z=%.2f（正=后排）补偿 %.2f 米",
+                 (double) viewerZForFloor(), (double) slopeDy);
+        }
+    }
     model.m[13] = s.dy + (1.65f - gCinemaEyeHeight.load()) + gSeatUp.load() + slopeDy +
                   gWorldShiftY.load();
     model.m[14] = s.dz - gSeatFwd.load();                     // 前/后：正数 = 人往椅子前部坐
@@ -1515,7 +1528,7 @@ float hallScreenFitWidth(float aspect) {
 float hallScreenCenterY() {
     const int seat = gSeat.load();
     const CinemaSeat &s = kCinemaSeats[seat];
-    return (kHallScreenModelY - kHallRefEyeY) + s.dy + (1.65f - gCinemaEyeHeight.load()) + hallFloorDy(gWalkZ.load() + gViewerZ.load()) +
+    return (kHallScreenModelY - kHallRefEyeY) + s.dy + (1.65f - gCinemaEyeHeight.load()) + hallFloorDy(viewerZForFloor()) +
            gWorldShiftY.load() +
            gScreenUp.load();
 }
@@ -1530,7 +1543,7 @@ float hallScreenCenterY() {
 float hallScreenBottomY() {
     const int seat = gSeat.load();
     const CinemaSeat &s = kCinemaSeats[seat];
-    return (kHallScreenBottomY - kHallRefEyeY) + s.dy + (1.65f - gCinemaEyeHeight.load()) + hallFloorDy(gWalkZ.load() + gViewerZ.load()) +
+    return (kHallScreenBottomY - kHallRefEyeY) + s.dy + (1.65f - gCinemaEyeHeight.load()) + hallFloorDy(viewerZForFloor()) +
            gWorldShiftY.load() +
            gScreenUp.load();
 }
