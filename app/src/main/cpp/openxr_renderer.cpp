@@ -6373,7 +6373,8 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeGetPanelPlace(JNIEnv *env, jobject /* t
     jfloatArray out = env->NewFloatArray(6);
     if (out == nullptr) return nullptr;
     const jfloat v[6] = {
-        g.panelPosX.load(), g.panelPosY.load(), g.panelPosZ.load(),
+        /* 与渲染同源：渲染时海报墙 Y 也加了眼高偏移，命中算的就是这块平面的实际位置 */
+        g.panelPosX.load(), g.panelPosY.load() + gEyeY.load(), g.panelPosZ.load(),
         g.panelYawDeg.load(), g.panelPitchDeg.load(), g.panelWidth.load(),
     };
     env->SetFloatArrayRegion(out, 0, 6, v);
