@@ -5621,7 +5621,7 @@ class MainActivity : ComponentActivity() {
                     "内核模式：字幕 $index 两边内封轨一致（$kernelEmbedded 条）→ 按序号选，不联网",
                 )
                 retryKernelTrackSwitch("字幕", index) {
-                    mpvBackend?.setSubtitleByOrdinal(ordinalOfSubtitleStream(index)) ?: false
+                    mpvBackend?.setSubtitleByOrdinal(pickKernelSubtitleOrdinal(index)) ?: false
                 }
                 return
             }
@@ -5646,16 +5646,75 @@ class MainActivity : ComponentActivity() {
                     }
                     Log.w(TAG, "内核模式：字幕 $index 地址加载没生效 → 退回按序号选")
                     retryKernelTrackSwitch("字幕", index) {
-                        mpvBackend?.setSubtitleByOrdinal(ordinalOfSubtitleStream(index)) ?: false
+                        mpvBackend?.setSubtitleByOrdinal(pickKernelSubtitleOrdinal(index)) ?: false
                     }
                 }
                 return
             }
         }
-        val ord = ordinalOfSubtitleStream(index)
-        Log.i(TAG, "内核模式：字幕 $index → 序号 $ord（失败会重试）")
+        val ord = pickKernelSubtitleOrdinal(index)
+        Log.i(TAG, "内核模式：字幕 $index → 内核第 $ord 条（失败会重试）")
         retryKernelTrackSwitch("字幕", index) {
-            mpvBackend?.setSubtitleByOrdinal(ordinalOfSubtitleStream(index)) ?: false
+            mpvBackend?.setSubtitleByOrdinal(pickKernelSubtitleOrdinal(index)) ?: false
+        }
+    }
+
+    /**
+     * 内核侧要选"第几条"字幕 —— 先按语言核对，序号只当兜底。
+     *
+     * 为什么不能只靠序号：Emby 索引出来的内封轨条数可能和文件里的对不上
+     * （实测《蜘蛛侠》Emby 报 1 条、文件里 38 条），这时"菜单第几条 = 内核第几条"
+     * 必然错位，表现就是父亲报的"选中文出英文"。语言是文件自带的元信息，
+     * 与索引无关，所以拿它核对：语言一致的那条才是要的那条。
+     *
+     * 同名语言有多条时（简繁、粤语）优先按标题关键字对齐；仍分不清就用序号。
+     */
+    private fun pickKernelSubtitleOrdinal(streamIndex: Int): Int? {
+        val base = ordinalOfSubtitleStream(streamIndex)
+        val m = mpvBackend ?: return base
+        val stream = currentStreams.firstOrNull { it.index == streamIndex } ?: return base
+        val infos = m.subtitleTrackInfos().filter { !it.external }
+        if (infos.isEmpty()) return base
+        val want = normSubLang(stream.language)
+        var hit = if (want == null) -1 else infos.indexOfFirst { normSubLang(it.lang) == want }
+        if (hit >= 0 && infos.count { normSubLang(it.lang) == want } > 1) {
+            // 同一语言多条（简繁 / 粤语）：用标题里的关键汉字再分一次
+            val key = listOf("繁", "粵", "粤", "简", "簡", "简体", "繁體")
+                .firstOrNull { k -> stream.title?.contains(k) == true }
+            if (key != null) {
+                val narrowed = infos.indexOfFirst {
+                    normSubLang(it.lang) == want && it.title.contains(key)
+                }
+                if (narrowed >= 0) hit = narrowed
+            }
+        }
+        if (hit >= 0 && hit != base) {
+            Log.i(
+                TAG,
+                "字幕语言核对：流 $streamIndex（${stream.language}）→ 内核第 $hit 条" +
+                    "（按序号是 $base，已纠正）",
+            )
+        }
+        return if (hit >= 0) hit else base
+    }
+
+    /** 语言标签归一（Emby 用 639-2 如 chi/eng，内核混用 639-1/2） */
+    private fun normSubLang(raw: String?): String? {
+        val s = raw?.trim()?.lowercase().orEmpty()
+        if (s.isBlank() || s == "und" || s == "unknown") return null
+        return when (s) {
+            "chi", "zho", "zh", "zh-cn", "zh-hans", "zh-tw", "zh-hk", "zh-hant" -> "zh"
+            "eng", "en" -> "en"
+            "jpn", "ja" -> "ja"
+            "kor", "ko" -> "ko"
+            "fre", "fra", "fr" -> "fr"
+            "ger", "deu", "de" -> "de"
+            "spa", "es" -> "es"
+            "rus", "ru" -> "ru"
+            "por", "pt" -> "pt"
+            "ita", "it" -> "it"
+            "ara", "ar" -> "ar"
+            else -> s.take(2)
         }
     }
 

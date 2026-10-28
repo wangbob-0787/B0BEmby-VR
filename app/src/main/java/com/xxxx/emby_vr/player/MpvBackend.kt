@@ -791,6 +791,46 @@ class MpvBackend(private val context: Context) {
      * 与音轨同一套做法：Emby 的字幕清单里第几条 → 内核侧第几条，
      * 序号映射靠"两边都是文件内顺序"这个前提（外挂弹幕轨不在内核清单里）。
      */
+    /** 内核侧一条字幕轨：id / 语言 / 标题 / 是否外挂（地址加载进来的那种） */
+    data class SubTrackInfo(
+        val id: Int,
+        val lang: String,
+        val title: String,
+        val external: Boolean,
+    )
+
+    /**
+     * 内核侧全部字幕轨（按文件内顺序）。
+     *
+     * 与 [subtitleTrackIds] 同一份数据，差别只是把语言和标题也带出来 ——
+     * 选字幕时要靠语言核对「Emby 菜单里这条」和「内核里那条」是不是同一条。
+     */
+    fun subtitleTrackInfos(): List<SubTrackInfo> {
+        val raw = cTrackList.takeIf { it.isNotBlank() } ?: return emptyList()
+        return try {
+            val arr = org.json.JSONArray(raw)
+            val out = ArrayList<SubTrackInfo>()
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val t = o.optString("type")
+                if (t == "sub" || t == "subtitle") {
+                    out.add(
+                        SubTrackInfo(
+                            id = o.optInt("id"),
+                            lang = o.optString("lang"),
+                            title = o.optString("title"),
+                            external = o.optBoolean("external", false),
+                        )
+                    )
+                }
+            }
+            out
+        } catch (t: Throwable) {
+            Log.w(TAG, "解析内核字幕轨失败: ${t.message}")
+            emptyList()
+        }
+    }
+
     fun subtitleTrackIds(): List<Int> {
         val raw = cTrackList.takeIf { it.isNotBlank() }
         if (raw.isNullOrBlank()) return emptyList()
