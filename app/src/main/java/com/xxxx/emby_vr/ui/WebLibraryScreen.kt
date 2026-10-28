@@ -3099,13 +3099,28 @@ private suspend fun injectYoutubeCookies() {
                 if (name.isBlank()) continue
                 val sb = StringBuilder()
                 sb.append(name).append('=').append(value)
-                sb.append("; domain=").append(c.optString("domain"))
+                val dom = c.optString("domain")
+                sb.append("; domain=").append(dom)
                 sb.append("; path=").append(c.optString("path").ifBlank { "/" })
                 if (c.optBoolean("secure")) sb.append("; Secure")
-                val exp = c.optLong("expires", -1L)
+                /*
+                 * 过期时间字段是 expirationDate（浏览器导出的写法），不是 expires。
+                 * 读错了就全变成会话 cookie：进程一退登录态就没了。
+                 */
+                val exp = c.optLong("expirationDate", -1L).takeIf { it > 0 }
+                    ?: c.optLong("expires", -1L)
                 if (exp > 0) sb.append("; Max-Age=").append(exp - System.currentTimeMillis() / 1000)
                 /* HttpOnly 由 setCookie 忽略（脚本本来也读不到它），这里不写，避免造出无效属性 */
-                cm.setCookie("https://www.youtube.com", sb.toString())
+                /*
+                 * 按 cookie 自己的域名给 URL（2026-10-28 修）。
+                 *
+                 * 原来所有 cookie 都往 https://www.youtube.com 写：带 domain=.google.com 的那批
+                 * （SID / __Secure-*PSIDTS 这些账号侧凭据）域名对不上，WebView 直接丢掉 ——
+                 * 结果 YouTube 页右上角一直是"登录"、没有头像（父亲 2026-10-28 21:39 报的现场），
+                 * 但服务端用同一份 cookie 解析视频却是通的（20:29 成功取到 4429 秒那条）。
+                 */
+                val host = if (dom.startsWith(".")) dom.substring(1) else dom
+                cm.setCookie("https://" + host + "/", sb.toString())
                 n++
             }
             cm.flush()
