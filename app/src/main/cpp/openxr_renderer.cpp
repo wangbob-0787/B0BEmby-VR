@@ -1247,6 +1247,14 @@ std::atomic<float> gViewerOriginZ{0.f};
  */
 std::atomic<float> gViewerOriginY{0.f};
 std::atomic<float> gEyeY{0.f};
+/*
+ * 面板（控制条 / 海报墙 / 菜单）吃多少眼高（父亲 2026-10-28 23:51 定）：
+ * 站着的高差只加**一半**，再叠回坐姿基准。全量加上去实际戴着偏高——父亲原话
+ * "把站起来的高差减半以后，再加上原来坐下时那个控制条和海报的高度"。
+ * 系数留成全局量，现场还能调。
+ */
+std::atomic<float> gPanelLiftK{0.5f};
+static inline float panelLift() { return gEyeY.load() * gPanelLiftK.load(); }
 std::atomic<float> gLastHeadY{0.f};
 /*
  * 眼高的两级记账（父亲 2026-10-28 实测"站起来按圆圈后眼高算成 -0.41"）：
@@ -2895,7 +2903,7 @@ ScreenPlacement panelPlacement(const VrContext &c) {
     // 跟随观影位（父亲 2026-10-10：走近银幕时控制条/菜单不能留在身后）
     p.cx = c.panelPosX.load() + viewerOffsetX();
     /* 海报墙高度也跟眼高（父亲 2026-10-28）：站着看、坐下看都在合适高度 */
-    p.cy = c.panelPosY.load() + gEyeY.load();
+    p.cy = c.panelPosY.load() + panelLift();
     p.cz = c.panelPosZ.load() + viewerOffsetZ();
     p.yawDeg = c.panelYawDeg.load();
     p.pitchDeg = c.panelPitchDeg.load();
@@ -3124,7 +3132,7 @@ void osdBasis(float *cx, float *cy, float *cz, float *nx, float *ny, float *nz, 
     const float ct = cosf(th), st = sinf(th);
     /* 控制条跟随观影位（2026-10-10）：命中计算必须和实际渲染位置一致，否则光柱偏 */
     /* Y 跟着当前眼高（父亲 2026-10-28）：站着坐着都贴在眼前下方，不再固定按坐姿算 */
-    *cx = viewerOffsetX(); *cy = kOsdCenterY + gEyeY.load(); *cz = -kOsdDistance + viewerOffsetZ();
+    *cx = viewerOffsetX(); *cy = kOsdCenterY + panelLift(); *cz = -kOsdDistance + viewerOffsetZ();
     // 绕 X 轴转 th：法线 (0,0,1) → (0,-sin,cos)；面内 y 轴 (0,1,0) → (0,cos,sin)
     *nx = 0.f; *ny = -st; *nz = ct;
     *ux = 1.f; *uy = 0.f; *uz = 0.f;
@@ -3199,7 +3207,7 @@ void menuBasis(float *cx, float *cy, float *cz, float *nx, float *ny, float *nz,
     const float half = kOsdHeight * 0.5f + kMenuHeight * 0.5f;   // 两块面沿 v 轴的半高之和
     const float menuY = kOsdCenterY + ct * half - st * kMenuGap;
     const float menuDist = kOsdDistance - st * half - ct * kMenuGap;
-    *cx = viewerOffsetX(); *cy = menuY + gEyeY.load(); *cz = -menuDist + viewerOffsetZ();
+    *cx = viewerOffsetX(); *cy = menuY + panelLift(); *cz = -menuDist + viewerOffsetZ();
     *nx = 0.f; *ny = -st; *nz = ct;
     *ux = 1.f; *uy = 0.f; *uz = 0.f;
     *vx = 0.f; *vy = ct;  *vz = st;
@@ -3521,11 +3529,11 @@ void pushInput(VrContext &c) {
                 c.panelDragActive[h] = true;
                 c.panelDragMoved[h] = false;
                 const float dx = c.panelPosX.load() - hand.x;
-                const float dy = (c.panelPosY.load() + gEyeY.load()) - hand.y;
+                const float dy = (c.panelPosY.load() + panelLift()) - hand.y;
                 const float dz = c.panelPosZ.load() - hand.z;
                 c.panelDragRadius[h] = sqrtf(dx * dx + dy * dy + dz * dz);
                 c.panelDragStartX[h] = c.panelPosX.load();
-                c.panelDragStartY[h] = c.panelPosY.load() + gEyeY.load();
+                c.panelDragStartY[h] = c.panelPosY.load() + panelLift();
                 c.panelDragStartZ[h] = c.panelPosZ.load();
                 c.panelAdjustAt[h] = t;
                 LOGI("海报墙：%s 握把键按住 → 抓住（半径 %.2f 米）", handName[h],
@@ -3550,7 +3558,7 @@ void pushInput(VrContext &c) {
                 }
                 if (c.panelDragMoved[h]) {
                     c.panelPosX = tx;
-                    c.panelPosY = ty - gEyeY.load();
+                    c.panelPosY = ty - panelLift();
                     c.panelPosZ = tz;
                     // 法线指回球心（= 手柄指向的反向），反解偏航与仰角
                     const float kRad2Deg = 180.f / 3.14159265358979f;
@@ -3574,7 +3582,7 @@ void pushInput(VrContext &c) {
                     aimDirection(c.aimPose[h], &ndx, &ndy, &ndz);
                     const float rr = c.panelDragRadius[h];
                     c.panelPosX = hand.x + ndx * rr;
-                    c.panelPosY = hand.y + ndy * rr - gEyeY.load();
+                    c.panelPosY = hand.y + ndy * rr - panelLift();
                     c.panelPosZ = hand.z + ndz * rr;
                     LOGI("海报墙：摇杆远近 → 半径 %.2f 米", (double) rr);
                 }
@@ -4423,7 +4431,7 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
              * kOsdCenterY —— 站着按圆圈把眼高抬起来之后，可点的范围升上去了、画出来的控制条
              * 还留在原处，于是"光点穿过控制条不亮，往上挪一点才亮"。
              */
-            osdPose.position = {0.f, kOsdCenterY + gEyeY.load(), -kOsdDistance};
+            osdPose.position = {0.f, kOsdCenterY + panelLift(), -kOsdDistance};
             osdPose.orientation = {sinf(th * 0.5f), 0.f, 0.f, cosf(th * 0.5f)};
             const Mat4 osdModel = poseScaleModel(osdPose, kOsdWidth, kOsdHeight, 1.f);
             const Mat4 osdMvp = multiply(multiply(proj, view4), osdModel);
@@ -5751,7 +5759,7 @@ void frameLoop(VrContext &c) {
             /* 位置恒固定（父亲 2026-10-12：控制条不许跟着走动变位置） */
             const float ocx = viewerOffsetX();
             /* 同上：与 nativeGetOsdPlace 同一套高度，别再各算一份 */
-            const float ocy = kOsdCenterY + gEyeY.load();
+            const float ocy = kOsdCenterY + panelLift();
             const float ocz = -kOsdDistance + viewerOffsetZ();
             osdQuad.pose.position = {ocx, ocy, ocz};
             quadOrientation(0.f, kOsdTiltDeg, ocx, ocy, ocz, &osdQuad.pose.orientation);
@@ -6445,7 +6453,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeGetPanelPlace(JNIEnv *env, jobject /* t
     if (out == nullptr) return nullptr;
     const jfloat v[6] = {
         /* 与渲染同源：渲染时海报墙 Y 也加了眼高偏移，命中算的就是这块平面的实际位置 */
-        g.panelPosX.load(), g.panelPosY.load() + gEyeY.load(), g.panelPosZ.load(),
+        g.panelPosX.load(), g.panelPosY.load() + panelLift(), g.panelPosZ.load(),
         g.panelYawDeg.load(), g.panelPitchDeg.load(), g.panelWidth.load(),
     };
     env->SetFloatArrayRegion(out, 0, 6, v);
