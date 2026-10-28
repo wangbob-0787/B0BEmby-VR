@@ -61,7 +61,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private var manifest: UpdateApi.Manifest? = null
 
-    /** 自身编译流水号（`versionName` 末段），与清单里的 run 比大小 */
+    /**
+     * 自身编译流水号，与清单里的 run 比大小。
+     *
+     * 取的是 `versionCode`（构建时写入的就是 CI 的 run 号），**不是**版本名末段 ——
+     * 版本名自 2026-10-28 起是 `1.0.0001` 这种展示序号，与 run 号不同源；
+     * 继续按版本名末段解析会让「有没有新版」永远算错。
+     */
     private var selfRun: Int = 0
 
     init {
@@ -111,7 +117,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 context.packageManager.getPackageInfo(context.packageName, 0)
             }
             val name = packageInfo.versionName ?: ""
-            runNumber = name.substringAfterLast('.').toIntOrNull() ?: 0
+            /* 用 versionCode 当自身 run 号（构建时写的就是 run），版本名只用于显示 */
+            runNumber = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                packageInfo.longVersionCode.toInt()
+            } else {
+                @Suppress("DEPRECATION")
+                packageInfo.versionCode
+            }
             "v$name"
         } catch (e: Exception) {
             ""
