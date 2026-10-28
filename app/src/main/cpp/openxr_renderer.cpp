@@ -1214,6 +1214,17 @@ std::atomic<float> gMinScreenGap{1.0f};  // 最近允许走到离银幕多远
 std::atomic<int> gFollowViewer{0};
 std::atomic<float> gViewerOriginX{0.f};
 std::atomic<float> gViewerOriginZ{0.f};
+/*
+ * 眼高（父亲 2026-10-28）：控制条与菜单要贴在"当前这双眼睛"下方，
+ * 站着坐着都得合身。原来它们的 Y 是常量（按坐姿校准的），站起来用就落到胸口。
+ *
+ * 做法：记下起点眼高，之后每帧取相对变化，带 5cm 死区 + 低通 ——
+ * 死区挡住呼吸和轻微点头（否则面板会跟着点头上下跳），低通保证站起来时是"抬上去"而不是"蹦一下"。
+ * 只影响贴身的两块面板；银幕、海报墙、影厅本身固定在世界里，不随身高动。
+ */
+std::atomic<float> gViewerOriginY{0.f};
+std::atomic<float> gEyeY{0.f};
+std::atomic<float> gLastHeadY{0.f};
 std::atomic<bool> gViewerOriginSet{false};
 /** 头部位置读数日志的节流（~1 秒一次），诊断用 */
 std::chrono::steady_clock::time_point gLastHeadLog{};
@@ -1225,9 +1236,11 @@ void updateViewerAnchor(const XrPosef &head) {
     if (!gViewerOriginSet.load()) {
         gViewerOriginX.store(hx);
         gViewerOriginZ.store(hz);
+        gViewerOriginY.store(head.position.y);
+        gLastHeadY.store(head.position.y);
         gViewerOriginSet.store(true);
-        LOGI("观影位锚点 → 起点记为 x=%.2f z=%.2f（后续所有走动都相对这个点）",
-             (double) hx, (double) hz);
+        LOGI("观影位锚点 → 起点记为 x=%.2f y=%.2f z=%.2f（后续所有走动与身高都相对这个点）",
+             (double) hx, (double) head.position.y, (double) hz);
     }
     /*
      * 【2026-10-22 10:57 父亲：按圆圈键必须还能回到原来位置】
@@ -1247,7 +1260,16 @@ void updateViewerAnchor(const XrPosef &head) {
             gWalkZ.store(gWalkZ.load() + gViewerZ.load());
             gViewerX.store(0.f);
             gViewerZ.store(0.f);
-            LOGI("重新居中：锚点已重设（x=%.2f z=%.2f），累计走动 %.2f 米", (double) hx, (double) hz, (double) gWalkZ.load());
+            /*
+             * 重新居中会把追踪原点搬到当前头位，Y 也跟着归零。
+             * 眼高是按"相对起点"算的，这里把新旧原点的差值补回去，
+             * 否则按一次圆圈键，已经抬上去的面板会突然掉回坐姿高度。
+             */
+            gEyeY.store(gEyeY.load() + (gLastHeadY.load() - head.position.y));
+            gViewerOriginY.store(head.position.y);
+            gLastHeadY.store(head.position.y);
+            LOGI("重新居中：锚点已重设（x=%.2f z=%.2f），累计走动 %.2f 米，眼高保持 %.2f 米",
+                 (double) hx, (double) hz, (double) gWalkZ.load(), (double) gEyeY.load());
             return;
         }
     }
@@ -1266,12 +1288,27 @@ void updateViewerAnchor(const XrPosef &head) {
     const float gap = gMinScreenGap.load();
     gScenePush.store(dist < gap ? gap - dist : 0.f);
 
+    /*
+     * 眼高跟随（父亲 2026-10-28）：站着 / 坐着都能让控制条与菜单落在眼前下方，
+     * 不用管圆圈键。死区 5cm 以内的上下一跳不动它（呼吸、轻微点头），
+     * 超过就按 0.12 的低通往目标慢慢靠，视觉上是"慢慢抬到位"。
+     */
+    {
+        const float rawY = head.position.y - gViewerOriginY.load();
+        const float curY = gEyeY.load();
+        const float dY = rawY - curY;
+        if (fabsf(dY) > 0.05f) {
+            gEyeY.store(curY + dY * 0.12f);
+        }
+        gLastHeadY.store(head.position.y);
+    }
+
     // 1 秒一次的位置日志：诊断"走动到底有没有被头显报出来"就靠它
     const auto now = std::chrono::steady_clock::now();
     if (now - gLastHeadLog > std::chrono::seconds(1)) {
         gLastHeadLog = now;
-        LOGI("观影位：x=%+.2f z=%+.2f（离银幕 %.2f 米，场景后推 %.3f 米）",
-             (double) sx, (double) sz, (double) dist, (double) gScenePush.load());
+        LOGI("观影位：x=%+.2f z=%+.2f 眼高 %+.2f（离银幕 %.2f 米，场景后推 %.3f 米）",
+             (double) sx, (double) sz, (double) gEyeY.load(), (double) dist, (double) gScenePush.load());
     }
 }
 
@@ -1321,7 +1358,8 @@ bool viewerBehindPanel(float yawDeg, float pitchDeg, float cx, float cy, float c
      * 固定摆位时恒为 0），也不能只用 gViewerX/Z —— 那对量在「重新居中」时会被清零。
      */
     const float vx = gWalkX.load() + gViewerX.load() - cx;
-    const float vy = -cy;
+    /* 眼睛的竖直位置也要算进去（父亲 2026-10-28）：站着看面板和坐着看，上下关系不同 */
+    const float vy = gEyeY.load() - cy;
     const float vz = gWalkZ.load() + gViewerZ.load() - cz;
     return (nx * vx + ny * vy + nz * vz) < -kBackFaceBias;
 }
@@ -2991,7 +3029,8 @@ void osdBasis(float *cx, float *cy, float *cz, float *nx, float *ny, float *nz, 
     const float th = kOsdTiltDeg * 3.14159265358979f / 180.f;
     const float ct = cosf(th), st = sinf(th);
     /* 控制条跟随观影位（2026-10-10）：命中计算必须和实际渲染位置一致，否则光柱偏 */
-    *cx = viewerOffsetX(); *cy = kOsdCenterY; *cz = -kOsdDistance + viewerOffsetZ();
+    /* Y 跟着当前眼高（父亲 2026-10-28）：站着坐着都贴在眼前下方，不再固定按坐姿算 */
+    *cx = viewerOffsetX(); *cy = kOsdCenterY + gEyeY.load(); *cz = -kOsdDistance + viewerOffsetZ();
     // 绕 X 轴转 th：法线 (0,0,1) → (0,-sin,cos)；面内 y 轴 (0,1,0) → (0,cos,sin)
     *nx = 0.f; *ny = -st; *nz = ct;
     *ux = 1.f; *uy = 0.f; *uz = 0.f;
@@ -3066,7 +3105,7 @@ void menuBasis(float *cx, float *cy, float *cz, float *nx, float *ny, float *nz,
     const float half = kOsdHeight * 0.5f + kMenuHeight * 0.5f;   // 两块面沿 v 轴的半高之和
     const float menuY = kOsdCenterY + ct * half - st * kMenuGap;
     const float menuDist = kOsdDistance - st * half - ct * kMenuGap;
-    *cx = viewerOffsetX(); *cy = menuY; *cz = -menuDist + viewerOffsetZ();
+    *cx = viewerOffsetX(); *cy = menuY + gEyeY.load(); *cz = -menuDist + viewerOffsetZ();
     *nx = 0.f; *ny = -st; *nz = ct;
     *ux = 1.f; *uy = 0.f; *uz = 0.f;
     *vx = 0.f; *vy = ct;  *vz = st;
