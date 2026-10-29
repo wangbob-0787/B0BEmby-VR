@@ -3330,7 +3330,13 @@ ScreenPlacement frontScreen(const VrContext &c) {
         /* 下沿锚定在 kHallScreenBottomY（换排/座椅调节都跟着走），上沿按片子比例往上长 */
         const float h = p.width / fmaxf(0.2f, p.aspect);
         p.cy = hallScreenBottomY() + h * 0.5f;
+        /*
+         * 银幕与弹幕层必须钉在影厅"舞台前墙"那块模型坐标上（父亲 2026-10-30 定）：
+         * 影厅模型整体带着 ±s.dz / 盖帽高度一起走，银幕原来只减了座椅前后量，
+         * 少了这一项就与墙脱开，换排或重摆时墙动幕不动。加上 s.dz 后两者同进同退。
+         */
         p.cz -= gSeatFwd.load();
+        p.cz += kCinemaSeats[gSeat.load()].dz;
         /* 横向取影厅前墙/银幕的位置（他比厅中线偏 0.12 米，画面跟着墙走） */
         p.cx = -(kHallScreenModelX - kAssetOriginModelX) + kCinemaShiftX;
     }
@@ -4054,7 +4060,7 @@ void pushInput(VrContext &c) {
                     float nx0 = eye.x + gdx * rr0;
                     const float ny0 = eye.y + gdy * rr0;
                     float nz0 = eye.z + gdz * rr0;
-                    const float sx0 = nx0, sz0 = nz0;
+                    float sx0 = nx0, sz0 = nz0;
                     worldToApp(&sx0, &sz0);
                     c.panelPosX = sx0;
                     c.panelPosY = ny0 - panelLift();
