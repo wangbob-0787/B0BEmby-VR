@@ -4006,18 +4006,21 @@ void pushInput(VrContext &c) {
          */
         if (c.squeezeDown[h]) {
             /*
-             * 球心 = 眼睛，不是手柄（父亲 2026-10-29 定）。
-             * 抓起来之后墙贴着视线动，推远拉近改的是"眼睛到墙"的半径；
-             * 竖直方向上球心取墙自己的高度，避免一抓墙就上下飘。
+             * 球心 = 手柄（父亲 2026-10-30 定）。推远拉近改的是"手柄到墙"的半径。
              */
             /*
              * 球心高度用眼位 0，**不能**取墙自己的高度：那样每帧
              * "墙高 = (墙高) + 垂直分量 × 半径"，竖直方向会累加，
              * 一拖就飞到天上或地底（父亲 2026-10-29 实测墙高从 5.79 米涨到 138.51 米）。
              */
-            float eyeX = gHeadRawX.load(), eyeZ = gHeadRawZ.load();
+            /*
+             * 球心 = 手柄（父亲 2026-10-30 定，回到周一那版的手感）。
+             * 以手柄为球心，墙就挂在这只手的球面上：手往哪转墙跟到哪，半径不变；
+             * 推摇杆改半径就是推远拉近。以眼睛为球心时墙会绕着眼球滑，手一动就对不上手。
+             */
+            float eyeX = c.aimPose[h].position.x, eyeZ = c.aimPose[h].position.z;
             appToWorld(&eyeX, &eyeZ);
-            const XrVector3f eye{eyeX, 0.f, eyeZ};
+            const XrVector3f eye{eyeX, c.aimPose[h].position.y, eyeZ};
             /*
              * 抓住的前提：光点正落在海报墙上（父亲 2026-10-07 实测报"光点在哪，
              * 一按握把键墙就跑到光点位置"）。抓住之后不再要求 —— 手一动光柱就会
@@ -4026,9 +4029,11 @@ void pushInput(VrContext &c) {
             if (!c.panelDragActive[h] && onPanel) {
                 c.panelDragActive[h] = true;
                 c.panelDragMoved[h] = false;
-                const float dx = c.panelPosX.load() - eye.x;
+                float wallX = c.panelPosX.load(), wallZ = c.panelPosZ.load();
+                appToWorld(&wallX, &wallZ);
+                const float dx = wallX - eye.x;
                 const float dy = (c.panelPosY.load() + panelLift()) - eye.y;
-                const float dz = c.panelPosZ.load() - eye.z;
+                const float dz = wallZ - eye.z;
                 c.panelDragRadius[h] = fmaxf(0.6f, sqrtf(dx * dx + dy * dy + dz * dz));
                 c.panelDragStartX[h] = c.panelPosX.load();
                 c.panelDragStartY[h] = c.panelPosY.load() + panelLift();
