@@ -1629,6 +1629,8 @@ void updateViewerAnchor(const XrPosef &head) {
                 gViewerZ.store(0.f);
                 gViewerOriginX.store(hx);
                 gViewerOriginZ.store(hz);
+                /* 锚点与偏航都已就位：这一刻把海报墙的朝向一次定死 */
+                pinPanelYaw();
                 LOGI("重锚：影厅摆到你脚下（偏航 %.1f 度，位置 X %.2f Z %.2f 米）",
                      (double) (gWorldYawRad.load() * 57.2958f), (double) hx, (double) hz);
             }
@@ -6406,6 +6408,9 @@ void frameLoop(VrContext &c) {
                      (double) yawDeg, (double) gWorldSnapX.load(), (double) gWorldSnapZ.load(),
                      seatIdx, (double) cs.dy, (double) cs.dz,
                      (double) hallFloorDy(viewerZForFloor()), (double) hallScreenBottomY());
+                LOGI("体检B 幕摆=cx%.2f cy%.2f cz%.2f 宽%.2f 影厅%d",
+                     (double) sc.cx, (double) sc.cy, (double) sc.cz,
+                     (double) sc.width, gCinemaOn.load());
                 LOGI("体检B 屏：幕pos=(%.2f,%.2f,%.2f) 幕角=%.1f° 弹幕pos=(%.2f,%.2f,%.2f) "
                      "弹幕角=%.1f° 海报pos=(%.2f,%.2f,%.2f) 海报角=%.1f°",
                      (double) videoQuad.pose.position.x, (double) videoQuad.pose.position.y,
