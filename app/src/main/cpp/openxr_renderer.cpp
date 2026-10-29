@@ -3113,7 +3113,14 @@ ScreenPlacement panelPlacement(const VrContext &c) {
 ScreenPlacement frontScreen(const VrContext &c) {
     ScreenPlacement p = kFrontScreen;
     // 防穿越推量（2026-10-10）：走近银幕到墙根时场景整体后推，见 updateViewerAnchor
-    p.cz = -gScreenDistance.load() - gScenePush.load();
+    /*
+     * 银幕只按固定距离摆，不叠加防穿越推量。
+     *
+     * 父亲 2026-10-29 定：走动时只有影厅的 Y 跟着他的位置走（台阶补偿），
+     * 大屏幕、弹幕层、控制条、海报墙一律不动；重摆只发生在按圆圈键那一刻。
+     * 原来这里叠了"走近就把场景整体后推"，于是人往前挪银幕就后退，与影厅错开。
+     */
+    p.cz = -gScreenDistance.load();
     p.width = gScreenWidth.load();      // 尺寸可运行时调
     /*
      * 网页在大银幕上、并且读到了那块视频画面 → 银幕形状按**视频**比例（父亲 2026-10-15：
