@@ -1525,21 +1525,16 @@ void updateViewerAnchor(const XrPosef &head) {
                 const float fx = -2.f * (qx * qz + qw * qy);
                 const float fz = -(1.f - 2.f * (qx * qx + qy * qy));
                 /*
-                 * 朝向只在"第一次按圆圈"和"换排"时定一次，之后按圆圈只搬位置、不再改朝向。
-                 *
-                 * 父亲 2026-10-29 实测：起步坐下按一次、走到舞台站着按一次、回起点再按一次，
-                 * 三次的朝向是 −12.2° / −109.1° / +1.5° —— 每按一次影厅就绕自己转一个角度，
-                 * 于是"回到起点后各部件摆不回原位"。他要的是每次按圆圈都回到同一套相对摆位，
-                 * 所以朝向必须锁住；换排时重新定一次（那时他刚坐下、面向银幕）。
+                 * 每次按圆圈都按"此刻正对的方向"重定朝向（父亲 2026-10-29 定）：
+                 * 位置搬到他脚下、朝向跟着他脸的朝向走，原地转身再按，整套场景就绕 Y 轴转过去。
+                 * 朝向不锁死 —— 锁死会让"转身后按圆圈"仍看到旧朝向的影厅。
                  */
-                static int lockedSeat = -1;
-                const bool yawLocked = (lockedSeat == gSeat.load());
-                if (!yawLocked) {
+                {
                     /* rotY(θ) 把 (0,0,−1) 转到 (fx,fz) ⇒ θ = atan2(−fx, −fz) */
-                    gWorldYawRad.store(atan2f(-fx, -fz));
-                    lockedSeat = gSeat.load();
-                    LOGI("朝向锁定：偏航 %.1f 度（座位 %d）",
-                         (double) (atan2f(-fx, -fz) * 57.29578f), lockedSeat);
+                    const float yaw = atan2f(-fx, -fz);
+                    gWorldYawRad.store(yaw);
+                    LOGI("重摆：偏航 %.1f 度 平移到 (%.2f, %.2f)",
+                         (double) (yaw * 57.29578f), (double) hx, (double) hz);
                 }
                 gWorldSnapX.store(hx);
                 gWorldSnapZ.store(hz);
