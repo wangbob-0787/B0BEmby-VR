@@ -1351,9 +1351,10 @@ void updateViewerAnchor(const XrPosef &head) {
          * 所以"走动途中"收到的重新居中都是运行时在重新定位，必须当噪声忽略，
          * 否则正走着忽然把累计走动清零，脚下的台阶就会被抽走。
          */
-        static double lastWalkMs = 0.0;
+        static long long lastWalkMs = 0;
         static float lastWalkX = 0.f, lastWalkZ = 0.f;
-        const double nowMoveMs = nowMs();
+        const long long nowMoveMs = (long long) std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
         {
             const float mx2 = hx - lastWalkX, mz2 = hz - lastWalkZ;
             if (mx2 * mx2 + mz2 * mz2 > 0.0004f) {   // 单帧挪了 2 厘米以上 = 在走
@@ -1362,7 +1363,7 @@ void updateViewerAnchor(const XrPosef &head) {
                 lastWalkZ = hz;
             }
         }
-        const bool whileWalking = (nowMoveMs - lastWalkMs) < 700.0;
+        const bool whileWalking = (nowMoveMs - lastWalkMs) < 700;
         const bool jumped = !whileWalking &&
                             (eventWithJump ||
                              dx * dx + dz * dz > 1.5f * 1.5f ||
