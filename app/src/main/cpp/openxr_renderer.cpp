@@ -1524,8 +1524,23 @@ void updateViewerAnchor(const XrPosef &head) {
                 /* 头位朝向的水平前向量（世界坐标，未旋转） */
                 const float fx = -2.f * (qx * qz + qw * qy);
                 const float fz = -(1.f - 2.f * (qx * qx + qy * qy));
-                /* rotY(θ) 把 (0,0,−1) 转到 (fx,fz) ⇒ θ = atan2(−fx, −fz) */
-                gWorldYawRad.store(atan2f(-fx, -fz));
+                /*
+                 * 朝向只在"第一次按圆圈"和"换排"时定一次，之后按圆圈只搬位置、不再改朝向。
+                 *
+                 * 父亲 2026-10-29 实测：起步坐下按一次、走到舞台站着按一次、回起点再按一次，
+                 * 三次的朝向是 −12.2° / −109.1° / +1.5° —— 每按一次影厅就绕自己转一个角度，
+                 * 于是"回到起点后各部件摆不回原位"。他要的是每次按圆圈都回到同一套相对摆位，
+                 * 所以朝向必须锁住；换排时重新定一次（那时他刚坐下、面向银幕）。
+                 */
+                static int lockedSeat = -1;
+                const bool yawLocked = (lockedSeat == gSeat.load());
+                if (!yawLocked) {
+                    /* rotY(θ) 把 (0,0,−1) 转到 (fx,fz) ⇒ θ = atan2(−fx, −fz) */
+                    gWorldYawRad.store(atan2f(-fx, -fz));
+                    lockedSeat = gSeat.load();
+                    LOGI("朝向锁定：偏航 %.1f 度（座位 %d）",
+                         (double) (atan2f(-fx, -fz) * 57.29578f), lockedSeat);
+                }
                 gWorldSnapX.store(hx);
                 gWorldSnapZ.store(hz);
                 gWalkX.store(0.f);
