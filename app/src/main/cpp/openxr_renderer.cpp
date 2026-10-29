@@ -266,25 +266,34 @@ Mat4 rotY(float a) {
     return m;
 }
 
+extern std::atomic<float> gWorldYawRad;
+extern std::atomic<float> gWorldSnapX;
+extern std::atomic<float> gWorldSnapZ;
+
 /**
- * 把 pose 绕世界 Y 轴转 yaw：位置和朝向一起转。
+ * 世界摆放：把影厅坐标系（app 坐标）摆到现实世界里。
  *
- * quad 图层（银幕画面、控制条、菜单、海报墙、弹幕层）由系统合成器按自己的 pose 摆放，
- * 不经过我们的视图矩阵，所以圆圈键的世界偏航必须同时作用到它们身上，
- * 否则就是"影厅转了、银幕没转"（父亲 2026-10-29 实测）。
+ * W(p) = R(θ)·p + t，θ = 让影厅正前方向（−Z）对准观影者朝向的偏角，
+ * t = 观影者脚下的水平位置。按圆圈键时不带条件地重算一次，所以
+ * 「选中排 → 不管走到哪 → 按圆圈」永远把该排锚点送回脚下（X 0、Y 0、Z 0）。
+ *
+ * 只作用于影厅本身（含银幕画面与弹幕层）。控制条、菜单、海报墙、手柄光柱都是
+ * 「贴着人」的东西，不进这个变换 —— 否则一按圆圈光柱就从手边飞到世界原点。
  */
-void applyWorldYaw(XrPosef &p, float yaw, float snapX, float snapZ) {
-    const float c = cosf(yaw), s = sinf(yaw);
-    const float x = p.position.x, z = p.position.z;
-    /* 先把世界绕 Y 轴转，再整体平移 —— 平移量就是"按圆圈那一刻你离座位锚点有多远" */
-    p.position.x = c * x + s * z + snapX;
-    p.position.z = -s * x + c * z + snapZ;
-    const XrQuaternionf qy{0.f, sinf(yaw * 0.5f), 0.f, cosf(yaw * 0.5f)};
-    const XrQuaternionf q = p.orientation;
-    p.orientation.x = qy.w * q.x + qy.x * q.w + qy.y * q.z - qy.z * q.y;
-    p.orientation.y = qy.w * q.y - qy.x * q.z + qy.y * q.w + qy.z * q.x;
-    p.orientation.z = qy.w * q.z + qy.x * q.y - qy.y * q.x + qy.z * q.w;
-    p.orientation.w = qy.w * q.w - qy.x * q.x - qy.y * q.y - qy.z * q.z;
+Mat4 worldXf() {
+    Mat4 m = rotY(gWorldYawRad.load());
+    m.m[12] = gWorldSnapX.load();
+    m.m[13] = 0.f;
+    m.m[14] = gWorldSnapZ.load();
+    return m;
+}
+
+/** app 坐标点 → 世界坐标（与 worldXf 同一套公式，供命中测试与 quad 摆位用） */
+void appToWorld(float *x, float *z) {
+    const float c = cosf(gWorldYawRad.load()), s = sinf(gWorldYawRad.load());
+    const float px = *x, pz = *z;
+    *x = c * px + s * pz + gWorldSnapX.load();
+    *z = -s * px + c * pz + gWorldSnapZ.load();
 }
 
 Mat4 viewMatrixFromPose(const XrPosef &pose) {
@@ -309,14 +318,6 @@ Mat4 viewMatrixFromPose(const XrPosef &pose) {
     v.m[13] = -(v.m[1] * tx + v.m[5] * ty + v.m[9] * tz);
     v.m[14] = -(v.m[2] * tx + v.m[6] * ty + v.m[10] * tz);
     return v;
-}
-
-Mat4 translateM(float tx, float ty, float tz) {
-    Mat4 m = identity();
-    m.m[12] = tx;
-    m.m[13] = ty;
-    m.m[14] = tz;
-    return m;
 }
 
 Mat4 translateScale(float tx, float ty, float tz, float sx, float sy) {
@@ -1129,7 +1130,8 @@ void drawCinema(const Mat4 &proj, const Mat4 &view, const XrVector3f &eyePos) {
     }
     model.m[13] = s.dy + baseLift + gSeatUp.load() + slopeDy;
     model.m[14] = s.dz - gSeatFwd.load();                     // 前/后：正数 = 人往椅子前部坐
-    const Mat4 mvp = multiply(multiply(proj, view), model);
+    /* 影厅几何自己带世界摆放：换排、按圆圈重锚都只体现在这里，视图保持原始头姿态 */
+    const Mat4 mvp = multiply(multiply(proj, view), multiply(worldXf(), model));
 
     glUseProgram(gCinemaProgram);
     glUniformMatrix4fv(gCinemaMvpLoc, 1, GL_FALSE, mvp.m);
@@ -1401,6 +1403,32 @@ void updateViewerAnchor(const XrPosef &head) {
              (double) hx, (double) head.position.y, (double) hz);
     }
     /*
+     * 运行时重新居中会把追踪原点搬到你脚下 —— 头位在一帧内瞬移一大截，物理上不可能。
+     * 原点变了，世界摆放的平移量就作废了，必须按新的头位重算，否则影厅和人对不上。
+     * 15 厘米/帧 ≈ 10 米/秒，走路达不到。
+     */
+    {
+        static float lastX = 0.f, lastZ = 0.f;
+        static bool lastValid = false;
+        if (lastValid) {
+            const float jx = hx - lastX, jz = hz - lastZ;
+            if (jx * jx + jz * jz > 0.0225f) {
+                gWorldSnapX.store(hx);
+                gWorldSnapZ.store(hz);
+                gWalkX.store(0.f);
+                gWalkZ.store(0.f);
+                gViewerX.store(0.f);
+                gViewerZ.store(0.f);
+                gViewerOriginX.store(hx);
+                gViewerOriginZ.store(hz);
+                LOGI("原点瞬移：影厅重新摆到脚下（X %.2f Z %.2f 米）", (double) hx, (double) hz);
+            }
+        }
+        lastX = hx;
+        lastZ = hz;
+        lastValid = true;
+    }
+    /*
      * 【2026-10-22 10:57 父亲：按圆圈键必须还能回到原来位置】
      *
      * 圆圈键是系统的"重新居中"：按下后头显把自己的追踪原点重置到当前站位，
@@ -1417,64 +1445,48 @@ void updateViewerAnchor(const XrPosef &head) {
          * 只按 x/z 判定会漏掉"原地坐着/站着不挪窝就按圆圈"这种情况 —— 那时只有 Y 跳，
          * 而 Y 恰好就是要采样的眼高。所以竖直方向的跳变也当作重新居中。
          */
-        const bool jumpedEvent = gRecenterEvent.exchange(0) == 1;
         /*
-         * 事件本身不算数：必须姿态真的跟着跳了才算重新居中。
-         * 只有事件、姿态没动的那种，是运行时在重复通告，照它处理就会把累计走动清零。
+         * 圆圈键无条件生效（父亲 2026-10-29）：原地不动、只转身、只坐着按，都要重锚。
+         * 运行时会在一次重居中里连发好几条事件，400 毫秒内只认第一条，避免重复摆位。
          */
-        const bool eventWithJump = jumpedEvent &&
-                                   (dx * dx + dz * dz > 0.02f ||
-                                    fabsf(headY - gLastHeadY.load()) > 0.12f);
-        const bool jumped = eventWithJump ||
-                            dx * dx + dz * dz > 1.5f * 1.5f ||
-                            fabsf(headY - gLastHeadY.load()) > 0.3f;
+        const auto recenterNowMs = (long long) std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+        static long long lastRecenterMs = 0;
+        const bool jumpedEvent = gRecenterEvent.exchange(0) == 1 &&
+                                 recenterNowMs - lastRecenterMs > 400;
+        if (jumpedEvent) lastRecenterMs = recenterNowMs;
+        /* 没收到事件但位置猛跳（>1.5 米）也当重锚，兜住不上报事件的机型 */
+        const bool jumped = jumpedEvent || dx * dx + dz * dz > 1.5f * 1.5f;
         if (jumped) {
             /*
-             * 累计走动必须用"真实位移"（此刻头位 - 旧锚点），不能用 gViewerX/Z ——
-             * 那是低通平滑后的值（系数 0.25，滞后好几帧），拿它记账每次按圆圈都少记一截。
-             * 而且必须先记账、后覆盖锚点：顺序反了位移恒为 0（实测累计走动一直是 0.00 米）。
-             */
-            {
-                const float ox = gViewerOriginX.load();
-                const float oz = gViewerOriginZ.load();
-                gWalkX.store(gWalkX.load() + (hx - ox));
-                gWalkZ.store(gWalkZ.load() + (hz - oz));
-            }
-            /*
-             * 重锚（父亲 2026-10-29）：走开以后按圆圈，世界要跟着你走回来 ——
-             * 把当前累计走动并进世界锚点，后续所有世界对象统一平移回来，
-             * 人就又坐在座椅上；走动记账同时清零，地形补偿按新位置重新算。
-             */
-            {
-                /* 头显的 z 与影厅 z 反向（地形补偿同一口径），x 同向 */
-                const float tx = gWalkX.load() + gViewerX.load();
-                const float tz = -(gWalkZ.load() + gViewerZ.load());
-                gWorldSnapX.store(gWorldSnapX.load() + tx);
-                gWorldSnapZ.store(gWorldSnapZ.load() + tz);
-                gWalkX.store(0.f);
-                gWalkZ.store(0.f);
-                gViewerX.store(0.f);
-                gViewerZ.store(0.f);
-                LOGI("重锚：世界平移 X %.2f Z %.2f 米（锚点累计 X %.2f Z %.2f）",
-                     (double) tx, (double) tz,
-                     (double) gWorldSnapX.load(), (double) gWorldSnapZ.load());
-            }
-            gViewerOriginX.store(hx);
-            gViewerOriginZ.store(hz);
-            /*
-             * 转身后按圆圈：把"你现在朝的方向"扳成正前方。
-             * 头位朝向四元数解出水平前向量，再取它相对 -Z 的偏角存进世界偏航。
+             * 世界摆放（父亲 2026-10-29 定稿）：
+             *
+             *   按圆圈 = 无条件重锚。θ 取当前朝向，让影厅正前方（−Z）对着你的脸；
+             *   t 取你脚下的水平位置。于是当前选中那一排的锚点（走道面）正好落到
+             *   世界原点上 —— 也就是你脚下；其余两排按各自的相对坐标留在原处。
+             *
+             * 走路不改变 t，所以走开以后厅留在原处；再按一次圆圈就把锚点搬回来。
+             * 走动记账只服务地形补偿（脚下地面跟着台阶），重锚时清零。
              */
             {
                 const float qx = head.orientation.x, qy = head.orientation.y;
                 const float qz = head.orientation.z, qw = head.orientation.w;
+                /* 头位朝向的水平前向量（世界坐标，未旋转） */
                 const float fx = -2.f * (qx * qz + qw * qy);
                 const float fz = -(1.f - 2.f * (qx * qx + qy * qy));
-                gWorldYawRad.store(atan2f(fx, -fz));
-                LOGI("圆圈键：世界偏航已对齐正前方 %.1f 度", (double) (gWorldYawRad.load() * 57.2958f));
+                /* rotY(θ) 把 (0,0,−1) 转到 (fx,fz) ⇒ θ = atan2(−fx, −fz) */
+                gWorldYawRad.store(atan2f(-fx, -fz));
+                gWorldSnapX.store(hx);
+                gWorldSnapZ.store(hz);
+                gWalkX.store(0.f);
+                gWalkZ.store(0.f);
+                gViewerX.store(0.f);
+                gViewerZ.store(0.f);
+                gViewerOriginX.store(hx);
+                gViewerOriginZ.store(hz);
+                LOGI("重锚：影厅摆到你脚下（偏航 %.1f 度，位置 X %.2f Z %.2f 米）",
+                     (double) (gWorldYawRad.load() * 57.2958f), (double) hx, (double) hz);
             }
-            gViewerX.store(0.f);
-            gViewerZ.store(0.f);
             /*
              * 眼高采样：跳变前那一帧的头部高度相对起点的高度差，就是按下圆圈那一刻
              * 眼睛的高度（相对开应用时的位置）。这一枪之后就定死了：
@@ -3093,6 +3105,9 @@ ScreenPlacement frontScreen(const VrContext &c) {
         /* 横向取影厅前墙/银幕的位置（他比厅中线偏 0.12 米，画面跟着墙走） */
         p.cx = -(kHallScreenModelX - kAssetOriginModelX) + kCinemaShiftX;
     }
+    /* 银幕属于影厅，跟着世界摆放走（命中测试也走这里，视觉与判定不会分家） */
+    appToWorld(&p.cx, &p.cz);
+    p.yawDeg += gWorldYawRad.load() * 57.29578f;
     return p;
 }
 
@@ -3250,7 +3265,7 @@ constexpr float kPanelPxH = 1080.f;
  * 控制条几何（2026-10-05 父亲定）：**贴近观影者**，在他正前方偏下，像一块
  * 悬在身前的手柄面板，而不是贴在远处的视频屏下面。上仰一点正对他的眼睛。
  *
- * 位置/尺寸都在这里调：距离 [kOsdDistance]、高度 [kOsdCenterY]、宽度 [kOsdWidth]、
+ * 位置/尺寸都在这里调：距离 [kOsdDistance]、上沿高度 [osdTopY]、宽度 [kOsdWidth]、
  * 仰角 [kOsdTiltDeg]。后续「指着它扣扳机拖走」也基于这几个量。
  */
 /*
@@ -3275,7 +3290,6 @@ constexpr float kOsdPxH = 474.f;
 constexpr float kOsdWidth = 1.295f;  // 米 = 2331px / 1800px每米（父亲 2026-10-06 晚定稿）
 constexpr float kOsdHeight = kOsdWidth * kOsdPxH / kOsdPxW;
 constexpr float kOsdDistance = 0.85f;                     // 正前方距离（米，父亲：再近些）
-constexpr float kOsdCenterY = -0.62f;                     // 旧口径，保留给不用世界 Y 的分支
 /*
  * 控制条上沿的世界 Y（米，地面为 0）。父亲 2026-10-29 定：坐姿 0.80 米，且要能运行时调
  * （vr-tuning.txt 的 osd_top_sit）。站姿不设第二个参数 —— 站起来多高由头显 Y 直接给：
@@ -4152,9 +4166,11 @@ bool renderCinemaEye(VrContext &c, int i, const XrView &view) {
      * 早先写成 R(yaw) · V 是绕"眼睛自己的上方向"转 —— 一低头歪头，Y 轴就不再竖直，
      * 三个轴一起被带歪（父亲 2026-10-29 实测"XYZ 都在转"）。
      */
-    const Mat4 view4 = multiply(
-            multiply(viewMatrixFromPose(view.pose), rotY(-gWorldYawRad.load())),
-            translateM(-gWorldSnapX.load(), 0.f, -gWorldSnapZ.load()));
+    /*
+     * 视图就是原始头姿态，不带任何世界摆放：影厅的摆放加在它自己的模型矩阵上，
+     * 光柱/控制条这些"贴身"的东西才能留在原处（父亲 2026-10-29 报光柱跑偏）。
+     */
+    const Mat4 view4 = viewMatrixFromPose(view.pose);
     /*
      * 这里**必须无条件画**（2026-10-10 19:31 抓到的真凶）：
      * 上一版把"独立层模式下不画"的判断条件误插进了这个函数 —— 结果影厅图层
@@ -4386,9 +4402,11 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
      * 早先写成 R(yaw) · V 是绕"眼睛自己的上方向"转 —— 一低头歪头，Y 轴就不再竖直，
      * 三个轴一起被带歪（父亲 2026-10-29 实测"XYZ 都在转"）。
      */
-    const Mat4 view4 = multiply(
-            multiply(viewMatrixFromPose(view.pose), rotY(-gWorldYawRad.load())),
-            translateM(-gWorldSnapX.load(), 0.f, -gWorldSnapZ.load()));
+    /*
+     * 视图就是原始头姿态，不带任何世界摆放：影厅的摆放加在它自己的模型矩阵上，
+     * 光柱/控制条这些"贴身"的东西才能留在原处（父亲 2026-10-29 报光柱跑偏）。
+     */
+    const Mat4 view4 = viewMatrixFromPose(view.pose);
     /*
      * 影厅先画（父亲 2026-10-10）：开深度、画完立刻关掉 —— 后面的银幕/海报墙/控制条/弹幕
      * 还是原来的图层顺序，一层层叠上去，不受影厅遮挡影响。
@@ -4619,11 +4637,10 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
             /*
              * 控制条的高度必须与命中侧同源（2026-10-28 父亲实测）。
              *
-             * 命中侧（nativeGetOsdPlace）一直按 kOsdCenterY + 眼高 算，渲染这两处却只用
-             * kOsdCenterY —— 站着按圆圈把眼高抬起来之后，可点的范围升上去了、画出来的控制条
-             * 还留在原处，于是"光点穿过控制条不亮，往上挪一点才亮"。
+             * 命中侧与渲染侧必须同一套高度（osdTopY），否则会出现"光点穿过控制条不亮、
+             * 往上挪一点才亮"的错位。
              */
-            osdPose.position = {0.f, kOsdCenterY + panelLift(), -kOsdDistance};
+            osdPose.position = {0.f, osdTopY() - kOsdHeight * 0.5f, -kOsdDistance};
             osdPose.orientation = {sinf(th * 0.5f), 0.f, 0.f, cosf(th * 0.5f)};
             const Mat4 osdModel = poseScaleModel(osdPose, kOsdWidth, kOsdHeight, 1.f);
             const Mat4 osdMvp = multiply(multiply(proj, view4), osdModel);
@@ -5950,8 +5967,8 @@ void frameLoop(VrContext &c) {
         if (rendered && c.osdLayer.submitted) {
             /* 位置恒固定（父亲 2026-10-12：控制条不许跟着走动变位置） */
             const float ocx = viewerOffsetX();
-            /* 同上：与 nativeGetOsdPlace 同一套高度，别再各算一份 */
-            const float ocy = kOsdCenterY + panelLift();
+            /* 与 osdBasis / nativeGetOsdPlace 同一套高度，上沿落在 osdTopY（站姿自动抬高） */
+            const float ocy = osdTopY() - kOsdHeight * 0.5f;
             const float ocz = -kOsdDistance + viewerOffsetZ();
             osdQuad.pose.position = {ocx, ocy, ocz};
             quadOrientation(0.f, kOsdTiltDeg, ocx, ocy, ocz, &osdQuad.pose.orientation);
@@ -5986,22 +6003,6 @@ void frameLoop(VrContext &c) {
         if (rendered && gHideProjection.load() == 0) {
             layerPtrs[layerCount++] =
                     reinterpret_cast<const XrCompositionLayerBaseHeader *>(&layer);
-        }
-        /*
-         * 世界偏航作用到所有 quad 图层（与影厅的视图矩阵同一份 yaw、同一个绕 Y 方向）。
-         */
-        {
-            const float wyaw = gWorldYawRad.load();
-            const float wsx = gWorldSnapX.load();
-            const float wsz = gWorldSnapZ.load();
-            if (fabsf(wyaw) > 1e-4f || fabsf(wsx) > 1e-4f || fabsf(wsz) > 1e-4f) {
-                applyWorldYaw(videoQuad.pose, wyaw, wsx, wsz);
-                applyWorldYaw(danmakuQuad.pose, wyaw, wsx, wsz);
-                applyWorldYaw(panelQuad.pose, wyaw, wsx, wsz);
-                applyWorldYaw(blankQuad.pose, wyaw, wsx, wsz);
-                applyWorldYaw(osdQuad.pose, wyaw, wsx, wsz);
-                applyWorldYaw(menuQuad.pose, wyaw, wsx, wsz);
-            }
         }
         gLastLayerCount.store((int) layerCount);
         fei.layerCount = layerCount;
