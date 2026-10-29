@@ -266,76 +266,25 @@ Mat4 rotY(float a) {
     return m;
 }
 
-extern std::atomic<float> gWorldYawRad;
-extern std::atomic<float> gHeadYawDeg;
-extern std::atomic<float> gHeadRawX;
-extern std::atomic<float> gHeadRawZ;
-extern std::atomic<float> gHeadStageY;
-extern std::atomic<float> gHeadSpeed;
-extern std::atomic<float> gWorldSnapX;
-void pinPanelYaw();   // 定义在面板摆位那一节；按圆圈时定海报墙的朝向
-extern std::atomic<float> gWorldSnapZ;
-
 /**
- * 世界摆放：把影厅坐标系（app 坐标）摆到现实世界里。
+ * 把 pose 绕世界 Y 轴转 yaw：位置和朝向一起转。
  *
- * W(p) = R(θ)·p + t，θ = 让影厅正前方向（−Z）对准观影者朝向的偏角，
- * t = 观影者脚下的水平位置。按圆圈键时不带条件地重算一次，所以
- * 「选中排 → 不管走到哪 → 按圆圈」永远把该排锚点送回脚下（X 0、Y 0、Z 0）。
- *
- * 只作用于影厅本身（含银幕画面与弹幕层）。控制条、菜单、海报墙、手柄光柱都是
- * 「贴着人」的东西，不进这个变换 —— 否则一按圆圈光柱就从手边飞到世界原点。
+ * quad 图层（银幕画面、控制条、菜单、海报墙、弹幕层）由系统合成器按自己的 pose 摆放，
+ * 不经过我们的视图矩阵，所以圆圈键的世界偏航必须同时作用到它们身上，
+ * 否则就是"影厅转了、银幕没转"（父亲 2026-10-29 实测）。
  */
-Mat4 worldXf() {
-    /*
-     * 与 appToWorld() 同一套朝向：x' = c·x + s·z，z' = −s·x + c·z。
-     *
-     * 这里原来用 rotY() 拼矩阵。rotY 是按列主序写的 x' = c·x − s·z、z' = s·x + c·z，
-     * 恰好是反方向 —— 影厅与银幕/控制条/海报墙朝相反方向转。
-     * 后果（父亲 2026-10-29 实测）：起点偏 1 度看不出来；右转 90 度按圆圈后，
-     * 银幕转到正前方、影厅却转到身后（面前是椅背）；再转回来又只差几度。
-     */
-    const float c = cosf(gWorldYawRad.load()), s = sinf(gWorldYawRad.load());
-    Mat4 m = identity();
-    m.m[0] = c;  m.m[2] = -s;
-    m.m[8] = s;  m.m[10] = c;
-    m.m[12] = gWorldSnapX.load();
-    m.m[13] = 0.f;
-    m.m[14] = gWorldSnapZ.load();
-    return m;
-}
-
-/** app 坐标点 → 世界坐标（与 worldXf 同一套公式，供命中测试与 quad 摆位用） */
-void appToWorld(float *x, float *z) {
-    const float c = cosf(gWorldYawRad.load()), s = sinf(gWorldYawRad.load());
-    const float px = *x, pz = *z;
-    *x = c * px + s * pz + gWorldSnapX.load();
-    *z = -s * px + c * pz + gWorldSnapZ.load();
-}
-
-/** 应用坐标系方向 → 世界方向（只绕 Y，与 appToWorld 同一套旋转） */
-void appDirToWorld(float *dx, float *dz) {
-    const float c = cosf(gWorldYawRad.load()), s = sinf(gWorldYawRad.load());
-    const float ox = *dx, oz = *dz;
-    *dx = c * ox + s * oz;
-    *dz = -s * ox + c * oz;
-}
-
-/** 世界坐标 → 应用坐标（appToWorld 的逆） */
-void worldToApp(float *x, float *z) {
-    const float c = cosf(gWorldYawRad.load()), s = sinf(gWorldYawRad.load());
-    const float px = *x - gWorldSnapX.load();
-    const float pz = *z - gWorldSnapZ.load();
-    *x = c * px - s * pz;
-    *z = s * px + c * pz;
-}
-
-/** 方向向量专用：世界 → 本地（不带平移） */
-void worldToAppDir(float *dx, float *dz) {
-    const float c = cosf(gWorldYawRad.load()), s = sinf(gWorldYawRad.load());
-    const float ox = *dx, oz = *dz;
-    *dx = c * ox - s * oz;
-    *dz = s * ox + c * oz;
+void applyWorldYaw(XrPosef &p, float yaw, float snapX, float snapZ) {
+    const float c = cosf(yaw), s = sinf(yaw);
+    const float x = p.position.x, z = p.position.z;
+    /* 先把世界绕 Y 轴转，再整体平移 —— 平移量就是"按圆圈那一刻你离座位锚点有多远" */
+    p.position.x = c * x + s * z + snapX;
+    p.position.z = -s * x + c * z + snapZ;
+    const XrQuaternionf qy{0.f, sinf(yaw * 0.5f), 0.f, cosf(yaw * 0.5f)};
+    const XrQuaternionf q = p.orientation;
+    p.orientation.x = qy.w * q.x + qy.x * q.w + qy.y * q.z - qy.z * q.y;
+    p.orientation.y = qy.w * q.y - qy.x * q.z + qy.y * q.w + qy.z * q.x;
+    p.orientation.z = qy.w * q.z + qy.x * q.y - qy.y * q.x + qy.z * q.w;
+    p.orientation.w = qy.w * q.w - qy.x * q.x - qy.y * q.y - qy.z * q.z;
 }
 
 Mat4 viewMatrixFromPose(const XrPosef &pose) {
@@ -360,6 +309,14 @@ Mat4 viewMatrixFromPose(const XrPosef &pose) {
     v.m[13] = -(v.m[1] * tx + v.m[5] * ty + v.m[9] * tz);
     v.m[14] = -(v.m[2] * tx + v.m[6] * ty + v.m[10] * tz);
     return v;
+}
+
+Mat4 translateM(float tx, float ty, float tz) {
+    Mat4 m = identity();
+    m.m[12] = tx;
+    m.m[13] = ty;
+    m.m[14] = tz;
+    return m;
 }
 
 Mat4 translateScale(float tx, float ty, float tz, float sx, float sy) {
@@ -757,20 +714,6 @@ std::atomic<float> gWorldYawRad{0.f};
  * 世界锚点：按圆圈时把它累加成"你走开后要补回来的距离"，之后整间影厅（含银幕、面板、弹幕）
  * 一起平移这么多，你就又坐回座椅锚点，而不是坐在扶手上（父亲 2026-10-29）。
  */
-/** 头显此刻的水平朝向（度，与"厅角/幕角"同一约定）：体检日志用它对照 */
-std::atomic<float> gHeadYawDeg{0.f};
-/** 头显此刻在参考空间里的原始水平坐标（不扣除锚点）：判"人在面板哪一侧"只能用这个 */
-std::atomic<float> gHeadRawX{0.f};
-std::atomic<float> gHeadRawZ{0.f};
-/* 头显离地高度（舞台空间）：控制条上沿跟随站坐用，每帧刷新 */
-std::atomic<float> gHeadStageY{0.f};
-/**
- * 头显当前移动速度（米/秒，平滑过）。用来分辨"参考空间变更"是哪种：
- * 站着不动时来的是他按圆圈（重置地面）；一边走一边来的是运行时自己重新定位。
- * 2026-10-29 实测：走动期间日志里出现 18 条重居中事件，每次都把锚点搬到他脚下，
- * 走动累计永远归零，影厅也就跟着一遍遍重摆。
- */
-std::atomic<float> gHeadSpeed{0.f};
 std::atomic<float> gWorldSnapX{0.f};
 std::atomic<float> gWorldSnapZ{0.f};
 
@@ -850,14 +793,7 @@ static float hallBaseLift() {
 /** 地形补偿用的前后位移：头显的相对 z 与影厅 z 轴方向相反，取反后再查地形曲线 */
 extern std::atomic<float> gViewerZ;
 extern std::atomic<float> gWalkZ;
-/*
- * 地形补偿查询用的影厅 z：就是他相对锚点的前后位移，方向与影厅坐标一致（银幕在 −Z）。
- *
- * 原来这里取反了，后果是往银幕方向走查到了后排的高台阶 —— 影厅反而往下沉，
- * 走回来才往上抬，正好反了（2026-10-29 实测日志：走向舞台时台阶 −0.20 → −0.60，
- * 返回时 +0.20 → +0.79）。阶梯表里 z 越小（越靠银幕）地面越低，补偿量应当为正值抬起来。
- */
-static float viewerZForFloor() { return gWalkZ.load() + gViewerZ.load(); }
+static float viewerZForFloor() { return -(gWalkZ.load() + gViewerZ.load()); }
 
 /* 观影位的前后位移在本文件后半段才定义（drawCinema 比它早），这里先声明一下 */
 extern std::atomic<float> gViewerZ;
@@ -1190,27 +1126,10 @@ void drawCinema(const Mat4 &proj, const Mat4 &view, const XrVector3f &eyePos) {
             LOGI("地形体检：走动 z=%.2f（正=后排）补偿 %.2f 米",
                  (double) viewerZForFloor(), (double) slopeDy);
         }
-        /*
-         * 影厅墙面与虚拟银幕的方位对账（父亲 2026-10-29 报"影厅转了 180 度"）：
-         * 两者都必须落在同一个方向上。影厅前墙在模型坐标 z=−22.46，
-         * 经同一套世界摆放后求它的世界坐标与相对观影者的方位角。
-         */
-        if ((tick % 120) == 60) {
-            const float yawW = gWorldYawRad.load();
-            const float cw = cosf(yawW), sw = sinf(yawW);
-            const float mx = kCinemaShiftX;
-            const float mz = s.dz - gSeatFwd.load() + kHallScreenModelZ;
-            const float wx = cw * mx + sw * mz + gWorldSnapX.load();
-            const float wz = -sw * mx + cw * mz + gWorldSnapZ.load();
-            LOGI("厅墙对账：前墙世界坐标 (%.2f, %.2f) 方位 %.1f 度 ／ 世界偏航 %.1f 度",
-                 (double) wx, (double) wz,
-                 (double) (atan2f(-wx, -wz) * 57.29578f), (double) (yawW * 57.29578f));
-        }
     }
     model.m[13] = s.dy + baseLift + gSeatUp.load() + slopeDy;
     model.m[14] = s.dz - gSeatFwd.load();                     // 前/后：正数 = 人往椅子前部坐
-    /* 影厅几何自己带世界摆放：换排、按圆圈重锚都只体现在这里，视图保持原始头姿态 */
-    const Mat4 mvp = multiply(multiply(proj, view), multiply(worldXf(), model));
+    const Mat4 mvp = multiply(multiply(proj, view), model);
 
     glUseProgram(gCinemaProgram);
     glUniformMatrix4fv(gCinemaMvpLoc, 1, GL_FALSE, mvp.m);
@@ -1434,7 +1353,6 @@ std::atomic<float> gViewerOriginZ{0.f};
  */
 std::atomic<float> gViewerOriginY{0.f};
 std::atomic<float> gEyeY{0.f};
-extern std::atomic<float> gOsdEyeBase;   // 定义在控制条参数那一节；重居中要作废重取
 /*
  * 面板（控制条 / 海报墙 / 菜单）吃多少眼高（父亲 2026-10-28 23:51 定）：
  * 站着的高差只加**一半**，再叠回坐姿基准。全量加上去实际戴着偏高——父亲原话
@@ -1471,51 +1389,7 @@ std::chrono::steady_clock::time_point gLastHeadLog{};
 void updateViewerAnchor(const XrPosef &head) {
     const float hx = head.position.x;
     const float hz = head.position.z;
-    /* 头部前向（水平面内），起手定世界朝向与每帧记头显偏航都用它 */
-    const float hfxNow = -2.f * (head.orientation.x * head.orientation.z +
-                                 head.orientation.w * head.orientation.y);
-    const float hfzNow = -(1.f - 2.f * (head.orientation.x * head.orientation.x +
-                                        head.orientation.y * head.orientation.y));
-    {
-        const float qx = head.orientation.x, qy = head.orientation.y;
-        const float qz = head.orientation.z, qw = head.orientation.w;
-        const float hfx = -2.f * (qx * qz + qw * qy);
-        const float hfz = -(1.f - 2.f * (qx * qx + qy * qy));
-        gHeadYawDeg.store(atan2f(-hfx, -hfz) * 57.29578f);
-    }
-    {
-        static float prevX = 0.f, prevZ = 0.f;
-        static long long prevMs = 0;
-        static bool prevValid = false;
-        const auto nowMs = (long long) std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now().time_since_epoch()).count();
-        if (prevValid && nowMs > prevMs) {
-            const float ddx = hx - prevX, ddz = hz - prevZ;
-            const float dt = (nowMs - prevMs) / 1000.f;
-            if (dt > 0.0001f && dt < 0.5f) {
-                const float v = sqrtf(ddx * ddx + ddz * ddz) / dt;
-                gHeadSpeed.store(gHeadSpeed.load() * 0.7f + v * 0.3f);
-            }
-        }
-        prevX = hx; prevZ = hz; prevMs = nowMs; prevValid = true;
-    }
-    gHeadRawX.store(hx);
-    gHeadRawZ.store(hz);
-    /* 头显在舞台空间里的实际离地高度：控制条上沿要靠它随站坐变化，不能只等按圆圈 */
-    gHeadStageY.store(head.position.y);
     if (!gViewerOriginSet.load()) {
-        /*
-         * 世界朝向必须按"戴上头显那一刻面朝的方向"定（父亲 2026-10-29）：
-         * 原来恒为 0，等于永远朝运行时的固定正前方。他在办公室朝一个方向、
-         * 回家朝另一个方向，影院和大屏就会摆在侧面或背后（看到菜单/面板背面）。
-         * 同一处把世界平移也落到他脚下，整厅才算围着他摆。
-         */
-        const float initYaw = atan2f(-hfxNow, -hfzNow);
-        gWorldYawRad.store(initYaw);
-        gWorldSnapX.store(hx);
-        gWorldSnapZ.store(hz);
-        LOGI("世界朝向按头显起手方位定：偏航 %.1f 度，原点落到 (%.2f, %.2f)",
-             (double) (initYaw * 57.29578f), (double) hx, (double) hz);
         gViewerOriginX.store(hx);
         gViewerOriginZ.store(hz);
         gViewerOriginY.store(head.position.y);
@@ -1525,34 +1399,6 @@ void updateViewerAnchor(const XrPosef &head) {
         gViewerOriginSet.store(true);
         LOGI("观影位锚点 → 起点记为 x=%.2f y=%.2f z=%.2f（后续所有走动与身高都相对这个点）",
              (double) hx, (double) head.position.y, (double) hz);
-    }
-    /*
-     * 运行时重新居中会把追踪原点搬到你脚下 —— 头位在一帧内瞬移一大截，物理上不可能。
-     * 原点变了，世界摆放的平移量就作废了，必须按新的头位重算，否则影厅和人对不上。
-     * 15 厘米/帧 ≈ 10 米/秒，走路达不到。
-     */
-    {
-        static float lastX = 0.f, lastZ = 0.f;
-        static bool lastValid = false;
-        if (lastValid) {
-            const float jx = hx - lastX, jz = hz - lastZ;
-            if (jx * jx + jz * jz > 0.0225f) {
-                gWorldSnapX.store(hx);
-                gWorldSnapZ.store(hz);
-                gWalkX.store(0.f);
-                gWalkZ.store(0.f);
-                gViewerX.store(0.f);
-                gViewerZ.store(0.f);
-                gViewerOriginX.store(hx);
-                gViewerOriginZ.store(hz);
-                /* 摆完锚点再定墙的朝向：这时墙心的世界位置才作数 */
-                pinPanelYaw();
-                LOGI("原点瞬移：影厅重新摆到脚下（X %.2f Z %.2f 米）", (double) hx, (double) hz);
-            }
-        }
-        lastX = hx;
-        lastZ = hz;
-        lastValid = true;
     }
     /*
      * 【2026-10-22 10:57 父亲：按圆圈键必须还能回到原来位置】
@@ -1571,69 +1417,64 @@ void updateViewerAnchor(const XrPosef &head) {
          * 只按 x/z 判定会漏掉"原地坐着/站着不挪窝就按圆圈"这种情况 —— 那时只有 Y 跳，
          * 而 Y 恰好就是要采样的眼高。所以竖直方向的跳变也当作重新居中。
          */
+        const bool jumpedEvent = gRecenterEvent.exchange(0) == 1;
         /*
-         * 圆圈键无条件生效（父亲 2026-10-29）：原地不动、只转身、只坐着按，都要重锚。
-         * 运行时会在一次重居中里连发好几条事件，400 毫秒内只认第一条，避免重复摆位。
+         * 事件本身不算数：必须姿态真的跟着跳了才算重新居中。
+         * 只有事件、姿态没动的那种，是运行时在重复通告，照它处理就会把累计走动清零。
          */
-        const auto recenterNowMs = (long long) std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now().time_since_epoch()).count();
-        static long long lastRecenterMs = 0;
-        const bool jumpedEvent = gRecenterEvent.exchange(0) == 1 &&
-                                 recenterNowMs - lastRecenterMs > 400;
-        if (jumpedEvent) lastRecenterMs = recenterNowMs;
-        /* 没收到事件但位置猛跳（>1.5 米）也当重锚，兜住不上报事件的机型 */
-        /*
-         * 只有"头显自己报了重新居中"才算重锚。
-         *
-         * 原来还带一条"离锚点超过 1.5 米就当重新居中"，那是没接通系统事件时的猜测。
-         * 后果是：他在厅里走动超 1.5 米就被当成一次重锚，而重锚会按当时的头朝向
-         * 重新摆一次影厅 —— 走一圈摆好几次，影厅和银幕朝不同方向转，角度每次都不一样
-         * （2026-10-29 实测日志：16:05:02 偏航 27.8 度、16:05:04 偏航 13.7 度、
-         * 16:05:12 偏航 -112.2 度，期间没有任何"系统重新居中"事件）。
-         */
-        const bool jumped = jumpedEvent;
+        const bool eventWithJump = jumpedEvent &&
+                                   (dx * dx + dz * dz > 0.02f ||
+                                    fabsf(headY - gLastHeadY.load()) > 0.12f);
+        const bool jumped = eventWithJump ||
+                            dx * dx + dz * dz > 1.5f * 1.5f ||
+                            fabsf(headY - gLastHeadY.load()) > 0.3f;
         if (jumped) {
             /*
-             * 世界摆放（父亲 2026-10-29 定稿）：
-             *
-             *   按圆圈 = 无条件重锚。θ 取当前朝向，让影厅正前方（−Z）对着你的脸；
-             *   t 取你脚下的水平位置。于是当前选中那一排的锚点（走道面）正好落到
-             *   世界原点上 —— 也就是你脚下；其余两排按各自的相对坐标留在原处。
-             *
-             * 走路不改变 t，所以走开以后厅留在原处；再按一次圆圈就把锚点搬回来。
-             * 走动记账只服务地形补偿（脚下地面跟着台阶），重锚时清零。
+             * 累计走动必须用"真实位移"（此刻头位 - 旧锚点），不能用 gViewerX/Z ——
+             * 那是低通平滑后的值（系数 0.25，滞后好几帧），拿它记账每次按圆圈都少记一截。
+             * 而且必须先记账、后覆盖锚点：顺序反了位移恒为 0（实测累计走动一直是 0.00 米）。
              */
             {
-                const float qx = head.orientation.x, qy = head.orientation.y;
-                const float qz = head.orientation.z, qw = head.orientation.w;
-                /* 头位朝向的水平前向量（世界坐标，未旋转） */
-                const float fx = -2.f * (qx * qz + qw * qy);
-                const float fz = -(1.f - 2.f * (qx * qx + qy * qy));
-                /*
-                 * 每次按圆圈都按"此刻正对的方向"重定朝向（父亲 2026-10-29 定）：
-                 * 位置搬到他脚下、朝向跟着他脸的朝向走，原地转身再按，整套场景就绕 Y 轴转过去。
-                 * 朝向不锁死 —— 锁死会让"转身后按圆圈"仍看到旧朝向的影厅。
-                 */
-                {
-                    /* rotY(θ) 把 (0,0,−1) 转到 (fx,fz) ⇒ θ = atan2(−fx, −fz) */
-                    const float yaw = atan2f(-fx, -fz);
-                    gWorldYawRad.store(yaw);
-                    LOGI("重摆：偏航 %.1f 度 平移到 (%.2f, %.2f)",
-                         (double) (yaw * 57.29578f), (double) hx, (double) hz);
-                }
-                gWorldSnapX.store(hx);
-                gWorldSnapZ.store(hz);
+                const float ox = gViewerOriginX.load();
+                const float oz = gViewerOriginZ.load();
+                gWalkX.store(gWalkX.load() + (hx - ox));
+                gWalkZ.store(gWalkZ.load() + (hz - oz));
+            }
+            /*
+             * 重锚（父亲 2026-10-29）：走开以后按圆圈，世界要跟着你走回来 ——
+             * 把当前累计走动并进世界锚点，后续所有世界对象统一平移回来，
+             * 人就又坐在座椅上；走动记账同时清零，地形补偿按新位置重新算。
+             */
+            {
+                /* 头显的 z 与影厅 z 反向（地形补偿同一口径），x 同向 */
+                const float tx = gWalkX.load() + gViewerX.load();
+                const float tz = -(gWalkZ.load() + gViewerZ.load());
+                gWorldSnapX.store(gWorldSnapX.load() + tx);
+                gWorldSnapZ.store(gWorldSnapZ.load() + tz);
                 gWalkX.store(0.f);
                 gWalkZ.store(0.f);
                 gViewerX.store(0.f);
                 gViewerZ.store(0.f);
-                gViewerOriginX.store(hx);
-                gViewerOriginZ.store(hz);
-                /* 锚点与偏航都已就位：这一刻把海报墙的朝向一次定死 */
-                pinPanelYaw();
-                LOGI("重锚：影厅摆到你脚下（偏航 %.1f 度，位置 X %.2f Z %.2f 米）",
-                     (double) (gWorldYawRad.load() * 57.2958f), (double) hx, (double) hz);
+                LOGI("重锚：世界平移 X %.2f Z %.2f 米（锚点累计 X %.2f Z %.2f）",
+                     (double) tx, (double) tz,
+                     (double) gWorldSnapX.load(), (double) gWorldSnapZ.load());
             }
+            gViewerOriginX.store(hx);
+            gViewerOriginZ.store(hz);
+            /*
+             * 转身后按圆圈：把"你现在朝的方向"扳成正前方。
+             * 头位朝向四元数解出水平前向量，再取它相对 -Z 的偏角存进世界偏航。
+             */
+            {
+                const float qx = head.orientation.x, qy = head.orientation.y;
+                const float qz = head.orientation.z, qw = head.orientation.w;
+                const float fx = -2.f * (qx * qz + qw * qy);
+                const float fz = -(1.f - 2.f * (qx * qx + qy * qy));
+                gWorldYawRad.store(atan2f(fx, -fz));
+                LOGI("圆圈键：世界偏航已对齐正前方 %.1f 度", (double) (gWorldYawRad.load() * 57.2958f));
+            }
+            gViewerX.store(0.f);
+            gViewerZ.store(0.f);
             /*
              * 眼高采样：跳变前那一帧的头部高度相对起点的高度差，就是按下圆圈那一刻
              * 眼睛的高度（相对开应用时的位置）。这一枪之后就定死了：
@@ -1662,7 +1503,6 @@ void updateViewerAnchor(const XrPosef &head) {
                     next = fmaxf(-1.f, fminf(1.f, base));
                 }
                 gEyeY.store(next);
-                gOsdEyeBase.store(-1e9f);   // 重居中后按当前眼高重新取基准
                 LOGI("圆圈键采样眼高：上次 %.2f，本次累计 %.2f → %.2f 米%s",
                      (double) prev, (double) base, (double) next,
                      next == 0.f ? "（坐下校准为零点）" : "");
@@ -1759,25 +1599,10 @@ bool viewerBehindPanel(float yawDeg, float pitchDeg, float cx, float cy, float c
      * 观影位必须取累计走动量（gWalk + gViewer），不能用 viewerOffsetX()（跟随开关的输出，
      * 固定摆位时恒为 0），也不能只用 gViewerX/Z —— 那对量在「重新居中」时会被清零。
      */
-    /*
-     * 人到底在面板前面还是后面，必须用"头显在参考空间里的原始坐标"比，
-     * 不能再用走动累计：走动累计是旧口径（锚点系、还没算世界摆放的旋转平移），
-     * 与世界摆放之后的面板坐标不在一个坐标系里。两者混用的后果是
-     * 正常走两步就被判成"绕到面板背后"，面板翻 180 度 —— 看着就是面板在乱转
-     * （2026-10-29 日志：控制条每秒一次被判成背面）。
-     */
-    /*
-     * 面板坐标已经过世界摆放（旋转+平移），所以头显坐标也必须过一次同样的变换再比，
-     * 否则两方不在同一坐标系里 —— 按圆圈重摆之后菜单会被判成"人在背面"，
-     * 于是菜单画成镜像背面（父亲 2026-10-29 实测截图：菜单文字左右反的、发暗）。
-     */
-    float hxw = gHeadRawX.load();
-    float hzw = gHeadRawZ.load();
-    appToWorld(&hxw, &hzw);
-    const float vx = hxw - cx;
+    const float vx = gWalkX.load() + gViewerX.load() - cx;
     /* 眼睛的竖直位置也要算进去（父亲 2026-10-28）：站着看面板和坐着看，上下关系不同 */
     const float vy = gEyeY.load() - cy;
-    const float vz = hzw - cz;
+    const float vz = gWalkZ.load() + gViewerZ.load() - cz;
     return (nx * vx + ny * vy + nz * vz) < -kBackFaceBias;
 }
 
@@ -3159,19 +2984,7 @@ void syncInput(VrContext &c) {
         if (c.squeezeValue[i] > 0.5f) c.squeezeDown[i] = true;
         readBool(c.aAction, c.aDown[i], "A");
         readBool(c.bAction, c.bDown[i], "B");
-        const bool menuWas = c.menuDown[i];
         readBool(c.menuAction, c.menuDown[i], "菜单");
-        /*
-         * 手柄菜单键（父亲口中的"圆圈键"）按下 = 重摆一次。
-         *
-         * 这是唯一能分清"他按的"与"运行时自己重新定位"的信号：运行时那条通知在走动中
-         * 也会来（2026-10-29 实测几分钟 18 条），踩着地板按圆圈和运行时重定位从通知里
-         * 看不出区别。菜单键是应用自己读到的手柄输入，来源明确。
-         */
-        if (c.menuDown[i] && !menuWas) {
-            gRecenterEvent.store(1);
-            LOGI("圆圈键按下（手柄 %d）：重摆影厅/银幕/弹幕层/控制条/菜单/海报墙", i);
-        }
 
         if (api.GetActionStateFloat != nullptr && c.triggerValueAction != XR_NULL_HANDLE) {
             XrActionStateGetInfo gi{XR_TYPE_ACTION_STATE_GET_INFO};
@@ -3248,53 +3061,6 @@ ScreenPlacement panelPlacement(const VrContext &c) {
     p.yawDeg = c.panelYawDeg.load();
     p.pitchDeg = c.panelPitchDeg.load();
     p.width = c.panelWidth.load();
-    /*
-     * 海报墙与世界摆放：按圆圈重摆时，它必须和影厅/银幕一起落到同一次摆放里，
-     * 否则重摆后海报墙留在旧位置（父亲 2026-10-29：走到另一处按圆圈，各部件摆不回原位）。
-     */
-    appToWorld(&p.cx, &p.cz);
-    return p;
-}
-
-/**
- * 海报墙在**应用坐标系**里的摆位（= 存的值，不套世界摆放）。
- *
- * 交互（光柱命中、抓取、拖动、调远近）全部在这一套坐标系里算：手柄位姿本身就是
- * 这个坐标系的原生读数，控制条与菜单的命中判定（osdBasis / menuBasis）也在这套里，
- * 只有渲染那一侧才经 appToWorld 落到世界。
- *
- * 之前交互侧误用了渲染那份（已套世界旋转与平移）摆位：不按圆圈时 θ=0、看着一切正常；
- * 一旦按圆圈重摆，两边差一个旋转角，于是光点吸不准、握把键一按墙就瞬移
- * （父亲 2026-10-29 实测：转 90 度后按圆圈，抓不住、一按就跳，光点偏得更狠）。
- */
-/**
- * 按圆圈那一刻把海报墙的朝向定死：取「墙心 → 眼睛」的连线，一次算完写回存档。
- * 定完之后转头、走动都不再改（父亲 2026-10-29：松开圆圈后墙不许跟着我转）。
- */
-void pinPanelYaw() {
-    float cx = g.panelPosX.load() + viewerOffsetX();
-    float cz = g.panelPosZ.load() + viewerOffsetZ();
-    const float cy = g.panelPosY.load() + panelLift();
-    appToWorld(&cx, &cz);
-    const float dx = gHeadRawX.load() - cx;
-    const float dz = gHeadRawZ.load() - cz;
-    const float dy = gHeadStageY.load() - cy;
-    const float len = sqrtf(dx * dx + dy * dy + dz * dz);
-    if (len < 0.05f) return;
-    g.panelYawDeg = atan2f(dx, dz) * 57.29578f;
-    g.panelPitchDeg = asinf(fmaxf(-1.f, fminf(1.f, -dy / len))) * 57.29578f;
-    LOGI("海报墙朝向定死：偏航 %.1f 度 仰角 %.1f 度（离墙 %.2f 米）",
-         (double) g.panelYawDeg.load(), (double) g.panelPitchDeg.load(), (double) len);
-}
-
-ScreenPlacement panelPlacementApp(const VrContext &c) {
-    ScreenPlacement p = kSideScreen;
-    p.cx = c.panelPosX.load();
-    p.cy = c.panelPosY.load() + panelLift();
-    p.cz = c.panelPosZ.load();
-    p.yawDeg = c.panelYawDeg.load();
-    p.pitchDeg = c.panelPitchDeg.load();
-    p.width = c.panelWidth.load();
     return p;
 }
 
@@ -3302,14 +3068,7 @@ ScreenPlacement panelPlacementApp(const VrContext &c) {
 ScreenPlacement frontScreen(const VrContext &c) {
     ScreenPlacement p = kFrontScreen;
     // 防穿越推量（2026-10-10）：走近银幕到墙根时场景整体后推，见 updateViewerAnchor
-    /*
-     * 银幕只按固定距离摆，不叠加防穿越推量。
-     *
-     * 父亲 2026-10-29 定：走动时只有影厅的 Y 跟着他的位置走（台阶补偿），
-     * 大屏幕、弹幕层、控制条、海报墙一律不动；重摆只发生在按圆圈键那一刻。
-     * 原来这里叠了"走近就把场景整体后推"，于是人往前挪银幕就后退，与影厅错开。
-     */
-    p.cz = -gScreenDistance.load();
+    p.cz = -gScreenDistance.load() - gScenePush.load();
     p.width = gScreenWidth.load();      // 尺寸可运行时调
     /*
      * 网页在大银幕上、并且读到了那块视频画面 → 银幕形状按**视频**比例（父亲 2026-10-15：
@@ -3330,19 +3089,10 @@ ScreenPlacement frontScreen(const VrContext &c) {
         /* 下沿锚定在 kHallScreenBottomY（换排/座椅调节都跟着走），上沿按片子比例往上长 */
         const float h = p.width / fmaxf(0.2f, p.aspect);
         p.cy = hallScreenBottomY() + h * 0.5f;
-        /*
-         * 银幕与弹幕层必须钉在影厅"舞台前墙"那块模型坐标上（父亲 2026-10-30 定）：
-         * 影厅模型整体带着 ±s.dz / 盖帽高度一起走，银幕原来只减了座椅前后量，
-         * 少了这一项就与墙脱开，换排或重摆时墙动幕不动。加上 s.dz 后两者同进同退。
-         */
         p.cz -= gSeatFwd.load();
-        p.cz += kCinemaSeats[gSeat.load()].dz;
         /* 横向取影厅前墙/银幕的位置（他比厅中线偏 0.12 米，画面跟着墙走） */
         p.cx = -(kHallScreenModelX - kAssetOriginModelX) + kCinemaShiftX;
     }
-    /* 银幕属于影厅，跟着世界摆放走（命中测试也走这里，视觉与判定不会分家） */
-    appToWorld(&p.cx, &p.cz);
-    p.yawDeg += gWorldYawRad.load() * 57.29578f;
     return p;
 }
 
@@ -3369,9 +3119,10 @@ Mat4 placementModel(const ScreenPlacement &p) {
  * 输出：平面距离 t（只要穿过平面就给，用于把光束收在屏上）、面内坐标 u/v
  * （米，右正 / 上正，用来换算面板像素）、世界命中点（画光点用）。
  */
-bool rayHitsPlacementAt(float px, float py, float pz, float dx, float dy, float dz,
-                        const ScreenPlacement &p, float *outT, float *outU,
-                        float *outV, float *outWx, float *outWy, float *outWz) {
+bool rayHitsPlacement(const XrPosef &aim, const ScreenPlacement &p, float *outT, float *outU,
+                      float *outV, float *outWx, float *outWy, float *outWz) {
+    float dx = 0.f, dy = 0.f, dz = 0.f;
+    aimDirection(aim, &dx, &dy, &dz);
     *outT = 0.f;
     // 屏的基向量：由偏航 + 仰角算（先绕 X 仰角、再绕 Y 偏航）
     const float yaw = p.yawDeg * 3.14159265358979f / 180.f;
@@ -3383,12 +3134,13 @@ bool rayHitsPlacementAt(float px, float py, float pz, float dx, float dy, float 
     const float vx = syaw * spit, vy = cpit, vz = cyaw * spit;       // 面内 y 轴
     const float denom = dx * nx + dy * ny + dz * nz;
     if (fabsf(denom) < 1e-6f) return false;                        // 与屏平行，永不相交
-    const float t = ((p.cx - px) * nx + (p.cy - py) * ny + (p.cz - pz) * nz) / denom;
+    const float t = ((p.cx - aim.position.x) * nx + (p.cy - aim.position.y) * ny +
+                     (p.cz - aim.position.z) * nz) / denom;
     if (t <= 0.f) return false;                                    // 交点在身后
     *outT = t;
-    const float wx = px + dx * t;
-    const float wy = py + dy * t;
-    const float wz = pz + dz * t;
+    const float wx = aim.position.x + dx * t;
+    const float wy = aim.position.y + dy * t;
+    const float wz = aim.position.z + dz * t;
     const float rx = wx - p.cx, ry = wy - p.cy, rz = wz - p.cz;
     const float u = rx * ux + ry * uy + rz * uz;
     const float v = rx * vx + ry * vy + rz * vz;
@@ -3498,7 +3250,7 @@ constexpr float kPanelPxH = 1080.f;
  * 控制条几何（2026-10-05 父亲定）：**贴近观影者**，在他正前方偏下，像一块
  * 悬在身前的手柄面板，而不是贴在远处的视频屏下面。上仰一点正对他的眼睛。
  *
- * 位置/尺寸都在这里调：距离 [kOsdDistance]、上沿高度 [osdTopY]、宽度 [kOsdWidth]、
+ * 位置/尺寸都在这里调：距离 [kOsdDistance]、高度 [kOsdCenterY]、宽度 [kOsdWidth]、
  * 仰角 [kOsdTiltDeg]。后续「指着它扣扳机拖走」也基于这几个量。
  */
 /*
@@ -3523,32 +3275,18 @@ constexpr float kOsdPxH = 474.f;
 constexpr float kOsdWidth = 1.295f;  // 米 = 2331px / 1800px每米（父亲 2026-10-06 晚定稿）
 constexpr float kOsdHeight = kOsdWidth * kOsdPxH / kOsdPxW;
 constexpr float kOsdDistance = 0.85f;                     // 正前方距离（米，父亲：再近些）
+constexpr float kOsdCenterY = -0.62f;                     // 旧口径，保留给不用世界 Y 的分支
 /*
  * 控制条上沿的世界 Y（米，地面为 0）。父亲 2026-10-29 定：坐姿 0.80 米，且要能运行时调
  * （vr-tuning.txt 的 osd_top_sit）。站姿不设第二个参数 —— 站起来多高由头显 Y 直接给：
  * 上沿 = 坐姿值 + (当前眼高 - 坐姿参考眼高)。
  */
-/*
- * 控制条上沿的高度与远近都是运行时可调的，量的都是"离你眼睛多少米"：
- * 面板活在以眼睛为原点的坐标系里，参数就该用同一把尺（vr-tuning.txt 的 osd_top / osd_dist）。
- */
-std::atomic<float> gOsdTopEye{-0.57f};   // 上沿相对眼睛的高度（米，负 = 低于眼睛）
-std::atomic<float> gOsdDistance{0.85f};  // 正前方距离（米）
-constexpr float kEyeSitRef = 1.17f;      // 旧调参键 osd_top_sit 的坐姿参考眼高（离地米数）
-/*
- * 眼高死区（父亲 2026-10-29 定：100 毫米）：只是晃头晃脑时眼高会上下浮动，
- * 控制条不许跟着抖；高差超过死区才重新取基准，一次跨过就落定，不会来回爬。
- */
-constexpr float kEyeTopDeadband = 0.10f;
-std::atomic<float> gOsdEyeBase{-1e9f};   // 已生效的眼高基准；-1e9 = 还没取过
+std::atomic<float> gOsdTopSit{0.80f};
+constexpr float kEyeSitRef = 1.17f;                       // 世界模型口径的坐姿眼高
 static inline float osdTopY() {
-    const float eye = gHeadStageY.load();
-    float base = gOsdEyeBase.load();
-    if (base < -1e8f || fabsf(eye - base) > kEyeTopDeadband) {
-        base = eye;
-        gOsdEyeBase.store(base);
-    }
-    return base + gOsdTopEye.load();
+    const float eye = gEyeY.load();
+    const float lift = (eye > kEyeSitRef - 0.15f) ? (eye - kEyeSitRef) : 0.f;
+    return gOsdTopSit.load() + lift;
 }
 constexpr float kOsdTiltDeg = -24.f;                      // 上仰角（度），正对观影者
 
@@ -3561,36 +3299,14 @@ void osdBasis(float *cx, float *cy, float *cz, float *nx, float *ny, float *nz, 
     /* Y 跟着当前眼高（父亲 2026-10-28）：站着坐着都贴在眼前下方，不再固定按坐姿算 */
     *cx = viewerOffsetX();
     *cy = osdTopY() - kOsdHeight * 0.5f;                    // 上沿落在 osdTopY，站姿自动跟着抬高
-    *cz = -gOsdDistance.load() + viewerOffsetZ();
+    *cz = -kOsdDistance + viewerOffsetZ();
     // 绕 X 轴转 th：法线 (0,0,1) → (0,-sin,cos)；面内 y 轴 (0,1,0) → (0,cos,sin)
     *nx = 0.f; *ny = -st; *nz = ct;
     *ux = 1.f; *uy = 0.f; *uz = 0.f;
     *vx = 0.f; *vy = ct;  *vz = st;
-    /* 与世界摆放同一套：中心平移到锚点、三个轴绕 Y 轴转 θ（命中测试与渲染共用） */
-    appToWorld(cx, cz);
-    {
-        const float c2 = cosf(gWorldYawRad.load()), s2 = sinf(gWorldYawRad.load());
-        const float nx0 = *nx, nz0 = *nz, ux0 = *ux, uz0 = *uz, vx0 = *vx, vz0 = *vz;
-        *nx = c2 * nx0 + s2 * nz0;  *nz = -s2 * nx0 + c2 * nz0;
-        *ux = c2 * ux0 + s2 * uz0;  *uz = -s2 * ux0 + c2 * uz0;
-        *vx = c2 * vx0 + s2 * vz0;  *vz = -s2 * vx0 + c2 * vz0;
-    }
 }
 
 /** 射线与控制条矩形的交点；命中返回 true（同一套路：交点必须在矩形内） */
-/** 手柄射线（应用坐标系）→ 世界坐标系后求交；面板的世界摆位见 panelPlacement */
-bool rayHitsPlacementWorld(const VrContext &c, const XrPosef &aim,
-                           const ScreenPlacement &p, float *outT, float *outU,
-                           float *outV, float *outWx, float *outWy, float *outWz) {
-    float dx = 0.f, dy = 0.f, dz = 0.f;
-    aimDirection(aim, &dx, &dy, &dz);
-    float px = aim.position.x, pz = aim.position.z;
-    appToWorld(&px, &pz);
-    appDirToWorld(&dx, &dz);
-    return rayHitsPlacementAt(px, aim.position.y, pz, dx, dy, dz, p, outT, outU, outV,
-                              outWx, outWy, outWz);
-}
-
 bool rayHitsOsd(const VrContext &c, const XrPosef &aim, float *outT, float *outX, float *outY) {
     (void) c;
     float dx = 0.f, dy = 0.f, dz = 0.f;
@@ -3657,19 +3373,11 @@ void menuBasis(float *cx, float *cy, float *cz, float *nx, float *ny, float *nz,
     const float ct = cosf(th), st = sinf(th);
     const float half = kOsdHeight * 0.5f + kMenuHeight * 0.5f;   // 两块面沿 v 轴的半高之和
     const float menuY = (osdTopY() - kOsdHeight * 0.5f) + ct * half - st * kMenuGap;
-    const float menuDist = gOsdDistance.load() - st * half - ct * kMenuGap;
+    const float menuDist = kOsdDistance - st * half - ct * kMenuGap;
     *cx = viewerOffsetX(); *cy = menuY; *cz = -menuDist + viewerOffsetZ();
     *nx = 0.f; *ny = -st; *nz = ct;
     *ux = 1.f; *uy = 0.f; *uz = 0.f;
     *vx = 0.f; *vy = ct;  *vz = st;
-    appToWorld(cx, cz);
-    {
-        const float c2 = cosf(gWorldYawRad.load()), s2 = sinf(gWorldYawRad.load());
-        const float nx0 = *nx, nz0 = *nz, ux0 = *ux, uz0 = *uz, vx0 = *vx, vz0 = *vz;
-        *nx = c2 * nx0 + s2 * nz0;  *nz = -s2 * nx0 + c2 * nz0;
-        *ux = c2 * ux0 + s2 * uz0;  *uz = -s2 * ux0 + c2 * uz0;
-        *vx = c2 * vx0 + s2 * vz0;  *vz = -s2 * vx0 + c2 * vz0;
-    }
 }
 
 /** 射线与菜单矩形的交点；命中返回 true */
@@ -3794,7 +3502,7 @@ void pushInput(VrContext &c) {
          */
         if (c.bDown[h] && !c.sinkLastBack[h] && c.sinkBack != nullptr) {
             float bT = 0.f, bu = 0.f, bv = 0.f, bx = 0.f, by = 0.f, bz = 0.f;
-            const bool aimOnScreen = rayHitsPlacementWorld(c, c.aimPose[h], frontScreen(c),
+            const bool aimOnScreen = rayHitsPlacement(c.aimPose[h], frontScreen(c),
                                                       &bT, &bu, &bv, &bx, &by, &bz);
             LOGI("VR 输入：%s B 键 → 返回（光柱落在银幕上=%d）", handName[h],
                  aimOnScreen ? 1 : 0);
@@ -3957,7 +3665,6 @@ void pushInput(VrContext &c) {
          *    光柱指在海报墙上 → 指针 / 点击 / 摇杆 / 拖动都给它，与是否正在播放无关。
          *    命中判定按摆位求交（含朝向），否则点击坐标会整体错位。
          */
-        /* 命中用世界摆位：和海报墙合成层的实际位姿同一份 */
         const ScreenPlacement place = panelPlacement(c);
         float planeT = 0.f, hu = 0.f, hv = 0.f, wx = 0.f, wy = 0.f, wz = 0.f;
         /*
@@ -3965,45 +3672,13 @@ void pushInput(VrContext &c) {
          * 起手那一下要用它决定"抓不抓"—— 之前不管光点在哪，一按握把键整块墙
          * 就按「半径 × 手柄指向」跳到光柱方向上，看着就是瞬移。
          */
-        /* 光柱是否真落在墙上：指针映射、扣扳机、滚轮都只认它 */
-        const bool rayOnPanel = c.panelShown.load() &&
-                                rayHitsPlacementWorld(c, c.aimPose[h], place, &planeT, &hu, &hv,
-                                                      &wx, &wy, &wz);
-        /* 抓着的时候即使光柱扫出墙面也算"还在墙上"，否则拖到一半就掉手 */
-        const bool onPanel = rayOnPanel || c.panelDragActive[h];
-        /*
-         * 对账日志（父亲 2026-10-29）：光柱打不中看得见的海报墙，必须把
-         * 「墙面世界位置 / 存档位置 / 锚点与偏航 / 手柄起点与方向 / 命中结果」
-         * 放在同一行里，才能判断是画错了还是算错了。同一只手 2 秒最多一条。
-         */
-        {
-            static long long lastDiagMs[2] = {0, 0};
-            const long long nowD = nowMs();
-            if (nowD - lastDiagMs[h] > 2000) {
-                lastDiagMs[h] = nowD;
-                float adx = 0.f, ady = 0.f, adz = 0.f;
-                aimDirection(c.aimPose[h], &adx, &ady, &adz);
-                const float ax = c.aimPose[h].position.x;
-                const float ay = c.aimPose[h].position.y;
-                const float az = c.aimPose[h].position.z;
-                float wpx = ax, wpz = az;
-                appToWorld(&wpx, &wpz);
-                float wdx = adx, wdz = adz;
-                appDirToWorld(&wdx, &wdz);
-                LOGI("对账 墙世界=(%.2f,%.2f,%.2f) 墙角=%.1f 存档=(%.2f,%.2f,%.2f) 锚点=(%.2f,%.2f) 偏航=%.1f 手本地=(%.2f,%.2f,%.2f) 手世界=(%.2f,%.2f) 方向=(%.2f,%.2f,%.2f) 命中=%d t=%.2f",
-                     (double) place.cx, (double) place.cy, (double) place.cz, (double) place.yawDeg,
-                     (double) c.panelPosX.load(), (double) c.panelPosY.load(), (double) c.panelPosZ.load(),
-                     (double) gWorldSnapX.load(), (double) gWorldSnapZ.load(),
-                     (double) (gWorldYawRad.load() * 57.29578f),
-                     (double) ax, (double) ay, (double) az, (double) wpx, (double) wpz,
-                     (double) wdx, (double) ady, (double) wdz,
-                     rayOnPanel ? 1 : 0, (double) planeT);
-            }
-        }
+        const bool onPanel = c.panelShown.load() &&
+                             rayHitsPlacement(c.aimPose[h], place, &planeT, &hu, &hv,
+                                              &wx, &wy, &wz);
         /*
          * 握把键（Grip / squeeze，手柄侧面中指那个）按住 = 抓住海报墙：
-         *   球心 = 眼睛位置（父亲 2026-10-29 改），半径 = 按下那一刻眼睛到墙中心的距离；
-         *   按住期间墙中心 = 眼睛 + 半径 × 手柄指向，朝向反解成"正对眼睛"。
+         *   球心 = 手柄位置，半径 = 按下那一刻手柄到面板中心的距离；按住期间
+         *   面板中心 = 球心 + 半径 × 手柄指向，朝向反解成"正对球心"。
          *   松开握把键就是松手。父亲 2026-10-06 定：拖动归握把键，别和点击打架。
          *
          * 这一段**刻意不放在 onPanel 分支里**（父亲 2026-10-06 报"按住握把键推摇杆
@@ -4011,70 +3686,25 @@ void pushInput(VrContext &c) {
          * 整段被跳过 —— 摇杆调远近也跟着没了。抓取只认握把键，不认光柱落点。
          */
         if (c.squeezeDown[h]) {
-            /*
-             * 球心 = 手柄（父亲 2026-10-30 定）。推远拉近改的是"手柄到墙"的半径。
-             */
-            /*
-             * 球心高度用眼位 0，**不能**取墙自己的高度：那样每帧
-             * "墙高 = (墙高) + 垂直分量 × 半径"，竖直方向会累加，
-             * 一拖就飞到天上或地底（父亲 2026-10-29 实测墙高从 5.79 米涨到 138.51 米）。
-             */
-            /*
-             * 球心 = 手柄（父亲 2026-10-30 定，回到周一那版的手感）。
-             * 以手柄为球心，墙就挂在这只手的球面上：手往哪转墙跟到哪，半径不变；
-             * 推摇杆改半径就是推远拉近。以眼睛为球心时墙会绕着眼球滑，手一动就对不上手。
-             */
-            float eyeX = c.aimPose[h].position.x, eyeZ = c.aimPose[h].position.z;
-            appToWorld(&eyeX, &eyeZ);
-            const XrVector3f eye{eyeX, c.aimPose[h].position.y, eyeZ};
+            const XrVector3f hand = c.aimPose[h].position;
             /*
              * 抓住的前提：光点正落在海报墙上（父亲 2026-10-07 实测报"光点在哪，
              * 一按握把键墙就跑到光点位置"）。抓住之后不再要求 —— 手一动光柱就会
              * 扫出墙面，那也算还抓着，否则拖到一半就掉。
              */
-            /*
-             * 按住侧键就抓墙（父亲 2026-10-30 定）：不再要求光点先落在墙上。
-             * 抓的瞬间墙心会吸到"手柄 → 光点"这条线上，所以按下去墙就跟着手走，
-             * 不管此刻指着哪儿。原来要求 onPanel，指着墙外按就什么也不发生 —— 手感像失灵。
-             */
-            if (!c.panelDragActive[h]) {
+            if (!c.panelDragActive[h] && onPanel) {
                 c.panelDragActive[h] = true;
                 c.panelDragMoved[h] = false;
-                float wallX = c.panelPosX.load(), wallZ = c.panelPosZ.load();
-                appToWorld(&wallX, &wallZ);
-                const float dx = wallX - eye.x;
-                const float dy = (c.panelPosY.load() + panelLift()) - eye.y;
-                const float dz = wallZ - eye.z;
-                c.panelDragRadius[h] = fmaxf(0.6f, sqrtf(dx * dx + dy * dy + dz * dz));
+                const float dx = c.panelPosX.load() - hand.x;
+                const float dy = (c.panelPosY.load() + panelLift()) - hand.y;
+                const float dz = c.panelPosZ.load() - hand.z;
+                c.panelDragRadius[h] = sqrtf(dx * dx + dy * dy + dz * dz);
                 c.panelDragStartX[h] = c.panelPosX.load();
                 c.panelDragStartY[h] = c.panelPosY.load() + panelLift();
                 c.panelDragStartZ[h] = c.panelPosZ.load();
                 c.panelAdjustAt[h] = t;
                 LOGI("海报墙：%s 握把键按住 → 抓住（半径 %.2f 米）", handName[h],
                      (double) c.panelDragRadius[h]);
-                /*
-                 * 按下的这一帧就把墙心挪到"手柄 → 光点"这条线上（父亲 2026-10-30）：
-                 * 以手柄为球心，墙心必须落在光柱上，光点才会打中墙的正中间。
-                 * 原来要等手移动超过阈值才更新，按住的瞬间墙不动，光点就还在墙外。
-                 */
-                {
-                    float gdx = 0.f, gdy = 0.f, gdz = 0.f;
-                    aimDirection(c.aimPose[h], &gdx, &gdy, &gdz);
-                    appDirToWorld(&gdx, &gdz);
-                    const float rr0 = c.panelDragRadius[h];
-                    float nx0 = eye.x + gdx * rr0;
-                    const float ny0 = eye.y + gdy * rr0;
-                    float nz0 = eye.z + gdz * rr0;
-                    float sx0 = nx0, sz0 = nz0;
-                    worldToApp(&sx0, &sz0);
-                    c.panelPosX = sx0;
-                    c.panelPosY = ny0 - panelLift();
-                    c.panelPosZ = sz0;
-                    const float kRad2Deg0 = 180.f / 3.14159265358979f;
-                    c.panelPitchDeg = asinf(gdy) * kRad2Deg0;
-                    c.panelYawDeg = atan2f(-gdx, -gdz) * kRad2Deg0;
-                    (void) nx0;
-                }
             }
             /*
              * 抓住之后每帧跑：拖动（球面）+ 握着握把键推摇杆调远近 / 缩放
@@ -4083,11 +3713,10 @@ void pushInput(VrContext &c) {
             if (c.panelDragActive[h]) {
                 float ddx = 0.f, ddy = 0.f, ddz = 0.f;
                 aimDirection(c.aimPose[h], &ddx, &ddy, &ddz);
-                appDirToWorld(&ddx, &ddz);   // 与墙的世界摆位同一套
                 const float r = c.panelDragRadius[h];
-                const float tx = eye.x + ddx * r;
-                const float ty = eye.y + ddy * r;
-                const float tz = eye.z + ddz * r;
+                const float tx = hand.x + ddx * r;
+                const float ty = hand.y + ddy * r;
+                const float tz = hand.z + ddz * r;
                 const float mx = tx - c.panelDragStartX[h];
                 const float my = ty - c.panelDragStartY[h];
                 const float mz = tz - c.panelDragStartZ[h];
@@ -4095,12 +3724,9 @@ void pushInput(VrContext &c) {
                     c.panelDragMoved[h] = true;
                 }
                 if (c.panelDragMoved[h]) {
-                    /* 目标是世界坐标，存储用应用坐标（渲染时会再摆一次） */
-                    float sx3 = tx, sz3 = tz;
-                    worldToApp(&sx3, &sz3);
-                    c.panelPosX = sx3;
+                    c.panelPosX = tx;
                     c.panelPosY = ty - panelLift();
-                    c.panelPosZ = sz3;
+                    c.panelPosZ = tz;
                     // 法线指回球心（= 手柄指向的反向），反解偏航与仰角
                     const float kRad2Deg = 180.f / 3.14159265358979f;
                     c.panelPitchDeg = asinf(ddy) * kRad2Deg;
@@ -4121,13 +3747,10 @@ void pushInput(VrContext &c) {
                             fmaxf(0.8f, c.panelDragRadius[h] + sy2 * kPanelDistSpeed * step);
                     float ndx = 0.f, ndy = 0.f, ndz = 0.f;
                     aimDirection(c.aimPose[h], &ndx, &ndy, &ndz);
-                    appDirToWorld(&ndx, &ndz);
                     const float rr = c.panelDragRadius[h];
-                    float sx4 = eye.x + ndx * rr, sz4 = eye.z + ndz * rr;
-                    worldToApp(&sx4, &sz4);
-                    c.panelPosX = sx4;
-                    c.panelPosY = eye.y + ndy * rr - panelLift();
-                    c.panelPosZ = sz4;
+                    c.panelPosX = hand.x + ndx * rr;
+                    c.panelPosY = hand.y + ndy * rr - panelLift();
+                    c.panelPosZ = hand.z + ndz * rr;
                     LOGI("海报墙：摇杆远近 → 半径 %.2f 米", (double) rr);
                 }
                 if (fabsf(sx2) > kStickDeadzone) {
@@ -4154,7 +3777,7 @@ void pushInput(VrContext &c) {
             }
         }
 
-        if (rayOnPanel) {
+        if (onPanel) {
             const float px = (hu / place.width + 0.5f) * kPanelPxW;
             const float py = (0.5f - hv / (place.width * 9.f / 16.f)) * kPanelPxH;
 
@@ -4258,7 +3881,7 @@ void pushInput(VrContext &c) {
          */
         {
             float vT = 0.f, vu = 0.f, vv = 0.f, vwx = 0.f, vwy = 0.f, vwz = 0.f;
-            const bool onScreen = rayHitsPlacementWorld(c, c.aimPose[h], frontScreen(c), &vT, &vu, &vv,
+            const bool onScreen = rayHitsPlacement(c.aimPose[h], frontScreen(c), &vT, &vu, &vv,
                                                    &vwx, &vwy, &vwz);
             const double nowToggle = nowMs();
             const bool triggerJust = c.triggerDown[h] && !c.sinkLastTrigger[h];
@@ -4331,7 +3954,7 @@ void pushInput(VrContext &c) {
          */
         {
             float sT = 0.f, su = 0.f, sv = 0.f, swx = 0.f, swy = 0.f, swz = 0.f;
-            const bool onScreenStick = rayHitsPlacementWorld(c, c.aimPose[h], frontScreen(c), &sT, &su,
+            const bool onScreenStick = rayHitsPlacement(c.aimPose[h], frontScreen(c), &sT, &su,
                                                         &sv, &swx, &swy, &swz);
             const bool webScroll = onScreenStick && c.screenShowsWeb.load();
             /*
@@ -4397,25 +4020,8 @@ void pumpEvents(VrContext &c) {
             static long long lastMs = 0;
             if (nowMs - lastMs > 1500) {
                 lastMs = nowMs;
-                /*
-                 * 只有站着不动时来的这条才算他按了圆圈（重置地面）。
-                 * 走动途中也会来（运行时自己重新定位），那种必须忽略 —— 否则人一走，
-                 * 锚点就被一遍遍搬到他脚下，影厅跟着重摆，看着就是影厅在转。
-                 */
-                /*
-                 * 按圆圈键在系统层面就是一次"参考空间变更"，头显不会单独把菜单键报给应用
-                 * （2026-10-29 16:54 实测：四次按圆圈各来一条通知，菜单键一次都没上报）。
-                 * 所以重摆必须由这条通知触发；再用头显速度区分来源 ——
-                 * 他按圆圈时几乎静止（实测 0.01 米/秒），走动途中来的那些是运行时自己重新定位。
-                 */
-                if (gHeadSpeed.load() < 0.15f) {
-                    gRecenterEvent.store(1);
-                    LOGI("圆圈键（站着不动，头显速度 %.2f 米/秒）：重摆整套",
-                         (double) gHeadSpeed.load());
-                } else {
-                    LOGI("忽略参考空间变更：头显在走动（%.2f 米/秒），判为运行时重新定位",
-                         (double) gHeadSpeed.load());
-                }
+                gRecenterEvent.store(1);
+                LOGI("系统重新居中（参考空间变更事件）");
             }
             continue;
         }
@@ -4546,11 +4152,9 @@ bool renderCinemaEye(VrContext &c, int i, const XrView &view) {
      * 早先写成 R(yaw) · V 是绕"眼睛自己的上方向"转 —— 一低头歪头，Y 轴就不再竖直，
      * 三个轴一起被带歪（父亲 2026-10-29 实测"XYZ 都在转"）。
      */
-    /*
-     * 视图就是原始头姿态，不带任何世界摆放：影厅的摆放加在它自己的模型矩阵上，
-     * 光柱/控制条这些"贴身"的东西才能留在原处（父亲 2026-10-29 报光柱跑偏）。
-     */
-    const Mat4 view4 = viewMatrixFromPose(view.pose);
+    const Mat4 view4 = multiply(
+            multiply(viewMatrixFromPose(view.pose), rotY(-gWorldYawRad.load())),
+            translateM(-gWorldSnapX.load(), 0.f, -gWorldSnapZ.load()));
     /*
      * 这里**必须无条件画**（2026-10-10 19:31 抓到的真凶）：
      * 上一版把"独立层模式下不画"的判断条件误插进了这个函数 —— 结果影厅图层
@@ -4782,11 +4386,9 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
      * 早先写成 R(yaw) · V 是绕"眼睛自己的上方向"转 —— 一低头歪头，Y 轴就不再竖直，
      * 三个轴一起被带歪（父亲 2026-10-29 实测"XYZ 都在转"）。
      */
-    /*
-     * 视图就是原始头姿态，不带任何世界摆放：影厅的摆放加在它自己的模型矩阵上，
-     * 光柱/控制条这些"贴身"的东西才能留在原处（父亲 2026-10-29 报光柱跑偏）。
-     */
-    const Mat4 view4 = viewMatrixFromPose(view.pose);
+    const Mat4 view4 = multiply(
+            multiply(viewMatrixFromPose(view.pose), rotY(-gWorldYawRad.load())),
+            translateM(-gWorldSnapX.load(), 0.f, -gWorldSnapZ.load()));
     /*
      * 影厅先画（父亲 2026-10-10）：开深度、画完立刻关掉 —— 后面的银幕/海报墙/控制条/弹幕
      * 还是原来的图层顺序，一层层叠上去，不受影厅遮挡影响。
@@ -5017,10 +4619,11 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
             /*
              * 控制条的高度必须与命中侧同源（2026-10-28 父亲实测）。
              *
-             * 命中侧与渲染侧必须同一套高度（osdTopY），否则会出现"光点穿过控制条不亮、
-             * 往上挪一点才亮"的错位。
+             * 命中侧（nativeGetOsdPlace）一直按 kOsdCenterY + 眼高 算，渲染这两处却只用
+             * kOsdCenterY —— 站着按圆圈把眼高抬起来之后，可点的范围升上去了、画出来的控制条
+             * 还留在原处，于是"光点穿过控制条不亮，往上挪一点才亮"。
              */
-            osdPose.position = {0.f, osdTopY() - kOsdHeight * 0.5f, -gOsdDistance.load()};
+            osdPose.position = {0.f, kOsdCenterY + panelLift(), -kOsdDistance};
             osdPose.orientation = {sinf(th * 0.5f), 0.f, 0.f, cosf(th * 0.5f)};
             const Mat4 osdModel = poseScaleModel(osdPose, kOsdWidth, kOsdHeight, 1.f);
             const Mat4 osdMvp = multiply(multiply(proj, view4), osdModel);
@@ -5161,7 +4764,7 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
                 const ScreenPlacement place = panelPlacement(c);
                 float t = 0.f, u = 0.f, v = 0.f, hx = 0.f, hy = 0.f, hz = 0.f;
                 if (c.panelShown.load() &&
-                    rayHitsPlacementWorld(c, c.aimPose[h], place, &t, &u, &v, &hx, &hy, &hz) && t > 0.f) {
+                    rayHitsPlacement(c.aimPose[h], place, &t, &u, &v, &hx, &hy, &hz) && t > 0.f) {
                     rayLength = t; dotT = t; dotKind = 1; dotPlace = place;
                 }
             }
@@ -5169,7 +4772,7 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
             {
                 const ScreenPlacement front = frontScreen(c);
                 float t = 0.f, u = 0.f, v = 0.f, hx = 0.f, hy = 0.f, hz = 0.f;
-                if (rayHitsPlacementWorld(c, c.aimPose[h], front, &t, &u, &v, &hx, &hy, &hz) &&
+                if (rayHitsPlacement(c.aimPose[h], front, &t, &u, &v, &hx, &hy, &hz) &&
                     t > 0.f && t < rayLength) {
                     rayLength = t; dotT = t; dotKind = 1; dotPlace = front;
                 }
@@ -5239,43 +4842,11 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
                     rot = {sinf(tth * 0.5f), 0.f, 0.f, cosf(tth * 0.5f)};
                 }
                 XrPosef dotPose{};
-                if (c.panelDragActive[h]) {
-                    /*
-                     * 抓着海报墙时，光点吸在墙中心（父亲 2026-10-29：
-                     * 一按侧键光点就该落到墙中间，不该还停在原来的落点）。
-                     */
-                    const ScreenPlacement pw = panelPlacementApp(c);
-                    const float pth2 = pw.yawDeg * 3.14159265358979f / 180.f;
-                    nx = sinf(pth2); ny = 0.f; nz = cosf(pth2);
-                    rot = {0.f, sinf(pth2 * 0.5f), 0.f, cosf(pth2 * 0.5f)};
-                    dotPose.position = {
-                            pw.cx + nx * 0.006f,
-                            pw.cy + ny * 0.006f,
-                            pw.cz + nz * 0.006f,
-                    };
-                } else {
-                    /*
-                     * 光点由 GL 画在参考空间里，而命中距离 dotT 是按世界坐标算出来的。
-                     * 直接把"参考空间的方向"乘"世界坐标的距离"会混两套坐标：场景一旦
-                     * 转过角度，光点就落到别处（父亲 2026-10-29 实测：指着看得见的
-                     * 海报墙打不中，要指到侧后方那块空位才打中）。
-                     * 做法：把世界落点原路转回参考空间，光点和墙面才对得上。
-                     */
-                    float wox = c.aimPose[h].position.x, woz = c.aimPose[h].position.z;
-                    appToWorld(&wox, &woz);
-                    float wdx = dx, wdz = dz;
-                    appDirToWorld(&wdx, &wdz);
-                    float hpx = wox + wdx * dotT, hpz = woz + wdz * dotT;
-                    worldToApp(&hpx, &hpz);
-                    /* 法线也要转回参考空间，否则那 6 毫米的抬升会朝错方向 */
-                    float anx = nx, anz = nz;
-                    worldToAppDir(&anx, &anz);
-                    dotPose.position = {
-                            hpx + anx * 0.006f,
-                            c.aimPose[h].position.y + dy * dotT + ny * 0.006f,
-                            hpz + anz * 0.006f,
-                    };
-                }
+                dotPose.position = {
+                        c.aimPose[h].position.x + dx * dotT + nx * 0.006f,
+                        c.aimPose[h].position.y + dy * dotT + ny * 0.006f,
+                        c.aimPose[h].position.z + dz * dotT + nz * 0.006f,
+                };
                 dotPose.orientation = rot;
                 /*
                  * 光点大小按**命中距离**缩放（2026-10-09）。
@@ -6379,15 +5950,12 @@ void frameLoop(VrContext &c) {
         if (rendered && c.osdLayer.submitted) {
             /* 位置恒固定（父亲 2026-10-12：控制条不许跟着走动变位置） */
             const float ocx = viewerOffsetX();
-            /* 与 osdBasis / nativeGetOsdPlace 同一套高度，上沿落在 osdTopY（站姿自动抬高） */
-            const float ocy = osdTopY() - kOsdHeight * 0.5f;
-            const float ocz = -gOsdDistance.load() + viewerOffsetZ();
-            const float osdYawDeg = gWorldYawRad.load() * 57.29578f;
-            float wcx = ocx, wcz = ocz;
-            appToWorld(&wcx, &wcz);                  // 与 osdBasis 同一次世界摆放
-            osdQuad.pose.position = {wcx, ocy, wcz};
-            quadOrientation(osdYawDeg, kOsdTiltDeg, wcx, ocy, wcz, &osdQuad.pose.orientation);
-            if (viewerBehindPanel(osdYawDeg, kOsdTiltDeg, wcx, ocy, wcz)) backMask |= 2;
+            /* 同上：与 nativeGetOsdPlace 同一套高度，别再各算一份 */
+            const float ocy = kOsdCenterY + panelLift();
+            const float ocz = -kOsdDistance + viewerOffsetZ();
+            osdQuad.pose.position = {ocx, ocy, ocz};
+            quadOrientation(0.f, kOsdTiltDeg, ocx, ocy, ocz, &osdQuad.pose.orientation);
+            if (viewerBehindPanel(0.f, kOsdTiltDeg, ocx, ocy, ocz)) backMask |= 2;
             osdQuad.size = {kOsdWidth, kOsdHeight};
             osdQuad.subImage.swapchain = c.osdLayer.handle;
             osdQuad.subImage.imageRect.offset = {0, 0};
@@ -6400,11 +5968,9 @@ void frameLoop(VrContext &c) {
             float mcx, mcy, mcz, mnx, mny, mnz, mux, muy, muz, mvx, mvy, mvz;
             menuBasis(&mcx, &mcy, &mcz, &mnx, &mny, &mnz, &mux, &muy, &muz, &mvx, &mvy, &mvz);
             /* 位置在 menuBasis 里统一算，这里只摆位（恒固定，不跟走动） */
-            const float menuYawDeg = gWorldYawRad.load() * 57.29578f;
             menuQuad.pose.position = {mcx, mcy, mcz};
-            quadOrientation(menuYawDeg, kMenuTiltDeg, mcx, mcy, mcz, &menuQuad.pose.orientation);
-            /* 判定必须和画这块面用同一个偏航：这里原来是 0，一有世界偏航就有一半方向判反 */
-            if (viewerBehindPanel(menuYawDeg, kMenuTiltDeg, mcx, mcy, mcz)) backMask |= 4;
+            quadOrientation(0.f, kMenuTiltDeg, mcx, mcy, mcz, &menuQuad.pose.orientation);
+            if (viewerBehindPanel(0.f, kMenuTiltDeg, mcx, mcy, mcz)) backMask |= 4;
             menuQuad.size = {kMenuWidth, kMenuHeight};
             menuQuad.subImage.swapchain = c.menuLayer.handle;
             menuQuad.subImage.imageRect.offset = {0, 0};
@@ -6422,61 +5988,19 @@ void frameLoop(VrContext &c) {
                     reinterpret_cast<const XrCompositionLayerBaseHeader *>(&layer);
         }
         /*
-         * 全要素体检（父亲 2026-10-29 要求）：一秒一行，把影厅、大银幕、弹幕层、控制条、
-         * 菜单、海报墙、手柄光柱各自的世界坐标与朝向摆在一起。谁在动、动多少、和谁不同步，
-         * 直接读数字就能定案，不再靠观感猜。
+         * 世界偏航作用到所有 quad 图层（与影厅的视图矩阵同一份 yaw、同一个绕 Y 方向）。
          */
         {
-            static long long lastWmMs = 0;
-            const auto nowMs = (long long) std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now().time_since_epoch()).count();
-            if (nowMs - lastWmMs > 1000) {
-                lastWmMs = nowMs;
-                const float rad2deg = 57.29578f;
-                const ScreenPlacement sc = frontScreen(c);
-                const ScreenPlacement pw = panelPlacement(c);
-                const float yawDeg = gWorldYawRad.load() * rad2deg;
-                const int seatIdx = gSeat.load();
-                const CinemaSeat &cs = kCinemaSeats[seatIdx];
-                auto yawOfQuat = [&](const XrQuaternionf &q) {
-                    const float fx = -2.f * (q.x * q.z + q.w * q.y);
-                    const float fz = -(1.f - 2.f * (q.x * q.x + q.y * q.y));
-                    return atan2f(fx, fz) * rad2deg;
-                };
-                LOGI("体检A 厅：角=%.1f° 平移=(%.2f,%.2f) 座%d dy=%.2f dz=%.2f 台阶=%.2f 幕底Y=%.2f",
-                     (double) yawDeg, (double) gWorldSnapX.load(), (double) gWorldSnapZ.load(),
-                     seatIdx, (double) cs.dy, (double) cs.dz,
-                     (double) hallFloorDy(viewerZForFloor()), (double) hallScreenBottomY());
-                LOGI("体检B 幕摆=cx%.2f cy%.2f cz%.2f 宽%.2f 影厅%d",
-                     (double) sc.cx, (double) sc.cy, (double) sc.cz,
-                     (double) sc.width, gCinemaOn.load());
-                LOGI("体检B 屏：幕pos=(%.2f,%.2f,%.2f) 幕角=%.1f° 弹幕pos=(%.2f,%.2f,%.2f) "
-                     "弹幕角=%.1f° 海报pos=(%.2f,%.2f,%.2f) 海报角=%.1f°",
-                     (double) videoQuad.pose.position.x, (double) videoQuad.pose.position.y,
-                     (double) videoQuad.pose.position.z, (double) sc.yawDeg,
-                     (double) danmakuQuad.pose.position.x, (double) danmakuQuad.pose.position.y,
-                     (double) danmakuQuad.pose.position.z, (double) yawOfQuat(danmakuQuad.pose.orientation),
-                     (double) panelQuad.pose.position.x, (double) panelQuad.pose.position.y,
-                     (double) panelQuad.pose.position.z, (double) pw.yawDeg);
-                LOGI("体检C 面板：控制条pos=(%.2f,%.2f,%.2f) 角=%.1f° 菜单pos=(%.2f,%.2f,%.2f) "
-                     "角=%.1f° 头角=%.1f° 走动=(%.2f,%.2f)",
-                     (double) osdQuad.pose.position.x, (double) osdQuad.pose.position.y,
-                     (double) osdQuad.pose.position.z, (double) yawOfQuat(osdQuad.pose.orientation),
-                     (double) menuQuad.pose.position.x, (double) menuQuad.pose.position.y,
-                     (double) menuQuad.pose.position.z, (double) yawOfQuat(menuQuad.pose.orientation),
-                     (double) gHeadYawDeg.load(),
-                     (double) gWalkX.load(), (double) gWalkZ.load());
-                if (c.aimValid[0] || c.aimValid[1]) {
-                    const int h = c.aimValid[0] ? 0 : 1;
-                    const XrPosef &aim = c.aimPose[h];
-                    const float fx = -2.f * (aim.orientation.x * aim.orientation.z +
-                                            aim.orientation.w * aim.orientation.y);
-                    const float fz = -(1.f - 2.f * (aim.orientation.x * aim.orientation.x +
-                                                   aim.orientation.y * aim.orientation.y));
-                    LOGI("体检D 手%d：pos=(%.2f,%.2f,%.2f) 指向角=%.1f°",
-                         h, (double) aim.position.x, (double) aim.position.y,
-                         (double) aim.position.z, (double) (atan2f(fx, fz) * rad2deg));
-                }
+            const float wyaw = gWorldYawRad.load();
+            const float wsx = gWorldSnapX.load();
+            const float wsz = gWorldSnapZ.load();
+            if (fabsf(wyaw) > 1e-4f || fabsf(wsx) > 1e-4f || fabsf(wsz) > 1e-4f) {
+                applyWorldYaw(videoQuad.pose, wyaw, wsx, wsz);
+                applyWorldYaw(danmakuQuad.pose, wyaw, wsx, wsz);
+                applyWorldYaw(panelQuad.pose, wyaw, wsx, wsz);
+                applyWorldYaw(blankQuad.pose, wyaw, wsx, wsz);
+                applyWorldYaw(osdQuad.pose, wyaw, wsx, wsz);
+                applyWorldYaw(menuQuad.pose, wyaw, wsx, wsz);
             }
         }
         gLastLayerCount.store((int) layerCount);
@@ -7149,24 +6673,9 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetPanelPlace(JNIEnv *env, jobject /* t
                                                        jfloat x, jfloat y, jfloat z,
                                                        jfloat yaw, jfloat pitch,
                                                        jfloat width) {
-    /*
-     * 还原时收敛到合理范围：历史版本里抓取球心算错会存下离谱坐标
-     * （实测存过 Y=138 米），直接还原就等于墙在头顶高空、抓都抓不到。
-     */
-    const float rr = sqrtf(x * x + z * z);
-    const float kMaxR = 8.f;
-    float cx2 = x, cz2 = z;
-    if (rr > kMaxR) {
-        const float k = kMaxR / rr;
-        cx2 = x * k;
-        cz2 = z * k;
-        LOGI("海报墙：还原坐标过远（%.2f 米），收敛到 %.2f 米", (double) rr, (double) kMaxR);
-    }
-    if (fabsf(y) > 1.5f) LOGI("海报墙：还原高度 %.2f 米不合理，收敛到 ±1.5 米内", (double) y);
-    const float y2 = fminf(1.5f, fmaxf(-1.5f, y));
-    g.panelPosX = cx2;
-    g.panelPosY = y2;
-    g.panelPosZ = cz2;
+    g.panelPosX = x;
+    g.panelPosY = y;
+    g.panelPosZ = z;
     g.panelYawDeg = yaw;
     g.panelPitchDeg = pitch;
     g.panelWidth = fminf(kPanelMaxWidth, fmaxf(kPanelMinWidth, width));
@@ -7298,25 +6807,10 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             }
             break;
         case 33:
-            /* 旧键：仍按离地高度给，换算成相对眼睛，老调参文件继续可用 */
+            /* 控制条上沿的世界 Y（坐姿，米）：站姿由此值加头显高差得出 */
             if (value >= 0.05f && value <= 2.0f) {
-                gOsdTopEye.store(value - kEyeSitRef);
-                gOsdEyeBase.store(-1e9f);
-                LOGI("调参 → 控制条上沿 %.2f 米（离地，换算成相对眼睛 %+.2f 米）",
-                     (double) value, (double) (value - kEyeSitRef));
-            }
-            break;
-        case 34:
-            if (value >= -1.5f && value <= 0.5f) {
-                gOsdTopEye.store(value);
-                gOsdEyeBase.store(-1e9f);
-                LOGI("调参 → 控制条上沿相对眼睛 %+.2f 米", (double) value);
-            }
-            break;
-        case 35:
-            if (value >= 0.3f && value <= 3.0f) {
-                gOsdDistance.store(value);
-                LOGI("调参 → 控制条距离 %.2f 米", (double) value);
+                gOsdTopSit.store(value);
+                LOGI("调参 → 控制条上沿 Y %.2f 米（坐姿）", (double) value);
             }
             break;
         case 31:

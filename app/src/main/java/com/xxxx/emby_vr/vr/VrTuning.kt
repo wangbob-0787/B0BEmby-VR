@@ -41,9 +41,7 @@ import java.io.File
  * | `screen_distance` | 银幕距离（米）。IMAX 几何 = 宽 26 / 距 15 | 3.2 |
  * | `screen_preset` | 影院银幕两套预设（2026-10-10）：1 = 影厅小屏 5.2/3.2 · 2 = IMAX 大屏 26/15 | 1 |
  * | `min_screen_gap` | 最近允许走到离银幕多少米（再走近场景整体后推，不许穿过；0.3~5.0） | 1.0 |
- * | `osd_top` | 控制条上沿**相对眼睛**的高度（米，0 = 与眼齐平，负 = 低于眼）；眼高变化 100 毫米内不动 | −0.57 |
-| `osd_dist` | 控制条正前方距离（米） | 0.85 |
-| `osd_top_sit` | 旧口径：离地上沿高度（米），原生换算成相对眼睛 | 已由 `osd_top` 取代 |
+ * | `osd_top_sit` | 控制条上沿的世界 Y（米，坐姿）。站姿 = 此值 + 头显高差 | 0.80 |
  * | `follow_viewer` | 控制条/菜单/海报墙是否跟随观影位（1=跟，0=固定；2026-10-10） | 1 |
  * | `ray_scale` | 光柱粗细倍率（1.0 = 银幕 3.2 米时代的角粗细） | 0.35 |
  * | `layer_boost` | 视频层增强（PICO 合成器）：0=关 1=超采样 2=超采样高 3=锐化 4=锐化高 5=自适应锐化 6=自适应锐化高 7=超分辨率（同一层只能开一种） | 7 |
@@ -312,12 +310,8 @@ object VrTuning {
 
     /** 地面坡度（2026-10-22）：每往前走 1 米，视线随之变化多少米；0 = 平地 */
     const val KEY_FLOOR_SLOPE = 32
-    /** 控制条上沿（米，离地，坐姿口径；原生换算成"相对眼睛"） */
+    /** 控制条上沿的世界 Y（米，坐姿，2026-10-29）；站姿按头显高差自动加 */
     const val KEY_OSD_TOP_SIT = 33
-    /** 控制条上沿相对眼睛的高度（米，0 = 与眼齐平，负 = 低于眼） */
-    const val KEY_OSD_TOP = 34
-    /** 控制条正前方距离（米） */
-    const val KEY_OSD_DIST = 35
 
     /** 上次应用的配置原文，只有变化才动手（避免每秒重复设置） */
     private var lastRaw: Map<String, String> = emptyMap()
@@ -647,17 +641,7 @@ object VrTuning {
         /* 控制条上沿的世界 Y（米，坐姿）：站姿会自动加上头显高差 */
         raw["osd_top_sit"]?.toFloatOrNull()?.let {
             VrNative.setTuning(KEY_OSD_TOP_SIT, it)
-            applied += "控制条上沿 ${"%.2f".format(it)} 米（离地）"
-        }
-        /* 控制条上沿相对眼睛的高度（米）：0 = 与眼齐平，负 = 低于眼 */
-        raw["osd_top"]?.toFloatOrNull()?.let {
-            VrNative.setTuning(KEY_OSD_TOP, it)
-            applied += "控制条上沿 ${"%+.2f".format(it)} 米（相对眼睛）"
-        }
-        /* 控制条正前方距离（米） */
-        raw["osd_dist"]?.toFloatOrNull()?.let {
-            VrNative.setTuning(KEY_OSD_DIST, it)
-            applied += "控制条距离 ${"%.2f".format(it)} 米"
+            applied += "控制条上沿 ${"%.2f".format(it)} 米"
         }
         raw["seat_up"]?.toFloatOrNull()?.let {
             VrNative.setTuning(KEY_SEAT_UP, it)
