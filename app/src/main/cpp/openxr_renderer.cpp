@@ -1717,10 +1717,18 @@ bool viewerBehindPanel(float yawDeg, float pitchDeg, float cx, float cy, float c
      * 正常走两步就被判成"绕到面板背后"，面板翻 180 度 —— 看着就是面板在乱转
      * （2026-10-29 日志：控制条每秒一次被判成背面）。
      */
-    const float vx = gHeadRawX.load() - cx;
+    /*
+     * 面板坐标已经过世界摆放（旋转+平移），所以头显坐标也必须过一次同样的变换再比，
+     * 否则两方不在同一坐标系里 —— 按圆圈重摆之后菜单会被判成"人在背面"，
+     * 于是菜单画成镜像背面（父亲 2026-10-29 实测截图：菜单文字左右反的、发暗）。
+     */
+    float hxw = gHeadRawX.load();
+    float hzw = gHeadRawZ.load();
+    appToWorld(&hxw, &hzw);
+    const float vx = hxw - cx;
     /* 眼睛的竖直位置也要算进去（父亲 2026-10-28）：站着看面板和坐着看，上下关系不同 */
     const float vy = gEyeY.load() - cy;
-    const float vz = gHeadRawZ.load() - cz;
+    const float vz = hzw - cz;
     return (nx * vx + ny * vy + nz * vz) < -kBackFaceBias;
 }
 
