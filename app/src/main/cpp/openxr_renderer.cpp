@@ -273,7 +273,7 @@ extern std::atomic<float> gHeadRawZ;
 extern std::atomic<float> gHeadStageY;
 extern std::atomic<float> gHeadSpeed;
 extern std::atomic<float> gWorldSnapX;
-void pinPanelYaw(VrContext &c);   // 定义在面板摆位那一节；按圆圈时定墙的朝向
+void pinPanelYaw();   // 定义在面板摆位那一节；按圆圈时定海报墙的朝向
 extern std::atomic<float> gWorldSnapZ;
 
 /**
@@ -1546,7 +1546,7 @@ void updateViewerAnchor(const XrPosef &head) {
                 gViewerOriginX.store(hx);
                 gViewerOriginZ.store(hz);
                 /* 摆完锚点再定墙的朝向：这时墙心的世界位置才作数 */
-                pinPanelYaw(c);
+                pinPanelYaw();
                 LOGI("原点瞬移：影厅重新摆到脚下（X %.2f Z %.2f 米）", (double) hx, (double) hz);
             }
         }
@@ -3269,20 +3269,20 @@ ScreenPlacement panelPlacement(const VrContext &c) {
  * 按圆圈那一刻把海报墙的朝向定死：取「墙心 → 眼睛」的连线，一次算完写回存档。
  * 定完之后转头、走动都不再改（父亲 2026-10-29：松开圆圈后墙不许跟着我转）。
  */
-void pinPanelYaw(VrContext &c) {
-    float cx = c.panelPosX.load() + viewerOffsetX();
-    float cz = c.panelPosZ.load() + viewerOffsetZ();
-    const float cy = c.panelPosY.load() + panelLift();
+void pinPanelYaw() {
+    float cx = g.panelPosX.load() + viewerOffsetX();
+    float cz = g.panelPosZ.load() + viewerOffsetZ();
+    const float cy = g.panelPosY.load() + panelLift();
     appToWorld(&cx, &cz);
     const float dx = gHeadRawX.load() - cx;
     const float dz = gHeadRawZ.load() - cz;
     const float dy = gHeadStageY.load() - cy;
     const float len = sqrtf(dx * dx + dy * dy + dz * dz);
     if (len < 0.05f) return;
-    c.panelYawDeg = atan2f(dx, dz) * 57.29578f;
-    c.panelPitchDeg = asinf(fmaxf(-1.f, fminf(1.f, -dy / len))) * 57.29578f;
+    g.panelYawDeg = atan2f(dx, dz) * 57.29578f;
+    g.panelPitchDeg = asinf(fmaxf(-1.f, fminf(1.f, -dy / len))) * 57.29578f;
     LOGI("海报墙朝向定死：偏航 %.1f 度 仰角 %.1f 度（离墙 %.2f 米）",
-         (double) c.panelYawDeg.load(), (double) c.panelPitchDeg.load(), (double) len);
+         (double) g.panelYawDeg.load(), (double) g.panelPitchDeg.load(), (double) len);
 }
 
 ScreenPlacement panelPlacementApp(const VrContext &c) {
