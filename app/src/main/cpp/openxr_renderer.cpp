@@ -1425,10 +1425,7 @@ std::atomic<float> gViewerOriginZ{0.f};
  */
 std::atomic<float> gViewerOriginY{0.f};
 std::atomic<float> gEyeY{0.f};
-/* 控制条上沿的口径：坐姿参考眼高（离地米数），旧调参键 osd_top_sit 靠它换算成相对眼睛 */
-constexpr float kEyeSitRef = 1.17f;
-/* 已生效的控制条眼高基准（定义在控制条参数那一节）；重居中要把它作废重取 */
-extern std::atomic<float> gOsdEyeBase;
+extern std::atomic<float> gOsdEyeBase;   // 定义在控制条参数那一节；重居中要作废重取
 /*
  * 面板（控制条 / 海报墙 / 菜单）吃多少眼高（父亲 2026-10-28 23:51 定）：
  * 站着的高差只加**一半**，再叠回坐姿基准。全量加上去实际戴着偏高——父亲原话
@@ -1761,13 +1758,12 @@ bool viewerBehindPanel(float yawDeg, float pitchDeg, float cx, float cy, float c
      * 否则两方不在同一坐标系里 —— 按圆圈重摆之后菜单会被判成"人在背面"，
      * 于是菜单画成镜像背面（父亲 2026-10-29 实测截图：菜单文字左右反的、发暗）。
      */
-    /* 与面板同一套：原始头位（眼部坐标系），不做世界变换 */
-    const float hxw = gHeadRawX.load();
-    const float hzw = gHeadRawZ.load();
+    float hxw = gHeadRawX.load();
+    float hzw = gHeadRawZ.load();
+    appToWorld(&hxw, &hzw);
     const float vx = hxw - cx;
     /* 眼睛的竖直位置也要算进去（父亲 2026-10-28）：站着看面板和坐着看，上下关系不同 */
-    /* 面板高度按离地米数记，眼睛高度取实时离地高度，两者同一把尺 */
-    const float vy = gHeadStageY.load() - cy;
+    const float vy = gEyeY.load() - cy;
     const float vz = hzw - cz;
     return (nx * vx + ny * vy + nz * vz) < -kBackFaceBias;
 }
@@ -3240,11 +3236,26 @@ ScreenPlacement panelPlacement(const VrContext &c) {
     p.pitchDeg = c.panelPitchDeg.load();
     p.width = c.panelWidth.load();
     /*
-     * 三块贴身面板（海报墙 / 控制条 / 菜单）留在**眼部独立坐标系**里：
-     * 原点是你，位置与角度都不套世界旋转 —— 摆位、命中、正反面判定全在同一套里算，
-     * 于是再怎么按圆圈重摆都不会出现"光点算的平面不是显示的那块"。
-     * 影厅与大银幕仍然跟世界摆放走，两边各算各的、互不换算。
+     * 海报墙与世界摆放：按圆圈重摆时，它必须和影厅/银幕一起落到同一次摆放里，
+     * 否则重摆后海报墙留在旧位置（父亲 2026-10-29：走到另一处按圆圈，各部件摆不回原位）。
      */
+    appToWorld(&p.cx, &p.cz);
+    /*
+     * 朝向不存角度，每帧由"墙中心 → 你的眼睛"反解 —— 墙永远正对你，
+     * 存档里就算留着历史错误角度也影响不到画面和光点。
+     */
+    {
+        float ex = gHeadRawX.load(), ez = gHeadRawZ.load();
+        appToWorld(&ex, &ez);
+        const float dx = ex - p.cx;
+        const float dz = ez - p.cz;
+        const float dy = gHeadStageY.load() - p.cy;
+        const float len = sqrtf(dx * dx + dy * dy + dz * dz);
+        if (len > 0.05f) {
+            p.yawDeg = atan2f(dx, dz) * 57.29578f;
+            p.pitchDeg = asinf(fmaxf(-1.f, fminf(1.f, -dy / len))) * 57.29578f;
+        }
+    }
     return p;
 }
 
@@ -3495,15 +3506,15 @@ constexpr float kOsdDistance = 0.85f;                     // 正前方距离（�
  * 上沿 = 坐姿值 + (当前眼高 - 坐姿参考眼高)。
  */
 /*
- * 控制条上沿的高度与远近都做成运行时可调，而且**量的是"离你眼睛多少米"**：
- * 这三块贴身面板活在以眼睛为原点的坐标系里，参数就该用同一把尺，
- * 改 vr-tuning.txt 的 osd_top / osd_dist 立刻生效，太高太低太远太近随手调。
+ * 控制条上沿的高度与远近都是运行时可调的，量的都是"离你眼睛多少米"：
+ * 面板活在以眼睛为原点的坐标系里，参数就该用同一把尺（vr-tuning.txt 的 osd_top / osd_dist）。
  */
 std::atomic<float> gOsdTopEye{-0.57f};   // 上沿相对眼睛的高度（米，负 = 低于眼睛）
 std::atomic<float> gOsdDistance{0.85f};  // 正前方距离（米）
+constexpr float kEyeSitRef = 1.17f;      // 旧调参键 osd_top_sit 的坐姿参考眼高（离地米数）
 /*
- * 眼高死区（父亲 2026-10-29 定：100 毫米）：站着没动、只是晃头晃脑时眼高会上下浮动，
- * 控制条不许跟着抖。只有高差超过死区才重新取基准，一次跨过就落定，不会来回爬。
+ * 眼高死区（父亲 2026-10-29 定：100 毫米）：只是晃头晃脑时眼高会上下浮动，
+ * 控制条不许跟着抖；高差超过死区才重新取基准，一次跨过就落定，不会来回爬。
  */
 constexpr float kEyeTopDeadband = 0.10f;
 std::atomic<float> gOsdEyeBase{-1e9f};   // 已生效的眼高基准；-1e9 = 还没取过
@@ -3532,18 +3543,18 @@ void osdBasis(float *cx, float *cy, float *cz, float *nx, float *ny, float *nz, 
     *nx = 0.f; *ny = -st; *nz = ct;
     *ux = 1.f; *uy = 0.f; *uz = 0.f;
     *vx = 0.f; *vy = ct;  *vz = st;
+    /* 与世界摆放同一套：中心平移到锚点、三个轴绕 Y 轴转 θ（命中测试与渲染共用） */
+    appToWorld(cx, cz);
+    {
+        const float c2 = cosf(gWorldYawRad.load()), s2 = sinf(gWorldYawRad.load());
+        const float nx0 = *nx, nz0 = *nz, ux0 = *ux, uz0 = *uz, vx0 = *vx, vz0 = *vz;
+        *nx = c2 * nx0 + s2 * nz0;  *nz = -s2 * nx0 + c2 * nz0;
+        *ux = c2 * ux0 + s2 * uz0;  *uz = -s2 * ux0 + c2 * uz0;
+        *vx = c2 * vx0 + s2 * vz0;  *vz = -s2 * vx0 + c2 * vz0;
+    }
 }
 
 /** 射线与控制条矩形的交点；命中返回 true（同一套路：交点必须在矩形内） */
-/** 手柄射线（眼部坐标系）与面板求交：控制条 / 菜单 / 海报墙都用这一版 */
-bool rayHitsPlacementApp(const XrPosef &aim, const ScreenPlacement &p, float *outT,
-                         float *outU, float *outV, float *outWx, float *outWy, float *outWz) {
-    float dx = 0.f, dy = 0.f, dz = 0.f;
-    aimDirection(aim, &dx, &dy, &dz);
-    return rayHitsPlacementAt(aim.position.x, aim.position.y, aim.position.z, dx, dy, dz,
-                              p, outT, outU, outV, outWx, outWy, outWz);
-}
-
 /** 手柄射线（应用坐标系）→ 世界坐标系后求交；面板的世界摆位见 panelPlacement */
 bool rayHitsPlacementWorld(const VrContext &c, const XrPosef &aim,
                            const ScreenPlacement &p, float *outT, float *outU,
@@ -3628,7 +3639,14 @@ void menuBasis(float *cx, float *cy, float *cz, float *nx, float *ny, float *nz,
     *nx = 0.f; *ny = -st; *nz = ct;
     *ux = 1.f; *uy = 0.f; *uz = 0.f;
     *vx = 0.f; *vy = ct;  *vz = st;
-    /* 眼部独立坐标系：不套世界摆放（与控制条、海报墙同一套） */
+    appToWorld(cx, cz);
+    {
+        const float c2 = cosf(gWorldYawRad.load()), s2 = sinf(gWorldYawRad.load());
+        const float nx0 = *nx, nz0 = *nz, ux0 = *ux, uz0 = *uz, vx0 = *vx, vz0 = *vz;
+        *nx = c2 * nx0 + s2 * nz0;  *nz = -s2 * nx0 + c2 * nz0;
+        *ux = c2 * ux0 + s2 * uz0;  *uz = -s2 * ux0 + c2 * uz0;
+        *vx = c2 * vx0 + s2 * vz0;  *vz = -s2 * vx0 + c2 * vz0;
+    }
 }
 
 /** 射线与菜单矩形的交点；命中返回 true */
@@ -3926,8 +3944,8 @@ void pushInput(VrContext &c) {
          */
         /* 光柱是否真落在墙上：指针映射、扣扳机、滚轮都只认它 */
         const bool rayOnPanel = c.panelShown.load() &&
-                                rayHitsPlacementApp(c.aimPose[h], place, &planeT, &hu, &hv,
-                                                    &wx, &wy, &wz);
+                                rayHitsPlacementWorld(c, c.aimPose[h], place, &planeT, &hu, &hv,
+                                                      &wx, &wy, &wz);
         /* 抓着的时候即使光柱扫出墙面也算"还在墙上"，否则拖到一半就掉手 */
         const bool onPanel = rayOnPanel || c.panelDragActive[h];
         /*
@@ -3951,7 +3969,9 @@ void pushInput(VrContext &c) {
              * "墙高 = (墙高) + 垂直分量 × 半径"，竖直方向会累加，
              * 一拖就飞到天上或地底（父亲 2026-10-29 实测墙高从 5.79 米涨到 138.51 米）。
              */
-            const XrVector3f eye{gHeadRawX.load(), 0.f, gHeadRawZ.load()};
+            float eyeX = gHeadRawX.load(), eyeZ = gHeadRawZ.load();
+            appToWorld(&eyeX, &eyeZ);
+            const XrVector3f eye{eyeX, 0.f, eyeZ};
             /*
              * 抓住的前提：光点正落在海报墙上（父亲 2026-10-07 实测报"光点在哪，
              * 一按握把键墙就跑到光点位置"）。抓住之后不再要求 —— 手一动光柱就会
@@ -3978,6 +3998,7 @@ void pushInput(VrContext &c) {
             if (c.panelDragActive[h]) {
                 float ddx = 0.f, ddy = 0.f, ddz = 0.f;
                 aimDirection(c.aimPose[h], &ddx, &ddy, &ddz);
+                appDirToWorld(&ddx, &ddz);   // 与墙的世界摆位同一套
                 const float r = c.panelDragRadius[h];
                 const float tx = eye.x + ddx * r;
                 const float ty = eye.y + ddy * r;
@@ -3989,9 +4010,12 @@ void pushInput(VrContext &c) {
                     c.panelDragMoved[h] = true;
                 }
                 if (c.panelDragMoved[h]) {
-                    c.panelPosX = tx;
+                    /* 目标是世界坐标，存储用应用坐标（渲染时会再摆一次） */
+                    float sx3 = tx, sz3 = tz;
+                    worldToApp(&sx3, &sz3);
+                    c.panelPosX = sx3;
                     c.panelPosY = ty - panelLift();
-                    c.panelPosZ = tz;
+                    c.panelPosZ = sz3;
                     // 法线指回球心（= 手柄指向的反向），反解偏航与仰角
                     const float kRad2Deg = 180.f / 3.14159265358979f;
                     c.panelPitchDeg = asinf(ddy) * kRad2Deg;
@@ -4012,10 +4036,13 @@ void pushInput(VrContext &c) {
                             fmaxf(0.8f, c.panelDragRadius[h] + sy2 * kPanelDistSpeed * step);
                     float ndx = 0.f, ndy = 0.f, ndz = 0.f;
                     aimDirection(c.aimPose[h], &ndx, &ndy, &ndz);
+                    appDirToWorld(&ndx, &ndz);
                     const float rr = c.panelDragRadius[h];
-                    c.panelPosX = eye.x + ndx * rr;
+                    float sx4 = eye.x + ndx * rr, sz4 = eye.z + ndz * rr;
+                    worldToApp(&sx4, &sz4);
+                    c.panelPosX = sx4;
                     c.panelPosY = eye.y + ndy * rr - panelLift();
-                    c.panelPosZ = eye.z + ndz * rr;
+                    c.panelPosZ = sz4;
                     LOGI("海报墙：摇杆远近 → 半径 %.2f 米", (double) rr);
                 }
                 if (fabsf(sx2) > kStickDeadzone) {
@@ -5049,7 +5076,7 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
                 const ScreenPlacement place = panelPlacement(c);
                 float t = 0.f, u = 0.f, v = 0.f, hx = 0.f, hy = 0.f, hz = 0.f;
                 if (c.panelShown.load() &&
-                    rayHitsPlacementApp(c.aimPose[h], place, &t, &u, &v, &hx, &hy, &hz) && t > 0.f) {
+                    rayHitsPlacementWorld(c, c.aimPose[h], place, &t, &u, &v, &hx, &hy, &hz) && t > 0.f) {
                     rayLength = t; dotT = t; dotKind = 1; dotPlace = place;
                 }
             }
@@ -6254,10 +6281,12 @@ void frameLoop(VrContext &c) {
             /* 与 osdBasis / nativeGetOsdPlace 同一套高度，上沿落在 osdTopY（站姿自动抬高） */
             const float ocy = osdTopY() - kOsdHeight * 0.5f;
             const float ocz = -gOsdDistance.load() + viewerOffsetZ();
-            /* 眼部独立坐标系：与 osdBasis 同一份，不套世界摆放 */
-            osdQuad.pose.position = {ocx, ocy, ocz};
-            quadOrientation(0.f, kOsdTiltDeg, ocx, ocy, ocz, &osdQuad.pose.orientation);
-            if (viewerBehindPanel(0.f, kOsdTiltDeg, ocx, ocy, ocz)) backMask |= 2;
+            const float osdYawDeg = gWorldYawRad.load() * 57.29578f;
+            float wcx = ocx, wcz = ocz;
+            appToWorld(&wcx, &wcz);                  // 与 osdBasis 同一次世界摆放
+            osdQuad.pose.position = {wcx, ocy, wcz};
+            quadOrientation(osdYawDeg, kOsdTiltDeg, wcx, ocy, wcz, &osdQuad.pose.orientation);
+            if (viewerBehindPanel(osdYawDeg, kOsdTiltDeg, wcx, ocy, wcz)) backMask |= 2;
             osdQuad.size = {kOsdWidth, kOsdHeight};
             osdQuad.subImage.swapchain = c.osdLayer.handle;
             osdQuad.subImage.imageRect.offset = {0, 0};
@@ -6270,10 +6299,11 @@ void frameLoop(VrContext &c) {
             float mcx, mcy, mcz, mnx, mny, mnz, mux, muy, muz, mvx, mvy, mvz;
             menuBasis(&mcx, &mcy, &mcz, &mnx, &mny, &mnz, &mux, &muy, &muz, &mvx, &mvy, &mvz);
             /* 位置在 menuBasis 里统一算，这里只摆位（恒固定，不跟走动） */
+            const float menuYawDeg = gWorldYawRad.load() * 57.29578f;
             menuQuad.pose.position = {mcx, mcy, mcz};
-            quadOrientation(0.f, kMenuTiltDeg, mcx, mcy, mcz, &menuQuad.pose.orientation);
+            quadOrientation(menuYawDeg, kMenuTiltDeg, mcx, mcy, mcz, &menuQuad.pose.orientation);
             /* 判定必须和画这块面用同一个偏航：这里原来是 0，一有世界偏航就有一半方向判反 */
-            if (viewerBehindPanel(0.f, kMenuTiltDeg, mcx, mcy, mcz)) backMask |= 4;
+            if (viewerBehindPanel(menuYawDeg, kMenuTiltDeg, mcx, mcy, mcz)) backMask |= 4;
             menuQuad.size = {kMenuWidth, kMenuHeight};
             menuQuad.subImage.swapchain = c.menuLayer.handle;
             menuQuad.subImage.imageRect.offset = {0, 0};
@@ -7164,16 +7194,15 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             }
             break;
         case 33:
-            /* 旧键：仍按"离地高度"给，换算成相对眼睛的高度，老调参文件继续可用 */
+            /* 旧键：仍按离地高度给，换算成相对眼睛，老调参文件继续可用 */
             if (value >= 0.05f && value <= 2.0f) {
                 gOsdTopEye.store(value - kEyeSitRef);
                 gOsdEyeBase.store(-1e9f);
-                LOGI("调参 → 控制条上沿 %.2f 米（离地，已换算成相对眼睛 %+.2f 米）",
+                LOGI("调参 → 控制条上沿 %.2f 米（离地，换算成相对眼睛 %+.2f 米）",
                      (double) value, (double) (value - kEyeSitRef));
             }
             break;
         case 34:
-            /* 上沿相对眼睛的高度（米，0 = 与眼齐平，负 = 低于眼） */
             if (value >= -1.5f && value <= 0.5f) {
                 gOsdTopEye.store(value);
                 gOsdEyeBase.store(-1e9f);
@@ -7181,7 +7210,6 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             }
             break;
         case 35:
-            /* 正前方距离（米） */
             if (value >= 0.3f && value <= 3.0f) {
                 gOsdDistance.store(value);
                 LOGI("调参 → 控制条距离 %.2f 米", (double) value);
