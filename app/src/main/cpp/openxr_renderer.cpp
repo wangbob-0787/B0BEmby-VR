@@ -273,6 +273,7 @@ extern std::atomic<float> gHeadRawZ;
 extern std::atomic<float> gHeadStageY;
 extern std::atomic<float> gHeadSpeed;
 extern std::atomic<float> gWorldSnapX;
+void pinPanelYaw(VrContext &c);   // 定义在面板摆位那一节；按圆圈时定墙的朝向
 extern std::atomic<float> gWorldSnapZ;
 
 /**
@@ -1544,6 +1545,8 @@ void updateViewerAnchor(const XrPosef &head) {
                 gViewerZ.store(0.f);
                 gViewerOriginX.store(hx);
                 gViewerOriginZ.store(hz);
+                /* 摆完锚点再定墙的朝向：这时墙心的世界位置才作数 */
+                pinPanelYaw(c);
                 LOGI("原点瞬移：影厅重新摆到脚下（X %.2f Z %.2f 米）", (double) hx, (double) hz);
             }
         }
@@ -3248,22 +3251,6 @@ ScreenPlacement panelPlacement(const VrContext &c) {
      * 否则重摆后海报墙留在旧位置（父亲 2026-10-29：走到另一处按圆圈，各部件摆不回原位）。
      */
     appToWorld(&p.cx, &p.cz);
-    /*
-     * 朝向不存角度，每帧由"墙中心 → 你的眼睛"反解 —— 墙永远正对你，
-     * 存档里就算留着历史错误角度也影响不到画面和光点。
-     */
-    {
-        float ex = gHeadRawX.load(), ez = gHeadRawZ.load();
-        appToWorld(&ex, &ez);
-        const float dx = ex - p.cx;
-        const float dz = ez - p.cz;
-        const float dy = gHeadStageY.load() - p.cy;
-        const float len = sqrtf(dx * dx + dy * dy + dz * dz);
-        if (len > 0.05f) {
-            p.yawDeg = atan2f(dx, dz) * 57.29578f;
-            p.pitchDeg = asinf(fmaxf(-1.f, fminf(1.f, -dy / len))) * 57.29578f;
-        }
-    }
     return p;
 }
 
@@ -3278,6 +3265,26 @@ ScreenPlacement panelPlacement(const VrContext &c) {
  * 一旦按圆圈重摆，两边差一个旋转角，于是光点吸不准、握把键一按墙就瞬移
  * （父亲 2026-10-29 实测：转 90 度后按圆圈，抓不住、一按就跳，光点偏得更狠）。
  */
+/**
+ * 按圆圈那一刻把海报墙的朝向定死：取「墙心 → 眼睛」的连线，一次算完写回存档。
+ * 定完之后转头、走动都不再改（父亲 2026-10-29：松开圆圈后墙不许跟着我转）。
+ */
+void pinPanelYaw(VrContext &c) {
+    float cx = c.panelPosX.load() + viewerOffsetX();
+    float cz = c.panelPosZ.load() + viewerOffsetZ();
+    const float cy = c.panelPosY.load() + panelLift();
+    appToWorld(&cx, &cz);
+    const float dx = gHeadRawX.load() - cx;
+    const float dz = gHeadRawZ.load() - cz;
+    const float dy = gHeadStageY.load() - cy;
+    const float len = sqrtf(dx * dx + dy * dy + dz * dz);
+    if (len < 0.05f) return;
+    c.panelYawDeg = atan2f(dx, dz) * 57.29578f;
+    c.panelPitchDeg = asinf(fmaxf(-1.f, fminf(1.f, -dy / len))) * 57.29578f;
+    LOGI("海报墙朝向定死：偏航 %.1f 度 仰角 %.1f 度（离墙 %.2f 米）",
+         (double) c.panelYawDeg.load(), (double) c.panelPitchDeg.load(), (double) len);
+}
+
 ScreenPlacement panelPlacementApp(const VrContext &c) {
     ScreenPlacement p = kSideScreen;
     p.cx = c.panelPosX.load();
