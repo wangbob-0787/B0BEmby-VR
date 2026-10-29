@@ -270,6 +270,7 @@ extern std::atomic<float> gWorldYawRad;
 extern std::atomic<float> gHeadYawDeg;
 extern std::atomic<float> gHeadRawX;
 extern std::atomic<float> gHeadRawZ;
+extern std::atomic<float> gHeadSpeed;
 extern std::atomic<float> gWorldSnapX;
 extern std::atomic<float> gWorldSnapZ;
 
@@ -723,6 +724,13 @@ std::atomic<float> gHeadYawDeg{0.f};
 /** 头显此刻在参考空间里的原始水平坐标（不扣除锚点）：判"人在面板哪一侧"只能用这个 */
 std::atomic<float> gHeadRawX{0.f};
 std::atomic<float> gHeadRawZ{0.f};
+/**
+ * 头显当前移动速度（米/秒，平滑过）。用来分辨"参考空间变更"是哪种：
+ * 站着不动时来的是他按圆圈（重置地面）；一边走一边来的是运行时自己重新定位。
+ * 2026-10-29 实测：走动期间日志里出现 18 条重居中事件，每次都把锚点搬到他脚下，
+ * 走动累计永远归零，影厅也就跟着一遍遍重摆。
+ */
+std::atomic<float> gHeadSpeed{0.f};
 std::atomic<float> gWorldSnapX{0.f};
 std::atomic<float> gWorldSnapZ{0.f};
 
@@ -1405,6 +1413,22 @@ void updateViewerAnchor(const XrPosef &head) {
         const float hfx = -2.f * (qx * qz + qw * qy);
         const float hfz = -(1.f - 2.f * (qx * qx + qy * qy));
         gHeadYawDeg.store(atan2f(-hfx, -hfz) * 57.29578f);
+    }
+    {
+        static float prevX = 0.f, prevZ = 0.f;
+        static long long prevMs = 0;
+        static bool prevValid = false;
+        const auto nowMs = (long long) std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (prevValid && nowMs > prevMs) {
+            const float ddx = hx - prevX, ddz = hz - prevZ;
+            const float dt = (nowMs - prevMs) / 1000.f;
+            if (dt > 0.0001f && dt < 0.5f) {
+                const float v = sqrtf(ddx * ddx + ddz * ddz) / dt;
+                gHeadSpeed.store(gHeadSpeed.load() * 0.7f + v * 0.3f);
+            }
+        }
+        prevX = hx; prevZ = hz; prevMs = nowMs; prevValid = true;
     }
     gHeadRawX.store(hx);
     gHeadRawZ.store(hz);
@@ -4074,8 +4098,18 @@ void pumpEvents(VrContext &c) {
             static long long lastMs = 0;
             if (nowMs - lastMs > 1500) {
                 lastMs = nowMs;
-                gRecenterEvent.store(1);
-                LOGI("系统重新居中（参考空间变更事件）");
+                /*
+                 * 只有站着不动时来的这条才算他按了圆圈（重置地面）。
+                 * 走动途中也会来（运行时自己重新定位），那种必须忽略 —— 否则人一走，
+                 * 锚点就被一遍遍搬到他脚下，影厅跟着重摆，看着就是影厅在转。
+                 */
+                if (gHeadSpeed.load() < 0.15f) {
+                    gRecenterEvent.store(1);
+                    LOGI("系统重新居中（参考空间变更事件，站着不动 = 按了圆圈）");
+                } else {
+                    LOGI("忽略重居中事件：头显在走动（%.2f 米/秒），判为运行时重新定位",
+                         (double) gHeadSpeed.load());
+                }
             }
             continue;
         }
