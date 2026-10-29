@@ -3208,6 +3208,28 @@ ScreenPlacement panelPlacement(const VrContext &c) {
     return p;
 }
 
+/**
+ * 海报墙在**应用坐标系**里的摆位（= 存的值，不套世界摆放）。
+ *
+ * 交互（光柱命中、抓取、拖动、调远近）全部在这一套坐标系里算：手柄位姿本身就是
+ * 这个坐标系的原生读数，控制条与菜单的命中判定（osdBasis / menuBasis）也在这套里，
+ * 只有渲染那一侧才经 appToWorld 落到世界。
+ *
+ * 之前交互侧误用了渲染那份（已套世界旋转与平移）摆位：不按圆圈时 θ=0、看着一切正常；
+ * 一旦按圆圈重摆，两边差一个旋转角，于是光点吸不准、握把键一按墙就瞬移
+ * （父亲 2026-10-29 实测：转 90 度后按圆圈，抓不住、一按就跳，光点偏得更狠）。
+ */
+ScreenPlacement panelPlacementApp(const VrContext &c) {
+    ScreenPlacement p = kSideScreen;
+    p.cx = c.panelPosX.load();
+    p.cy = c.panelPosY.load() + panelLift();
+    p.cz = c.panelPosZ.load();
+    p.yawDeg = c.panelYawDeg.load();
+    p.pitchDeg = c.panelPitchDeg.load();
+    p.width = c.panelWidth.load();
+    return p;
+}
+
 /** 银幕当前摆位（宽高比跟着片子的实际比例走，父亲 2026-10-06） */
 ScreenPlacement frontScreen(const VrContext &c) {
     ScreenPlacement p = kFrontScreen;
@@ -3842,7 +3864,7 @@ void pushInput(VrContext &c) {
          *    光柱指在海报墙上 → 指针 / 点击 / 摇杆 / 拖动都给它，与是否正在播放无关。
          *    命中判定按摆位求交（含朝向），否则点击坐标会整体错位。
          */
-        const ScreenPlacement place = panelPlacement(c);
+        const ScreenPlacement place = panelPlacementApp(c);
         float planeT = 0.f, hu = 0.f, hv = 0.f, wx = 0.f, wy = 0.f, wz = 0.f;
         /*
          * 光点是否落在海报墙上。**必须在握把键之前算**（父亲 2026-10-07）：
@@ -3850,12 +3872,13 @@ void pushInput(VrContext &c) {
          * 就按「半径 × 手柄指向」跳到光柱方向上，看着就是瞬移。
          */
         const bool onPanel = c.panelShown.load() &&
-                             rayHitsPlacement(c.aimPose[h], place, &planeT, &hu, &hv,
-                                              &wx, &wy, &wz);
+                             (c.panelDragActive[h] ||
+                              rayHitsPlacement(c.aimPose[h], place, &planeT, &hu, &hv,
+                                               &wx, &wy, &wz));
         /*
          * 握把键（Grip / squeeze，手柄侧面中指那个）按住 = 抓住海报墙：
-         *   球心 = 手柄位置，半径 = 按下那一刻手柄到面板中心的距离；按住期间
-         *   面板中心 = 球心 + 半径 × 手柄指向，朝向反解成"正对球心"。
+         *   球心 = 眼睛位置（父亲 2026-10-29 改），半径 = 按下那一刻眼睛到墙中心的距离；
+         *   按住期间墙中心 = 眼睛 + 半径 × 手柄指向，朝向反解成"正对眼睛"。
          *   松开握把键就是松手。父亲 2026-10-06 定：拖动归握把键，别和点击打架。
          *
          * 这一段**刻意不放在 onPanel 分支里**（父亲 2026-10-06 报"按住握把键推摇杆
@@ -3863,7 +3886,13 @@ void pushInput(VrContext &c) {
          * 整段被跳过 —— 摇杆调远近也跟着没了。抓取只认握把键，不认光柱落点。
          */
         if (c.squeezeDown[h]) {
-            const XrVector3f hand = c.aimPose[h].position;
+            /*
+             * 球心 = 眼睛，不是手柄（父亲 2026-10-29 定）。
+             * 抓起来之后墙贴着视线动，推远拉近改的是"眼睛到墙"的半径；
+             * 竖直方向上球心取墙自己的高度，避免一抓墙就上下飘。
+             */
+            const XrVector3f eye{gHeadRawX.load(), c.panelPosY.load() + panelLift(),
+                                 gHeadRawZ.load()};
             /*
              * 抓住的前提：光点正落在海报墙上（父亲 2026-10-07 实测报"光点在哪，
              * 一按握把键墙就跑到光点位置"）。抓住之后不再要求 —— 手一动光柱就会
@@ -3872,10 +3901,10 @@ void pushInput(VrContext &c) {
             if (!c.panelDragActive[h] && onPanel) {
                 c.panelDragActive[h] = true;
                 c.panelDragMoved[h] = false;
-                const float dx = c.panelPosX.load() - hand.x;
-                const float dy = (c.panelPosY.load() + panelLift()) - hand.y;
-                const float dz = c.panelPosZ.load() - hand.z;
-                c.panelDragRadius[h] = sqrtf(dx * dx + dy * dy + dz * dz);
+                const float dx = c.panelPosX.load() - eye.x;
+                const float dy = (c.panelPosY.load() + panelLift()) - eye.y;
+                const float dz = c.panelPosZ.load() - eye.z;
+                c.panelDragRadius[h] = fmaxf(0.6f, sqrtf(dx * dx + dy * dy + dz * dz));
                 c.panelDragStartX[h] = c.panelPosX.load();
                 c.panelDragStartY[h] = c.panelPosY.load() + panelLift();
                 c.panelDragStartZ[h] = c.panelPosZ.load();
@@ -3891,9 +3920,9 @@ void pushInput(VrContext &c) {
                 float ddx = 0.f, ddy = 0.f, ddz = 0.f;
                 aimDirection(c.aimPose[h], &ddx, &ddy, &ddz);
                 const float r = c.panelDragRadius[h];
-                const float tx = hand.x + ddx * r;
-                const float ty = hand.y + ddy * r;
-                const float tz = hand.z + ddz * r;
+                const float tx = eye.x + ddx * r;
+                const float ty = eye.y + ddy * r;
+                const float tz = eye.z + ddz * r;
                 const float mx = tx - c.panelDragStartX[h];
                 const float my = ty - c.panelDragStartY[h];
                 const float mz = tz - c.panelDragStartZ[h];
@@ -3925,9 +3954,9 @@ void pushInput(VrContext &c) {
                     float ndx = 0.f, ndy = 0.f, ndz = 0.f;
                     aimDirection(c.aimPose[h], &ndx, &ndy, &ndz);
                     const float rr = c.panelDragRadius[h];
-                    c.panelPosX = hand.x + ndx * rr;
-                    c.panelPosY = hand.y + ndy * rr - panelLift();
-                    c.panelPosZ = hand.z + ndz * rr;
+                    c.panelPosX = eye.x + ndx * rr;
+                    c.panelPosY = eye.y + ndy * rr - panelLift();
+                    c.panelPosZ = eye.z + ndz * rr;
                     LOGI("海报墙：摇杆远近 → 半径 %.2f 米", (double) rr);
                 }
                 if (fabsf(sx2) > kStickDeadzone) {
@@ -4954,11 +4983,11 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
             float rayLength = kNoHitDistance;   // 没打中就射 100m（官方默认）
             float dotT = -1.f;
             int dotKind = 0;                    // 1=平面屏（海报墙/银幕）2=控制条 3=菜单
-            ScreenPlacement dotPlace = panelPlacement(c);
+            ScreenPlacement dotPlace = panelPlacementApp(c);
 
             // ① 海报墙（收起时不参与）
             {
-                const ScreenPlacement place = panelPlacement(c);
+                const ScreenPlacement place = panelPlacementApp(c);
                 float t = 0.f, u = 0.f, v = 0.f, hx = 0.f, hy = 0.f, hz = 0.f;
                 if (c.panelShown.load() &&
                     rayHitsPlacement(c.aimPose[h], place, &t, &u, &v, &hx, &hy, &hz) && t > 0.f) {
@@ -5039,11 +5068,27 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
                     rot = {sinf(tth * 0.5f), 0.f, 0.f, cosf(tth * 0.5f)};
                 }
                 XrPosef dotPose{};
-                dotPose.position = {
-                        c.aimPose[h].position.x + dx * dotT + nx * 0.006f,
-                        c.aimPose[h].position.y + dy * dotT + ny * 0.006f,
-                        c.aimPose[h].position.z + dz * dotT + nz * 0.006f,
-                };
+                if (c.panelDragActive[h]) {
+                    /*
+                     * 抓着海报墙时，光点吸在墙中心（父亲 2026-10-29：
+                     * 一按侧键光点就该落到墙中间，不该还停在原来的落点）。
+                     */
+                    const ScreenPlacement pw = panelPlacementApp(c);
+                    const float pth2 = pw.yawDeg * 3.14159265358979f / 180.f;
+                    nx = sinf(pth2); ny = 0.f; nz = cosf(pth2);
+                    rot = {0.f, sinf(pth2 * 0.5f), 0.f, cosf(pth2 * 0.5f)};
+                    dotPose.position = {
+                            pw.cx + nx * 0.006f,
+                            pw.cy + ny * 0.006f,
+                            pw.cz + nz * 0.006f,
+                    };
+                } else {
+                    dotPose.position = {
+                            c.aimPose[h].position.x + dx * dotT + nx * 0.006f,
+                            c.aimPose[h].position.y + dy * dotT + ny * 0.006f,
+                            c.aimPose[h].position.z + dz * dotT + nz * 0.006f,
+                    };
+                }
                 dotPose.orientation = rot;
                 /*
                  * 光点大小按**命中距离**缩放（2026-10-09）。
