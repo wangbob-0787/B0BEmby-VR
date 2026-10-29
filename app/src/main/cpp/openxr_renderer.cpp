@@ -257,6 +257,15 @@ Mat4 perspectiveFromFov(const XrFovf &fov, float nearZ, float farZ) {
 }
 
 /** 头姿（LOCAL 空间）→ 视图矩阵（世界→相机），刚性变换直接取转置+平移 */
+/** 绕 Y 轴旋转 a 弧度 */
+Mat4 rotY(float a) {
+    const float c = cosf(a), s2 = sinf(a);
+    Mat4 m = identity();
+    m.m[0] = c;  m.m[2] = s2;
+    m.m[8] = -s2; m.m[10] = c;
+    return m;
+}
+
 Mat4 viewMatrixFromPose(const XrPosef &pose) {
     const float x = pose.orientation.x, y = pose.orientation.y;
     const float z = pose.orientation.z, w = pose.orientation.w;
@@ -665,6 +674,14 @@ std::atomic<float> gWorldShiftY{0.f};
  * 系统本来就会告诉我们，不用猜。
  */
 std::atomic<int> gRecenterEvent{0};
+/**
+ * 世界偏航补偿（弧度）：按圆圈时把你当时的朝向扳成"正前方 = -Z"。
+ *
+ * 头显的重新居中会挪原点，但不会保证我们的海报墙/控制条/大屏还在你正前方；
+ * 这里在视图矩阵上绕 Y 轴整体转一次，等于让整个虚拟世界绕你旋转一下（父亲 2026-10-29 提）。
+ */
+std::atomic<float> gWorldYawRad{0.f};
+
 
 /*
  * 【2026-10-22 10:55 父亲定：走坡道，按前后位置补高度】
@@ -1350,16 +1367,31 @@ void updateViewerAnchor(const XrPosef &head) {
                             dx * dx + dz * dz > 1.5f * 1.5f ||
                             fabsf(headY - gLastHeadY.load()) > 0.3f;
         if (jumped) {
+            /*
+             * 累计走动必须用"真实位移"（此刻头位 - 旧锚点），不能用 gViewerX/Z ——
+             * 那是低通平滑后的值（系数 0.25，滞后好几帧），拿它记账每次按圆圈都少记一截。
+             * 而且必须先记账、后覆盖锚点：顺序反了位移恒为 0（实测累计走动一直是 0.00 米）。
+             */
+            {
+                const float ox = gViewerOriginX.load();
+                const float oz = gViewerOriginZ.load();
+                gWalkX.store(gWalkX.load() + (hx - ox));
+                gWalkZ.store(gWalkZ.load() + (hz - oz));
+            }
             gViewerOriginX.store(hx);
             gViewerOriginZ.store(hz);
             /*
-             * 累计走动必须用"真实位移"（此刻头位 - 旧锚点），不能用 gViewerX/Z ——
-             * 那是低通平滑后的值（系数 0.25，滞后好几帧），拿它记账每次按圆圈都少记一截，
-             * 几次下来累计值就乱跳（实测 21:08-21:10 那一串）。地形补偿吃这个值，
-             * 错多少，地面就升降多少。
+             * 转身后按圆圈：把"你现在朝的方向"扳成正前方。
+             * 头位朝向四元数解出水平前向量，再取它相对 -Z 的偏角存进世界偏航。
              */
-            gWalkX.store(gWalkX.load() + (hx - gViewerOriginX.load()));
-            gWalkZ.store(gWalkZ.load() + (hz - gViewerOriginZ.load()));
+            {
+                const float qx = head.orientation.x, qy = head.orientation.y;
+                const float qz = head.orientation.z, qw = head.orientation.w;
+                const float fx = -2.f * (qx * qz + qw * qy);
+                const float fz = -(1.f - 2.f * (qx * qx + qy * qy));
+                gWorldYawRad.store(atan2f(fx, -fz));
+                LOGI("圆圈键：世界偏航已对齐正前方 %.1f 度", (double) (gWorldYawRad.load() * 57.2958f));
+            }
             gViewerX.store(0.f);
             gViewerZ.store(0.f);
             /*
@@ -4020,7 +4052,7 @@ bool renderCinemaEye(VrContext &c, int i, const XrView &view) {
     glClearColor(0.f, 0.f, 0.f, 0.f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     const Mat4 proj = perspectiveFromFov(view.fov, 0.05f, 100.f);
-    const Mat4 view4 = viewMatrixFromPose(view.pose);
+    const Mat4 view4 = multiply(rotY(gWorldYawRad.load()), viewMatrixFromPose(view.pose));
     /*
      * 这里**必须无条件画**（2026-10-10 19:31 抓到的真凶）：
      * 上一版把"独立层模式下不画"的判断条件误插进了这个函数 —— 结果影厅图层
@@ -4247,7 +4279,7 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     const Mat4 proj = perspectiveFromFov(view.fov, 0.05f, 100.f);
-    const Mat4 view4 = viewMatrixFromPose(view.pose);
+    const Mat4 view4 = multiply(rotY(gWorldYawRad.load()), viewMatrixFromPose(view.pose));
     /*
      * 影厅先画（父亲 2026-10-10）：开深度、画完立刻关掉 —— 后面的银幕/海报墙/控制条/弹幕
      * 还是原来的图层顺序，一层层叠上去，不受影厅遮挡影响。
