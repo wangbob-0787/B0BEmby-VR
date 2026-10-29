@@ -810,7 +810,14 @@ static float hallBaseLift() {
 /** 地形补偿用的前后位移：头显的相对 z 与影厅 z 轴方向相反，取反后再查地形曲线 */
 extern std::atomic<float> gViewerZ;
 extern std::atomic<float> gWalkZ;
-static float viewerZForFloor() { return -(gWalkZ.load() + gViewerZ.load()); }
+/*
+ * 地形补偿查询用的影厅 z：就是他相对锚点的前后位移，方向与影厅坐标一致（银幕在 −Z）。
+ *
+ * 原来这里取反了，后果是往银幕方向走查到了后排的高台阶 —— 影厅反而往下沉，
+ * 走回来才往上抬，正好反了（2026-10-29 实测日志：走向舞台时台阶 −0.20 → −0.60，
+ * 返回时 +0.20 → +0.79）。阶梯表里 z 越小（越靠银幕）地面越低，补偿量应当为正值抬起来。
+ */
+static float viewerZForFloor() { return gWalkZ.load() + gViewerZ.load(); }
 
 /* 观影位的前后位移在本文件后半段才定义（drawCinema 比它早），这里先声明一下 */
 extern std::atomic<float> gViewerZ;
