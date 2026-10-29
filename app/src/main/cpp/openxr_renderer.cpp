@@ -6239,7 +6239,17 @@ void frameLoop(VrContext &c) {
                     reinterpret_cast<const XrCompositionLayerBaseHeader *>(&cinemaProj);
         }
         if (rendered && c.videoLayer.submitted) {
-            const ScreenPlacement sp = frontScreen(c);
+            ScreenPlacement sp = frontScreen(c);
+            /*
+             * 银幕/弹幕层的位置是"厅内坐标"，必须和影厅走同一套世界摆放（绕 Y 转 θ、
+             * 平移到锚点）才能和 GL 画出来的影厅重合。直接拿厅内坐标提交，转到
+             * 90/180 度后银幕会留在原地，看上去就跑到侧后方去了（父亲 2026-10-30 实测）。
+             */
+            float sqx = sp.cx, sqz = sp.cz;
+            appToWorld(&sqx, &sqz);
+            sp.cx = sqx;
+            sp.cz = sqz;
+            sp.yawDeg += gWorldYawRad.load() * 57.29578f;
             const float hy = sp.yawDeg * 3.14159265358979f / 360.f;
             const float hp = sp.pitchDeg * 3.14159265358979f / 360.f;
             const float sy2 = sinf(hy), cy2 = cosf(hy);
@@ -6298,12 +6308,18 @@ void frameLoop(VrContext &c) {
                  c.danmakuLayer.height, c.danmakuLayer.built ? 1 : 0);
         }
         if (rendered && c.danmakuLayer.submitted) {
-            const ScreenPlacement sp = frontScreen(c);
-            const float hy = sp.yawDeg * 3.14159265358979f / 360.f;
+            ScreenPlacement sp = frontScreen(c);
+            /* 与银幕同一套世界摆放，见上面视频层那段注释 */
+            float dqx = sp.cx, dqz = sp.cz + kDanmakuNearer;
+            appToWorld(&dqx, &dqz);
+            sp.cx = dqx;
+            sp.cz = dqz;
+            sp.yawDeg += gWorldYawRad.load() * 57.29578f;
+            const float hy = sp.yawDeg * 3.14159265358979f / 360.0f;
             const float hp = sp.pitchDeg * 3.14159265358979f / 360.f;
             const float sy2 = sinf(hy), cy2 = cosf(hy);
             const float sp2 = sinf(hp), cp2 = cosf(hp);
-            danmakuQuad.pose.position = {sp.cx, sp.cy, sp.cz + kDanmakuNearer};
+            danmakuQuad.pose.position = {sp.cx, sp.cy, sp.cz};
             danmakuQuad.pose.orientation = {cy2 * sp2, sy2 * cp2, -sy2 * sp2, cy2 * cp2};
             const float dw = sp.width * kDanmakuScale;
             danmakuQuad.size = {dw, dw / fmaxf(0.1f, sp.aspect)};
