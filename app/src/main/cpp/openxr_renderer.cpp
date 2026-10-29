@@ -567,9 +567,9 @@ struct CinemaSeat {
 };
 /* dy = -(该排眼高 - 基准排眼高)；dz = -(该排离幕距离) + 基准排离幕距离(12.18) */
 constexpr CinemaSeat kCinemaSeats[3] = {
-        {"近排 · 第 4 排", 0.40f, 2.62f, 9.56f},    // 水平视角 86°，最包裹
-        {"中排 · 第 6 排", 0.00f, 0.00f, 12.18f},   // 72°，默认
-        {"远排 · 第 9 排", -0.60f, -3.07f, 15.25f}, // 61°
+        {"近排 · 第 4 排", 0.39f, 2.62f, 9.47f},    // 水平视角 86°，最包裹
+        {"中排 · 第 6 排", 0.00f, 0.00f, 12.09f},   // 72°，默认
+        {"远排 · 第 9 排", -0.60f, -3.06f, 15.15f}, // 61°
 };
 /**
  * 影厅自带那块银幕（模型几何）——我们的画面就钉在它上面。
@@ -698,60 +698,33 @@ std::atomic<float> gWorldYawRad{0.f};
  * 平地段走动时地面也跟着上下动，坡道段又按近两倍的坡度翻，脚下对不上。
  * 现在按地形曲线补偿：平地段高度恒定（走过去地面不动），只有坡道段才升降。
  */
-std::atomic<float> gFloorSlope{0.20f};  // 保留给调参口；新模型实测每级 0.20 米
+std::atomic<float> gFloorSlope{0.205f};  // 实测坡度：地板从 z=-7 的 -1.96 米升到 z=7.5 的 +1.01 米 ⇒ 2.97/14.5
 
-/*
- * 影厅座椅区是阶梯式的：13 级台阶，每级约 1 米深、升高 0.20 米（Movie_Theater.glb 实测）。
- * 走动补偿必须按台阶查表，不能再用线性坡度 —— 线性会把台阶磨成斜坡，
- * 站在两级之间时脚就悬空或陷进去（父亲 2026-10-29 报"走动时地面高度一直不对"）。
- *
- * 表的坐标是 app 空间（模型 z 减中排 z 2.26、模型 y 减基准排眼高 2.80），
- * 与渲染时用的影厅局部坐标同一套。z 是这一级的地面起点，y 是这一级的地面高度。
- */
-struct HallStep { float z; float y; };
-static const HallStep kHallSteps[] = {
-        {-7.60f, -2.80f},   // 银幕前舞台台面（模型 y=0.00）
-        {-6.77f, -2.60f},   // 座椅区第 1 级（模型 y=0.20）
-        {-5.77f, -2.40f},
-        {-4.77f, -2.20f},
-        {-3.77f, -2.00f},
-        {-2.77f, -1.80f},   // 中排前走道（模型 y=1.00，约在此带）
-        {-1.77f, -1.61f},
-        {-0.45f, -1.41f},   // 中排（第 6 排）脚下这一级：抬 1.40 米后正好落在 Y=0
-        {+0.87f, -1.21f},
-        {+1.87f, -1.01f},
-        {+2.87f, -0.81f},
-        {+3.87f, -0.61f},
-        {+4.87f, -0.41f},
-        {+5.87f, -0.21f},
-        {+7.32f, -0.01f},   // 后排最高一级
-};
-static const int kHallStepCount = (int) (sizeof(kHallSteps) / sizeof(kHallSteps[0]));
+/* 影厅地板在「观众前后位置 z」处的高度（相对第一排，单位米） */
+static const float kHallFloorZ0 = -7.0f;    // 坡道起点（银幕前的平地到此为止）
+static const float kHallFloorZ1 = 7.5f;     // 坡道终点（再往后是后排过道平地）
 
-/** 影厅地面在 app 坐标 z 处的高度（阶梯查表，级间跳变 0.20 米） */
 static float hallFloorY(float z) {
-    if (z <= kHallSteps[0].z) return kHallSteps[0].y;
-    for (int i = kHallStepCount - 1; i >= 0; i--) {
-        if (z >= kHallSteps[i].z) return kHallSteps[i].y;
-    }
-    return kHallSteps[0].y;
+    const float k = gFloorSlope.load();
+    if (z <= kHallFloorZ0) return 0.f;
+    if (z >= kHallFloorZ1) return k * (kHallFloorZ1 - kHallFloorZ0);
+    return k * (z - kHallFloorZ0);
 }
 
-/** 走动时要给整间影厅加的升降量：你走到哪一级，那一级的地面就贴到脚底 */
+/** 走动时要给整间影厅加的升降量：脚下那块地面始终贴着脚，平地段恒为常数 */
 static float hallFloorDy(float z) { return -(hallFloorY(z) - hallFloorY(0.f)); }
 
 /**
  * 影厅纵向基准高度。
  *
- * STAGE（地面基准）：资产里中排（第 6 排）前走道在 y=-1.40（Movie_Theater.glb 实测，
- * 走道面模型高度 1.40 米减基准排眼高 2.80 米），抬 1.40 米这级地面就与头显标定的真实地面重合。
- * 早先的 0.82 米是旧影厅量的，换模型后少抬 0.58 米，人就悬在半空。
+ * STAGE（地面基准）：资产里 z=0 处地板在 y=-0.82（从 cinema.b0bcin 实测），
+ * 抬 0.82 米整间影厅的地面就与头显标定的真实地面重合 —— 起身、坐下、往前走全部由系统带。
  * LOCAL（退化分支）：沿用老的"眼高采样 + 世界补偿"那套。
  */
 extern std::atomic<int> gStageSpace;
 static float hallBaseLift() {
     return gStageSpace.load() != 0
-           ? 1.40f
+           ? 0.82f
            : (1.65f - gCinemaEyeHeight.load()) + gWorldShiftY.load();
 }
 
@@ -1100,7 +1073,7 @@ void drawCinema(const Mat4 &proj, const Mat4 &view, const XrVector3f &eyePos) {
     glUniformMatrix4fv(gCinemaMvpLoc, 1, GL_FALSE, mvp.m);
     glUniformMatrix4fv(gCinemaModelLoc, 1, GL_FALSE, model.m);
     /* 银幕中心：世界坐标里就在观影位正前方 distance 米处（影厅平移也跟着走） */
-    glUniform3f(gCinemaScreenPosLoc, 0.f, 1.13f + slopeDy, -s.distance);
+    glUniform3f(gCinemaScreenPosLoc, 0.f, 0.55f + slopeDy, -s.distance);
     glUniform3f(gCinemaTintLoc, gScreenTintR.load(), gScreenTintG.load(),
                 gScreenTintB.load());
     /* 画面照亮影厅的那份也乘亮度条（0 = 全黑），并按父亲 2026-10-11 的要求砍半 */
@@ -3221,7 +3194,7 @@ constexpr float kOsdPxH = 474.f;
 constexpr float kOsdWidth = 1.295f;  // 米 = 2331px / 1800px每米（父亲 2026-10-06 晚定稿）
 constexpr float kOsdHeight = kOsdWidth * kOsdPxH / kOsdPxW;
 constexpr float kOsdDistance = 0.85f;                     // 正前方距离（米，父亲：再近些）
-constexpr float kOsdCenterY = -0.20f;                     // 眼睛下方（米，父亲 2026-10-30 定：原来 -0.62 看着落在脚边）
+constexpr float kOsdCenterY = -0.20f;                     // 眼睛下方（米，父亲 2026-10-30 定）
 constexpr float kOsdTiltDeg = -24.f;                      // 上仰角（度），正对观影者
 
 /** 控制条平面：中心与两条轴（含仰角）。返回法线 n 与面内 x/y 轴 */
