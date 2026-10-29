@@ -270,6 +270,7 @@ extern std::atomic<float> gWorldYawRad;
 extern std::atomic<float> gHeadYawDeg;
 extern std::atomic<float> gHeadRawX;
 extern std::atomic<float> gHeadRawZ;
+extern std::atomic<float> gHeadStageY;
 extern std::atomic<float> gHeadSpeed;
 extern std::atomic<float> gWorldSnapX;
 extern std::atomic<float> gWorldSnapZ;
@@ -735,6 +736,8 @@ std::atomic<float> gHeadYawDeg{0.f};
 /** 头显此刻在参考空间里的原始水平坐标（不扣除锚点）：判"人在面板哪一侧"只能用这个 */
 std::atomic<float> gHeadRawX{0.f};
 std::atomic<float> gHeadRawZ{0.f};
+/* 头显离地高度（舞台空间）：控制条上沿跟随站坐用，每帧刷新 */
+std::atomic<float> gHeadStageY{0.f};
 /**
  * 头显当前移动速度（米/秒，平滑过）。用来分辨"参考空间变更"是哪种：
  * 站着不动时来的是他按圆圈（重置地面）；一边走一边来的是运行时自己重新定位。
@@ -1466,6 +1469,8 @@ void updateViewerAnchor(const XrPosef &head) {
     }
     gHeadRawX.store(hx);
     gHeadRawZ.store(hz);
+    /* 头显在舞台空间里的实际离地高度：控制条上沿要靠它随站坐变化，不能只等按圆圈 */
+    gHeadStageY.store(head.position.y);
     if (!gViewerOriginSet.load()) {
         gViewerOriginX.store(hx);
         gViewerOriginZ.store(hz);
@@ -3424,8 +3429,15 @@ constexpr float kOsdDistance = 0.85f;                     // 正前方距离（�
 std::atomic<float> gOsdTopSit{0.80f};
 constexpr float kEyeSitRef = 1.17f;                       // 世界模型口径的坐姿眼高
 static inline float osdTopY() {
+    /*
+     * 抬高量取两种来源的较大者：
+     * ① 头显当前真实离地高度（每帧刷新）—— 站起来就立刻抬高，不用按圆圈；
+     * ② 按圆圈时采样的站坐累计值 —— 运行时把原点放到头位、Y 读数不可靠时兜底。
+     */
+    const float live = gHeadStageY.load() - kEyeSitRef;
     const float eye = gEyeY.load();
-    const float lift = (eye > kEyeSitRef - 0.15f) ? (eye - kEyeSitRef) : 0.f;
+    const float sampled = (eye > kEyeSitRef - 0.15f) ? (eye - kEyeSitRef) : 0.f;
+    const float lift = fmaxf(0.f, fmaxf(live, sampled));
     return gOsdTopSit.load() + lift;
 }
 constexpr float kOsdTiltDeg = -24.f;                      // 上仰角（度），正对观影者
