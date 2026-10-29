@@ -3053,7 +3053,19 @@ void syncInput(VrContext &c) {
         if (c.squeezeValue[i] > 0.5f) c.squeezeDown[i] = true;
         readBool(c.aAction, c.aDown[i], "A");
         readBool(c.bAction, c.bDown[i], "B");
+        const bool menuWas = c.menuDown[i];
         readBool(c.menuAction, c.menuDown[i], "菜单");
+        /*
+         * 手柄菜单键（父亲口中的"圆圈键"）按下 = 重摆一次。
+         *
+         * 这是唯一能分清"他按的"与"运行时自己重新定位"的信号：运行时那条通知在走动中
+         * 也会来（2026-10-29 实测几分钟 18 条），踩着地板按圆圈和运行时重定位从通知里
+         * 看不出区别。菜单键是应用自己读到的手柄输入，来源明确。
+         */
+        if (c.menuDown[i] && !menuWas) {
+            gRecenterEvent.store(1);
+            LOGI("圆圈键按下（手柄 %d）：重摆影厅/银幕/弹幕层/控制条/菜单/海报墙", i);
+        }
 
         if (api.GetActionStateFloat != nullptr && c.triggerValueAction != XR_NULL_HANDLE) {
             XrActionStateGetInfo gi{XR_TYPE_ACTION_STATE_GET_INFO};
@@ -3130,6 +3142,12 @@ ScreenPlacement panelPlacement(const VrContext &c) {
     p.yawDeg = c.panelYawDeg.load();
     p.pitchDeg = c.panelPitchDeg.load();
     p.width = c.panelWidth.load();
+    /*
+     * 海报墙与世界摆放：按圆圈重摆时，它必须和影厅/银幕一起落到同一次摆放里，
+     * 否则重摆后海报墙留在旧位置（父亲 2026-10-29：走到另一处按圆圈，各部件摆不回原位）。
+     */
+    appToWorld(&p.cx, &p.cz);
+    p.yawDeg += gWorldYawRad.load() * 57.29578f;
     return p;
 }
 
@@ -3382,6 +3400,15 @@ void osdBasis(float *cx, float *cy, float *cz, float *nx, float *ny, float *nz, 
     *nx = 0.f; *ny = -st; *nz = ct;
     *ux = 1.f; *uy = 0.f; *uz = 0.f;
     *vx = 0.f; *vy = ct;  *vz = st;
+    /* 与世界摆放同一套：中心平移到锚点、三个轴绕 Y 轴转 θ（命中测试与渲染共用） */
+    appToWorld(cx, cz);
+    {
+        const float c2 = cosf(gWorldYawRad.load()), s2 = sinf(gWorldYawRad.load());
+        const float nx0 = *nx, nz0 = *nz, ux0 = *ux, uz0 = *uz, vx0 = *vx, vz0 = *vz;
+        *nx = c2 * nx0 + s2 * nz0;  *nz = -s2 * nx0 + c2 * nz0;
+        *ux = c2 * ux0 + s2 * uz0;  *uz = -s2 * ux0 + c2 * uz0;
+        *vx = c2 * vx0 + s2 * vz0;  *vz = -s2 * vx0 + c2 * vz0;
+    }
 }
 
 /** 射线与控制条矩形的交点；命中返回 true（同一套路：交点必须在矩形内） */
@@ -3456,6 +3483,14 @@ void menuBasis(float *cx, float *cy, float *cz, float *nx, float *ny, float *nz,
     *nx = 0.f; *ny = -st; *nz = ct;
     *ux = 1.f; *uy = 0.f; *uz = 0.f;
     *vx = 0.f; *vy = ct;  *vz = st;
+    appToWorld(cx, cz);
+    {
+        const float c2 = cosf(gWorldYawRad.load()), s2 = sinf(gWorldYawRad.load());
+        const float nx0 = *nx, nz0 = *nz, ux0 = *ux, uz0 = *uz, vx0 = *vx, vz0 = *vz;
+        *nx = c2 * nx0 + s2 * nz0;  *nz = -s2 * nx0 + c2 * nz0;
+        *ux = c2 * ux0 + s2 * uz0;  *uz = -s2 * ux0 + c2 * uz0;
+        *vx = c2 * vx0 + s2 * vz0;  *vz = -s2 * vx0 + c2 * vz0;
+    }
 }
 
 /** 射线与菜单矩形的交点；命中返回 true */
@@ -4103,13 +4138,13 @@ void pumpEvents(VrContext &c) {
                  * 走动途中也会来（运行时自己重新定位），那种必须忽略 —— 否则人一走，
                  * 锚点就被一遍遍搬到他脚下，影厅跟着重摆，看着就是影厅在转。
                  */
-                if (gHeadSpeed.load() < 0.15f) {
-                    gRecenterEvent.store(1);
-                    LOGI("系统重新居中（参考空间变更事件，站着不动 = 按了圆圈）");
-                } else {
-                    LOGI("忽略重居中事件：头显在走动（%.2f 米/秒），判为运行时重新定位",
-                         (double) gHeadSpeed.load());
-                }
+                /*
+                 * 这条只是"参考空间变了"，分不清是他按圆圈还是运行时自己重新定位
+                 * （2026-10-29 实测：走动中也来，几分钟 18 条）。重摆只认手柄菜单键那条，
+                 * 所以这里仅记录，不触发。
+                 */
+                LOGI("参考空间变更通知（仅记录，不重摆；头显速度 %.2f 米/秒）",
+                     (double) gHeadSpeed.load());
             }
             continue;
         }
@@ -6044,9 +6079,12 @@ void frameLoop(VrContext &c) {
             /* 与 osdBasis / nativeGetOsdPlace 同一套高度，上沿落在 osdTopY（站姿自动抬高） */
             const float ocy = osdTopY() - kOsdHeight * 0.5f;
             const float ocz = -kOsdDistance + viewerOffsetZ();
-            osdQuad.pose.position = {ocx, ocy, ocz};
-            quadOrientation(0.f, kOsdTiltDeg, ocx, ocy, ocz, &osdQuad.pose.orientation);
-            if (viewerBehindPanel(0.f, kOsdTiltDeg, ocx, ocy, ocz)) backMask |= 2;
+            const float osdYawDeg = gWorldYawRad.load() * 57.29578f;
+            float wcx = ocx, wcz = ocz;
+            appToWorld(&wcx, &wcz);                  // 与 osdBasis 同一次世界摆放
+            osdQuad.pose.position = {wcx, ocy, wcz};
+            quadOrientation(osdYawDeg, kOsdTiltDeg, wcx, ocy, wcz, &osdQuad.pose.orientation);
+            if (viewerBehindPanel(osdYawDeg, kOsdTiltDeg, wcx, ocy, wcz)) backMask |= 2;
             osdQuad.size = {kOsdWidth, kOsdHeight};
             osdQuad.subImage.swapchain = c.osdLayer.handle;
             osdQuad.subImage.imageRect.offset = {0, 0};
@@ -6059,8 +6097,9 @@ void frameLoop(VrContext &c) {
             float mcx, mcy, mcz, mnx, mny, mnz, mux, muy, muz, mvx, mvy, mvz;
             menuBasis(&mcx, &mcy, &mcz, &mnx, &mny, &mnz, &mux, &muy, &muz, &mvx, &mvy, &mvz);
             /* 位置在 menuBasis 里统一算，这里只摆位（恒固定，不跟走动） */
+            const float menuYawDeg = gWorldYawRad.load() * 57.29578f;
             menuQuad.pose.position = {mcx, mcy, mcz};
-            quadOrientation(0.f, kMenuTiltDeg, mcx, mcy, mcz, &menuQuad.pose.orientation);
+            quadOrientation(menuYawDeg, kMenuTiltDeg, mcx, mcy, mcz, &menuQuad.pose.orientation);
             if (viewerBehindPanel(0.f, kMenuTiltDeg, mcx, mcy, mcz)) backMask |= 4;
             menuQuad.size = {kMenuWidth, kMenuHeight};
             menuQuad.subImage.swapchain = c.menuLayer.handle;
