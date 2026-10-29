@@ -1346,20 +1346,39 @@ void updateViewerAnchor(const XrPosef &head) {
         const bool eventWithJump = jumpedEvent &&
                                    (dx * dx + dz * dz > 0.02f ||
                                     fabsf(headY - gLastHeadY.load()) > 0.12f);
-        const bool jumped = eventWithJump ||
-                            dx * dx + dz * dz > 1.5f * 1.5f ||
-                            fabsf(headY - gLastHeadY.load()) > 0.3f;
+        /*
+         * 父亲只在站定或坐定时按圆圈（按圆圈 = 把人瞬移回锚点），走动过程中不会按。
+         * 所以"走动途中"收到的重新居中都是运行时在重新定位，必须当噪声忽略，
+         * 否则正走着忽然把累计走动清零，脚下的台阶就会被抽走。
+         */
+        static double lastWalkMs = 0.0;
+        static float lastWalkX = 0.f, lastWalkZ = 0.f;
+        const double nowMoveMs = nowMs();
+        {
+            const float mx2 = hx - lastWalkX, mz2 = hz - lastWalkZ;
+            if (mx2 * mx2 + mz2 * mz2 > 0.0004f) {   // 单帧挪了 2 厘米以上 = 在走
+                lastWalkMs = nowMoveMs;
+                lastWalkX = hx;
+                lastWalkZ = hz;
+            }
+        }
+        const bool whileWalking = (nowMoveMs - lastWalkMs) < 700.0;
+        const bool jumped = !whileWalking &&
+                            (eventWithJump ||
+                             dx * dx + dz * dz > 1.5f * 1.5f ||
+                             fabsf(headY - gLastHeadY.load()) > 0.3f);
         if (jumped) {
+            /*
+             * 记账必须在覆盖锚点之前：先 store 新锚点再减，位移恒为 0，累计走动永远是 0
+             * —— 表现就是"地面刚抬起来又被拉回去"（父亲 2026-10-30 实测）。
+             * 位移取此刻头位减旧锚点，不用低通后的 gViewerX/Z（那值滞后好几帧，会少记）。
+             */
+            const float ox = gViewerOriginX.load();
+            const float oz = gViewerOriginZ.load();
+            gWalkX.store(gWalkX.load() + (hx - ox));
+            gWalkZ.store(gWalkZ.load() + (hz - oz));
             gViewerOriginX.store(hx);
             gViewerOriginZ.store(hz);
-            /*
-             * 累计走动必须用"真实位移"（此刻头位 - 旧锚点），不能用 gViewerX/Z ——
-             * 那是低通平滑后的值（系数 0.25，滞后好几帧），拿它记账每次按圆圈都少记一截，
-             * 几次下来累计值就乱跳（实测 21:08-21:10 那一串）。地形补偿吃这个值，
-             * 错多少，地面就升降多少。
-             */
-            gWalkX.store(gWalkX.load() + (hx - gViewerOriginX.load()));
-            gWalkZ.store(gWalkZ.load() + (hz - gViewerOriginZ.load()));
             gViewerX.store(0.f);
             gViewerZ.store(0.f);
             /*
@@ -3161,7 +3180,7 @@ constexpr float kOsdPxH = 474.f;
 constexpr float kOsdWidth = 1.295f;  // 米 = 2331px / 1800px每米（父亲 2026-10-06 晚定稿）
 constexpr float kOsdHeight = kOsdWidth * kOsdPxH / kOsdPxW;
 constexpr float kOsdDistance = 0.85f;                     // 正前方距离（米，父亲：再近些）
-constexpr float kOsdCenterY = -0.40f;                     // 眼睛下方（米，父亲 2026-10-30 定）
+constexpr float kOsdCenterY = -0.65f;                     // 眼睛下方（米，父亲 2026-10-30 定：-0.40 再降 0.25）
 constexpr float kOsdTiltDeg = -24.f;                      // 上仰角（度），正对观影者
 
 /** 控制条平面：中心与两条轴（含仰角）。返回法线 n 与面内 x/y 轴 */
