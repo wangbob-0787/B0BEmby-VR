@@ -312,6 +312,23 @@ void appToWorld(float *x, float *z) {
     *z = -s * px + c * pz + gWorldSnapZ.load();
 }
 
+/** 应用坐标系方向 → 世界方向（只绕 Y，与 appToWorld 同一套旋转） */
+void appDirToWorld(float *dx, float *dz) {
+    const float c = cosf(gWorldYawRad.load()), s = sinf(gWorldYawRad.load());
+    const float ox = *dx, oz = *dz;
+    *dx = c * ox + s * oz;
+    *dz = -s * ox + c * oz;
+}
+
+/** 世界坐标 → 应用坐标（appToWorld 的逆） */
+void worldToApp(float *x, float *z) {
+    const float c = cosf(gWorldYawRad.load()), s = sinf(gWorldYawRad.load());
+    const float px = *x - gWorldSnapX.load();
+    const float pz = *z - gWorldSnapZ.load();
+    *x = c * px - s * pz;
+    *z = s * px + c * pz;
+}
+
 Mat4 viewMatrixFromPose(const XrPosef &pose) {
     const float x = pose.orientation.x, y = pose.orientation.y;
     const float z = pose.orientation.z, w = pose.orientation.w;
@@ -3312,10 +3329,9 @@ Mat4 placementModel(const ScreenPlacement &p) {
  * 输出：平面距离 t（只要穿过平面就给，用于把光束收在屏上）、面内坐标 u/v
  * （米，右正 / 上正，用来换算面板像素）、世界命中点（画光点用）。
  */
-bool rayHitsPlacement(const XrPosef &aim, const ScreenPlacement &p, float *outT, float *outU,
-                      float *outV, float *outWx, float *outWy, float *outWz) {
-    float dx = 0.f, dy = 0.f, dz = 0.f;
-    aimDirection(aim, &dx, &dy, &dz);
+bool rayHitsPlacementAt(float px, float py, float pz, float dx, float dy, float dz,
+                        const ScreenPlacement &p, float *outT, float *outU,
+                        float *outV, float *outWx, float *outWy, float *outWz) {
     *outT = 0.f;
     // 屏的基向量：由偏航 + 仰角算（先绕 X 仰角、再绕 Y 偏航）
     const float yaw = p.yawDeg * 3.14159265358979f / 180.f;
@@ -3327,13 +3343,12 @@ bool rayHitsPlacement(const XrPosef &aim, const ScreenPlacement &p, float *outT,
     const float vx = syaw * spit, vy = cpit, vz = cyaw * spit;       // 面内 y 轴
     const float denom = dx * nx + dy * ny + dz * nz;
     if (fabsf(denom) < 1e-6f) return false;                        // 与屏平行，永不相交
-    const float t = ((p.cx - aim.position.x) * nx + (p.cy - aim.position.y) * ny +
-                     (p.cz - aim.position.z) * nz) / denom;
+    const float t = ((p.cx - px) * nx + (p.cy - py) * ny + (p.cz - pz) * nz) / denom;
     if (t <= 0.f) return false;                                    // 交点在身后
     *outT = t;
-    const float wx = aim.position.x + dx * t;
-    const float wy = aim.position.y + dy * t;
-    const float wz = aim.position.z + dz * t;
+    const float wx = px + dx * t;
+    const float wy = py + dy * t;
+    const float wz = pz + dz * t;
     const float rx = wx - p.cx, ry = wy - p.cy, rz = wz - p.cz;
     const float u = rx * ux + ry * uy + rz * uz;
     const float v = rx * vx + ry * vy + rz * vz;
@@ -3515,6 +3530,19 @@ void osdBasis(float *cx, float *cy, float *cz, float *nx, float *ny, float *nz, 
 }
 
 /** 射线与控制条矩形的交点；命中返回 true（同一套路：交点必须在矩形内） */
+/** 手柄射线（应用坐标系）→ 世界坐标系后求交；面板的世界摆位见 panelPlacement */
+bool rayHitsPlacementWorld(const VrContext &c, const XrPosef &aim,
+                           const ScreenPlacement &p, float *outT, float *outU,
+                           float *outV, float *outWx, float *outWy, float *outWz) {
+    float dx = 0.f, dy = 0.f, dz = 0.f;
+    aimDirection(aim, &dx, &dy, &dz);
+    float px = aim.position.x, pz = aim.position.z;
+    appToWorld(&px, &pz);
+    appDirToWorld(&dx, &dz);
+    return rayHitsPlacementAt(px, aim.position.y, pz, dx, dy, dz, p, outT, outU, outV,
+                              outWx, outWy, outWz);
+}
+
 bool rayHitsOsd(const VrContext &c, const XrPosef &aim, float *outT, float *outX, float *outY) {
     (void) c;
     float dx = 0.f, dy = 0.f, dz = 0.f;
@@ -3718,7 +3746,7 @@ void pushInput(VrContext &c) {
          */
         if (c.bDown[h] && !c.sinkLastBack[h] && c.sinkBack != nullptr) {
             float bT = 0.f, bu = 0.f, bv = 0.f, bx = 0.f, by = 0.f, bz = 0.f;
-            const bool aimOnScreen = rayHitsPlacement(c.aimPose[h], frontScreen(c),
+            const bool aimOnScreen = rayHitsPlacementWorld(c, c.aimPose[h], frontScreen(c),
                                                       &bT, &bu, &bv, &bx, &by, &bz);
             LOGI("VR 输入：%s B 键 → 返回（光柱落在银幕上=%d）", handName[h],
                  aimOnScreen ? 1 : 0);
@@ -3881,17 +3909,20 @@ void pushInput(VrContext &c) {
          *    光柱指在海报墙上 → 指针 / 点击 / 摇杆 / 拖动都给它，与是否正在播放无关。
          *    命中判定按摆位求交（含朝向），否则点击坐标会整体错位。
          */
-        const ScreenPlacement place = panelPlacementApp(c);
+        /* 命中用世界摆位：和海报墙合成层的实际位姿同一份 */
+        const ScreenPlacement place = panelPlacement(c);
         float planeT = 0.f, hu = 0.f, hv = 0.f, wx = 0.f, wy = 0.f, wz = 0.f;
         /*
          * 光点是否落在海报墙上。**必须在握把键之前算**（父亲 2026-10-07）：
          * 起手那一下要用它决定"抓不抓"—— 之前不管光点在哪，一按握把键整块墙
          * 就按「半径 × 手柄指向」跳到光柱方向上，看着就是瞬移。
          */
-        const bool onPanel = c.panelShown.load() &&
-                             (c.panelDragActive[h] ||
-                              rayHitsPlacement(c.aimPose[h], place, &planeT, &hu, &hv,
-                                               &wx, &wy, &wz));
+        /* 光柱是否真落在墙上：指针映射、扣扳机、滚轮都只认它 */
+        const bool rayOnPanel = c.panelShown.load() &&
+                                rayHitsPlacementWorld(c, c.aimPose[h], place, &planeT, &hu, &hv,
+                                                      &wx, &wy, &wz);
+        /* 抓着的时候即使光柱扫出墙面也算"还在墙上"，否则拖到一半就掉手 */
+        const bool onPanel = rayOnPanel || c.panelDragActive[h];
         /*
          * 握把键（Grip / squeeze，手柄侧面中指那个）按住 = 抓住海报墙：
          *   球心 = 眼睛位置（父亲 2026-10-29 改），半径 = 按下那一刻眼睛到墙中心的距离；
@@ -3913,7 +3944,9 @@ void pushInput(VrContext &c) {
              * "墙高 = (墙高) + 垂直分量 × 半径"，竖直方向会累加，
              * 一拖就飞到天上或地底（父亲 2026-10-29 实测墙高从 5.79 米涨到 138.51 米）。
              */
-            const XrVector3f eye{gHeadRawX.load(), 0.f, gHeadRawZ.load()};
+            float eyeX = gHeadRawX.load(), eyeZ = gHeadRawZ.load();
+            appToWorld(&eyeX, &eyeZ);
+            const XrVector3f eye{eyeX, 0.f, eyeZ};
             /*
              * 抓住的前提：光点正落在海报墙上（父亲 2026-10-07 实测报"光点在哪，
              * 一按握把键墙就跑到光点位置"）。抓住之后不再要求 —— 手一动光柱就会
@@ -3940,6 +3973,7 @@ void pushInput(VrContext &c) {
             if (c.panelDragActive[h]) {
                 float ddx = 0.f, ddy = 0.f, ddz = 0.f;
                 aimDirection(c.aimPose[h], &ddx, &ddy, &ddz);
+                appDirToWorld(&ddx, &ddz);   // 与墙的世界摆位同一套
                 const float r = c.panelDragRadius[h];
                 const float tx = eye.x + ddx * r;
                 const float ty = eye.y + ddy * r;
@@ -3951,9 +3985,12 @@ void pushInput(VrContext &c) {
                     c.panelDragMoved[h] = true;
                 }
                 if (c.panelDragMoved[h]) {
-                    c.panelPosX = tx;
+                    /* 目标是世界坐标，存储用应用坐标（渲染时会再摆一次） */
+                    float sx3 = tx, sz3 = tz;
+                    worldToApp(&sx3, &sz3);
+                    c.panelPosX = sx3;
                     c.panelPosY = ty - panelLift();
-                    c.panelPosZ = tz;
+                    c.panelPosZ = sz3;
                     // 法线指回球心（= 手柄指向的反向），反解偏航与仰角
                     const float kRad2Deg = 180.f / 3.14159265358979f;
                     c.panelPitchDeg = asinf(ddy) * kRad2Deg;
@@ -3974,10 +4011,13 @@ void pushInput(VrContext &c) {
                             fmaxf(0.8f, c.panelDragRadius[h] + sy2 * kPanelDistSpeed * step);
                     float ndx = 0.f, ndy = 0.f, ndz = 0.f;
                     aimDirection(c.aimPose[h], &ndx, &ndy, &ndz);
+                    appDirToWorld(&ndx, &ndz);
                     const float rr = c.panelDragRadius[h];
-                    c.panelPosX = eye.x + ndx * rr;
+                    float sx4 = eye.x + ndx * rr, sz4 = eye.z + ndz * rr;
+                    worldToApp(&sx4, &sz4);
+                    c.panelPosX = sx4;
                     c.panelPosY = eye.y + ndy * rr - panelLift();
-                    c.panelPosZ = eye.z + ndz * rr;
+                    c.panelPosZ = sz4;
                     LOGI("海报墙：摇杆远近 → 半径 %.2f 米", (double) rr);
                 }
                 if (fabsf(sx2) > kStickDeadzone) {
@@ -4004,7 +4044,7 @@ void pushInput(VrContext &c) {
             }
         }
 
-        if (onPanel) {
+        if (rayOnPanel) {
             const float px = (hu / place.width + 0.5f) * kPanelPxW;
             const float py = (0.5f - hv / (place.width * 9.f / 16.f)) * kPanelPxH;
 
@@ -4108,7 +4148,7 @@ void pushInput(VrContext &c) {
          */
         {
             float vT = 0.f, vu = 0.f, vv = 0.f, vwx = 0.f, vwy = 0.f, vwz = 0.f;
-            const bool onScreen = rayHitsPlacement(c.aimPose[h], frontScreen(c), &vT, &vu, &vv,
+            const bool onScreen = rayHitsPlacementWorld(c, c.aimPose[h], frontScreen(c), &vT, &vu, &vv,
                                                    &vwx, &vwy, &vwz);
             const double nowToggle = nowMs();
             const bool triggerJust = c.triggerDown[h] && !c.sinkLastTrigger[h];
@@ -4181,7 +4221,7 @@ void pushInput(VrContext &c) {
          */
         {
             float sT = 0.f, su = 0.f, sv = 0.f, swx = 0.f, swy = 0.f, swz = 0.f;
-            const bool onScreenStick = rayHitsPlacement(c.aimPose[h], frontScreen(c), &sT, &su,
+            const bool onScreenStick = rayHitsPlacementWorld(c, c.aimPose[h], frontScreen(c), &sT, &su,
                                                         &sv, &swx, &swy, &swz);
             const bool webScroll = onScreenStick && c.screenShowsWeb.load();
             /*
@@ -5004,14 +5044,14 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
             float rayLength = kNoHitDistance;   // 没打中就射 100m（官方默认）
             float dotT = -1.f;
             int dotKind = 0;                    // 1=平面屏（海报墙/银幕）2=控制条 3=菜单
-            ScreenPlacement dotPlace = panelPlacementApp(c);
+            ScreenPlacement dotPlace = panelPlacement(c);
 
             // ① 海报墙（收起时不参与）
             {
-                const ScreenPlacement place = panelPlacementApp(c);
+                const ScreenPlacement place = panelPlacement(c);
                 float t = 0.f, u = 0.f, v = 0.f, hx = 0.f, hy = 0.f, hz = 0.f;
                 if (c.panelShown.load() &&
-                    rayHitsPlacement(c.aimPose[h], place, &t, &u, &v, &hx, &hy, &hz) && t > 0.f) {
+                    rayHitsPlacementWorld(c, c.aimPose[h], place, &t, &u, &v, &hx, &hy, &hz) && t > 0.f) {
                     rayLength = t; dotT = t; dotKind = 1; dotPlace = place;
                 }
             }
@@ -5019,7 +5059,7 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
             {
                 const ScreenPlacement front = frontScreen(c);
                 float t = 0.f, u = 0.f, v = 0.f, hx = 0.f, hy = 0.f, hz = 0.f;
-                if (rayHitsPlacement(c.aimPose[h], front, &t, &u, &v, &hx, &hy, &hz) &&
+                if (rayHitsPlacementWorld(c, c.aimPose[h], front, &t, &u, &v, &hx, &hy, &hz) &&
                     t > 0.f && t < rayLength) {
                     rayLength = t; dotT = t; dotKind = 1; dotPlace = front;
                 }
@@ -6237,7 +6277,8 @@ void frameLoop(VrContext &c) {
             const float menuYawDeg = gWorldYawRad.load() * 57.29578f;
             menuQuad.pose.position = {mcx, mcy, mcz};
             quadOrientation(menuYawDeg, kMenuTiltDeg, mcx, mcy, mcz, &menuQuad.pose.orientation);
-            if (viewerBehindPanel(0.f, kMenuTiltDeg, mcx, mcy, mcz)) backMask |= 4;
+            /* 判定必须和画这块面用同一个偏航：这里原来是 0，一有世界偏航就有一半方向判反 */
+            if (viewerBehindPanel(menuYawDeg, kMenuTiltDeg, mcx, mcy, mcz)) backMask |= 4;
             menuQuad.size = {kMenuWidth, kMenuHeight};
             menuQuad.subImage.swapchain = c.menuLayer.handle;
             menuQuad.subImage.imageRect.offset = {0, 0};
