@@ -273,11 +273,12 @@ Mat4 rotY(float a) {
  * 不经过我们的视图矩阵，所以圆圈键的世界偏航必须同时作用到它们身上，
  * 否则就是"影厅转了、银幕没转"（父亲 2026-10-29 实测）。
  */
-void applyWorldYaw(XrPosef &p, float yaw) {
+void applyWorldYaw(XrPosef &p, float yaw, float snapX, float snapZ) {
     const float c = cosf(yaw), s = sinf(yaw);
     const float x = p.position.x, z = p.position.z;
-    p.position.x = c * x + s * z;
-    p.position.z = -s * x + c * z;
+    /* 先把世界绕 Y 轴转，再整体平移 —— 平移量就是"按圆圈那一刻你离座位锚点有多远" */
+    p.position.x = c * x + s * z + snapX;
+    p.position.z = -s * x + c * z + snapZ;
     const XrQuaternionf qy{0.f, sinf(yaw * 0.5f), 0.f, cosf(yaw * 0.5f)};
     const XrQuaternionf q = p.orientation;
     p.orientation.x = qy.w * q.x + qy.x * q.w + qy.y * q.z - qy.z * q.y;
@@ -308,6 +309,14 @@ Mat4 viewMatrixFromPose(const XrPosef &pose) {
     v.m[13] = -(v.m[1] * tx + v.m[5] * ty + v.m[9] * tz);
     v.m[14] = -(v.m[2] * tx + v.m[6] * ty + v.m[10] * tz);
     return v;
+}
+
+Mat4 translateM(float tx, float ty, float tz) {
+    Mat4 m = identity();
+    m.m[12] = tx;
+    m.m[13] = ty;
+    m.m[14] = tz;
+    return m;
 }
 
 Mat4 translateScale(float tx, float ty, float tz, float sx, float sy) {
@@ -701,6 +710,12 @@ std::atomic<int> gRecenterEvent{0};
  * 这里在视图矩阵上绕 Y 轴整体转一次，等于让整个虚拟世界绕你旋转一下（父亲 2026-10-29 提）。
  */
 std::atomic<float> gWorldYawRad{0.f};
+/*
+ * 世界锚点：按圆圈时把它累加成"你走开后要补回来的距离"，之后整间影厅（含银幕、面板、弹幕）
+ * 一起平移这么多，你就又坐回座椅锚点，而不是坐在扶手上（父亲 2026-10-29）。
+ */
+std::atomic<float> gWorldSnapX{0.f};
+std::atomic<float> gWorldSnapZ{0.f};
 
 
 /*
@@ -1424,6 +1439,25 @@ void updateViewerAnchor(const XrPosef &head) {
                 const float oz = gViewerOriginZ.load();
                 gWalkX.store(gWalkX.load() + (hx - ox));
                 gWalkZ.store(gWalkZ.load() + (hz - oz));
+            }
+            /*
+             * 重锚（父亲 2026-10-29）：走开以后按圆圈，世界要跟着你走回来 ——
+             * 把当前累计走动并进世界锚点，后续所有世界对象统一平移回来，
+             * 人就又坐在座椅上；走动记账同时清零，地形补偿按新位置重新算。
+             */
+            {
+                /* 头显的 z 与影厅 z 反向（地形补偿同一口径），x 同向 */
+                const float tx = gWalkX.load() + gViewerX.load();
+                const float tz = -(gWalkZ.load() + gViewerZ.load());
+                gWorldSnapX.store(gWorldSnapX.load() + tx);
+                gWorldSnapZ.store(gWorldSnapZ.load() + tz);
+                gWalkX.store(0.f);
+                gWalkZ.store(0.f);
+                gViewerX.store(0.f);
+                gViewerZ.store(0.f);
+                LOGI("重锚：世界平移 X %.2f Z %.2f 米（锚点累计 X %.2f Z %.2f）",
+                     (double) tx, (double) tz,
+                     (double) gWorldSnapX.load(), (double) gWorldSnapZ.load());
             }
             gViewerOriginX.store(hx);
             gViewerOriginZ.store(hz);
@@ -4118,7 +4152,9 @@ bool renderCinemaEye(VrContext &c, int i, const XrView &view) {
      * 早先写成 R(yaw) · V 是绕"眼睛自己的上方向"转 —— 一低头歪头，Y 轴就不再竖直，
      * 三个轴一起被带歪（父亲 2026-10-29 实测"XYZ 都在转"）。
      */
-    const Mat4 view4 = multiply(viewMatrixFromPose(view.pose), rotY(-gWorldYawRad.load()));
+    const Mat4 view4 = multiply(
+            multiply(viewMatrixFromPose(view.pose), rotY(-gWorldYawRad.load())),
+            translateM(-gWorldSnapX.load(), 0.f, -gWorldSnapZ.load()));
     /*
      * 这里**必须无条件画**（2026-10-10 19:31 抓到的真凶）：
      * 上一版把"独立层模式下不画"的判断条件误插进了这个函数 —— 结果影厅图层
@@ -4350,7 +4386,9 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
      * 早先写成 R(yaw) · V 是绕"眼睛自己的上方向"转 —— 一低头歪头，Y 轴就不再竖直，
      * 三个轴一起被带歪（父亲 2026-10-29 实测"XYZ 都在转"）。
      */
-    const Mat4 view4 = multiply(viewMatrixFromPose(view.pose), rotY(-gWorldYawRad.load()));
+    const Mat4 view4 = multiply(
+            multiply(viewMatrixFromPose(view.pose), rotY(-gWorldYawRad.load())),
+            translateM(-gWorldSnapX.load(), 0.f, -gWorldSnapZ.load()));
     /*
      * 影厅先画（父亲 2026-10-10）：开深度、画完立刻关掉 —— 后面的银幕/海报墙/控制条/弹幕
      * 还是原来的图层顺序，一层层叠上去，不受影厅遮挡影响。
@@ -5954,13 +5992,15 @@ void frameLoop(VrContext &c) {
          */
         {
             const float wyaw = gWorldYawRad.load();
-            if (fabsf(wyaw) > 1e-4f) {
-                applyWorldYaw(videoQuad.pose, wyaw);
-                applyWorldYaw(danmakuQuad.pose, wyaw);
-                applyWorldYaw(panelQuad.pose, wyaw);
-                applyWorldYaw(blankQuad.pose, wyaw);
-                applyWorldYaw(osdQuad.pose, wyaw);
-                applyWorldYaw(menuQuad.pose, wyaw);
+            const float wsx = gWorldSnapX.load();
+            const float wsz = gWorldSnapZ.load();
+            if (fabsf(wyaw) > 1e-4f || fabsf(wsx) > 1e-4f || fabsf(wsz) > 1e-4f) {
+                applyWorldYaw(videoQuad.pose, wyaw, wsx, wsz);
+                applyWorldYaw(danmakuQuad.pose, wyaw, wsx, wsz);
+                applyWorldYaw(panelQuad.pose, wyaw, wsx, wsz);
+                applyWorldYaw(blankQuad.pose, wyaw, wsx, wsz);
+                applyWorldYaw(osdQuad.pose, wyaw, wsx, wsz);
+                applyWorldYaw(menuQuad.pose, wyaw, wsx, wsz);
             }
         }
         gLastLayerCount.store((int) layerCount);
