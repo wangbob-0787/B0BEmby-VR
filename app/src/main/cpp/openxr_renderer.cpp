@@ -257,15 +257,6 @@ Mat4 perspectiveFromFov(const XrFovf &fov, float nearZ, float farZ) {
 }
 
 /** 头姿（LOCAL 空间）→ 视图矩阵（世界→相机），刚性变换直接取转置+平移 */
-/** 绕 Y 轴旋转 a 弧度 */
-Mat4 rotY(float a) {
-    const float c = cosf(a), s2 = sinf(a);
-    Mat4 m = identity();
-    m.m[0] = c;  m.m[2] = s2;
-    m.m[8] = -s2; m.m[10] = c;
-    return m;
-}
-
 Mat4 viewMatrixFromPose(const XrPosef &pose) {
     const float x = pose.orientation.x, y = pose.orientation.y;
     const float z = pose.orientation.z, w = pose.orientation.w;
@@ -674,14 +665,6 @@ std::atomic<float> gWorldShiftY{0.f};
  * 系统本来就会告诉我们，不用猜。
  */
 std::atomic<int> gRecenterEvent{0};
-/**
- * 世界偏航补偿（弧度）：按圆圈时把你当时的朝向扳成"正前方 = -Z"。
- *
- * 头显的重新居中会挪原点，但不会保证我们的海报墙/控制条/大屏还在你正前方；
- * 这里在视图矩阵上绕 Y 轴整体转一次，等于让整个虚拟世界绕你旋转一下（父亲 2026-10-29 提）。
- */
-std::atomic<float> gWorldYawRad{0.f};
-
 
 /*
  * 【2026-10-22 10:55 父亲定：走坡道，按前后位置补高度】
@@ -713,25 +696,6 @@ static float hallFloorY(float z) {
 
 /** 走动时要给整间影厅加的升降量：脚下那块地面始终贴着脚，平地段恒为常数 */
 static float hallFloorDy(float z) { return -(hallFloorY(z) - hallFloorY(0.f)); }
-
-/**
- * 影厅纵向基准高度。
- *
- * STAGE（地面基准）：资产里 z=0 处地板在 y=-0.82（从 cinema.b0bcin 实测），
- * 抬 0.82 米整间影厅的地面就与头显标定的真实地面重合 —— 起身、坐下、往前走全部由系统带。
- * LOCAL（退化分支）：沿用老的"眼高采样 + 世界补偿"那套。
- */
-extern std::atomic<int> gStageSpace;
-static float hallBaseLift() {
-    return gStageSpace.load() != 0
-           ? 0.82f
-           : (1.65f - gCinemaEyeHeight.load()) + gWorldShiftY.load();
-}
-
-/** 地形补偿用的前后位移：头显的相对 z 与影厅 z 轴方向相反，取反后再查地形曲线 */
-extern std::atomic<float> gViewerZ;
-extern std::atomic<float> gWalkZ;
-static float viewerZForFloor() { return -(gWalkZ.load() + gViewerZ.load()); }
 
 /* 观影位的前后位移在本文件后半段才定义（drawCinema 比它早），这里先声明一下 */
 extern std::atomic<float> gViewerZ;
@@ -1055,17 +1019,9 @@ void drawCinema(const Mat4 &proj, const Mat4 &view, const XrVector3f &eyePos) {
     Mat4 model = identity();
     model.m[12] = kCinemaShiftX;                              // 横向：让座位中心正对观影位
     /* 坡度补偿：人往后走（gViewerZ 增大）→ 影厅整体下移，脚底那格地面始终在眼睛下方 */
-    const float slopeDy = hallFloorDy(viewerZForFloor());
-    const float baseLift = hallBaseLift();
-    {
-        // 地形体检：约每两秒一行，必要时拿它核对走动方向与补偿正负
-        static int tick = 0;
-        if ((tick++ % 120) == 0) {
-            LOGI("地形体检：走动 z=%.2f（正=后排）补偿 %.2f 米",
-                 (double) viewerZForFloor(), (double) slopeDy);
-        }
-    }
-    model.m[13] = s.dy + baseLift + gSeatUp.load() + slopeDy;
+    const float slopeDy = hallFloorDy(gWalkZ.load() + gViewerZ.load());
+    model.m[13] = s.dy + (1.65f - gCinemaEyeHeight.load()) + gSeatUp.load() + slopeDy +
+                  gWorldShiftY.load();
     model.m[14] = s.dz - gSeatFwd.load();                     // 前/后：正数 = 人往椅子前部坐
     const Mat4 mvp = multiply(multiply(proj, view), model);
 
@@ -1367,31 +1323,16 @@ void updateViewerAnchor(const XrPosef &head) {
                             dx * dx + dz * dz > 1.5f * 1.5f ||
                             fabsf(headY - gLastHeadY.load()) > 0.3f;
         if (jumped) {
-            /*
-             * 累计走动必须用"真实位移"（此刻头位 - 旧锚点），不能用 gViewerX/Z ——
-             * 那是低通平滑后的值（系数 0.25，滞后好几帧），拿它记账每次按圆圈都少记一截。
-             * 而且必须先记账、后覆盖锚点：顺序反了位移恒为 0（实测累计走动一直是 0.00 米）。
-             */
-            {
-                const float ox = gViewerOriginX.load();
-                const float oz = gViewerOriginZ.load();
-                gWalkX.store(gWalkX.load() + (hx - ox));
-                gWalkZ.store(gWalkZ.load() + (hz - oz));
-            }
             gViewerOriginX.store(hx);
             gViewerOriginZ.store(hz);
             /*
-             * 转身后按圆圈：把"你现在朝的方向"扳成正前方。
-             * 头位朝向四元数解出水平前向量，再取它相对 -Z 的偏角存进世界偏航。
+             * 累计走动必须用"真实位移"（此刻头位 - 旧锚点），不能用 gViewerX/Z ——
+             * 那是低通平滑后的值（系数 0.25，滞后好几帧），拿它记账每次按圆圈都少记一截，
+             * 几次下来累计值就乱跳（实测 21:08-21:10 那一串）。地形补偿吃这个值，
+             * 错多少，地面就升降多少。
              */
-            {
-                const float qx = head.orientation.x, qy = head.orientation.y;
-                const float qz = head.orientation.z, qw = head.orientation.w;
-                const float fx = -2.f * (qx * qz + qw * qy);
-                const float fz = -(1.f - 2.f * (qx * qx + qy * qy));
-                gWorldYawRad.store(atan2f(fx, -fz));
-                LOGI("圆圈键：世界偏航已对齐正前方 %.1f 度", (double) (gWorldYawRad.load() * 57.2958f));
-            }
+            gWalkX.store(gWalkX.load() + (hx - gViewerOriginX.load()));
+            gWalkZ.store(gWalkZ.load() + (hz - gViewerOriginZ.load()));
             gViewerX.store(0.f);
             gViewerZ.store(0.f);
             /*
@@ -1574,7 +1515,8 @@ float hallScreenFitWidth(float aspect) {
 float hallScreenCenterY() {
     const int seat = gSeat.load();
     const CinemaSeat &s = kCinemaSeats[seat];
-    return (kHallScreenModelY - kHallRefEyeY) + s.dy + hallBaseLift() + hallFloorDy(viewerZForFloor()) +
+    return (kHallScreenModelY - kHallRefEyeY) + s.dy + (1.65f - gCinemaEyeHeight.load()) + hallFloorDy(gWalkZ.load() + gViewerZ.load()) +
+           gWorldShiftY.load() +
            gScreenUp.load();
 }
 
@@ -1588,7 +1530,8 @@ float hallScreenCenterY() {
 float hallScreenBottomY() {
     const int seat = gSeat.load();
     const CinemaSeat &s = kCinemaSeats[seat];
-    return (kHallScreenBottomY - kHallRefEyeY) + s.dy + hallBaseLift() + hallFloorDy(viewerZForFloor()) +
+    return (kHallScreenBottomY - kHallRefEyeY) + s.dy + (1.65f - gCinemaEyeHeight.load()) + hallFloorDy(gWalkZ.load() + gViewerZ.load()) +
+           gWorldShiftY.load() +
            gScreenUp.load();
 }
 
@@ -2636,18 +2579,15 @@ bool createSession(VrContext &c) {
      * 结果整个厅沉到脚下，人就像飘在半空。
      * 要换 STAGE 就必须同时把所有几何上移一个眼高，那是另一件事，不在这一版里做。
      */
-    /*
-     * 先要 STAGE：头显在进入 VR 时标定过地面，STAGE 的原点就在那块地面上（Y=0 = 地面，
-     * -Z = 正前方），起身、坐下、往前走都由系统给出真实离地高度与位移，不必采样眼高猜
-     * （父亲 2026-10-29 定的口径）。拿不到才退回 LOCAL（原点 = 启动那一刻的头位）。
-     */
-    rsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_STAGE;
+    rsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
     rsci.poseInReferenceSpace = {{0, 0, 0, 1}, {0, 0, 0}};
     r = api.CreateReferenceSpace(c.session, &rsci, &c.localSpace);
-    gStageSpace.store(XR_SUCCEEDED(r) ? 1 : 0);
+    gStageSpace.store(0);
     if (XR_FAILED(r)) {
-        rsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+        // 退一步用 STAGE（有些运行时只给 STAGE），此时高度是离地值，只做兜底
+        rsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_STAGE;
         r = api.CreateReferenceSpace(c.session, &rsci, &c.localSpace);
+        gStageSpace.store(XR_SUCCEEDED(r) ? 1 : 0);
         if (XR_FAILED(r)) {
             LOGE("xrCreateReferenceSpace 失败：%d", (int) r);
             return false;
@@ -4052,7 +3992,7 @@ bool renderCinemaEye(VrContext &c, int i, const XrView &view) {
     glClearColor(0.f, 0.f, 0.f, 0.f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     const Mat4 proj = perspectiveFromFov(view.fov, 0.05f, 100.f);
-    const Mat4 view4 = multiply(rotY(gWorldYawRad.load()), viewMatrixFromPose(view.pose));
+    const Mat4 view4 = viewMatrixFromPose(view.pose);
     /*
      * 这里**必须无条件画**（2026-10-10 19:31 抓到的真凶）：
      * 上一版把"独立层模式下不画"的判断条件误插进了这个函数 —— 结果影厅图层
@@ -4279,7 +4219,7 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     const Mat4 proj = perspectiveFromFov(view.fov, 0.05f, 100.f);
-    const Mat4 view4 = multiply(rotY(gWorldYawRad.load()), viewMatrixFromPose(view.pose));
+    const Mat4 view4 = viewMatrixFromPose(view.pose);
     /*
      * 影厅先画（父亲 2026-10-10）：开深度、画完立刻关掉 —— 后面的银幕/海报墙/控制条/弹幕
      * 还是原来的图层顺序，一层层叠上去，不受影厅遮挡影响。
