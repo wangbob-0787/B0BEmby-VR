@@ -3221,7 +3221,7 @@ constexpr float kOsdPxH = 474.f;
 constexpr float kOsdWidth = 1.295f;  // 米 = 2331px / 1800px每米（父亲 2026-10-06 晚定稿）
 constexpr float kOsdHeight = kOsdWidth * kOsdPxH / kOsdPxW;
 constexpr float kOsdDistance = 0.85f;                     // 正前方距离（米，父亲：再近些）
-constexpr float kOsdCenterY = -0.40f;                     // 视线下方（米，父亲 2026-10-30：原来 -0.62 看着落在脚边，抬 22 厘米）
+constexpr float kOsdCenterY = -0.20f;                     // 眼睛下方（米，父亲 2026-10-30 定：原来 -0.62 看着落在脚边）
 constexpr float kOsdTiltDeg = -24.f;                      // 上仰角（度），正对观影者
 
 /** 控制条平面：中心与两条轴（含仰角）。返回法线 n 与面内 x/y 轴 */
