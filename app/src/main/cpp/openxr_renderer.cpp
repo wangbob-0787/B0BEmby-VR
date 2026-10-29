@@ -1425,6 +1425,10 @@ std::atomic<float> gViewerOriginZ{0.f};
  */
 std::atomic<float> gViewerOriginY{0.f};
 std::atomic<float> gEyeY{0.f};
+/* 控制条上沿的口径：坐姿参考眼高（离地米数），旧调参键 osd_top_sit 靠它换算成相对眼睛 */
+constexpr float kEyeSitRef = 1.17f;
+/* 已生效的控制条眼高基准（定义在控制条参数那一节）；重居中要把它作废重取 */
+extern std::atomic<float> gOsdEyeBase;
 /*
  * 面板（控制条 / 海报墙 / 菜单）吃多少眼高（父亲 2026-10-28 23:51 定）：
  * 站着的高差只加**一半**，再叠回坐姿基准。全量加上去实际戴着偏高——父亲原话
@@ -3528,13 +3532,6 @@ void osdBasis(float *cx, float *cy, float *cz, float *nx, float *ny, float *nz, 
     *nx = 0.f; *ny = -st; *nz = ct;
     *ux = 1.f; *uy = 0.f; *uz = 0.f;
     *vx = 0.f; *vy = ct;  *vz = st;
-    /* 眼部独立坐标系：不套世界摆放（与面板摆位、命中、正反面同一套） */
-    {
-        const float nx0 = *nx, nz0 = *nz, ux0 = *ux, uz0 = *uz, vx0 = *vx, vz0 = *vz;
-        *nx = nx0; *nz = nz0;
-        *ux = c2 * ux0 + s2 * uz0;  *uz = -s2 * ux0 + c2 * uz0;
-        *vx = c2 * vx0 + s2 * vz0;  *vz = -s2 * vx0 + c2 * vz0;
-    }
 }
 
 /** 射线与控制条矩形的交点；命中返回 true（同一套路：交点必须在矩形内） */
