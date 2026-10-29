@@ -4041,6 +4041,29 @@ void pushInput(VrContext &c) {
                 c.panelAdjustAt[h] = t;
                 LOGI("海报墙：%s 握把键按住 → 抓住（半径 %.2f 米）", handName[h],
                      (double) c.panelDragRadius[h]);
+                /*
+                 * 按下的这一帧就把墙心挪到"手柄 → 光点"这条线上（父亲 2026-10-30）：
+                 * 以手柄为球心，墙心必须落在光柱上，光点才会打中墙的正中间。
+                 * 原来要等手移动超过阈值才更新，按住的瞬间墙不动，光点就还在墙外。
+                 */
+                {
+                    float gdx = 0.f, gdy = 0.f, gdz = 0.f;
+                    aimDirection(c.aimPose[h], &gdx, &gdy, &gdz);
+                    appDirToWorld(&gdx, &gdz);
+                    const float rr0 = c.panelDragRadius[h];
+                    float nx0 = eye.x + gdx * rr0;
+                    const float ny0 = eye.y + gdy * rr0;
+                    float nz0 = eye.z + gdz * rr0;
+                    const float sx0 = nx0, sz0 = nz0;
+                    worldToApp(&sx0, &sz0);
+                    c.panelPosX = sx0;
+                    c.panelPosY = ny0 - panelLift();
+                    c.panelPosZ = sz0;
+                    const float kRad2Deg0 = 180.f / 3.14159265358979f;
+                    c.panelPitchDeg = asinf(gdy) * kRad2Deg0;
+                    c.panelYawDeg = atan2f(-gdx, -gdz) * kRad2Deg0;
+                    (void) nx0;
+                }
             }
             /*
              * 抓住之后每帧跑：拖动（球面）+ 握着握把键推摇杆调远近 / 缩放
