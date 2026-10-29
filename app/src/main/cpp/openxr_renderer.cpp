@@ -329,6 +329,14 @@ void worldToApp(float *x, float *z) {
     *z = s * px + c * pz;
 }
 
+/** 方向向量专用：世界 → 本地（不带平移） */
+void worldToAppDir(float *dx, float *dz) {
+    const float c = cosf(gWorldYawRad.load()), s = sinf(gWorldYawRad.load());
+    const float ox = *dx, oz = *dz;
+    *dx = c * ox - s * oz;
+    *dz = s * ox + c * oz;
+}
+
 Mat4 viewMatrixFromPose(const XrPosef &pose) {
     const float x = pose.orientation.x, y = pose.orientation.y;
     const float z = pose.orientation.z, w = pose.orientation.w;
@@ -5198,10 +5206,26 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
                             pw.cz + nz * 0.006f,
                     };
                 } else {
+                    /*
+                     * 光点由 GL 画在参考空间里，而命中距离 dotT 是按世界坐标算出来的。
+                     * 直接把"参考空间的方向"乘"世界坐标的距离"会混两套坐标：场景一旦
+                     * 转过角度，光点就落到别处（父亲 2026-10-29 实测：指着看得见的
+                     * 海报墙打不中，要指到侧后方那块空位才打中）。
+                     * 做法：把世界落点原路转回参考空间，光点和墙面才对得上。
+                     */
+                    float wox = c.aimPose[h].position.x, woz = c.aimPose[h].position.z;
+                    appToWorld(&wox, &woz);
+                    float wdx = dx, wdz = dz;
+                    appDirToWorld(&wdx, &wdz);
+                    float hpx = wox + wdx * dotT, hpz = woz + wdz * dotT;
+                    worldToApp(&hpx, &hpz);
+                    /* 法线也要转回参考空间，否则那 6 毫米的抬升会朝错方向 */
+                    float anx = nx, anz = nz;
+                    worldToAppDir(&anx, &anz);
                     dotPose.position = {
-                            c.aimPose[h].position.x + dx * dotT + nx * 0.006f,
+                            hpx + anx * 0.006f,
                             c.aimPose[h].position.y + dy * dotT + ny * 0.006f,
-                            c.aimPose[h].position.z + dz * dotT + nz * 0.006f,
+                            hpz + anz * 0.006f,
                     };
                 }
                 dotPose.orientation = rot;
