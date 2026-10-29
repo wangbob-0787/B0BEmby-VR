@@ -1444,6 +1444,11 @@ std::chrono::steady_clock::time_point gLastHeadLog{};
 void updateViewerAnchor(const XrPosef &head) {
     const float hx = head.position.x;
     const float hz = head.position.z;
+    /* 头部前向（水平面内），起手定世界朝向与每帧记头显偏航都用它 */
+    const float hfxNow = -2.f * (head.orientation.x * head.orientation.z +
+                                 head.orientation.w * head.orientation.y);
+    const float hfzNow = -(1.f - 2.f * (head.orientation.x * head.orientation.x +
+                                        head.orientation.y * head.orientation.y));
     {
         const float qx = head.orientation.x, qy = head.orientation.y;
         const float qz = head.orientation.z, qw = head.orientation.w;
@@ -1472,6 +1477,18 @@ void updateViewerAnchor(const XrPosef &head) {
     /* 头显在舞台空间里的实际离地高度：控制条上沿要靠它随站坐变化，不能只等按圆圈 */
     gHeadStageY.store(head.position.y);
     if (!gViewerOriginSet.load()) {
+        /*
+         * 世界朝向必须按"戴上头显那一刻面朝的方向"定（父亲 2026-10-29）：
+         * 原来恒为 0，等于永远朝运行时的固定正前方。他在办公室朝一个方向、
+         * 回家朝另一个方向，影院和大屏就会摆在侧面或背后（看到菜单/面板背面）。
+         * 同一处把世界平移也落到他脚下，整厅才算围着他摆。
+         */
+        const float initYaw = atan2f(-hfxNow, -hfzNow);
+        gWorldYawRad.store(initYaw);
+        gWorldSnapX.store(hx);
+        gWorldSnapZ.store(hz);
+        LOGI("世界朝向按头显起手方位定：偏航 %.1f 度，原点落到 (%.2f, %.2f)",
+             (double) (initYaw * 57.29578f), (double) hx, (double) hz);
         gViewerOriginX.store(hx);
         gViewerOriginZ.store(hz);
         gViewerOriginY.store(head.position.y);
@@ -3891,8 +3908,12 @@ void pushInput(VrContext &c) {
              * 抓起来之后墙贴着视线动，推远拉近改的是"眼睛到墙"的半径；
              * 竖直方向上球心取墙自己的高度，避免一抓墙就上下飘。
              */
-            const XrVector3f eye{gHeadRawX.load(), c.panelPosY.load() + panelLift(),
-                                 gHeadRawZ.load()};
+            /*
+             * 球心高度用眼位 0，**不能**取墙自己的高度：那样每帧
+             * "墙高 = (墙高) + 垂直分量 × 半径"，竖直方向会累加，
+             * 一拖就飞到天上或地底（父亲 2026-10-29 实测墙高从 5.79 米涨到 138.51 米）。
+             */
+            const XrVector3f eye{gHeadRawX.load(), 0.f, gHeadRawZ.load()};
             /*
              * 抓住的前提：光点正落在海报墙上（父亲 2026-10-07 实测报"光点在哪，
              * 一按握把键墙就跑到光点位置"）。抓住之后不再要求 —— 手一动光柱就会
@@ -6958,9 +6979,24 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetPanelPlace(JNIEnv *env, jobject /* t
                                                        jfloat x, jfloat y, jfloat z,
                                                        jfloat yaw, jfloat pitch,
                                                        jfloat width) {
-    g.panelPosX = x;
-    g.panelPosY = y;
-    g.panelPosZ = z;
+    /*
+     * 还原时收敛到合理范围：历史版本里抓取球心算错会存下离谱坐标
+     * （实测存过 Y=138 米），直接还原就等于墙在头顶高空、抓都抓不到。
+     */
+    const float rr = sqrtf(x * x + z * z);
+    const float kMaxR = 8.f;
+    float cx2 = x, cz2 = z;
+    if (rr > kMaxR) {
+        const float k = kMaxR / rr;
+        cx2 = x * k;
+        cz2 = z * k;
+        LOGI("海报墙：还原坐标过远（%.2f 米），收敛到 %.2f 米", (double) rr, (double) kMaxR);
+    }
+    if (fabsf(y) > 1.5f) LOGI("海报墙：还原高度 %.2f 米不合理，收敛到 ±1.5 米内", (double) y);
+    const float y2 = fminf(1.5f, fmaxf(-1.5f, y));
+    g.panelPosX = cx2;
+    g.panelPosY = y2;
+    g.panelPosZ = cz2;
     g.panelYawDeg = yaw;
     g.panelPitchDeg = pitch;
     g.panelWidth = fminf(kPanelMaxWidth, fmaxf(kPanelMinWidth, width));
