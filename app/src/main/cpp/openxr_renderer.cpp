@@ -285,7 +285,18 @@ extern std::atomic<float> gWorldSnapZ;
  * 「贴着人」的东西，不进这个变换 —— 否则一按圆圈光柱就从手边飞到世界原点。
  */
 Mat4 worldXf() {
-    Mat4 m = rotY(gWorldYawRad.load());
+    /*
+     * 与 appToWorld() 同一套朝向：x' = c·x + s·z，z' = −s·x + c·z。
+     *
+     * 这里原来用 rotY() 拼矩阵。rotY 是按列主序写的 x' = c·x − s·z、z' = s·x + c·z，
+     * 恰好是反方向 —— 影厅与银幕/控制条/海报墙朝相反方向转。
+     * 后果（父亲 2026-10-29 实测）：起点偏 1 度看不出来；右转 90 度按圆圈后，
+     * 银幕转到正前方、影厅却转到身后（面前是椅背）；再转回来又只差几度。
+     */
+    const float c = cosf(gWorldYawRad.load()), s = sinf(gWorldYawRad.load());
+    Mat4 m = identity();
+    m.m[0] = c;  m.m[2] = -s;
+    m.m[8] = s;  m.m[10] = c;
     m.m[12] = gWorldSnapX.load();
     m.m[13] = 0.f;
     m.m[14] = gWorldSnapZ.load();
