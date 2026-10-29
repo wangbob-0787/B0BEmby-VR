@@ -267,6 +267,7 @@ Mat4 rotY(float a) {
 }
 
 extern std::atomic<float> gWorldYawRad;
+extern std::atomic<float> gHeadYawDeg;
 extern std::atomic<float> gWorldSnapX;
 extern std::atomic<float> gWorldSnapZ;
 
@@ -715,6 +716,8 @@ std::atomic<float> gWorldYawRad{0.f};
  * 世界锚点：按圆圈时把它累加成"你走开后要补回来的距离"，之后整间影厅（含银幕、面板、弹幕）
  * 一起平移这么多，你就又坐回座椅锚点，而不是坐在扶手上（父亲 2026-10-29）。
  */
+/** 头显此刻的水平朝向（度，与"厅角/幕角"同一约定）：体检日志用它对照 */
+std::atomic<float> gHeadYawDeg{0.f};
 std::atomic<float> gWorldSnapX{0.f};
 std::atomic<float> gWorldSnapZ{0.f};
 
@@ -1391,6 +1394,13 @@ std::chrono::steady_clock::time_point gLastHeadLog{};
 void updateViewerAnchor(const XrPosef &head) {
     const float hx = head.position.x;
     const float hz = head.position.z;
+    {
+        const float qx = head.orientation.x, qy = head.orientation.y;
+        const float qz = head.orientation.z, qw = head.orientation.w;
+        const float hfx = -2.f * (qx * qz + qw * qy);
+        const float hfz = -(1.f - 2.f * (qx * qx + qy * qy));
+        gHeadYawDeg.store(atan2f(-hfx, -hfz) * 57.29578f);
+    }
     if (!gViewerOriginSet.load()) {
         gViewerOriginX.store(hx);
         gViewerOriginZ.store(hz);
@@ -6003,6 +6013,29 @@ void frameLoop(VrContext &c) {
         if (rendered && gHideProjection.load() == 0) {
             layerPtrs[layerCount++] =
                     reinterpret_cast<const XrCompositionLayerBaseHeader *>(&layer);
+        }
+        /*
+         * 世界摆放体检（父亲 2026-10-29 要求）：一秒一行，把"影厅朝向"与"银幕朝向"
+         * 摆在同一行里直接比。两者本该永远是同一个角；差多少、反号没有、跟头朝向什么关系，
+         * 一眼就能看出来 —— 这是定案"影厅为什么自己转"的唯一硬证据。
+         */
+        {
+            static long long lastWmMs = 0;
+            const auto nowMs = (long long) std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count();
+            if (nowMs - lastWmMs > 1000) {
+                lastWmMs = nowMs;
+                const ScreenPlacement sc = frontScreen(c);
+                const float yawDeg = gWorldYawRad.load() * 57.29578f;
+                const int seatIdx = gSeat.load();
+                const CinemaSeat &cs = kCinemaSeats[seatIdx];
+                LOGI("摆放体检：厅角=%.1f° 幕角=%.1f° 头角=%.1f° 平移=(%.2f,%.2f) 幕世界=(%.2f,%.2f) "
+                     "幕底Y=%.2f 座位=%d 厅平移dz=%.2f 台阶=%.2f",
+                     (double) yawDeg, (double) sc.yawDeg, (double) gHeadYawDeg.load(),
+                     (double) gWorldSnapX.load(), (double) gWorldSnapZ.load(),
+                     (double) sc.cx, (double) sc.cz, (double) hallScreenBottomY(),
+                     seatIdx, (double) cs.dz, (double) hallFloorDy(viewerZForFloor()));
+            }
         }
         gLastLayerCount.store((int) layerCount);
         fei.layerCount = layerCount;
