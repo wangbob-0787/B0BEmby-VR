@@ -6015,9 +6015,9 @@ void frameLoop(VrContext &c) {
                     reinterpret_cast<const XrCompositionLayerBaseHeader *>(&layer);
         }
         /*
-         * 世界摆放体检（父亲 2026-10-29 要求）：一秒一行，把"影厅朝向"与"银幕朝向"
-         * 摆在同一行里直接比。两者本该永远是同一个角；差多少、反号没有、跟头朝向什么关系，
-         * 一眼就能看出来 —— 这是定案"影厅为什么自己转"的唯一硬证据。
+         * 全要素体检（父亲 2026-10-29 要求）：一秒一行，把影厅、大银幕、弹幕层、控制条、
+         * 菜单、海报墙、手柄光柱各自的世界坐标与朝向摆在一起。谁在动、动多少、和谁不同步，
+         * 直接读数字就能定案，不再靠观感猜。
          */
         {
             static long long lastWmMs = 0;
@@ -6025,16 +6025,48 @@ void frameLoop(VrContext &c) {
                     std::chrono::steady_clock::now().time_since_epoch()).count();
             if (nowMs - lastWmMs > 1000) {
                 lastWmMs = nowMs;
+                const float rad2deg = 57.29578f;
                 const ScreenPlacement sc = frontScreen(c);
-                const float yawDeg = gWorldYawRad.load() * 57.29578f;
+                const ScreenPlacement pw = panelPlacement(c);
+                const float yawDeg = gWorldYawRad.load() * rad2deg;
                 const int seatIdx = gSeat.load();
                 const CinemaSeat &cs = kCinemaSeats[seatIdx];
-                LOGI("摆放体检：厅角=%.1f° 幕角=%.1f° 头角=%.1f° 平移=(%.2f,%.2f) 幕世界=(%.2f,%.2f) "
-                     "幕底Y=%.2f 座位=%d 厅平移dz=%.2f 台阶=%.2f",
-                     (double) yawDeg, (double) sc.yawDeg, (double) gHeadYawDeg.load(),
-                     (double) gWorldSnapX.load(), (double) gWorldSnapZ.load(),
-                     (double) sc.cx, (double) sc.cz, (double) hallScreenBottomY(),
-                     seatIdx, (double) cs.dz, (double) hallFloorDy(viewerZForFloor()));
+                auto yawOfQuat = [&](const XrQuaternionf &q) {
+                    const float fx = -2.f * (q.x * q.z + q.w * q.y);
+                    const float fz = -(1.f - 2.f * (q.x * q.x + q.y * q.y));
+                    return atan2f(fx, fz) * rad2deg;
+                };
+                LOGI("体检A 厅：角=%.1f° 平移=(%.2f,%.2f) 座%d dy=%.2f dz=%.2f 台阶=%.2f 幕底Y=%.2f",
+                     (double) yawDeg, (double) gWorldSnapX.load(), (double) gWorldSnapZ.load(),
+                     seatIdx, (double) cs.dy, (double) cs.dz,
+                     (double) hallFloorDy(viewerZForFloor()), (double) hallScreenBottomY());
+                LOGI("体检B 屏：幕pos=(%.2f,%.2f,%.2f) 幕角=%.1f° 弹幕pos=(%.2f,%.2f,%.2f) "
+                     "弹幕角=%.1f° 海报pos=(%.2f,%.2f,%.2f) 海报角=%.1f°",
+                     (double) videoQuad.pose.position.x, (double) videoQuad.pose.position.y,
+                     (double) videoQuad.pose.position.z, (double) sc.yawDeg,
+                     (double) danmakuQuad.pose.position.x, (double) danmakuQuad.pose.position.y,
+                     (double) danmakuQuad.pose.position.z, (double) yawOfQuat(danmakuQuad.pose.orientation),
+                     (double) panelQuad.pose.position.x, (double) panelQuad.pose.position.y,
+                     (double) panelQuad.pose.position.z, (double) pw.yawDeg);
+                LOGI("体检C 面板：控制条pos=(%.2f,%.2f,%.2f) 角=%.1f° 菜单pos=(%.2f,%.2f,%.2f) "
+                     "角=%.1f° 头角=%.1f° 走动=(%.2f,%.2f)",
+                     (double) osdQuad.pose.position.x, (double) osdQuad.pose.position.y,
+                     (double) osdQuad.pose.position.z, (double) yawOfQuat(osdQuad.pose.orientation),
+                     (double) menuQuad.pose.position.x, (double) menuQuad.pose.position.y,
+                     (double) menuQuad.pose.position.z, (double) yawOfQuat(menuQuad.pose.orientation),
+                     (double) gHeadYawDeg.load(),
+                     (double) gWalkX.load(), (double) gWalkZ.load());
+                if (c.aimValid[0] || c.aimValid[1]) {
+                    const int h = c.aimValid[0] ? 0 : 1;
+                    const XrPosef &aim = c.aimPose[h];
+                    const float fx = -2.f * (aim.orientation.x * aim.orientation.z +
+                                            aim.orientation.w * aim.orientation.y);
+                    const float fz = -(1.f - 2.f * (aim.orientation.x * aim.orientation.x +
+                                                   aim.orientation.y * aim.orientation.y));
+                    LOGI("体检D 手%d：pos=(%.2f,%.2f,%.2f) 指向角=%.1f°",
+                         h, (double) aim.position.x, (double) aim.position.y,
+                         (double) aim.position.z, (double) (atan2f(fx, fz) * rad2deg));
+                }
             }
         }
         gLastLayerCount.store((int) layerCount);
