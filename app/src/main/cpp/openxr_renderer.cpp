@@ -4032,7 +4032,12 @@ void pushInput(VrContext &c) {
              * 一按握把键墙就跑到光点位置"）。抓住之后不再要求 —— 手一动光柱就会
              * 扫出墙面，那也算还抓着，否则拖到一半就掉。
              */
-            if (!c.panelDragActive[h] && onPanel) {
+            /*
+             * 按住侧键就抓墙（父亲 2026-10-30 定）：不再要求光点先落在墙上。
+             * 抓的瞬间墙心会吸到"手柄 → 光点"这条线上，所以按下去墙就跟着手走，
+             * 不管此刻指着哪儿。原来要求 onPanel，指着墙外按就什么也不发生 —— 手感像失灵。
+             */
+            if (!c.panelDragActive[h]) {
                 c.panelDragActive[h] = true;
                 c.panelDragMoved[h] = false;
                 float wallX = c.panelPosX.load(), wallZ = c.panelPosZ.load();
