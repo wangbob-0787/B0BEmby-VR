@@ -1150,6 +1150,22 @@ void drawCinema(const Mat4 &proj, const Mat4 &view, const XrVector3f &eyePos) {
             LOGI("地形体检：走动 z=%.2f（正=后排）补偿 %.2f 米",
                  (double) viewerZForFloor(), (double) slopeDy);
         }
+        /*
+         * 影厅墙面与虚拟银幕的方位对账（父亲 2026-10-29 报"影厅转了 180 度"）：
+         * 两者都必须落在同一个方向上。影厅前墙在模型坐标 z=−22.46，
+         * 经同一套世界摆放后求它的世界坐标与相对观影者的方位角。
+         */
+        if ((tick % 120) == 60) {
+            const float yawW = gWorldYawRad.load();
+            const float cw = cosf(yawW), sw = sinf(yawW);
+            const float mx = kCinemaShiftX;
+            const float mz = s.dz - gSeatFwd.load() + kHallScreenModelZ;
+            const float wx = cw * mx + sw * mz + gWorldSnapX.load();
+            const float wz = -sw * mx + cw * mz + gWorldSnapZ.load();
+            LOGI("厅墙对账：前墙世界坐标 (%.2f, %.2f) 方位 %.1f 度 ／ 世界偏航 %.1f 度",
+                 (double) wx, (double) wz,
+                 (double) (atan2f(-wx, -wz) * 57.29578f), (double) (yawW * 57.29578f));
+        }
     }
     model.m[13] = s.dy + baseLift + gSeatUp.load() + slopeDy;
     model.m[14] = s.dz - gSeatFwd.load();                     // 前/后：正数 = 人往椅子前部坐
