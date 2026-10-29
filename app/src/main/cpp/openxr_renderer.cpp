@@ -268,6 +268,8 @@ Mat4 rotY(float a) {
 
 extern std::atomic<float> gWorldYawRad;
 extern std::atomic<float> gHeadYawDeg;
+extern std::atomic<float> gHeadRawX;
+extern std::atomic<float> gHeadRawZ;
 extern std::atomic<float> gWorldSnapX;
 extern std::atomic<float> gWorldSnapZ;
 
@@ -718,6 +720,9 @@ std::atomic<float> gWorldYawRad{0.f};
  */
 /** 头显此刻的水平朝向（度，与"厅角/幕角"同一约定）：体检日志用它对照 */
 std::atomic<float> gHeadYawDeg{0.f};
+/** 头显此刻在参考空间里的原始水平坐标（不扣除锚点）：判"人在面板哪一侧"只能用这个 */
+std::atomic<float> gHeadRawX{0.f};
+std::atomic<float> gHeadRawZ{0.f};
 std::atomic<float> gWorldSnapX{0.f};
 std::atomic<float> gWorldSnapZ{0.f};
 
@@ -1401,6 +1406,8 @@ void updateViewerAnchor(const XrPosef &head) {
         const float hfz = -(1.f - 2.f * (qx * qx + qy * qy));
         gHeadYawDeg.store(atan2f(-hfx, -hfz) * 57.29578f);
     }
+    gHeadRawX.store(hx);
+    gHeadRawZ.store(hz);
     if (!gViewerOriginSet.load()) {
         gViewerOriginX.store(hx);
         gViewerOriginZ.store(hz);
@@ -1466,7 +1473,16 @@ void updateViewerAnchor(const XrPosef &head) {
                                  recenterNowMs - lastRecenterMs > 400;
         if (jumpedEvent) lastRecenterMs = recenterNowMs;
         /* 没收到事件但位置猛跳（>1.5 米）也当重锚，兜住不上报事件的机型 */
-        const bool jumped = jumpedEvent || dx * dx + dz * dz > 1.5f * 1.5f;
+        /*
+         * 只有"头显自己报了重新居中"才算重锚。
+         *
+         * 原来还带一条"离锚点超过 1.5 米就当重新居中"，那是没接通系统事件时的猜测。
+         * 后果是：他在厅里走动超 1.5 米就被当成一次重锚，而重锚会按当时的头朝向
+         * 重新摆一次影厅 —— 走一圈摆好几次，影厅和银幕朝不同方向转，角度每次都不一样
+         * （2026-10-29 实测日志：16:05:02 偏航 27.8 度、16:05:04 偏航 13.7 度、
+         * 16:05:12 偏航 -112.2 度，期间没有任何"系统重新居中"事件）。
+         */
+        const bool jumped = jumpedEvent;
         if (jumped) {
             /*
              * 世界摆放（父亲 2026-10-29 定稿）：
@@ -1621,10 +1637,17 @@ bool viewerBehindPanel(float yawDeg, float pitchDeg, float cx, float cy, float c
      * 观影位必须取累计走动量（gWalk + gViewer），不能用 viewerOffsetX()（跟随开关的输出，
      * 固定摆位时恒为 0），也不能只用 gViewerX/Z —— 那对量在「重新居中」时会被清零。
      */
-    const float vx = gWalkX.load() + gViewerX.load() - cx;
+    /*
+     * 人到底在面板前面还是后面，必须用"头显在参考空间里的原始坐标"比，
+     * 不能再用走动累计：走动累计是旧口径（锚点系、还没算世界摆放的旋转平移），
+     * 与世界摆放之后的面板坐标不在一个坐标系里。两者混用的后果是
+     * 正常走两步就被判成"绕到面板背后"，面板翻 180 度 —— 看着就是面板在乱转
+     * （2026-10-29 日志：控制条每秒一次被判成背面）。
+     */
+    const float vx = gHeadRawX.load() - cx;
     /* 眼睛的竖直位置也要算进去（父亲 2026-10-28）：站着看面板和坐着看，上下关系不同 */
     const float vy = gEyeY.load() - cy;
-    const float vz = gWalkZ.load() + gViewerZ.load() - cz;
+    const float vz = gHeadRawZ.load() - cz;
     return (nx * vx + ny * vy + nz * vz) < -kBackFaceBias;
 }
 
