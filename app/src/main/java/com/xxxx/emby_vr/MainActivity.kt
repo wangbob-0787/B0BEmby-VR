@@ -1731,8 +1731,14 @@ class MainActivity : ComponentActivity() {
     /** 把海报墙当前摆放存下来（下次打开还原） */
     private fun savePanelPlace() {
         val v = com.xxxx.emby_vr.vr.VrNative.getPanelPlace() ?: return
-        placePrefs.edit().putString("panel_place", v.joinToString(",")).apply()
-        Log.i(TAG, "海报墙摆放已记住")
+        /*
+         * 这里必须 commit()（同步写），不能 apply()（异步）：
+         * 退出走的是 exitApp() 直接杀进程，进程被杀的那一刻 apply() 排队的写
+         * 可能还没落盘，下次打开读到的仍是旧值（2026-10-30 父亲实测：
+         * 1113 版「海报墙摆放已记住」日志打了、位置却没存上，就是这个原因）。
+         */
+        val ok = placePrefs.edit().putString("panel_place", v.joinToString(",")).commit()
+        Log.i(TAG, if (ok) "海报墙摆放已记住（同步落盘）" else "海报墙摆放保存失败（commit 返回 false）")
     }
 
     /** 关掉菜单（控制条按钮高亮一并清掉） */
