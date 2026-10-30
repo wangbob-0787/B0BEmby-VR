@@ -687,6 +687,13 @@ object EmbyApi {
             val looksProfile8 = (dvProfile?.contains("8") == true) ||
                 (dvProfile?.contains("HDR10", true) == true) ||
                 (dvByName && nameLooksHdr)
+            /*
+             * Profile 7（双流 BL+EL）与 Profile 8 一样，基础层本身就是标准 HDR10（PQ + BT.2020），
+             * 系统解码器直接解出基础层、丢掉杜比动态层，颜色仍然是正确的（2026-10-30 父亲实测的
+             * 《The.355》就是 7.6）。所以它与 8 同待遇：走系统解码那条零拷贝通路，
+             * 不进内核、也不需要每帧那次完整拷贝。
+             */
+            val looksProfile7 = (dvProfile?.contains("7") == true)
             val looksProfile5 = (dvProfile?.contains("5") == true) ||
                 (dvProfile?.equals("DOVI", true) == true)
             /*
@@ -695,9 +702,10 @@ object EmbyApi {
              *  ② 用户选了**图形字幕**（PGS/VobSub）—— 内核自己就能画图片字幕，
              *     比"请服务端烧字幕"（要转码、实测还不烧）干净得多。
              */
-            val useKernel = (isDolbyVision && (looksProfile5 || !looksProfile8)) ||
+            val hdr10Base = looksProfile8 || looksProfile7
+            val useKernel = (isDolbyVision && (looksProfile5 || !hdr10Base)) ||
                 com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForImageSubs
-            Log.i(TAG, "片源判定：杜比视界=$isDolbyVision 版本=$dvProfile 走内核=$useKernel" +
+            Log.i(TAG, "片源判定：杜比视界=$isDolbyVision 版本=$dvProfile HDR10打底=$hdr10Base 走内核=$useKernel" +
                 "（按名=$dvByName 按流=$dvByStream）path=${sourcePath.takeLast(70)}")
             com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource = isDolbyVision
             com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionProfile = dvProfile
