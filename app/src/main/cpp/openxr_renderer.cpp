@@ -1351,19 +1351,31 @@ void updateViewerAnchor(const XrPosef &head) {
          * 所以"走动途中"收到的重新居中都是运行时在重新定位，必须当噪声忽略，
          * 否则正走着忽然把累计走动清零，脚下的台阶就会被抽走。
          */
+        /*
+         * "在走动"的判据用一秒内的累积路程，不用单帧位移：
+         * 身体晃动、换重心时头显每秒会晃几厘米，单帧判据会被误触发；
+         * 真走一步通常一秒内累积几十厘米。单帧超过 0.5 米的算瞬移（重新居中的跳变），
+         * 不计入路程，否则按圆圈那一下会被自己判成"正在走"。
+         */
+        static long long walkWinMs = 0;
+        static float walkPrevX = 0.f, walkPrevZ = 0.f;
+        static float walkPath = 0.f;
         static long long lastWalkMs = 0;
-        static float lastWalkX = 0.f, lastWalkZ = 0.f;
         const long long nowMoveMs = (long long) std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now().time_since_epoch()).count();
-        {
-            const float mx2 = hx - lastWalkX, mz2 = hz - lastWalkZ;
-            if (mx2 * mx2 + mz2 * mz2 > 0.0004f) {   // 单帧挪了 2 厘米以上 = 在走
-                lastWalkMs = nowMoveMs;
-                lastWalkX = hx;
-                lastWalkZ = hz;
-            }
+        if (walkWinMs == 0 || nowMoveMs - walkWinMs > 1000) {
+            walkWinMs = nowMoveMs;
+            walkPath = 0.f;
         }
-        const bool whileWalking = (nowMoveMs - lastWalkMs) < 700;
+        {
+            const float mx2 = hx - walkPrevX, mz2 = hz - walkPrevZ;
+            const float d2 = mx2 * mx2 + mz2 * mz2;
+            if (d2 < 0.25f) walkPath += sqrtf(d2);
+            walkPrevX = hx;
+            walkPrevZ = hz;
+            if (walkPath > 0.15f) lastWalkMs = nowMoveMs;   // 一秒走了 15 厘米以上 = 真在走
+        }
+        const bool whileWalking = lastWalkMs != 0 && (nowMoveMs - lastWalkMs) < 600;
         const bool jumped = !whileWalking &&
                             (eventWithJump ||
                              dx * dx + dz * dz > 1.5f * 1.5f ||
