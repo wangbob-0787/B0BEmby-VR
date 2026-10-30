@@ -61,7 +61,14 @@
 #include "pico_ext.h"
 
 #define TAG "B0BEmbyVR-Native"
-#define VLOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
+#define LOGI_RAW(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
+/*
+ * 排查日志开关（父亲 2026-10-30 定：日志一行不删，只加开关）。
+ * vr-tuning.txt 写 log_verbose=1 才输出排查日志，默认关（写日志会拖渲染线程）。
+ * 报错与警告不设开关 —— 出问题时不能因为开关没开而丢证据。
+ */
+static std::atomic<int> gLogVerbose{0};
+#define VLOGI(...) do { if (gLogVerbose.load() != 0) LOGI_RAW(__VA_ARGS__); } while (0)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
@@ -676,14 +683,6 @@ std::atomic<float> gOsdCenterY{-0.65f};
 /* 走动判据：一秒内累积路程超过 gWalkPathM 才算在走；停走后 gWalkStillMs 毫秒内收到的重新居中算噪声 */
 std::atomic<float> gWalkPathM{0.15f};
 std::atomic<float> gWalkStillMs{600.f};
-/*
- * 排查日志开关（父亲 2026-10-30 定：日志一行不删，只加开关）。
- * vr-tuning.txt 写 log_verbose=1 才输出"每秒若干条"的排查日志；默认关，免得刷屏。
- * 只给排查用的高频日志上开关，启动/报错/一次性事件照旧常开 —— 出问题时不能因为开关没开而丢证据。
- */
-std::atomic<int> gLogVerbose{0};
-#define VLOGI(...) do { if (gLogVerbose.load() != 0) VLOGI(__VA_ARGS__); } while (0)
-
 std::atomic<int> gRecenterEvent{0};
 
 /*
