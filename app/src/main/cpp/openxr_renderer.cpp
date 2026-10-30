@@ -664,6 +664,11 @@ std::atomic<float> gWorldShiftY{0.f};
  * 地形补偿按错的位移整间影厅升降 —— 父亲的原话是"地面高度乱套"。
  * 系统本来就会告诉我们，不用猜。
  */
+/* 控制条中心相对眼睛的高度（米，负 = 下方）。运行时可用 vr-tuning.txt 的 osd_y 改 */
+std::atomic<float> gOsdCenterY{-0.65f};
+/* 走动判据：一秒内累积路程超过 gWalkPathM 才算在走；停走后 gWalkStillMs 毫秒内收到的重新居中算噪声 */
+std::atomic<float> gWalkPathM{0.15f};
+std::atomic<float> gWalkStillMs{600.f};
 std::atomic<int> gRecenterEvent{0};
 
 /*
@@ -3194,11 +3199,6 @@ constexpr float kOsdPxH = 474.f;
 constexpr float kOsdWidth = 1.295f;  // 米 = 2331px / 1800px每米（父亲 2026-10-06 晚定稿）
 constexpr float kOsdHeight = kOsdWidth * kOsdPxH / kOsdPxW;
 constexpr float kOsdDistance = 0.85f;                     // 正前方距离（米，父亲：再近些）
-/* 控制条中心相对眼睛的高度（米，负 = 下方）。运行时可用 vr-tuning.txt 的 osd_y 改 */
-std::atomic<float> gOsdCenterY{-0.65f};
-/* 走动判据：一秒内累积路程超过 gWalkPathM 才算在走；停走后 gWalkStillMs 毫秒内收到的重新居中算噪声 */
-std::atomic<float> gWalkPathM{0.15f};
-std::atomic<float> gWalkStillMs{600.f};
 constexpr float kOsdTiltDeg = -24.f;                      // 上仰角（度），正对观影者
 
 /** 控制条平面：中心与两条轴（含仰角）。返回法线 n 与面内 x/y 轴 */
