@@ -1373,9 +1373,10 @@ void updateViewerAnchor(const XrPosef &head) {
             if (d2 < 0.25f) walkPath += sqrtf(d2);
             walkPrevX = hx;
             walkPrevZ = hz;
-            if (walkPath > 0.15f) lastWalkMs = nowMoveMs;   // 一秒走了 15 厘米以上 = 真在走
+            if (walkPath > gWalkPathM.load()) lastWalkMs = nowMoveMs;   // 一秒走了多少米才算在走（可调）
         }
-        const bool whileWalking = lastWalkMs != 0 && (nowMoveMs - lastWalkMs) < 600;
+        const bool whileWalking = lastWalkMs != 0 &&
+                                  (nowMoveMs - lastWalkMs) < (long long) gWalkStillMs.load();
         const bool jumped = !whileWalking &&
                             (eventWithJump ||
                              dx * dx + dz * dz > 1.5f * 1.5f ||
@@ -3168,7 +3169,7 @@ constexpr float kPanelPxH = 1080.f;
  * 控制条几何（2026-10-05 父亲定）：**贴近观影者**，在他正前方偏下，像一块
  * 悬在身前的手柄面板，而不是贴在远处的视频屏下面。上仰一点正对他的眼睛。
  *
- * 位置/尺寸都在这里调：距离 [kOsdDistance]、高度 [kOsdCenterY]、宽度 [kOsdWidth]、
+ * 位置/尺寸都在这里调：距离 [kOsdDistance]、高度 [gOsdCenterY.load()]、宽度 [kOsdWidth]、
  * 仰角 [kOsdTiltDeg]。后续「指着它扣扳机拖走」也基于这几个量。
  */
 /*
@@ -3193,7 +3194,11 @@ constexpr float kOsdPxH = 474.f;
 constexpr float kOsdWidth = 1.295f;  // 米 = 2331px / 1800px每米（父亲 2026-10-06 晚定稿）
 constexpr float kOsdHeight = kOsdWidth * kOsdPxH / kOsdPxW;
 constexpr float kOsdDistance = 0.85f;                     // 正前方距离（米，父亲：再近些）
-constexpr float kOsdCenterY = -0.65f;                     // 眼睛下方（米，父亲 2026-10-30 定：-0.40 再降 0.25）
+/* 控制条中心相对眼睛的高度（米，负 = 下方）。运行时可用 vr-tuning.txt 的 osd_y 改 */
+std::atomic<float> gOsdCenterY{-0.65f};
+/* 走动判据：一秒内累积路程超过 gWalkPathM 才算在走；停走后 gWalkStillMs 毫秒内收到的重新居中算噪声 */
+std::atomic<float> gWalkPathM{0.15f};
+std::atomic<float> gWalkStillMs{600.f};
 constexpr float kOsdTiltDeg = -24.f;                      // 上仰角（度），正对观影者
 
 /** 控制条平面：中心与两条轴（含仰角）。返回法线 n 与面内 x/y 轴 */
@@ -3203,7 +3208,7 @@ void osdBasis(float *cx, float *cy, float *cz, float *nx, float *ny, float *nz, 
     const float ct = cosf(th), st = sinf(th);
     /* 控制条跟随观影位（2026-10-10）：命中计算必须和实际渲染位置一致，否则光柱偏 */
     /* Y 跟着当前眼高（父亲 2026-10-28）：站着坐着都贴在眼前下方，不再固定按坐姿算 */
-    *cx = viewerOffsetX(); *cy = kOsdCenterY + panelLift(); *cz = -kOsdDistance + viewerOffsetZ();
+    *cx = viewerOffsetX(); *cy = gOsdCenterY.load() + panelLift(); *cz = -kOsdDistance + viewerOffsetZ();
     // 绕 X 轴转 th：法线 (0,0,1) → (0,-sin,cos)；面内 y 轴 (0,1,0) → (0,cos,sin)
     *nx = 0.f; *ny = -st; *nz = ct;
     *ux = 1.f; *uy = 0.f; *uz = 0.f;
@@ -3276,7 +3281,7 @@ void menuBasis(float *cx, float *cy, float *cz, float *nx, float *ny, float *nz,
     const float th = kMenuTiltDeg * 3.14159265358979f / 180.f;
     const float ct = cosf(th), st = sinf(th);
     const float half = kOsdHeight * 0.5f + kMenuHeight * 0.5f;   // 两块面沿 v 轴的半高之和
-    const float menuY = kOsdCenterY + ct * half - st * kMenuGap;
+    const float menuY = gOsdCenterY.load() + ct * half - st * kMenuGap;
     const float menuDist = kOsdDistance - st * half - ct * kMenuGap;
     *cx = viewerOffsetX(); *cy = menuY + panelLift(); *cz = -menuDist + viewerOffsetZ();
     *nx = 0.f; *ny = -st; *nz = ct;
@@ -4509,11 +4514,11 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
             /*
              * 控制条的高度必须与命中侧同源（2026-10-28 父亲实测）。
              *
-             * 命中侧（nativeGetOsdPlace）一直按 kOsdCenterY + 眼高 算，渲染这两处却只用
-             * kOsdCenterY —— 站着按圆圈把眼高抬起来之后，可点的范围升上去了、画出来的控制条
+             * 命中侧（nativeGetOsdPlace）一直按 gOsdCenterY.load() + 眼高 算，渲染这两处却只用
+             * gOsdCenterY.load() —— 站着按圆圈把眼高抬起来之后，可点的范围升上去了、画出来的控制条
              * 还留在原处，于是"光点穿过控制条不亮，往上挪一点才亮"。
              */
-            osdPose.position = {0.f, kOsdCenterY + panelLift(), -kOsdDistance};
+            osdPose.position = {0.f, gOsdCenterY.load() + panelLift(), -kOsdDistance};
             osdPose.orientation = {sinf(th * 0.5f), 0.f, 0.f, cosf(th * 0.5f)};
             const Mat4 osdModel = poseScaleModel(osdPose, kOsdWidth, kOsdHeight, 1.f);
             const Mat4 osdMvp = multiply(multiply(proj, view4), osdModel);
@@ -5841,7 +5846,7 @@ void frameLoop(VrContext &c) {
             /* 位置恒固定（父亲 2026-10-12：控制条不许跟着走动变位置） */
             const float ocx = viewerOffsetX();
             /* 同上：与 nativeGetOsdPlace 同一套高度，别再各算一份 */
-            const float ocy = kOsdCenterY + panelLift();
+            const float ocy = gOsdCenterY.load() + panelLift();
             const float ocz = -kOsdDistance + viewerOffsetZ();
             osdQuad.pose.position = {ocx, ocy, ocz};
             quadOrientation(0.f, kOsdTiltDeg, ocx, ocy, ocz, &osdQuad.pose.orientation);
@@ -6659,6 +6664,27 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
                                                    jint key, jfloat value) {
     (void) env;
     switch (key) {
+        /* 控制条高度（2026-10-30 父亲要求：设备上改，不用再编译） */
+        case 40:
+            if (value >= -2.f && value <= 0.5f) {
+                gOsdCenterY.store(value);
+                LOGI("调参 → 控制条高度：眼睛下方 %.2f 米", (double) -value);
+            }
+            break;
+        /* 走动判据：一秒累积路程阈值（米） */
+        case 41:
+            if (value >= 0.03f && value <= 1.0f) {
+                gWalkPathM.store(value);
+                LOGI("调参 → 走动判据：一秒累积 %.2f 米以上算在走", (double) value);
+            }
+            break;
+        /* 走动判据：停走后多久内的重新居中算噪声（毫秒） */
+        case 42:
+            if (value >= 100.f && value <= 5000.f) {
+                gWalkStillMs.store(value);
+                LOGI("调参 → 走动判据：停走后 %.0f 毫秒内的重新居中当噪声", (double) value);
+            }
+            break;
         /* PICO 官方合成层能力（2026-10-14 父亲定：1、2、3 都做） */
         case 29:
             if (value >= 0.f && value <= 7.f) {

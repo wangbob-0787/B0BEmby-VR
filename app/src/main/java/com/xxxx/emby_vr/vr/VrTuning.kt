@@ -279,6 +279,12 @@ object VrTuning {
     /** 选座（2026-10-10 17:35）：0 = 近排（第 1 排）· 1 = 中排（第 3 排）· 2 = 远排（第 6 排） */
     const val KEY_SCREEN_PRESET = 17
     /** 防穿越：离银幕最近允许多少米（2026-10-10：可以走近银幕，不许穿过） */
+    /** 控制条高度：中心在眼睛下方多少米（负值，2026-10-30 父亲要求做成可调） */
+    const val KEY_OSD_Y = 40
+    /** 走动判据：一秒内累积路程超过多少米才算在走（抗身体晃动，2026-10-30） */
+    const val KEY_WALK_PATH_M = 41
+    /** 走动判据：停走后多少毫秒内的重新居中当噪声（2026-10-30） */
+    const val KEY_WALK_STILL_MS = 42
     const val KEY_MIN_SCREEN_GAP = 18
     /** 控制条/菜单/海报墙是否跟随观影位（2026-10-10：走近银幕时控制条留在伸手可及处） */
     const val KEY_FOLLOW_VIEWER = 19
@@ -665,6 +671,18 @@ object VrTuning {
             applied += "坐姿眼高 ${"%.2f".format(it)} 米"
         }
         /* 防穿越最近距离（2026-10-10）：走近银幕到这么近时，场景会整体后推，不许穿过 */
+        raw["osd_y"]?.toFloatOrNull()?.let {
+            VrNative.setTuning(KEY_OSD_Y, it)
+            applied += "控制条在眼睛下方 ${"%.2f".format(-it)} 米"
+        }
+        raw["walk_path_m"]?.toFloatOrNull()?.let {
+            VrNative.setTuning(KEY_WALK_PATH_M, it)
+            applied += "走动判据 ${"%.2f".format(it)} 米/秒"
+        }
+        raw["walk_still_ms"]?.toFloatOrNull()?.let {
+            VrNative.setTuning(KEY_WALK_STILL_MS, it)
+            applied += "停走判定 ${"%.0f".format(it)} 毫秒"
+        }
         raw["min_screen_gap"]?.toFloatOrNull()?.let {
             VrNative.setTuning(KEY_MIN_SCREEN_GAP, it)
             applied += "最近离银幕 ${"%.1f".format(it)} 米"
