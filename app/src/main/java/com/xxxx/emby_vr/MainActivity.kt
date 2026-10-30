@@ -28,6 +28,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -324,6 +325,8 @@ class MainActivity : ComponentActivity() {
 
     /** 启动后的海报墙摆放是否已还原过（onResume 只做一次） */
     private var panelPlaceRestored = false
+    private var panelAutoSaveStarted = false
+    private var lastSavedPanelPlace: String? = null
 
     // ── 播放上下文（切字幕 / 音轨 / 质量 / 选集都要用它重新起播）──
     private var currentMediaId = ""
@@ -1725,6 +1728,30 @@ class MainActivity : ComponentActivity() {
         if (v.size != 6) return
         com.xxxx.emby_vr.vr.VrNative.setPanelPlace(v)
         Log.i(TAG, "海报墙摆放已还原到上次退出前的样子")
+    }
+
+    /**
+     * 海报墙摆放定时落盘（2026-10-30 父亲实测：摆好后直接退出/被系统杀掉，位置没记住）。
+     *
+     * 原来只在 onPause 存一次；应用被强杀或没走正常生命周期时，那一次就丢了，
+     * 下次启动还原的是更早的旧位置 —— 看起来就是"没记住我摆的位置"。
+     * 改成每 3 秒查一次，位置变了就存，最多只丢 3 秒内的微调。
+     */
+    private fun startPanelPlaceAutoSave() {
+        if (panelAutoSaveStarted) return
+        panelAutoSaveStarted = true
+        scope.launch {
+            while (isActive) {
+                delay(3000)
+                val v = com.xxxx.emby_vr.vr.VrNative.getPanelPlace() ?: continue
+                val joined = v.joinToString(",")
+                if (joined == lastSavedPanelPlace) continue
+                lastSavedPanelPlace = joined
+                placePrefs.edit().putString("panel_place", joined).apply()
+                Log.i(TAG, "海报墙摆放自动记住 x=%.2f y=%.2f z=%.2f 朝向 %.0f°/%.0f° 宽 %.2f 米"
+                    .format(v[0], v[1], v[2], v[3], v[4], v[5]))
+            }
+        }
     }
 
     /** 把海报墙当前摆放存下来（下次打开还原） */
@@ -7761,6 +7788,7 @@ class MainActivity : ComponentActivity() {
         if (!panelPlaceRestored) {
             panelPlaceRestored = true
             restorePanelPlace()
+            startPanelPlaceAutoSave()
         }
     }
 
