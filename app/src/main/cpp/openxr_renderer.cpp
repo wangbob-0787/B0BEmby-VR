@@ -1051,7 +1051,7 @@ void drawCinema(const Mat4 &proj, const Mat4 &view, const XrVector3f &eyePos) {
     Mat4 model = identity();
     model.m[12] = kCinemaShiftX;                              // 横向：让座位中心正对观影位
     /* 坡度补偿：人往后走（gViewerZ 增大）→ 影厅整体下移，脚底那格地面始终在眼睛下方 */
-    const float slopeDy = hallFloorDy(-(gWalkZ.load() + gViewerZ.load()));
+    const float slopeDy = hallFloorDy(gWalkZ.load() + gViewerZ.load());
     model.m[13] = s.dy + (1.65f - gCinemaEyeHeight.load()) + gSeatUp.load() + slopeDy +
                   gWorldShiftY.load();
     model.m[14] = s.dz - gSeatFwd.load();                     // 前/后：正数 = 人往椅子前部坐
@@ -1580,7 +1580,7 @@ float hallScreenFitWidth(float aspect) {
 float hallScreenCenterY() {
     const int seat = gSeat.load();
     const CinemaSeat &s = kCinemaSeats[seat];
-    return (kHallScreenModelY - kHallRefEyeY) + s.dy + (1.65f - gCinemaEyeHeight.load()) + hallFloorDy(-(gWalkZ.load() + gViewerZ.load())) +
+    return (kHallScreenModelY - kHallRefEyeY) + s.dy + (1.65f - gCinemaEyeHeight.load()) + hallFloorDy(gWalkZ.load() + gViewerZ.load()) +
            gWorldShiftY.load() +
            gScreenUp.load();
 }
@@ -1595,7 +1595,7 @@ float hallScreenCenterY() {
 float hallScreenBottomY() {
     const int seat = gSeat.load();
     const CinemaSeat &s = kCinemaSeats[seat];
-    return (kHallScreenBottomY - kHallRefEyeY) + s.dy + (1.65f - gCinemaEyeHeight.load()) + hallFloorDy(-(gWalkZ.load() + gViewerZ.load())) +
+    return (kHallScreenBottomY - kHallRefEyeY) + s.dy + (1.65f - gCinemaEyeHeight.load()) + hallFloorDy(gWalkZ.load() + gViewerZ.load()) +
            gWorldShiftY.load() +
            gScreenUp.load();
 }
