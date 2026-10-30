@@ -617,6 +617,13 @@ constexpr float kHallScreenH = 7.74f;
  * 模型自带那块幕下沿在 1.04 米，父亲 2026-10-10 要求再降——降到 0.30 米
  * （墙能容的极限：16:9 时幕顶 8.04，仍在天花板 9.82 以下，也不会贴地）。
  */
+/*
+ * 影厅基准偏移（2026-10-30 父亲定：他调好的座椅位置烘进代码，调参归零即等于这个位置）。
+ * kHallBakeY = 整间影厅抬高多少米；kHallBakeZ = 整间影厅沿 Z 挪多少米（正 = 往后、离银幕更远）。
+ * 影厅、银幕、前墙共用这两个数，否则幕与墙会脱开。
+ */
+constexpr float kHallBakeY = 0.13f;
+constexpr float kHallBakeZ = 0.35f;
 constexpr float kHallScreenBottomY = 0.30f;
 /** 基准排（第 6 排）眼睛高度（模型坐标）——资产就是按它归零的 */
 constexpr float kHallRefEyeY = 2.80f;
@@ -888,7 +895,7 @@ std::atomic<float> gScreenUp{0.f};
  * 初始值 +0.23 米：实测座垫面在第 6 排是 1.85 米，标准坐姿眼睛应在座垫上方 0.72 米，
  * 而资产当初按"座位网格中心 + 0.75"估的眼睛（被高椅背拉高 0.23 米）→ 抬高 0.23 修回来。
  */
-std::atomic<float> gSeatUp{0.23f};
+std::atomic<float> gSeatUp{0.f};
 std::atomic<float> gSeatFwd{0.f};
 /** 银幕发出的光色（默认中性白；后面按视频画面实时取样） */
 std::atomic<float> gScreenTintR{1.f};
@@ -1053,8 +1060,8 @@ void drawCinema(const Mat4 &proj, const Mat4 &view, const XrVector3f &eyePos) {
     /* 坡度补偿：人往后走（gViewerZ 增大）→ 影厅整体下移，脚底那格地面始终在眼睛下方 */
     const float slopeDy = hallFloorDy(gWalkZ.load() + gViewerZ.load());
     model.m[13] = s.dy + (1.65f - gCinemaEyeHeight.load()) + gSeatUp.load() + slopeDy +
-                  gWorldShiftY.load();
-    model.m[14] = s.dz - gSeatFwd.load();                     // 前/后：正数 = 人往椅子前部坐
+                  gWorldShiftY.load() + kHallBakeY;
+    model.m[14] = s.dz - gSeatFwd.load() + kHallBakeZ;                     // 前/后：正数 = 人往椅子前部坐
     const Mat4 mvp = multiply(multiply(proj, view), model);
 
     glUseProgram(gCinemaProgram);
@@ -1596,7 +1603,7 @@ float hallScreenBottomY() {
     const int seat = gSeat.load();
     const CinemaSeat &s = kCinemaSeats[seat];
     return (kHallScreenBottomY - kHallRefEyeY) + s.dy + (1.65f - gCinemaEyeHeight.load()) + hallFloorDy(gWalkZ.load() + gViewerZ.load()) +
-           gWorldShiftY.load() +
+           gWorldShiftY.load() + kHallBakeY +
            gScreenUp.load();
 }
 
@@ -3013,7 +3020,7 @@ ScreenPlacement frontScreen(const VrContext &c) {
         /* 下沿锚定在 kHallScreenBottomY（换排/座椅调节都跟着走），上沿按片子比例往上长 */
         const float h = p.width / fmaxf(0.2f, p.aspect);
         p.cy = hallScreenBottomY() + h * 0.5f;
-        p.cz -= gSeatFwd.load();
+        p.cz += -gSeatFwd.load() + kHallBakeZ;
         /* 横向取影厅前墙/银幕的位置（他比厅中线偏 0.12 米，画面跟着墙走） */
         p.cx = -(kHallScreenModelX - kAssetOriginModelX) + kCinemaShiftX;
     }
