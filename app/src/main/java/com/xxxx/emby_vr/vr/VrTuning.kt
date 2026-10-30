@@ -40,6 +40,7 @@ import java.io.File
  * | `screen_width` | 银幕宽度（米）。与 `screen_distance` 一起决定视角，默认按 IMAX 第10排几何 | 5.2 |
  * | `screen_distance` | 银幕距离（米）。IMAX 几何 = 宽 26 / 距 15 | 3.2 |
  * | `screen_preset` | 影院银幕两套预设（2026-10-10）：1 = 影厅小屏 5.2/3.2 · 2 = IMAX 大屏 26/15 | 1 |
+ * | `log_verbose` | 排查日志总开关（1 = 全部排查日志，0 = 只留报错与警告；默认 0） | 0 |
  * | `osd_y` | 控制条中心在眼睛下方多少米（写负数，-2.0~0.5；2026-10-30） | -0.65 |
  * | `walk_path_m` | 一秒内累积路程超过多少米才算"在走动"（0.03~1.0，抗身体晃动误判） | 0.15 |
  * | `walk_still_ms` | 停走后多少毫秒内收到的"重新居中"当运行时噪声忽略 | 600 |
@@ -282,6 +283,8 @@ object VrTuning {
     /** 选座（2026-10-10 17:35）：0 = 近排（第 1 排）· 1 = 中排（第 3 排）· 2 = 远排（第 6 排） */
     const val KEY_SCREEN_PRESET = 17
     /** 防穿越：离银幕最近允许多少米（2026-10-10：可以走近银幕，不许穿过） */
+    /** 排查日志总开关：1 = 输出全部排查日志，0 = 只留报错与警告（2026-10-30） */
+    const val KEY_LOG_VERBOSE = 43
     /** 控制条高度：中心在眼睛下方多少米（负值，2026-10-30 父亲要求做成可调） */
     const val KEY_OSD_Y = 40
     /** 走动判据：一秒内累积路程超过多少米才算在走（抗身体晃动，2026-10-30） */
@@ -674,6 +677,10 @@ object VrTuning {
             applied += "坐姿眼高 ${"%.2f".format(it)} 米"
         }
         /* 防穿越最近距离（2026-10-10）：走近银幕到这么近时，场景会整体后推，不许穿过 */
+        raw["log_verbose"]?.toFloatOrNull()?.let {
+            VrNative.setTuning(KEY_LOG_VERBOSE, it)
+            applied += if (it >= 1f) "排查日志全开" else "排查日志只在关键处"
+        }
         raw["osd_y"]?.toFloatOrNull()?.let {
             VrNative.setTuning(KEY_OSD_Y, it)
             applied += "控制条在眼睛下方 ${"%.2f".format(-it)} 米"

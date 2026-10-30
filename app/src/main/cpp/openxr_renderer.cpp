@@ -61,7 +61,7 @@
 #include "pico_ext.h"
 
 #define TAG "B0BEmbyVR-Native"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
+#define VLOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
@@ -205,7 +205,7 @@ bool fetchAll(XrInstance instance) {
             && fetch(instance, "xrGetActionStateVector2f", api.GetActionStateVector2f)
             && fetch(instance, "xrGetActionStatePose", api.GetActionStatePose)
             && fetch(instance, "xrStringToPath", api.StringToPath);
-    LOGI("手柄输入入口点：%s", inputOk ? "齐备" : "部分缺失（输入不可用，渲染不受影响）");
+    VLOGI("手柄输入入口点：%s", inputOk ? "齐备" : "部分缺失（输入不可用，渲染不受影响）");
     return ok;
 }
 
@@ -676,6 +676,14 @@ std::atomic<float> gOsdCenterY{-0.65f};
 /* 走动判据：一秒内累积路程超过 gWalkPathM 才算在走；停走后 gWalkStillMs 毫秒内收到的重新居中算噪声 */
 std::atomic<float> gWalkPathM{0.15f};
 std::atomic<float> gWalkStillMs{600.f};
+/*
+ * 排查日志开关（父亲 2026-10-30 定：日志一行不删，只加开关）。
+ * vr-tuning.txt 写 log_verbose=1 才输出"每秒若干条"的排查日志；默认关，免得刷屏。
+ * 只给排查用的高频日志上开关，启动/报错/一次性事件照旧常开 —— 出问题时不能因为开关没开而丢证据。
+ */
+std::atomic<int> gLogVerbose{0};
+#define VLOGI(...) do { if (gLogVerbose.load() != 0) VLOGI(__VA_ARGS__); } while (0)
+
 std::atomic<int> gRecenterEvent{0};
 
 /*
@@ -989,7 +997,7 @@ bool loadCinemaAsset(const char *path) {
     gCinemaColorOffset = (long) ((pos.size() + nrm.size()) * sizeof(float));
     gCinemaUvOffset = (long) ((pos.size() + nrm.size()) * sizeof(float) + col.size());
     gCinemaReady.store(true);
-    LOGI("影厅几何已加载：%u 顶点 / %u 三角形（%s）", vcount, icount / 3, path);
+    VLOGI("影厅几何已加载：%u 顶点 / %u 三角形（%s）", vcount, icount / 3, path);
     return true;
 }
 
@@ -1026,7 +1034,7 @@ bool loadEnvAsset(const char *path) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_2D, 0);
-    LOGI("环境光贴图已加载：%ux%u（%s）", w, h, path);
+    VLOGI("环境光贴图已加载：%ux%u（%s）", w, h, path);
     return true;
 }
 
@@ -1045,7 +1053,7 @@ void uploadSeatTexture() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
     glBindTexture(GL_TEXTURE_2D, 0);
     gSeatTexReady.store(true);
-    LOGI("座椅贴图集已上传：%dx%d（四宫格：绒布/皮面/木框/杯托；带内采样 ±%.1f 米）",
+    VLOGI("座椅贴图集已上传：%dx%d（四宫格：绒布/皮面/木框/杯托；带内采样 ±%.1f 米）",
          gSeatTexW, gSeatTexH, (double) kSeatTextureBandZ);
 }
 
@@ -1330,7 +1338,7 @@ void updateViewerAnchor(const XrPosef &head) {
         gEyeBase.store(0.f);
         gLastRawEyeY.store(0.f);
         gViewerOriginSet.store(true);
-        LOGI("观影位锚点 → 起点记为 x=%.2f y=%.2f z=%.2f（后续所有走动与身高都相对这个点）",
+        VLOGI("观影位锚点 → 起点记为 x=%.2f y=%.2f z=%.2f（后续所有走动与身高都相对这个点）",
              (double) hx, (double) head.position.y, (double) hz);
     }
     /*
@@ -1435,7 +1443,7 @@ void updateViewerAnchor(const XrPosef &head) {
                     next = fmaxf(-1.f, fminf(1.f, base));
                 }
                 gEyeY.store(next);
-                LOGI("圆圈键采样眼高：上次 %.2f，本次累计 %.2f → %.2f 米%s",
+                VLOGI("圆圈键采样眼高：上次 %.2f，本次累计 %.2f → %.2f 米%s",
                      (double) prev, (double) base, (double) next,
                      next == 0.f ? "（坐下校准为零点）" : "");
             }
@@ -1445,10 +1453,10 @@ void updateViewerAnchor(const XrPosef &head) {
             gLastHeadY.store(headY);
             gLastRawEyeY.store(0.f);
             /* 定位"站起来按圆圈后面板太高"用：把三项实际生效的高度一次打全（2026-10-28 晚） */
-            LOGI("面板高度体检：眼高采样 %.2f｜世界补偿 %.2f｜原始眼位 %.2f",
+            VLOGI("面板高度体检：眼高采样 %.2f｜世界补偿 %.2f｜原始眼位 %.2f",
                  (double) gEyeY.load(), (double) gWorldShiftY.load(),
                  (double) gLastRawEyeY.load());
-            LOGI("重新居中：锚点已重设（x=%.2f z=%.2f），累计走动 %.2f 米，眼高保持 %.2f 米",
+            VLOGI("重新居中：锚点已重设（x=%.2f z=%.2f），累计走动 %.2f 米，眼高保持 %.2f 米",
                  (double) hx, (double) hz, (double) gWalkZ.load(), (double) gEyeY.load());
             return;
         }
@@ -1481,7 +1489,7 @@ void updateViewerAnchor(const XrPosef &head) {
     const auto now = std::chrono::steady_clock::now();
     if (now - gLastHeadLog > std::chrono::seconds(1)) {
         gLastHeadLog = now;
-        LOGI("观影位：x=%+.2f z=%+.2f 眼高 %+.2f（离银幕 %.2f 米，场景后推 %.3f 米）",
+        VLOGI("观影位：x=%+.2f z=%+.2f 眼高 %+.2f（离银幕 %.2f 米，场景后推 %.3f 米）",
              (double) sx, (double) sz, (double) gEyeY.load(), (double) dist, (double) gScenePush.load());
     }
 }
@@ -1554,7 +1562,7 @@ void quadOrientation(float yawDeg, float pitchDeg, float cx, float cy, float cz,
         const auto now = std::chrono::steady_clock::now();
         if (now - gLastFlipLog > std::chrono::seconds(1)) {
             gLastFlipLog = now;
-            LOGI("面片翻到背面朝人：中心 (%.2f, %.2f, %.2f) 观影位 x=%+.2f z=%+.2f",
+            VLOGI("面片翻到背面朝人：中心 (%.2f, %.2f, %.2f) 观影位 x=%+.2f z=%+.2f",
                  (double) cx, (double) cy, (double) cz, (double) gViewerX.load(),
                  (double) gViewerZ.load());
         }
@@ -1614,7 +1622,7 @@ void applySeat(int seat) {
     gSeat.store(seat);
     gScreenWidth.store(kHallScreenW);
     gScreenDistance.store(kCinemaSeats[seat].distance);
-    LOGI("选座 → %s：屏幕距离 %.2f 米 · 影厅平移 dy=%.2f dz=%.2f（水平视角 %.1f°）",
+    VLOGI("选座 → %s：屏幕距离 %.2f 米 · 影厅平移 dy=%.2f dz=%.2f（水平视角 %.1f°）",
          kCinemaSeats[seat].name, (double) kCinemaSeats[seat].distance,
          (double) kCinemaSeats[seat].dy, (double) kCinemaSeats[seat].dz,
          (double) (2.0 * atan((kHallScreenW * 0.5) / kCinemaSeats[seat].distance) *
@@ -2322,7 +2330,7 @@ bool initializeLoader(VrContext &c) {
         LOGE("xrInitializeLoaderKHR 失败：%d", (int) r);
         return false;
     }
-    LOGI("OpenXR loader 已初始化（JavaVM + Activity 已交付）");
+    VLOGI("OpenXR loader 已初始化（JavaVM + Activity 已交付）");
     return true;
 }
 
@@ -2352,7 +2360,7 @@ bool createInstance(VrContext &c) {
         }
         return false;
     };
-    LOGI("运行时扩展：枚举到 %u 个%s", (unsigned) available.size(),
+    VLOGI("运行时扩展：枚举到 %u 个%s", (unsigned) available.size(),
          available.empty() ? "（枚举失败，新特性一律按不可用处理）" : "");
 
     std::vector<const char *> exts = {
@@ -2379,7 +2387,7 @@ bool createInstance(VrContext &c) {
     }
     if (gExtAdaptiveRes.load()) exts.push_back(XR_PICO_ADAPTIVE_RESOLUTION_EXTENSION_NAME);
 
-    LOGI("PICO 能力探测：合成层增强 %s · 固定注视点 %s · 自适应分辨率 %s",
+    VLOGI("PICO 能力探测：合成层增强 %s · 固定注视点 %s · 自适应分辨率 %s",
          gExtLayerSettings.load() ? "有" : "无",
          gExtFoveation.load() ? "有" : "无",
          gExtAdaptiveRes.load() ? "有" : "无");
@@ -2397,7 +2405,7 @@ bool createInstance(VrContext &c) {
         LOGE("xrCreateInstance 失败：%d", (int) r);
         return false;
     }
-    LOGI("OpenXR 实例已建立（apiVersion=%u.%u.%u）",
+    VLOGI("OpenXR 实例已建立（apiVersion=%u.%u.%u）",
          XR_VERSION_MAJOR(XR_CURRENT_API_VERSION),
          XR_VERSION_MINOR(XR_CURRENT_API_VERSION),
          XR_VERSION_PATCH(XR_CURRENT_API_VERSION));
@@ -2417,7 +2425,7 @@ bool createInstance(VrContext &c) {
                                           &refreshFn)) &&
         refreshFn != nullptr) {
         c.requestRefreshRate = reinterpret_cast<PFN_xrRequestDisplayRefreshRateAVS>(refreshFn);
-        LOGI("刷新率切换可用：播放中 72Hz / 界面 90Hz");
+        VLOGI("刷新率切换可用：播放中 72Hz / 界面 90Hz");
     } else {
         LOGW("刷新率扩展不可用，保持运行时默认刷新率");
     }
@@ -2435,7 +2443,7 @@ bool initEgl(VrContext &c) {
         LOGE("eglInitialize 失败");
         return false;
     }
-    LOGI("EGL 就绪 %d.%d", major, minor);
+    VLOGI("EGL 就绪 %d.%d", major, minor);
 
     const EGLint configAttrs[] = {
             EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
@@ -2493,7 +2501,7 @@ bool createSwapchains(VrContext &c) {
         if (f == GL_SRGB8_ALPHA8) { chosen = f; break; }
         if (f == GL_RGBA8) chosen = f;
     }
-    LOGI("swapchain 格式选定 0x%llx（候选 %u 个）", (unsigned long long) chosen, count);
+    VLOGI("swapchain 格式选定 0x%llx（候选 %u 个）", (unsigned long long) chosen, count);
     c.eyeFormat = chosen;   // 影厅图层的交换链用同一个格式
 
     c.eyes.resize(c.viewConfigs.size());
@@ -2511,7 +2519,7 @@ bool createSwapchains(VrContext &c) {
         const float kSuperSample = gSuperSample.load();
         eye.width = (int32_t) fminf(3200.f, vc.recommendedImageRectWidth * kSuperSample);
         eye.height = (int32_t) fminf(3200.f, vc.recommendedImageRectHeight * kSuperSample);
-        LOGI("渲染分辨率：推荐 %ux%u → 实际 %dx%d（超采样 %.2f 倍）",
+        VLOGI("渲染分辨率：推荐 %ux%u → 实际 %dx%d（超采样 %.2f 倍）",
              vc.recommendedImageRectWidth, vc.recommendedImageRectHeight,
              eye.width, eye.height, (double) kSuperSample);
 
@@ -2562,7 +2570,7 @@ bool createSwapchains(VrContext &c) {
             }
         }
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        LOGI("眼 %zu：swapchain %dx%d，%u 张图", i, eye.width, eye.height, imgCount);
+        VLOGI("眼 %zu：swapchain %dx%d，%u 张图", i, eye.width, eye.height, imgCount);
     }
     return true;
 }
@@ -2581,7 +2589,7 @@ void setupFoveation(VrContext &c) {
     }
     const int lvl = gFoveationLevel.load();
     if (lvl <= 0) {
-        LOGI("注视点渲染：配置为关，跳过");
+        VLOGI("注视点渲染：配置为关，跳过");
         return;
     }
     /*
@@ -2618,7 +2626,7 @@ void setupFoveation(VrContext &c) {
             LOGE("注视点渲染：应用到眼交换链失败（xrResult=%d）", (int) sr);
         }
     }
-    LOGI("注视点渲染：等级 %d，已应用到 %d/%zu 只眼", lvl, applied, c.eyes.size());
+    VLOGI("注视点渲染：等级 %d，已应用到 %d/%zu 只眼", lvl, applied, c.eyes.size());
 }
 
 bool createSession(VrContext &c) {
@@ -2665,7 +2673,7 @@ bool createSession(VrContext &c) {
             return false;
         }
     }
-    LOGI("OpenXR 会话已建立");
+    VLOGI("OpenXR 会话已建立");
     return true;
 }
 
@@ -2778,7 +2786,7 @@ bool setupInput(VrContext &c) {
         sbi.countSuggestedBindings = (uint32_t) bindings.size();
         sbi.suggestedBindings = bindings.data();
         const XrResult sr = api.SuggestInteractionProfileBindings(c.instance, &sbi);
-        LOGI("绑定交互配置 %s：%u 条 → xrResult=%d%s", profile, sbi.countSuggestedBindings,
+        VLOGI("绑定交互配置 %s：%u 条 → xrResult=%d%s", profile, sbi.countSuggestedBindings,
              (int) sr, XR_SUCCEEDED(sr) ? "（成功）" : "（被拒）");
         return XR_SUCCEEDED(sr);
     };
@@ -2835,7 +2843,7 @@ bool setupInput(VrContext &c) {
     }
 
     c.inputReady = true;
-    LOGI("手柄输入已就绪（动作集 + 姿态空间）");
+    VLOGI("手柄输入已就绪（动作集 + 姿态空间）");
     return true;
 }
 
@@ -2872,7 +2880,7 @@ void syncInput(VrContext &c) {
                 // 首次拿到"有标志位但不可用"的情况，打一次便于定位原因
                 static int flagLog = 0;
                 if (flagLog < 4) {
-                    LOGI("手柄姿态标志位（%s）=0x%x（含位置位=%d 朝向位=%d）",
+                    VLOGI("手柄姿态标志位（%s）=0x%x（含位置位=%d 朝向位=%d）",
                          handName[i], (unsigned) loc.locationFlags,
                          (loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) ? 1 : 0,
                          (loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) ? 1 : 0);
@@ -2892,7 +2900,7 @@ void syncInput(VrContext &c) {
             if (XR_FAILED(api.GetActionStateBoolean(c.session, &gi, &st))) return;
             const bool now = st.isActive && st.currentState == XR_TRUE;
             if (now != prev) {
-                LOGI("手柄事件：%s %s %s", handName[i], label, now ? "按下" : "松开");
+                VLOGI("手柄事件：%s %s %s", handName[i], label, now ? "按下" : "松开");
                 prev = now;
             }
         };
@@ -2936,7 +2944,7 @@ void syncInput(VrContext &c) {
                 const XrVector2f v = st.isActive ? st.currentState : XrVector2f{0.f, 0.f};
                 const XrVector2f prev = c.thumbstick[i];
                 if (fabsf(v.x - prev.x) > 0.25f || fabsf(v.y - prev.y) > 0.25f) {
-                    LOGI("手柄事件：%s 摇杆 (%.2f, %.2f)", handName[i], v.x, v.y);
+                    VLOGI("手柄事件：%s 摇杆 (%.2f, %.2f)", handName[i], v.x, v.y);
                 }
                 c.thumbstick[i] = v;
             }
@@ -3420,7 +3428,7 @@ void pushInput(VrContext &c) {
             float bT = 0.f, bu = 0.f, bv = 0.f, bx = 0.f, by = 0.f, bz = 0.f;
             const bool aimOnScreen = rayHitsPlacement(c.aimPose[h], frontScreen(c),
                                                       &bT, &bu, &bv, &bx, &by, &bz);
-            LOGI("VR 输入：%s B 键 → 返回（光柱落在银幕上=%d）", handName[h],
+            VLOGI("VR 输入：%s B 键 → 返回（光柱落在银幕上=%d）", handName[h],
                  aimOnScreen ? 1 : 0);
             env->CallVoidMethod(c.inputSink, c.sinkBack,
                                 (jboolean) (aimOnScreen ? JNI_TRUE : JNI_FALSE));
@@ -3542,7 +3550,7 @@ void pushInput(VrContext &c) {
                     c.sinkOsdPressed = osdPressed;
                 }
                 if (c.triggerDown[h] && !c.sinkLastTrigger[h] && c.sinkOsdClick != nullptr) {
-                    LOGI("VR 输入：%s 扳机 → 控制条点击 (%d, %d)", handName[h], (int) opx, (int) opy);
+                    VLOGI("VR 输入：%s 扳机 → 控制条点击 (%d, %d)", handName[h], (int) opx, (int) opy);
                     env->CallVoidMethod(c.inputSink, c.sinkOsdClick, opx, opy);
                     clearJavaException(env, "输入回调 onOsdClick");
                 }
@@ -3619,7 +3627,7 @@ void pushInput(VrContext &c) {
                 c.panelDragStartY[h] = c.panelPosY.load() + panelLift();
                 c.panelDragStartZ[h] = c.panelPosZ.load();
                 c.panelAdjustAt[h] = t;
-                LOGI("海报墙：%s 握把键按住 → 抓住（半径 %.2f 米）", handName[h],
+                VLOGI("海报墙：%s 握把键按住 → 抓住（半径 %.2f 米）", handName[h],
                      (double) c.panelDragRadius[h]);
             }
             /*
@@ -3667,19 +3675,19 @@ void pushInput(VrContext &c) {
                     c.panelPosX = hand.x + ndx * rr;
                     c.panelPosY = hand.y + ndy * rr - panelLift();
                     c.panelPosZ = hand.z + ndz * rr;
-                    LOGI("海报墙：摇杆远近 → 半径 %.2f 米", (double) rr);
+                    VLOGI("海报墙：摇杆远近 → 半径 %.2f 米", (double) rr);
                 }
                 if (fabsf(sx2) > kStickDeadzone) {
                     const float w = c.panelWidth.load() + sx2 * kPanelSizeSpeed * step;
                     c.panelWidth = fminf(kPanelMaxWidth, fmaxf(kPanelMinWidth, w));
-                    LOGI("海报墙：摇杆缩放 → 宽 %.2f 米", (double) c.panelWidth.load());
+                    VLOGI("海报墙：摇杆缩放 → 宽 %.2f 米", (double) c.panelWidth.load());
                 }
                 c.panelAdjustAt[h] = t;
             }
         } else if (c.panelDragActive[h]) {
             c.panelDragActive[h] = false;
             c.panelDragMoved[h] = false;
-            LOGI("海报墙：挪到 (%.2f, %.2f, %.2f) 朝向 %.0f°/%.0f° 宽 %.2f 米",
+            VLOGI("海报墙：挪到 (%.2f, %.2f, %.2f) 朝向 %.0f°/%.0f° 宽 %.2f 米",
                  c.panelPosX.load(), c.panelPosY.load(), c.panelPosZ.load(),
                  c.panelYawDeg.load(), c.panelPitchDeg.load(), c.panelWidth.load());
         }
@@ -3719,7 +3727,7 @@ void pushInput(VrContext &c) {
             }
             if (!c.squeezeDown[h] && c.triggerDown[h] && !c.sinkLastTrigger[h] &&
                 c.sinkClick != nullptr) {
-                LOGI("VR 输入：%s 扳机 → 面板点击 (%d, %d)", handName[h], (int) px, (int) py);
+                VLOGI("VR 输入：%s 扳机 → 面板点击 (%d, %d)", handName[h], (int) px, (int) py);
                 env->CallVoidMethod(c.inputSink, c.sinkClick, px, py);
                 clearJavaException(env, "输入回调 onClick");
             }
@@ -3752,7 +3760,7 @@ void pushInput(VrContext &c) {
                  */
                 static int stickRawLogTick = 0;
                 if ((stickRawLogTick++ % 60) == 0) {
-                    LOGI("摇杆原始值：x=%.3f y=%.3f 握把=%d 扳机=%d 菜单=%d",
+                    VLOGI("摇杆原始值：x=%.3f y=%.3f 握把=%d 扳机=%d 菜单=%d",
                          sx, sy, c.squeezeDown[h] ? 1 : 0, c.triggerDown[h] ? 1 : 0,
                          c.menuVisible.load() ? 1 : 0);
                 }
@@ -3764,7 +3772,7 @@ void pushInput(VrContext &c) {
                             // 坐标 + 摇杆量（x 右正、y 上正，与 OpenXR 一致；方向语义在 Java 侧翻）
                             static int stickLogTick = 0;
                             if ((stickLogTick++ % 60) == 0) {
-                                LOGI("摇杆推给界面层：x=%.2f y=%.2f 接收对象=%p", sx, sy,
+                                VLOGI("摇杆推给界面层：x=%.2f y=%.2f 接收对象=%p", sx, sy,
                                      (void *) c.inputSink);
                             }
                             env->CallVoidMethod(c.inputSink, c.sinkStick, px, py, sx, sy);
@@ -3807,13 +3815,13 @@ void pushInput(VrContext &c) {
                 const ScreenPlacement &sp = frontScreen(c);
                 const float px = (vu / sp.width + 0.5f) * kPanelPxW;
                 const float py = (0.5f - vv / (sp.width * 9.f / 16.f)) * kPanelPxH;
-                LOGI("VR 输入：%s 扳机 → 网页点击 (%d, %d)", handName[h], (int) px, (int) py);
+                VLOGI("VR 输入：%s 扳机 → 网页点击 (%d, %d)", handName[h], (int) px, (int) py);
                 env->CallVoidMethod(c.inputSink, c.sinkWebClick, px, py);
                 clearJavaException(env, "输入回调 onWebClick（网页）");
             } else if (onScreen && triggerJust && c.squeezeDown[h] &&
                        c.sinkToggleOsd != nullptr && nowToggle - c.sinkLastToggleMs > 300.0) {
                 c.sinkLastToggleMs = nowToggle;
-                LOGI("VR 输入：%s 侧握+扳机 → 控制条开关（指着银幕）", handName[h]);
+                VLOGI("VR 输入：%s 侧握+扳机 → 控制条开关（指着银幕）", handName[h]);
                 env->CallVoidMethod(c.inputSink, c.sinkToggleOsd);
                 clearJavaException(env, "输入回调 onToggleOsd");
             }
@@ -3937,21 +3945,21 @@ void pumpEvents(VrContext &c) {
             if (nowMs - lastMs > 1500) {
                 lastMs = nowMs;
                 gRecenterEvent.store(1);
-                LOGI("系统重新居中（参考空间变更事件）");
+                VLOGI("系统重新居中（参考空间变更事件）");
             }
             continue;
         }
         if (ev.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED) {
             auto *sc = reinterpret_cast<XrEventDataSessionStateChanged *>(&ev);
             c.state = sc->state;
-            LOGI("会话状态 → %d", (int) sc->state);
+            VLOGI("会话状态 → %d", (int) sc->state);
             switch (sc->state) {
                 case XR_SESSION_STATE_READY: {
                     XrSessionBeginInfo bi{XR_TYPE_SESSION_BEGIN_INFO};
                     bi.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
                     if (XR_SUCCEEDED(api.BeginSession(c.session, &bi))) {
                         c.sessionRunning = true;
-                        LOGI("会话已开始（立体渲染）");
+                        VLOGI("会话已开始（立体渲染）");
                     } else {
                         LOGE("xrBeginSession 失败");
                     }
@@ -4024,7 +4032,7 @@ bool createCinemaSwapchains(VrContext &c, float scale) {
             }
         }
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        LOGI("影厅图层交换链：眼 %zu %dx%d（%u 张图）", i, ce.width, ce.height, imgCount);
+        VLOGI("影厅图层交换链：眼 %zu %dx%d（%u 张图）", i, ce.width, ce.height, imgCount);
     }
     c.cinemaEyesOk = true;
     return true;
@@ -4206,7 +4214,7 @@ void updateScreenLightFromVideo(VrContext &c) {
     static double lastLightLog = 0.0;
     if (nowMs() - lastLightLog > 5000.0) {
         lastLightLog = nowMs();
-        LOGI("影厅灯光：画面亮度 %.2f → 光强 %.2f · 色调 (%.2f,%.2f,%.2f) · 环境光 %.2f · 座位 %d",
+        VLOGI("影厅灯光：画面亮度 %.2f → 光强 %.2f · 色调 (%.2f,%.2f,%.2f) · 环境光 %.2f · 座位 %d",
              (double) gCinemaLuma.load(), (double) gCinemaGlow.load(),
              (double) gScreenTintR.load(), (double) gScreenTintG.load(),
              (double) gScreenTintB.load(), (double) gEnvStrength.load(), gSeat.load());
@@ -4453,7 +4461,7 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
             static double lastLayerLog = 0.0;
             if (nowMs() - lastLayerLog > 3000.0) {
                 lastLayerLog = nowMs();
-                LOGI("图层体检：面板帧%d 视频帧%d 控制条帧%d/开%d 菜单帧%d/开%d 弹幕帧%d/开关%d logo帧%d/开关%d",
+                VLOGI("图层体检：面板帧%d 视频帧%d 控制条帧%d/开%d 菜单帧%d/开%d 弹幕帧%d/开关%d logo帧%d/开关%d",
                      c.panelHasFrame.load() ? 1 : 0,
                      c.videoHasFrame.load() ? 1 : 0,
                      c.osdHasFrame.load() ? 1 : 0, c.osdVisible.load() ? 1 : 0,
@@ -4917,7 +4925,7 @@ bool buildQuadLayer(VrContext &c, VideoLayerBuf &L, int32_t w, int32_t h,
     L.width = w;
     L.height = h;
     L.built = true;
-    LOGI("%s独立层已就绪：%dx%d，%u 张图（缩放交给系统合成器）", what, w, h, imgCount);
+    VLOGI("%s独立层已就绪：%dx%d，%u 张图（缩放交给系统合成器）", what, w, h, imgCount);
     return true;
 }
 
@@ -5147,7 +5155,7 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
         const float lcy = 1.f - 2.f * 0.028f - lhFrac * 0.5f;
         static int logoDrawLogTick = 0;
         if ((logoDrawLogTick++ % 90) == 0) {
-            LOGI("logo 画进视频层：中心(%.3f, %.3f) 尺寸(%.3f, %.3f) 目标缓冲 %dx%d",
+            VLOGI("logo 画进视频层：中心(%.3f, %.3f) 尺寸(%.3f, %.3f) 目标缓冲 %dx%d",
                  lcx, lcy, lwFrac, lhFrac, L.width, L.height);
         }
         drawOverlayIntoVideoLayer(c, c.logoTex, lcx, lcy, lwFrac, lhFrac);
@@ -5393,7 +5401,7 @@ void frameLoop(VrContext &c) {
             static double lastLog = 0.0;
             accWait += waitFrameMs; accPeriod += periodMs; accDelta += deltaMs; accN++;
             if (nowMs() - lastLog > 3000.0 && accN > 0) {
-                LOGI("帧调度：%d 帧｜xrWaitFrame 均 %.2fms｜预测周期均 %.2fms（应为 11.11）"
+                VLOGI("帧调度：%d 帧｜xrWaitFrame 均 %.2fms｜预测周期均 %.2fms（应为 11.11）"
                      "｜预测显示时刻间隔均 %.2fms",
                      accN, accWait / accN, accPeriod / accN, accDelta / accN);
                 accWait = accPeriod = accDelta = 0.0;
@@ -5526,7 +5534,7 @@ void frameLoop(VrContext &c) {
             c.danmakuTex != 0) {
             static int danmakuLogTick = 0;
             if ((danmakuLogTick++ % 180) == 0) {
-                LOGI("弹幕层：有帧=%d 开关=%d 已建=%d",
+                VLOGI("弹幕层：有帧=%d 开关=%d 已建=%d",
                      c.danmakuHasFrame.load() ? 1 : 0, c.danmakuVisible.load() ? 1 : 0,
                      c.danmakuLayer.built ? 1 : 0);
             }
@@ -5543,7 +5551,7 @@ void frameLoop(VrContext &c) {
         // 片名 logo：每秒报一次状态，定位"没画在视频上"（父亲 2026-10-06 晚）
         static int logoLogTick = 0;
         if ((logoLogTick++ % 90) == 0) {
-            LOGI("片名 logo 状态 → 层可用=%d 开关=%d 有帧=%d 纹理=%u 视频层=%d 视频帧=%d",
+            VLOGI("片名 logo 状态 → 层可用=%d 开关=%d 有帧=%d 纹理=%u 视频层=%d 视频帧=%d",
                  c.logoTex != 0 ? 1 : 0, c.logoVisible.load() ? 1 : 0,
                  c.logoHasFrame.load() ? 1 : 0, (unsigned) c.logoTex,
                  c.videoLayer.submitted ? 1 : 0, c.videoHasFrame.load() ? 1 : 0);
@@ -5625,7 +5633,7 @@ void frameLoop(VrContext &c) {
             static int aimLog = 0;
             if (aimLog < 6) {
                 const XrPosef &p0 = c.aimValid[0] ? c.aimPose[0] : c.aimPose[1];
-                LOGI("手柄指向可用：pos=(%.2f, %.2f, %.2f) 朝向=(%.2f, %.2f, %.2f, %.2f)",
+                VLOGI("手柄指向可用：pos=(%.2f, %.2f, %.2f) 朝向=(%.2f, %.2f, %.2f, %.2f)",
                      p0.position.x, p0.position.y, p0.position.z,
                      p0.orientation.x, p0.orientation.y, p0.orientation.z, p0.orientation.w);
                 aimLog++;
@@ -5684,7 +5692,7 @@ void frameLoop(VrContext &c) {
                     static double lastGate = 0.0;
                     if (nowMs() - lastGate > 3000.0) {
                         lastGate = nowMs();
-                        LOGI("影厅图层闸门：eyesOk=%d 交换链=%d 几何=%d 开关=%d",
+                        VLOGI("影厅图层闸门：eyesOk=%d 交换链=%d 几何=%d 开关=%d",
                              eyesOk, c.cinemaEyesOk, gCinemaReady.load(), gCinemaOn.load());
                     }
                 }
@@ -5709,7 +5717,7 @@ void frameLoop(VrContext &c) {
                         static bool firstCinemaLogged = false;
                         if (!firstCinemaLogged) {
                             firstCinemaLogged = true;
-                            LOGI("影厅图层首帧已画：%ux%u × %u 眼",
+                            VLOGI("影厅图层首帧已画：%ux%u × %u 眼",
                                  (unsigned) c.cinemaEyes[0].width,
                                  (unsigned) c.cinemaEyes[0].height, viewCount);
                         }
@@ -5718,11 +5726,11 @@ void frameLoop(VrContext &c) {
                 tEyes = std::chrono::steady_clock::now();
                 rendered = eyesOk;
                 if (rendered && loggedFrames < 3) {
-                    LOGI("已渲染第 %d 帧（%u 眼）", loggedFrames + 1, viewCount);
+                    VLOGI("已渲染第 %d 帧（%u 眼）", loggedFrames + 1, viewCount);
                     loggedFrames++;
                 }
             } else if (loggedFrames < 3) {
-                LOGI("本帧跳过：LocateViews=%d 视图数=%u 状态位=0x%x",
+                VLOGI("本帧跳过：LocateViews=%d 视图数=%u 状态位=0x%x",
                      (int) lr, viewCount, (unsigned) vs.viewStateFlags);
             }
         }
@@ -5805,7 +5813,7 @@ void frameLoop(VrContext &c) {
          */
         static int danmakuSubmitLogTick = 0;
         if ((danmakuSubmitLogTick++ % 180) == 0) {
-            LOGI("弹幕层提交：已提交=%d 缓冲=%dx%d 已建=%d",
+            VLOGI("弹幕层提交：已提交=%d 缓冲=%dx%d 已建=%d",
                  c.danmakuLayer.submitted ? 1 : 0, c.danmakuLayer.width,
                  c.danmakuLayer.height, c.danmakuLayer.built ? 1 : 0);
         }
@@ -5915,7 +5923,7 @@ void frameLoop(VrContext &c) {
                 if (XR_SUCCEEDED(ar)) {
                     if (last.width != gAdaptiveLastW.load() ||
                         last.height != gAdaptiveLastH.load()) {
-                        LOGI("自适应分辨率：档 %d，当前 %dx%d，运行时建议 %dx%d",
+                        VLOGI("自适应分辨率：档 %d，当前 %dx%d，运行时建议 %dx%d",
                              mode, cur.width, cur.height, last.width, last.height);
                         gAdaptiveLastW.store(last.width);
                         gAdaptiveLastH.store(last.height);
@@ -5956,7 +5964,7 @@ void frameLoop(VrContext &c) {
             if (std::chrono::duration<double, std::milli>(now - statLast).count() > 3000.0 &&
                 statFrames > 0) {
                 const double n = (double) statFrames;
-                LOGI("帧统计（均/峰 毫秒）：周期 %.1f/%.1f 视频 %.1f/%.1f 界面 %.1f/%.1f "
+                VLOGI("帧统计（均/峰 毫秒）：周期 %.1f/%.1f 视频 %.1f/%.1f 界面 %.1f/%.1f "
                      "双眼 %.1f/%.1f 收尾 %.1f/%.1f | 帧 %.1f/%.1f，%.0f 帧里 %d 帧超 11ms，"
                      "等交换链平均 %.2f｜当前参数 超采样 %.2f 超时 %dms 掩码 0x%x"
                      "｜跳过提交 眼 %d 视频层 %d 其他层 %d｜同步档 %d 刷新率档 %d"
@@ -6035,7 +6043,7 @@ void frameLoop(VrContext &c) {
             c.menuLayer.submitted = false;
         }
     }
-    LOGI("渲染循环结束");
+    VLOGI("渲染循环结束");
 }
 
 void teardown(VrContext &c) {
@@ -6071,7 +6079,7 @@ bool createOesSources(VrContext &c);
 
 void renderThreadMain() {
     VrContext &c = g;
-    LOGI("VR 渲染线程启动");
+    VLOGI("VR 渲染线程启动");
 
     do {
         if (!initializeLoader(c)) break;
@@ -6096,7 +6104,7 @@ void renderThreadMain() {
         api.EnumerateViewConfigurationViews(c.instance, c.systemId,
                                             XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, count,
                                             &count, c.viewConfigs.data());
-        LOGI("视图数 = %u", count);
+        VLOGI("视图数 = %u", count);
 
         if (!createSession(c)) break;
         if (!setupInput(c)) LOGW("手柄输入不可用，继续渲染（诊断阶段先保画面）");
@@ -6163,7 +6171,7 @@ void renderThreadMain() {
         makeQuadBuffers(c);
         makeRayBuffer(c);
         makeTriBuffer(c);
-        LOGI("GL 资源就绪（program=%u）", c.program);
+        VLOGI("GL 资源就绪（program=%u）", c.program);
 
         frameLoop(c);
     } while (false);
@@ -6171,7 +6179,7 @@ void renderThreadMain() {
     teardown(c);
     // 建纹理时把渲染线程附加到了 JVM（之后每帧都要回调 Java），退出前摘掉
     if (c.jvm != nullptr) c.jvm->DetachCurrentThread();
-    LOGI("VR 渲染线程结束");
+    VLOGI("VR 渲染线程结束");
 }
 
 /** 建一张 OES 外部纹理（用的是**当前** GL 上下文，所以必须在渲染线程调） */
@@ -6256,7 +6264,7 @@ jobject makeOesSurface(JNIEnv *env, GLuint tex, std::function<void()> &out,
             if (ts > 0 && !staleFrame) {
                 if (notifyFirstFrame) g.lastVideoFrameTs = ts;
                 hasFrame = true;
-                LOGI("%s首帧到位（timestamp=%lld）—— 可以画了", what, (long long) ts);
+                VLOGI("%s首帧到位（timestamp=%lld）—— 可以画了", what, (long long) ts);
                 /*
                  * 视频画面**第一次真正到纹理层**：通知 Java 侧可以收黑幕了。
                  *
@@ -6301,7 +6309,7 @@ void pushTexturesToJava(VrContext &c, JNIEnv *env) {
         clearJavaException(env, it.what);
         pushed++;
     }
-    LOGI("画面纹理已推给界面层：%d 块（面板/播放画面/控制条/菜单/弹幕/片名 logo）", pushed);
+    VLOGI("画面纹理已推给界面层：%d 块（面板/播放画面/控制条/菜单/弹幕/片名 logo）", pushed);
 }
 
 /**
@@ -6320,7 +6328,7 @@ bool createOesSources(VrContext &c) {
             LOGE("建画面纹理：渲染线程附加 JVM 失败");
             return false;
         }
-        LOGI("建画面纹理：渲染线程已附加到 JVM（不摘除，之后每帧要回调 Java）");
+        VLOGI("建画面纹理：渲染线程已附加到 JVM（不摘除，之后每帧要回调 Java）");
     }
 
     c.panelTex = genOesTexture();
@@ -6358,7 +6366,7 @@ bool createOesSources(VrContext &c) {
     c.menuVisible = false;
     c.danmakuVisible = false;
     c.logoVisible = false;
-    LOGI("六张画面纹理已在本渲染线程的上下文里创建：panel=%u video=%u osd=%u menu=%u "
+    VLOGI("六张画面纹理已在本渲染线程的上下文里创建：panel=%u video=%u osd=%u menu=%u "
          "danmaku=%u logo=%u",
          c.panelTex, c.videoTex, c.osdTex, c.menuTex, c.danmakuTex, c.logoTex);
 
@@ -6373,7 +6381,7 @@ extern "C" JNIEXPORT jboolean JNICALL
 Java_com_xxxx_emby_1vr_vr_VrNative_nativeStartVr(JNIEnv *env, jobject /* this */,
                                                  jobject activity) {
     if (gRunning) {
-        LOGI("VR 会话已在运行");
+        VLOGI("VR 会话已在运行");
         return JNI_TRUE;
     }
     env->GetJavaVM(&g.jvm);
@@ -6389,7 +6397,7 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetPanelActive(JNIEnv *env, jobject /* this */,
                                                        jboolean active) {
     g.panelActive = (active == JNI_TRUE);
-    LOGI("面板激活状态 → %s", g.panelActive.load() ? "true" : "false");
+    VLOGI("面板激活状态 → %s", g.panelActive.load() ? "true" : "false");
 }
 
 
@@ -6401,7 +6409,7 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetScreenPanel(JNIEnv *env, jobject /* this */,
                                                        jboolean on) {
     g.screenShowsPanel = (on == JNI_TRUE);
-    LOGI("银幕画面来源 → %s", on == JNI_TRUE ? "面板（网页全屏）" : "影片");
+    VLOGI("银幕画面来源 → %s", on == JNI_TRUE ? "面板（网页全屏）" : "影片");
 }
 
 
@@ -6422,7 +6430,7 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetWebKeepSampling(JNIEnv *env, jobject /* this */,
                                                             jboolean on) {
     g.webKeepSampling = (on == JNI_TRUE);
-    LOGI("网页面后台取帧 → %s", on == JNI_TRUE ? "开" : "关");
+    VLOGI("网页面后台取帧 → %s", on == JNI_TRUE ? "开" : "关");
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -6430,7 +6438,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetScreenWeb(JNIEnv *env, jobject /* th
                                                      jboolean on) {
     g.screenShowsWeb = (on == JNI_TRUE);
     if (!g.screenShowsWeb.load()) g.webHasFrame = false;   // 关掉后不留旧帧
-    LOGI("银幕画面来源 → %s", on == JNI_TRUE ? "网页" : "（网页面已关）");
+    VLOGI("银幕画面来源 → %s", on == JNI_TRUE ? "网页" : "（网页面已关）");
 }
 
 
@@ -6456,9 +6464,9 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetVideoActive(JNIEnv *env, jobject /* 
         const int fixed = gRefreshHz.load();
         const float hz = fixed > 0 ? (float) fixed : (g.videoActive.load() ? 72.f : 90.f);
         const XrResult rr = g.requestRefreshRate(g.session, hz);
-        LOGI("刷新率 → %.0fHz（结果 %d，档位 %d）", (double) hz, (int) rr, fixed);
+        VLOGI("刷新率 → %.0fHz（结果 %d，档位 %d）", (double) hz, (int) rr, fixed);
     }
-    LOGI("播放画面状态 → %s", g.videoActive.load() ? "true" : "false");
+    VLOGI("播放画面状态 → %s", g.videoActive.load() ? "true" : "false");
 }
 
 /**
@@ -6476,7 +6484,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetSpinnerWanted(JNIEnv *env, jobject /
         g.videoActiveAtMs = nowMs();
     }
     g.spinnerWanted = w;
-    LOGI("银幕转圈 → %s", w ? "等第一帧（转圈）" : "收起");
+    VLOGI("银幕转圈 → %s", w ? "等第一帧（转圈）" : "收起");
 }
 
 
@@ -6485,7 +6493,7 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetOsdVisible(JNIEnv *env, jobject /* this */,
                                                       jboolean visible) {
     g.osdVisible = (visible == JNI_TRUE);
-    LOGI("控制条状态 → %s", g.osdVisible.load() ? "显示" : "隐藏");
+    VLOGI("控制条状态 → %s", g.osdVisible.load() ? "显示" : "隐藏");
 }
 
 /** 展开菜单显示/隐藏（控制条上的按钮点开菜单时由 Java 侧决定） */
@@ -6493,7 +6501,7 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetMenuVisible(JNIEnv *env, jobject /* this */,
                                                        jboolean visible) {
     g.menuVisible = (visible == JNI_TRUE);
-    LOGI("展开菜单状态 → %s", g.menuVisible.load() ? "显示" : "隐藏");
+    VLOGI("展开菜单状态 → %s", g.menuVisible.load() ? "显示" : "隐藏");
 }
 
 /**
@@ -6516,7 +6524,7 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetDanmakuVisible(JNIEnv * /* env */, jobject /* this */,
                                                           jboolean visible) {
     g.danmakuVisible = (visible == JNI_TRUE);
-    LOGI("弹幕层状态 → %s", g.danmakuVisible.load() ? "显示" : "隐藏");
+    VLOGI("弹幕层状态 → %s", g.danmakuVisible.load() ? "显示" : "隐藏");
 }
 
 /** 片名 logo 显隐（播放中出现，停止后收起） */
@@ -6524,7 +6532,7 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetLogoVisible(JNIEnv * /* env */, jobject /* this */,
                                                        jboolean visible) {
     g.logoVisible = (visible == JNI_TRUE);
-    LOGI("片名 logo 状态 → %s", g.logoVisible.load() ? "显示" : "隐藏");
+    VLOGI("片名 logo 状态 → %s", g.logoVisible.load() ? "显示" : "隐藏");
 }
 
 /** 海报墙显示/隐藏（控制条上的「选片」按钮切换，由 Java 侧决定） */
@@ -6532,7 +6540,7 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetPanelShown(JNIEnv *env, jobject /* this */,
                                                        jboolean shown) {
     g.panelShown = (shown == JNI_TRUE);
-    LOGI("海报墙状态 → %s", g.panelShown.load() ? "摆出来" : "收起");
+    VLOGI("海报墙状态 → %s", g.panelShown.load() ? "摆出来" : "收起");
 }
 
 /*
@@ -6565,7 +6573,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetPanelPlace(JNIEnv *env, jobject /* t
     g.panelYawDeg = yaw;
     g.panelPitchDeg = pitch;
     g.panelWidth = fminf(kPanelMaxWidth, fmaxf(kPanelMinWidth, width));
-    LOGI("海报墙：还原到 (%.2f, %.2f, %.2f) 朝向 %.0f°/%.0f° 宽 %.2f 米",
+    VLOGI("海报墙：还原到 (%.2f, %.2f, %.2f) 朝向 %.0f°/%.0f° 宽 %.2f 米",
          (double) x, (double) y, (double) z, (double) yaw, (double) pitch, (double) width);
 }
 
@@ -6580,7 +6588,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetVideoAspect(JNIEnv *env, jobject /* 
                                                         jfloat aspect) {
     if (aspect > 0.2f && aspect < 6.f) {
         g.videoAspect = aspect;
-        LOGI("视频比例 → %.3f", (double) aspect);
+        VLOGI("视频比例 → %.3f", (double) aspect);
     }
 }
 
@@ -6602,7 +6610,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetWebVideoRect(JNIEnv *env, jobject /*
         gWebUvY.store(0.f);
         gWebUvW.store(1.f);
         gWebUvH.store(1.f);
-        if (gWebAspect.exchange(0.f) != 0.f) LOGI("网页视频画面 → 没了，银幕回到整张");
+        if (gWebAspect.exchange(0.f) != 0.f) VLOGI("网页视频画面 → 没了，银幕回到整张");
         return;
     }
     /* 兜一下：矩形必须落在画布内、且不能是空块（网页读数偶尔会给出 0 宽） */
@@ -6617,7 +6625,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetWebVideoRect(JNIEnv *env, jobject /*
     const float old = gWebAspect.exchange(aspect);
     /* 只在明显变化时打日志，免得每 250ms 刷屏 */
     if (fabsf(old - aspect) > 0.02f) {
-        LOGI("网页视频画面：比例 %.3f · 画面块 x=%.3f y=%.3f w=%.3f h=%.3f", (double) aspect,
+        VLOGI("网页视频画面：比例 %.3f · 画面块 x=%.3f y=%.3f w=%.3f h=%.3f", (double) aspect,
              (double) cx, (double) cy, (double) cw, (double) ch);
     }
 }
@@ -6634,7 +6642,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetDanmakuCanvas(JNIEnv * /* env */, jo
     if (w >= 256 && w <= 8192 && h >= 256 && h <= 8192) {
         g.danmakuPxW = (int32_t) w;
         g.danmakuPxH = (int32_t) h;
-        LOGI("弹幕画布 → %dx%d", (int) w, (int) h);
+        VLOGI("弹幕画布 → %dx%d", (int) w, (int) h);
     }
 }
 
@@ -6654,7 +6662,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetImageAdjust(JNIEnv *env, jobject /* 
     if (saturation > 0.f && saturation < 2.f) g.saturation.store(saturation);
     if (sharpen >= 0.f && sharpen < 3.f) g.sharpen.store(sharpen);
     if (temperature > -1.f && temperature < 1.f) g.temperature.store(temperature);
-    LOGI("画面调整 → 亮度 %.2f 对比度 %.2f 饱和度 %.2f 锐度 %.2f 色温 %+.2f",
+    VLOGI("画面调整 → 亮度 %.2f 对比度 %.2f 饱和度 %.2f 锐度 %.2f 色温 %+.2f",
          (double) g.brightness.load(), (double) g.contrast.load(),
          (double) g.saturation.load(), (double) g.sharpen.load(),
          (double) g.temperature.load());
@@ -6671,64 +6679,69 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
                                                    jint key, jfloat value) {
     (void) env;
     switch (key) {
+        /* 排查日志开关（2026-10-30）：0 = 只留关键日志，1 = 输出全部排查日志 */
+        case 43:
+            gLogVerbose.store(value >= 1.f ? 1 : 0);
+            VLOGI("调参 → 排查日志 %s", value >= 1.f ? "全开" : "只在关键处输出");
+            break;
         /* 控制条高度（2026-10-30 父亲要求：设备上改，不用再编译） */
         case 40:
             if (value >= -2.f && value <= 0.5f) {
                 gOsdCenterY.store(value);
-                LOGI("调参 → 控制条高度：眼睛下方 %.2f 米", (double) -value);
+                VLOGI("调参 → 控制条高度：眼睛下方 %.2f 米", (double) -value);
             }
             break;
         /* 走动判据：一秒累积路程阈值（米） */
         case 41:
             if (value >= 0.03f && value <= 1.0f) {
                 gWalkPathM.store(value);
-                LOGI("调参 → 走动判据：一秒累积 %.2f 米以上算在走", (double) value);
+                VLOGI("调参 → 走动判据：一秒累积 %.2f 米以上算在走", (double) value);
             }
             break;
         /* 走动判据：停走后多久内的重新居中算噪声（毫秒） */
         case 42:
             if (value >= 100.f && value <= 5000.f) {
                 gWalkStillMs.store(value);
-                LOGI("调参 → 走动判据：停走后 %.0f 毫秒内的重新居中当噪声", (double) value);
+                VLOGI("调参 → 走动判据：停走后 %.0f 毫秒内的重新居中当噪声", (double) value);
             }
             break;
         /* PICO 官方合成层能力（2026-10-14 父亲定：1、2、3 都做） */
         case 29:
             if (value >= 0.f && value <= 7.f) {
                 gLayerBoost.store((int) value);
-                LOGI("调参 → 视频层增强 %d（0关 1超采样 2超采样高 3锐化 4锐化高 5自适应锐化 "
+                VLOGI("调参 → 视频层增强 %d（0关 1超采样 2超采样高 3锐化 4锐化高 5自适应锐化 "
                      "6自适应锐化高 7超分辨率）", (int) value);
             }
             break;
         case 30:
             if (value >= 0.f && value <= 3.f) {
                 gFoveationLevel.store((int) value);
-                LOGI("调参 → 固定注视点渲染 等级 %d（0关 1低 2中 3高，下帧生效）", (int) value);
+                VLOGI("调参 → 固定注视点渲染 等级 %d（0关 1低 2中 3高，下帧生效）", (int) value);
             }
             break;
         case 32:
             /* 地面坡度（每往前走 1 米视线降多少米）：0 = 平地；0.35 = 影厅实测坡度 */
             if (value >= -0.5f && value <= 1.0f) {
                 gFloorSlope.store(value);
-                LOGI("调参 → 地面坡度 %.2f（每走 1 米视线变化 %.2f 米）", (double) value, (double) value);
+                VLOGI("调参 → 地面坡度 %.2f（每走 1 米视线变化 %.2f 米）", (double) value, (double) value);
             }
             break;
         case 31:
             if (value >= 0.f && value <= 3.f) {
                 gAdaptiveRes.store((int) value);
-                LOGI("调参 → 自适应分辨率 档 %d（0关 1高画质 2平衡 3省电）", (int) value);
+                VLOGI("调参 → 自适应分辨率 档 %d（0关 1高画质 2平衡 3省电）", (int) value);
             }
             break;
         case 1:
             if (value >= 0.6f && value <= 2.0f) {
                 gSuperSample.store(value);
-                LOGI("调参 → 渲染超采样 %.2f 倍（下次起播生效）", (double) value);
+                VLOGI("调参 → 渲染超采样 %.2f 倍（下次起播生效）", (double) value);
             }
             break;
         case 2:
             if (value >= 0.f && value <= 50.f) {
                 gSwapWaitTimeoutMs.store((int) value);
-                LOGI("调参 → 等交换链超时 %d 毫秒", (int) value);
+                VLOGI("调参 → 等交换链超时 %d 毫秒", (int) value);
             }
             break;
         case 3:
@@ -6741,7 +6754,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
              *   bit3 海报墙 · bit4 控制条 · bit5 菜单
              * 默认 0x3F 全开。投影层（眼缓冲）是必交层，无法关闭。
              */
-            LOGI("调参 → 层掩码 0x%x（视频=%d 弹幕=%d logo=%d 海报墙=%d 控制条=%d 菜单=%d）",
+            VLOGI("调参 → 层掩码 0x%x（视频=%d 弹幕=%d logo=%d 海报墙=%d 控制条=%d 菜单=%d）",
                  (int) value,
                  (int) value & 1, ((int) value >> 1) & 1, ((int) value >> 2) & 1,
                  ((int) value >> 3) & 1, ((int) value >> 4) & 1, ((int) value >> 5) & 1);
@@ -6753,16 +6766,16 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
                 const float want = hz > 0 ? (float) hz
                                           : (g.videoActive.load() ? 72.f : 90.f);
                 const XrResult rr = g.requestRefreshRate(g.session, want);
-                LOGI("调参 → 刷新率档 %d，立即请求 %.0fHz（结果 %d）", hz, (double) want,
+                VLOGI("调参 → 刷新率档 %d，立即请求 %.0fHz（结果 %d）", hz, (double) want,
                      (int) rr);
             } else {
-                LOGI("调参 → 刷新率档 %d（运行时未就绪，下次生效）", hz);
+                VLOGI("调参 → 刷新率档 %d（运行时未就绪，下次生效）", hz);
             }
             break;
         }
         case 4:
             gSyncMode.store((int) value);
-            LOGI("调参 → 交回图像同步档 %d（0=glFlush 1=glFinish）", (int) value);
+            VLOGI("调参 → 交回图像同步档 %d（0=glFlush 1=glFinish）", (int) value);
             break;
         /*
          * 6..12：黑纹诊断开关（2026-10-09 父亲要求"多给参数就能多做实验"）。
@@ -6770,45 +6783,45 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
          */
         case 6:
             gHideProjection.store((int) value);
-            LOGI("调参 → 投影层 %s（关掉后只剩 quad 层）",
+            VLOGI("调参 → 投影层 %s（关掉后只剩 quad 层）",
                  (int) value ? "不提交" : "提交");
             break;
         case 7:
             gTestPattern.store((int) value);
-            LOGI("调参 → 固定测试图 %s（切断 mpv/MediaCodec/SurfaceTexture 输入链）",
+            VLOGI("调参 → 固定测试图 %s（切断 mpv/MediaCodec/SurfaceTexture 输入链）",
                  (int) value ? "开" : "关");
             break;
         case 8:
             gVideoLayerMaxW.store((int) value);
-            LOGI("调参 → 视频层宽度上限 %d（0=按视频原分辨率；下次重建生效）", (int) value);
+            VLOGI("调参 → 视频层宽度上限 %d（0=按视频原分辨率；下次重建生效）", (int) value);
             break;
         case 9:
             gNoDownsample.store((int) value);
-            LOGI("调参 → 视频降采样分支 %s", (int) value ? "关（只做单次采样）" : "开");
+            VLOGI("调参 → 视频降采样分支 %s", (int) value ? "关（只做单次采样）" : "开");
             break;
         case 10:
             gNoJitter.store((int) value);
-            LOGI("调参 → 抖动 %s", (int) value ? "固定（排除逐帧变化输入）" : "逐帧变化");
+            VLOGI("调参 → 抖动 %s", (int) value ? "固定（排除逐帧变化输入）" : "逐帧变化");
             break;
         case 11:
             gForceRgba8.store((int) value);
-            LOGI("调参 → 视频层交换链格式 %s（下次重建生效）",
+            VLOGI("调参 → 视频层交换链格式 %s（下次重建生效）",
                  (int) value ? "强制 GL_RGBA8" : "优先 sRGB");
             break;
         case 12:
             gNoPostfx.store((int) value);
-            LOGI("调参 → 画质增强 %s", (int) value ? "全关" : "开");
+            VLOGI("调参 → 画质增强 %s", (int) value ? "全关" : "开");
             break;
         case 13:
             gFinishBeforeTexUpdate.store((int) value);
-            LOGI("调参 → 取帧前先 glFinish %s（防外部纹理缓冲被提前回收）",
+            VLOGI("调参 → 取帧前先 glFinish %s（防外部纹理缓冲被提前回收）",
                  (int) value ? "开" : "关");
             break;
         case 14:
             if (value >= 1.f && value <= 40.f) {
                 gScreenWidth.store(value);
                 const float dist = gScreenDistance.load();
-                LOGI("调参 → 银幕宽 %.2f 米（距离 %.2f 米，水平视角 %.1f°）",
+                VLOGI("调参 → 银幕宽 %.2f 米（距离 %.2f 米，水平视角 %.1f°）",
                      (double) value, (double) dist,
                      (double) (2.0 * atan((value * 0.5) / dist) * 180.0 / 3.14159265358979));
             }
@@ -6817,7 +6830,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             if (value >= 1.f && value <= 40.f) {
                 gScreenDistance.store(value);
                 const float w = gScreenWidth.load();
-                LOGI("调参 → 银幕距离 %.2f 米（宽 %.2f 米，水平视角 %.1f°）",
+                VLOGI("调参 → 银幕距离 %.2f 米（宽 %.2f 米，水平视角 %.1f°）",
                      (double) value, (double) w,
                      (double) (2.0 * atan((w * 0.5) / value) * 180.0 / 3.14159265358979));
             }
@@ -6825,7 +6838,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
         case 16:
             if (value >= 0.05f && value <= 3.f) {
                 gRayScale.store(value);
-                LOGI("调参 → 光柱粗细倍率 %.2f（1.0 = 银幕 3.2 米时代同样的角粗细）",
+                VLOGI("调参 → 光柱粗细倍率 %.2f（1.0 = 银幕 3.2 米时代同样的角粗细）",
                      (double) value);
             }
             break;
@@ -6836,26 +6849,26 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
         case 20:
             /* 影厅环境开关（出问题时一键回黑背景，不用重装） */
             gCinemaOn.store(value >= 0.5f ? 1 : 0);
-            LOGI("调参 → 影厅环境 %s", gCinemaOn.load() ? "开" : "关（只剩黑背景）");
+            VLOGI("调参 → 影厅环境 %s", gCinemaOn.load() ? "开" : "关（只剩黑背景）");
             break;
         case 21:
             if (value >= 0.f && value <= 0.5f) {
                 gCinemaAmbient.store(value);
-                LOGI("调参 → 影厅底光 %.3f", (double) value);
+                VLOGI("调参 → 影厅底光 %.3f", (double) value);
             }
             break;
         case 22:
             /* 影院 HDRI 环境光强度（父亲 2026-10-10：灯光用下载的那套全景图） */
             if (value >= 0.f && value <= 12.f) {
                 gEnvStrength.store(value);
-                LOGI("调参 → 影院环境光强度 %.2f", (double) value);
+                VLOGI("调参 → 影院环境光强度 %.2f", (double) value);
             }
             break;
         case 27:
             /* 座椅高度（米，正 = 椅子相对人抬高） */
             if (value >= -0.6f && value <= 0.6f) {
                 gSeatUp.store(value);
-                LOGI("调参 → 座椅高度 %+.3f 米（厅整体上移；座垫在眼睛下方 %.2f 米）",
+                VLOGI("调参 → 座椅高度 %+.3f 米（厅整体上移；座垫在眼睛下方 %.2f 米）",
                      (double) value, (double) (0.72f - value + 0.23f));
             }
             break;
@@ -6863,21 +6876,21 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             /* 座椅前后（米，正 = 人往椅子前部坐） */
             if (value >= -0.8f && value <= 0.8f) {
                 gSeatFwd.store(value);
-                LOGI("调参 → 座椅前后 %+.3f 米（正数 = 往前坐）", (double) value);
+                VLOGI("调参 → 座椅前后 %+.3f 米（正数 = 往前坐）", (double) value);
             }
             break;
         case 26:
             /* 银幕竖直微调（米）：影厅对好之后按父亲观感微调 */
             if (value >= -2.f && value <= 2.f) {
                 gScreenUp.store(value);
-                LOGI("调参 → 银幕竖直微调 %+.2f 米（影厅银幕中心 %.2f）", (double) value,
+                VLOGI("调参 → 银幕竖直微调 %+.2f 米（影厅银幕中心 %.2f）", (double) value,
                      (double) hallScreenCenterY());
             }
             break;
         case 25:
             /* 影厅画在哪一层（1 = 独立底层 / 0 = 主投影层，对照用） */
             gCinemaLayerMode.store(value >= 0.5f ? 1 : 0);
-            LOGI("调参 → 影厅图层模式 %d（1=独立底层 0=主投影层）", gCinemaLayerMode.load());
+            VLOGI("调参 → 影厅图层模式 %d（1=独立底层 0=主投影层）", gCinemaLayerMode.load());
             break;
         case 24:
             /*
@@ -6895,7 +6908,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
                 /* 父亲 2026-10-11 00:11：最亮档再砍一半（底光 0.10→0.05、环境光 5.0→2.5） */
                 gCinemaAmbient.store(0.05f * value);
                 gEnvStrength.store(2.5f * value);
-                LOGI("调参 → 影厅环境亮度条 %.2f（环境光 %.2f / 底光 %.3f）", (double) value,
+                VLOGI("调参 → 影厅环境亮度条 %.2f（环境光 %.2f / 底光 %.3f）", (double) value,
                      (double) gEnvStrength.load(), (double) gCinemaAmbient.load());
             }
             break;
@@ -6903,7 +6916,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             /* 坐姿眼高（米）：父亲是坐着看电影，地面到眼睛的距离 */
             if (value >= 0.7f && value <= 1.9f) {
                 gCinemaEyeHeight.store(value);
-                LOGI("调参 → 坐姿眼高 %.2f 米（影厅跟着挪 %.2f 米）", (double) value,
+                VLOGI("调参 → 坐姿眼高 %.2f 米（影厅跟着挪 %.2f 米）", (double) value,
                      (double) (1.65f - value));
             }
             break;
@@ -6911,7 +6924,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             /* 防穿越：离银幕最近允许多少米（父亲 2026-10-10：可以走近银幕，不许穿过） */
             if (value >= 0.3f && value <= 5.f) {
                 gMinScreenGap.store(value);
-                LOGI("调参 → 最近离银幕 %.2f 米（再走近，整个场景会跟着往远处推）", (double) value);
+                VLOGI("调参 → 最近离银幕 %.2f 米（再走近，整个场景会跟着往远处推）", (double) value);
             }
             break;
         case 19:
@@ -6923,10 +6936,10 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
              */
             gFollowViewer.store(0);
             (void) value;
-            LOGI("调参 → 控制条跟随观影位 恒关（父亲 2026-10-12：位置不许随走动变）");
+            VLOGI("调参 → 控制条跟随观影位 恒关（父亲 2026-10-12：位置不许随走动变）");
             break;
         default:
-            LOGI("调参 → 未知参数 key=%d（忽略）", (int) key);
+            VLOGI("调参 → 未知参数 key=%d（忽略）", (int) key);
             break;
     }
 }
@@ -6953,7 +6966,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetAssetPaths(JNIEnv *env, jobject /* t
             env->ReleaseStringUTFChars(envPath, p);
         }
     }
-    LOGI("影厅资源路径：几何=%s 环境光=%s", gCinemaAssetPath.c_str(), gEnvAssetPath.c_str());
+    VLOGI("影厅资源路径：几何=%s 环境光=%s", gCinemaAssetPath.c_str(), gEnvAssetPath.c_str());
 }
 
 /**
@@ -6979,7 +6992,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetSeatTexture(JNIEnv *env, jobject /* 
     env->ReleaseIntArrayElements(pixels, buf, JNI_ABORT);
     gSeatTexW = w;
     gSeatTexH = h;
-    LOGI("座椅布纹像素已收到：%dx%d（等渲染线程上传）", w, h);
+    VLOGI("座椅布纹像素已收到：%dx%d（等渲染线程上传）", w, h);
 }
 
 /** 选座（0 近 / 1 中 / 2 远）：控制条上点一下就换排 */
@@ -7014,7 +7027,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetVideoLayerMaxW(JNIEnv *env, jobject 
     (void) env;
     if (width > 0) {
         gVideoLayerMaxW.store((int) width);
-        LOGI("调参 → 视频层宽度上限 %d（按播放路径下发）", (int) width);
+        VLOGI("调参 → 视频层宽度上限 %d（按播放路径下发）", (int) width);
     }
 }
 
@@ -7037,7 +7050,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachInputSink(JNIEnv *env, jobject /*
     g.sinkMenuPointer = g.sinkMenuClick = nullptr;
     g.sinkVideoFrame = nullptr;
     if (sink == nullptr) {
-        LOGI("VR 输入回调已注销");
+        VLOGI("VR 输入回调已注销");
         return;
     }
     g.inputSink = env->NewGlobalRef(sink);
@@ -7061,7 +7074,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachInputSink(JNIEnv *env, jobject /*
     // 视频画面首次到纹理层（换片等待期的黑幕 / 转圈等这个信号才收）
     g.sinkVideoFrame = env->GetMethodID(cls, "onVideoFrameReady", "()V");
     env->DeleteLocalRef(cls);
-    LOGI("VR 输入回调已注册（指针=%d 点击=%d 摇杆=%d 返回=%d 控制条=%d/%d 开关=%d 面板焦点=%d "
+    VLOGI("VR 输入回调已注册（指针=%d 点击=%d 摇杆=%d 返回=%d 控制条=%d/%d 开关=%d 面板焦点=%d "
          "菜单=%d/%d）",
          g.sinkPointer != nullptr ? 1 : 0, g.sinkClick != nullptr ? 1 : 0,
          g.sinkStick != nullptr ? 1 : 0, g.sinkBack != nullptr ? 1 : 0,
@@ -7085,7 +7098,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachTextureSink(JNIEnv *env, jobject 
     }
     g.sinkTexture = nullptr;
     if (sink == nullptr) {
-        LOGI("纹理回调已注销");
+        VLOGI("纹理回调已注销");
         return;
     }
     g.textureSink = env->NewGlobalRef(sink);
@@ -7093,7 +7106,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeAttachTextureSink(JNIEnv *env, jobject 
     g.sinkTexture = env->GetMethodID(cls, "onTexture",
                                      "(ILandroid/graphics/SurfaceTexture;)V");
     env->DeleteLocalRef(cls);
-    LOGI("纹理回调已注册（统一通道 onTexture=%d）", g.sinkTexture != nullptr ? 1 : 0);
+    VLOGI("纹理回调已注册（统一通道 onTexture=%d）", g.sinkTexture != nullptr ? 1 : 0);
 
     if (g.panelSt != nullptr) pushTexturesToJava(g, env);
 }
@@ -7108,5 +7121,5 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeStopVr(JNIEnv *env, jobject /* this */)
         env->DeleteGlobalRef(g.activity);
         g.activity = nullptr;
     }
-    LOGI("VR 会话已停止");
+    VLOGI("VR 会话已停止");
 }
