@@ -467,6 +467,22 @@ private fun MoreMenu(menu: MenuState, playing: Boolean) {
         MenuKind.BUFFER to "缓冲设置",
     )
     Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+        /*
+         * 3D 模式（父亲 2026-11-01）：放在最上面一行，点一下循环 关 → 标准 → 舒适。
+         * 排在最前面是因为「更多」列表本身能滚，放末尾容易被挤出可视区。
+         * 行号固定 = 7，与下面四条（0..3）互不干扰。
+         */
+        MenuRow(
+            label = "3D 模式",
+            value = when (menu.stereoMode) {
+                1 -> "标准"
+                2 -> "舒适"
+                else -> "关"
+            },
+            selected = menu.stereoMode != 0,
+            hasSub = false,
+            onClick = { menu.onSelect?.invoke(MenuKind.MORE, 7) },
+        )
         entries.forEachIndexed { i, (k, label) ->
             MenuRow(
                 label = label,
@@ -534,22 +550,7 @@ private fun MoreMenu(menu: MenuState, playing: Boolean) {
             hasSub = true,
             onClick = { menu.onSelect?.invoke(MenuKind.MORE, 5) },
         )
-        /*
-         * 3D 模式（父亲 2026-11-01）：点一下开/关实时 2D→3D。行号 = 7。
-         * 打开后视频层拆成左右眼两条，按深度图给左右眼不同的水平视差。
-         */
-        MenuRow(
-            label = "3D 模式",
-            value = when (menu.stereoMode) {
-                1 -> "标准"
-                2 -> "舒适"
-                else -> "关"
-            },
-            selected = menu.stereoMode != 0,
-            hasSub = false,
-            enabled = playing,
-            onClick = { menu.onSelect?.invoke(MenuKind.MORE, 7) },
-        )
+
     }
 }
 

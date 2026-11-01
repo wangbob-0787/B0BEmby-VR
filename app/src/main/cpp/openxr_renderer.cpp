@@ -408,12 +408,24 @@ void main() {
      */
     vec2 uvT = vUv;
     if (uDepthOn == 1) {
-        float d = texture(uDepthTex, vUv).r;
-        if (uDepthInvert == 1) d = 1.0 - d;
         float edgeW = smoothstep(0.0, max(uDepthEdgeFade, 1e-6),
                                  min(vUv.x, 1.0 - vUv.x));
-        uvT.x += uEyeSign * edgeW * uDisp * (d - uConvergence);
-        uvT.x = clamp(uvT.x, 0.0005, 0.9995);
+        /*
+         * 反解源位置（父亲 2026-11-01 报"线条接不上、断开"）。
+         *
+         * 直接按本点深度平移一次，遇到深度突变的地方会采到"本眼根本看不到"的像素，
+         * 于是物体边缘被拉出一条错位的缝。改成迭代求源位置：找一个源点，
+         * 它平移之后正好落到当前像素上 —— 落在洞里的点会自然收敛到前景边缘，
+         * 由前景把它盖住，缝就没了。这与 DepthRay 的做法同源（它是牛顿迭代）。
+         */
+        float ux = vUv.x;
+        for (int i = 0; i < 4; i++) {
+            float dd = texture(uDepthTex, vec2(ux, vUv.y)).r;
+            if (uDepthInvert == 1) dd = 1.0 - dd;
+            ux = clamp(vUv.x - uEyeSign * edgeW * uDisp * (dd - uConvergence),
+                       0.0005, 0.9995);
+        }
+        uvT.x = ux;
     }
     uvT = uvT * uUvScale + uUvBias;
     if (uTestPattern == 1) {
