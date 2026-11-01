@@ -375,7 +375,11 @@ uniform samplerExternalOES uTexture;
 #ifdef B0B_RING
 uniform sampler2D uDelayedTex;
 uniform int uUseDelayed;
-#define SAMPLE_SRC(uv) (uUseDelayed == 1 ? texture(uDelayedTex, uv) : texture(uTexture, uv))
+/*
+ * 槽里的画面是渲染进 FBO 拷出来的，FBO 的 V 轴与屏幕相反，
+ * 所以取槽纹理时要把 V 翻回来，否则整幅画面上下颠倒（父亲 2026-11-01 实测）。
+ */
+#define SAMPLE_SRC(uv) (uUseDelayed == 1 ? texture(uDelayedTex, vec2((uv).x, 1.0 - (uv).y)) : texture(uTexture, uv))
 #else
 #define SAMPLE_SRC(uv) texture(uTexture, uv)
 #endif
