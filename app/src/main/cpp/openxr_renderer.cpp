@@ -2337,6 +2337,8 @@ static std::vector<unsigned char> gDepthStage;
 static std::atomic<int> gDepthStageW{0};
 static std::atomic<int> gDepthStageH{0};
 static std::atomic<bool> gDepthFresh{false};
+/* 最近一次深度到位的时间：太久没新深度就说明画面已换（跳转/换集），先退回 2D */
+static std::atomic<long long> gDepthStampMs{0};
 /*
  * 交回图像前的同步档（父亲 2026-10-08 手机拍到撕裂后加的对照开关）。
  *
@@ -6219,7 +6221,13 @@ void frameLoop(VrContext &c) {
                  * 不能让"立体没做成"变成"画面没了"。
                  */
                 bool stereo = false;
-                c.depthOn = gStereo3d.load() != 0 && c.videoLayerROk;
+                /*
+                 * 深度超过半秒没更新就不做立体：说明正在跳转、换集或解码卡住，
+                 * 此时拿旧深度去变形新画面只会错位。宁可短暂退回平面。
+                 * DepthRay 起播/跳转时是"等深度到位再出画面"，我们用同样的取舍。
+                 */
+                const long long dAge = nowMs() - gDepthStampMs.load();
+                c.depthOn = gStereo3d.load() != 0 && c.videoLayerROk && dAge < 500;
                 c.depthDisp = gStereoDisp.load();
                 c.depthConv = gStereoConv.load();
                 c.depthFade = gStereoFade.load();
@@ -7524,6 +7532,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativePushDepth(JNIEnv *env, jobject /* this 
         gDepthStageH.store(h);
     }
     gDepthFresh.store(true);
+    gDepthStampMs.store(nowMs());
 }
 
 extern "C" JNIEXPORT void JNICALL
