@@ -43,7 +43,7 @@ object VrNative {
 
     private external fun nativeSetDepthInputSize(w: Int, h: Int)
 
-    private external fun nativePushDepth(data: ByteArray, w: Int, h: Int, slot: Int)
+    private external fun nativePushDepth(data: ByteArray, w: Int, h: Int)
 
     internal fun setDepthSink(sink: Any?) {
         try {
@@ -61,9 +61,9 @@ object VrNative {
         }
     }
 
-    internal fun pushDepth(data: ByteArray, w: Int, h: Int, slot: Int) {
+    internal fun pushDepth(data: ByteArray, w: Int, h: Int) {
         try {
-            if (loaded) nativePushDepth(data, w, h, slot)
+            if (loaded) nativePushDepth(data, w, h)
         } catch (t: Throwable) {
             Log.e(TAG, "回传深度失败：${t.message}")
         }

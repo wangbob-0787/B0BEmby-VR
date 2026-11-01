@@ -364,14 +364,6 @@ uniform float uJitter;        // 每帧变的抖动种子（打散 8 位量化�
 uniform int uTestPattern;     // 1 = 用固定测试图替代视频纹理（黑纹诊断，2026-10-09）
 uniform samplerExternalOES uTexture;
 /*
- * 延迟画面（3D 配对用）：环形缓冲里那一帧"深度已经算好"的画面。
- *
- * 为什么单开一个采样器：OES 只能直接读解码器交出来的纹理，缓冲里存的是普通 2D 纹理，
- * 两者在 GLSL 里必须是不同的采样器类型，不能合并成一个 uniform。
- */
-uniform sampler2D uDelayedTex;
-uniform int uUseDelayed;
-/*
  * 纹理采样窗口（父亲 2026-10-15：网页视频铺满墙宽）。
  * 默认 (1,1)/(0,0) = 整张纹理；网页在大银幕上时设成"视频画面"那一块，
  * 于是黑边不会被贴上银幕。除银幕以外的所有绘制都显式设回默认值。
@@ -441,12 +433,6 @@ float depthAt(vec2 uv) {
     float d = mix(mix(a11, a01, g0.x), mix(a10, a00, g0.x), g0.y);
     if (uDepthInvert == 1) d = 1.0 - d;
     return d;
-}
-
-/* 画面取样唯一入口：普通播放直接读 OES，3D 配对时读延迟那一帧 */
-vec3 srcColor(vec2 uv) {
-    if (uUseDelayed == 1) return texture(uDelayedTex, uv).rgb;
-    return texture(uTexture, uv).rgb;
 }
 
 void main() {
@@ -561,12 +547,12 @@ void main() {
             for (int i = 0; i < 4; i++) {
                 for (int j = 0; j < 4; j++) {
                     vec2 o = (vec2(float(i), float(j)) - vec2(1.5)) * 0.5 * uScreenStep;
-                    acc += srcColor(uvT + o) * w[i * 4 + j];
+                    acc += texture(uTexture, uvT + o).rgb * w[i * 4 + j];
                 }
             }
             c = vec4(acc / 36.0, 1.0);
         } else {
-            c = vec4(srcColor(uvT), 1.0);
+            c = texture(uTexture, uvT);
         }
         if (uExpandRange == 1) {
             /*
@@ -605,10 +591,10 @@ void main() {
          * 锐化：中心与四邻域均值之差加回去（近似 unsharp mask）。
          * 只在视频上做 —— 面板/控制条是文字界面，锐化只会生出毛边。
          */
-        vec3 nb = srcColor(uvT + vec2(uTexel.x, 0.0))
-                + srcColor(uvT - vec2(uTexel.x, 0.0))
-                + srcColor(uvT + vec2(0.0, uTexel.y))
-                + srcColor(uvT - vec2(0.0, uTexel.y));
+        vec3 nb = texture(uTexture, uvT + vec2(uTexel.x, 0.0)).rgb
+                + texture(uTexture, uvT - vec2(uTexel.x, 0.0)).rgb
+                + texture(uTexture, uvT + vec2(0.0, uTexel.y)).rgb
+                + texture(uTexture, uvT - vec2(0.0, uTexel.y)).rgb;
         outColor.rgb += (outColor.rgb - nb * 0.25) * uSharpen;
     }
     outColor.rgb = clamp(outColor.rgb, 0.0, 1.0);
@@ -1793,36 +1779,6 @@ constexpr ScreenPlacement kSideScreen{-2.25f, -0.05f, -2.05f, 46.f, 0.f, 2.8f, 1
 typedef XrResult(XRAPI_PTR *PFN_xrRequestDisplayRefreshRateAVS)(XrSession session,
                                                                float displayRefreshRate);
 
-/**
- * 画面环形缓冲里的一个槽：一份画面拷贝 + 由这一帧算出来的三张深度纹理。
- *
- * 三张深度纹理成套放在槽里，而不是全局只留一份：上屏用的是"一百多毫秒前那一帧"，
- * 而推理还在为更新的帧计算，全局单份会被下一个结果覆盖，配对的就成了别人的深度。
- */
-struct VideoSlot {
-    GLuint tex = 0;              // 画面拷贝（视频原尺寸，2D 纹理）
-    int w = 0;
-    int h = 0;
-    GLuint fbo = 0;              // 这个槽自己的帧缓冲，每次用完换挂附件
-    long long ts = 0;            // 拷贝时刻（毫秒）
-    bool hasFrame = false;
-    /* 送进模型的那张低分画面（RGB 存这里、A 存深度），引导放大要拿它比亮度 */
-    std::vector<unsigned char> lowColor;
-    int lowW = 0;
-    int lowH = 0;
-    long long depthReqTs = 0;    // 抓帧时的画面时刻，用来识别"槽已被新画面顶掉"
-    GLuint depthLow = 0;         // RGBA8：RGB = 低分画面，A = 深度
-    int dw = 0;
-    int dh = 0;
-    GLuint offsetsTex = 0;       // RGBA8：RG = 左右眼偏移，BA = 空洞
-    int ow = 0;
-    int oh = 0;
-    GLuint depthUp = 0;          // R8：上采样到视频层分辨率的深度
-    int uw = 0;
-    int uh = 0;
-    bool depthReady = false;
-};
-
 struct VrContext {
     JavaVM *jvm = nullptr;
     jobject activity = nullptr;   // 全局引用
@@ -2012,8 +1968,8 @@ struct VrContext {
     GLuint depthTex = 0;           // 深度图（R 通道 0=近 … 1=远）
     int depthTexW = 0;
     int depthTexH = 0;
-    bool depthOn = false;          // 2D→3D 生效中（决定抓不抓帧）
-    bool depthFresh = true;        // 手上的深度是否够新（决定能不能拿它变形）
+    bool depthOn = false;      // 2D→3D 生效中（决定抓不抓帧）
+    bool depthFresh = true;    // 手上的深度够不够新（决定能不能拿它变形）          // 2D→3D 生效中
     float depthDisp = 0.012f;      // 视差强度（UV 单位，按整幅宽度）
     float depthConv = 0.5f;        // 零视差平面
     float depthFade = 0.04f;       // 左右边缘淡出宽度
@@ -2021,7 +1977,6 @@ struct VrContext {
     GLuint depthGrabProg = 0;
     GLint depthGrabUvScaleLoc = -1;
     GLint depthGrabUvBiasLoc = -1;
-    GLint depthGrabTexLoc = -1;
     GLuint depthGrabFbo = 0;
     GLuint depthGrabTex = 0;
     int depthGrabW = 0;
@@ -2029,20 +1984,13 @@ struct VrContext {
     std::vector<unsigned char> depthGrabPixels;
     long long depthLastGrabMs = 0;
     /* 深度上采样（边缘引导）：把 512x288 的深度对齐到画面边缘后放到视频层分辨率 */
-    /*
-     * 上采样着色器备两份：引导用的高分辨率画面可能是 OES（解码器直接交的纹理），
-     * 也可能是环形缓冲里的普通 2D 纹理。两种采样器类型在 GLSL 里不能共用一个 uniform，
-     * 所以按类型各建一份程序，位置各自缓存。
-     */
-    struct UpProgCache {
-        GLuint prog = 0;
-        GLint depth = -1;
-        GLint color = -1;
-        GLint uvScale = -1;
-        GLint uvBias = -1;
-    };
-    UpProgCache upOes;
-    UpProgCache up2d;
+    GLuint depthUpProg = 0;
+    GLint depthUpDepthLoc = -1;
+    GLint depthUpColorLoc = -1;
+    GLint depthUpStepLoc = -1;
+    GLint depthUpUvScaleLoc = -1;
+    GLint depthUpUvBiasLoc = -1;
+    GLint depthUpInvertLoc = -1;
     GLuint depthUpFbo = 0;
     GLuint depthUpTex = 0;
     int depthUpW = 0;
@@ -2064,25 +2012,6 @@ struct VrContext {
     GLint srcInsetLoc = -1;
     GLint eyeIndexLoc = -1;
     GLint offsetsLoc = -1;
-    /*
-     * 画面环形缓冲（3D 配对）：深度总比画面晚一百多毫秒才算得出来。
-     * 渲染线程若照旧贴"当前帧"、却用"一百毫秒前那帧"的深度去位移，运动时物体边缘
-     * 就会被拉裂。这里先把画面存几帧，等那一帧的深度齐了再一起上屏，两者天然对齐。
-     */
-    static constexpr int kVideoSlots = 6;
-    VideoSlot slots[kVideoSlots];
-    int slotWrite = 0;
-    long long slotLastPushMs = 0;
-    bool ringOk = true;              // 建不起来就永久退回"不延迟"的老路
-    /* 这一帧绘制要用的深度与遮挡表（由选中槽填好，绘制函数只读这几个） */
-    GLuint curDepthUp = 0;
-    GLuint curOffsets = 0;
-    int curDepthW = 0;
-    int curDepthUpW = 0;
-    /* 延迟画面采样器（uDelayedTex → 4 号单元）与没用它时的占位纹理 */
-    GLint delayedLoc = -1;
-    GLint useDelayedLoc = -1;
-    GLuint dummyTex = 0;
     /*
      * 弹幕独立合成层（父亲 2026-10-06 晚定）：弹幕与字幕离开视频画面，做成
      * 单独一层摆在银幕前面一点点。原来画在视频层里 / GL 场景里，前者会跟着
@@ -2326,20 +2255,6 @@ VrContext g;
 std::thread gThread;
 
 /**
- * 给 uDelayedTex 指定单元并绑纹理（不显示延迟画面时绑 1×1 占位）。
- *
- * 单元号必须**每次绘制前无条件写**：采样器 uniform 默认指向 0 号单元，而 0 号上
- * 已经绑着画面自己的 OES 采样器；同一程序里两个不同类型的采样器指向同一单元，
- * Adreno 在 draw 时判非法、整层画不出来（海报墙全黑就是这么来的）。
- */
-static void bindDelayedSampler(VrContext &c, GLuint tex2d) {
-    if (c.delayedLoc >= 0) glUniform1i(c.delayedLoc, 4);
-    glActiveTexture(GL_TEXTURE4);
-    glBindTexture(GL_TEXTURE_2D, tex2d != 0 ? tex2d : c.dummyTex);
-    glActiveTexture(GL_TEXTURE0);
-}
-
-/**
  * 面板帧更新回调。
  *
  * updateTexImage 必须在**创建该纹理的 GL 上下文**里调用，也就是本渲染线程；
@@ -2423,14 +2338,6 @@ static std::vector<unsigned char> gDepthStage;
 static std::atomic<int> gDepthStageW{0};
 static std::atomic<int> gDepthStageH{0};
 static std::atomic<bool> gDepthFresh{false};
-std::atomic<int> gDepthStageSlot{-1};   // 这份深度是从哪个槽算出来的
-/* 画面延后多少毫秒再上屏（0 = 不延迟）。够盖住一次推理的耗时即可，越短越好 */
-std::atomic<int> gStereoDelayMs{150};
-/*
- * 画面进缓冲的间隔：33 毫秒 ≈ 30 帧/秒，6 个槽就是约 200 毫秒历史 ——
- * 刚好盖住一次推演的耗时。拷得更密只是让历史更短，拷得更疏衔接会跳。
- */
-constexpr long long kSlotPushMs = 33;
 /* 最近一次深度到位的时间：太久没新深度就说明画面已换（跳转/换集），先退回 2D */
 static std::atomic<long long> gDepthStampMs{0};
 /*
@@ -2599,8 +2506,6 @@ void drawMesh(VrContext &c, GLuint vbo, int vertexCount, const Mat4 &mvp, float 
     glUseProgram(c.program);
     glUniformMatrix4fv(c.mvpLoc, 1, GL_FALSE, mvp.m);
     glUniform1i(c.useTexLoc, 0);
-    if (c.useDelayedLoc >= 0) glUniform1i(c.useDelayedLoc, 0);
-    bindDelayedSampler(c, 0);
     /* 除银幕以外的绘制一律采整张纹理（银幕那一路在 drawScreen 里自己设窗口） */
     if (c.uvScaleLoc >= 0) glUniform2f(c.uvScaleLoc, 1.f, 1.f);
     if (c.uvBiasLoc >= 0) glUniform2f(c.uvBiasLoc, 0.f, 0.f);
@@ -4471,8 +4376,6 @@ void updateScreenLightFromVideo(VrContext &c) {
     glBindTexture(GL_TEXTURE_EXTERNAL_OES, c.videoTex);
     if (c.texLoc >= 0) glUniform1i(c.texLoc, 0);
     if (c.useTexLoc >= 0) glUniform1i(c.useTexLoc, 1);
-    if (c.useDelayedLoc >= 0) glUniform1i(c.useDelayedLoc, 0);
-    bindDelayedSampler(c, 0);
     if (c.circleLoc >= 0) glUniform1i(c.circleLoc, 0);
     if (c.expandLoc >= 0) glUniform1i(c.expandLoc, 0);
     if (c.downLoc >= 0) glUniform1i(c.downLoc, 0);
@@ -4602,8 +4505,6 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
     glClearColor(0.f, 0.f, 0.f, 0.f);
     /* 每帧统一刷一次画面调整（亮度/对比度/饱和度，视频与界面一起变）*/
     glUseProgram(c.program);
-    if (c.useDelayedLoc >= 0) glUniform1i(c.useDelayedLoc, 0);
-    bindDelayedSampler(c, 0);
     if (c.brightLoc >= 0) glUniform1f(c.brightLoc, c.brightness.load());
     if (c.contrastLoc >= 0) glUniform1f(c.contrastLoc, c.contrast.load());
     if (c.satLoc >= 0) glUniform1f(c.satLoc, c.saturation.load());
@@ -4638,8 +4539,6 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
                               bool webCrop = false) {
             const Mat4 mvp = multiply(multiply(proj, view4), placementModel(place));
             glUseProgram(c.program);
-            if (c.useDelayedLoc >= 0) glUniform1i(c.useDelayedLoc, 0);
-            bindDelayedSampler(c, 0);
             /*
              * 采样窗口：网页在大银幕上（webCrop）时只采"视频画面"那一块 —— 网页播放器留的
              * 黑边不带上银幕，视频正好铺满（父亲 2026-10-15）。其余情况采整张。
@@ -5277,8 +5176,6 @@ void drawOverlayIntoVideoLayer(VrContext &c, GLuint tex,
     glBindTexture(GL_TEXTURE_EXTERNAL_OES, tex);
     glUniform1i(c.texLoc, 0);
     glUniform1i(c.useTexLoc, 1);
-    if (c.useDelayedLoc >= 0) glUniform1i(c.useDelayedLoc, 0);
-    bindDelayedSampler(c, 0);
     if (c.expandLoc >= 0) glUniform1i(c.expandLoc, 0);
     if (c.downLoc >= 0) glUniform1i(c.downLoc, 0);
     glUniform4f(c.colorLoc, 1.f, 1.f, 1.f, 1.f);
@@ -5396,15 +5293,19 @@ static JNIEnv *depthJniEnv(VrContext &c) {
  * 为什么要单独一趟：视频纹理是外部纹理（OES），CPU 读不到，必须先画进自己的
  * 帧缓冲再 glReadPixels。尺寸就是模型输入尺寸（512x288），读回不到 600KB。
  */
-static bool ensureDepthGrabProgram(VrContext &c) {
-    if (c.depthGrabProg != 0) return true;
-    static const char *vs = R"(#version 300 es
+void grabDepthFrame(VrContext &c, GLuint tex, bool webCrop) {
+    const int W = gDepthInputW.load();
+    const int H = gDepthInputH.load();
+    if (W <= 0 || H <= 0 || tex == 0 || gDepthSink == nullptr) return;
+
+    if (c.depthGrabProg == 0) {
+        static const char *vs = R"(#version 300 es
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec2 aUv;
 out vec2 vUv;
 void main() { vUv = aUv; gl_Position = vec4(aPos.xy, 0.0, 1.0); }
 )";
-    static const char *fs = R"(#version 300 es
+        static const char *fs = R"(#version 300 es
 #extension GL_OES_EGL_image_external_essl3 : require
 precision mediump float;
 in vec2 vUv;
@@ -5416,25 +5317,17 @@ void main() {
     oColor = vec4(texture(uTexture, vUv * uUvScale + uUvBias).rgb, 1.0);
 }
 )";
-    c.depthGrabProg = buildProgramFrom(vs, fs);
-    if (c.depthGrabProg == 0) {
-        VLOGI("2D→3D：抓帧着色器建不起来，深度不可用");
-        gDepthInputW.store(0);
-        return false;
+        c.depthGrabProg = buildProgramFrom(vs, fs);
+        if (c.depthGrabProg == 0) {
+            VLOGI("2D→3D：抓帧着色器建不起来，深度不可用");
+            gDepthInputW.store(0);
+            return;
+        }
+        c.depthGrabUvScaleLoc = glGetUniformLocation(c.depthGrabProg, "uUvScale");
+        c.depthGrabUvBiasLoc = glGetUniformLocation(c.depthGrabProg, "uUvBias");
+        glUseProgram(c.depthGrabProg);
+        glUniform1i(glGetUniformLocation(c.depthGrabProg, "uTexture"), 0);
     }
-    c.depthGrabUvScaleLoc = glGetUniformLocation(c.depthGrabProg, "uUvScale");
-    c.depthGrabUvBiasLoc = glGetUniformLocation(c.depthGrabProg, "uUvBias");
-    c.depthGrabTexLoc = glGetUniformLocation(c.depthGrabProg, "uTexture");
-    glUseProgram(c.depthGrabProg);
-    if (c.depthGrabTexLoc >= 0) glUniform1i(c.depthGrabTexLoc, 0);
-    return true;
-}
-
-void grabDepthFrame(VrContext &c, GLuint tex, bool webCrop, int slot) {
-    const int W = gDepthInputW.load();
-    const int H = gDepthInputH.load();
-    if (W <= 0 || H <= 0 || tex == 0 || gDepthSink == nullptr) return;
-    if (!ensureDepthGrabProgram(c)) return;
     if (c.depthGrabW != W || c.depthGrabH != H) {
         if (c.depthGrabFbo != 0) glDeleteFramebuffers(1, &c.depthGrabFbo);
         if (c.depthGrabTex != 0) glDeleteTextures(1, &c.depthGrabTex);
@@ -5476,49 +5369,14 @@ void grabDepthFrame(VrContext &c, GLuint tex, bool webCrop, int slot) {
     glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, c.depthGrabPixels.data());
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    /*
-     * 这份低分画面要跟着槽一起存：结果回来时（一百多毫秒后）depthGrabPixels 早就
-     * 被后面的帧覆盖了，引导放大需要的是"这一帧"的低分亮度。
-     */
-    if (slot >= 0 && slot < VrContext::kVideoSlots) {
-        VideoSlot &s = c.slots[slot];
-        s.lowColor = c.depthGrabPixels;
-        s.lowW = W;
-        s.lowH = H;
-        s.depthReqTs = s.ts;
-    }
-
     JNIEnv *env = depthJniEnv(c);
     if (env == nullptr) return;
     const jsize n = (jsize) c.depthGrabPixels.size();
     jbyteArray arr = env->NewByteArray(n);
     if (arr == nullptr) return;
     env->SetByteArrayRegion(arr, 0, n, (const jbyte *) c.depthGrabPixels.data());
-    env->CallVoidMethod(gDepthSink, gDepthSubmit, arr, (jint) W, (jint) H, (jint) slot);
+    env->CallVoidMethod(gDepthSink, gDepthSubmit, arr, (jint) W, (jint) H);
     env->DeleteLocalRef(arr);
-}
-
-/* 按需建/重建一张 2D 纹理（尺寸缓存存在 tw/th 里） */
-static bool ensureTex2D(GLuint &tex, int &tw, int &th, int w, int h,
-                        GLenum internal, GLenum format, GLenum type, GLint filter) {
-    if (tex != 0 && tw == w && th == h) return true;
-    if (tex != 0) {
-        glDeleteTextures(1, &tex);
-        tex = 0;
-    }
-    glGenTextures(1, &tex);
-    if (tex == 0) return false;
-    glBindTexture(GL_TEXTURE_2D, tex);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage2D(GL_TEXTURE_2D, 0, (GLint) internal, w, h, 0, format, type, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glBindTexture(GL_TEXTURE_2D, 0);
-    tw = w;
-    th = h;
-    return true;
 }
 
 /**
@@ -5528,11 +5386,9 @@ static bool ensureTex2D(GLuint &tex, int &tw, int &th, int w, int h,
  * 表面抢在前面，就标记为"空洞"（本眼看这里其实看不到东西）。warp 时按这张表决定
  * 是直接采样还是走补洞分支。
  * 输出 RGBA8：R = 左眼偏移、G = 右眼偏移（都编码成 0..1）、B/A = 左右眼空洞标记。
- *
- * 目标纹理与帧缓冲由调用方给：环形缓冲里每个槽各有一份，不能存在上下文里共用。
  */
-void renderOffsets(VrContext &c, GLuint depthLow, GLuint targetTex, GLuint fbo, int w, int h) {
-    if (depthLow == 0 || targetTex == 0 || fbo == 0 || w <= 0 || h <= 0) return;
+void renderOffsets(VrContext &c, int w, int h) {
+    if (c.depthTex == 0 || w <= 0 || h <= 0) return;
 
     if (c.offsetsProg == 0) {
         static const char *vs = R"(#version 300 es
@@ -5593,15 +5449,30 @@ void main() {
         glUseProgram(c.offsetsProg);
         if (c.offsetsSamplerLoc >= 0) glUniform1i(c.offsetsSamplerLoc, 2);
     }
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, targetTex, 0);
+    if (c.offsetsW != w || c.offsetsH != h) {
+        if (c.offsetsFbo != 0) glDeleteFramebuffers(1, &c.offsetsFbo);
+        if (c.offsetsTex != 0) glDeleteTextures(1, &c.offsetsTex);
+        glGenTextures(1, &c.offsetsTex);
+        glBindTexture(GL_TEXTURE_2D, c.offsetsTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glGenFramebuffers(1, &c.offsetsFbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, c.offsetsFbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                               c.offsetsTex, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        c.offsetsW = w;
+        c.offsetsH = h;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, c.offsetsFbo);
     glViewport(0, 0, w, h);
-    glDisable(GL_SCISSOR_TEST);
-    glDisable(GL_BLEND);
     glUseProgram(c.offsetsProg);
-    if (c.offsetsSamplerLoc >= 0) glUniform1i(c.offsetsSamplerLoc, 2);
     glActiveTexture(GL_TEXTURE2);
-    glBindTexture(GL_TEXTURE_2D, depthLow);
+    glBindTexture(GL_TEXTURE_2D, c.depthTex);
     glActiveTexture(GL_TEXTURE0);
     if (c.offsetsDispLoc >= 0) glUniform1f(c.offsetsDispLoc, c.depthDisp * (float) w);
     if (c.offsetsConvLoc >= 0) glUniform1f(c.offsetsConvLoc, c.depthConv);
@@ -5612,19 +5483,33 @@ void main() {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
-/* 上采样着色器模板：两份实现只差引导画面的采样器类型 */
-static const char *kUpSampleVs = R"(#version 300 es
+/**
+ * 深度上采样（边缘引导，照 DepthRay 的做法）。
+ *
+ * 为什么必须有这一步：模型只在 512x288 上出深度，直接双线性放大到 1080P 时，
+ * 深度边缘会糊过物体轮廓 —— 左右眼按这个糊边去错位，物体边上就会出现一条
+ * "接不上"的缝（父亲 2026-11-01 报的现象）。这里在放大时拿画面的亮度当引导：
+ * 只有亮度接近的邻点才参与加权，深度边缘就自动贴住了画面里的真实轮廓。
+ *
+ * 5x5 窗口，只在深度更新时跑一次（每秒 8 次），不是每帧，代价可以忽略。
+ */
+void renderDepthUpsample(VrContext &c, GLuint colorTex, bool webCrop, int w, int h) {
+    if (c.depthTex == 0 || c.depthTexW <= 0 || colorTex == 0) return;
+    if (w < 64 || h < 64) return;
+
+    if (c.depthUpProg == 0) {
+        static const char *vs = R"(#version 300 es
 layout(location = 0) in vec3 aPos;
 layout(location = 1) in vec2 aUv;
 out vec2 vUv;
 void main() { vUv = aUv; gl_Position = vec4(aPos.xy, 0.0, 1.0); }
 )";
-static const char *kUpSampleFsTmpl = R"(#version 300 es
-%EXT%
+        static const char *fs = R"(#version 300 es
+#extension GL_OES_EGL_image_external_essl3 : require
 precision highp float;
 in vec2 vUv;
 uniform sampler2D uDepth;              // RGBA：RGB = 低分辨率画面，A = 深度
-uniform %SAMPLER% uColor;              // 高分辨率画面（引导）
+uniform samplerExternalOES uColor;     // 高分辨率画面
 uniform vec2 uUvScale;
 uniform vec2 uUvBias;
 out vec4 oColor;
@@ -5670,82 +5555,69 @@ void main() {
     oColor = vec4(d, d, d, 1.0);
 }
 )";
-
-static GLuint buildUpsampleProgram(bool colorIsOes) {
-    std::string fs(kUpSampleFsTmpl);
-    const std::string ext = colorIsOes
-                                    ? "#extension GL_OES_EGL_image_external_essl3 : require"
-                                    : "";
-    const std::string sampler = colorIsOes ? "samplerExternalOES" : "sampler2D";
-    fs.replace(fs.find("%EXT%"), 5, ext);
-    fs.replace(fs.find("%SAMPLER%"), 9, sampler);
-    return buildProgramFrom(kUpSampleVs, fs.c_str());
-}
-
-/**
- * 深度上采样（边缘引导，照 DepthRay 的做法）。
- *
- * 为什么必须有这一步：模型只在 512x288 上出深度，直接双线性放大到 1080P 时，
- * 深度边缘会糊过物体轮廓 —— 左右眼按这个糊边去错位，物体边上就会出现一条
- * "接不上"的缝。这里在放大时拿画面的亮度当引导：只有亮度接近的邻点才参与加权，
- * 深度边缘就自动贴住了画面里的真实轮廓。
- *
- * 5x5 窗口，只在深度更新时跑一次，不是每帧，代价可以忽略。
- */
-void renderDepthUpsample(VrContext &c, GLuint depthLow, GLuint colorTex, bool colorIsOes,
-                         bool webCrop, GLuint targetTex, GLuint fbo, int w, int h) {
-    if (depthLow == 0 || colorTex == 0 || targetTex == 0 || fbo == 0) return;
-    if (w < 64 || h < 64) return;
-
-    VrContext::UpProgCache &cache = colorIsOes ? c.upOes : c.up2d;
-    if (cache.prog == 0) {
-        cache.prog = buildUpsampleProgram(colorIsOes);
-        if (cache.prog == 0) {
+        c.depthUpProg = buildProgramFrom(vs, fs);
+        if (c.depthUpProg == 0) {
             VLOGI("2D→3D：深度上采样着色器建不起来，退回直接放大");
             return;
         }
-        cache.depth = glGetUniformLocation(cache.prog, "uDepth");
-        cache.color = glGetUniformLocation(cache.prog, "uColor");
-        cache.uvScale = glGetUniformLocation(cache.prog, "uUvScale");
-        cache.uvBias = glGetUniformLocation(cache.prog, "uUvBias");
-        glUseProgram(cache.prog);
-        if (cache.depth >= 0) glUniform1i(cache.depth, 2);
-        if (cache.color >= 0) glUniform1i(cache.color, 0);
+        c.depthUpDepthLoc = glGetUniformLocation(c.depthUpProg, "uDepth");
+        c.depthUpColorLoc = glGetUniformLocation(c.depthUpProg, "uColor");
+        c.depthUpStepLoc = glGetUniformLocation(c.depthUpProg, "uStep");
+        c.depthUpUvScaleLoc = glGetUniformLocation(c.depthUpProg, "uUvScale");
+        c.depthUpUvBiasLoc = glGetUniformLocation(c.depthUpProg, "uUvBias");
+        c.depthUpInvertLoc = glGetUniformLocation(c.depthUpProg, "uInvert");
+        glUseProgram(c.depthUpProg);
+        if (c.depthUpDepthLoc >= 0) glUniform1i(c.depthUpDepthLoc, 2);
+        if (c.depthUpColorLoc >= 0) glUniform1i(c.depthUpColorLoc, 0);
+    }
+    if (c.depthUpW != w || c.depthUpH != h) {
+        if (c.depthUpFbo != 0) glDeleteFramebuffers(1, &c.depthUpFbo);
+        if (c.depthUpTex != 0) glDeleteTextures(1, &c.depthUpTex);
+        glGenTextures(1, &c.depthUpTex);
+        glBindTexture(GL_TEXTURE_2D, c.depthUpTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, w, h, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glGenFramebuffers(1, &c.depthUpFbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, c.depthUpFbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                               c.depthUpTex, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        c.depthUpW = w;
+        c.depthUpH = h;
+        VLOGI("2D→3D：深度上采样缓冲 %dx%d 就绪", w, h);
     }
     ensureVideoLayerQuad(c);
 
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, targetTex, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, c.depthUpFbo);
     glViewport(0, 0, w, h);
-    glDisable(GL_SCISSOR_TEST);
-    glDisable(GL_BLEND);
-    glUseProgram(cache.prog);
-    if (cache.depth >= 0) glUniform1i(cache.depth, 2);
-    if (cache.color >= 0) glUniform1i(cache.color, 0);
+    glUseProgram(c.depthUpProg);
     glActiveTexture(GL_TEXTURE2);
-    glBindTexture(GL_TEXTURE_2D, depthLow);
+    glBindTexture(GL_TEXTURE_2D, c.depthTex);
     glActiveTexture(GL_TEXTURE0);
-    if (colorIsOes) {
-        glBindTexture(GL_TEXTURE_EXTERNAL_OES, colorTex);
-    } else {
-        glBindTexture(GL_TEXTURE_2D, colorTex);
-    }
-    if (cache.uvScale >= 0) {
-        glUniform2f(cache.uvScale, webCrop ? gWebUvW.load() : 1.f,
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, colorTex);
+    if (c.depthUpStepLoc >= 0) glUniform2f(c.depthUpStepLoc, 1.f / (float) w, 1.f / (float) h);
+    if (c.depthUpUvScaleLoc >= 0) {
+        glUniform2f(c.depthUpUvScaleLoc, webCrop ? gWebUvW.load() : 1.f,
                     webCrop ? gWebUvH.load() : 1.f);
     }
-    if (cache.uvBias >= 0) {
-        glUniform2f(cache.uvBias, webCrop ? gWebUvX.load() : 0.f,
+    if (c.depthUpUvBiasLoc >= 0) {
+        glUniform2f(c.depthUpUvBiasLoc, webCrop ? gWebUvX.load() : 0.f,
                     webCrop ? gWebUvY.load() : 0.f);
     }
+    if (c.depthUpInvertLoc >= 0) glUniform1i(c.depthUpInvertLoc, gDepthInvert.load());
     glBindVertexArray(c.videoLayerVao);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(0);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    c.depthUpDirty = false;
 }
 
 /**
- * 把 Kotlin 侧算好的深度图上传成纹理（不延迟的老路，只在环形缓冲建不起来时用）。
+ * 把 Kotlin 侧算好的深度图上传成纹理。没有真深度时保持假深度（管线仍可验证）。
  */
 void uploadDepthIfFresh(VrContext &c) {
     if (!gDepthFresh.load()) return;
@@ -5763,230 +5635,44 @@ void uploadDepthIfFresh(VrContext &c) {
     /*
      * 打包成 RGBA：RGB 存这一帧的低分辨率画面，A 存深度。
      * 为什么要把颜色也存进来：引导放大要拿"低分辨率的颜色"和高分辨率画面比亮度，
-     * DepthRay 就是这么存的。不翻行 —— 读回的第 0 行就是 v=0 那一行，
-     * 深度和画面用的是同一套行序。
+     * DepthRay 就是这么存的。顺带把行序翻正 —— 读回的画面是底朝上，
+     * 不翻的话深度会上下颠倒（天空近、地面远）。
      */
     const bool haveColor = c.depthGrabPixels.size() == (size_t) w * h * 4;
     std::vector<unsigned char> rgba((size_t) w * h * 4);
     for (int y = 0; y < h; y++) {
+        /* 不翻行：读回的第 0 行就是 v=0 那一行，深度和画面用的是同一套行序 */
+        const int sy = y;
         for (int x = 0; x < w; x++) {
             const size_t di = (size_t) y * w + x;
-            rgba[di * 4 + 0] = haveColor ? c.depthGrabPixels[di * 4 + 0] : 128;
-            rgba[di * 4 + 1] = haveColor ? c.depthGrabPixels[di * 4 + 1] : 128;
-            rgba[di * 4 + 2] = haveColor ? c.depthGrabPixels[di * 4 + 2] : 128;
-            rgba[di * 4 + 3] = buf[di];
+            const size_t si = (size_t) sy * w + x;
+            rgba[di * 4 + 0] = haveColor ? c.depthGrabPixels[si * 4 + 0] : 128;
+            rgba[di * 4 + 1] = haveColor ? c.depthGrabPixels[si * 4 + 1] : 128;
+            rgba[di * 4 + 2] = haveColor ? c.depthGrabPixels[si * 4 + 2] : 128;
+            rgba[di * 4 + 3] = buf[si];
         }
     }
-    if (!ensureTex2D(c.depthTex, c.depthTexW, c.depthTexH, w, h,
-                     GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, GL_LINEAR)) {
-        return;
+    if (c.depthTex == 0 || c.depthTexW != w || c.depthTexH != h) {
+        if (c.depthTex != 0) glDeleteTextures(1, &c.depthTex);
+        GLuint t = 0;
+        glGenTextures(1, &t);
+        glBindTexture(GL_TEXTURE_2D, t);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        c.depthTex = t;
+        c.depthTexW = w;
+        c.depthTexH = h;
+        VLOGI("2D→3D：深度图换成真模型输出 %dx%d", w, h);
     }
     glBindTexture(GL_TEXTURE_2D, c.depthTex);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
     glBindTexture(GL_TEXTURE_2D, 0);
     c.depthUpDirty = true;
-}
-
-/*
- * ==================== 画面环形缓冲：让上屏的画面等到自己那份深度 ====================
- */
-
-/**
- * 把当前画面拷进下一个槽，返回槽号；拿不到就返回 −1（调用方退回不延迟的老路）。
- *
- * 只拷画面不拷深度：深度由这一帧算出来，回来时按槽号落回原处。
- */
-int pushVideoFrame(VrContext &c, GLuint srcTex, bool webCrop, int w, int h) {
-    if (srcTex == 0 || w < 64 || h < 64) return -1;
-    /*
-     * 超过 4K 的源不做缓冲：槽纹理按画面原尺寸开，8K 一份就上百兆，
-     * 与其吃显存，不如退回"不延迟" —— 宁可深度略旧，也不要画面出问题。
-     */
-    if (w > 3840 || h > 2160) return -1;
-    if (!ensureDepthGrabProgram(c)) return -1;
-
-    const int i = c.slotWrite;
-    VideoSlot &s = c.slots[i];
-    if (s.tex == 0 || s.w != w || s.h != h) {
-        if (!ensureTex2D(s.tex, s.w, s.h, w, h, GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, GL_LINEAR)) {
-            return -1;
-        }
-        s.hasFrame = false;
-        s.depthReady = false;
-    }
-    if (s.fbo == 0) glGenFramebuffers(1, &s.fbo);
-    if (s.fbo == 0) return -1;
-
-    glBindFramebuffer(GL_FRAMEBUFFER, s.fbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, s.tex, 0);
-    glViewport(0, 0, w, h);
-    glDisable(GL_SCISSOR_TEST);
-    glDisable(GL_BLEND);
-    glUseProgram(c.depthGrabProg);
-    if (c.depthGrabTexLoc >= 0) glUniform1i(c.depthGrabTexLoc, 0);
-    if (c.depthGrabUvScaleLoc >= 0) {
-        glUniform2f(c.depthGrabUvScaleLoc, webCrop ? gWebUvW.load() : 1.f,
-                    webCrop ? gWebUvH.load() : 1.f);
-    }
-    if (c.depthGrabUvBiasLoc >= 0) {
-        glUniform2f(c.depthGrabUvBiasLoc, webCrop ? gWebUvX.load() : 0.f,
-                    webCrop ? gWebUvY.load() : 0.f);
-    }
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_EXTERNAL_OES, srcTex);
-    ensureVideoLayerQuad(c);
-    glBindVertexArray(c.videoLayerVao);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    glBindVertexArray(0);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-    s.ts = (long long) nowMs();
-    s.hasFrame = true;
-    s.depthReady = false;
-    c.slotWrite = (i + 1) % VrContext::kVideoSlots;
-    return i;
-}
-
-/* 上屏用哪个槽：环形缓冲里时间戳不晚于 now−delay 的最新那一个（没有返回 −1） */
-int pickDisplaySlot(VrContext &c, int delayMs) {
-    const long long cutoff = (long long) nowMs() - (long long) delayMs;
-    for (int k = 0; k < VrContext::kVideoSlots; k++) {
-        const int i = (c.slotWrite - 1 - k + VrContext::kVideoSlots * 2) % VrContext::kVideoSlots;
-        VideoSlot &s = c.slots[i];
-        if (!s.hasFrame) continue;
-        if (s.ts > cutoff) continue;        // 太"新"，还没到该上屏的时候
-        if (cutoff - s.ts > 500) return -1;  // 缓冲里全是旧帧（刚暂停过），退回当前帧
-        return i;
-    }
-    return -1;
-}
-
-/*
- * 这一帧配哪份深度：从它自己往前找最近的、且不算太旧的已完成深度。
- *
- * 为什么不要求"必须是这一帧自己的深度"：推理跟不上画面帧率，只有一部分槽算得出深度。
- * 严格配对会让画面卡在少数几帧上变成一顿一顿。用"不晚于这一帧、且不太旧"的深度，
- * 既保证深度永远来自更早的画面（不会用到"未来"），又把错位压在一两个推理周期内。
- */
-int pickDepthSlot(VrContext &c, int frameSlot) {
-    if (frameSlot < 0) return -1;
-    const long long ts = c.slots[frameSlot].ts;
-    for (int k = 0; k < VrContext::kVideoSlots; k++) {
-        const int i = (frameSlot - k + VrContext::kVideoSlots * 2) % VrContext::kVideoSlots;
-        VideoSlot &s = c.slots[i];
-        if (!s.hasFrame || !s.depthReady) continue;
-        if (s.ts > ts) continue;              // 比画面新的深度 = 用在未来，必然反向错位
-        if (ts - s.ts > 200) return -1;       // 太久以前的深度，配不上这一帧
-        return i;
-    }
-    return -1;
-}
-
-/**
- * 深度结果落地：按槽号写进那个槽自己的三张深度纹理。
- *
- * 槽可能已经被新画面顶掉（推理比一次环形回转还慢），所以先比对抓帧时刻，
- * 对不上就丢掉 —— 把这份深度贴到别的画面上，比不做立体还糟。
- */
-void applySlotDepth(VrContext &c) {
-    if (!gDepthFresh.load()) return;
-    std::vector<unsigned char> buf;
-    int w = 0;
-    int h = 0;
-    int slot = -1;
-    {
-        std::lock_guard<std::mutex> lk(gDepthMutex);
-        buf.swap(gDepthStage);
-        w = gDepthStageW.load();
-        h = gDepthStageH.load();
-        slot = gDepthStageSlot.load();
-        gDepthFresh.store(false);
-    }
-    if (slot < 0 || slot >= VrContext::kVideoSlots) return;
-    VideoSlot &s = c.slots[slot];
-    if (!s.hasFrame || s.ts != s.depthReqTs) return;
-    if (w <= 0 || h <= 0 || buf.size() != (size_t) w * h) return;
-
-    const bool haveColor = s.lowColor.size() == (size_t) w * h * 4 && s.lowW == w && s.lowH == h;
-    std::vector<unsigned char> rgba((size_t) w * h * 4);
-    for (int y = 0; y < h; y++) {
-        for (int x = 0; x < w; x++) {
-            const size_t i = (size_t) y * w + x;
-            rgba[i * 4 + 0] = haveColor ? s.lowColor[i * 4 + 0] : 128;
-            rgba[i * 4 + 1] = haveColor ? s.lowColor[i * 4 + 1] : 128;
-            rgba[i * 4 + 2] = haveColor ? s.lowColor[i * 4 + 2] : 128;
-            rgba[i * 4 + 3] = buf[i];
-        }
-    }
-    if (!ensureTex2D(s.depthLow, s.dw, s.dh, w, h, GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, GL_LINEAR)) {
-        return;
-    }
-    glBindTexture(GL_TEXTURE_2D, s.depthLow);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
-    glBindTexture(GL_TEXTURE_2D, 0);
-
-    /*
-     * 上采样尺寸跟着槽里的画面走，封顶 1280 宽：4K 片源下 5x5 窗口在全分辨率跑
-     * 会把 GPU 吃掉一大块，而深度边缘的锐度并不需要跟视频同尺寸。
-     */
-    int uw = s.w;
-    int uh = s.h;
-    if (uw > 1280) {
-        uh = (int) ((float) s.h * 1280.f / (float) s.w);
-        uw = 1280;
-    }
-    if (!ensureTex2D(s.offsetsTex, s.ow, s.oh, w, h, GL_RGBA8, GL_RGBA,
-                     GL_UNSIGNED_BYTE, GL_NEAREST)) {
-        return;
-    }
-    if (!ensureTex2D(s.depthUp, s.uw, s.uh, uw, uh, GL_R8, GL_RED, GL_UNSIGNED_BYTE, GL_LINEAR)) {
-        return;
-    }
-
-    renderOffsets(c, s.depthLow, s.offsetsTex, s.fbo, w, h);
-    renderDepthUpsample(c, s.depthLow, s.tex, false, false, s.depthUp, s.fbo, uw, uh);
-    s.depthReady = true;
-}
-
-/* 把绘制要用的三张深度纹理设成某个槽的（−1 = 不做立体） */
-void selectDrawDepth(VrContext &c, int slot) {
-    if (slot < 0 || slot >= VrContext::kVideoSlots) {
-        c.curDepthUp = 0;
-        c.curOffsets = 0;
-        c.curDepthW = 0;
-        c.curDepthUpW = 0;
-        return;
-    }
-    VideoSlot &s = c.slots[slot];
-    c.curDepthUp = s.depthUp;
-    c.curOffsets = s.offsetsTex;
-    c.curDepthW = s.dw;
-    c.curDepthUpW = s.uw;
-}
-
-/* 不延迟的老路：把这一轮的深度直接落到上下文里那三张共用纹理上 */
-void drawLegacyDepth(VrContext &c, GLuint colorTex, bool webCrop, int upW, int upH) {
-    if (c.depthTex == 0 || c.depthTexW <= 0) return;
-    if (!ensureTex2D(c.offsetsTex, c.offsetsW, c.offsetsH, c.depthTexW, c.depthTexH,
-                     GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, GL_NEAREST)) {
-        return;
-    }
-    if (c.offsetsFbo == 0) glGenFramebuffers(1, &c.offsetsFbo);
-    if (!ensureTex2D(c.depthUpTex, c.depthUpW, c.depthUpH, upW, upH,
-                     GL_R8, GL_RED, GL_UNSIGNED_BYTE, GL_LINEAR)) {
-        return;
-    }
-    if (c.depthUpFbo == 0) glGenFramebuffers(1, &c.depthUpFbo);
-    renderOffsets(c, c.depthTex, c.offsetsTex, c.offsetsFbo, c.depthTexW, c.depthTexH);
-    renderDepthUpsample(c, c.depthTex, colorTex, true, webCrop, c.depthUpTex, c.depthUpFbo,
-                        upW, upH);
-    c.curDepthUp = c.depthUpTex;
-    c.curOffsets = c.offsetsTex;
-    c.curDepthW = c.depthTexW;
-    c.curDepthUpW = c.depthUpW;
-    c.depthUpDirty = false;
 }
 
 void ensureDepthTexture(VrContext &c) {
@@ -6020,8 +5706,7 @@ void ensureDepthTexture(VrContext &c) {
 
 bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
                      bool videoLayerPass, bool skipDrawIfWritten = false,
-                     int eyeIndex = -1, GLuint delayedTex = 0,
-                     bool depthAllowed = true) {
+                     int eyeIndex = -1) {
     // 视频层铺满整块、不透明；弹幕层是一层透明浮层，清屏必须透明，
     // 否则它会变成一块黑板把视频整个盖住（父亲 2026-10-06 晚实测现象）。
     if (!L.built || tex == 0 || c.program == 0) return false;
@@ -6072,12 +5757,6 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
     glBindTexture(GL_TEXTURE_EXTERNAL_OES, tex);
     glUniform1i(c.texLoc, 0);
     glUniform1i(c.useTexLoc, 1);
-    /*
-     * 延迟画面：环形缓冲里那一帧（它的深度已经算好了）。
-     * 采样器单元在 bindDelayedSampler 里无条件写死，没有延迟画面时绑 1×1 占位。
-     */
-    if (c.useDelayedLoc >= 0) glUniform1i(c.useDelayedLoc, delayedTex != 0 ? 1 : 0);
-    bindDelayedSampler(c, delayedTex);
     if (c.circleLoc >= 0) glUniform1i(c.circleLoc, 0);
     if (c.expandLoc >= 0) glUniform1i(c.expandLoc, 0);
     if (c.downLoc >= 0) glUniform1i(c.downLoc, 0);   // 这一层不缩，不做降采样
@@ -6122,15 +5801,12 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
     if (c.depthTexLoc >= 0) glUniform1i(c.depthTexLoc, 1);
     if (c.offsetsLoc >= 0) glUniform1i(c.offsetsLoc, 3);
     if (c.depthOnLoc >= 0) {
-        /*
-         * offsets 还没算出来就先不做视差：拿不到遮挡表时采样偏移是错的。
-         * 深度纹理取自"当前选中槽"，由渲染循环在绘制前用 selectDrawDepth 设好。
-         */
-        const bool useDepth = c.depthOn && c.depthFresh && depthAllowed && c.curDepthUp != 0 &&
-                              c.curOffsets != 0 && eyeIndex >= 0;
+        /* offsets 还没算出来就先不做视差：拿不到遮挡表时采样偏移是错的 */
+        const bool useDepth = c.depthOn && c.depthFresh && c.depthTex != 0 && c.offsetsTex != 0 &&
+                              c.depthUpTex != 0 && eyeIndex >= 0;
         if (useDepth) {
             glActiveTexture(GL_TEXTURE1);
-            glBindTexture(GL_TEXTURE_2D, c.curDepthUp);
+            glBindTexture(GL_TEXTURE_2D, c.depthUpTex != 0 ? c.depthUpTex : c.depthTex);
             glActiveTexture(GL_TEXTURE0);
             glUniform1i(c.depthOnLoc, 1);
             if (c.eyeSignLoc >= 0) glUniform1f(c.eyeSignLoc, eyeIndex == 1 ? 1.f : -1.f);
@@ -6141,13 +5817,11 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
             /* 遮挡预计算结果与单位换算（DepthRay 的 warp 按低分辨率像素计视差） */
             if (c.offsetsLoc >= 0) glUniform1i(c.offsetsLoc, 3);
             glActiveTexture(GL_TEXTURE3);
-            glBindTexture(GL_TEXTURE_2D, c.curOffsets);
+            glBindTexture(GL_TEXTURE_2D, c.offsetsTex);
             glActiveTexture(GL_TEXTURE0);
-            if (c.dispTexelsLoc >= 0) glUniform1f(c.dispTexelsLoc, c.depthDisp * (float) c.curDepthW);
-            if (c.lowResWLoc >= 0) glUniform1f(c.lowResWLoc, (float) c.curDepthW);
-            if (c.frameWLoc >= 0) {
-                glUniform1f(c.frameWLoc, (float) (c.curDepthUpW > 0 ? c.curDepthUpW : c.curDepthW));
-            }
+            if (c.dispTexelsLoc >= 0) glUniform1f(c.dispTexelsLoc, c.depthDisp * (float) c.depthTexW);
+            if (c.lowResWLoc >= 0) glUniform1f(c.lowResWLoc, (float) c.depthTexW);
+            if (c.frameWLoc >= 0) glUniform1f(c.frameWLoc, (float) (c.depthUpW > 0 ? c.depthUpW : c.depthTexW));
             if (c.srcInsetLoc >= 0) glUniform1f(c.srcInsetLoc, 0.0005f);
             if (c.eyeIndexLoc >= 0) glUniform1f(c.eyeIndexLoc, eyeIndex == 1 ? 1.f : 0.f);
         } else {
@@ -6555,27 +6229,21 @@ void frameLoop(VrContext &c) {
                  */
                 const long long dAge = nowMs() - gDepthStampMs.load();
                 /*
-                 * 开关只管"要不要抓帧"，新鲜度只管"要不要拿它变形"。
-                 * 早先把新鲜度也塞进开关，导致从没抓过帧 → 深度永远是旧的 → 永远不抓，死锁。
+                 * 开关只决定"要不要抓帧"，新鲜度只决定"要不要拿它变形"。
+                 * 两者混在一起会死锁：从没抓过帧 → 深度永远是旧的 → 永远不抓。
                  */
                 c.depthOn = gStereo3d.load() != 0 && c.videoLayerROk;
-                c.depthFresh = dAge < 500;
-                /*
-                 * 一秒一条立体诊断：父亲报"开了 3D 没效果"时，靠这一行区分是
-                 * 开关没传到原生、深度没算出来，还是算出来了没用上。
-                 */
                 {
                     static long long lastDiagMs = 0;
                     const long long nowD = (long long) nowMs();
                     if (nowD - lastDiagMs >= 1000) {
                         lastDiagMs = nowD;
-                        VLOGI("3D 诊断：开关=%d 左层=%d 深度图=%d 偏移表=%d 上采样=%d "
-                              "深度龄=%lldms 视差=%.4f 零视差=%.2f 抓帧间隔=%dms",
+                        VLOGI("3D 诊断：开关=%d 左层=%d 深度图=%d 偏移表=%d 上采样=%d 深度龄=%lldms 视差=%.4f",
                               gStereo3d.load(), c.videoLayerROk ? 1 : 0, c.depthTex != 0 ? 1 : 0,
-                              c.offsetsTex != 0 ? 1 : 0, c.depthUpTex != 0 ? 1 : 0, dAge,
-                              c.depthDisp, c.depthConv, gDepthIntervalMs.load());
+                              c.offsetsTex != 0 ? 1 : 0, c.depthUpTex != 0 ? 1 : 0, dAge, c.depthDisp);
                     }
                 }
+                c.depthFresh = dAge < 500;
                 /*
                  * 视差按"屏幕有多大、离多远"自动换算，不写死。
                  *
@@ -6590,11 +6258,7 @@ void frameLoop(VrContext &c) {
                         sqrtf(videoQuad.pose.position.x * videoQuad.pose.position.x +
                               videoQuad.pose.position.y * videoQuad.pose.position.y +
                               videoQuad.pose.position.z * videoQuad.pose.position.z));
-                    /*
-                     * 2e-2 弧度 ≈ 1.15°：单眼最大错开的角度预算。
-                     * 0.35° 太保守，头显里几乎看不出立体；再大（旧版写死 0.012 UV ≈ 1.7°）
-                     * 边缘就会被拉裂。调参里的 stereo_disp 是这档的倍数，可以现场调。
-                     */
+                    /* 6e-3 弧度 ≈ 0.35°，单眼最大错开；调参里的值当倍数用 */
                     const float budgetRad = 2e-2f;
                     const float autoDisp = budgetRad * zMeters / wMeters;
                     c.depthDisp = fminf(0.02f, fmaxf(0.0004f,
@@ -6602,98 +6266,49 @@ void frameLoop(VrContext &c) {
                 }
                 c.depthConv = gStereoConv.load();
                 c.depthFade = gStereoFade.load();
-                /*
-                 * 延迟画面放在这一层声明：等深度期间（缓冲还没填满、深度还没回来）
-                 * 仍然要用它连续出画，不能退回"当前帧"，否则画面会一顿一顿。
-                 */
-                GLuint delayedTex = 0;
                 if (c.depthOn && c.videoLayerROk) {
                     ensureDepthTexture(c);
                     /*
-                     * 画面先进环形缓冲、再抓这一帧的深度，上屏时挑"时间戳对上"的那一帧。
-                     *
-                     * 为什么不能边贴当前帧边用旧深度：深度总要晚一百多毫秒才算完，
-                     * 运动时画面已经走掉，按旧位移去错开物体边缘就是一条裂缝。
-                     * 把画面也延后同样多，深度和画面就落在同一时刻。
+                     * 真实深度：先把上一轮算好的上传，再按间隔抓这一帧。
+                     * 抓帧与推理分开跑，渲染线程只做读回（几毫秒），不等模型。
                      */
-                    const long long nowT = (long long) nowMs();
-                    const GLuint drawSrc = screenSrc;
-                    int depthSlot = -1;
-                    const int delayMs = gStereoDelayMs.load();
-                    if (c.ringOk && delayMs > 0) {
-                        applySlotDepth(c);
-                        if (nowT - c.slotLastPushMs >= kSlotPushMs) {
-                            c.slotLastPushMs = nowT;
-                            const int slot = pushVideoFrame(c, screenSrc, webOnScreen, vw, vh);
-                            if (slot >= 0) {
-                                /* 每帧都抓：推理跟不上时 Kotlin 侧会丢弃这一帧，不会积压 */
-                                grabDepthFrame(c, screenSrc, webOnScreen, slot);
-                            } else {
-                                c.ringOk = false;
-                                VLOGI("2D→3D：画面缓冲建不起来（%dx%d），退回不延迟", vw, vh);
-                            }
+                    uploadDepthIfFresh(c);
+                    if (c.depthUpDirty) {
+                        renderOffsets(c, c.depthTexW, c.depthTexH);
+                        /*
+                         * 上采样按 UV 采样，分辨率只影响深度边缘的锐度，不需要跟视频层同尺寸。
+                         * 封顶 1280 宽：4K 片源下 5x5 窗口在全分辨率跑会把 GPU 吃掉一大块。
+                         */
+                        int upW = vw;
+                        int upH = vh;
+                        if (upW > 1280) {
+                            upH = (int) ((float) vh * 1280.f / (float) vw);
+                            upW = 1280;
                         }
-                        const int frameSlot = pickDisplaySlot(c, delayMs);
-                        if (frameSlot >= 0) {
-                            delayedTex = c.slots[frameSlot].tex;
-                            depthSlot = pickDepthSlot(c, frameSlot);
-                        }
+                        renderDepthUpsample(c, screenSrc, webOnScreen, upW, upH);
                     }
-                    bool useLegacy = (!c.ringOk) || delayMs <= 0;
-                    if (useLegacy) {
-                        uploadDepthIfFresh(c);
-                        if (c.depthUpDirty) {
-                            int upW = vw;
-                            int upH = vh;
-                            if (upW > 1280) {
-                                upH = (int) ((float) vh * 1280.f / (float) vw);
-                                upW = 1280;
-                            }
-                            drawLegacyDepth(c, screenSrc, webOnScreen, upW, upH);
-                        }
-                        if (nowT - c.depthLastGrabMs >= gDepthIntervalMs.load()) {
-                            c.depthLastGrabMs = nowT;
-                            grabDepthFrame(c, screenSrc, webOnScreen, -1);
-                        }
-                        depthSlot = (c.curDepthUp != 0) ? -2 : -1;   // −2 = 共用纹理那一路
+                    const long long nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch()).count();
+                    if (nowMs - c.depthLastGrabMs >= gDepthIntervalMs.load()) {
+                        c.depthLastGrabMs = nowMs;
+                        grabDepthFrame(c, screenSrc, webOnScreen);
+                    }
+                    if (c.depthTex != 0 &&
+                        buildQuadLayer(c, c.videoLayerR, vw, vh, "视频层(右眼)")) {
+                        const bool okL = renderQuadLayer(c, c.videoLayer, screenSrc, true, false, 0);
+                        const bool okR = renderQuadLayer(c, c.videoLayerR, screenSrc, true, false, 1);
+                        c.videoLayer.submitted = okL;
+                        c.videoLayerR.submitted = okL && okR;
+                        stereo = true;
                     } else {
-                        selectDrawDepth(c, depthSlot);
-                    }
-                    /*
-                     * 只有"画面配上了深度"才做立体。起播头一两百毫秒里缓冲还没填满、
-                     * 或者深度还没回来，就先按平面显示 —— 短暂平面好过反向错位。
-                     * 注意这里不能把开关关掉：等深度到了下一帧自然就立体了。
-                     */
-                    const bool canStereo = (delayedTex != 0 || useLegacy) && depthSlot != -1;
-                    if (canStereo && delayedTex != 0) {
-                        static bool pairedLogged = false;
-                        if (!pairedLogged) {
-                            pairedLogged = true;
-                            VLOGI("2D→3D：画面缓冲配对生效（延后 %d 毫秒，显示槽深度 %d）",
-                                  delayMs, c.curDepthW);
-                        }
-                    }
-                    if (canStereo) {
-                        if (!buildQuadLayer(c, c.videoLayerR, vw, vh, "视频层(右眼)")) {
-                            c.videoLayerROk = false;
-                            c.depthOn = false;
-                            VLOGI("2D→3D：右眼图层建不起来，退回单层");
-                        } else {
-                            const bool okL = renderQuadLayer(c, c.videoLayer, drawSrc, true,
-                                                            false, 0, delayedTex, true);
-                            const bool okR = renderQuadLayer(c, c.videoLayerR, drawSrc, true,
-                                                            false, 1, delayedTex, true);
-                            c.videoLayer.submitted = okL;
-                            c.videoLayerR.submitted = okL && okR;
-                            stereo = true;
-                        }
+                        c.videoLayerROk = false;
+                        c.depthOn = false;
+                        VLOGI("2D→3D：右眼图层建不起来，退回单层");
                     }
                 }
                 if (!stereo) {
-                    /* 等深度期间照常出画：有延迟画面就贴它，保持画面连续 */
                     c.videoLayerR.submitted = false;
-                    c.videoLayer.submitted = renderQuadLayer(c, c.videoLayer, screenSrc, true,
-                                                             false, -1, delayedTex, false);
+                    c.videoLayer.submitted = renderQuadLayer(c, c.videoLayer, screenSrc, true);
                 }
             }
         }
@@ -7385,20 +7000,6 @@ void renderThreadMain() {
         c.frameWLoc = glGetUniformLocation(c.program, "uFrameWidth");
         c.srcInsetLoc = glGetUniformLocation(c.program, "uSrcInset");
         c.eyeIndexLoc = glGetUniformLocation(c.program, "uEyeIndex");
-        c.delayedLoc = glGetUniformLocation(c.program, "uDelayedTex");
-        c.useDelayedLoc = glGetUniformLocation(c.program, "uUseDelayed");
-        if (c.delayedLoc >= 0) glUniform1i(c.delayedLoc, 4);
-        {
-            /* 1×1 全黑占位：不显示延迟画面时也要有东西占着 4 号单元 */
-            const unsigned char px[4] = {0, 0, 0, 255};
-            glGenTextures(1, &c.dummyTex);
-            glBindTexture(GL_TEXTURE_2D, c.dummyTex);
-            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-            glBindTexture(GL_TEXTURE_2D, 0);
-        }
         c.circleLoc = glGetUniformLocation(c.program, "uCircle");
         c.expandLoc = glGetUniformLocation(c.program, "uExpandRange");
         c.brightLoc = glGetUniformLocation(c.program, "uBrightness");
@@ -7934,7 +7535,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetDepthSink(JNIEnv *env, jobject /* th
     if (sink == nullptr) return;
     gDepthSink = env->NewGlobalRef(sink);
     jclass k = env->GetObjectClass(sink);
-    gDepthSubmit = env->GetMethodID(k, "submitFrame", "([BIII)V");
+    gDepthSubmit = env->GetMethodID(k, "submitFrame", "([BII)V");
     env->DeleteLocalRef(k);
     if (gDepthSubmit == nullptr) {
         env->DeleteGlobalRef(gDepthSink);
@@ -7953,7 +7554,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetDepthInputSize(JNIEnv * /* env */,
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_xxxx_emby_1vr_vr_VrNative_nativePushDepth(JNIEnv *env, jobject /* this */,
-                                                   jbyteArray data, jint w, jint h, jint slot) {
+                                                   jbyteArray data, jint w, jint h) {
     if (data == nullptr || w <= 0 || h <= 0) return;
     const jsize n = env->GetArrayLength(data);
     if (n != (jsize) (w * h)) return;
@@ -7964,7 +7565,6 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativePushDepth(JNIEnv *env, jobject /* this 
         gDepthStage.swap(tmp);
         gDepthStageW.store(w);
         gDepthStageH.store(h);
-        gDepthStageSlot.store(slot);
     }
     gDepthFresh.store(true);
     gDepthStampMs.store(nowMs());
@@ -7999,13 +7599,6 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             if (value >= 0.f && value <= 0.3f) {
                 gStereoFade.store(value);
                 VLOGI("调参 → 3D 边缘淡出 %.3f", (double) value);
-            }
-            break;
-        /* 50 = 画面延后毫秒（3D 配对：等深度算完再上屏，0 = 不延后） */
-        case 50:
-            if (value >= 0.f && value <= 500.f) {
-                gStereoDelayMs.store((int) value);
-                VLOGI("调参 → 3D 画面延后 %d 毫秒", (int) value);
             }
             break;
         /* 48 = 深度图方向（1 = 模型输出越大越近，用之前取反） */

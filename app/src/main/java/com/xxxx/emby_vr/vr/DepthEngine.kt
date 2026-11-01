@@ -161,16 +161,13 @@ object DepthEngine {
     /**
      * 原生渲染线程调用（必须在几毫秒内返回）：只入队，不推理。
      * 上一帧还没算完就丢掉这一帧 —— 深度不需要每帧都新。
-     *
-     * slot 是原生侧画面缓冲的槽号，结果原路带回：那一帧的深度只能贴回那一帧，
-     * 贴到别的画面上就是错位。
      */
-    fun submitFrame(rgba: ByteArray, w: Int, h: Int, slot: Int) {
+    fun submitFrame(rgba: ByteArray, w: Int, h: Int) {
         if (!ready || w <= 0 || h <= 0) return
         if (!busy.compareAndSet(false, true)) return
         worker.execute {
             try {
-                runInfer(rgba, w, h, slot)
+                runInfer(rgba, w, h)
             } catch (t: Throwable) {
                 Log.e(TAG, "深度推理失败：${t.message}")
             } finally {
@@ -179,7 +176,7 @@ object DepthEngine {
         }
     }
 
-    private fun runInfer(rgba: ByteArray, w: Int, h: Int, slot: Int) {
+    private fun runInfer(rgba: ByteArray, w: Int, h: Int) {
         val it = interp ?: return
         val ib = inBuf ?: return
         val ob = outBuf ?: return
@@ -263,7 +260,7 @@ object DepthEngine {
         if (inferCount % 20 == 1) {
             Log.i(TAG, "深度推理：${lastInferMs}ms 第 ${inferCount} 次 输入 ${w}x${h}")
         }
-        VrNative.pushDepth(out, outW, outH, slot)
+        VrNative.pushDepth(out, outW, outH)
     }
 
     private fun halfToFloat(h: Int): Float {
