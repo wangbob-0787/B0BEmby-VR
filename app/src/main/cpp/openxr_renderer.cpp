@@ -2012,7 +2012,8 @@ struct VrContext {
     GLuint depthTex = 0;           // 深度图（R 通道 0=近 … 1=远）
     int depthTexW = 0;
     int depthTexH = 0;
-    bool depthOn = false;          // 2D→3D 生效中
+    bool depthOn = false;          // 2D→3D 生效中（决定抓不抓帧）
+    bool depthFresh = true;        // 手上的深度是否够新（决定能不能拿它变形）
     float depthDisp = 0.012f;      // 视差强度（UV 单位，按整幅宽度）
     float depthConv = 0.5f;        // 零视差平面
     float depthFade = 0.04f;       // 左右边缘淡出宽度
@@ -6125,7 +6126,7 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
          * offsets 还没算出来就先不做视差：拿不到遮挡表时采样偏移是错的。
          * 深度纹理取自"当前选中槽"，由渲染循环在绘制前用 selectDrawDepth 设好。
          */
-        const bool useDepth = c.depthOn && depthAllowed && c.curDepthUp != 0 &&
+        const bool useDepth = c.depthOn && c.depthFresh && depthAllowed && c.curDepthUp != 0 &&
                               c.curOffsets != 0 && eyeIndex >= 0;
         if (useDepth) {
             glActiveTexture(GL_TEXTURE1);
@@ -6553,7 +6554,12 @@ void frameLoop(VrContext &c) {
                  * DepthRay 起播/跳转时是"等深度到位再出画面"，我们用同样的取舍。
                  */
                 const long long dAge = nowMs() - gDepthStampMs.load();
-                c.depthOn = gStereo3d.load() != 0 && c.videoLayerROk && dAge < 500;
+                /*
+                 * 开关只管"要不要抓帧"，新鲜度只管"要不要拿它变形"。
+                 * 早先把新鲜度也塞进开关，导致从没抓过帧 → 深度永远是旧的 → 永远不抓，死锁。
+                 */
+                c.depthOn = gStereo3d.load() != 0 && c.videoLayerROk;
+                c.depthFresh = dAge < 500;
                 /*
                  * 一秒一条立体诊断：父亲报"开了 3D 没效果"时，靠这一行区分是
                  * 开关没传到原生、深度没算出来，还是算出来了没用上。
