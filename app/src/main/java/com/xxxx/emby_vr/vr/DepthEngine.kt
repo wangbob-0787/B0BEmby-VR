@@ -56,6 +56,11 @@ object DepthEngine {
 
     private var prevDepth: ByteArray? = null
     private var inferCount = 0
+    /* 连续几次判定为"换了镜头"：单帧超阈值可能只是画面里有物体快速移动，不算换镜头 */
+    private var jumpStreak = 0
+    /* 最近一次抽样的平均差与累计换镜头次数，给稳定度日志用 */
+    private var lastSampleDiff = 0
+    private var shotCount = 0
     private var refMn = 0f
     private var refMx = 1f
     private var refInit = false
@@ -166,7 +171,7 @@ object DepthEngine {
      * 原生渲染线程调用（必须在几毫秒内返回）：只入队，不推理。
      * 上一帧还没算完就丢掉这一帧 —— 深度不需要每帧都新。
      */
-    fun submitFrame(rgba: ByteArray, w: Int, h: Int) {
+    fun submitFrame(rgba: ByteArray, w: Int, h: Int, seq: Long) {
         if (!ready || w <= 0 || h <= 0) return
         /*
          * 看门狗：推理线程卡住（模型内部报错、NNAPI 挂起）时 busy 会一直是 true，
@@ -180,7 +185,7 @@ object DepthEngine {
         if (!busy.compareAndSet(false, true)) return
         worker.execute {
             try {
-                runInfer(rgba, w, h)
+                runInfer(rgba, w, h, seq)
             } catch (t: Throwable) {
                 Log.e(TAG, "深度推理失败：${t.message}")
             } finally {
@@ -189,7 +194,7 @@ object DepthEngine {
         }
     }
 
-    private fun runInfer(rgba: ByteArray, w: Int, h: Int) {
+    private fun runInfer(rgba: ByteArray, w: Int, h: Int, seq: Long) {
         val it = interp ?: return
         val ib = inBuf ?: return
         val ob = outBuf ?: return
@@ -272,7 +277,25 @@ object DepthEngine {
                 cnt++
                 i += 64
             }
-            if (cnt > 0 && acc / cnt > 40) prev = null
+            /*
+             * 深度是 8 位，抽样差 40 在暗场与高频纹理上很容易被单帧噪声顶到；
+             * 抬到 90 再要求连续两次，才认定真换了镜头 —— 误判的代价是新画面前几帧
+             * 还在用旧场景的深度，看起来像物体滑过去。
+             */
+            lastSampleDiff = if (cnt > 0) (acc / cnt).toInt() else 0
+            if (lastSampleDiff > 90) {
+                jumpStreak++
+                if (jumpStreak >= 2) {
+                    prev = null
+                    shotCount++
+                    jumpStreak = 0
+                }
+            } else {
+                jumpStreak = 0
+            }
+        } else {
+            lastSampleDiff = 0
+            jumpStreak = 0
         }
         for (i in 0 until n) {
             var v = (vals[i] - mnFinal) / range
@@ -288,9 +311,11 @@ object DepthEngine {
         inferCount++
         if (inferCount % 20 == 1) {
             Log.i(TAG, "深度推理：${lastInferMs}ms 第 ${inferCount} 次 输入 ${w}x${h}")
+            Log.i(TAG, "深度稳定度：抽样差 ${lastSampleDiff} 换镜头 ${shotCount} 次 平滑 ${smooth}")
         }
         lastOkMs = System.currentTimeMillis()
-        VrNative.pushDepth(out, outW, outH)
+        /* 帧号原样带回原生：环形缓冲靠它把深度还给"本来就是它"的那一帧 */
+        VrNative.pushDepth(out, outW, outH, seq)
     }
 
     private fun halfToFloat(h: Int): Float {

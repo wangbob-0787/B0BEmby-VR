@@ -43,7 +43,9 @@ object VrNative {
 
     private external fun nativeSetDepthInputSize(w: Int, h: Int)
 
-    private external fun nativePushDepth(data: ByteArray, w: Int, h: Int)
+    private external fun nativePushDepth(data: ByteArray, w: Int, h: Int, seq: Long)
+
+    private external fun nativeNotifySeek()
 
     internal fun setDepthSink(sink: Any?) {
         try {
@@ -61,11 +63,25 @@ object VrNative {
         }
     }
 
-    internal fun pushDepth(data: ByteArray, w: Int, h: Int) {
+    internal fun pushDepth(data: ByteArray, w: Int, h: Int, seq: Long) {
         try {
-            if (loaded) nativePushDepth(data, w, h)
+            if (loaded) nativePushDepth(data, w, h, seq)
         } catch (t: Throwable) {
             Log.e(TAG, "回传深度失败：${t.message}")
+        }
+    }
+
+    /**
+     * 跳转 / 换片：让原生清空画面环形缓冲。
+     *
+     * 不清的话，环形缓冲里还留着跳转前的画面，按延迟一帧帧往外吐，屏幕上会先闪回
+     * 一两帧旧位置，且那几帧的深度对不上新画面。
+     */
+    internal fun notifySeek() {
+        try {
+            if (loaded) nativeNotifySeek()
+        } catch (t: Throwable) {
+            Log.e(TAG, "通知跳转失败：${t.message}")
         }
     }
 

@@ -2,6 +2,7 @@ package com.xxxx.emby_vr.player
 
 import android.util.Log
 import androidx.media3.common.Player
+import com.xxxx.emby_vr.vr.VrNative
 
 /**
  * 播放接口统一层（父亲 2026-10-08）。
@@ -94,6 +95,11 @@ class PlaybackControl {
 
     fun seekTo(ms: Long) {
         val target = ms.coerceAtLeast(0L)
+        /*
+         * 跳转前先通知原生：环形缓冲里还留着跳转前的画面，不丢的话按延迟一帧帧吐出去，
+         * 屏幕上会先闪回旧位置。两条内核都要通知，所以放在分发之前。
+         */
+        VrNative.notifySeek()
         mpvProvider()?.let {
             it.seekToSec(target / 1000.0)
             return

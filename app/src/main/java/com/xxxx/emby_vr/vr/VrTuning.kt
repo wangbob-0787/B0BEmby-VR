@@ -301,6 +301,11 @@ object VrTuning {
     const val KEY_STEREO_FADE = 47
     /** 深度图方向：1 = 模型输出越大越近（用之前取反） */
     const val KEY_DEPTH_INVERT = 48
+    /**
+     * 画面环形缓冲：1 = 画面延后一点上屏，等这一帧自己的深度，做到逐帧配对。
+     * 0 = 直采（深度用最近一次结果，画面不延迟）。默认关，出问题写 0 即刻回到老行为。
+     */
+    const val KEY_STEREO_RING = 49
     const val KEY_MIN_SCREEN_GAP = 18
     /** 控制条/菜单/海报墙是否跟随观影位（2026-10-10：走近银幕时控制条留在伸手可及处） */
     const val KEY_FOLLOW_VIEWER = 19
@@ -732,6 +737,10 @@ object VrTuning {
         raw["depth_invert"]?.toIntOrNull()?.let {
             VrNative.setTuning(KEY_DEPTH_INVERT, it.toFloat())
             applied += "深度方向 " + if (it != 0) "取反" else "原样"
+        }
+        raw["stereo_ring"]?.toIntOrNull()?.let {
+            VrNative.setTuning(KEY_STEREO_RING, it.toFloat())
+            applied += "环形缓冲 " + if (it != 0) "开" else "关"
         }
 
         if (!wrote) return applied
