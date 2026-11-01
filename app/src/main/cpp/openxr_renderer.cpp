@@ -2520,7 +2520,7 @@ std::atomic<float> gStereoDisp{kStereoDispStandard};
 std::atomic<float> gStereoConv{0.5f};
 std::atomic<float> gStereoFade{0.04f};
 /* 画面环形缓冲开关（vr-tuning.txt 的 stereo_ring，默认 0 = 关闭，走直采路径） */
-std::atomic<int> gStereoRing{1};
+std::atomic<int> gStereoRing{0};
 /* 请求清空环形缓冲（seek / 换片时置 1，渲染线程取走并清零） */
 static std::atomic<int> gRingFlush{0};
 /* 各路画面是否换了新一帧（环只在有新帧时推进，否则同一帧会占满整环） */
@@ -6795,7 +6795,13 @@ void frameLoop(VrContext &c) {
             int32_t capW = kMaxVideoW;
             /* video_layer_max_w：把视频层交换链压到指定宽度（0 = 按视频原分辨率）。
              * 用来验证"4K 大图层是否本身就是问题"（2026-10-09 诊断开关）。 */
-            const int32_t userCap = gVideoLayerMaxW.load();
+            int32_t userCap = gVideoLayerMaxW.load();
+            /*
+             * 3D 时把视频层压到 2560 宽：DepthRay 同一台机器也是这么做的
+             * （日志原文 video eye 2560x1440 capped from 3840x2160 for the DIBR chain），
+             * 关掉 3D 立刻回到原分辨率，2D 看片不受影响。
+             */
+            if (userCap <= 0 && gStereo3d.load() != 0) userCap = 2560;
             if (userCap > 0) capW = userCap;
             if (vw > capW || vh > kMaxVideoH) {
                 const float k = fminf((float) capW / (float) vw,
