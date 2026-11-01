@@ -106,10 +106,8 @@ object DepthEngine {
                 try {
                     val compat = CompatibilityList()
                     if (compat.isDelegateSupportedOnThisDevice) {
-                        val o = GpuDelegate.Options()
-                        o.setPrecisionLossAllowed(true)   // 深度图不追求数值精度，换速度
-                        o.setInferencePreference(GpuDelegate.Options.INFERENCE_PREFERENCE_SUSTAINED_SPEED)
-                        val d = GpuDelegate(o)
+                        /* 默认参数即可：精度损失本来就允许（深度图不追求数值），只求速度 */
+                        val d = GpuDelegate()
                         opts.addDelegate(d)
                         gpu = d
                         Log.i(TAG, "深度模型：走 GPU 加速")
