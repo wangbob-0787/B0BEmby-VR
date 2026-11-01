@@ -369,6 +369,23 @@ uniform samplerExternalOES uTexture;
  */
 uniform vec2 uUvScale;
 uniform vec2 uUvBias;
+/*
+ * 实时 2D→3D（2026-11-01）：按深度给左右眼各一个水平视差。
+ *
+ * 方案参照 DepthRay 的 warp 通道（逆向结论见
+ * docs/plans/realtime-2d-to-3d-2026-11-01.md §2.5）：深度图存 R 通道
+ * （0=近 … 1=远），零视差平面 uConvergence 之上往近处推、之下往远处推，
+ * 于是同一条片子左眼看的是"往左错开一点"的画面、右眼相反，大脑合成出深度。
+ *
+ * uDepthEdgeFade：画面左右各留一小段淡出，否则最边上那一列会被采到画面外、
+ * 表现为银幕两侧出现拉伸的竖条。
+ */
+uniform sampler2D uDepthTex;
+uniform int uDepthOn;
+uniform float uEyeSign;
+uniform float uDisp;
+uniform float uConvergence;
+uniform float uDepthEdgeFade;
 out vec4 fragColor;
 
 /* 抖动用的哈希（打散 8 位量化色带）*/
@@ -380,8 +397,22 @@ float hash21(vec2 p) {
 
 void main() {
     vec4 outColor;
-    /* 纹理采样窗口（网页视频那块画面）；测试图与圆点仍用原始 vUv，不受影响 */
-    vec2 uvT = vUv * uUvScale + uUvBias;
+    /*
+     * 纹理采样窗口（网页视频那块画面）；测试图与圆点仍用原始 vUv，不受影响。
+     *
+     * 2D→3D 的视差在**窗口坐标里**先加、再套 uUvScale/uUvBias ——
+     * 反过来（先缩窗口再加视差）会让网页在大银幕上那种"只取画面一块"的场景
+     * 把视差算到黑边上。
+     */
+    vec2 uvT = vUv;
+    if (uDepthOn == 1) {
+        float d = texture(uDepthTex, vUv).r;
+        float edgeW = smoothstep(0.0, max(uDepthEdgeFade, 1e-6),
+                                 min(vUv.x, 1.0 - vUv.x));
+        uvT.x += uEyeSign * edgeW * uDisp * (d - uConvergence);
+        uvT.x = clamp(uvT.x, 0.0005, 0.9995);
+    }
+    uvT = uvT * uUvScale + uUvBias;
     if (uTestPattern == 1) {
         /*
          * 固定测试图（2026-10-09 黑纹诊断）：完全不依赖视频输入链路。
@@ -1690,6 +1721,13 @@ struct VrContext {
     /* 纹理采样窗口（网页视频铺满墙宽，2026-10-15）：默认整张，银幕那一路按视频画面裁 */
     GLint uvScaleLoc = -1;
     GLint uvBiasLoc = -1;
+    /* 实时 2D→3D（2026-11-01）：深度图与视差参数 */
+    GLint depthTexLoc = -1;
+    GLint depthOnLoc = -1;
+    GLint eyeSignLoc = -1;
+    GLint dispLoc = -1;
+    GLint convLoc = -1;
+    GLint depthFadeLoc = -1;
     GLint circleLoc = -1;          // uCircle：纯色画成圆点还是方块
     GLint expandLoc = -1;          // uExpandRange：视频有限范围 → 全范围
     GLint brightLoc = -1;          // uBrightness：画面亮度（控制条上可调）
@@ -1816,6 +1854,23 @@ struct VrContext {
     /** 视频独立合成层（父亲 2026-10-06）：建不起来就退回老路，画进我们自己的画面 */
     VideoLayerBuf videoLayer;
     bool videoLayerOk = true;      // 运行时拒绝过就永久关掉，免得每帧报错
+    /*
+     * 实时 2D→3D（2026-11-01）：右眼交换链。
+     *
+     * 一个 quad 层的同一张图两只眼共用，做不到左右眼不同，所以把视频层拆成
+     * 左（videoLayer）右（videoLayerR）两条交换链、两个 quad 层，各自只对一只眼可见
+     * （XR_EYE_VISIBILITY_LEFT_BITS / RIGHT_BITS）。关闭 2D→3D 时右眼这条不建、不提交，
+     * 走回原来单层的零额外开销路径。
+     */
+    VideoLayerBuf videoLayerR;
+    bool videoLayerROk = true;
+    GLuint depthTex = 0;           // 深度图（R 通道 0=近 … 1=远）
+    int depthTexW = 0;
+    int depthTexH = 0;
+    bool depthOn = false;          // 2D→3D 生效中
+    float depthDisp = 0.012f;      // 视差强度（UV 单位，按整幅宽度）
+    float depthConv = 0.5f;        // 零视差平面
+    float depthFade = 0.04f;       // 左右边缘淡出宽度
     /*
      * 弹幕独立合成层（父亲 2026-10-06 晚定）：弹幕与字幕离开视频画面，做成
      * 单独一层摆在银幕前面一点点。原来画在视频层里 / GL 场景里，前者会跟着
@@ -2118,6 +2173,14 @@ XrLayerSettingsFlagsPICO layerBoostFlags(int mode) {
 }
 std::atomic<int> gSwapWaitTimeoutMs{4};      // 等交换链图像超时（毫秒，可运行时调）
 std::atomic<int> gLayerMask{0x3F};            // bit0 视频 bit1 弹幕 bit2 logo bit3 海报墙 bit4 控制条 bit5 菜单
+/*
+ * 实时 2D→3D（2026-11-01）：运行时可调的四个参数，走 vr-tuning.txt。
+ * 默认关 —— 打开后视频层拆成左右两条交换链、GPU 开销翻倍，必须是父亲主动开。
+ */
+std::atomic<int> gStereo3d{0};
+std::atomic<float> gStereoDisp{0.012f};
+std::atomic<float> gStereoConv{0.5f};
+std::atomic<float> gStereoFade{0.04f};
 /*
  * 交回图像前的同步档（父亲 2026-10-08 手机拍到撕裂后加的对照开关）。
  *
@@ -5046,8 +5109,47 @@ bool acquireWritableImage(VrContext &c, VideoLayerBuf &L, uint32_t *outIdx,
     return true;
 }
 
+/**
+ * 深度图纹理（实时 2D→3D，2026-11-01）。
+ *
+ * S1 阶段先建一张**静态假深度**，只为验证管线：两条交换链 + 逐眼视差 + 图层数是否超限。
+ * 真深度由 TFLite 推理产出（S3），接上后这里只负责按推理结果重传纹理。
+ *
+ * 假深度做成斜向正弦条纹而不是左右渐变：渐变在画面中轴上视差恒为 0，一眼看不出效果；
+ * 条纹能让整幅画面都出现左右眼差异，装机时"有没有生效"一望即知。
+ */
+void ensureDepthTexture(VrContext &c) {
+    if (c.depthTex != 0) return;
+    constexpr int W = 256;
+    constexpr int H = 144;
+    std::vector<unsigned char> px((size_t) W * H);
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+            const float u = (float) x / (float) (W - 1);
+            const float v = (float) y / (float) (H - 1);
+            const float d = 0.5f + 0.45f * sinf(u * 6.2831853f * 1.5f + v * 2.f);
+            px[(size_t) y * W + x] = (unsigned char) (fminf(fmaxf(d, 0.f), 1.f) * 255.f);
+        }
+    }
+    GLuint t = 0;
+    glGenTextures(1, &t);
+    glBindTexture(GL_TEXTURE_2D, t);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, W, H, 0, GL_RED, GL_UNSIGNED_BYTE, px.data());
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    c.depthTex = t;
+    c.depthTexW = W;
+    c.depthTexH = H;
+    VLOGI("2D→3D：深度图就绪（假深度 %dx%d，仅用于验证管线）", W, H);
+}
+
 bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
-                     bool videoLayerPass, bool skipDrawIfWritten = false) {
+                     bool videoLayerPass, bool skipDrawIfWritten = false,
+                     int eyeIndex = -1) {
     // 视频层铺满整块、不透明；弹幕层是一层透明浮层，清屏必须透明，
     // 否则它会变成一块黑板把视频整个盖住（父亲 2026-10-06 晚实测现象）。
     if (!L.built || tex == 0 || c.program == 0) return false;
@@ -5120,6 +5222,27 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
         } else {
             static uint32_t layerJitter = 0;
             glUniform1f(c.jitterLoc, (float) (layerJitter++ % 64u) * 1.7f);
+        }
+    }
+    /*
+     * 实时 2D→3D：把深度图挂到 1 号纹理单元（0 号是 OES 视频，不能抢），
+     * eyeIndex 0=左眼 −1 倍视差、1=右眼 +1 倍。eyeIndex < 0 表示这一路不做视差
+     * （单层模式、或海报墙/弹幕这类非视频层）。
+     */
+    if (c.depthOnLoc >= 0) {
+        const bool useDepth = c.depthOn && c.depthTex != 0 && eyeIndex >= 0;
+        if (useDepth) {
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, c.depthTex);
+            glUniform1i(c.depthTexLoc, 1);
+            glActiveTexture(GL_TEXTURE0);
+            glUniform1i(c.depthOnLoc, 1);
+            if (c.eyeSignLoc >= 0) glUniform1f(c.eyeSignLoc, eyeIndex == 1 ? 1.f : -1.f);
+            if (c.dispLoc >= 0) glUniform1f(c.dispLoc, c.depthDisp);
+            if (c.convLoc >= 0) glUniform1f(c.convLoc, c.depthConv);
+            if (c.depthFadeLoc >= 0) glUniform1f(c.depthFadeLoc, c.depthFade);
+        } else {
+            glUniform1i(c.depthOnLoc, 0);
         }
     }
 
@@ -5279,6 +5402,15 @@ void frameLoop(VrContext &c) {
     videoQuad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
     videoQuad.layerFlags = 0;
     /*
+     * 右眼那一路（实时 2D→3D，2026-11-01）：位置/朝向/尺寸与 videoQuad 完全一致，
+     * 只有交换链和 eyeVisibility 不同。两只眼各自看到自己那张图，深度感由此而来。
+     * 不启用 2D→3D 时这一层不提交，videoQuad 仍是 BOTH。
+     */
+    XrCompositionLayerQuad videoQuadR{XR_TYPE_COMPOSITION_LAYER_QUAD};
+    videoQuadR.space = c.localSpace;
+    videoQuadR.eyeVisibility = XR_EYE_VISIBILITY_RIGHT_BIT;
+    videoQuadR.layerFlags = 0;
+    /*
      * 视频层增强（2026-10-14）：超采样 / 锐化 / 超分辨率交给系统合成器做。
      * 必须和 videoQuad 同生命周期（都建在循环外），每帧只改 flags —— 建在循环里
      * 会让 next 指向已经出栈的结构体，运行时读到脏内存。
@@ -5332,8 +5464,13 @@ void frameLoop(VrContext &c) {
     menuQuad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
     menuQuad.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
 
-    const XrCompositionLayerBaseHeader *layerPtrs[8] = {nullptr, nullptr, nullptr, nullptr,
-                                                        nullptr, nullptr, nullptr};
+    /*
+     * 12 个槽位：原 8 个之外，2D→3D 打开时视频层拆成左/右两条，多占一个。
+     * PICO 对合成层数有上限，超出会被 xrEndFrame 拒绝（日志 gLastLayerCount 可查）。
+     */
+    const XrCompositionLayerBaseHeader *layerPtrs[12] = {
+            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
 
     int loggedFrames = 0;
     /* 自适应分辨率上报节流（每 90 帧一次）与注视点等级变更检测 */
@@ -5448,6 +5585,7 @@ void frameLoop(VrContext &c) {
          * 建不起来（运行时不支持）就退回老路，功能不受影响。
          */
         c.videoLayer.submitted = false;
+        c.videoLayerR.submitted = false;   /* 右眼那一路每帧重置，否则停播后还会提交旧图 */
         /*
          * 注意（2026-10-07 回退）：这里**不能**在"没有帧"时改走别的绘制路径。
          * 之前试过"照旧提交、把内容刷黑"来清屏，结果视频层提交直接失效
@@ -5496,7 +5634,34 @@ void frameLoop(VrContext &c) {
                 const GLuint screenSrc = webOnScreen
                                              ? c.webTex
                                              : (panelOnScreen ? c.panelTex : c.videoTex);
-                c.videoLayer.submitted = renderQuadLayer(c, c.videoLayer, screenSrc, true);
+                /*
+                 * 2D→3D：左右眼各画一条交换链。任一条建不起来就当场退回单层，
+                 * 不能让"立体没做成"变成"画面没了"。
+                 */
+                bool stereo = false;
+                c.depthOn = gStereo3d.load() != 0 && c.videoLayerROk;
+                c.depthDisp = gStereoDisp.load();
+                c.depthConv = gStereoConv.load();
+                c.depthFade = gStereoFade.load();
+                if (c.depthOn && c.videoLayerROk) {
+                    ensureDepthTexture(c);
+                    if (c.depthTex != 0 &&
+                        buildQuadLayer(c, c.videoLayerR, vw, vh, "视频层(右眼)")) {
+                        const bool okL = renderQuadLayer(c, c.videoLayer, screenSrc, true, false, 0);
+                        const bool okR = renderQuadLayer(c, c.videoLayerR, screenSrc, true, false, 1);
+                        c.videoLayer.submitted = okL;
+                        c.videoLayerR.submitted = okL && okR;
+                        stereo = true;
+                    } else {
+                        c.videoLayerROk = false;
+                        c.depthOn = false;
+                        VLOGI("2D→3D：右眼图层建不起来，退回单层");
+                    }
+                }
+                if (!stereo) {
+                    c.videoLayerR.submitted = false;
+                    c.videoLayer.submitted = renderQuadLayer(c, c.videoLayer, screenSrc, true);
+                }
             }
         }
 
@@ -5780,6 +5945,25 @@ void frameLoop(VrContext &c) {
             }
             layerPtrs[layerCount++] =
                     reinterpret_cast<const XrCompositionLayerBaseHeader *>(&videoQuad);
+            /*
+             * 右眼那一路（2D→3D 生效时才有）：与左眼同位置同尺寸，只对右眼可见。
+             * 左眼那层的 eyeVisibility 必须同时改成 LEFT_BIT，否则左眼会看到两张图
+             * 叠在一起 —— 叠出来的效果是"重影"，比不做立体更糟。
+             */
+            if (c.videoLayerR.submitted) {
+                videoQuad.eyeVisibility = XR_EYE_VISIBILITY_LEFT_BIT;
+                videoQuadR.pose = videoQuad.pose;
+                videoQuadR.size = videoQuad.size;
+                videoQuadR.subImage.swapchain = c.videoLayerR.handle;
+                videoQuadR.subImage.imageRect.offset = {0, 0};
+                videoQuadR.subImage.imageRect.extent = {c.videoLayerR.width, c.videoLayerR.height};
+                videoQuadR.subImage.imageArrayIndex = 0;
+                videoQuadR.next = videoQuad.next;
+                layerPtrs[layerCount++] =
+                        reinterpret_cast<const XrCompositionLayerBaseHeader *>(&videoQuadR);
+            } else {
+                videoQuad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+            }
         }
         /*
          * 空屏层提交（2026-10-09）：与视频层同一个位置与朝向，未播放时顶上。
@@ -6155,6 +6339,12 @@ void renderThreadMain() {
         c.uvBiasLoc = glGetUniformLocation(c.program, "uUvBias");
         if (c.uvScaleLoc >= 0) glUniform2f(c.uvScaleLoc, 1.f, 1.f);
         if (c.uvBiasLoc >= 0) glUniform2f(c.uvBiasLoc, 0.f, 0.f);
+        c.depthTexLoc = glGetUniformLocation(c.program, "uDepthTex");
+        c.depthOnLoc = glGetUniformLocation(c.program, "uDepthOn");
+        c.eyeSignLoc = glGetUniformLocation(c.program, "uEyeSign");
+        c.dispLoc = glGetUniformLocation(c.program, "uDisp");
+        c.convLoc = glGetUniformLocation(c.program, "uConvergence");
+        c.depthFadeLoc = glGetUniformLocation(c.program, "uDepthEdgeFade");
         c.circleLoc = glGetUniformLocation(c.program, "uCircle");
         c.expandLoc = glGetUniformLocation(c.program, "uExpandRange");
         c.brightLoc = glGetUniformLocation(c.program, "uBrightness");
@@ -6678,6 +6868,32 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
                                                    jint key, jfloat value) {
     (void) env;
     switch (key) {
+        /*
+         * 实时 2D→3D（2026-11-01）：44 开关 / 45 视差强度 / 46 零视差平面 / 47 边缘淡出。
+         * 视差强度按整幅画面宽度算（UV 单位），0.03 已经很夸张，默认 0.012。
+         */
+        case 44:
+            gStereo3d.store(value >= 1.f ? 1 : 0);
+            VLOGI("调参 → 实时 2D→3D %s", value >= 1.f ? "开（视频层拆左右眼）" : "关");
+            break;
+        case 45:
+            if (value >= 0.f && value <= 0.08f) {
+                gStereoDisp.store(value);
+                VLOGI("调参 → 3D 视差强度 %.4f", (double) value);
+            }
+            break;
+        case 46:
+            if (value >= 0.f && value <= 1.f) {
+                gStereoConv.store(value);
+                VLOGI("调参 → 3D 零视差平面 %.2f", (double) value);
+            }
+            break;
+        case 47:
+            if (value >= 0.f && value <= 0.3f) {
+                gStereoFade.store(value);
+                VLOGI("调参 → 3D 边缘淡出 %.3f", (double) value);
+            }
+            break;
         /* 排查日志开关（2026-10-30）：0 = 只留关键日志，1 = 输出全部排查日志 */
         case 43:
             gLogVerbose.store(value >= 1.f ? 1 : 0);

@@ -291,6 +291,14 @@ object VrTuning {
     const val KEY_WALK_PATH_M = 41
     /** 走动判据：停走后多少毫秒内的重新居中当噪声（2026-10-30） */
     const val KEY_WALK_STILL_MS = 42
+    /** 实时 2D→3D 开关（2026-11-01）：1 = 视频层拆成左右眼两条交换链 */
+    const val KEY_STEREO3D = 44
+    /** 实时 2D→3D 视差强度（UV 单位，按整幅画面宽度；默认 0.012） */
+    const val KEY_STEREO_DISP = 45
+    /** 实时 2D→3D 零视差平面（0 近 … 1 远，默认 0.5 = 银幕所在深度） */
+    const val KEY_STEREO_CONV = 46
+    /** 实时 2D→3D 左右边缘淡出宽度（防边缘拉伸竖条） */
+    const val KEY_STEREO_FADE = 47
     const val KEY_MIN_SCREEN_GAP = 18
     /** 控制条/菜单/海报墙是否跟随观影位（2026-10-10：走近银幕时控制条留在伸手可及处） */
     const val KEY_FOLLOW_VIEWER = 19
@@ -701,6 +709,23 @@ object VrTuning {
         raw["follow_viewer"]?.toIntOrNull()?.let {
             VrNative.setTuning(KEY_FOLLOW_VIEWER, it.toFloat())
             applied += "跟随观影位 " + if (it != 0) "开" else "关"
+        }
+        /* 实时 2D→3D（2026-11-01）：开关与三个手感参数 */
+        raw["stereo3d"]?.toIntOrNull()?.let {
+            VrNative.setTuning(KEY_STEREO3D, it.toFloat())
+            applied += "实时 2D→3D " + if (it != 0) "开" else "关"
+        }
+        raw["stereo_disp"]?.toFloatOrNull()?.let {
+            VrNative.setTuning(KEY_STEREO_DISP, it)
+            applied += "3D 视差 ${"%.4f".format(it)}"
+        }
+        raw["stereo_conv"]?.toFloatOrNull()?.let {
+            VrNative.setTuning(KEY_STEREO_CONV, it)
+            applied += "3D 零视差 ${"%.2f".format(it)}"
+        }
+        raw["stereo_fade"]?.toFloatOrNull()?.let {
+            VrNative.setTuning(KEY_STEREO_FADE, it)
+            applied += "3D 边缘淡出 ${"%.3f".format(it)}"
         }
 
         if (!wrote) return applied
