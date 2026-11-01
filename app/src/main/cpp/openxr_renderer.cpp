@@ -403,11 +403,10 @@ uniform vec2 uUvBias;
  */
 uniform sampler2D uDepthTex;
 uniform int uDepthOn;
-uniform float uEyeSign;
+uniform float uEyeSign;         // −1 = 左眼，+1 = 右眼；不用遮挡表那一路靠它分左右
 uniform float uDisp;
 uniform float uConvergence;
 uniform float uDepthEdgeFade;
-uniform int uDepthInvert;   // 1 = 模型输出是"近大远小"的视差，取反后再用
 /*
  * 下面这组照 DepthRay 的立体着色器移植（u_offsets / u_dispTexels / u_occlusion ...）：
  * 深度图是低分辨率（模型输入 256x256），视差按"低分辨率像素"计，遮挡与补洞也用低分辨率单位。
@@ -418,17 +417,19 @@ uniform float uLowResWidth;     // 深度图宽度
 uniform float uFrameWidth;      // 视差采样用的画面宽度（上采样后）
 uniform float uSrcInset;        // 采样边界内缩，防边缘拉出黑边
 uniform float uEyeIndex;        // 0 = 左眼，1 = 右眼
+uniform int uOcclusion;         // 1 = 用预计算遮挡表（默认），0 = 逐像素现算深度
+uniform int uFill;              // 1 = 空洞沿扫描线补（默认），0 = 空洞也按偏移表走
+uniform int uSmoothRead;        // 1 = 深度三次插值读（默认），0 = 双线性
 out vec4 fragColor;
 
 /*
- * 补洞上限：DepthRay 原值是 12 步 / 24 像素，这里加大到 24 步 / 40 像素。
+ * 补洞搜索范围：一步 2 帧像素、最多 12 步 = 24 帧像素，与 DepthRay 同量级。
  *
- * 为什么偏离原值：它在同一台机器上没这个毛病，我们的画面上却能看到"边缘一串白点" ——
- * 那是空洞没填住、采到了画面外的底色。它的深度图更干净（GPU 推理的 int8 全量路径），
- * 我们的空洞更宽，所以搜索范围必须比它大；步数翻倍是为了让近距离大视差也够用。
+ * 单位必须是**帧像素**：按低分辨率像素一步走，256 宽的深度图一步就是十个帧像素，
+ * 两脚步跨完整个空洞，取到的"更远表面"其实是隔了半个画面的东西，补完颜色对不上。
  */
-const int FILL_MAX = 24;
-const float FILL_PX = 40.0;
+const int FILL_MAX = 12;
+const float FILL_PX = 24.0;
 
 /* 抖动用的哈希（打散 8 位量化色带）*/
 float hash21(vec2 p) {
@@ -440,8 +441,10 @@ float hash21(vec2 p) {
 /*
  * 深度读取（三次 B 样条，与 DepthRay 同款）：双线性放大会在物体边缘产生台阶，
  * 台阶在立体画面里就是"边缘一跳一跳"，用平滑插值能压掉。
+ * u_smoothRead 保留关掉它的一路，用来对照"台阶到底是不是插值造成的"。
  */
 float depthAt(vec2 uv) {
+    if (uSmoothRead == 0) return texture(uDepthTex, uv).r;
     vec2 size = vec2(textureSize(uDepthTex, 0));
     vec2 tc = uv * size - 0.5;
     vec2 base = floor(tc);
@@ -460,9 +463,7 @@ float depthAt(vec2 uv) {
     float a10 = texture(uDepthTex, vec2(h1.x, h0.y)).r;
     float a01 = texture(uDepthTex, vec2(h0.x, h1.y)).r;
     float a11 = texture(uDepthTex, vec2(h1.x, h1.y)).r;
-    float d = mix(mix(a11, a01, g0.x), mix(a10, a00, g0.x), g0.y);
-    if (uDepthInvert == 1) d = 1.0 - d;
-    return d;
+    return mix(mix(a11, a01, g0.x), mix(a10, a00, g0.x), g0.y);
 }
 
 void main() {
@@ -479,12 +480,15 @@ void main() {
         /*
          * 立体视差：照 DepthRay 的立体着色器移植。
          *
+         * 视差由两只眼**各推一半**、方向相反：左眼往左、右眼往右，屏幕上两眼之间
+         * 出现的就是完整视差。只推一只眼同样能出立体，但强度只有一半，而且画面整体
+         * 会朝推的那一边偏 —— 观感是"立体偏弱、画面往一边斜"。
+         *
          * 两条路：
-         *  · 该像素在本眼里是"空洞"（被更近的物体遮住，本眼看不到它）→ 沿扫描线
-         *    找最近的深度把洞填上（最多 FILL_MAX 步、搜索到 FILL_PX 像素），
-         *    这样物体边缘不会拉出裂缝；
-         *  · 正常像素 → 用预计算的偏移量定位，再做两次牛顿迭代把误差压到 ±4 像素内，
-         *    避免深度边缘处采样点偏出去。
+         *  · 遮挡表这条路（uOcclusion=1，默认）：空洞像素沿扫描线找更远的深度把洞填上，
+         *    正常像素用预计算偏移定位，再做两次牛顿迭代压掉误差；
+         *  · 直接这条路（uOcclusion=0）：逐像素现算深度，边缘比预计算糙，
+         *    留着是给"遮挡表算错"这类问题做对照用的。
          */
         float edgeW = smoothstep(0.0, max(uDepthEdgeFade, 1e-6),
                                  min(vUv.x, 1.0 - vUv.x));
@@ -494,29 +498,42 @@ void main() {
         vec4 enc = texture(uOffsets, vUv);
         float off = (uEyeIndex < 0.5 ? enc.r : enc.g) - 0.5;
         float hole = (uEyeIndex < 0.5 ? enc.b : enc.a);
-        if (hole > 0.5) {
-            float texel = 1.0 / max(uLowResWidth, 1.0);
-            int span = int(min(float(reach), FILL_PX * uLowResWidth / max(uFrameWidth, 1.0)));
+        if (uOcclusion == 1 && uFill == 1 && hole > 0.5) {
+            /*
+             * 本眼在这个像素上被更近的物体挡住了，没有源像素可采。
+             * 沿扫描线**左右两个方向**都找，取其中更远的那个深度（值越小越远），
+             * 用背景把洞铺上 —— 只搜一侧会在物体边缘留下半条缝。
+             */
+            float stepUV = FILL_PX / float(FILL_MAX) / max(uFrameWidth, 1.0);
+            float reachUV = float(reach) / max(uLowResWidth, 1.0);
+            int span = int(min(float(FILL_MAX), ceil(reachUV / stepUV)));
             float far = depthAt(vUv);
             for (int i = 1; i <= FILL_MAX; i++) {
                 if (i > span) break;
-                float o = float(i) * texel;
+                float o = float(i) * stepUV;
                 far = min(far, texture(uDepthTex, vec2(vUv.x - o, vUv.y)).r);
                 far = min(far, texture(uDepthTex, vec2(vUv.x + o, vUv.y)).r);
             }
-            uvT.x = vUv.x - disp * (far - uConvergence);
-        } else {
+            uvT.x = vUv.x + uEyeSign * disp * (far - uConvergence);
+        } else if (uOcclusion == 1) {
             uvT.x = vUv.x + edgeW * off * 2.0 * float(reach) / max(uLowResWidth, 1.0);
+            /*
+             * 两次牛顿迭代：把采样点推到"落在该像素应有的视差位置"上。
+             * 斜率带 uEyeSign —— 右眼的约束方向与左眼相反，漏掉符号就是右眼被往
+             * 反方向修正最多 4 个像素，这正是"一只眼边缘发虚"的来源。
+             */
             float h = 1.0 / max(uFrameWidth, 1.0);
             for (int i = 0; i < 2; i++) {
                 float d0 = depthAt(vec2(uvT.x, vUv.y));
                 float dm = texture(uDepthTex, vec2(uvT.x - h, vUv.y)).r;
                 float dp = texture(uDepthTex, vec2(uvT.x + h, vUv.y)).r;
-                float e = (uvT.x - vUv.x) + disp * (d0 - uConvergence);
-                float slope = 1.0 + disp * (dp - dm) / (2.0 * h);
+                float e = (uvT.x - vUv.x) - uEyeSign * disp * (d0 - uConvergence);
+                float slope = 1.0 - uEyeSign * disp * (dp - dm) / (2.0 * h);
                 if (abs(slope) < 0.25) slope = 0.25;
                 uvT.x -= clamp(e / slope, -4.0 * h, 4.0 * h);
             }
+        } else {
+            uvT.x = vUv.x + uEyeSign * disp * (depthAt(vUv) - uConvergence);
         }
         uvT.x = clamp(uvT.x, uSrcInset, 1.0 - uSrcInset);
     }
@@ -1897,8 +1914,9 @@ struct StereoSrc {
 struct QuadLocs {
     GLint mvp = -1, color = -1, useTex = -1, tex = -1, uvScale = -1, uvBias = -1;
     GLint depthTex = -1, depthOn = -1, eyeSign = -1, disp = -1, conv = -1;
-    GLint depthFade = -1, depthInvert = -1, offsets = -1, dispTexels = -1;
+    GLint depthFade = -1, offsets = -1, dispTexels = -1;
     GLint lowResW = -1, frameW = -1, srcInset = -1, eyeIndex = -1;
+    GLint occl = -1, fill = -1, smoothRead = -1;
     GLint circle = -1, expand = -1, bright = -1, contrast = -1, sat = -1;
     GLint sharpen = -1, temp = -1, texel = -1, screenStep = -1, down = -1;
     GLint jitter = -1, testPattern = -1;
@@ -1912,7 +1930,10 @@ struct UpsamplePipe {
     GLint colorLoc = -1;
     GLint uvScaleLoc = -1;
     GLint uvBiasLoc = -1;
-    GLint invertLoc = -1;
+    GLint upModeLoc = -1;
+    GLint sharpLoc = -1;
+    GLint edgeSigmaLoc = -1;
+    GLint sigmaRLoc = -1;
 };
 
 /** 查一套主着色器的 uniform 位置（原版与 B0B_RING 版各查一次） */
@@ -1929,13 +1950,15 @@ void fillQuadLocs(GLuint prog, QuadLocs &u) {
     u.disp = glGetUniformLocation(prog, "uDisp");
     u.conv = glGetUniformLocation(prog, "uConvergence");
     u.depthFade = glGetUniformLocation(prog, "uDepthEdgeFade");
-    u.depthInvert = glGetUniformLocation(prog, "uDepthInvert");
     u.offsets = glGetUniformLocation(prog, "uOffsets");
     u.dispTexels = glGetUniformLocation(prog, "uDispTexels");
     u.lowResW = glGetUniformLocation(prog, "uLowResWidth");
     u.frameW = glGetUniformLocation(prog, "uFrameWidth");
     u.srcInset = glGetUniformLocation(prog, "uSrcInset");
     u.eyeIndex = glGetUniformLocation(prog, "uEyeIndex");
+    u.occl = glGetUniformLocation(prog, "uOcclusion");
+    u.fill = glGetUniformLocation(prog, "uFill");
+    u.smoothRead = glGetUniformLocation(prog, "uSmoothRead");
     u.circle = glGetUniformLocation(prog, "uCircle");
     u.expand = glGetUniformLocation(prog, "uExpandRange");
     u.bright = glGetUniformLocation(prog, "uBrightness");
@@ -2001,7 +2024,6 @@ struct VrContext {
     GLint dispLoc = -1;
     GLint convLoc = -1;
     GLint depthFadeLoc = -1;
-    GLint depthInvertLoc = -1;
     GLint circleLoc = -1;          // uCircle：纯色画成圆点还是方块
     GLint expandLoc = -1;          // uExpandRange：视频有限范围 → 全范围
     GLint brightLoc = -1;          // uBrightness：画面亮度（控制条上可调）
@@ -2178,11 +2200,12 @@ struct VrContext {
     GLint offsetsSamplerLoc = -1;
     RenderTarget offsets;
     /*
-     * 画面环形缓冲（stereo_ring，默认关）。
+     * 画面环形缓冲（stereo_ring，默认开，与 DepthRay 的 zero age ring 一致）。
      *
      * 画面进环、延后 delayMs 上屏，深度按帧序号配对 —— 这是「边缘错位」的正解：
      * 推理要几十毫秒，拿刚到站的深度去变形刚到站的画面，物体边缘永远对不上。
-     * 关掉时整条路径不碰（画面与深度仍走实时那条）。
+     * 环建不起来、纹理不完整、延迟超过环容量时一律整功能关闭并退回实时路径
+     * （画面照常出，绝不黑屏）；关掉时整条路径不碰。
      */
     std::vector<RingSlot> ringSlots;
     int ringCount = 0;
@@ -2204,6 +2227,9 @@ struct VrContext {
     int ringArtifactsLowW = 0;
     float ringArtifactsDisp = -1.f;
     float ringArtifactsConv = -1.f;
+    int ringArtifactsUpMode = -1;
+    float ringArtifactsSharp = -1.f;
+    float ringArtifactsSigma = -1.f;
     /* 延迟自适应：深度迟到量的 90 分位数，每秒重算一次 */
     float ringDelayMs = 0.f;
     std::vector<float> ringLateMs;
@@ -2554,6 +2580,19 @@ constexpr int kDepthUpW = 2560;
 std::atomic<float> gStereoDisp{kStereoDispStandard};
 std::atomic<float> gStereoConv{0.5f};
 std::atomic<float> gStereoFade{0.04f};
+/*
+ * 立体链路的六个画质开关（vr-tuning.txt 的 stereo_up_mode / stereo_sharp /
+ * stereo_edge_sigma / stereo_fill / stereo_occl / stereo_smooth）。
+ *
+ * 默认值就是 DepthRay 那一套：引导上采样、分层锐化全开、σe=0.1（它写成 0.01 的平方项）、
+ * 遮挡表 + 补洞都开、深度三次插值读。把任一项拨到对照档，就是排查"哪一步出了问题"的 A/B。
+ */
+std::atomic<int> gStereoUpMode{1};         // 0 = 双线性放大，1 = 引导，2 = 双边
+std::atomic<float> gStereoSharp{1.0f};     // 分层锐化强度 0..1
+std::atomic<float> gStereoEdgeSigma{0.1f}; // 引导回归正则项 σe
+std::atomic<int> gStereoFill{1};
+std::atomic<int> gStereoOccl{1};
+std::atomic<int> gStereoSmooth{1};
 /*
  * 画面环形缓冲开关（vr-tuning.txt 的 stereo_ring）。
  *
@@ -5814,7 +5853,12 @@ void main() {
         glUseProgram(c.offsetsProg);
         if (c.offsetsSamplerLoc >= 0) glUniform1i(c.offsetsSamplerLoc, 2);
     }
-    if (!ensureTarget(dst, w, h, GL_RGBA8, false)) return;
+    /*
+     * 遮挡表必须线性过滤：它存的是"偏移量"而不是"标签"，相邻像素之间插值才有意义。
+     * 用最近邻时，256 宽的深度图铺到 2560 宽的画面就是十像素一块的方块，
+     * 立体偏移跟着一块一块跳 —— 这是"边缘发虚、偶尔扭曲"的另一半来源。
+     */
+    if (!ensureTarget(dst, w, h, GL_RGBA8, true)) return;
 
     GLint prevFbo = 0;
     GLint prevViewport[4] = {0, 0, 0, 0};
@@ -5838,17 +5882,21 @@ void main() {
 }
 
 /**
- * 深度上采样（边缘引导，照 DepthRay 的做法）。
+ * 深度上采样（颜色引导，照 DepthRay 第 10 段着色器）。
  *
  * 为什么必须有这一步：模型只在 256x256 上出深度，直接双线性放大到 1080P 时，
  * 深度边缘会糊过物体轮廓 —— 左右眼按这个糊边去错位，物体边上就会出现一条
- * "接不上"的缝（父亲 2026-11-01 报的现象）。这里在放大时拿画面的亮度当引导：
- * 只有亮度接近的邻点才参与加权，深度边缘就自动贴住了画面里的真实轮廓。
+ * "接不上"的缝，也就是"边缘发虚"。
  *
- * 5x5 窗口，只在深度更新时跑一次，不是每帧，代价可以忽略。
+ * 三种模式（stereo_up_mode）：
+ *  · 1 引导（默认）：5×5 窗口内对「低分亮度 / 低分深度」做加权线性回归，再把斜率
+ *    用到全分辨率亮度上 —— 深度沿画面的亮暗边界展开，边缘贴住真实轮廓；
+ *  · 2 双边：只有颜色相近的邻点参与加权，比回归便宜、但边界处更容易漏；
+ *  · 0 双线性：A/B 对照用，能一眼看出引导值不值这次全屏 pass。
  *
- * guideOes / guide2d 二者只取其一：实时路径的引导画面是 OES 视频纹理，环形缓冲
- * 路径是槽里那一帧的 2D 副本 —— 两条路各用一套程序，采样器类型不能混。
+ * 只在深度更新时跑一次，不是每帧。guideOes / guide2d 二者只取其一：实时路径的引导
+ * 画面是 OES 视频纹理，环形缓冲路径是槽里那一帧的 2D 副本 —— 两条路各用一套程序，
+ * 采样器类型不能混。
  */
 void renderDepthUpsample(VrContext &c, GLuint depthTex, GLuint guideOes, GLuint guide2d,
                          bool webCrop, int w, int h, RenderTarget &dst) {
@@ -5868,21 +5916,31 @@ void main() { vUv = aUv; gl_Position = vec4(aPos.xy, 0.0, 1.0); }
 #extension GL_OES_EGL_image_external_essl3 : require
 precision highp float;
 in vec2 vUv;
-uniform sampler2D uDepth;              // RGBA：RGB = 低分辨率画面，A = 深度
+uniform sampler2D uDepth;              // RGBA：RGB = 同一帧的低分辨率画面，A = 深度
 uniform %SAMPLER% uColor;              // 高分辨率画面（引导）
 uniform vec2 uUvScale;
 uniform vec2 uUvBias;
+uniform int uUpMode;                   // 0 = 双线性（对照） 1 = 引导（默认） 2 = 双边
+uniform float uSharp;                  // 分层锐化强度 0..1
+uniform float uEdgeSigma;              // 引导回归的正则项 σe
+uniform float uSigmaR;                 // 双边模式的色差 σr
 out vec4 oColor;
 const float SIGMA_S = 1.5;
 const float FLAT = 0.05;
 float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 void main() {
-    vec3 hi = texture(uColor, vUv * uUvScale + uUvBias).rgb;
     vec2 dsize = vec2(textureSize(uDepth, 0));
+    if (uUpMode == 0) {
+        /* 双线性放大：只拿来对照"引导到底有没有用"，边缘会糊过真实轮廓 */
+        oColor = vec4(texture(uDepth, vUv).a);
+        return;
+    }
+    vec3 hi = texture(uColor, vUv * uUvScale + uUvBias).rgb;
     vec2 lp = vUv * dsize - 0.5;
     ivec2 base = ivec2(floor(lp));
     float gh = luma(hi);
     float sw = 0.0, sg = 0.0, sd = 0.0, sgg = 0.0, sgd = 0.0;
+    float num = 0.0, den = 0.0;
     float dlo = 1.0, dhi = 0.0;
     for (int dy = -2; dy <= 2; dy++) {
         for (int dx = -2; dx <= 2; dx++) {
@@ -5890,29 +5948,52 @@ void main() {
             vec4 s = texelFetch(uDepth, q, 0);
             vec2 off = vec2(q) - lp;
             float ws = exp(-dot(off, off) / (2.0 * SIGMA_S * SIGMA_S));
-            float g = luma(s.rgb);
-            sw += ws;
-            sg += ws * g;
-            sd += ws * s.a;
-            sgg += ws * g * g;
-            sgd += ws * g * s.a;
+            if (uUpMode == 1) {
+                /*
+                 * 引导：在 (低分亮度, 低分深度) 上做加权线性回归，再把斜率用到
+                 * 全分辨率亮度上。画面亮→暗的边界处斜率大，深度沿这条边界展开，
+                 * 于是深度边缘贴住真实轮廓而不是糊成一片。
+                 */
+                float g = luma(s.rgb);
+                sw += ws;
+                sg += ws * g;
+                sd += ws * s.a;
+                sgg += ws * g * g;
+                sgd += ws * g * s.a;
+            } else {
+                /* 双边：权重 = 空间高斯 × 与高分辨率像素的色差高斯，只信颜色相近的邻点 */
+                vec3 cd = hi - s.rgb;
+                float w = ws * exp(-dot(cd, cd) / (2.0 * uSigmaR * uSigmaR));
+                num += w * s.a;
+                den += w;
+            }
             dlo = min(dlo, s.a);
             dhi = max(dhi, s.a);
         }
     }
-    float inv = 1.0 / max(sw, 1e-6);
-    float mg = sg * inv;
-    float md = sd * inv;
-    float varG = max(sgg * inv - mg * mg, 0.0);
-    float covGD = sgd * inv - mg * md;
-    float a = covGD / (varG + 0.01);
-    float d = clamp(md + a * (gh - mg), dlo, dhi);
-    float span = dhi - dlo;
-    if (span >= FLAT) {
-        float u = clamp((d - dlo) / max(span, 1e-6), 0.0, 1.0);
-        d = mix(d, dlo + span / (1.0 + exp(-24.0 * (u - 0.5))), 1.0);
+    float d;
+    if (uUpMode == 1) {
+        float inv = 1.0 / max(sw, 1e-6);
+        float mg = sg * inv;
+        float md = sd * inv;
+        float varG = max(sgg * inv - mg * mg, 0.0);
+        float covGD = sgd * inv - mg * md;
+        float a = covGD / (varG + max(uEdgeSigma * uEdgeSigma, 1e-6));
+        d = clamp(md + a * (gh - mg), dlo, dhi);
+    } else {
+        d = num / max(den, 1e-6);
     }
-    oColor = vec4(d, d, d, 1.0);
+    /*
+     * 分层锐化：把窗口内的深度按 S 曲线推向两端，前后景分层更干脆。
+     * 窗口跨度小于 FLAT 视为平坦面，不动它 —— 平坦面上推只会放大噪声，
+     * 单帧噪声在立体画面里就是画面边缘的麻点。
+     */
+    float span = dhi - dlo;
+    if (uSharp > 0.0 && span >= FLAT) {
+        float u = clamp((d - dlo) / max(span, 1e-6), 0.0, 1.0);
+        d = mix(d, dlo + span / (1.0 + exp(-24.0 * (u - 0.5))), uSharp);
+    }
+    oColor = vec4(d);
 }
 )";
         pipe.prog = buildProgramWithSampler(vs, fs, useOes ? "samplerExternalOES" : "sampler2D");
@@ -5924,7 +6005,10 @@ void main() {
         pipe.colorLoc = glGetUniformLocation(pipe.prog, "uColor");
         pipe.uvScaleLoc = glGetUniformLocation(pipe.prog, "uUvScale");
         pipe.uvBiasLoc = glGetUniformLocation(pipe.prog, "uUvBias");
-        pipe.invertLoc = glGetUniformLocation(pipe.prog, "uInvert");
+        pipe.upModeLoc = glGetUniformLocation(pipe.prog, "uUpMode");
+        pipe.sharpLoc = glGetUniformLocation(pipe.prog, "uSharp");
+        pipe.edgeSigmaLoc = glGetUniformLocation(pipe.prog, "uEdgeSigma");
+        pipe.sigmaRLoc = glGetUniformLocation(pipe.prog, "uSigmaR");
         glUseProgram(pipe.prog);
         if (pipe.depthLoc >= 0) glUniform1i(pipe.depthLoc, 2);
         if (pipe.colorLoc >= 0) glUniform1i(pipe.colorLoc, 0);
@@ -5956,7 +6040,10 @@ void main() {
         glUniform2f(pipe.uvBiasLoc, webCrop ? gWebUvX.load() : 0.f,
                     webCrop ? gWebUvY.load() : 0.f);
     }
-    if (pipe.invertLoc >= 0) glUniform1i(pipe.invertLoc, gDepthInvert.load());
+    if (pipe.upModeLoc >= 0) glUniform1i(pipe.upModeLoc, gStereoUpMode.load());
+    if (pipe.sharpLoc >= 0) glUniform1f(pipe.sharpLoc, gStereoSharp.load());
+    if (pipe.edgeSigmaLoc >= 0) glUniform1f(pipe.edgeSigmaLoc, gStereoEdgeSigma.load());
+    if (pipe.sigmaRLoc >= 0) glUniform1f(pipe.sigmaRLoc, 0.12f);
     glBindVertexArray(c.videoLayerVao);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(0);
@@ -5976,6 +6063,13 @@ bool uploadDepthToTarget(RenderTarget &t, const std::vector<unsigned char> &dept
     if (w <= 0 || h <= 0 || depth.size() != (size_t) w * h) return false;
     if (!ensureTarget(t, w, h, GL_RGBA8, true)) return false;
     const bool haveColor = lowColor.size() == (size_t) w * h * 4;
+    /*
+     * 深度方向在这里一次定死（depth_invert），纹理里永远是「越大越远」。
+     *
+     * 不能在着色器里各读各的取反：上采样那趟取反、补洞的最小值搜索不取反、
+     * 遮挡表那趟又不取反，三处约定不一致时补洞就会取到前景，边缘冒出亮条。
+     */
+    const bool invert = gDepthInvert.load() != 0;
     std::vector<unsigned char> rgba((size_t) w * h * 4);
     for (int y = 0; y < h; y++) {
         /* 不翻行：读回的第 0 行就是 v=0 那一行，深度和画面用的是同一套行序 */
@@ -5984,7 +6078,7 @@ bool uploadDepthToTarget(RenderTarget &t, const std::vector<unsigned char> &dept
             rgba[i * 4 + 0] = haveColor ? lowColor[i * 4 + 0] : 128;
             rgba[i * 4 + 1] = haveColor ? lowColor[i * 4 + 1] : 128;
             rgba[i * 4 + 2] = haveColor ? lowColor[i * 4 + 2] : 128;
-            rgba[i * 4 + 3] = depth[i];
+            rgba[i * 4 + 3] = invert ? (unsigned char) (255 - depth[i]) : depth[i];
         }
     }
     glBindTexture(GL_TEXTURE_2D, t.tex);
@@ -6356,13 +6450,20 @@ void buildRingArtifacts(VrContext &c, RingSlot &s, int upW, int upH) {
     const bool sameSeq = c.ringArtifactsSeq == s.seq;
     const bool sameDisp = fabsf(c.ringArtifactsDisp - c.depthDisp) < 1e-6f &&
                           fabsf(c.ringArtifactsConv - c.depthConv) < 1e-6f;
-    if (sameSeq && sameDisp) return;
+    /* 上采样参数一改也要重算：否则要等到下一次换片才看到效果，调参等于没生效 */
+    const bool sameUp = c.ringArtifactsUpMode == gStereoUpMode.load() &&
+                        fabsf(c.ringArtifactsSharp - gStereoSharp.load()) < 1e-4f &&
+                        fabsf(c.ringArtifactsSigma - gStereoEdgeSigma.load()) < 1e-5f;
+    if (sameSeq && sameDisp && sameUp) return;
     renderOffsets(c, s.depth.tex, s.depth.w, s.depth.h, c.ringOffsets);
     renderDepthUpsample(c, s.depth.tex, 0, s.color.tex, false, upW, upH, c.ringUp);
     c.ringArtifactsSeq = s.seq;
     c.ringArtifactsLowW = s.depth.w;
     c.ringArtifactsDisp = c.depthDisp;
     c.ringArtifactsConv = c.depthConv;
+    c.ringArtifactsUpMode = gStereoUpMode.load();
+    c.ringArtifactsSharp = gStereoSharp.load();
+    c.ringArtifactsSigma = gStereoEdgeSigma.load();
 }
 
 bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
@@ -6503,7 +6604,6 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
             if (u.disp >= 0) glUniform1f(u.disp, c.depthDisp);
             if (u.conv >= 0) glUniform1f(u.conv, c.depthConv);
             if (u.depthFade >= 0) glUniform1f(u.depthFade, c.depthFade);
-            if (u.depthInvert >= 0) glUniform1i(u.depthInvert, gDepthInvert.load());
             /* 遮挡表与单位换算（DepthRay 的 warp 按低分辨率像素计视差） */
             if (u.dispTexels >= 0) glUniform1f(u.dispTexels, c.depthDisp * (float) lowW);
             if (u.lowResW >= 0) glUniform1f(u.lowResW, (float) lowW);
@@ -6522,6 +6622,9 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
                 glUniform1f(u.srcInset, inset);
             }
             if (u.eyeIndex >= 0) glUniform1f(u.eyeIndex, eyeIndex == 1 ? 1.f : 0.f);
+            if (u.occl >= 0) glUniform1i(u.occl, gStereoOccl.load());
+            if (u.fill >= 0) glUniform1i(u.fill, gStereoFill.load());
+            if (u.smoothRead >= 0) glUniform1i(u.smoothRead, gStereoSmooth.load());
         } else {
             glUniform1i(u.depthOn, 0);
             /*
@@ -7814,7 +7917,6 @@ void renderThreadMain() {
         c.dispLoc = c.quadU.disp;
         c.convLoc = c.quadU.conv;
         c.depthFadeLoc = c.quadU.depthFade;
-        c.depthInvertLoc = c.quadU.depthInvert;
         c.circleLoc = c.quadU.circle;
         c.expandLoc = c.quadU.expand;
         c.brightLoc = c.quadU.bright;
@@ -8491,6 +8593,41 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
         case 48:
             gDepthInvert.store(value >= 1.f ? 1 : 0);
             VLOGI("调参 → 深度方向 %s", value >= 1.f ? "取反（越大越近）" : "原样（越大越远）");
+            break;
+        /*
+         * 52~57 = 立体画质的六个开关。默认值就是 DepthRay 那一套；拨到对照档
+         * 是为了回答"这一步到底有没有用"，不是为了长期跑在对照档上。
+         */
+        case 52:
+            if (value >= 0.f && value <= 2.f) {
+                gStereoUpMode.store((int) value);
+                VLOGI("调参 → 深度上采样 %s", (int) value == 0 ? "双线性（对照）"
+                                                 : ((int) value == 2 ? "双边引导" : "颜色引导"));
+            }
+            break;
+        case 53:
+            if (value >= 0.f && value <= 1.f) {
+                gStereoSharp.store(value);
+                VLOGI("调参 → 分层锐化 %.2f", (double) value);
+            }
+            break;
+        case 54:
+            if (value > 0.f && value <= 0.5f) {
+                gStereoEdgeSigma.store(value);
+                VLOGI("调参 → 引导正则 σe %.3f", (double) value);
+            }
+            break;
+        case 55:
+            gStereoFill.store(value >= 1.f ? 1 : 0);
+            VLOGI("调参 → 空洞填充 %s", value >= 1.f ? "开（沿扫描线找背景补）" : "关（洞按偏移表走）");
+            break;
+        case 56:
+            gStereoOccl.store(value >= 1.f ? 1 : 0);
+            VLOGI("调参 → 遮挡表 %s", value >= 1.f ? "用（预计算偏移）" : "不用（逐像素现算）");
+            break;
+        case 57:
+            gStereoSmooth.store(value >= 1.f ? 1 : 0);
+            VLOGI("调参 → 深度读取 %s", value >= 1.f ? "三次插值" : "双线性（对照）");
             break;
         /* 排查日志开关（2026-10-30）：0 = 只留关键日志，1 = 输出全部排查日志 */
         case 43:

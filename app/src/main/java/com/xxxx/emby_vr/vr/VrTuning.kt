@@ -54,6 +54,12 @@ import java.io.File
  * | `depth_invert` | 深度方向：1=模型输出越大越近（用之前取反） | 0 |
  * | `stereo_ring` | 画面环形缓冲：1=画面延后一点上屏等这一帧自己的深度，0=直采 | 1 |
  * | `stereo_interval` | 抓帧的毫秒下限；0=纯按帧数（每 3 个新视频帧一次） | 0 |
+ * | `stereo_up_mode` | 深度上采样：0=双线性（对照档）1=颜色引导（默认）2=双边引导 | 1 |
+ * | `stereo_sharp` | 上采样的分层锐化强度（0=不锐化，1=全量；小窗口噪声大时调小） | 1.0 |
+ * | `stereo_edge_sigma` | 引导回归的正则项 σe（越小越贴边缘、越大越稳，0.02~0.2） | 0.1 |
+ * | `stereo_fill` | 空洞填充：1=沿扫描线找背景补（默认）0=洞也按偏移表走（出白点时对照） | 1 |
+ * | `stereo_occl` | 遮挡表：1=用预计算偏移（默认）0=逐像素现算（偏移表算错时对照） | 1 |
+ * | `stereo_smooth` | 深度读取：1=三次插值（默认）0=双线性（台阶对照） | 1 |
  * | `layer_boost` | 视频层增强（PICO 合成器）：0=关 1=超采样 2=超采样高 3=锐化 4=锐化高 5=自适应锐化 6=自适应锐化高 7=超分辨率（同一层只能开一种） | 7 |
  * | `foveation` | 固定注视点渲染：0=关 1=低 2=中 3=高（边缘降精度换 GPU） | 2 |
  * | `adaptive_res` | 自适应分辨率：0=关 1=高画质 2=平衡 3=省电（这版只上报与记录建议值） | 2 |
@@ -326,6 +332,22 @@ object VrTuning {
      * 太密时才用得上，写 0 就是完全不限。
      */
     const val KEY_STEREO_INTERVAL = 51
+    /**
+     * 深度上采样模式（照 DepthRay 第 10 段着色器）：0 = 双线性（对照档）、1 = 颜色引导（默认）、
+     * 2 = 双边引导。引导档在 5×5 窗口里对「低分亮度/低分深度」做加权线性回归，深度边缘贴住
+     * 画面真实轮廓；对照档留着重现"边缘发虚"，用来判断这次全屏 pass 值不值。
+     */
+    const val KEY_STEREO_UP_MODE = 52
+    /** 分层锐化强度（把深度按 S 曲线推向窗口两端；平坦面不锐化，避免放大噪声） */
+    const val KEY_STEREO_SHARP = 53
+    /** 引导回归的正则项 σe（σe² 项；越大越稳、越小越贴边缘） */
+    const val KEY_STEREO_EDGE_SIGMA = 54
+    /** 空洞填充开关：0 = 空洞像素也走偏移表（出白点时用来判断是不是补洞的锅） */
+    const val KEY_STEREO_FILL = 55
+    /** 遮挡表开关：0 = 不用预计算偏移，逐像素现算（偏移表算错时用来对照） */
+    const val KEY_STEREO_OCCL = 56
+    /** 深度读取方式：1 = 三次插值（默认）、0 = 双线性（判断台阶是不是插值造成的） */
+    const val KEY_STEREO_SMOOTH = 57
     const val KEY_MIN_SCREEN_GAP = 18
     /** 控制条/菜单/海报墙是否跟随观影位（2026-10-10：走近银幕时控制条留在伸手可及处） */
     const val KEY_FOLLOW_VIEWER = 19
@@ -766,6 +788,35 @@ object VrTuning {
         raw["stereo_interval"]?.toIntOrNull()?.let {
             VrNative.setTuning(KEY_STEREO_INTERVAL, it.toFloat())
             applied += if (it <= 0) "抓帧按帧数（每 3 帧一次）" else "抓帧毫秒下限 ${it}ms"
+        }
+        /* 立体画质的六个开关：默认全按 DepthRay，其余档位只为做 A/B */
+        raw["stereo_up_mode"]?.toIntOrNull()?.let {
+            VrNative.setTuning(KEY_STEREO_UP_MODE, it.toFloat())
+            applied += "深度上采样 " + when (it) {
+                0 -> "双线性（对照）"
+                2 -> "双边引导"
+                else -> "颜色引导"
+            }
+        }
+        raw["stereo_sharp"]?.toFloatOrNull()?.let {
+            VrNative.setTuning(KEY_STEREO_SHARP, it)
+            applied += "分层锐化 ${"%.2f".format(it)}"
+        }
+        raw["stereo_edge_sigma"]?.toFloatOrNull()?.let {
+            VrNative.setTuning(KEY_STEREO_EDGE_SIGMA, it)
+            applied += "引导正则 ${"%.3f".format(it)}"
+        }
+        raw["stereo_fill"]?.toIntOrNull()?.let {
+            VrNative.setTuning(KEY_STEREO_FILL, it.toFloat())
+            applied += "空洞填充 " + if (it != 0) "开" else "关"
+        }
+        raw["stereo_occl"]?.toIntOrNull()?.let {
+            VrNative.setTuning(KEY_STEREO_OCCL, it.toFloat())
+            applied += "遮挡表 " + if (it != 0) "用" else "不用"
+        }
+        raw["stereo_smooth"]?.toIntOrNull()?.let {
+            VrNative.setTuning(KEY_STEREO_SMOOTH, it.toFloat())
+            applied += "深度读取 " + if (it != 0) "三次插值" else "双线性"
         }
 
         if (!wrote) return applied
