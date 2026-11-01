@@ -6228,7 +6228,26 @@ void frameLoop(VrContext &c) {
                  */
                 const long long dAge = nowMs() - gDepthStampMs.load();
                 c.depthOn = gStereo3d.load() != 0 && c.videoLayerROk && dAge < 500;
-                c.depthDisp = gStereoDisp.load();
+                /*
+                 * 视差按"屏幕有多大、离多远"自动换算，不写死。
+                 *
+                 * 同一个 UV 视差，屏幕越大、离得越近，实际错开的物理距离就越大 ——
+                 * 我们这块银幕有十米宽，写死 0.012 会变成两只眼错开十几厘米，
+                 * 远超两眼瞳距，边缘必然被拉出裂缝（父亲 2026-11-01 反复报的现象）。
+                 * 按角度预算反推：允许的最大错开角 / 屏幕张角 = UV 视差。
+                 */
+                {
+                    const float wMeters = fmaxf(0.5f, videoQuad.size.width);
+                    const float zMeters = fmaxf(0.3f,
+                        sqrtf(videoQuad.pose.position.x * videoQuad.pose.position.x +
+                              videoQuad.pose.position.y * videoQuad.pose.position.y +
+                              videoQuad.pose.position.z * videoQuad.pose.position.z));
+                    /* 6e-3 弧度 ≈ 0.35°，单眼最大错开；调参里的值当倍数用 */
+                    const float budgetRad = 6e-3f;
+                    const float autoDisp = budgetRad * zMeters / wMeters;
+                    c.depthDisp = fminf(0.02f, fmaxf(0.0004f,
+                                                    autoDisp * gStereoDisp.load() / 0.012f));
+                }
                 c.depthConv = gStereoConv.load();
                 c.depthFade = gStereoFade.load();
                 if (c.depthOn && c.videoLayerROk) {
