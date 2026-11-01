@@ -306,6 +306,8 @@ object VrTuning {
      * 0 = 直采（深度用最近一次结果，画面不延迟）。默认关，出问题写 0 即刻回到老行为。
      */
     const val KEY_STEREO_RING = 49
+    /** 深度抓帧间隔（毫秒）：GPU 推理与画面渲染共用一块 GPU，间隔越短越吃帧率 */
+    const val KEY_STEREO_INTERVAL = 51
     const val KEY_MIN_SCREEN_GAP = 18
     /** 控制条/菜单/海报墙是否跟随观影位（2026-10-10：走近银幕时控制条留在伸手可及处） */
     const val KEY_FOLLOW_VIEWER = 19
@@ -741,6 +743,10 @@ object VrTuning {
         raw["stereo_ring"]?.toIntOrNull()?.let {
             VrNative.setTuning(KEY_STEREO_RING, it.toFloat())
             applied += "环形缓冲 " + if (it != 0) "开" else "关"
+        }
+        raw["stereo_interval"]?.toIntOrNull()?.let {
+            VrNative.setTuning(KEY_STEREO_INTERVAL, it.toFloat())
+            applied += "深度间隔 ${it}ms"
         }
 
         if (!wrote) return applied

@@ -2533,7 +2533,7 @@ static std::atomic<bool> gWebFrameChanged{false};
  */
 std::atomic<int> gDepthInputW{0};
 std::atomic<int> gDepthInputH{0};
-std::atomic<int> gDepthIntervalMs{120};
+std::atomic<int> gDepthIntervalMs{300};
 std::atomic<int> gDepthInvert{0};   // 多久更新一次深度（深度不必每帧新）
 static jobject gDepthSink = nullptr;      // DepthEngine 单例的全局引用
 static jmethodID gDepthSubmit = nullptr;  // DepthEngine.submitFrame([BIIJ)V
@@ -8288,6 +8288,13 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             }
             break;
         /* 48 = 深度图方向（1 = 模型输出越大越近，用之前取反） */
+        /* 51 = 深度抓帧间隔（毫秒）：GPU 推理与画面渲染抢同一个 GPU，间隔太密会把帧率拖下来 */
+        case 51:
+            if (value >= 50.f && value <= 1000.f) {
+                gDepthIntervalMs.store((int) value);
+                VLOGI("调参 → 深度抓帧间隔 %dms", (int) value);
+            }
+            break;
         case 49:
             gStereoRing.store(value >= 1.f ? 1 : 0);
             VLOGI("调参 → 画面环形缓冲 %s", (int) value ? "开（画面延后与深度配对）" : "关（直采）");
