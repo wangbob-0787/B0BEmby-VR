@@ -5228,13 +5228,19 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
      * 实时 2D→3D：把深度图挂到 1 号纹理单元（0 号是 OES 视频，不能抢），
      * eyeIndex 0=左眼 −1 倍视差、1=右眼 +1 倍。eyeIndex < 0 表示这一路不做视差
      * （单层模式、或海报墙/弹幕这类非视频层）。
+     *
+     * uDepthTex 的单元号**必须无条件写**：采样器 uniform 默认指向 0 号单元，而 0 号
+     * 上已经绑着 OES 视频纹理 —— 同一程序里两种不同类型的采样器指向同一单元，
+     * Adreno 在 draw 时判非法，整层画不出来。r1116 实测症状就是这个：海报墙全黑、
+     * 控制条没有内容（两个都由这个程序绘制）。关掉 2D→3D 时单元号写 1、开关写 0，
+     * 永远走不到采样那一步。
      */
+    if (c.depthTexLoc >= 0) glUniform1i(c.depthTexLoc, 1);
     if (c.depthOnLoc >= 0) {
         const bool useDepth = c.depthOn && c.depthTex != 0 && eyeIndex >= 0;
         if (useDepth) {
             glActiveTexture(GL_TEXTURE1);
             glBindTexture(GL_TEXTURE_2D, c.depthTex);
-            glUniform1i(c.depthTexLoc, 1);
             glActiveTexture(GL_TEXTURE0);
             glUniform1i(c.depthOnLoc, 1);
             if (c.eyeSignLoc >= 0) glUniform1f(c.eyeSignLoc, eyeIndex == 1 ? 1.f : -1.f);
