@@ -301,6 +301,8 @@ object VrTuning {
     const val KEY_STEREO_FADE = 47
     /** 深度图方向：1 = 模型输出越大越近（用之前取反） */
     const val KEY_DEPTH_INVERT = 48
+    /** 画面延后多少毫秒再上屏（3D 配对用，等那一帧的深度算完；0 = 不延后） */
+    const val KEY_STEREO_DELAY = 50
     const val KEY_MIN_SCREEN_GAP = 18
     /** 控制条/菜单/海报墙是否跟随观影位（2026-10-10：走近银幕时控制条留在伸手可及处） */
     const val KEY_FOLLOW_VIEWER = 19
@@ -732,6 +734,10 @@ object VrTuning {
         raw["depth_invert"]?.toIntOrNull()?.let {
             VrNative.setTuning(KEY_DEPTH_INVERT, it.toFloat())
             applied += "深度方向 " + if (it != 0) "取反" else "原样"
+        }
+        raw["stereo_delay"]?.toIntOrNull()?.let {
+            VrNative.setTuning(KEY_STEREO_DELAY, it.toFloat())
+            applied += "3D 画面延后 ${it} 毫秒"
         }
 
         if (!wrote) return applied
