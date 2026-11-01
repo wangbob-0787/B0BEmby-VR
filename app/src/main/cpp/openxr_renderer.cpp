@@ -1919,6 +1919,19 @@ struct VrContext {
     int depthGrabH = 0;
     std::vector<unsigned char> depthGrabPixels;
     long long depthLastGrabMs = 0;
+    /* 深度上采样（边缘引导）：把 512x288 的深度对齐到画面边缘后放到视频层分辨率 */
+    GLuint depthUpProg = 0;
+    GLint depthUpDepthLoc = -1;
+    GLint depthUpColorLoc = -1;
+    GLint depthUpStepLoc = -1;
+    GLint depthUpUvScaleLoc = -1;
+    GLint depthUpUvBiasLoc = -1;
+    GLint depthUpInvertLoc = -1;
+    GLuint depthUpFbo = 0;
+    GLuint depthUpTex = 0;
+    int depthUpW = 0;
+    int depthUpH = 0;
+    bool depthUpDirty = true;
     /*
      * 弹幕独立合成层（父亲 2026-10-06 晚定）：弹幕与字幕离开视频画面，做成
      * 单独一层摆在银幕前面一点点。原来画在视频层里 / GL 场景里，前者会跟着
@@ -5285,6 +5298,122 @@ void main() {
 }
 
 /**
+ * 深度上采样（边缘引导，照 DepthRay 的做法）。
+ *
+ * 为什么必须有这一步：模型只在 512x288 上出深度，直接双线性放大到 1080P 时，
+ * 深度边缘会糊过物体轮廓 —— 左右眼按这个糊边去错位，物体边上就会出现一条
+ * "接不上"的缝（父亲 2026-11-01 报的现象）。这里在放大时拿画面的亮度当引导：
+ * 只有亮度接近的邻点才参与加权，深度边缘就自动贴住了画面里的真实轮廓。
+ *
+ * 5x5 窗口，只在深度更新时跑一次（每秒 8 次），不是每帧，代价可以忽略。
+ */
+void renderDepthUpsample(VrContext &c, GLuint colorTex, bool webCrop, int w, int h) {
+    if (c.depthTex == 0 || c.depthTexW <= 0 || colorTex == 0) return;
+    if (w < 64 || h < 64) return;
+
+    if (c.depthUpProg == 0) {
+        static const char *vs = R"(#version 300 es
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec2 aUv;
+out vec2 vUv;
+void main() { vUv = aUv; gl_Position = vec4(aPos.xy, 0.0, 1.0); }
+)";
+        static const char *fs = R"(#version 300 es
+#extension GL_OES_EGL_image_external_essl3 : require
+precision mediump float;
+in vec2 vUv;
+uniform sampler2D uDepth;
+uniform samplerExternalOES uColor;
+uniform vec2 uStep;      // 画面里一个像素的 UV 步长
+uniform vec2 uUvScale;
+uniform vec2 uUvBias;
+uniform int uInvert;
+out vec4 oColor;
+
+float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+
+void main() {
+    vec2 cuv = vUv * uUvScale + uUvBias;
+    float l0 = luma(texture(uColor, cuv).rgb);
+    float sum = 0.0;
+    float wsum = 0.0;
+    /* 5x5 联合双边：空间权重固定，颜色权重按亮度差衰减 */
+    for (int y = -2; y <= 2; y++) {
+        for (int x = -2; x <= 2; x++) {
+            vec2 off = vec2(float(x), float(y)) * uStep;
+            float l = luma(texture(uColor, cuv + off).rgb);
+            float dl = l - l0;
+            float w = exp(-(dl * dl) / 0.012) * exp(-float(x * x + y * y) / 6.0);
+            sum += texture(uDepth, vUv + off).r * w;
+            wsum += w;
+        }
+    }
+    float d = wsum > 0.0001 ? sum / wsum : texture(uDepth, vUv).r;
+    oColor = vec4(d, d, d, 1.0);
+}
+)";
+        c.depthUpProg = buildProgramFrom(vs, fs);
+        if (c.depthUpProg == 0) {
+            VLOGI("2D→3D：深度上采样着色器建不起来，退回直接放大");
+            return;
+        }
+        c.depthUpDepthLoc = glGetUniformLocation(c.depthUpProg, "uDepth");
+        c.depthUpColorLoc = glGetUniformLocation(c.depthUpProg, "uColor");
+        c.depthUpStepLoc = glGetUniformLocation(c.depthUpProg, "uStep");
+        c.depthUpUvScaleLoc = glGetUniformLocation(c.depthUpProg, "uUvScale");
+        c.depthUpUvBiasLoc = glGetUniformLocation(c.depthUpProg, "uUvBias");
+        c.depthUpInvertLoc = glGetUniformLocation(c.depthUpProg, "uInvert");
+        glUseProgram(c.depthUpProg);
+        if (c.depthUpDepthLoc >= 0) glUniform1i(c.depthUpDepthLoc, 2);
+        if (c.depthUpColorLoc >= 0) glUniform1i(c.depthUpColorLoc, 0);
+    }
+    if (c.depthUpW != w || c.depthUpH != h) {
+        if (c.depthUpFbo != 0) glDeleteFramebuffers(1, &c.depthUpFbo);
+        if (c.depthUpTex != 0) glDeleteTextures(1, &c.depthUpTex);
+        glGenTextures(1, &c.depthUpTex);
+        glBindTexture(GL_TEXTURE_2D, c.depthUpTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, w, h, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glGenFramebuffers(1, &c.depthUpFbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, c.depthUpFbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                               c.depthUpTex, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        c.depthUpW = w;
+        c.depthUpH = h;
+        VLOGI("2D→3D：深度上采样缓冲 %dx%d 就绪", w, h);
+    }
+    ensureVideoLayerQuad(c);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, c.depthUpFbo);
+    glViewport(0, 0, w, h);
+    glUseProgram(c.depthUpProg);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, c.depthTex);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, colorTex);
+    if (c.depthUpStepLoc >= 0) glUniform2f(c.depthUpStepLoc, 1.f / (float) w, 1.f / (float) h);
+    if (c.depthUpUvScaleLoc >= 0) {
+        glUniform2f(c.depthUpUvScaleLoc, webCrop ? gWebUvW.load() : 1.f,
+                    webCrop ? gWebUvH.load() : 1.f);
+    }
+    if (c.depthUpUvBiasLoc >= 0) {
+        glUniform2f(c.depthUpUvBiasLoc, webCrop ? gWebUvX.load() : 0.f,
+                    webCrop ? gWebUvY.load() : 0.f);
+    }
+    if (c.depthUpInvertLoc >= 0) glUniform1i(c.depthUpInvertLoc, gDepthInvert.load());
+    glBindVertexArray(c.videoLayerVao);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindVertexArray(0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    c.depthUpDirty = false;
+}
+
+/**
  * 把 Kotlin 侧算好的深度图上传成纹理。没有真深度时保持假深度（管线仍可验证）。
  */
 void uploadDepthIfFresh(VrContext &c) {
@@ -5320,6 +5449,7 @@ void uploadDepthIfFresh(VrContext &c) {
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RED, GL_UNSIGNED_BYTE, buf.data());
     glBindTexture(GL_TEXTURE_2D, 0);
+    c.depthUpDirty = true;
 }
 
 void ensureDepthTexture(VrContext &c) {
@@ -5444,7 +5574,7 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
         const bool useDepth = c.depthOn && c.depthTex != 0 && eyeIndex >= 0;
         if (useDepth) {
             glActiveTexture(GL_TEXTURE1);
-            glBindTexture(GL_TEXTURE_2D, c.depthTex);
+            glBindTexture(GL_TEXTURE_2D, c.depthUpTex != 0 ? c.depthUpTex : c.depthTex);
             glActiveTexture(GL_TEXTURE0);
             glUniform1i(c.depthOnLoc, 1);
             if (c.eyeSignLoc >= 0) glUniform1f(c.eyeSignLoc, eyeIndex == 1 ? 1.f : -1.f);
@@ -5861,6 +5991,19 @@ void frameLoop(VrContext &c) {
                      * 抓帧与推理分开跑，渲染线程只做读回（几毫秒），不等模型。
                      */
                     uploadDepthIfFresh(c);
+                    if (c.depthUpDirty) {
+                        /*
+                         * 上采样按 UV 采样，分辨率只影响深度边缘的锐度，不需要跟视频层同尺寸。
+                         * 封顶 1280 宽：4K 片源下 5x5 窗口在全分辨率跑会把 GPU 吃掉一大块。
+                         */
+                        int upW = vw;
+                        int upH = vh;
+                        if (upW > 1280) {
+                            upH = (int) ((float) vh * 1280.f / (float) vw);
+                            upW = 1280;
+                        }
+                        renderDepthUpsample(c, screenSrc, webOnScreen, upW, upH);
+                    }
                     const long long nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                             std::chrono::steady_clock::now().time_since_epoch()).count();
                     if (nowMs - c.depthLastGrabMs >= gDepthIntervalMs.load()) {
