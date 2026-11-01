@@ -5638,7 +5638,8 @@ void uploadDepthIfFresh(VrContext &c) {
     const bool haveColor = c.depthGrabPixels.size() == (size_t) w * h * 4;
     std::vector<unsigned char> rgba((size_t) w * h * 4);
     for (int y = 0; y < h; y++) {
-        const int sy = h - 1 - y;
+        /* 不翻行：读回的第 0 行就是 v=0 那一行，深度和画面用的是同一套行序 */
+        const int sy = y;
         for (int x = 0; x < w; x++) {
             const size_t di = (size_t) y * w + x;
             const size_t si = (size_t) sy * w + x;

@@ -47,10 +47,10 @@ object DepthEngine {
      *
      * 为什么要它（2026-11-01）：单帧深度本身够用，但逐帧会轻微跳，
      * 跳在立体画面里就是"物体在抖"，看久了累。平滑几乎不花算力，观感提升比换模型大。
-     * 取 0.35 是折中：跟得上镜头移动，又压得住抖动。
+     * 取 0.65 是折中：跟得上镜头移动，又压得住抖动。
      */
     @Volatile
-    var smooth = 0.35f
+    var smooth = 0.65f
 
     private var prevDepth: ByteArray? = null
 
