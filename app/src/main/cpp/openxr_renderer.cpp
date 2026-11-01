@@ -6192,14 +6192,18 @@ void updateRingDelay(VrContext &c) {
     if (c.ringLateMs.size() < 5) return;
     std::vector<float> v = c.ringLateMs;
     std::sort(v.begin(), v.end());
-    const float p90 = v[(size_t) ((float) (v.size() - 1) * 0.9f)];
+    /*
+     * 取 95 分位而不是中位数：延迟要盖住慢的那几次推理，否则总有一部分帧的深度赶不上，
+     * 那几帧只能出平面，看起来就是立体一阵一阵。再补 40ms 余量给抓帧到上屏之间的抖动。
+     */
+    const float p90 = v[(size_t) ((float) (v.size() - 1) * 0.95f)] + 40.f;
     /*
      * 上限两重：规格给的 200ms，以及"环真能装下多少"。延迟超过环的长度就永远等不到
      * 那一槽，只能一直退到最老的一帧，等于白延。
      */
     const float ringSpan =
             c.ringFrameMs > 1.f ? (float) (c.ringCount - 1) * c.ringFrameMs : 200.f;
-    const float applied = fminf(fminf(200.f, fmaxf(0.f, p90)), fmaxf(c.ringFrameMs, ringSpan));
+    const float applied = fminf(fminf(200.f, fmaxf(120.f, p90)), fmaxf(c.ringFrameMs, ringSpan));
     if (fabsf(applied - c.ringDelayMs) > 1.f) {
         VLOGI("环形缓冲：延迟 %.0fms（深度迟到 p90=%.0fms，样本 %d，槽 %d，环装得下 %.0fms）",
              (double) applied, (double) p90, (int) v.size(), c.ringCount, (double) ringSpan);
