@@ -5788,7 +5788,14 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
      * 控制条没有内容（两个都由这个程序绘制）。关掉 2D→3D 时单元号写 1、开关写 0，
      * 永远走不到采样那一步。
      */
+    /*
+     * 采样器单元必须在每次绘制前无条件指定，不能只在"开 3D"的分支里设。
+     * 采样器默认都落在单元 0，而单元 0 是画面自己的 OES 采样器；两个采样器撞在
+     * 同一个单元上，Adreno 会直接拒掉这次绘制 —— 表现是所有用这个着色器的图层
+     * （海报墙、控制条、菜单）整片变黑。2026-11-01 遮挡表又踩了同一个坑。
+     */
     if (c.depthTexLoc >= 0) glUniform1i(c.depthTexLoc, 1);
+    if (c.offsetsLoc >= 0) glUniform1i(c.offsetsLoc, 3);
     if (c.depthOnLoc >= 0) {
         /* offsets 还没算出来就先不做视差：拿不到遮挡表时采样偏移是错的 */
         const bool useDepth = c.depthOn && c.depthTex != 0 && c.offsetsTex != 0 &&
