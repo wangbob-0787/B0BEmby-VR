@@ -363,29 +363,24 @@ uniform vec2 uScreenStep;     // 银幕上一个屏幕像素对应的 UV 步长�
 uniform int uDownsample;      // 1 = 视频降采样（4×4 盒式平均）
 uniform float uJitter;        // 每帧变的抖动种子（打散 8 位量化的色带）
 uniform int uTestPattern;     // 1 = 用固定测试图替代视频纹理（黑纹诊断，2026-10-09）
+uniform samplerExternalOES uTexture;
 /*
- * 两个画面来源各编一份程序，**同一份程序里只有一种采样器类型**：
+ * 延迟画面（环形缓冲，stereo_ring 开启时才有）：解码器交出来的是 OES 外部纹理，
+ * 环里存的是普通 2D 纹理，GLSL 里两种采样器类型不能共用一个 uniform。
  *
- *  · 直采版（主程序）：采样解码器交出来的 OES 外部纹理，海报墙 / 控制条 / 菜单也用它；
- *  · 环版（B0B_RING）：画面是槽里的普通 2D 副本，环路径每帧画的都是槽里那一帧，
- *    永远不需要读解码器纹理，所以这一版**不声明 OES 采样器**。
- *
- * 为什么不在一份程序里两种都声明：samplerExternalOES 与 sampler2D 混用，在部分驱动上
- * 链接或绘制会整份失败（ANGLE 上有整份 program 链接失败的实例，
- * https://issues.angleproject.org/42260512），失败的后果是"环永远建不起来"。
- *
- * 采样器一旦没绑纹理，Adreno 会直接拒掉整次绘制，症状是整层变黑 —— 所以每次绘制前
- * 采样器单元必须无条件绑满（见 renderQuadLayer）。
+ * 这一段只在 B0B_RING 版程序里编译进来 —— 主程序（海报墙、控制条、菜单都用它）
+ * 保持原样，多出来的采样器不可能波及那些图层：采样器一旦没绑纹理，Adreno 会
+ * 直接拒掉整次绘制，症状是那几层整片变黑。
  */
 #ifdef B0B_RING
 uniform sampler2D uDelayedTex;
+uniform int uUseDelayed;
 /*
  * 槽里的画面是渲染进 FBO 拷出来的，FBO 的 V 轴与屏幕相反，
  * 所以取槽纹理时要把 V 翻回来，否则整幅画面上下颠倒（父亲 2026-11-01 实测）。
  */
-#define SAMPLE_SRC(uv) texture(uDelayedTex, vec2((uv).x, 1.0 - (uv).y))
+#define SAMPLE_SRC(uv) (uUseDelayed == 1 ? texture(uDelayedTex, vec2((uv).x, 1.0 - (uv).y)) : texture(uTexture, uv))
 #else
-uniform samplerExternalOES uTexture;
 #define SAMPLE_SRC(uv) texture(uTexture, uv)
 #endif
 /*
@@ -399,9 +394,8 @@ uniform vec2 uUvBias;
  * 实时 2D→3D（2026-11-01）：按深度给左右眼各一个水平视差。
  *
  * 方案参照 DepthRay 的 warp 通道（逆向结论见
- * docs/plans/realtime-2d-to-3d-2026-11-01.md §2.5）：深度存在 RGBA 的 **A 通道**
- * （RGB 是同一帧的低分辨率画面，颜色引导上采样要用），数值**越大越远、越小越近**；
- * 零视差平面 uConvergence 之外往远处推、之内往近处推，
+ * docs/plans/realtime-2d-to-3d-2026-11-01.md §2.5）：深度图存 R 通道
+ * （0=近 … 1=远），零视差平面 uConvergence 之上往近处推、之下往远处推，
  * 于是同一条片子左眼看的是"往左错开一点"的画面、右眼相反，大脑合成出深度。
  *
  * uDepthEdgeFade：画面左右各留一小段淡出，否则最边上那一列会被采到画面外、
@@ -507,8 +501,8 @@ void main() {
         if (uOcclusion == 1 && uFill == 1 && hole > 0.5) {
             /*
              * 本眼在这个像素上被更近的物体挡住了，没有源像素可采。
-             * 沿扫描线**左右两个方向**都找，取其中更远的那个深度（纹理里**越大越远**，
-             * 所以取 max），用背景把洞铺上 —— 只搜一侧会在物体边缘留下半条缝。
+             * 沿扫描线**左右两个方向**都找，取其中更远的那个深度（值越小越远），
+             * 用背景把洞铺上 —— 只搜一侧会在物体边缘留下半条缝。
              */
             float stepUV = FILL_PX / float(FILL_MAX) / max(uFrameWidth, 1.0);
             float reachUV = float(reach) / max(uLowResWidth, 1.0);
@@ -517,8 +511,8 @@ void main() {
             for (int i = 1; i <= FILL_MAX; i++) {
                 if (i > span) break;
                 float o = float(i) * stepUV;
-                far = max(far, texture(uDepthTex, vec2(vUv.x - o, vUv.y)).r);
-                far = max(far, texture(uDepthTex, vec2(vUv.x + o, vUv.y)).r);
+                far = min(far, texture(uDepthTex, vec2(vUv.x - o, vUv.y)).r);
+                far = min(far, texture(uDepthTex, vec2(vUv.x + o, vUv.y)).r);
             }
             uvT.x = vUv.x + uEyeSign * disp * (far - uConvergence);
         } else if (uOcclusion == 1) {
@@ -1939,7 +1933,7 @@ struct QuadLocs {
     GLint circle = -1, expand = -1, bright = -1, contrast = -1, sat = -1;
     GLint sharpen = -1, temp = -1, texel = -1, screenStep = -1, down = -1;
     GLint jitter = -1, testPattern = -1;
-    GLint delayed = -1;                    // 只有 B0B_RING 版有（槽里那一帧的 2D 副本）
+    GLint delayed = -1, useDelayed = -1;   // 只有 B0B_RING 版有
 };
 
 /** 深度上采样那一趟的程序与 uniform 位置（引导画面的采样器类型决定用哪一套） */
@@ -1991,6 +1985,7 @@ void fillQuadLocs(GLuint prog, QuadLocs &u) {
     u.jitter = glGetUniformLocation(prog, "uJitter");
     u.testPattern = glGetUniformLocation(prog, "uTestPattern");
     u.delayed = glGetUniformLocation(prog, "uDelayedTex");   // 只有 B0B_RING 版有
+    u.useDelayed = glGetUniformLocation(prog, "uUseDelayed");
 }
 
 struct VrContext {
@@ -5921,15 +5916,9 @@ void main() {
  * 只在深度更新时跑一次，不是每帧。guideOes / guide2d 二者只取其一：实时路径的引导
  * 画面是 OES 视频纹理，环形缓冲路径是槽里那一帧的 2D 副本 —— 两条路各用一套程序，
  * 采样器类型不能混。
- *
- * flipGuide：引导画面与低分深度**在同一条 v 上必须是同一段画面**，否则回归会把深度
- * 边缘贴到上下翻过来的轮廓上（边缘发虚、扭曲）。低分深度写进纹理后 v=0 一律是画面
- * 顶部（见 uploadDepthToTarget），而两条路的引导画面 v=0 指向的反端不同：
- *  · 实时路引导是解码器纹理，v=0 就是画面顶部 → 不翻（flipGuide=0）；
- *  · 环路引导是槽纹理，槽是渲染进 FBO 出来的、v=0 在画面底部 → 翻一次（flipGuide=1）。
  */
 void renderDepthUpsample(VrContext &c, GLuint depthTex, GLuint guideOes, GLuint guide2d,
-                         bool webCrop, int w, int h, RenderTarget &dst, bool flipGuide) {
+                         bool webCrop, int w, int h, RenderTarget &dst) {
     const bool useOes = guideOes != 0;
     if (depthTex == 0 || (guideOes == 0 && guide2d == 0)) return;
     if (w < 64 || h < 64) return;
@@ -6062,19 +6051,13 @@ void main() {
     } else {
         glBindTexture(GL_TEXTURE_2D, guide2d);
     }
-    /*
-     * 引导画面的采样窗口：先按采样窗口缩放平移，再按 flipGuide 决定要不要把 V 翻过来。
-     * 两步都是仿射，合成一次写进 uniform：v' = (flip ? 1 − v : v) ∘ (v·s + b)。
-     */
-    const float sx = webCrop ? gWebUvW.load() : 1.f;
-    const float sy = webCrop ? gWebUvH.load() : 1.f;
-    const float bx = webCrop ? gWebUvX.load() : 0.f;
-    const float by = webCrop ? gWebUvY.load() : 0.f;
     if (pipe.uvScaleLoc >= 0) {
-        glUniform2f(pipe.uvScaleLoc, sx, flipGuide ? -sy : sy);
+        glUniform2f(pipe.uvScaleLoc, webCrop ? gWebUvW.load() : 1.f,
+                    webCrop ? gWebUvH.load() : 1.f);
     }
     if (pipe.uvBiasLoc >= 0) {
-        glUniform2f(pipe.uvBiasLoc, bx, flipGuide ? 1.f - by : by);
+        glUniform2f(pipe.uvBiasLoc, webCrop ? gWebUvX.load() : 0.f,
+                    webCrop ? gWebUvY.load() : 0.f);
     }
     if (pipe.upModeLoc >= 0) glUniform1i(pipe.upModeLoc, gStereoUpMode.load());
     if (pipe.sharpLoc >= 0) glUniform1f(pipe.sharpLoc, gStereoSharp.load());
@@ -6093,39 +6076,28 @@ void main() {
  *
  * 为什么把颜色也塞进同一张纹理：引导放大要拿低分辨率的颜色和高分辨率画面比亮度。
  * 颜色必须属于同一帧 —— 拿别的帧的颜色当引导，深度边缘会贴到错的地方。
- *
- * flipV：源数据第 0 行是画面的哪一端，两条路不一样，**必须由调用方声明**。
- *
- *  · 实时路径抓的是解码器纹理：拷进 FBO 时 v=0 落在视口底部，读回的第 0 行是**画面底部**。
- *    银幕四边形的 uv 约定是 v=0 在顶部，所以这里要翻一次行，否则深度整幅上下颠倒，
- *    颜色引导的回归会贴到上下翻过来的边缘上 —— 边缘发虚、扭曲的一半来源。
- *  · 环路径抓的是槽里的副本：槽本身就是"v=0 在底部"的 FBO 内容，再拷一次刚好翻回来，
- *    读回第 0 行已经是**画面顶部**，与显示同向，不能再翻。
- *
- * 翻转只作用于这一帧自己的数据（颜色与深度同一套行序），所以 A 通道和 RGB 始终同向。
  */
 bool uploadDepthToTarget(RenderTarget &t, const std::vector<unsigned char> &depth, int w, int h,
-                         const std::vector<unsigned char> &lowColor, bool flipV) {
+                         const std::vector<unsigned char> &lowColor) {
     if (w <= 0 || h <= 0 || depth.size() != (size_t) w * h) return false;
     if (!ensureTarget(t, w, h, GL_RGBA8, true)) return false;
     const bool haveColor = lowColor.size() == (size_t) w * h * 4;
     /*
      * 深度方向在这里一次定死（depth_invert），纹理里永远是「越大越远」。
      *
-     * 不能在着色器里各读各的取反：上采样那趟取反、补洞的最远值搜索不取反、
+     * 不能在着色器里各读各的取反：上采样那趟取反、补洞的最小值搜索不取反、
      * 遮挡表那趟又不取反，三处约定不一致时补洞就会取到前景，边缘冒出亮条。
      */
     const bool invert = gDepthInvert.load() != 0;
     std::vector<unsigned char> rgba((size_t) w * h * 4);
     for (int y = 0; y < h; y++) {
-        const int sy = flipV ? (h - 1 - y) : y;
+        /* 不翻行：读回的第 0 行就是 v=0 那一行，深度和画面用的是同一套行序 */
         for (int x = 0; x < w; x++) {
             const size_t i = (size_t) y * w + x;
-            const size_t s = (size_t) sy * w + x;
-            rgba[i * 4 + 0] = haveColor ? lowColor[s * 4 + 0] : 128;
-            rgba[i * 4 + 1] = haveColor ? lowColor[s * 4 + 1] : 128;
-            rgba[i * 4 + 2] = haveColor ? lowColor[s * 4 + 2] : 128;
-            rgba[i * 4 + 3] = invert ? (unsigned char) (255 - depth[s]) : depth[s];
+            rgba[i * 4 + 0] = haveColor ? lowColor[i * 4 + 0] : 128;
+            rgba[i * 4 + 1] = haveColor ? lowColor[i * 4 + 1] : 128;
+            rgba[i * 4 + 2] = haveColor ? lowColor[i * 4 + 2] : 128;
+            rgba[i * 4 + 3] = invert ? (unsigned char) (255 - depth[i]) : depth[i];
         }
     }
     glBindTexture(GL_TEXTURE_2D, t.tex);
@@ -6133,21 +6105,6 @@ bool uploadDepthToTarget(RenderTarget &t, const std::vector<unsigned char> &dept
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
     glBindTexture(GL_TEXTURE_2D, 0);
     return true;
-}
-
-/**
- * 一次性自检：深度这条链上的 V 方向约定（装机核对用，整个进程只打一行）。
- *
- * 三处约定必须同向，任何一处不同向就表现为"深度整幅上下颠倒"或"颜色引导贴到
- * 上下翻过来的边缘上"（边缘发虚、扭曲）：
- *   · 实时路抓帧读回的第 0 行是画面底部 → 写纹理时 flipV=1；
- *   · 环路的抓帧取自槽（槽本身就是翻过的 FBO 内容）→ flipV=0；
- *   · 环路的引导画面是槽纹理（v=0 在底部），与深度相反 → 上采样绘制时翻一次 V。
- */
-void logDepthOrientationOnce() {
-    static std::atomic<bool> done{false};
-    if (done.exchange(true)) return;
-    LOGI_RAW("深度方向：实时路 flipV=1，环路 flipV=0，引导已对齐（环路引导画面按 V 翻转后再回归）");
 }
 
 /**
@@ -6175,10 +6132,8 @@ void uploadDepthIfFresh(VrContext &c) {
     long long seq = -1;
     if (!takeDepthResult(buf, &w, &h, &seq)) return;
     if (seq >= 0) return;    // 环里的结果，环那条路自己收
-    /* flipV=1：实时路读回的第 0 行是画面底部，银幕 uv 的 v=0 在顶部（见 uploadDepthToTarget） */
-    if (uploadDepthToTarget(c.depth, buf, w, h, c.depthGrabPixels, true)) {
+    if (uploadDepthToTarget(c.depth, buf, w, h, c.depthGrabPixels)) {
         c.depthUpDirty = true;
-        logDepthOrientationOnce();
     }
 }
 
@@ -6462,10 +6417,8 @@ void applyRingDepth(VrContext &c) {
     }
     for (RingSlot &s : c.ringSlots) {
         if (!s.hasFrame || s.seq != seq) continue;
-        /* flipV=0：这一帧的抓帧来自槽，读回的第 0 行已经是画面顶部，与显示同向 */
-        if (!uploadDepthToTarget(s.depth, buf, w, h, s.lowColor, false)) return;
+        if (!uploadDepthToTarget(s.depth, buf, w, h, s.lowColor)) return;
         s.depthReady = true;
-        logDepthOrientationOnce();
         s.depthMs = (long long) nowMs();
         c.ringLateMs.push_back((float) (s.depthMs - s.tsMs));
         /* 样本 64：分位数要稳，样本太少一次慢推理就把延迟顶高（DepthRay 也用 64） */
@@ -6561,7 +6514,7 @@ void buildRingArtifacts(VrContext &c, RingSlot &s, int upW, int upH) {
                         fabsf(c.ringArtifactsSigma - gStereoEdgeSigma.load()) < 1e-5f;
     if (sameSeq && sameDisp && sameUp) return;
     renderOffsets(c, s.depth.tex, s.depth.w, s.depth.h, c.ringOffsets);
-    renderDepthUpsample(c, s.depth.tex, 0, s.color.tex, false, upW, upH, c.ringUp, true);
+    renderDepthUpsample(c, s.depth.tex, 0, s.color.tex, false, upW, upH, c.ringUp);
     c.ringArtifactsSeq = s.seq;
     c.ringArtifactsLowW = s.depth.w;
     c.ringArtifactsDisp = c.depthDisp;
@@ -6630,16 +6583,15 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
     const Mat4 id = identityMat();
     glUniformMatrix4fv(u.mvp, 1, GL_FALSE, id.m);
     /*
-     * 采样器单元的固定分工：0 号 = 解码器画面（OES）、1 号 = 深度、3 号 = 遮挡表、
-     * 4 号 = 环里那一帧的 2D 副本。
+     * 0 号单元永远绑实时画面（OES 外部纹理），4 号单元才是环里那一帧的 2D 副本。
      *
-     * 每次绘制前**无条件**把用到的单元绑满：单元空着、或绑着另一种采样器类型的纹理，
-     * Adreno 会把整次绘制判为非法（整层黑掉，且不一定报错）。环版程序里根本没有 OES
-     * 采样器，0 号绑的是什么它都不看，两条路仍走同一份代码照绑不误。
+     * 为什么 0 号也必须绑对类型：B0B_RING 版程序里有两种采样器（uTexture 是 OES、
+     * uDelayedTex 是 2D），即使这一帧走的是 uDelayedTex，驱动在 draw 时仍会校验
+     * 两个采样器各自的单元绑定类型 —— 单元上绑错类型就整次绘制作废（整层黑）。
      */
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_EXTERNAL_OES, tex);
-    if (u.tex >= 0) glUniform1i(u.tex, 0);
+    glUniform1i(u.tex, 0);
     glUniform1i(u.useTex, 1);
     if (u.circle >= 0) glUniform1i(u.circle, 0);
     if (u.expand >= 0) glUniform1i(u.expand, 0);
@@ -6676,6 +6628,7 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
      */
     if (u.depthTex >= 0) glUniform1i(u.depthTex, 1);
     if (u.offsets >= 0) glUniform1i(u.offsets, 3);
+    if (u.useDelayed >= 0) glUniform1i(u.useDelayed, delayed ? 1 : 0);
     if (u.delayed >= 0) {
         /* uDelayedTex 只有 B0B_RING 版有，而那一版一定是带着环里那一帧来画的 */
         glUniform1i(u.delayed, 4);
@@ -7288,7 +7241,7 @@ void frameLoop(VrContext &c) {
                         if (c.depthUpDirty && c.depth.tex != 0) {
                             renderOffsets(c, c.depth.tex, c.depth.w, c.depth.h, c.offsets);
                             renderDepthUpsample(c, c.depth.tex, screenSrc, 0, webOnScreen,
-                                                upW0, upH0, c.depthUp, false);
+                                                upW0, upH0, c.depthUp);
                         }
                         /*
                          * 抓帧节奏按帧号（每 kDepthEveryNFrames 个新视频帧一次），
