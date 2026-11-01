@@ -228,6 +228,7 @@ dependencies {
      * 模型文件在 assets/models/zipdepth_512x288_fp16.tflite（ZipDepth 官方 MIT 授权）。
      */
     implementation(libs.tensorflow.lite)
+    implementation(libs.tensorflow.lite.gpu)
 
     /*
      * 【2026-10-20 16:18 父亲要求：火狐内核整套拆掉】

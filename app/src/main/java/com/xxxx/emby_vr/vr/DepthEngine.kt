@@ -5,6 +5,8 @@ import android.os.SystemClock
 import android.util.Log
 import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
+import org.tensorflow.lite.gpu.CompatibilityList
+import org.tensorflow.lite.gpu.GpuDelegate
 import org.tensorflow.lite.nnapi.NnApiDelegate
 import java.io.FileInputStream
 import java.nio.ByteBuffer
@@ -56,6 +58,7 @@ object DepthEngine {
 
     private var interp: Interpreter? = null
     private var nnapi: NnApiDelegate? = null
+    private var gpu: GpuDelegate? = null
     private var inW = 0
     private var inH = 0
     private var outW = 0
@@ -82,6 +85,9 @@ object DepthEngine {
 
     fun detach() {
         if (VrNative.loaded) VrNative.setDepthSink(null)
+        /* GPU 委托会长期占显存，退出 VR 就释放 */
+        runCatching { gpu?.close() }
+        gpu = null
     }
 
     private fun init(context: Context) {
@@ -91,15 +97,36 @@ object DepthEngine {
                 val model = loadModel(context)
                 val opts = Interpreter.Options()
                 /*
-                 * NNAPI 优先：XR2 上走加速器比纯 CPU 快一档。
-                 * 建不起来就用 CPU 多线程 —— 这个模型不大，CPU 也够跑十来赫兹。
+                 * 委托优先级：GPU → NNAPI → CPU 多线程。
+                 *
+                 * GPU 排第一有依据：ZipDepth 官方在 5W 的红米 Poco X3 上靠手机 GPU 就有 16 帧，
+                 * XR2 的 Adreno 比它强得多，跑 GPU 比 CPU 快一档，省下的算力可以换更高分辨率。
+                 * 建不起来就退 NNAPI，再不行退 CPU 多线程（模型不大，CPU 也能跑十来赫兹）。
                  */
                 try {
-                    val d = NnApiDelegate()
-                    opts.addDelegate(d)
-                    nnapi = d
+                    val compat = CompatibilityList()
+                    if (compat.isDelegateSupportedOnThisDevice) {
+                        val o = GpuDelegate.Options()
+                        o.setPrecisionLossAllowed(true)   // 深度图不追求数值精度，换速度
+                        o.setInferencePreference(GpuDelegate.Options.INFERENCE_PREFERENCE_SUSTAINED_SPEED)
+                        val d = GpuDelegate(o)
+                        opts.addDelegate(d)
+                        gpu = d
+                        Log.i(TAG, "深度模型：走 GPU 加速")
+                    } else {
+                        Log.i(TAG, "深度模型：本机不支持 GPU 委托")
+                    }
                 } catch (t: Throwable) {
-                    Log.w(TAG, "深度模型：NNAPI 不可用，改用 CPU（${t.message}）")
+                    Log.w(TAG, "深度模型：GPU 不可用，改试 NNAPI（${t.message}）")
+                }
+                if (gpu == null) {
+                    try {
+                        val d = NnApiDelegate()
+                        opts.addDelegate(d)
+                        nnapi = d
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "深度模型：NNAPI 不可用，改用 CPU（${t.message}）")
+                    }
                 }
                 opts.setNumThreads(3)
                 val it = Interpreter(model, opts)
