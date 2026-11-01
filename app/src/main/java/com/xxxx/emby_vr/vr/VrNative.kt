@@ -215,7 +215,7 @@ object VrNative {
 
     /** 起 VR 会话（原生渲染线程）；失败返回 false，应用继续按 2D 面板模式跑 */
     fun startVr(activity: android.app.Activity): Boolean = try {
-        // 深度模型在后台线程加载，不挡 VR 会话起来；加载完自己通知原生输入尺寸
+        // 只挂回调：模型等 3D 打开时再加载，2D 播放不占推理资源
         DepthEngine.attach(activity)
         val ok = if (loaded) nativeStartVr(activity) else false
         vrRunning = ok
@@ -644,6 +644,8 @@ object VrNative {
         } catch (t: Throwable) {
             Log.e(TAG, "停止 VR 会话失败：${t.message}")
         }
+        /* 会话结束就把推理侧一并收掉：解释器与四个推理线程不该留着 */
+        DepthEngine.detach()
     }
 
     /** 打一行探针日志（失败也只是日志缺失，不影响界面） */

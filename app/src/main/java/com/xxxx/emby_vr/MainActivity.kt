@@ -4852,15 +4852,17 @@ class MainActivity : ComponentActivity() {
                  */
                 if (index == 7) {
                     /*
-                     * 三态循环：关 → 标准 → 舒适 → 关（父亲 2026-11-01：DepthRay 有两档）。
-                     * 标准视差足、立体感强；舒适收到约六成并把边缘淡出加宽，久看不累。
+                     * 三态循环：关 → 标准 → 舒适 → 关。
+                     *
+                     * 两档的数值照 DepthRay 的整数千分位给：标准 6‰、舒适 4‰（同一台机器上
+                     * 它跑的是 6）。舒适档另把边缘淡出加宽，久看不累。
                      */
                     val next = (menuState.stereoMode + 1) % 3
                     menuState.stereoMode = next
                     val disp = when (next) {
-                        1 -> 0.012f
-                        2 -> 0.007f
-                        else -> 0.012f
+                        1 -> 0.006f
+                        2 -> 0.004f
+                        else -> 0.006f
                     }
                     val fade = if (next == 2) 0.06f else 0.04f
                     com.xxxx.emby_vr.vr.VrTuning.setValue(this, "stereo_mode", next.toString())

@@ -224,12 +224,11 @@ dependencies {
 
     /*
      * 实时 2D→3D 的深度推理（2026-11-01）：ZipDepth 的 .tflite 模型在 Kotlin 侧跑。
-     * 只引基础运行时，不引 support 库 —— 输入是原始像素缓冲，不需要它的图像处理封装。
-     * 模型文件在 assets/models/zipdepth_512x288_fp16.tflite（ZipDepth 官方 MIT 授权）。
+     * 只引基础运行时：推理固定在 CPU 四线程，GPU delegate 与画面渲染抢显卡，实测反而掉帧，
+     * 连 gpu / gpu-api 两个包一起不引（它们各带一份原生库，白占包体）。
+     * 模型文件是 assets/models/zipdepth_256_int8dr.tflite（ZipDepth 官方 MIT 授权）。
      */
     implementation(libs.tensorflow.lite)
-    implementation(libs.tensorflow.lite.gpu)
-    implementation(libs.tensorflow.lite.gpu.api)
 
     /*
      * 【2026-10-20 16:18 父亲要求：火狐内核整套拆掉】

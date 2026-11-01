@@ -47,6 +47,13 @@ import java.io.File
  * | `min_screen_gap` | 最近允许走到离银幕多少米（再走近场景整体后推，不许穿过；0.3~5.0） | 1.0 |
  * | `follow_viewer` | 控制条/菜单/海报墙是否跟随观影位（1=跟，0=固定；2026-10-10） | 1 |
  * | `ray_scale` | 光柱粗细倍率（1.0 = 银幕 3.2 米时代的角粗细） | 0.35 |
+ * | `stereo3d` | 实时 2D→3D：1=视频层拆左右眼并起推理线程，0=整条链路不参与（2D 不受影响） | 0 |
+ * | `stereo_disp` | 3D 视差强度：UV 或千分位整数（标准档 6=0.006、舒适档 4=0.004） | 0.006 |
+ * | `stereo_conv` | 3D 零视差平面（0 近 … 1 远，0.5 = 银幕所在深度） | 0.5 |
+ * | `stereo_fade` | 3D 左右边缘淡出宽度（防边缘拉出竖条） | 0.04 |
+ * | `depth_invert` | 深度方向：1=模型输出越大越近（用之前取反） | 0 |
+ * | `stereo_ring` | 画面环形缓冲：1=画面延后一点上屏等这一帧自己的深度，0=直采 | 1 |
+ * | `stereo_interval` | 抓帧的毫秒下限；0=纯按帧数（每 3 个新视频帧一次） | 0 |
  * | `layer_boost` | 视频层增强（PICO 合成器）：0=关 1=超采样 2=超采样高 3=锐化 4=锐化高 5=自适应锐化 6=自适应锐化高 7=超分辨率（同一层只能开一种） | 7 |
  * | `foveation` | 固定注视点渲染：0=关 1=低 2=中 3=高（边缘降精度换 GPU） | 2 |
  * | `adaptive_res` | 自适应分辨率：0=关 1=高画质 2=平衡 3=省电（这版只上报与记录建议值） | 2 |
@@ -291,22 +298,33 @@ object VrTuning {
     const val KEY_WALK_PATH_M = 41
     /** 走动判据：停走后多少毫秒内的重新居中当噪声（2026-10-30） */
     const val KEY_WALK_STILL_MS = 42
-    /** 实时 2D→3D 开关（2026-11-01）：1 = 视频层拆成左右眼两条交换链 */
+    /**
+     * 实时 2D→3D 开关：1 = 视频层拆成左右眼两条交换链，推理线程起来。
+     * 0 = 整条 3D 链路不参与（分辨率、上采样、环、推理全部回默认），2D 不受影响。
+     */
     const val KEY_STEREO3D = 44
-    /** 实时 2D→3D 视差强度（UV 单位，按整幅画面宽度；默认 0.012） */
+    /**
+     * 视差强度：UV 单位（占整幅画面宽度的比例），也可以写千分位整数。
+     * 标准档 6（= 0.006，与 DepthRay 同值）、舒适档 4（= 0.004）。
+     */
     const val KEY_STEREO_DISP = 45
-    /** 实时 2D→3D 零视差平面（0 近 … 1 远，默认 0.5 = 银幕所在深度） */
+    /** 零视差平面（0 近 … 1 远，默认 0.5 = 银幕所在深度；DepthRay 也是 50/100） */
     const val KEY_STEREO_CONV = 46
-    /** 实时 2D→3D 左右边缘淡出宽度（防边缘拉伸竖条） */
+    /** 左右边缘淡出宽度（防边缘拉伸竖条） */
     const val KEY_STEREO_FADE = 47
     /** 深度图方向：1 = 模型输出越大越近（用之前取反） */
     const val KEY_DEPTH_INVERT = 48
     /**
      * 画面环形缓冲：1 = 画面延后一点上屏，等这一帧自己的深度，做到逐帧配对。
-     * 0 = 直采（深度用最近一次结果，画面不延迟）。默认关，出问题写 0 即刻回到老行为。
+     * 0 = 直采（深度用最近一次结果，画面不延迟）。
      */
     const val KEY_STEREO_RING = 49
-    /** 深度抓帧间隔（毫秒）：GPU 推理与画面渲染共用一块 GPU，间隔越短越吃帧率 */
+    /**
+     * 抓帧的毫秒下限（0 = 纯按帧数，默认）。
+     *
+     * 主判据是视频帧数：每 3 个新帧抓一次。这一项只在片源帧率特别高、按帧数算仍然
+     * 太密时才用得上，写 0 就是完全不限。
+     */
     const val KEY_STEREO_INTERVAL = 51
     const val KEY_MIN_SCREEN_GAP = 18
     /** 控制条/菜单/海报墙是否跟随观影位（2026-10-10：走近银幕时控制条留在伸手可及处） */
@@ -726,7 +744,8 @@ object VrTuning {
         }
         raw["stereo_disp"]?.toFloatOrNull()?.let {
             VrNative.setTuning(KEY_STEREO_DISP, it)
-            applied += "3D 视差 ${"%.4f".format(it)}"
+            /* 写 6 / 4 这种整数时它是千分位，落到原生后是 0.006 / 0.004 */
+            applied += "3D 视差 ${"%.4f".format(if (it > 1f) it / 1000f else it)}"
         }
         raw["stereo_conv"]?.toFloatOrNull()?.let {
             VrNative.setTuning(KEY_STEREO_CONV, it)
@@ -746,7 +765,7 @@ object VrTuning {
         }
         raw["stereo_interval"]?.toIntOrNull()?.let {
             VrNative.setTuning(KEY_STEREO_INTERVAL, it.toFloat())
-            applied += "深度间隔 ${it}ms"
+            applied += if (it <= 0) "抓帧按帧数（每 3 帧一次）" else "抓帧毫秒下限 ${it}ms"
         }
 
         if (!wrote) return applied

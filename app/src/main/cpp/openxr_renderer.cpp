@@ -410,7 +410,7 @@ uniform float uDepthEdgeFade;
 uniform int uDepthInvert;   // 1 = 模型输出是"近大远小"的视差，取反后再用
 /*
  * 下面这组照 DepthRay 的立体着色器移植（u_offsets / u_dispTexels / u_occlusion ...）：
- * 深度图是低分辨率（512x288），视差按"低分辨率像素"计，遮挡与补洞也用低分辨率单位。
+ * 深度图是低分辨率（模型输入 256x256），视差按"低分辨率像素"计，遮挡与补洞也用低分辨率单位。
  */
 uniform sampler2D uOffsets;     // RG = 左右眼偏移（编码成 0..1），BA = 空洞标记
 uniform float uDispTexels;      // 视差（低分辨率像素）
@@ -419,6 +419,16 @@ uniform float uFrameWidth;      // 视差采样用的画面宽度（上采样后
 uniform float uSrcInset;        // 采样边界内缩，防边缘拉出黑边
 uniform float uEyeIndex;        // 0 = 左眼，1 = 右眼
 out vec4 fragColor;
+
+/*
+ * 补洞上限：DepthRay 原值是 12 步 / 24 像素，这里加大到 24 步 / 40 像素。
+ *
+ * 为什么偏离原值：它在同一台机器上没这个毛病，我们的画面上却能看到"边缘一串白点" ——
+ * 那是空洞没填住、采到了画面外的底色。它的深度图更干净（GPU 推理的 int8 全量路径），
+ * 我们的空洞更宽，所以搜索范围必须比它大；步数翻倍是为了让近距离大视差也够用。
+ */
+const int FILL_MAX = 24;
+const float FILL_PX = 40.0;
 
 /* 抖动用的哈希（打散 8 位量化色带）*/
 float hash21(vec2 p) {
@@ -471,10 +481,10 @@ void main() {
          *
          * 两条路：
          *  · 该像素在本眼里是"空洞"（被更近的物体遮住，本眼看不到它）→ 沿扫描线
-         *    找最近的深度把洞填上（最多 12 步 / 24 像素），这样物体边缘不会拉出裂缝；
+         *    找最近的深度把洞填上（最多 FILL_MAX 步、搜索到 FILL_PX 像素），
+         *    这样物体边缘不会拉出裂缝；
          *  · 正常像素 → 用预计算的偏移量定位，再做两次牛顿迭代把误差压到 ±4 像素内，
          *    避免深度边缘处采样点偏出去。
-         * 父亲 2026-11-01 报的"线条接不上、断开的错开"就是缺这两步。
          */
         float edgeW = smoothstep(0.0, max(uDepthEdgeFade, 1e-6),
                                  min(vUv.x, 1.0 - vUv.x));
@@ -486,9 +496,9 @@ void main() {
         float hole = (uEyeIndex < 0.5 ? enc.b : enc.a);
         if (hole > 0.5) {
             float texel = 1.0 / max(uLowResWidth, 1.0);
-            int span = int(min(float(reach), 24.0 * uLowResWidth / max(uFrameWidth, 1.0)));
+            int span = int(min(float(reach), FILL_PX * uLowResWidth / max(uFrameWidth, 1.0)));
             float far = depthAt(vUv);
-            for (int i = 1; i <= 12; i++) {
+            for (int i = 1; i <= FILL_MAX; i++) {
                 if (i > span) break;
                 float o = float(i) * texel;
                 far = min(far, texture(uDepthTex, vec2(vUv.x - o, vUv.y)).r);
@@ -2131,7 +2141,7 @@ struct VrContext {
     RenderTarget depth;            // 实时路径的深度图（RGBA8：RGB 低分画面 + A 深度）
     bool depthOn = false;          // 2D→3D 生效中（决定抓不抓帧）
     bool depthFresh = true;        // 手上的深度够不够新（决定能不能拿它变形）
-    float depthDisp = 0.012f;      // 视差强度（UV 单位，按整幅宽度）
+    float depthDisp = 0.006f;      // 视差强度（UV 单位，按整幅宽度，标准档）
     float depthConv = 0.5f;        // 零视差平面
     float depthFade = 0.04f;       // 左右边缘淡出宽度
     /** 主着色器的两套程序与位置：原版给所有图层，B0B_RING 版只给视频层 */
@@ -2153,7 +2163,9 @@ struct VrContext {
     int depthGrabH = 0;
     std::vector<unsigned char> depthGrabPixels;
     long long depthLastGrabMs = 0;
-    /* 深度上采样（边缘引导）：把 512x288 的深度对齐到画面边缘后放到视频层分辨率 */
+    /* 自上次抓帧以来收到的新视频帧数：按帧数决定抓不抓（stereo_interval 只是毫秒下限） */
+    int depthFrameTick = 0;
+    /* 深度上采样（边缘引导）：把 256x256 的深度对齐到画面边缘后铺到 kDepthUpW 宽 */
     UpsamplePipe upOes;            // 引导画面来自 OES 视频纹理（实时路径）
     UpsamplePipe up2d;             // 引导画面来自槽里的 2D 副本（环形缓冲路径）
     RenderTarget depthUp;          // 上采样后的深度（R8）
@@ -2179,6 +2191,8 @@ struct VrContext {
     int ringNext = 0;
     bool ringActive = false;
     bool ringFailed = false;        // 建不起来就整功能关闭，绝不黑屏
+    /* 需要的延迟超过环能装的长度：这一片不再做逐帧配对（DepthRay 的 zero age off） */
+    bool ringOffForFile = false;
     long long ringSeq = 0;
     GLuint ringCopyProg = 0;        // OES 画面 → 槽（普通 2D 纹理）
     GLint ringCopyTexLoc = -1;
@@ -2186,6 +2200,8 @@ struct VrContext {
     RenderTarget ringOffsets;
     RenderTarget ringUp;
     long long ringArtifactsSeq = -1;
+    /* 这套产物对应的低分辨率深度宽度：沿用旧产物时视差换算仍按它算 */
+    int ringArtifactsLowW = 0;
     float ringArtifactsDisp = -1.f;
     float ringArtifactsConv = -1.f;
     /* 延迟自适应：深度迟到量的 90 分位数，每秒重算一次 */
@@ -2196,7 +2212,8 @@ struct VrContext {
     long long ringLastPushMs = 0;
     long long ringStatPushed = 0;   // 推进去的帧数
     long long ringStatPaired = 0;   // 上屏时配到"本来就是它"的深度
-    long long ringStatFlat = 0;     // 上屏时那一帧的深度还没到（只出平面）
+    long long ringStatReuse = 0;    // 上屏时沿用最近一次的深度（隔帧推理的中间两帧）
+    long long ringStatFlat = 0;     // 上屏时连一次深度都还没有（只出平面）
     long long ringStatStale = 0;    // 深度回来时对应槽已被顶掉
     long long ringStatShort = 0;    // 环不够长，退回最老那一槽
 
@@ -2510,17 +2527,40 @@ std::atomic<int> gStereo3d{0};
 /*
  * 视差强度：UV 单位（相对整幅画面宽度的比例），**不是**角度预算也不是倍数。
  *
- * 照 DepthRay 的整数千分位两档来。原来这里按银幕尺寸和距离把角度预算换算成 UV，
- * 换厅/换距离/换座位都会变，实测落在 0.0135 —— 数值上接近标准档，但随几何漂移，
- * 观感就是"强度时有时无"。改成常量后与几何无关。
+ * 数值照 DepthRay 在同一台机器上的档位给（它的日志：depth strength 6 and convergence 50）：
+ * 强度按千分位整数写，6 = 0.006；舒适档按同一比例取 4。与银幕尺寸、距离、座位无关 ——
+ * 这组数一变，观感就会"强度时有时无"。
  */
-constexpr float kStereoDispStandard = 12.f / 1000.f;   // 标准档 12‰
-constexpr float kStereoDispComfort = 7.f / 1000.f;     // 舒适档 7‰
+constexpr float kStereoDispStandard = 6.f / 1000.f;    // 标准档 6‰
+constexpr float kStereoDispComfort = 4.f / 1000.f;     // 舒适档 4‰
+/*
+ * 每眼 DIBR 输出的宽度上限（DepthRay 日志：video eye 2560x1440 capped from 3840x2160）。
+ * 这是**每只眼**的宽度：双眼是两次独立的 2560 宽绘制，不是两只眼合计 2560。
+ * 只在 3D 分支生效，2D 播放保持视频原分辨率。
+ */
+constexpr int kStereo3dEyeW = 2560;
+/*
+ * 深度抓帧节奏：每这么多个新视频帧推理一次（DepthRay 日志：depth every 3rd frame）。
+ *
+ * 为什么不是每帧：推理在 CPU 上占四个核，每帧都抓会和渲染线程的读回、解码抢 CPU；
+ * 隔三帧深度变化肉眼几乎看不出，省下的 CPU 全给渲染。
+ */
+constexpr int kDepthEveryNFrames = 3;
+/*
+ * 深度上采样目标的宽度（与每眼 DIBR 输出同宽，DepthRay 的链路就是这么铺的）。
+ * 高度按画面比例算，不写死 —— 宽高比变了还按 16:9 铺，采样坐标会整体歪。
+ */
+constexpr int kDepthUpW = 2560;
 std::atomic<float> gStereoDisp{kStereoDispStandard};
 std::atomic<float> gStereoConv{0.5f};
 std::atomic<float> gStereoFade{0.04f};
-/* 画面环形缓冲开关（vr-tuning.txt 的 stereo_ring，默认 0 = 关闭，走直采路径） */
-std::atomic<int> gStereoRing{0};
+/*
+ * 画面环形缓冲开关（vr-tuning.txt 的 stereo_ring）。
+ *
+ * 默认开：逐帧配对是「边缘不错位」的正解，关掉就退回"用最近一次深度变形新画面"，
+ * 动态场景里物体边缘会朝反方向错开。出问题时写 0 即可回到直采路径。
+ */
+std::atomic<int> gStereoRing{1};
 /* 请求清空环形缓冲（seek / 换片时置 1，渲染线程取走并清零） */
 static std::atomic<int> gRingFlush{0};
 /* 各路画面是否换了新一帧（环只在有新帧时推进，否则同一帧会占满整环） */
@@ -2533,10 +2573,18 @@ static std::atomic<bool> gWebFrameChanged{false};
  */
 std::atomic<int> gDepthInputW{0};
 std::atomic<int> gDepthInputH{0};
-std::atomic<int> gDepthIntervalMs{300};
-std::atomic<int> gDepthInvert{0};   // 多久更新一次深度（深度不必每帧新）
+/*
+ * 抓帧的毫秒下限（vr-tuning.txt 的 stereo_interval，0 = 纯按帧数）。
+ *
+ * 帧数节奏是主判据（每 kDepthEveryNFrames 帧一次）；这一项只用来兜住
+ * "片源帧率很高时按帧数算也太密"的情况，正常留 0。
+ */
+std::atomic<int> gDepthMsFloor{0};
+std::atomic<int> gDepthInvert{0};   // 深度的近远方向（1 = 用之前取反）
 static jobject gDepthSink = nullptr;      // DepthEngine 单例的全局引用
 static jmethodID gDepthSubmit = nullptr;  // DepthEngine.submitFrame([BIIJ)V
+/* DepthEngine.setActive(Z)V —— 3D 关掉时让推理线程真正收工，不留空转的四个核 */
+static jmethodID gDepthSetActive = nullptr;
 static std::mutex gDepthMutex;
 static std::vector<unsigned char> gDepthStage;
 static std::atomic<int> gDepthStageW{0};
@@ -5571,7 +5619,7 @@ bool ensurePlaceholder(VrContext &c) {
  *
  * 为什么单独一趟：画面在 GPU 上（实时路径是 OES 外部纹理、环形缓冲路径是槽里的
  * 2D 副本），CPU 读不到，必须先画进自己的帧缓冲再 glReadPixels。尺寸就是模型输入
- * 尺寸（512x288），读回不到 600KB。
+ * 尺寸（256x256），读回 256KB 左右。
  *
  * seq 是这次抓帧属于环形缓冲里的哪一帧（-1 = 实时路径）。它跟着推理结果回到原生，
  * 让深度落在**它自己那一帧**的槽上 —— 装错槽就是用别人的深度变形这一帧。
@@ -5677,6 +5725,23 @@ void main() {
 }
 
 /**
+ * 这一帧要不要抓深度。
+ *
+ * 主判据是帧号（每 kDepthEveryNFrames 个新视频帧一次），DepthRay 在同机型上也是这个节奏。
+ * gDepthMsFloor（stereo_interval）只是毫秒下限，用来兜住"帧率很高、按帧数算仍然太密"的片源，
+ * 0 表示纯按帧数。
+ */
+bool depthGrabDue(VrContext &c) {
+    if (gDepthSink == nullptr || gDepthInputW.load() <= 0) return false;
+    const int msFloor = gDepthMsFloor.load();
+    if (msFloor > 0 && c.depthLastGrabMs > 0 &&
+        nowMs() - (double) c.depthLastGrabMs < (double) msFloor) {
+        return false;
+    }
+    return c.depthFrameTick > 0 && ((c.depthFrameTick - 1) % kDepthEveryNFrames) == 0;
+}
+
+/**
  * 遮挡预计算（照 DepthRay 的 offsets 那趟移植）。
  *
  * 逐列沿扫描线算：每只眼把这一列的深度往前推，看它落在哪个位置；同一位置若有更近的
@@ -5775,7 +5840,7 @@ void main() {
 /**
  * 深度上采样（边缘引导，照 DepthRay 的做法）。
  *
- * 为什么必须有这一步：模型只在 512x288 上出深度，直接双线性放大到 1080P 时，
+ * 为什么必须有这一步：模型只在 256x256 上出深度，直接双线性放大到 1080P 时，
  * 深度边缘会糊过物体轮廓 —— 左右眼按这个糊边去错位，物体边上就会出现一条
  * "接不上"的缝（父亲 2026-11-01 报的现象）。这里在放大时拿画面的亮度当引导：
  * 只有亮度接近的邻点才参与加权，深度边缘就自动贴住了画面里的真实轮廓。
@@ -6001,12 +6066,21 @@ void ensureDepthTexture(VrContext &c) {
  * 绝不因为配对做不成而黑屏。
  */
 
-/** 环里放几个槽（照 DepthRay 的算法，见 docs/plans/depthray-pipeline-reverse-2026-11-01.md §2.2） */
+/**
+ * 环里放几个槽：照 DepthRay 的算法。
+ *
+ * 它的规则是「按 126.5MB 像素预算算能用几槽，1080p 及以下固定 5 槽」——
+ * 4K 一槽 33MB 得 4 槽（它的日志：4 slots at 3840x2160, 126 MB），1080p 一槽 8MB
+ * 本可以放 15 槽，但没有意义：延迟再长只是多等，所以封在 5 槽。
+ * 槽数直接决定环能装多长的延迟，写死会在大分辨率上把延迟截断。
+ */
 int ringSlotCount(int w, int h) {
     const long long px = (long long) w * h;
+    if (px <= 0) return 0;
     if (px > 11063296LL) return 0;            // 4K 以上不建环（一槽 33MB，显存吃不消）
-    if (px <= 5636096LL) return 5;            // 1080p 及以下：5 槽 ≈ 200ms
-    return (int) (132710400LL / (px * 4));    // 中间档按 132MB 预算
+    const int budgeted = (int) (132710400LL / (px * 4));
+    if (px <= 5636096LL) return 5;            // 1080p 及以下：5 槽封顶
+    return budgeted;
 }
 
 void releaseRing(VrContext &c) {
@@ -6024,6 +6098,7 @@ void releaseRing(VrContext &c) {
     c.ringNext = 0;
     c.ringActive = false;
     c.ringArtifactsSeq = -1;
+    c.ringArtifactsLowW = 0;
 }
 
 /** 清空环（seek / 换片）：槽里的旧画面绝不能再上屏 */
@@ -6042,9 +6117,14 @@ void flushRing(VrContext &c) {
     VLOGI("环形缓冲：已清空（跳转或换片，等深度重新追上）");
 }
 
-/** 建 / 重建环形缓冲。返回 false 表示这次用不了环，调用方走实时路径。 */
+/**
+ * 建 / 重建环形缓冲。返回 false 表示这次用不了环，调用方走实时路径。
+ *
+ * ringOffForFile 是「这一片不需要再试了」：延迟需求超过环能装的长度时由
+ * updateRingDelay 置位，之后同一片不再反复建环拆环（每建一次就是几十 MB 的显存抖动）。
+ */
 bool ensureRing(VrContext &c, int w, int h) {
-    if (c.ringFailed) return false;
+    if (c.ringFailed || c.ringOffForFile) return false;
     if (c.ringActive && c.ringW == w && c.ringH == h) return true;
     releaseRing(c);
     const int n = ringSlotCount(w, h);
@@ -6095,6 +6175,11 @@ void main() { oColor = vec4(texture(uTexture, vUv).rgb, 1.0); }
     c.ringArtifactsSeq = -1;
     c.ringDelayUpdatedMs = 0;
     c.ringLateMs.clear();
+    /*
+     * 起播先按 55ms 种一个延迟（DepthRay 在同一台机器上量到的值），
+     * 攒够 8 个样本后一秒内改成实测 p90 —— 开头那一秒不至于一直显示最新帧、深度却还是旧的。
+     */
+    c.ringDelayMs = 55.f;
     c.ringFrameMs = 0.f;
     c.ringLastPushMs = 0;
     const long long mb = (long long) n * w * h * 4 / (1024 * 1024);
@@ -6151,11 +6236,17 @@ void pushRingFrame(VrContext &c, GLuint oesSrc) {
     c.ringStatPushed++;
 
     /*
-     * 每推进一帧就抓一次低分图：推理忙时 Kotlin 侧会丢掉多余的，而丢的是哪一帧无法预知
-     * —— 少抓一次，那一槽就永远没有深度，轮到它上屏时只能出平面。
+     * 抓帧按帧号节流（每 kDepthEveryNFrames 帧一次），不是每帧都抓：CPU 推理占四个核，
+     * 每帧都抓会把渲染线程的读回和整机解码一起拖慢。没抓的那两槽不带深度，
+     * 上屏时沿用最近一次的深度图（见 buildRingArtifacts 的调用处）。
      */
-    if (grabDepthFrame(c, s.color.tex, false, true, s.seq)) {
-        s.lowColor = c.depthGrabPixels;
+    if (depthGrabDue(c)) {
+        c.depthLastGrabMs = (long long) now;
+        if (grabDepthFrame(c, s.color.tex, false, true, s.seq)) {
+            s.lowColor = c.depthGrabPixels;
+        } else {
+            s.lowColor.clear();
+        }
     } else {
         s.lowColor.clear();
     }
@@ -6178,50 +6269,66 @@ void applyRingDepth(VrContext &c) {
         s.depthReady = true;
         s.depthMs = (long long) nowMs();
         c.ringLateMs.push_back((float) (s.depthMs - s.tsMs));
-        if (c.ringLateMs.size() > 30) c.ringLateMs.erase(c.ringLateMs.begin());
+        /* 样本 64：分位数要稳，样本太少一次慢推理就把延迟顶高（DepthRay 也用 64） */
+        if (c.ringLateMs.size() > 64) c.ringLateMs.erase(c.ringLateMs.begin());
         return;
     }
     c.ringStatStale++;   // 那一槽已经被新画面顶掉了
 }
 
-/** 延迟自适应：取深度迟到量的 90 分位数，钳在 [0, 200]ms，每秒重算一次 */
+/**
+ * 延迟自适应：深度迟到量的 90 分位数（样本 64）+ 一小段 render lead，每秒重算一次。
+ *
+ * 取 p90 而不是最大值：延迟要盖住慢的那几次推理，否则总有几帧的深度赶不上、只能出平面；
+ * 用最大值又会被一次异常推理永久抬高。DepthRay 的日志口径就是
+ * 「maps up %.1f ms after their frame was due at the 90th percentile of 64, render lead %.1f ms」。
+ *
+ * render lead = 从深度到站到那一帧真正上屏之间还要走的一帧（提交与合成），
+ * 按 DepthRay 的「80 percent of the player's vsync」上限折算，取 0.8 个帧间隔。
+ * 环装不下这个延迟时整功能关闭（它的原文：Zero age off for this file），绝不硬压延迟 ——
+ * 压下来就等于永远追不上，那几帧只能出平面。
+ */
 void updateRingDelay(VrContext &c) {
     const double now = nowMs();
     if (now - (double) c.ringDelayUpdatedMs < 1000.0) return;
     c.ringDelayUpdatedMs = (long long) now;
-    if (c.ringLateMs.size() < 5) return;
+    if (c.ringLateMs.size() < 8) return;
     std::vector<float> v = c.ringLateMs;
     std::sort(v.begin(), v.end());
-    /*
-     * 取 95 分位而不是中位数：延迟要盖住慢的那几次推理，否则总有一部分帧的深度赶不上，
-     * 那几帧只能出平面，看起来就是立体一阵一阵。再补 40ms 余量给抓帧到上屏之间的抖动。
-     */
-    const float p90 = v[(size_t) ((float) (v.size() - 1) * 0.95f)] + 40.f;
-    /*
-     * 上限两重：规格给的 200ms，以及"环真能装下多少"。延迟超过环的长度就永远等不到
-     * 那一槽，只能一直退到最老的一帧，等于白延。
-     */
-    const float ringSpan =
-            c.ringFrameMs > 1.f ? (float) (c.ringCount - 1) * c.ringFrameMs : 200.f;
-    const float applied = fminf(fminf(200.f, fmaxf(120.f, p90)), fmaxf(c.ringFrameMs, ringSpan));
-    if (fabsf(applied - c.ringDelayMs) > 1.f) {
-        VLOGI("环形缓冲：延迟 %.0fms（深度迟到 p90=%.0fms，样本 %d，槽 %d，环装得下 %.0fms）",
-             (double) applied, (double) p90, (int) v.size(), c.ringCount, (double) ringSpan);
+    const float p90 = v[(size_t) ((float) (v.size() - 1) * 0.90f)];
+    const float frameMs = c.ringFrameMs > 1.f ? c.ringFrameMs : (1000.f / 90.f);
+    /* 补偿上限 80% 一个显示周期（面板 90Hz），再大就等于让画面白等 */
+    constexpr float kVsyncMs = 1000.f / 90.f;
+    const float leadMs = fminf(0.8f * frameMs, 0.8f * kVsyncMs);
+    const float wanted = fminf(200.f, p90 + leadMs);
+    /* 环能装下的延迟 = (槽数 - 1) 个帧间隔：最后一槽推进去之后就没有"更晚的帧"了 */
+    const float ringSpan = (float) (c.ringCount - 1) * frameMs;
+    if (wanted > ringSpan) {
+        VLOGI("环形缓冲：本片关掉逐帧配对（需要 %.0fms，%d 槽只装得下 %.0fms，%.1f fps）",
+             (double) wanted, c.ringCount, (double) ringSpan, (double) (1000.f / frameMs));
+        releaseRing(c);
+        c.ringOffForFile = true;
+        return;
     }
-    c.ringDelayMs = applied;
+    if (fabsf(wanted - c.ringDelayMs) > 1.f) {
+        VLOGI("环形缓冲：延迟 %.0fms（深度迟到 p90=%.0fms，样本 %d，render lead %.1fms，"
+              "槽 %d，环装得下 %.0fms）",
+             (double) wanted, (double) p90, (int) v.size(), (double) leadMs, c.ringCount,
+             (double) ringSpan);
+    }
+    c.ringDelayMs = wanted;
 }
 
 /**
- * 选这一帧上屏的槽。
+ * 选这一帧上屏的槽：时间戳不晚于 now − 延迟的最新那一槽。
  *
- * 规矩：时间戳不晚于 now − 延迟的最新一槽；它自己的深度到了才做立体，没到就只出平面
- * —— 绝不用别的帧的深度。若到点的几槽里有的深度已到，用**到点且深度已到的最新那一槽**
- * （仍然是它自己的深度），免得推理偶发漏掉一帧就闪一下平面。
+ * 必须是"最新"那一槽，不能退去挑深度已就绪的更老槽 —— 推理是每 3 帧一次，
+ * 按深度就绪挑就等于每 3 帧才换一次画面，观感是掉到三分之一的帧率。
+ * 中间两帧的画面照常更新，深度沿用最近一次（见选槽之后那段）。
  */
 int pickRingSlot(VrContext &c) {
     const double due = nowMs() - (double) c.ringDelayMs;
     int newestDue = -1;
-    int readyDue = -1;
     int oldest = -1;
     for (int i = 0; i < c.ringCount; i++) {
         const RingSlot &s = c.ringSlots[(size_t) i];
@@ -6229,16 +6336,13 @@ int pickRingSlot(VrContext &c) {
         if (oldest < 0 || s.tsMs < c.ringSlots[(size_t) oldest].tsMs) oldest = i;
         if ((double) s.tsMs > due) continue;
         if (newestDue < 0 || s.tsMs > c.ringSlots[(size_t) newestDue].tsMs) newestDue = i;
-        if (s.depthReady && (readyDue < 0 || s.tsMs > c.ringSlots[(size_t) readyDue].tsMs)) {
-            readyDue = i;
-        }
     }
     if (newestDue < 0) {
         /* 刚起播 / 刚跳转：还没攒够延迟那么久，先拿最老的那一槽顶上 */
         c.ringStatShort++;
         return oldest;
     }
-    return readyDue >= 0 ? readyDue : newestDue;
+    return newestDue;
 }
 
 /**
@@ -6256,6 +6360,7 @@ void buildRingArtifacts(VrContext &c, RingSlot &s, int upW, int upH) {
     renderOffsets(c, s.depth.tex, s.depth.w, s.depth.h, c.ringOffsets);
     renderDepthUpsample(c, s.depth.tex, 0, s.color.tex, false, upW, upH, c.ringUp);
     c.ringArtifactsSeq = s.seq;
+    c.ringArtifactsLowW = s.depth.w;
     c.ringArtifactsDisp = c.depthDisp;
     c.ringArtifactsConv = c.depthConv;
 }
@@ -6403,7 +6508,19 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
             if (u.dispTexels >= 0) glUniform1f(u.dispTexels, c.depthDisp * (float) lowW);
             if (u.lowResW >= 0) glUniform1f(u.lowResW, (float) lowW);
             if (u.frameW >= 0) glUniform1f(u.frameW, (float) frameW);
-            if (u.srcInset >= 0) glUniform1f(u.srcInset, 0.0005f);
+            /*
+             * 采样边界内缩量随视差自适应：内缩 = 最大视差 + 2 像素。
+             *
+             * 视差是 UV 常量（c.depthDisp 就是"最大视差占画面宽度的比例"），所以内缩
+             * 直接取它，再补两个像素的余量给牛顿迭代的修正量。内缩小于视差时，
+             * 立体偏移会把采样点推出画面边界，着色器只能钳住 —— 钳住的那一列就是
+             * 拉长的竖条，也就是父测看到的"边缘扭曲"。
+             */
+            if (u.srcInset >= 0) {
+                const float inset = fmaxf(0.0005f, fminf(0.25f,
+                        fabsf(c.depthDisp) + 2.f / (float) (frameW > 0 ? frameW : 1)));
+                glUniform1f(u.srcInset, inset);
+            }
             if (u.eyeIndex >= 0) glUniform1f(u.eyeIndex, eyeIndex == 1 ? 1.f : 0.f);
         } else {
             glUniform1i(u.depthOn, 0);
@@ -6797,11 +6914,13 @@ void frameLoop(VrContext &c) {
              * 用来验证"4K 大图层是否本身就是问题"（2026-10-09 诊断开关）。 */
             int32_t userCap = gVideoLayerMaxW.load();
             /*
-             * 3D 时把视频层压到 2560 宽：DepthRay 同一台机器也是这么做的
-             * （日志原文 video eye 2560x1440 capped from 3840x2160 for the DIBR chain），
-             * 关掉 3D 立刻回到原分辨率，2D 看片不受影响。
+             * 3D 时把视频层压到每眼 2560 宽（DepthRay：video eye 2560x1440 capped from
+             * 3840x2160 for the DIBR chain），高度按同一比例缩。
+             *
+             * 这是唯一为 3D 引入的分辨率上限，只写在 3D 分支里：3D 关掉时 userCap 原样
+             * 取调参值（默认 0），视频层回到片源原分辨率，2D 清晰度一点不受影响。
              */
-            if (userCap <= 0 && gStereo3d.load() != 0) userCap = 2560;
+            if (userCap <= 0 && gStereo3d.load() != 0) userCap = kStereo3dEyeW;
             if (userCap > 0) capW = userCap;
             if (vw > capW || vh > kMaxVideoH) {
                 const float k = fminf((float) capW / (float) vw,
@@ -6828,19 +6947,38 @@ void frameLoop(VrContext &c) {
                  * 两者混在一起会死锁：从没抓过帧 → 深度永远是旧的 → 永远不抓。
                  */
                 c.depthOn = gStereo3d.load() != 0 && c.videoLayerROk;
-                c.depthFresh = dAge < 1200;
+                /*
+                 * 3D 关掉时把整条深度链的显存与状态一起放掉：环、深度图、遮挡表、上采样
+                 * 都不再参与。这里不解引用任何东西，也不改分辨率 —— 上面的 cap 判断已经
+                 * 回到调参原值，2D 走的就是引入 3D 之前那条路径。
+                 * 重新打开 3D 时这些资源按需重建，代价只有一次分配。
+                 */
+                if (!c.depthOn) {
+                    if (c.ringActive) {
+                        releaseRing(c);
+                        c.ringOffForFile = false;   // 下次开 3D 重新给这一片一次机会
+                    }
+                    releaseTarget(c.depthUp);
+                    releaseTarget(c.offsets);
+                    releaseTarget(c.depth);
+                    c.depthUpDirty = true;
+                }
+                c.depthFresh = c.depthOn && dAge < 1200;
                 /* 视差是 UV 常量（见 gStereoDisp 的说明），与银幕尺寸/距离无关 */
                 c.depthDisp = gStereoDisp.load();
                 c.depthConv = gStereoConv.load();
                 c.depthFade = gStereoFade.load();
 
                 /*
-                 * 深度上采样宽度：这一趟每个深度更新都要跑一次，是全屏 pass。
-                 * 深度本身是 512x288 的低分图，上采样到 960 宽已足够撑住边缘，
-                 * 再高只是白烧 GPU（父测：1280 时双眼峰值 47ms，帧率 44）。
+                 * 深度上采样目标宽度：按每眼 2560 铺满（DepthRay 的 DIBR 链路就是这个宽度）。
+                 *
+                 * 深度图本身只有 256 见方，上采样一次是廉价的全屏 pass；铺得越宽，
+                 * 后面按"每像素视差"采样时越不容易在物体边缘插到糊掉的深度 ——
+                 * 父测的"边缘发糊、白点"有一半来自深度分辨率不够。
+                 * 高度一律按画面比例算：比例错了，采样坐标会整体歪斜。
                  */
-                const int upW0 = (vw > 960) ? 960 : vw;
-                const int upH0 = (vw > 1280) ? (int) ((float) vh * 1280.f / (float) vw) : vh;
+                const int upW0 = vw > kDepthUpW ? kDepthUpW : vw;
+                const int upH0 = (int) lroundf((float) upW0 * (float) vh / (float) vw);
 
                 /*
                  * 画面来源这一帧要不要进槽：只在真来了新帧时推进，否则 72Hz 的渲染
@@ -6851,6 +6989,13 @@ void frameLoop(VrContext &c) {
                                                     : (panelOnScreen
                                                                ? gPanelFrameChanged.exchange(false)
                                                                : gVideoFrameChanged.exchange(false));
+                /*
+                 * 深度的帧号只在新画面到时推进：抓帧节奏按视频帧数算，不按渲染帧数。
+                 * 在 3 的整数倍处回绕，取模的判断因此永远成立。
+                 */
+                if (newSourceFrame) {
+                    c.depthFrameTick = (c.depthFrameTick + 1) % (kDepthEveryNFrames * 1024);
+                }
 
                 StereoSrc src;
                 bool ringShown = false;
@@ -6881,13 +7026,20 @@ void frameLoop(VrContext &c) {
                         if (shown >= 0) {
                             RingSlot &slot = c.ringSlots[(size_t) shown];
                             src.colorTex = slot.color.tex;
-                            src.lowW = slot.depth.w;
-                            if (slot.depthReady) {
-                                buildRingArtifacts(c, slot, upW0, upH0);
+                            /*
+                             * 这一槽自己的深度到了就用它自己的（帧与深度严格同帧）。
+                             * 推理是每 3 帧一次，中间两槽没有自己的深度 —— 那时沿用最近
+                             * 一次算出来的那一套（画面照常更新，深度最多旧 2 帧），
+                             * 否则中间两帧只能出平面，观感就是立体一帧一帧地闪。
+                             */
+                            if (slot.depthReady) buildRingArtifacts(c, slot, upW0, upH0);
+                            src.lowW = slot.depth.w > 0 ? slot.depth.w : c.ringArtifactsLowW;
+                            if (c.ringArtifactsSeq >= 0 && c.ringUp.tex != 0 &&
+                                c.ringOffsets.tex != 0) {
                                 src.depthTex = c.ringUp.tex;
                                 src.offsetsTex = c.ringOffsets.tex;
                                 src.frameW = c.ringUp.w;
-                                src.parallax = src.depthTex != 0 && src.offsetsTex != 0;
+                                src.parallax = true;
                             }
                             ringShown = true;
                             static long long lastRingLog = 0;
@@ -6895,14 +7047,16 @@ void frameLoop(VrContext &c) {
                             if (nowR - lastRingLog >= 3000) {
                                 lastRingLog = nowR;
                                 VLOGI("环形缓冲：延迟 %.0fms 槽 %d 已在屏 帧龄 %lldms 深度就绪=%d"
-                                      "｜推 %lld 帧 配对 %lld 平面 %lld 过期 %lld 不够长 %lld",
+                                      "｜推 %lld 帧 配对 %lld 沿用 %lld 平面 %lld 过期 %lld 不够长 %lld",
                                       (double) c.ringDelayMs, shown,
                                       (long long) (nowR - slot.tsMs), slot.depthReady ? 1 : 0,
-                                      c.ringStatPushed, c.ringStatPaired, c.ringStatFlat,
-                                      c.ringStatStale, c.ringStatShort);
+                                      c.ringStatPushed, c.ringStatPaired, c.ringStatReuse,
+                                      c.ringStatFlat, c.ringStatStale, c.ringStatShort);
                             }
                             if (slot.depthReady) {
                                 c.ringStatPaired++;
+                            } else if (src.parallax) {
+                                c.ringStatReuse++;
                             } else {
                                 c.ringStatFlat++;
                             }
@@ -6916,16 +7070,15 @@ void frameLoop(VrContext &c) {
                         uploadDepthIfFresh(c);
                         if (c.depthUpDirty && c.depth.tex != 0) {
                             renderOffsets(c, c.depth.tex, c.depth.w, c.depth.h, c.offsets);
-                            /*
-                             * 上采样按 UV 采样，分辨率只影响深度边缘的锐度，不必与视频层同尺寸。
-                             * 封顶 1280 宽：4K 片源下 5x5 窗口在全分辨率跑会把 GPU 吃掉一大块。
-                             */
                             renderDepthUpsample(c, c.depth.tex, screenSrc, 0, webOnScreen,
                                                 upW0, upH0, c.depthUp);
                         }
-                        const long long nowGrab = (long long) nowMs();
-                        if (nowGrab - c.depthLastGrabMs >= gDepthIntervalMs.load()) {
-                            c.depthLastGrabMs = nowGrab;
+                        /*
+                         * 抓帧节奏按帧号（每 kDepthEveryNFrames 个新视频帧一次），
+                         * 不是按毫秒：片源帧率一变，固定毫秒就能抓到几个相同的帧。
+                         */
+                        if (newSourceFrame && depthGrabDue(c)) {
+                            c.depthLastGrabMs = (long long) nowMs();
                             grabDepthFrame(c, screenSrc, webOnScreen, false, -1);
                         }
                     }
@@ -6957,10 +7110,11 @@ void frameLoop(VrContext &c) {
                     if (nowD - lastDiagMs >= 1000) {
                         lastDiagMs = nowD;
                         VLOGI("3D 诊断：开关=%d 环=%d 左层=%d 深度图=%d 偏移表=%d 上采样=%d"
-                              " 深度龄=%lldms 视差=%.4f",
+                              " 深度龄=%lldms 视差=%.4f 每眼=%dx%d 上采样目标=%dx%d",
                               gStereo3d.load(), c.ringActive ? 1 : 0, c.videoLayerROk ? 1 : 0,
                               c.depth.tex != 0 ? 1 : 0, c.offsets.tex != 0 ? 1 : 0,
-                              c.depthUp.tex != 0 ? 1 : 0, dAge, (double) c.depthDisp);
+                              c.depthUp.tex != 0 ? 1 : 0, dAge, (double) c.depthDisp,
+                              vw, vh, upW0, upH0);
                     }
                 }
             }
@@ -8215,15 +8369,24 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetDepthSink(JNIEnv *env, jobject /* th
         gDepthSink = nullptr;
     }
     gDepthSubmit = nullptr;
+    gDepthSetActive = nullptr;
     if (sink == nullptr) return;
     gDepthSink = env->NewGlobalRef(sink);
     jclass k = env->GetObjectClass(sink);
     gDepthSubmit = env->GetMethodID(k, "submitFrame", "([BIIJ)V");
+    gDepthSetActive = env->GetMethodID(k, "setActive", "(Z)V");
     env->DeleteLocalRef(k);
     if (gDepthSubmit == nullptr) {
         env->DeleteGlobalRef(gDepthSink);
         gDepthSink = nullptr;
-        LOGE("深度链路：DepthEngine.submitFrame 找不到");
+        return;
+    }
+    /*
+     * 挂上就把当前的 3D 开关告诉推理侧：挂之前调参可能已经把它打开（或关着），
+     * 不通知的话推理侧只能等下一次调参变化，开着 3D 却没有推理线程。
+     */
+    if (gDepthSetActive != nullptr) {
+        env->CallVoidMethod(gDepthSink, gDepthSetActive, (jboolean) (gStereo3d.load() != 0));
     }
 }
 
@@ -8269,18 +8432,26 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeNotifySeek(JNIEnv * /* env */, jobject 
 extern "C" JNIEXPORT void JNICALL
 Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this */,
                                                    jint key, jfloat value) {
-    (void) env;
     switch (key) {
         /*
          * 实时 2D→3D（2026-11-01）：44 开关 / 45 视差强度 / 46 零视差平面 / 47 边缘淡出。
-         * 视差强度按整幅画面宽度算（UV 单位），0.03 已经很夸张，默认 0.012。
+         * 视差强度按整幅画面宽度算（UV 单位），默认 0.006。
+         *
+         * 这个开关是整条 3D 链路的唯一判据：渲染侧用它决定要不要拆左右眼、要不要抓帧，
+         * 推理侧（DepthEngine.setActive）用它决定要不要养那四个推理线程。2D 播放时
+         * 两边都不参与，路径与引入 3D 之前完全一致。
          */
-        case 44:
-            gStereo3d.store(value >= 1.f ? 1 : 0);
-            VLOGI("调参 → 实时 2D→3D %s", value >= 1.f ? "开（视频层拆左右眼）" : "关");
+        case 44: {
+            const bool on = value >= 1.f;
+            gStereo3d.store(on ? 1 : 0);
+            if (gDepthSink != nullptr && gDepthSetActive != nullptr) {
+                env->CallVoidMethod(gDepthSink, gDepthSetActive, (jboolean) on);
+            }
+            VLOGI("调参 → 实时 2D→3D %s", on ? "开（视频层拆左右眼）" : "关（推理线程收工）");
             break;
+        }
         case 45: {
-            /* 两种写法都认：直接写 UV（0.012），或写千分位整数（12 = 0.012 = 标准档） */
+            /* 两种写法都认：直接写 UV（0.006），或写千分位整数（6 = 0.006 = 标准档） */
             const float uv = value > 1.f ? value / 1000.f : value;
             if (uv >= 0.f && uv <= 0.08f) {
                 gStereoDisp.store(uv);
@@ -8303,11 +8474,14 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             }
             break;
         /* 48 = 深度图方向（1 = 模型输出越大越近，用之前取反） */
-        /* 51 = 深度抓帧间隔（毫秒）：GPU 推理与画面渲染抢同一个 GPU，间隔太密会把帧率拖下来 */
+        /*
+         * 51 = 抓帧的毫秒下限（0 = 纯按帧数，每 3 帧一次）。
+         * 主判据是帧数；这一项只在片源帧率特别高、按帧数算仍然太密时才用得上。
+         */
         case 51:
-            if (value >= 50.f && value <= 1000.f) {
-                gDepthIntervalMs.store((int) value);
-                VLOGI("调参 → 深度抓帧间隔 %dms", (int) value);
+            if (value >= 0.f && value <= 1000.f) {
+                gDepthMsFloor.store((int) value);
+                VLOGI("调参 → 深度抓帧毫秒下限 %dms（0 = 纯按帧数，每 3 帧一次）", (int) value);
             }
             break;
         case 49:
