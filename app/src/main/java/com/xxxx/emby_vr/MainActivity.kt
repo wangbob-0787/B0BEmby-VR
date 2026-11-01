@@ -3183,7 +3183,13 @@ class MainActivity : ComponentActivity() {
                  */
                 val dvSource = com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource
                 val path0 = when {
-                    dvSource && method != "DirectPlay" -> {
+                    /*
+                     * 只有 Profile 5 才换直连：那一版系统解不出画面。
+                     * 8.1 / 7 的基础层就是普通 HDR10，照常交给系统播放器，
+                     * 强换直连反而让系统解不了、只剩声音（父亲 2026-11-01 实测）。
+                     */
+                    dvSource && com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder &&
+                        method != "DirectPlay" -> {
                         val tc = source?.transcodingUrl.orEmpty()
                         val videoCopied = Regex("[?&]VideoCodec=copy", RegexOption.IGNORE_CASE)
                             .containsMatchIn(tc)
