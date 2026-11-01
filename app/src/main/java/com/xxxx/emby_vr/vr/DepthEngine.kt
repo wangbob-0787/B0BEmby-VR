@@ -31,13 +31,13 @@ object DepthEngine {
     private const val TAG = "B0BEmbyVR"
     private const val MODEL = "models/zipdepth_256_int8dr.tflite"
     /**
-     * 推理线程数。
+     * 推理线程数：4。
      *
-     * XR2 是 4 小核（1.8G）+ 3 大核（2.4G）+ 1 超大核（2.8G）。4 线程时线程池
-     * 容易被调度到小核上，单次推理 100ms 上下；6 线程会把大核拉进来，代价是
-     * 与解码、渲染抢 CPU，帧时间可能变差 —— 这是权衡，不是纯优化。
+     * XR2 是 4 小核（1.8G）+ 3 大核（2.4G）+ 1 超大核（2.8G）。实测 6 线程反而更慢
+     * （单次推理 110→191ms，画面与深度的配对率 18%→12%）：多出来的线程和解码、
+     * 渲染抢 CPU，还更容易把整机推到降频。4 线程是这块芯片上的最优。
      */
-    private const val THREADS = 6
+    private const val THREADS = 4
 
     /**
      * 换镜头检测的三个量（照 DepthRay 的 depth cut 口径）。
