@@ -122,8 +122,18 @@ object DepthEngine {
     private var outH = 0
     private var inBuf: ByteBuffer? = null
     private var outBuf: ByteBuffer? = null
+    /*
+     * 推理线程：钉到高频核 + 抬到音频级优先级。
+     *
+     * TFLite 的工作线程池由它在 init 时自己创建，pthread_create 继承创建者的亲和掩码，
+     * 所以钉核必须在创建解释器之前、在同一个线程里做 —— 这里包在 Runnable 最前面。
+     */
     private val worker = Executors.newSingleThreadExecutor { r ->
-        Thread(r, "depth-infer").apply { priority = Thread.NORM_PRIORITY - 1 }
+        Thread({
+            runCatching { VrNative.pinCurrentThreadToFastCores() }
+            runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO) }
+            r.run()
+        }, "depth-infer")
     }
     private val busy = AtomicBoolean(false)
 

@@ -26,6 +26,10 @@
 #include <thread>
 #include <vector>
 
+#include <sched.h>
+#include <unistd.h>
+#include <cerrno>
+
 #include <android/log.h>
 #include <jni.h>
 
@@ -8282,6 +8286,51 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeStartVr(JNIEnv *env, jobject /* this */
     gRunning = true;
     gThread = std::thread(renderThreadMain);
     return JNI_TRUE;
+}
+
+/**
+ * 把调用线程钉到「主频最高」的几个核上（PICO 4：cpu7 2.84GHz、cpu4~6 2.42GHz、cpu0~3 1.80GHz）。
+ *
+ * 深度推理的线程池由 TFLite 自己创建，pthread_create 会继承创建者的亲和掩码，
+ * 所以只要在创建解释器之前把调用线程钉住，池里的工作线程就一起被钉住。
+ * 返回钉住的核心数，0 表示没动（读不到频率表就保持系统调度）。
+ */
+extern "C" JNIEXPORT jint JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativePinCurrentThreadToFastCores(JNIEnv * /*env*/,
+                                                                    jobject /* this */) {
+    const int ncpu = (int) sysconf(_SC_NPROCESSORS_ONLN);
+    if (ncpu <= 0 || ncpu > 64) return 0;
+    long best = 0;
+    long freq[64] = {0};
+    for (int i = 0; i < ncpu; i++) {
+        char path[128];
+        snprintf(path, sizeof(path),
+                 "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", i);
+        FILE *f = fopen(path, "r");
+        if (!f) continue;
+        long v = 0;
+        if (fscanf(f, "%ld", &v) != 1) v = 0;
+        fclose(f);
+        freq[i] = v;
+        if (v > best) best = v;
+    }
+    if (best <= 0) return 0;
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    int n = 0;
+    for (int i = 0; i < ncpu; i++) {
+        if (freq[i] > 0 && freq[i] * 10 >= best * 8) {   // 主频不低于最高档的 80%
+            CPU_SET(i, &set);
+            n++;
+        }
+    }
+    if (n <= 0) return 0;
+    if (sched_setaffinity(0, sizeof(set), &set) != 0) {
+        LOGE("深度推理：钉核失败（errno=%d）", errno);
+        return 0;
+    }
+    LOGI_RAW("深度推理：已钉到 %d 个高频核", n);
+    return n;
 }
 
 /** 界面开始往面板 Surface 上画了，可以贴纹理了 */
