@@ -1859,7 +1859,7 @@ struct VrContext {
      *
      * 一个 quad 层的同一张图两只眼共用，做不到左右眼不同，所以把视频层拆成
      * 左（videoLayer）右（videoLayerR）两条交换链、两个 quad 层，各自只对一只眼可见
-     * （XR_EYE_VISIBILITY_LEFT_BITS / RIGHT_BITS）。关闭 2D→3D 时右眼这条不建、不提交，
+     * （XR_EYE_VISIBILITY_LEFT / RIGHT）。关闭 2D→3D 时右眼这条不建、不提交，
      * 走回原来单层的零额外开销路径。
      */
     VideoLayerBuf videoLayerR;
@@ -5408,7 +5408,7 @@ void frameLoop(VrContext &c) {
      */
     XrCompositionLayerQuad videoQuadR{XR_TYPE_COMPOSITION_LAYER_QUAD};
     videoQuadR.space = c.localSpace;
-    videoQuadR.eyeVisibility = XR_EYE_VISIBILITY_RIGHT_BIT;
+    videoQuadR.eyeVisibility = XR_EYE_VISIBILITY_RIGHT;
     videoQuadR.layerFlags = 0;
     /*
      * 视频层增强（2026-10-14）：超采样 / 锐化 / 超分辨率交给系统合成器做。
@@ -5951,7 +5951,7 @@ void frameLoop(VrContext &c) {
              * 叠在一起 —— 叠出来的效果是"重影"，比不做立体更糟。
              */
             if (c.videoLayerR.submitted) {
-                videoQuad.eyeVisibility = XR_EYE_VISIBILITY_LEFT_BIT;
+                videoQuad.eyeVisibility = XR_EYE_VISIBILITY_LEFT;
                 videoQuadR.pose = videoQuad.pose;
                 videoQuadR.size = videoQuad.size;
                 videoQuadR.subImage.swapchain = c.videoLayerR.handle;
