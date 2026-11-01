@@ -299,6 +299,8 @@ object VrTuning {
     const val KEY_STEREO_CONV = 46
     /** 实时 2D→3D 左右边缘淡出宽度（防边缘拉伸竖条） */
     const val KEY_STEREO_FADE = 47
+    /** 深度图方向：1 = 模型输出越大越近（用之前取反） */
+    const val KEY_DEPTH_INVERT = 48
     const val KEY_MIN_SCREEN_GAP = 18
     /** 控制条/菜单/海报墙是否跟随观影位（2026-10-10：走近银幕时控制条留在伸手可及处） */
     const val KEY_FOLLOW_VIEWER = 19
@@ -727,6 +729,10 @@ object VrTuning {
             VrNative.setTuning(KEY_STEREO_FADE, it)
             applied += "3D 边缘淡出 ${"%.3f".format(it)}"
         }
+        raw["depth_invert"]?.toIntOrNull()?.let {
+            VrNative.setTuning(KEY_DEPTH_INVERT, it.toFloat())
+            applied += "深度方向 " + if (it != 0) "取反" else "原样"
+        }
 
         if (!wrote) return applied
         if (mask != null) {
@@ -746,6 +752,32 @@ object VrTuning {
         read(context).orEmpty()
             .filterKeys { it.startsWith("mpv_") }
             .mapKeys { it.key.removePrefix("mpv_") }
+
+    /**
+     * 读一个键的当前值（界面上的开关要显示"现在是开还是关"）。
+     * 文件是唯一事实源：轮询每秒读一次，界面改了就写回文件，两边不会打架。
+     */
+    fun value(context: Context, key: String): String? = read(context)?.get(key)
+
+    /** 改一个键并落盘（界面开关用）。轮询下一秒会读到并下发，这里同时立即生效。 */
+    fun setValue(context: Context, key: String, value: String) {
+        try {
+            val f = File(context.getExternalFilesDir(null), FILE_NAME)
+            val lines = if (f.isFile) f.readLines().toMutableList() else mutableListOf()
+            var hit = false
+            for (i in lines.indices) {
+                val k = lines[i].substringBefore('#').substringBefore('=').trim()
+                if (k == key) {
+                    lines[i] = "$key=$value"
+                    hit = true
+                }
+            }
+            if (!hit) lines.add("$key=$value")
+            f.writeText(lines.joinToString("\n") + "\n")
+        } catch (t: Throwable) {
+            Log.w(TAG, "调参文件写入失败：${t.message}")
+        }
+    }
 
     /** 读配置；文件不存在或读失败返回 null */
     private fun read(context: Context): Map<String, String>? {

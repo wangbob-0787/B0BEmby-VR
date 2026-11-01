@@ -18,6 +18,7 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <cstring>
 #include <string>
 #include <cstring>
@@ -386,6 +387,7 @@ uniform float uEyeSign;
 uniform float uDisp;
 uniform float uConvergence;
 uniform float uDepthEdgeFade;
+uniform int uDepthInvert;   // 1 = 模型输出是"近大远小"的视差，取反后再用
 out vec4 fragColor;
 
 /* 抖动用的哈希（打散 8 位量化色带）*/
@@ -407,6 +409,7 @@ void main() {
     vec2 uvT = vUv;
     if (uDepthOn == 1) {
         float d = texture(uDepthTex, vUv).r;
+        if (uDepthInvert == 1) d = 1.0 - d;
         float edgeW = smoothstep(0.0, max(uDepthEdgeFade, 1e-6),
                                  min(vUv.x, 1.0 - vUv.x));
         uvT.x += uEyeSign * edgeW * uDisp * (d - uConvergence);
@@ -567,6 +570,28 @@ GLuint buildProgram() {
         char log[512];
         glGetProgramInfoLog(p, sizeof(log), nullptr, log);
         LOGE("着色器链接失败: %s", log);
+    }
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    return p;
+}
+
+/** 用给定的着色器源码建程序（抓帧那一路用，和主程序互不影响） */
+GLuint buildProgramFrom(const char *vsSrc, const char *fsSrc) {
+    GLuint vs = compile(GL_VERTEX_SHADER, vsSrc);
+    GLuint fs = compile(GL_FRAGMENT_SHADER, fsSrc);
+    GLuint p = glCreateProgram();
+    glAttachShader(p, vs);
+    glAttachShader(p, fs);
+    glLinkProgram(p);
+    GLint ok = 0;
+    glGetProgramiv(p, GL_LINK_STATUS, &ok);
+    if (!ok) {
+        char log[512];
+        glGetProgramInfoLog(p, sizeof(log), nullptr, log);
+        LOGE("着色器链接失败（抓帧）: %s", log);
+        glDeleteProgram(p);
+        p = 0;
     }
     glDeleteShader(vs);
     glDeleteShader(fs);
@@ -1728,6 +1753,7 @@ struct VrContext {
     GLint dispLoc = -1;
     GLint convLoc = -1;
     GLint depthFadeLoc = -1;
+    GLint depthInvertLoc = -1;
     GLint circleLoc = -1;          // uCircle：纯色画成圆点还是方块
     GLint expandLoc = -1;          // uExpandRange：视频有限范围 → 全范围
     GLint brightLoc = -1;          // uBrightness：画面亮度（控制条上可调）
@@ -1871,6 +1897,16 @@ struct VrContext {
     float depthDisp = 0.012f;      // 视差强度（UV 单位，按整幅宽度）
     float depthConv = 0.5f;        // 零视差平面
     float depthFade = 0.04f;       // 左右边缘淡出宽度
+    /* 深度抓帧（把视频缩到模型输入尺寸、读回 CPU） */
+    GLuint depthGrabProg = 0;
+    GLint depthGrabUvScaleLoc = -1;
+    GLint depthGrabUvBiasLoc = -1;
+    GLuint depthGrabFbo = 0;
+    GLuint depthGrabTex = 0;
+    int depthGrabW = 0;
+    int depthGrabH = 0;
+    std::vector<unsigned char> depthGrabPixels;
+    long long depthLastGrabMs = 0;
     /*
      * 弹幕独立合成层（父亲 2026-10-06 晚定）：弹幕与字幕离开视频画面，做成
      * 单独一层摆在银幕前面一点点。原来画在视频层里 / GL 场景里，前者会跟着
@@ -2181,6 +2217,22 @@ std::atomic<int> gStereo3d{0};
 std::atomic<float> gStereoDisp{0.012f};
 std::atomic<float> gStereoConv{0.5f};
 std::atomic<float> gStereoFade{0.04f};
+/*
+ * 真实深度（2026-11-01）：模型在 Kotlin 侧跑，原生只负责
+ * 抓帧（缩到模型输入尺寸读回 CPU）→ 交 Kotlin → 收结果 → 上传成纹理。
+ * 推理不在渲染线程做：渲染线程只做读回和上传，一次几毫秒。
+ */
+std::atomic<int> gDepthInputW{0};
+std::atomic<int> gDepthInputH{0};
+std::atomic<int> gDepthIntervalMs{120};
+std::atomic<int> gDepthInvert{0};   // 多久更新一次深度（深度不必每帧新）
+static jobject gDepthSink = nullptr;      // DepthEngine 单例的全局引用
+static jmethodID gDepthSubmit = nullptr;  // DepthEngine.submitFrame([BII)V
+static std::mutex gDepthMutex;
+static std::vector<unsigned char> gDepthStage;
+static std::atomic<int> gDepthStageW{0};
+static std::atomic<int> gDepthStageH{0};
+static std::atomic<bool> gDepthFresh{false};
 /*
  * 交回图像前的同步档（父亲 2026-10-08 手机拍到撕裂后加的对照开关）。
  *
@@ -5118,6 +5170,146 @@ bool acquireWritableImage(VrContext &c, VideoLayerBuf &L, uint32_t *outIdx,
  * 假深度做成斜向正弦条纹而不是左右渐变：渐变在画面中轴上视差恒为 0，一眼看不出效果；
  * 条纹能让整幅画面都出现左右眼差异，装机时"有没有生效"一望即知。
  */
+/** 渲染线程取 JNIEnv（只 attach 一次，之后这个线程一直有效） */
+static JNIEnv *depthJniEnv(VrContext &c) {
+    static thread_local JNIEnv *env = nullptr;
+    if (env != nullptr) return env;
+    if (c.jvm == nullptr) return nullptr;
+    JavaVMAttachArgs args{JNI_VERSION_1_6, nullptr, nullptr};
+    if (c.jvm->AttachCurrentThread(&env, &args) != JNI_OK) env = nullptr;
+    return env;
+}
+
+/**
+ * 把这一帧的画面缩到模型输入尺寸读回 CPU，交给 Kotlin 侧推理。
+ *
+ * 为什么要单独一趟：视频纹理是外部纹理（OES），CPU 读不到，必须先画进自己的
+ * 帧缓冲再 glReadPixels。尺寸就是模型输入尺寸（512x288），读回不到 600KB。
+ */
+void grabDepthFrame(VrContext &c, GLuint tex, bool webCrop) {
+    const int W = gDepthInputW.load();
+    const int H = gDepthInputH.load();
+    if (W <= 0 || H <= 0 || tex == 0 || gDepthSink == nullptr) return;
+
+    if (c.depthGrabProg == 0) {
+        static const char *vs = R"(#version 300 es
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec2 aUv;
+out vec2 vUv;
+void main() { vUv = aUv; gl_Position = vec4(aPos.xy, 0.0, 1.0); }
+)";
+        static const char *fs = R"(#version 300 es
+#extension GL_OES_EGL_image_external_essl3 : require
+precision mediump float;
+in vec2 vUv;
+uniform samplerExternalOES uTexture;
+uniform vec2 uUvScale;
+uniform vec2 uUvBias;
+out vec4 oColor;
+void main() {
+    oColor = vec4(texture(uTexture, vUv * uUvScale + uUvBias).rgb, 1.0);
+}
+)";
+        c.depthGrabProg = buildProgramFrom(vs, fs);
+        if (c.depthGrabProg == 0) {
+            VLOGI("2D→3D：抓帧着色器建不起来，深度不可用");
+            gDepthInputW.store(0);
+            return;
+        }
+        c.depthGrabUvScaleLoc = glGetUniformLocation(c.depthGrabProg, "uUvScale");
+        c.depthGrabUvBiasLoc = glGetUniformLocation(c.depthGrabProg, "uUvBias");
+        glUseProgram(c.depthGrabProg);
+        glUniform1i(glGetUniformLocation(c.depthGrabProg, "uTexture"), 0);
+    }
+    if (c.depthGrabW != W || c.depthGrabH != H) {
+        if (c.depthGrabFbo != 0) glDeleteFramebuffers(1, &c.depthGrabFbo);
+        if (c.depthGrabTex != 0) glDeleteTextures(1, &c.depthGrabTex);
+        glGenTextures(1, &c.depthGrabTex);
+        glBindTexture(GL_TEXTURE_2D, c.depthGrabTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, W, H, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glGenFramebuffers(1, &c.depthGrabFbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, c.depthGrabFbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                               c.depthGrabTex, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        c.depthGrabW = W;
+        c.depthGrabH = H;
+        c.depthGrabPixels.assign((size_t) W * H * 4, 0);
+        VLOGI("2D→3D：抓帧缓冲 %dx%d 就绪", W, H);
+    }
+    ensureVideoLayerQuad(c);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, c.depthGrabFbo);
+    glViewport(0, 0, W, H);
+    glUseProgram(c.depthGrabProg);
+    if (c.depthGrabUvScaleLoc >= 0) {
+        glUniform2f(c.depthGrabUvScaleLoc, webCrop ? gWebUvW.load() : 1.f,
+                    webCrop ? gWebUvH.load() : 1.f);
+    }
+    if (c.depthGrabUvBiasLoc >= 0) {
+        glUniform2f(c.depthGrabUvBiasLoc, webCrop ? gWebUvX.load() : 0.f,
+                    webCrop ? gWebUvY.load() : 0.f);
+    }
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, tex);
+    glBindVertexArray(c.videoLayerVao);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindVertexArray(0);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, c.depthGrabPixels.data());
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    JNIEnv *env = depthJniEnv(c);
+    if (env == nullptr) return;
+    const jsize n = (jsize) c.depthGrabPixels.size();
+    jbyteArray arr = env->NewByteArray(n);
+    if (arr == nullptr) return;
+    env->SetByteArrayRegion(arr, 0, n, (const jbyte *) c.depthGrabPixels.data());
+    env->CallVoidMethod(gDepthSink, gDepthSubmit, arr, (jint) W, (jint) H);
+    env->DeleteLocalRef(arr);
+}
+
+/**
+ * 把 Kotlin 侧算好的深度图上传成纹理。没有真深度时保持假深度（管线仍可验证）。
+ */
+void uploadDepthIfFresh(VrContext &c) {
+    if (!gDepthFresh.load()) return;
+    std::vector<unsigned char> buf;
+    int w = 0;
+    int h = 0;
+    {
+        std::lock_guard<std::mutex> lk(gDepthMutex);
+        buf.swap(gDepthStage);
+        w = gDepthStageW.load();
+        h = gDepthStageH.load();
+        gDepthFresh.store(false);
+    }
+    if (w <= 0 || h <= 0 || buf.size() != (size_t) w * h) return;
+    if (c.depthTex == 0 || c.depthTexW != w || c.depthTexH != h) {
+        if (c.depthTex != 0) glDeleteTextures(1, &c.depthTex);
+        GLuint t = 0;
+        glGenTextures(1, &t);
+        glBindTexture(GL_TEXTURE_2D, t);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, w, h, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        c.depthTex = t;
+        c.depthTexW = w;
+        c.depthTexH = h;
+        VLOGI("2D→3D：深度图换成真模型输出 %dx%d", w, h);
+    }
+    glBindTexture(GL_TEXTURE_2D, c.depthTex);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RED, GL_UNSIGNED_BYTE, buf.data());
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
 void ensureDepthTexture(VrContext &c) {
     if (c.depthTex != 0) return;
     constexpr int W = 256;
@@ -5247,6 +5439,7 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
             if (c.dispLoc >= 0) glUniform1f(c.dispLoc, c.depthDisp);
             if (c.convLoc >= 0) glUniform1f(c.convLoc, c.depthConv);
             if (c.depthFadeLoc >= 0) glUniform1f(c.depthFadeLoc, c.depthFade);
+            if (c.depthInvertLoc >= 0) glUniform1i(c.depthInvertLoc, gDepthInvert.load());
         } else {
             glUniform1i(c.depthOnLoc, 0);
         }
@@ -5651,6 +5844,17 @@ void frameLoop(VrContext &c) {
                 c.depthFade = gStereoFade.load();
                 if (c.depthOn && c.videoLayerROk) {
                     ensureDepthTexture(c);
+                    /*
+                     * 真实深度：先把上一轮算好的上传，再按间隔抓这一帧。
+                     * 抓帧与推理分开跑，渲染线程只做读回（几毫秒），不等模型。
+                     */
+                    uploadDepthIfFresh(c);
+                    const long long nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch()).count();
+                    if (nowMs - c.depthLastGrabMs >= gDepthIntervalMs.load()) {
+                        c.depthLastGrabMs = nowMs;
+                        grabDepthFrame(c, screenSrc, webOnScreen);
+                    }
                     if (c.depthTex != 0 &&
                         buildQuadLayer(c, c.videoLayerR, vw, vh, "视频层(右眼)")) {
                         const bool okL = renderQuadLayer(c, c.videoLayer, screenSrc, true, false, 0);
@@ -6351,6 +6555,7 @@ void renderThreadMain() {
         c.dispLoc = glGetUniformLocation(c.program, "uDisp");
         c.convLoc = glGetUniformLocation(c.program, "uConvergence");
         c.depthFadeLoc = glGetUniformLocation(c.program, "uDepthEdgeFade");
+        c.depthInvertLoc = glGetUniformLocation(c.program, "uDepthInvert");
         c.circleLoc = glGetUniformLocation(c.program, "uCircle");
         c.expandLoc = glGetUniformLocation(c.program, "uExpandRange");
         c.brightLoc = glGetUniformLocation(c.program, "uBrightness");
@@ -6869,6 +7074,57 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetImageAdjust(JNIEnv *env, jobject /* 
  * key：1=超采样倍数 2=等交换链超时毫秒 3=层掩码（bit0 视频层 / bit1 弹幕层 / bit2 logo）
  * 参数由界面层从 vr-tuning.txt 读出后调用；见 VrTuning.kt。
  */
+/*
+ * 实时 2D→3D 的深度链路（2026-11-01）：
+ *   原生渲染线程 → 抓帧 → DepthEngine.submitFrame（Kotlin 后台推理）
+ *   → VrNative.pushDepth（回原生暂存）→ 渲染线程上传成纹理
+ * 推理放在 Kotlin 侧，原生不链 TensorFlow Lite 的库。
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetDepthSink(JNIEnv *env, jobject /* this */,
+                                                      jobject sink) {
+    if (gDepthSink != nullptr) {
+        env->DeleteGlobalRef(gDepthSink);
+        gDepthSink = nullptr;
+    }
+    gDepthSubmit = nullptr;
+    if (sink == nullptr) return;
+    gDepthSink = env->NewGlobalRef(sink);
+    jclass k = env->GetObjectClass(sink);
+    gDepthSubmit = env->GetMethodID(k, "submitFrame", "([BII)V");
+    env->DeleteLocalRef(k);
+    if (gDepthSubmit == nullptr) {
+        env->DeleteGlobalRef(gDepthSink);
+        gDepthSink = nullptr;
+        LOGE("深度链路：DepthEngine.submitFrame 找不到");
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetDepthInputSize(JNIEnv * /* env */,
+                                                           jobject /* this */, jint w, jint h) {
+    gDepthInputW.store(w > 0 ? w : 0);
+    gDepthInputH.store(h > 0 ? h : 0);
+    VLOGI("深度链路：模型输入 %dx%d", w, h);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativePushDepth(JNIEnv *env, jobject /* this */,
+                                                   jbyteArray data, jint w, jint h) {
+    if (data == nullptr || w <= 0 || h <= 0) return;
+    const jsize n = env->GetArrayLength(data);
+    if (n != (jsize) (w * h)) return;
+    std::vector<unsigned char> tmp((size_t) n);
+    env->GetByteArrayRegion(data, 0, n, (jbyte *) tmp.data());
+    {
+        std::lock_guard<std::mutex> lk(gDepthMutex);
+        gDepthStage.swap(tmp);
+        gDepthStageW.store(w);
+        gDepthStageH.store(h);
+    }
+    gDepthFresh.store(true);
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this */,
                                                    jint key, jfloat value) {
@@ -6899,6 +7155,11 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
                 gStereoFade.store(value);
                 VLOGI("调参 → 3D 边缘淡出 %.3f", (double) value);
             }
+            break;
+        /* 48 = 深度图方向（1 = 模型输出越大越近，用之前取反） */
+        case 48:
+            gDepthInvert.store(value >= 1.f ? 1 : 0);
+            VLOGI("调参 → 深度方向 %s", value >= 1.f ? "取反（越大越近）" : "原样（越大越远）");
             break;
         /* 排查日志开关（2026-10-30）：0 = 只留关键日志，1 = 输出全部排查日志 */
         case 43:

@@ -173,6 +173,12 @@ class MenuState {
     var kernelActive by mutableStateOf(false)
     var playMode by mutableStateOf(0)
     var danmakuOn by mutableStateOf(true)
+
+    /**
+     * 实时 2D→3D 开关（父亲 2026-11-01）。真正的值存在 vr-tuning.txt 的 stereo3d 里，
+     * 这里只是界面显示用的一份副本，切换时写回文件并立即下发。
+     */
+    var stereo3d by mutableStateOf(false)
     var danmakuScale by mutableStateOf(1f)
 
     /** 弹幕时间偏移（毫秒）：正 = 提前，负 = 推后（父亲 2026-10-09 要求） */
@@ -526,6 +532,18 @@ private fun MoreMenu(menu: MenuState, playing: Boolean) {
             selected = false,
             hasSub = true,
             onClick = { menu.onSelect?.invoke(MenuKind.MORE, 5) },
+        )
+        /*
+         * 3D 模式（父亲 2026-11-01）：点一下开/关实时 2D→3D。行号 = 7。
+         * 打开后视频层拆成左右眼两条，按深度图给左右眼不同的水平视差。
+         */
+        MenuRow(
+            label = "3D 模式",
+            value = if (menu.stereo3d) "开" else "关",
+            selected = menu.stereo3d,
+            hasSub = false,
+            enabled = playing,
+            onClick = { menu.onSelect?.invoke(MenuKind.MORE, 7) },
         )
     }
 }

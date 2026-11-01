@@ -35,6 +35,40 @@ object VrNative {
     /** 运行时可调参数（key 见 VrTuning.KEY_*） */
     private external fun nativeSetTuning(key: Int, value: Float)
 
+    /*
+     * 实时 2D→3D 的深度链路（2026-11-01）：原生抓帧 → [DepthEngine] 推理 → 回传。
+     * 这三个方法只给 DepthEngine 用，外面别直接调。
+     */
+    private external fun nativeSetDepthSink(sink: Any?)
+
+    private external fun nativeSetDepthInputSize(w: Int, h: Int)
+
+    private external fun nativePushDepth(data: ByteArray, w: Int, h: Int)
+
+    internal fun setDepthSink(sink: Any?) {
+        try {
+            if (loaded) nativeSetDepthSink(sink)
+        } catch (t: Throwable) {
+            Log.e(TAG, "挂深度回调失败：${t.message}")
+        }
+    }
+
+    internal fun setDepthInputSize(w: Int, h: Int) {
+        try {
+            if (loaded) nativeSetDepthInputSize(w, h)
+        } catch (t: Throwable) {
+            Log.e(TAG, "设置深度输入尺寸失败：${t.message}")
+        }
+    }
+
+    internal fun pushDepth(data: ByteArray, w: Int, h: Int) {
+        try {
+            if (loaded) nativePushDepth(data, w, h)
+        } catch (t: Throwable) {
+            Log.e(TAG, "回传深度失败：${t.message}")
+        }
+    }
+
     /**
      * 影厅资源路径（父亲 2026-10-10）：assets 里的影厅几何 / 环境光贴图先拷到应用目录，
      * 再把两个路径塞给原生。原生读不到 APK 里的 assets，只认文件路径。
@@ -165,6 +199,8 @@ object VrNative {
 
     /** 起 VR 会话（原生渲染线程）；失败返回 false，应用继续按 2D 面板模式跑 */
     fun startVr(activity: android.app.Activity): Boolean = try {
+        // 深度模型在后台线程加载，不挡 VR 会话起来；加载完自己通知原生输入尺寸
+        DepthEngine.attach(activity)
         val ok = if (loaded) nativeStartVr(activity) else false
         vrRunning = ok
         ok

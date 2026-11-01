@@ -223,6 +223,13 @@ dependencies {
     implementation(libs.nanohttpd)
 
     /*
+     * 实时 2D→3D 的深度推理（2026-11-01）：ZipDepth 的 .tflite 模型在 Kotlin 侧跑。
+     * 只引基础运行时，不引 support 库 —— 输入是原始像素缓冲，不需要它的图像处理封装。
+     * 模型文件在 assets/models/zipdepth_512x288_fp16.tflite（ZipDepth 官方 MIT 授权）。
+     */
+    implementation(libs.tensorflow.lite)
+
+    /*
      * 【2026-10-20 16:18 父亲要求：火狐内核整套拆掉】
      *
      * 原因：火狐内核切不动腾讯的清晰度（同账号同页面，谷歌内核能切），换内核后它就没有用了；

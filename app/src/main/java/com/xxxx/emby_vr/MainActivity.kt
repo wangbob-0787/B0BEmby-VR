@@ -4846,6 +4846,24 @@ class MainActivity : ComponentActivity() {
                     return
                 }
                 /*
+                 * 3D 模式（父亲 2026-11-01）：开关实时 2D→3D。
+                 * 写回 vr-tuning.txt 的 stereo3d —— 文件是唯一事实源，
+                 * 只调原生的话下一秒会被文件里的旧值覆盖回去。
+                 */
+                if (index == 7) {
+                    val on = !menuState.stereo3d
+                    menuState.stereo3d = on
+                    com.xxxx.emby_vr.vr.VrTuning.setValue(
+                        this, "stereo3d", if (on) "1" else "0",
+                    )
+                    com.xxxx.emby_vr.vr.VrNative.setTuning(
+                        com.xxxx.emby_vr.vr.VrTuning.KEY_STEREO3D, if (on) 1f else 0f,
+                    )
+                    Log.i(TAG, "3D 模式 → " + if (on) "开" else "关")
+                    refreshMenuRows(kind)
+                    return
+                }
+                /*
                  * 「影厅亮度」（父亲 2026-10-10）：跟上面四条一样是二级菜单 ——
                  * 点这一行才展开亮度条，条子本身由菜单指针路径拖动（见 onMenuPointer）。
                  */
@@ -7613,6 +7631,8 @@ class MainActivity : ComponentActivity() {
          * 文件一改就生效，不用重编重装。
          */
         com.xxxx.emby_vr.vr.VrTuning.applyStartup(this)
+        /* 菜单里「3D 模式」显示的开/关，以调参文件里的 stereo3d 为准 */
+        menuState.stereo3d = com.xxxx.emby_vr.vr.VrTuning.value(this, "stereo3d") == "1"
         com.xxxx.emby_vr.vr.VrTuning.start(
             this,
             scope,
