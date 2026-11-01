@@ -178,14 +178,24 @@ object VrTuning {
     var depthThreads: Int = 4
 
     /**
-     * 深度模型：0 = 256 int8dr（默认）1 = 512x288 fp16。
+     * 深度推理走哪条：1 = 显卡委托（默认，参考实现的路子）0 = CPU 四线程。
+     *
+     * 实测（2026-11-01）：CPU 上 256 int8 单次 110ms、512 fp16 单次 229ms；
+     * 参考实现的 25~60ms 不是 CPU 跑出来的。显卡委托建不起来会自动退回 CPU。
+     * 改文件后下一次开 3D（或重新起播）生效，不用重装。
+     */
+    @Volatile
+    var depthGpu: Int = 1
+
+    /**
+     * 深度模型：-1 = 自动（默认，GPU 配 512 fp16、CPU 配 256 int8）0 = 256 int8dr 1 = 512 fp16。
      *
      * 实测（2026-11-01，CPU 四线程）：256 int8 单次 110ms，512 fp16 单次 229ms。
      * fp16 那款在 CPU 上更慢（像素多 4.5 倍），参考实现的 25~60ms 是靠显卡跑的。
      * 改文件后要重新起播才生效（解释器只在开 3D 时建一次）。
      */
     @Volatile
-    var depthModel: Int = 0
+    var depthModel: Int = -1
 
     /**
      * 网页内核选择（2026-10-14 父亲定）：0 = 系统自带网页视图（Chromium 90，B站慢），
@@ -649,9 +659,21 @@ object VrTuning {
             videoSurfaceMaxW = it
             applied += "视频处理宽度上限 $it（0=1920）"
         }
+        raw["depth_gpu"]?.toIntOrNull()?.let {
+            depthGpu = if (it == 0) 0 else 1
+            applied += "深度推理 ${if (depthGpu == 1) "显卡" else "CPU"}"
+        }
         raw["depth_model"]?.toIntOrNull()?.let {
-            depthModel = if (it == 0) 0 else 1
-            applied += "深度模型 ${if (depthModel == 0) "256 int8" else "512 fp16"}（重新起播生效）"
+            depthModel = when (it) {
+                0 -> 0
+                1 -> 1
+                else -> -1
+            }
+            applied += "深度模型 " + when (depthModel) {
+                0 -> "256 int8"
+                1 -> "512 fp16"
+                else -> "自动"
+            }
         }
         raw["depth_threads"]?.toIntOrNull()?.let {
             depthThreads = it.coerceIn(1, 8)

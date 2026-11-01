@@ -225,12 +225,17 @@ dependencies {
 
     /*
      * 实时 2D→3D 的深度推理（2026-11-01）：ZipDepth 的 .tflite 模型在 Kotlin 侧跑。
-     * 只引基础运行时：推理固定在 CPU 四线程，GPU delegate 与画面渲染抢显卡，实测反而掉帧，
-     * 连 gpu / gpu-api 两个包一起不引（它们各带一份原生库，白占包体）。
+     *
+     * 三条运行时都引：CPU（基础运行时）、GPU 委托本体（tensorflow-lite-gpu）、
+     * GPU 委托的接口类（tensorflow-lite-gpu-api，缺了它运行时会 NoClassDefFoundError）。
+     * 走哪条由调参 depth_gpu 决定，随时可切；GPU 建不起来自动退回 CPU，不会黑屏。
+     *
      * 模型文件：assets/models/ 下两套（zipdepth_512x288_fp16 / zipdepth_256_int8dr，
-     * ZipDepth 官方 MIT 授权），运行时按调参 depth_model 选，默认 512 fp16。
+     * ZipDepth 官方 MIT 授权），按 depth_model 选，auto 时 GPU 配 fp16、CPU 配 int8。
      */
     implementation(libs.tensorflow.lite)
+    implementation(libs.tensorflow.lite.gpu)
+    implementation(libs.tensorflow.lite.gpu.api)
 
     /*
      * 【2026-10-20 16:18 父亲要求：火狐内核整套拆掉】

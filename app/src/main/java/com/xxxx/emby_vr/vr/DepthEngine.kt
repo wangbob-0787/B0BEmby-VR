@@ -5,6 +5,8 @@ import android.os.SystemClock
 import android.util.Log
 import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
+import org.tensorflow.lite.gpu.CompatibilityList
+import org.tensorflow.lite.gpu.GpuDelegate
 import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -37,9 +39,16 @@ object DepthEngine {
      * 1 = `zipdepth_512x288_fp16.tflite`（12MB，fp16）：参考实现（DepthRay）的默认款，
      * 它同一台头显上 25~60ms。
      */
-    private fun modelAsset(): String =
-        if (VrTuning.depthModel == 0) "models/zipdepth_256_int8dr.tflite"
-        else "models/zipdepth_512x288_fp16.tflite"
+    private fun modelAsset(): String {
+        val m = VrTuning.depthModel
+        val fp16 = when (m) {
+            0 -> false
+            1 -> true
+            else -> VrTuning.depthGpu == 1     // 自动：显卡配 fp16（显卡跑 fp16 才快），CPU 配 int8
+        }
+        return if (fp16) "models/zipdepth_512x288_fp16.tflite"
+        else "models/zipdepth_256_int8dr.tflite"
+    }
 
     /**
      * 换镜头检测的三个量（照 DepthRay 的 depth cut 口径）。
@@ -103,6 +112,10 @@ object DepthEngine {
     @Volatile private var lastOkMs = System.currentTimeMillis()
 
     private var interp: Interpreter? = null
+    /** 解释器是用哪套后端/模型/线程建起来的；调参一变就重建 */
+    private var initedSig = ""
+    /** 显卡委托对象：必须自己留着，解释器关闭后再关它 */
+    private var gpu: GpuDelegate? = null
     private var inW = 0
     private var inH = 0
     private var outW = 0
@@ -150,6 +163,8 @@ object DepthEngine {
     private fun shutdown() {
         runCatching { interp?.close() }
         interp = null
+        runCatching { gpu?.close() }
+        gpu = null
         ready = false
         prevDepth = null
         refInit = false
@@ -167,9 +182,24 @@ object DepthEngine {
         synchronized(this) {
             if (ready) return
             try {
-                val model = loadModel(context, modelAsset())
-                /* 只走 CPU：GPU 委托和画面渲染抢同一块显卡，父测开 GPU 反而掉帧 */
+                val asset = modelAsset()
+                val model = loadModel(context, asset)
                 val opts = Interpreter.Options().setNumThreads(VrTuning.depthThreads)
+                /*
+                 * 显卡委托：建不起来（老驱动、显存不足、机型不支持）就安静退回 CPU，
+                 * 不能让 3D 整条链路因为这一步挂掉。委托对象要留着，close 时一起关。
+                 */
+                var gpuDelegate: GpuDelegate? = null
+                if (VrTuning.depthGpu == 1) {
+                    gpuDelegate = runCatching {
+                        val compat = CompatibilityList()
+                        check(compat.isDelegateSupportedOnThisDevice) { "本机显卡委托不支持" }
+                        val gpuOpts = compat.bestOptionsForThisDevice
+                        GpuDelegate(gpuOpts).also { opts.addDelegate(it) }
+                    }.onFailure {
+                        Log.w(TAG, "深度推理：显卡委托建不起来，退回 CPU（${it.message}）")
+                    }.getOrNull()
+                }
                 val it = Interpreter(model, opts)
 
                 val ishape = it.getInputTensor(0).shape()   // [1,h,w,3]
@@ -192,8 +222,12 @@ object DepthEngine {
                     .order(ByteOrder.nativeOrder())
 
                 interp = it
+                gpu = gpuDelegate
                 ready = true
-                Log.i(TAG, "深度模型就绪：输入 ${inW}x${inH}，输出 ${outW}x${outH}，CPU ${VrTuning.depthThreads} 线程")
+                initedSig = "${VrTuning.depthGpu}|${VrTuning.depthModel}|${VrTuning.depthThreads}"
+                Log.i(TAG, "深度模型就绪：${asset.substringAfterLast('/')} 输入 ${inW}x${inH}，" +
+                    "输出 ${outW}x${outH}，" +
+                    (if (gpuDelegate != null) "显卡推理" else "CPU ${VrTuning.depthThreads} 线程"))
                 VrNative.setDepthInputSize(inW, inH)
             } catch (t: Throwable) {
                 Log.e(TAG, "深度模型加载失败：${t.message}")
@@ -207,7 +241,23 @@ object DepthEngine {
      * 上一帧还没算完就丢掉这一帧 —— 深度不需要每帧都新。
      */
     fun submitFrame(rgba: ByteArray, w: Int, h: Int, seq: Long) {
-        if (!ready || !active || w <= 0 || h <= 0) return
+        if (!active || w <= 0 || h <= 0) return
+        /*
+         * 调参换了推理后端（CPU/显卡）或模型：当场重建解释器，不用重装、不用重起播。
+         * 只在两帧之间做，推理进行中不打断。
+         */
+        val wantSig = "${VrTuning.depthGpu}|${VrTuning.depthModel}|${VrTuning.depthThreads}"
+        if (wantSig != initedSig) {
+            val ctx = appContext
+            if (ctx != null && !busy.get()) {
+                worker.execute {
+                    shutdown()
+                    init(ctx)
+                }
+                return
+            }
+        }
+        if (!ready) return
         /*
          * 看门狗：推理线程卡住（模型内部报错）时 busy 会一直是 true，之后就再也不推理，
          * 表现是立体感过一会儿就没了。超过三秒没结果就强行放开。
