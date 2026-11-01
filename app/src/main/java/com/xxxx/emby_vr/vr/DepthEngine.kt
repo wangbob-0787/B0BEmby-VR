@@ -56,6 +56,7 @@ object DepthEngine {
 
     private var prevDepth: ByteArray? = null
     private var inferCount = 0
+    @Volatile private var lastOkMs = System.currentTimeMillis()
 
     private var interp: Interpreter? = null
     private var nnapi: NnApiDelegate? = null
@@ -164,6 +165,15 @@ object DepthEngine {
      */
     fun submitFrame(rgba: ByteArray, w: Int, h: Int) {
         if (!ready || w <= 0 || h <= 0) return
+        /*
+         * 看门狗：推理线程卡住（模型内部报错、NNAPI 挂起）时 busy 会一直是 true，
+         * 之后就再也不推理，表现是立体感过一会儿就没了。超过三秒没结果就强行放开。
+         */
+        val nowMs = System.currentTimeMillis()
+        if (busy.get() && nowMs - lastOkMs > 3000) {
+            Log.w(TAG, "深度推理卡住超过 3 秒，强行恢复")
+            busy.set(false)
+        }
         if (!busy.compareAndSet(false, true)) return
         worker.execute {
             try {
@@ -260,6 +270,7 @@ object DepthEngine {
         if (inferCount % 20 == 1) {
             Log.i(TAG, "深度推理：${lastInferMs}ms 第 ${inferCount} 次 输入 ${w}x${h}")
         }
+        lastOkMs = System.currentTimeMillis()
         VrNative.pushDepth(out, outW, outH)
     }
 

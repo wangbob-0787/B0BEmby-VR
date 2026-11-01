@@ -6243,7 +6243,7 @@ void frameLoop(VrContext &c) {
                               c.offsetsTex != 0 ? 1 : 0, c.depthUpTex != 0 ? 1 : 0, dAge, c.depthDisp);
                     }
                 }
-                c.depthFresh = dAge < 500;
+                c.depthFresh = dAge < 1200;
                 /*
                  * 视差按"屏幕有多大、离多远"自动换算，不写死。
                  *
