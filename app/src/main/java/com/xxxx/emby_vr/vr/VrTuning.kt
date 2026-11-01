@@ -361,6 +361,10 @@ object VrTuning {
      * 1 = 逐帧算，最跟手但和解码渲染抢 CPU；4~6 = 省 CPU，深度更旧、边缘更容易错位。
      */
     const val KEY_DEPTH_EVERY = 60
+    /** 局部液化拉伸权重（0 = 关，退回纯偏移；默认 0.65，照参考实现 tachi） */
+    const val KEY_STEREO_STRETCH = 61
+    /** 局部液化羽化半径，单位是每眼 1920 源宽的像素（默认 96） */
+    const val KEY_STEREO_FEATHER = 62
     /**
      * 抓帧的毫秒下限（0 = 纯按帧数，默认）。
      *
@@ -678,6 +682,18 @@ object VrTuning {
         raw["depth_threads"]?.toIntOrNull()?.let {
             depthThreads = it.coerceIn(1, 8)
             applied += "深度推理线程 $depthThreads（重新起播生效）"
+        }
+        raw["stereo_stretch"]?.toFloatOrNull()?.let {
+            if (it >= 0f && it <= 1f) {
+                VrNative.setTuning(KEY_STEREO_STRETCH, it)
+                applied += "局部液化拉伸 %.2f".format(it)
+            }
+        }
+        raw["stereo_feather"]?.toFloatOrNull()?.let {
+            if (it >= 0f && it <= 300f) {
+                VrNative.setTuning(KEY_STEREO_FEATHER, it)
+                applied += "局部液化羽化 %.0f px".format(it)
+            }
         }
         raw["depth_every"]?.toFloatOrNull()?.let {
             VrNative.setTuning(KEY_DEPTH_EVERY, it)

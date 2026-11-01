@@ -2218,6 +2218,8 @@ struct VrContext {
     GLint offsetsDepthLoc = -1;
     GLint offsetsDispLoc = -1;
     GLint offsetsConvLoc = -1;
+    GLint offsetsFeatherLoc = -1;   // 局部液化：羽化半径（深度图像素）
+    GLint offsetsStretchLoc = -1;   // 局部液化：背景修正权重
     GLint offsetsSamplerLoc = -1;
     RenderTarget offsets;
     /*
@@ -2259,6 +2261,8 @@ struct VrContext {
     int ringArtifactsUpMode = -1;
     float ringArtifactsSharp = -1.f;
     float ringArtifactsSigma = -1.f;
+    float ringArtifactsStretch = -1.f;   // 局部液化参数：改了要重算偏移表
+    float ringArtifactsFeather = -1.f;
     /* 延迟自适应：深度迟到量的 90 分位数，每秒重算一次 */
     float ringDelayMs = 0.f;
     std::vector<float> ringLateMs;
@@ -2629,6 +2633,14 @@ std::atomic<float> gStereoFade{0.04f};
  * 遮挡表 + 补洞都开、深度三次插值读。把任一项拨到对照档，就是排查"哪一步出了问题"的 A/B。
  */
 std::atomic<int> gStereoUpMode{1};         // 0 = 双线性放大，1 = 引导，2 = 双边
+/*
+ * 局部液化（照 tachi 的 SBS 实现，2026-11-02）：
+ * 出现空洞时不是硬拉整幅画面，而是把附近背景按羽化范围稍微拉过去填。
+ *  - 拉伸权重 0 = 关（退回纯偏移），越大背景被拉得越多；
+ *  - 羽化 96 px（按每眼 1920 源宽折算）是参考实现的默认值。
+ */
+std::atomic<float> gStereoStretch{0.65f};
+std::atomic<float> gStereoFeather{96.f};
 std::atomic<float> gStereoSharp{1.0f};     // 分层锐化强度 0..1
 std::atomic<float> gStereoEdgeSigma{0.1f}; // 引导回归正则项 σe
 std::atomic<int> gStereoFill{1};
@@ -5847,6 +5859,8 @@ precision highp float;
 uniform sampler2D uDepth;
 uniform float uDispTexels;
 uniform float uConvergence;
+uniform float uFeather;     // 羽化半径，单位是深度图的像素
+uniform float uStretch;     // 背景修正权重 0..1，0 = 关（纯偏移）
 out vec4 fragColor;
 void main() {
     ivec2 sz = textureSize(uDepth, 0);
@@ -5879,6 +5893,32 @@ void main() {
         }
         result[eye] = bestOff;
         holes[eye] = bestD < 0.0 ? 1.0 : 0.0;
+        /*
+         * 局部液化：这一只眼在这一行出现空洞时，继续往两侧多找一段羽化范围，
+         * 把"能覆盖本像素的背景样本"按距离衰减加权，混进偏移里。
+         * 这样洞是被附近的背景稍微拉过去补上的，而不是整幅画面一起被拉长。
+         */
+        if (uStretch > 0.001 && uFeather >= 1.0 && holes[eye] > 0.5) {
+            int fr = int(min(uFeather, 64.0));
+            float wsum = 0.0;
+            float osum = 0.0;
+            for (int s = -1; s <= 1; s += 2) {
+                for (int t = reach + 1; t <= reach + fr; t++) {
+                    int xx = clamp(x + s * t, 0, sz.x - 1);
+                    float cd = texelFetch(uDepth, ivec2(xx, y), 0).a;
+                    float ce = float(s * t) + disp * (cd - uConvergence);
+                    /* 只认投影后能盖住本像素（跨过 0）的样本 */
+                    if (abs(ce) > 1.5) continue;
+                    float w = 1.0 - float(t - reach) / float(fr + 1);
+                    wsum += w;
+                    osum += w * float(s * t);
+                }
+            }
+            if (wsum > 0.0) {
+                bestOff = mix(bestOff, osum / wsum, uStretch);
+                holes[eye] = 0.0;
+            }
+        }
     }
     fragColor = vec4(result / (2.0 * float(reach)) + 0.5, holes);
 }
@@ -5891,6 +5931,8 @@ void main() {
         c.offsetsSamplerLoc = glGetUniformLocation(c.offsetsProg, "uDepth");
         c.offsetsDispLoc = glGetUniformLocation(c.offsetsProg, "uDispTexels");
         c.offsetsConvLoc = glGetUniformLocation(c.offsetsProg, "uConvergence");
+        c.offsetsFeatherLoc = glGetUniformLocation(c.offsetsProg, "uFeather");
+        c.offsetsStretchLoc = glGetUniformLocation(c.offsetsProg, "uStretch");
         glUseProgram(c.offsetsProg);
         if (c.offsetsSamplerLoc >= 0) glUniform1i(c.offsetsSamplerLoc, 2);
     }
@@ -5914,6 +5956,11 @@ void main() {
     glActiveTexture(GL_TEXTURE0);
     if (c.offsetsDispLoc >= 0) glUniform1f(c.offsetsDispLoc, c.depthDisp * (float) w);
     if (c.offsetsConvLoc >= 0) glUniform1f(c.offsetsConvLoc, c.depthConv);
+    /* 羽化按每眼 1920 源宽折算成深度图像素，和参考实现同一个口径 */
+    if (c.offsetsFeatherLoc >= 0) {
+        glUniform1f(c.offsetsFeatherLoc, gStereoFeather.load() * (float) w / 1920.f);
+    }
+    if (c.offsetsStretchLoc >= 0) glUniform1f(c.offsetsStretchLoc, gStereoStretch.load());
     ensureVideoLayerQuad(c);
     glBindVertexArray(c.videoLayerVao);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
@@ -6549,7 +6596,9 @@ void buildRingArtifacts(VrContext &c, RingSlot &s, int upW, int upH) {
     /* 上采样参数一改也要重算：否则要等到下一次换片才看到效果，调参等于没生效 */
     const bool sameUp = c.ringArtifactsUpMode == gStereoUpMode.load() &&
                         fabsf(c.ringArtifactsSharp - gStereoSharp.load()) < 1e-4f &&
-                        fabsf(c.ringArtifactsSigma - gStereoEdgeSigma.load()) < 1e-5f;
+                        fabsf(c.ringArtifactsSigma - gStereoEdgeSigma.load()) < 1e-5f &&
+                        fabsf(c.ringArtifactsStretch - gStereoStretch.load()) < 1e-4f &&
+                        fabsf(c.ringArtifactsFeather - gStereoFeather.load()) < 1e-3f;
     if (sameSeq && sameDisp && sameUp) return;
     renderOffsets(c, s.depth.tex, s.depth.w, s.depth.h, c.ringOffsets);
     renderDepthUpsample(c, s.depth.tex, 0, s.color.tex, false, upW, upH, c.ringUp);
@@ -6560,6 +6609,8 @@ void buildRingArtifacts(VrContext &c, RingSlot &s, int upW, int upH) {
     c.ringArtifactsUpMode = gStereoUpMode.load();
     c.ringArtifactsSharp = gStereoSharp.load();
     c.ringArtifactsSigma = gStereoEdgeSigma.load();
+    c.ringArtifactsStretch = gStereoStretch.load();
+    c.ringArtifactsFeather = gStereoFeather.load();
 }
 
 bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
@@ -8705,6 +8756,19 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             if (value >= 1.f && value <= 6.f) {
                 gDepthEveryN.store((int) value);
                 VLOGI("调参 → 深度节奏 每 %d 帧一次", (int) value);
+            }
+            break;
+        /* 局部液化（2026-11-02 照 tachi 的 SBS 实现）：出现空洞时把附近背景稍微拉过来 */
+        case 61:
+            if (value >= 0.f && value <= 1.f) {
+                gStereoStretch.store(value);
+                VLOGI("调参 → 局部液化拉伸 %.2f（0 = 关，退回纯偏移）", (double) value);
+            }
+            break;
+        case 62:
+            if (value >= 0.f && value <= 300.f) {
+                gStereoFeather.store(value);
+                VLOGI("调参 → 局部液化羽化 %.0f px（按每眼 1920 源宽折算）", (double) value);
             }
             break;
         /*
