@@ -4851,15 +4851,36 @@ class MainActivity : ComponentActivity() {
                  * 只调原生的话下一秒会被文件里的旧值覆盖回去。
                  */
                 if (index == 7) {
-                    val on = !menuState.stereo3d
-                    menuState.stereo3d = on
-                    com.xxxx.emby_vr.vr.VrTuning.setValue(
-                        this, "stereo3d", if (on) "1" else "0",
+                    /*
+                     * 三态循环：关 → 标准 → 舒适 → 关（父亲 2026-11-01：DepthRay 有两档）。
+                     * 标准视差足、立体感强；舒适收到约六成并把边缘淡出加宽，久看不累。
+                     */
+                    val next = (menuState.stereoMode + 1) % 3
+                    menuState.stereoMode = next
+                    val disp = when (next) {
+                        1 -> 0.012f
+                        2 -> 0.007f
+                        else -> 0.012f
+                    }
+                    val fade = if (next == 2) 0.06f else 0.04f
+                    com.xxxx.emby_vr.vr.VrTuning.setValue(this, "stereo_mode", next.toString())
+                    com.xxxx.emby_vr.vr.VrTuning.setValue(this, "stereo3d", if (next == 0) "0" else "1")
+                    com.xxxx.emby_vr.vr.VrTuning.setValue(this, "stereo_disp", disp.toString())
+                    com.xxxx.emby_vr.vr.VrTuning.setValue(this, "stereo_fade", fade.toString())
+                    com.xxxx.emby_vr.vr.VrNative.setTuning(
+                        com.xxxx.emby_vr.vr.VrTuning.KEY_STEREO_DISP, disp,
                     )
                     com.xxxx.emby_vr.vr.VrNative.setTuning(
-                        com.xxxx.emby_vr.vr.VrTuning.KEY_STEREO3D, if (on) 1f else 0f,
+                        com.xxxx.emby_vr.vr.VrTuning.KEY_STEREO_FADE, fade,
                     )
-                    Log.i(TAG, "3D 模式 → " + if (on) "开" else "关")
+                    com.xxxx.emby_vr.vr.VrNative.setTuning(
+                        com.xxxx.emby_vr.vr.VrTuning.KEY_STEREO3D, if (next == 0) 0f else 1f,
+                    )
+                    Log.i(TAG, "3D 模式 → " + when (next) {
+                        1 -> "标准（视差 ${disp}）"
+                        2 -> "舒适（视差 ${disp}）"
+                        else -> "关"
+                    })
                     refreshMenuRows(kind)
                     return
                 }
@@ -7631,8 +7652,9 @@ class MainActivity : ComponentActivity() {
          * 文件一改就生效，不用重编重装。
          */
         com.xxxx.emby_vr.vr.VrTuning.applyStartup(this)
-        /* 菜单里「3D 模式」显示的开/关，以调参文件里的 stereo3d 为准 */
-        menuState.stereo3d = com.xxxx.emby_vr.vr.VrTuning.value(this, "stereo3d") == "1"
+        /* 菜单里「3D 模式」显示的档位，以调参文件为准（老配置只有 stereo3d 时按标准算） */
+        menuState.stereoMode = com.xxxx.emby_vr.vr.VrTuning.value(this, "stereo_mode")?.toIntOrNull()
+            ?: if (com.xxxx.emby_vr.vr.VrTuning.value(this, "stereo3d") == "1") 1 else 0
         com.xxxx.emby_vr.vr.VrTuning.start(
             this,
             scope,

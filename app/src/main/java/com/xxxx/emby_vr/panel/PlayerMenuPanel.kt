@@ -175,10 +175,11 @@ class MenuState {
     var danmakuOn by mutableStateOf(true)
 
     /**
-     * 实时 2D→3D 开关（父亲 2026-11-01）。真正的值存在 vr-tuning.txt 的 stereo3d 里，
-     * 这里只是界面显示用的一份副本，切换时写回文件并立即下发。
+     * 实时 2D→3D 档位（父亲 2026-11-01）：0 = 关 · 1 = 标准 · 2 = 舒适。
+     * 标准给足视差、立体感强；舒适把视差收到约六成、边缘淡出加宽，久看不容易累。
+     * 真正的值存在 vr-tuning.txt 里，这里只是界面显示用的副本。
      */
-    var stereo3d by mutableStateOf(false)
+    var stereoMode by mutableStateOf(0)
     var danmakuScale by mutableStateOf(1f)
 
     /** 弹幕时间偏移（毫秒）：正 = 提前，负 = 推后（父亲 2026-10-09 要求） */
@@ -539,8 +540,12 @@ private fun MoreMenu(menu: MenuState, playing: Boolean) {
          */
         MenuRow(
             label = "3D 模式",
-            value = if (menu.stereo3d) "开" else "关",
-            selected = menu.stereo3d,
+            value = when (menu.stereoMode) {
+                1 -> "标准"
+                2 -> "舒适"
+                else -> "关"
+            },
+            selected = menu.stereoMode != 0,
             hasSub = false,
             enabled = playing,
             onClick = { menu.onSelect?.invoke(MenuKind.MORE, 7) },

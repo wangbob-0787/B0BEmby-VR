@@ -42,6 +42,18 @@ object DepthEngine {
     @Volatile
     var invert = false
 
+    /**
+     * 时间平滑系数：新深度只占这么多，其余沿用上一帧（0 = 完全不动，1 = 不平滑）。
+     *
+     * 为什么要它（2026-11-01）：单帧深度本身够用，但逐帧会轻微跳，
+     * 跳在立体画面里就是"物体在抖"，看久了累。平滑几乎不花算力，观感提升比换模型大。
+     * 取 0.35 是折中：跟得上镜头移动，又压得住抖动。
+     */
+    @Volatile
+    var smooth = 0.35f
+
+    private var prevDepth: ByteArray? = null
+
     private var interp: Interpreter? = null
     private var nnapi: NnApiDelegate? = null
     private var inW = 0
@@ -186,11 +198,19 @@ object DepthEngine {
         }
         val range = (mx - mn).let { if (it > 1e-5f) it else 1f }
         val out = ByteArray(n)
+        val prev = prevDepth
+        val a = smooth.coerceIn(0f, 1f)
         for (i in 0 until n) {
             var v = (vals[i] - mn) / range
             if (invert) v = 1f - v
-            out[i] = ((v.coerceIn(0f, 1f)) * 255f).toInt().toByte()
+            var b = v.coerceIn(0f, 1f) * 255f
+            /* 尺寸变了（换片源 / 模型换了）就直接用新值，别拿旧图去插值 */
+            if (prev != null && prev.size == n && a < 1f) {
+                b = prev[i].toInt().and(0xFF) * (1f - a) + b * a
+            }
+            out[i] = b.toInt().coerceIn(0, 255).toByte()
         }
+        prevDepth = out
         VrNative.pushDepth(out, outW, outH)
     }
 
