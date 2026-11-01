@@ -178,6 +178,13 @@ object VrTuning {
     var depthThreads: Int = 4
 
     /**
+     * 深度模型：1 = 512x288 fp16（参考实现的默认款，默认用这个）0 = 256 int8dr。
+     * 改文件后要重新起播才生效（解释器只在开 3D 时建一次）。
+     */
+    @Volatile
+    var depthModel: Int = 1
+
+    /**
      * 网页内核选择（2026-10-14 父亲定）：0 = 系统自带网页视图（Chromium 90，B站慢），
      * 1 = 打进应用里的火狐内核（GeckoView 158）。
      *
@@ -638,6 +645,10 @@ object VrTuning {
         raw["video_surface_w"]?.toIntOrNull()?.let {
             videoSurfaceMaxW = it
             applied += "视频处理宽度上限 $it（0=1920）"
+        }
+        raw["depth_model"]?.toIntOrNull()?.let {
+            depthModel = if (it == 0) 0 else 1
+            applied += "深度模型 ${if (depthModel == 0) "256 int8" else "512 fp16"}（重新起播生效）"
         }
         raw["depth_threads"]?.toIntOrNull()?.let {
             depthThreads = it.coerceIn(1, 8)

@@ -44,7 +44,8 @@ android {
      * 拷贝时也不用现解压（8.5 MB 几何本来就不该再压）。
      */
     androidResources {
-        noCompress += listOf("b0bcin", "b0benv")
+        /* .tflite 必须不压缩：openFd 只能映射未压缩的 assets，压缩后会抛 FileNotFoundException */
+        noCompress += listOf("b0bcin", "b0benv", "tflite")
     }
 
     buildFeatures {
@@ -226,7 +227,8 @@ dependencies {
      * 实时 2D→3D 的深度推理（2026-11-01）：ZipDepth 的 .tflite 模型在 Kotlin 侧跑。
      * 只引基础运行时：推理固定在 CPU 四线程，GPU delegate 与画面渲染抢显卡，实测反而掉帧，
      * 连 gpu / gpu-api 两个包一起不引（它们各带一份原生库，白占包体）。
-     * 模型文件是 assets/models/zipdepth_256_int8dr.tflite（ZipDepth 官方 MIT 授权）。
+     * 模型文件：assets/models/ 下两套（zipdepth_512x288_fp16 / zipdepth_256_int8dr，
+     * ZipDepth 官方 MIT 授权），运行时按调参 depth_model 选，默认 512 fp16。
      */
     implementation(libs.tensorflow.lite)
 

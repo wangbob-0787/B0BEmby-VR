@@ -29,7 +29,17 @@ import java.util.concurrent.atomic.AtomicBoolean
 object DepthEngine {
 
     private const val TAG = "B0BEmbyVR"
-    private const val MODEL = "models/zipdepth_256_int8dr.tflite"
+    /**
+     * 两套模型，运行时按 depth_model 选（默认 1 = 参考实现的默认款）。
+     *
+     * 0 = `zipdepth_256_int8dr.tflite`（6MB，动态范围量化）：体积小，但动态范围量化的
+     * 卷积走的是参考实现、吃不到 XNNPACK 的加速内核，实测单次推理 110ms 上下。
+     * 1 = `zipdepth_512x288_fp16.tflite`（12MB，fp16）：参考实现（DepthRay）的默认款，
+     * 它同一台头显上 25~60ms。
+     */
+    private fun modelAsset(): String =
+        if (VrTuning.depthModel == 0) "models/zipdepth_256_int8dr.tflite"
+        else "models/zipdepth_512x288_fp16.tflite"
 
     /**
      * 换镜头检测的三个量（照 DepthRay 的 depth cut 口径）。
@@ -157,7 +167,7 @@ object DepthEngine {
         synchronized(this) {
             if (ready) return
             try {
-                val model = loadModel(context)
+                val model = loadModel(context, modelAsset())
                 /* 只走 CPU：GPU 委托和画面渲染抢同一块显卡，父测开 GPU 反而掉帧 */
                 val opts = Interpreter.Options().setNumThreads(VrTuning.depthThreads)
                 val it = Interpreter(model, opts)
@@ -386,8 +396,8 @@ object DepthEngine {
         )
     }
 
-    private fun loadModel(context: Context): MappedByteBuffer {
-        context.assets.openFd(MODEL).use { fd ->
+    private fun loadModel(context: Context, asset: String): MappedByteBuffer {
+        context.assets.openFd(asset).use { fd ->
             FileInputStream(fd.fileDescriptor).use { fis ->
                 return fis.channel.map(
                     FileChannel.MapMode.READ_ONLY,
