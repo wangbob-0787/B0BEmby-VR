@@ -321,8 +321,10 @@ object DepthEngine {
         inferCount++
         if (inferCount % 20 == 1) {
             Log.i(TAG, "深度推理：${lastInferMs}ms 第 ${inferCount} 次 输入 ${w}x${h}")
-            Log.i(TAG, "深度切镜：diff %.3f hist %.3f corr %.2f 换镜头 ${shotCount} 次 平滑 ${smooth}",
-                lastDiff, lastHist, lastCorr)
+            Log.i(TAG, "深度切镜：diff " + "%.3f".format(lastDiff) +
+                    " hist " + "%.3f".format(lastHist) +
+                    " corr " + "%.2f".format(lastCorr) +
+                    " 换镜头 ${shotCount} 次 平滑 ${smooth}")
         }
         lastOkMs = System.currentTimeMillis()
         /* 帧号原样带回原生：环形缓冲靠它把深度还给"本来就是它"的那一帧 */
