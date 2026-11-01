@@ -4860,9 +4860,9 @@ class MainActivity : ComponentActivity() {
                     val next = (menuState.stereoMode + 1) % 3
                     menuState.stereoMode = next
                     val disp = when (next) {
-                        1 -> 0.006f
-                        2 -> 0.004f
-                        else -> 0.006f
+                        1 -> 0.014f
+                        2 -> 0.009f
+                        else -> 0.014f
                     }
                     val fade = if (next == 2) 0.06f else 0.04f
                     com.xxxx.emby_vr.vr.VrTuning.setValue(this, "stereo_mode", next.toString())

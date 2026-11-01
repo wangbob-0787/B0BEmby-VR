@@ -2141,7 +2141,7 @@ struct VrContext {
     RenderTarget depth;            // 实时路径的深度图（RGBA8：RGB 低分画面 + A 深度）
     bool depthOn = false;          // 2D→3D 生效中（决定抓不抓帧）
     bool depthFresh = true;        // 手上的深度够不够新（决定能不能拿它变形）
-    float depthDisp = 0.006f;      // 视差强度（UV 单位，按整幅宽度，标准档）
+    float depthDisp = 0.014f;      // 视差强度（UV 单位，按整幅宽度，标准档）
     float depthConv = 0.5f;        // 零视差平面
     float depthFade = 0.04f;       // 左右边缘淡出宽度
     /** 主着色器的两套程序与位置：原版给所有图层，B0B_RING 版只给视频层 */
@@ -2531,8 +2531,8 @@ std::atomic<int> gStereo3d{0};
  * 强度按千分位整数写，6 = 0.006；舒适档按同一比例取 4。与银幕尺寸、距离、座位无关 ——
  * 这组数一变，观感就会"强度时有时无"。
  */
-constexpr float kStereoDispStandard = 6.f / 1000.f;    // 标准档 6‰
-constexpr float kStereoDispComfort = 4.f / 1000.f;     // 舒适档 4‰
+constexpr float kStereoDispStandard = 14.f / 1000.f;   // 标准档 14‰（6 那档肉眼看不出立体）
+constexpr float kStereoDispComfort = 9.f / 1000.f;     // 舒适档 9‰
 /*
  * 每眼 DIBR 输出的宽度上限（DepthRay 日志：video eye 2560x1440 capped from 3840x2160）。
  * 这是**每只眼**的宽度：双眼是两次独立的 2560 宽绘制，不是两只眼合计 2560。
