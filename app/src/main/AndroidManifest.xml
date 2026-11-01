@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -12,6 +13,16 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- 应用内更新：下载完要交给系统安装器，没有这条权限 startActivity 会被拒 -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <!--
+      去掉依赖库带进来的敏感权限（相机 / 麦克风 / 电话）。
+      本应用不用它们，但 PICO 的权限管理会给含这些权限组的第三方包弹
+      「本地缓存中没有权限信息」，联网取不到记录就把应用杀掉。
+    -->
+    <uses-permission android:name="android.permission.CAMERA" tools:node="remove" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" tools:node="remove" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" tools:node="remove" />
+    <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" tools:node="remove" />
 
     <!--
       VR 头显能力声明。
