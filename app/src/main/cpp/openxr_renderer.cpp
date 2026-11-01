@@ -6834,7 +6834,12 @@ void frameLoop(VrContext &c) {
                 c.depthConv = gStereoConv.load();
                 c.depthFade = gStereoFade.load();
 
-                const int upW0 = (vw > 1280) ? 1280 : vw;
+                /*
+                 * 深度上采样宽度：这一趟每个深度更新都要跑一次，是全屏 pass。
+                 * 深度本身是 512x288 的低分图，上采样到 960 宽已足够撑住边缘，
+                 * 再高只是白烧 GPU（父测：1280 时双眼峰值 47ms，帧率 44）。
+                 */
+                const int upW0 = (vw > 960) ? 960 : vw;
                 const int upH0 = (vw > 1280) ? (int) ((float) vh * 1280.f / (float) vw) : vh;
 
                 /*
