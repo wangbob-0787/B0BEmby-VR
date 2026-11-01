@@ -178,11 +178,14 @@ object VrTuning {
     var depthThreads: Int = 4
 
     /**
-     * 深度模型：1 = 512x288 fp16（参考实现的默认款，默认用这个）0 = 256 int8dr。
+     * 深度模型：0 = 256 int8dr（默认）1 = 512x288 fp16。
+     *
+     * 实测（2026-11-01，CPU 四线程）：256 int8 单次 110ms，512 fp16 单次 229ms。
+     * fp16 那款在 CPU 上更慢（像素多 4.5 倍），参考实现的 25~60ms 是靠显卡跑的。
      * 改文件后要重新起播才生效（解释器只在开 3D 时建一次）。
      */
     @Volatile
-    var depthModel: Int = 1
+    var depthModel: Int = 0
 
     /**
      * 网页内核选择（2026-10-14 父亲定）：0 = 系统自带网页视图（Chromium 90，B站慢），
