@@ -55,6 +55,7 @@ object DepthEngine {
     var smooth = 0.8f
 
     private var prevDepth: ByteArray? = null
+    private var inferCount = 0
 
     private var interp: Interpreter? = null
     private var nnapi: NnApiDelegate? = null
@@ -255,6 +256,10 @@ object DepthEngine {
             out[i] = b.toInt().coerceIn(0, 255).toByte()
         }
         prevDepth = out
+        inferCount++
+        if (inferCount % 20 == 1) {
+            Log.i(TAG, "深度推理：${lastInferMs}ms 第 ${inferCount} 次 输入 ${w}x${h}")
+        }
         VrNative.pushDepth(out, outW, outH)
     }
 
