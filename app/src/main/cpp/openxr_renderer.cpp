@@ -728,9 +728,13 @@ GLuint buildProgramFrom(const char *vsSrc, const char *fsSrc) {
  */
 GLuint buildRingProgram() {
     std::string src = kQuadFs;
-    const std::string ver = "#version 300 es\n";
+    const std::string ver = "#version 300 es";
     const size_t at = src.find(ver);
-    if (at == std::string::npos) return 0;
+    if (at == std::string::npos) {
+        LOGE("环形缓冲：着色器源码里找不到版本行，环程序不建");
+        return 0;
+    }
+    const size_t verEnd = src.find('\n', at);
     /*
      * #define 插在 #extension 之后，不插在紧跟 #version 的位置。
      *
@@ -738,7 +742,7 @@ GLuint buildRingProgram() {
      * "#extension 必须紧跟 #version"当成硬要求，插在前面会让整份着色器编译失败 ——
      * 后果是环程序建不起来、环永远不启用。
      */
-    size_t ins = at + ver.size();
+    size_t ins = (verEnd == std::string::npos) ? src.size() : verEnd + 1;
     while (src.compare(ins, 10, "#extension") == 0) {
         const size_t eol = src.find('\n', ins);
         if (eol == std::string::npos) break;
@@ -756,7 +760,9 @@ GLuint buildRingProgram() {
     const std::string ext = "#extension GL_OES_EGL_image_external_essl3 : require\n";
     const size_t eat = src.find(ext);
     if (eat != std::string::npos) src.erase(eat, ext.size());
-    return buildProgramFrom(kQuadVs, src.c_str());
+    const GLuint p = buildProgramFrom(kQuadVs, src.c_str());
+    LOGI_RAW("环形缓冲：环版着色器建立结果 %u（源码 %zu 字节）", p, src.size());
+    return p;
 }
 
 /**
