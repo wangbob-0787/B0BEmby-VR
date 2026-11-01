@@ -47,25 +47,12 @@ object VrNative {
 
     private external fun nativeNotifySeek()
 
-    private external fun nativePinCurrentThreadToFastCores(): Int
-
     internal fun setDepthSink(sink: Any?) {
         try {
             if (loaded) nativeSetDepthSink(sink)
         } catch (t: Throwable) {
             Log.e(TAG, "挂深度回调失败：${t.message}")
         }
-    }
-
-    /**
-     * 把当前线程钉到高频核（TFLite 的线程池会继承这个亲和掩码）。
-     * 返回钉住的核心数，0 = 没动。
-     */
-    internal fun pinCurrentThreadToFastCores(): Int = try {
-        if (loaded) nativePinCurrentThreadToFastCores() else 0
-    } catch (t: Throwable) {
-        Log.w(TAG, "钉核失败：${t.message}")
-        0
     }
 
     internal fun setDepthInputSize(w: Int, h: Int) {
