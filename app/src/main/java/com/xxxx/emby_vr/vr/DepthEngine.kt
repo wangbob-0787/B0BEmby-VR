@@ -49,10 +49,10 @@ object DepthEngine {
      *
      * 为什么要它（2026-11-01）：单帧深度本身够用，但逐帧会轻微跳，
      * 跳在立体画面里就是"物体在抖"，看久了累。平滑几乎不花算力，观感提升比换模型大。
-     * 取 0.65 是折中：跟得上镜头移动，又压得住抖动。
+     * 取 0.8 是折中：跟得上镜头移动，又压得住抖动。
      */
     @Volatile
-    var smooth = 0.65f
+    var smooth = 0.8f
 
     private var prevDepth: ByteArray? = null
 
@@ -223,8 +223,27 @@ object DepthEngine {
         }
         val range = (mx - mn).let { if (it > 1e-5f) it else 1f }
         val out = ByteArray(n)
-        val prev = prevDepth
+        var prev = prevDepth
         val a = smooth.coerceIn(0f, 1f)
+        /*
+         * 换镜头检测：切镜、换集、跳转时深度会突变，这时绝不能拿上一张去混合，
+         * 否则新画面前半秒还在用旧场景的深度 —— 看到的就是"物体缓慢滑到正确位置"。
+         * 抽样比对即可，几百个点足够判出来。
+         */
+        if (prev != null && prev.size == n && a < 1f) {
+            var acc = 0L
+            var cnt = 0
+            var i = 0
+            while (i < n) {
+                var x = (vals[i] - mn) / range
+                if (invert) x = 1f - x
+                acc += kotlin.math.abs(prev[i].toInt().and(0xFF) -
+                        (x.coerceIn(0f, 1f) * 255f).toInt())
+                cnt++
+                i += 64
+            }
+            if (cnt > 0 && acc / cnt > 40) prev = null
+        }
         for (i in 0 until n) {
             var v = (vals[i] - mn) / range
             if (invert) v = 1f - v
