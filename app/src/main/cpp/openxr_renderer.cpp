@@ -2601,12 +2601,18 @@ constexpr int kStereo3dEyeW = 2560;
  * 隔三帧深度变化肉眼几乎看不出，省下的 CPU 全给渲染。
  */
 /*
- * 深度每几帧算一次：3。
+ * 深度每几帧算一次，运行时可调（调参 key 60，参数名 depth_every，范围 1~6，默认 3）。
  *
  * 2 帧一次实测更差（单次推理 110→136ms，配对率 18%→14%）：推理负担翻倍后
- * 与解码渲染抢 CPU，深度反而更晚到站。中间两帧沿用最近一次深度即可。
+ * 与解码渲染抢 CPU，深度反而更晚到站。默认 3 是这块芯片上的实测最优。
  */
-constexpr int kDepthEveryNFrames = 3;
+std::atomic<int> gDepthEveryN{3};
+
+/** 当前节奏值，调用处统一走这个，别直接读原子量。 */
+inline int depthEveryN() {
+    const int n = gDepthEveryN.load();
+    return n < 1 ? 1 : (n > 6 ? 6 : n);
+}
 /*
  * 深度上采样目标的宽度（与每眼 DIBR 输出同宽，DepthRay 的链路就是这么铺的）。
  * 高度按画面比例算，不写死 —— 宽高比变了还按 16:9 铺，采样坐标会整体歪。
@@ -2650,7 +2656,7 @@ std::atomic<int> gDepthInputH{0};
 /*
  * 抓帧的毫秒下限（vr-tuning.txt 的 stereo_interval，0 = 纯按帧数）。
  *
- * 帧数节奏是主判据（每 kDepthEveryNFrames 帧一次）；这一项只用来兜住
+ * 帧数节奏是主判据（每 depthEveryN() 帧一次）；这一项只用来兜住
  * "片源帧率很高时按帧数算也太密"的情况，正常留 0。
  */
 std::atomic<int> gDepthMsFloor{0};
@@ -5801,7 +5807,7 @@ void main() {
 /**
  * 这一帧要不要抓深度。
  *
- * 主判据是帧号（每 kDepthEveryNFrames 个新视频帧一次），DepthRay 在同机型上也是这个节奏。
+ * 主判据是帧号（每 depthEveryN() 个新视频帧一次），DepthRay 在同机型上也是这个节奏。
  * gDepthMsFloor（stereo_interval）只是毫秒下限，用来兜住"帧率很高、按帧数算仍然太密"的片源，
  * 0 表示纯按帧数。
  */
@@ -5812,7 +5818,7 @@ bool depthGrabDue(VrContext &c) {
         nowMs() - (double) c.depthLastGrabMs < (double) msFloor) {
         return false;
     }
-    return c.depthFrameTick > 0 && ((c.depthFrameTick - 1) % kDepthEveryNFrames) == 0;
+    return c.depthFrameTick > 0 && ((c.depthFrameTick - 1) % depthEveryN()) == 0;
 }
 
 /**
@@ -6410,7 +6416,7 @@ void pushRingFrame(VrContext &c, GLuint oesSrc) {
     c.ringStatPushed++;
 
     /*
-     * 抓帧按帧号节流（每 kDepthEveryNFrames 帧一次），不是每帧都抓：CPU 推理占四个核，
+     * 抓帧按帧号节流（每 depthEveryN() 帧一次），不是每帧都抓：CPU 推理占四个核，
      * 每帧都抓会把渲染线程的读回和整机解码一起拖慢。没抓的那两槽不带深度，
      * 上屏时沿用最近一次的深度图（见 buildRingArtifacts 的调用处）。
      */
@@ -7187,7 +7193,7 @@ void frameLoop(VrContext &c) {
                  * 在 3 的整数倍处回绕，取模的判断因此永远成立。
                  */
                 if (newSourceFrame) {
-                    c.depthFrameTick = (c.depthFrameTick + 1) % (kDepthEveryNFrames * 1024);
+                    c.depthFrameTick = (c.depthFrameTick + 1) % (depthEveryN() * 1024);
                 }
 
                 StereoSrc src;
@@ -7276,7 +7282,7 @@ void frameLoop(VrContext &c) {
                                                 upW0, upH0, c.depthUp);
                         }
                         /*
-                         * 抓帧节奏按帧号（每 kDepthEveryNFrames 个新视频帧一次），
+                         * 抓帧节奏按帧号（每 depthEveryN() 个新视频帧一次），
                          * 不是按毫秒：片源帧率一变，固定毫秒就能抓到几个相同的帧。
                          */
                         if (newSourceFrame && depthGrabDue(c)) {
@@ -8690,6 +8696,16 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
         case 49:
             gStereoRing.store(value >= 1.f ? 1 : 0);
             VLOGI("调参 → 画面环形缓冲 %s", (int) value ? "开（画面延后与深度配对）" : "关（直采）");
+            break;
+        /*
+         * 60 = 深度节奏：每几个新视频帧算一次深度（1~6，默认 3）。
+         * 调到 1 是逐帧算，代价是与解码渲染抢 CPU；调到 4~6 省 CPU 但深度更旧。
+         */
+        case 60:
+            if (value >= 1.f && value <= 6.f) {
+                gDepthEveryN.store((int) value);
+                VLOGI("调参 → 深度节奏 每 %d 帧一次", (int) value);
+            }
             break;
         /*
          * 51 = 抓帧的毫秒下限（0 = 纯按帧数，每 3 帧一次）。

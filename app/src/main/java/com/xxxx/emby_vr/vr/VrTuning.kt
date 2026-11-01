@@ -168,6 +168,16 @@ object VrTuning {
     var danmakuCanvasW: Int = 1920
 
     /**
+     * 深度推理线程数（1~8，默认 4）。
+     *
+     * XR2 是 4 小核 + 3 大核 + 1 超大核。实测 6 线程反而更慢（单次推理 110→191ms，
+     * 配对率 18%→12%）：多出来的线程和解码、渲染抢 CPU。改文件后要重新起播才生效，
+     * 因为解释器只在开 3D 时建一次。
+     */
+    @Volatile
+    var depthThreads: Int = 4
+
+    /**
      * 网页内核选择（2026-10-14 父亲定）：0 = 系统自带网页视图（Chromium 90，B站慢），
      * 1 = 打进应用里的火狐内核（GeckoView 158）。
      *
@@ -325,6 +335,12 @@ object VrTuning {
      * 0 = 直采（深度用最近一次结果，画面不延迟）。
      */
     const val KEY_STEREO_RING = 49
+    /**
+     * 深度节奏：每几个新视频帧算一次深度（1~6，默认 3）。
+     *
+     * 1 = 逐帧算，最跟手但和解码渲染抢 CPU；4~6 = 省 CPU，深度更旧、边缘更容易错位。
+     */
+    const val KEY_DEPTH_EVERY = 60
     /**
      * 抓帧的毫秒下限（0 = 纯按帧数，默认）。
      *
@@ -622,6 +638,14 @@ object VrTuning {
         raw["video_surface_w"]?.toIntOrNull()?.let {
             videoSurfaceMaxW = it
             applied += "视频处理宽度上限 $it（0=1920）"
+        }
+        raw["depth_threads"]?.toIntOrNull()?.let {
+            depthThreads = it.coerceIn(1, 8)
+            applied += "深度推理线程 $depthThreads（重新起播生效）"
+        }
+        raw["depth_every"]?.toFloatOrNull()?.let {
+            VrNative.setTuning(KEY_DEPTH_EVERY, it)
+            applied += "深度节奏 每 ${it.toInt()} 帧一次"
         }
         raw["danmaku_w"]?.toIntOrNull()?.let {
             danmakuCanvasW = it.coerceIn(960, 3840)
