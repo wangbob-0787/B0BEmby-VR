@@ -750,16 +750,9 @@ GLuint buildRingProgram() {
     }
     src.insert(ins, "#define B0B_RING 1\n");
     /*
-     * 环版整份着色器不声明、也不使用外部纹理采样器，所以把那条
-     * GL_OES_EGL_image_external_essl3 扩展一并删掉。
-     *
-     * 保留它等于"声明了扩展却没有任何外部采样器"，Adreno 的着色器编译器
-     * 遇到这种组合会直接段错误（2026-11-01 实测：应用启动即闪退，
-     * 崩在 libllvm-qgl.so 的 CreateQGLCShader）。
+     * 扩展行必须留着：环版程序里 uTexture 仍然声明着（只是环路径不采样它），
+     * 删掉扩展会让整份着色器编译失败。
      */
-    const std::string ext = "#extension GL_OES_EGL_image_external_essl3 : require\n";
-    const size_t eat = src.find(ext);
-    if (eat != std::string::npos) src.erase(eat, ext.size());
     const GLuint p = buildProgramFrom(kQuadVs, src.c_str());
     LOGI_RAW("环形缓冲：环版着色器建立结果 %u（源码 %zu 字节）", p, src.size());
     return p;
