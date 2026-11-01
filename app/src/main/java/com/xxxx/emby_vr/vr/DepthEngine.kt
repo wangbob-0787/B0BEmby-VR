@@ -57,7 +57,13 @@ object DepthEngine {
     var lastInferMs = 0L
         private set
 
-    /** 模型输出是"近大远小"还是相反：默认按视差（越大越近）取反一次 */
+    /**
+     * Kotlin 侧要不要把归一化后的深度取反（1 − v）。
+     *
+     * 默认 false = **原样透传**：(v − 最小值) / 跨度 之后直接交回原生。
+     * 深度方向的权威口径在原生侧（`depth_invert`，纹理里一律"越大越远"），这里留一个
+     * 开关只是为了"换了模型、输出极性反过来"时就地翻，不用动原生代码。
+     */
     @Volatile
     var invert = false
 

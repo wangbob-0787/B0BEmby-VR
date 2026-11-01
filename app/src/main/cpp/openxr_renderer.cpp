@@ -731,7 +731,20 @@ GLuint buildRingProgram() {
     const std::string ver = "#version 300 es\n";
     const size_t at = src.find(ver);
     if (at == std::string::npos) return 0;
-    src.insert(at + ver.size(), "#define B0B_RING 1\n");
+    /*
+     * #define 插在 #extension 之后，不插在紧跟 #version 的位置。
+     *
+     * 规范允许 #define 出现在 #extension 之前（两者都是预处理指令），但部分驱动把
+     * "#extension 必须紧跟 #version"当成硬要求，插在前面会让整份着色器编译失败 ——
+     * 后果是环程序建不起来、环永远不启用。
+     */
+    size_t ins = at + ver.size();
+    while (src.compare(ins, 10, "#extension") == 0) {
+        const size_t eol = src.find('\n', ins);
+        if (eol == std::string::npos) break;
+        ins = eol + 1;
+    }
+    src.insert(ins, "#define B0B_RING 1\n");
     return buildProgramFrom(kQuadVs, src.c_str());
 }
 
@@ -2020,8 +2033,6 @@ struct VrContext {
     /* 实时 2D→3D（2026-11-01）：深度图与视差参数 */
     GLint depthTexLoc = -1;
     GLint depthOnLoc = -1;
-    GLint eyeSignLoc = -1;
-    GLint dispLoc = -1;
     GLint convLoc = -1;
     GLint depthFadeLoc = -1;
     GLint circleLoc = -1;          // uCircle：纯色画成圆点还是方块
@@ -2213,9 +2224,17 @@ struct VrContext {
     int ringH = 0;
     int ringNext = 0;
     bool ringActive = false;
-    bool ringFailed = false;        // 建不起来就整功能关闭，绝不黑屏
+    bool ringFailed = false;        // 拷贝着色器链路建不起来：本进程整功能关闭，绝不黑屏
+    /*
+     * 某个尺寸试过建不起来（像素超限 / 显存不够）：只封这条尺寸，换片换分辨率再试一次 ——
+     * DepthRay 的"no ring at WxH，这个文件不带零延迟播"就是按文件算，不是一棍子打死。
+     */
+    int ringFailedW = 0;
+    int ringFailedH = 0;
     /* 需要的延迟超过环能装的长度：这一片不再做逐帧配对（DepthRay 的 zero age off） */
     bool ringOffForFile = false;
+    /* 上一次报过的"不建环"原因码（0 = 没在跳过状态）：同一个原因只报一次，不按帧刷屏 */
+    int ringSkipCode = 0;
     long long ringSeq = 0;
     GLuint ringCopyProg = 0;        // OES 画面 → 槽（普通 2D 纹理）
     GLint ringCopyTexLoc = -1;
@@ -6177,6 +6196,19 @@ int ringSlotCount(int w, int h) {
     return budgeted;
 }
 
+/**
+ * 报一次"这一帧为什么没建环"。同一个原因只报一次（环每帧都会问一遍）。
+ *
+ * 为什么要一个**不挂 log_verbose 开关**的日志：环整条链在此之前只有"建起来之后"的日志，
+ * 建不起来的那几种原因一旦静默，装机时只能在诊断行里看到「环=0」，无从下手。
+ * 环是不是建起来，是排查立体效果的第一分叉点，这条证据不能因为开关没开就丢。
+ */
+void ringSkip(VrContext &c, int code, const char *why) {
+    if (c.ringSkipCode == code) return;
+    c.ringSkipCode = code;
+    LOGI_RAW("环形缓冲：跳过（原因：%s）", why);
+}
+
 void releaseRing(VrContext &c) {
     for (RingSlot &s : c.ringSlots) {
         releaseTarget(s.color);
@@ -6218,13 +6250,35 @@ void flushRing(VrContext &c) {
  * updateRingDelay 置位，之后同一片不再反复建环拆环（每建一次就是几十 MB 的显存抖动）。
  */
 bool ensureRing(VrContext &c, int w, int h) {
-    if (c.ringFailed || c.ringOffForFile) return false;
-    if (c.ringActive && c.ringW == w && c.ringH == h) return true;
+    if (c.ringFailed) {
+        ringSkip(c, 1, "槽拷贝链路建不起来，本进程已整功能关闭（失败原因见那条日志）");
+        return false;
+    }
+    if (w > 0 && h > 0 && c.ringFailedW == w && c.ringFailedH == h) {
+        ringSkip(c, 8, "这个尺寸建不起来过（像素超限或显存不够），换分辨率才再试");
+        return false;
+    }
+    if (c.ringOffForFile) {
+        ringSkip(c, 2, "这一片的延迟超过环能装的长度（DepthRay 的 zero age off），不再配对");
+        return false;
+    }
+    if (c.ringActive && c.ringW == w && c.ringH == h) {
+        c.ringSkipCode = 0;
+        return true;
+    }
     releaseRing(c);
     const int n = ringSlotCount(w, h);
-    if (n < 3) {
-        VLOGI("环形缓冲：%dx%d 不建环（逐帧配对关掉，画面直出）", w, h);
-        c.ringFailed = true;
+    if (n < 2) {
+        /*
+         * 1 槽装不下任何延迟（环能装的延迟 = (槽数-1) 个帧间隔），2 槽起才有意义。
+         * 照 DepthRay 的规则，像素数没超上限就按预算算几槽，算得出几槽就建几槽 ——
+         * 不额外要求"至少 3 槽"，那是自己加的紧箍咒。
+         */
+        ringSkip(c, 3, (w <= 0 || h <= 0)
+                              ? "画面尺寸无效（还没拿到视频分辨率）"
+                              : "像素数超过 11,063,296（约 4K 以上不建环，一槽 33MB 显存吃不消）");
+        c.ringFailedW = w;
+        c.ringFailedH = h;
         return false;
     }
     if (c.ringCopyProg == 0) {
@@ -6244,7 +6298,7 @@ void main() { oColor = vec4(texture(uTexture, vUv).rgb, 1.0); }
 )";
         c.ringCopyProg = buildProgramFrom(vs, fs);
         if (c.ringCopyProg == 0) {
-            VLOGI("环形缓冲：拷贝着色器建不起来，整功能关闭（画面照常出）");
+            ringSkip(c, 4, "槽拷贝着色器建不起来（OES→2D 那一趟链接失败，见上面的着色器报错）");
             c.ringFailed = true;
             return false;
         }
@@ -6255,9 +6309,10 @@ void main() { oColor = vec4(texture(uTexture, vUv).rgb, 1.0); }
     c.ringSlots.resize((size_t) n);
     for (int i = 0; i < n; i++) {
         if (!ensureTarget(c.ringSlots[(size_t) i].color, w, h, GL_RGBA8, true)) {
-            VLOGI("环形缓冲：第 %d 槽建不起来，整功能关闭（画面照常出）", i);
+            ringSkip(c, 5, "槽纹理或帧缓冲建不起来（显存不足，见上面的离屏目标报错）");
             releaseRing(c);
-            c.ringFailed = true;
+            c.ringFailedW = w;
+            c.ringFailedH = h;
             return false;
         }
     }
@@ -6277,7 +6332,10 @@ void main() { oColor = vec4(texture(uTexture, vUv).rgb, 1.0); }
     c.ringFrameMs = 0.f;
     c.ringLastPushMs = 0;
     const long long mb = (long long) n * w * h * 4 / (1024 * 1024);
-    VLOGI("环形缓冲：%d 槽 每槽 %dx%d 共 %lldMB（延迟按深度迟到的 p90 自适应）", n, w, h, mb);
+    c.ringSkipCode = 0;
+    c.ringFailedW = 0;
+    c.ringFailedH = 0;
+    LOGI_RAW("环形缓冲：%d 槽 每槽 %dx%d 共 %lldMB（延迟按深度迟到的 p90 自适应）", n, w, h, mb);
     return true;
 }
 
@@ -6398,8 +6456,8 @@ void updateRingDelay(VrContext &c) {
     /* 环能装下的延迟 = (槽数 - 1) 个帧间隔：最后一槽推进去之后就没有"更晚的帧"了 */
     const float ringSpan = (float) (c.ringCount - 1) * frameMs;
     if (wanted > ringSpan) {
-        VLOGI("环形缓冲：本片关掉逐帧配对（需要 %.0fms，%d 槽只装得下 %.0fms，%.1f fps）",
-             (double) wanted, c.ringCount, (double) ringSpan, (double) (1000.f / frameMs));
+        LOGI_RAW("环形缓冲：本片关掉逐帧配对（需要 %.0fms，%d 槽只装得下 %.0fms，%.1f fps）",
+                 (double) wanted, c.ringCount, (double) ringSpan, (double) (1000.f / frameMs));
         releaseRing(c);
         c.ringOffForFile = true;
         return;
@@ -7105,13 +7163,22 @@ void frameLoop(VrContext &c) {
                 if (c.depthOn) {
                     ensureDepthTexture(c);
                     if (gRingFlush.exchange(0) != 0) flushRing(c);
-                    const bool ringWanted = gStereoRing.load() != 0 && c.ringProg != 0;
-                    if (!ringWanted && c.ringActive) {
+                    /*
+                     * 环要不要建：三道门，每道门都要留下依据（ringSkip 同一原因只报一次，不刷屏）。
+                     * 这里以前只有"建起来了"的日志，三道门里有两道静默，排查时只能看到
+                     * 诊断行里一个「环=0」。
+                     */
+                    const bool ringSwitch = gStereoRing.load() != 0;
+                    if (!ringSwitch && c.ringActive) {
                         /* 调参把开关拨回 0：立刻释放显存，画面回到直采路径 */
                         releaseRing(c);
-                        VLOGI("环形缓冲：已关闭（stereo_ring=0），画面回到直采");
+                        LOGI_RAW("环形缓冲：已关闭（stereo_ring=0），画面回到直采");
                     }
-                    if (ringWanted && ensureRing(c, vw, vh)) {
+                    if (!ringSwitch) {
+                        ringSkip(c, 6, "stereo_ring=0（调参文件把开关关了）");
+                    } else if (c.ringProg == 0) {
+                        ringSkip(c, 7, "带延迟画面的着色器没建起来（初始化时链接失败，见着色器报错）");
+                    } else if (ensureRing(c, vw, vh)) {
                         if (c.videoLayerR.handle == XR_NULL_HANDLE &&
                             !buildQuadLayer(c, c.videoLayerR, vw, vh, "视频层(右眼)")) {
                             VLOGI("2D→3D：右眼图层建不起来，退回单层");
@@ -7213,11 +7280,13 @@ void frameLoop(VrContext &c) {
                     if (nowD - lastDiagMs >= 1000) {
                         lastDiagMs = nowD;
                         VLOGI("3D 诊断：开关=%d 环=%d 左层=%d 深度图=%d 偏移表=%d 上采样=%d"
-                              " 深度龄=%lldms 视差=%.4f 每眼=%dx%d 上采样目标=%dx%d",
+                              " 深度龄=%lldms 视差=%.4f 每眼=%dx%d 上采样目标=%dx%d"
+                              "｜环开关=%d 环程序=%d 环跳过码=%d 环槽=%d",
                               gStereo3d.load(), c.ringActive ? 1 : 0, c.videoLayerROk ? 1 : 0,
                               c.depth.tex != 0 ? 1 : 0, c.offsets.tex != 0 ? 1 : 0,
                               c.depthUp.tex != 0 ? 1 : 0, dAge, (double) c.depthDisp,
-                              vw, vh, upW0, upH0);
+                              vw, vh, upW0, upH0, gStereoRing.load(), c.ringProg != 0 ? 1 : 0,
+                              c.ringSkipCode, c.ringCount);
                     }
                 }
             }
@@ -7913,8 +7982,6 @@ void renderThreadMain() {
         if (c.uvBiasLoc >= 0) glUniform2f(c.uvBiasLoc, 0.f, 0.f);
         c.depthTexLoc = c.quadU.depthTex;
         c.depthOnLoc = c.quadU.depthOn;
-        c.eyeSignLoc = c.quadU.eyeSign;
-        c.dispLoc = c.quadU.disp;
         c.convLoc = c.quadU.conv;
         c.depthFadeLoc = c.quadU.depthFade;
         c.circleLoc = c.quadU.circle;
@@ -7945,7 +8012,13 @@ void renderThreadMain() {
             if (c.ringU.depthTex >= 0) glUniform1i(c.ringU.depthTex, 1);
             if (c.ringU.offsets >= 0) glUniform1i(c.ringU.offsets, 3);
         } else {
-            VLOGI("环形缓冲：带延迟画面的着色器建不起来，stereo_ring 整功能关闭");
+            /*
+             * 这一条必须是 LOGE（不挂 log_verbose）：它在渲染线程初始化时打，
+             * 那时 Kotlin 侧还没把调参文件（含 log_verbose）送进来，用 VLOGI 就永远
+             * 看不到 —— 结果就是"环永远建不起来，日志里一条都没有"。
+             */
+            LOGE("环形缓冲：带延迟画面的着色器建不起来，stereo_ring 整功能关闭（画面照常出，"
+                 "立体退回实时路径）");
         }
         makeQuadBuffers(c);
         makeRayBuffer(c);
@@ -8575,7 +8648,17 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
                 VLOGI("调参 → 3D 边缘淡出 %.3f", (double) value);
             }
             break;
-        /* 48 = 深度图方向（1 = 模型输出越大越近，用之前取反） */
+        /* 48 = 深度图方向：1 = 模型输出越大越近，用之前取反（纹理里一律"越大越远"） */
+        case 48:
+            gDepthInvert.store(value >= 1.f ? 1 : 0);
+            VLOGI("调参 → 深度方向 %s", value >= 1.f ? "取反（模型输出越大越近）"
+                                                    : "原样（模型输出越大越远）");
+            break;
+        /* 49 = 画面环形缓冲开关 */
+        case 49:
+            gStereoRing.store(value >= 1.f ? 1 : 0);
+            VLOGI("调参 → 画面环形缓冲 %s", (int) value ? "开（画面延后与深度配对）" : "关（直采）");
+            break;
         /*
          * 51 = 抓帧的毫秒下限（0 = 纯按帧数，每 3 帧一次）。
          * 主判据是帧数；这一项只在片源帧率特别高、按帧数算仍然太密时才用得上。
@@ -8585,14 +8668,6 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
                 gDepthMsFloor.store((int) value);
                 VLOGI("调参 → 深度抓帧毫秒下限 %dms（0 = 纯按帧数，每 3 帧一次）", (int) value);
             }
-            break;
-        case 49:
-            gStereoRing.store(value >= 1.f ? 1 : 0);
-            VLOGI("调参 → 画面环形缓冲 %s", (int) value ? "开（画面延后与深度配对）" : "关（直采）");
-            break;
-        case 48:
-            gDepthInvert.store(value >= 1.f ? 1 : 0);
-            VLOGI("调参 → 深度方向 %s", value >= 1.f ? "取反（越大越近）" : "原样（越大越远）");
             break;
         /*
          * 52~57 = 立体画质的六个开关。默认值就是 DepthRay 那一套；拨到对照档
