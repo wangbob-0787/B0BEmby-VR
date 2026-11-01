@@ -388,6 +388,16 @@ uniform float uDisp;
 uniform float uConvergence;
 uniform float uDepthEdgeFade;
 uniform int uDepthInvert;   // 1 = 模型输出是"近大远小"的视差，取反后再用
+/*
+ * 下面这组照 DepthRay 的立体着色器移植（u_offsets / u_dispTexels / u_occlusion ...）：
+ * 深度图是低分辨率（512x288），视差按"低分辨率像素"计，遮挡与补洞也用低分辨率单位。
+ */
+uniform sampler2D uOffsets;     // RG = 左右眼偏移（编码成 0..1），BA = 空洞标记
+uniform float uDispTexels;      // 视差（低分辨率像素）
+uniform float uLowResWidth;     // 深度图宽度
+uniform float uFrameWidth;      // 视差采样用的画面宽度（上采样后）
+uniform float uSrcInset;        // 采样边界内缩，防边缘拉出黑边
+uniform float uEyeIndex;        // 0 = 左眼，1 = 右眼
 out vec4 fragColor;
 
 /* 抖动用的哈希（打散 8 位量化色带）*/
@@ -395,6 +405,34 @@ float hash21(vec2 p) {
     p = fract(p * vec2(123.34, 456.21));
     p += dot(p, p + 45.32);
     return fract(p.x * p.y);
+}
+
+/*
+ * 深度读取（三次 B 样条，与 DepthRay 同款）：双线性放大会在物体边缘产生台阶，
+ * 台阶在立体画面里就是"边缘一跳一跳"，用平滑插值能压掉。
+ */
+float depthAt(vec2 uv) {
+    vec2 size = vec2(textureSize(uDepthTex, 0));
+    vec2 tc = uv * size - 0.5;
+    vec2 base = floor(tc);
+    vec2 f = tc - base;
+    vec2 f2 = f * f;
+    vec2 f3 = f2 * f;
+    vec2 w0 = (1.0 - 3.0 * f + 3.0 * f2 - f3) / 6.0;
+    vec2 w1 = (4.0 - 6.0 * f2 + 3.0 * f3) / 6.0;
+    vec2 w2 = (1.0 + 3.0 * f + 3.0 * f2 - 3.0 * f3) / 6.0;
+    vec2 w3 = f3 / 6.0;
+    vec2 g0 = w0 + w1;
+    vec2 g1 = w2 + w3;
+    vec2 h0 = (base - 0.5 + w1 / max(g0, vec2(1e-6))) / size;
+    vec2 h1 = (base + 1.5 + w3 / max(g1, vec2(1e-6))) / size;
+    float a00 = texture(uDepthTex, vec2(h0.x, h0.y)).r;
+    float a10 = texture(uDepthTex, vec2(h1.x, h0.y)).r;
+    float a01 = texture(uDepthTex, vec2(h0.x, h1.y)).r;
+    float a11 = texture(uDepthTex, vec2(h1.x, h1.y)).r;
+    float d = mix(mix(a11, a01, g0.x), mix(a10, a00, g0.x), g0.y);
+    if (uDepthInvert == 1) d = 1.0 - d;
+    return d;
 }
 
 void main() {
@@ -408,24 +446,49 @@ void main() {
      */
     vec2 uvT = vUv;
     if (uDepthOn == 1) {
+        /*
+         * 立体视差：照 DepthRay 的立体着色器移植。
+         *
+         * 两条路：
+         *  · 该像素在本眼里是"空洞"（被更近的物体遮住，本眼看不到它）→ 沿扫描线
+         *    找最近的深度把洞填上（最多 12 步 / 24 像素），这样物体边缘不会拉出裂缝；
+         *  · 正常像素 → 用预计算的偏移量定位，再做两次牛顿迭代把误差压到 ±4 像素内，
+         *    避免深度边缘处采样点偏出去。
+         * 父亲 2026-11-01 报的"线条接不上、断开的错开"就是缺这两步。
+         */
         float edgeW = smoothstep(0.0, max(uDepthEdgeFade, 1e-6),
                                  min(vUv.x, 1.0 - vUv.x));
-        /*
-         * 反解源位置（父亲 2026-11-01 报"线条接不上、断开"）。
-         *
-         * 直接按本点深度平移一次，遇到深度突变的地方会采到"本眼根本看不到"的像素，
-         * 于是物体边缘被拉出一条错位的缝。改成迭代求源位置：找一个源点，
-         * 它平移之后正好落到当前像素上 —— 落在洞里的点会自然收敛到前景边缘，
-         * 由前景把它盖住，缝就没了。这与 DepthRay 的做法同源（它是牛顿迭代）。
-         */
-        float ux = vUv.x;
-        for (int i = 0; i < 4; i++) {
-            float dd = texture(uDepthTex, vec2(ux, vUv.y)).r;
-            if (uDepthInvert == 1) dd = 1.0 - dd;
-            ux = clamp(vUv.x - uEyeSign * edgeW * uDisp * (dd - uConvergence),
-                       0.0005, 0.9995);
+        float disp = edgeW * uDisp;
+        int reach = int(ceil(abs(uDispTexels) *
+                             max(uConvergence, 1.0 - uConvergence))) + 2;
+        vec4 enc = texture(uOffsets, vUv);
+        float off = (uEyeIndex < 0.5 ? enc.r : enc.g) - 0.5;
+        float hole = (uEyeIndex < 0.5 ? enc.b : enc.a);
+        if (hole > 0.5) {
+            float texel = 1.0 / max(uLowResWidth, 1.0);
+            int span = int(min(float(reach), 24.0 * uLowResWidth / max(uFrameWidth, 1.0)));
+            float far = depthAt(vUv);
+            for (int i = 1; i <= 12; i++) {
+                if (i > span) break;
+                float o = float(i) * texel;
+                far = min(far, texture(uDepthTex, vec2(vUv.x - o, vUv.y)).r);
+                far = min(far, texture(uDepthTex, vec2(vUv.x + o, vUv.y)).r);
+            }
+            uvT.x = vUv.x - disp * (far - uConvergence);
+        } else {
+            uvT.x = vUv.x + edgeW * off * 2.0 * float(reach) / max(uLowResWidth, 1.0);
+            float h = 1.0 / max(uFrameWidth, 1.0);
+            for (int i = 0; i < 2; i++) {
+                float d0 = depthAt(vec2(uvT.x, vUv.y));
+                float dm = texture(uDepthTex, vec2(uvT.x - h, vUv.y)).r;
+                float dp = texture(uDepthTex, vec2(uvT.x + h, vUv.y)).r;
+                float e = (uvT.x - vUv.x) + disp * (d0 - uConvergence);
+                float slope = 1.0 + disp * (dp - dm) / (2.0 * h);
+                if (abs(slope) < 0.25) slope = 0.25;
+                uvT.x -= clamp(e / slope, -4.0 * h, 4.0 * h);
+            }
         }
-        uvT.x = ux;
+        uvT.x = clamp(uvT.x, uSrcInset, 1.0 - uSrcInset);
     }
     uvT = uvT * uUvScale + uUvBias;
     if (uTestPattern == 1) {
@@ -1932,6 +1995,22 @@ struct VrContext {
     int depthUpW = 0;
     int depthUpH = 0;
     bool depthUpDirty = true;
+    /* 遮挡预计算（DepthRay 的 offsets 那趟）：RG = 左右眼偏移，BA = 空洞标记 */
+    GLuint offsetsProg = 0;
+    GLint offsetsDepthLoc = -1;
+    GLint offsetsDispLoc = -1;
+    GLint offsetsConvLoc = -1;
+    GLuint offsetsFbo = 0;
+    GLuint offsetsTex = 0;
+    int offsetsW = 0;
+    int offsetsH = 0;
+    GLint offsetsSamplerLoc = -1;
+    GLint dispTexelsLoc = -1;
+    GLint lowResWLoc = -1;
+    GLint frameWLoc = -1;
+    GLint srcInsetLoc = -1;
+    GLint eyeIndexLoc = -1;
+    GLint offsetsLoc = -1;
     /*
      * 弹幕独立合成层（父亲 2026-10-06 晚定）：弹幕与字幕离开视频画面，做成
      * 单独一层摆在银幕前面一点点。原来画在视频层里 / GL 场景里，前者会跟着
@@ -5298,6 +5377,110 @@ void main() {
 }
 
 /**
+ * 遮挡预计算（照 DepthRay 的 offsets 那趟移植）。
+ *
+ * 逐列沿扫描线算：每只眼把这一列的深度往前推，看它落在哪个位置；同一位置若有更近的
+ * 表面抢在前面，就标记为"空洞"（本眼看这里其实看不到东西）。warp 时按这张表决定
+ * 是直接采样还是走补洞分支。
+ * 输出 RGBA8：R = 左眼偏移、G = 右眼偏移（都编码成 0..1）、B/A = 左右眼空洞标记。
+ */
+void renderOffsets(VrContext &c, int w, int h) {
+    if (c.depthTex == 0 || w <= 0 || h <= 0) return;
+
+    if (c.offsetsProg == 0) {
+        static const char *vs = R"(#version 300 es
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec2 aUv;
+out vec2 vUv;
+void main() { vUv = aUv; gl_Position = vec4(aPos.xy, 0.0, 1.0); }
+)";
+        static const char *fs = R"(#version 300 es
+precision highp float;
+uniform sampler2D uDepth;
+uniform float uDispTexels;
+uniform float uConvergence;
+out vec4 fragColor;
+void main() {
+    ivec2 sz = textureSize(uDepth, 0);
+    int x = int(gl_FragCoord.x);
+    int y = int(gl_FragCoord.y);
+    int reach = int(ceil(abs(uDispTexels) * max(uConvergence, 1.0 - uConvergence))) + 2;
+    vec2 result = vec2(0.0);
+    vec2 holes = vec2(0.0);
+    for (int eye = 0; eye < 2; eye++) {
+        float disp = (eye == 0) ? uDispTexels : -uDispTexels;
+        float here = texelFetch(uDepth, ivec2(x, y), 0).a;
+        float bestD = -1.0;
+        float bestOff = -disp * (here - uConvergence);
+        float pd = texelFetch(uDepth, ivec2(clamp(x - reach, 0, sz.x - 1), y), 0).a;
+        float pe = float(-reach) + disp * (pd - uConvergence);
+        for (int t = -reach + 1; t <= reach; t++) {
+            float cd = texelFetch(uDepth, ivec2(clamp(x + t, 0, sz.x - 1), y), 0).a;
+            float ce = float(t) + disp * (cd - uConvergence);
+            float span = ce - pe;
+            if (pe * ce <= 0.0 && abs(span) > 1e-6) {
+                float f = clamp(-pe / span, 0.0, 1.0);
+                float rd = pd + f * (cd - pd);
+                if (rd > bestD) {
+                    bestD = rd;
+                    bestOff = float(t - 1) + f;
+                }
+            }
+            pd = cd;
+            pe = ce;
+        }
+        result[eye] = bestOff;
+        holes[eye] = bestD < 0.0 ? 1.0 : 0.0;
+    }
+    fragColor = vec4(result / (2.0 * float(reach)) + 0.5, holes);
+}
+)";
+        c.offsetsProg = buildProgramFrom(vs, fs);
+        if (c.offsetsProg == 0) {
+            VLOGI("2D→3D：遮挡预计算着色器建不起来，退回直接采样");
+            return;
+        }
+        c.offsetsSamplerLoc = glGetUniformLocation(c.offsetsProg, "uDepth");
+        c.offsetsDispLoc = glGetUniformLocation(c.offsetsProg, "uDispTexels");
+        c.offsetsConvLoc = glGetUniformLocation(c.offsetsProg, "uConvergence");
+        glUseProgram(c.offsetsProg);
+        if (c.offsetsSamplerLoc >= 0) glUniform1i(c.offsetsSamplerLoc, 2);
+    }
+    if (c.offsetsW != w || c.offsetsH != h) {
+        if (c.offsetsFbo != 0) glDeleteFramebuffers(1, &c.offsetsFbo);
+        if (c.offsetsTex != 0) glDeleteTextures(1, &c.offsetsTex);
+        glGenTextures(1, &c.offsetsTex);
+        glBindTexture(GL_TEXTURE_2D, c.offsetsTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glGenFramebuffers(1, &c.offsetsFbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, c.offsetsFbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                               c.offsetsTex, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        c.offsetsW = w;
+        c.offsetsH = h;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, c.offsetsFbo);
+    glViewport(0, 0, w, h);
+    glUseProgram(c.offsetsProg);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, c.depthTex);
+    glActiveTexture(GL_TEXTURE0);
+    if (c.offsetsDispLoc >= 0) glUniform1f(c.offsetsDispLoc, c.depthDisp * (float) w);
+    if (c.offsetsConvLoc >= 0) glUniform1f(c.offsetsConvLoc, c.depthConv);
+    ensureVideoLayerQuad(c);
+    glBindVertexArray(c.videoLayerVao);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindVertexArray(0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+/**
  * 深度上采样（边缘引导，照 DepthRay 的做法）。
  *
  * 为什么必须有这一步：模型只在 512x288 上出深度，直接双线性放大到 1080P 时，
@@ -5320,35 +5503,52 @@ void main() { vUv = aUv; gl_Position = vec4(aPos.xy, 0.0, 1.0); }
 )";
         static const char *fs = R"(#version 300 es
 #extension GL_OES_EGL_image_external_essl3 : require
-precision mediump float;
+precision highp float;
 in vec2 vUv;
-uniform sampler2D uDepth;
-uniform samplerExternalOES uColor;
-uniform vec2 uStep;      // 画面里一个像素的 UV 步长
+uniform sampler2D uDepth;              // RGBA：RGB = 低分辨率画面，A = 深度
+uniform samplerExternalOES uColor;     // 高分辨率画面
 uniform vec2 uUvScale;
 uniform vec2 uUvBias;
-uniform int uInvert;
 out vec4 oColor;
-
-float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
-
+const float SIGMA_S = 1.5;
+const float FLAT = 0.05;
+float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 void main() {
-    vec2 cuv = vUv * uUvScale + uUvBias;
-    float l0 = luma(texture(uColor, cuv).rgb);
-    float sum = 0.0;
-    float wsum = 0.0;
-    /* 5x5 联合双边：空间权重固定，颜色权重按亮度差衰减 */
-    for (int y = -2; y <= 2; y++) {
-        for (int x = -2; x <= 2; x++) {
-            vec2 off = vec2(float(x), float(y)) * uStep;
-            float l = luma(texture(uColor, cuv + off).rgb);
-            float dl = l - l0;
-            float w = exp(-(dl * dl) / 0.012) * exp(-float(x * x + y * y) / 6.0);
-            sum += texture(uDepth, vUv + off).r * w;
-            wsum += w;
+    vec3 hi = texture(uColor, vUv * uUvScale + uUvBias).rgb;
+    vec2 dsize = vec2(textureSize(uDepth, 0));
+    vec2 lp = vUv * dsize - 0.5;
+    ivec2 base = ivec2(floor(lp));
+    float gh = luma(hi);
+    float sw = 0.0, sg = 0.0, sd = 0.0, sgg = 0.0, sgd = 0.0;
+    float dlo = 1.0, dhi = 0.0;
+    for (int dy = -2; dy <= 2; dy++) {
+        for (int dx = -2; dx <= 2; dx++) {
+            ivec2 q = clamp(base + ivec2(dx, dy), ivec2(0), ivec2(dsize) - 1);
+            vec4 s = texelFetch(uDepth, q, 0);
+            vec2 off = vec2(q) - lp;
+            float ws = exp(-dot(off, off) / (2.0 * SIGMA_S * SIGMA_S));
+            float g = luma(s.rgb);
+            sw += ws;
+            sg += ws * g;
+            sd += ws * s.a;
+            sgg += ws * g * g;
+            sgd += ws * g * s.a;
+            dlo = min(dlo, s.a);
+            dhi = max(dhi, s.a);
         }
     }
-    float d = wsum > 0.0001 ? sum / wsum : texture(uDepth, vUv).r;
+    float inv = 1.0 / max(sw, 1e-6);
+    float mg = sg * inv;
+    float md = sd * inv;
+    float varG = max(sgg * inv - mg * mg, 0.0);
+    float covGD = sgd * inv - mg * md;
+    float a = covGD / (varG + 0.01);
+    float d = clamp(md + a * (gh - mg), dlo, dhi);
+    float span = dhi - dlo;
+    if (span >= FLAT) {
+        float u = clamp((d - dlo) / max(span, 1e-6), 0.0, 1.0);
+        d = mix(d, dlo + span / (1.0 + exp(-24.0 * (u - 0.5))), 1.0);
+    }
     oColor = vec4(d, d, d, 1.0);
 }
 )";
@@ -5429,13 +5629,32 @@ void uploadDepthIfFresh(VrContext &c) {
         gDepthFresh.store(false);
     }
     if (w <= 0 || h <= 0 || buf.size() != (size_t) w * h) return;
+    /*
+     * 打包成 RGBA：RGB 存这一帧的低分辨率画面，A 存深度。
+     * 为什么要把颜色也存进来：引导放大要拿"低分辨率的颜色"和高分辨率画面比亮度，
+     * DepthRay 就是这么存的。顺带把行序翻正 —— 读回的画面是底朝上，
+     * 不翻的话深度会上下颠倒（天空近、地面远）。
+     */
+    const bool haveColor = c.depthGrabPixels.size() == (size_t) w * h * 4;
+    std::vector<unsigned char> rgba((size_t) w * h * 4);
+    for (int y = 0; y < h; y++) {
+        const int sy = h - 1 - y;
+        for (int x = 0; x < w; x++) {
+            const size_t di = (size_t) y * w + x;
+            const size_t si = (size_t) sy * w + x;
+            rgba[di * 4 + 0] = haveColor ? c.depthGrabPixels[si * 4 + 0] : 128;
+            rgba[di * 4 + 1] = haveColor ? c.depthGrabPixels[si * 4 + 1] : 128;
+            rgba[di * 4 + 2] = haveColor ? c.depthGrabPixels[si * 4 + 2] : 128;
+            rgba[di * 4 + 3] = buf[si];
+        }
+    }
     if (c.depthTex == 0 || c.depthTexW != w || c.depthTexH != h) {
         if (c.depthTex != 0) glDeleteTextures(1, &c.depthTex);
         GLuint t = 0;
         glGenTextures(1, &t);
         glBindTexture(GL_TEXTURE_2D, t);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, w, h, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -5447,7 +5666,7 @@ void uploadDepthIfFresh(VrContext &c) {
     }
     glBindTexture(GL_TEXTURE_2D, c.depthTex);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RED, GL_UNSIGNED_BYTE, buf.data());
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
     glBindTexture(GL_TEXTURE_2D, 0);
     c.depthUpDirty = true;
 }
@@ -5571,7 +5790,9 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
      */
     if (c.depthTexLoc >= 0) glUniform1i(c.depthTexLoc, 1);
     if (c.depthOnLoc >= 0) {
-        const bool useDepth = c.depthOn && c.depthTex != 0 && eyeIndex >= 0;
+        /* offsets 还没算出来就先不做视差：拿不到遮挡表时采样偏移是错的 */
+        const bool useDepth = c.depthOn && c.depthTex != 0 && c.offsetsTex != 0 &&
+                              c.depthUpTex != 0 && eyeIndex >= 0;
         if (useDepth) {
             glActiveTexture(GL_TEXTURE1);
             glBindTexture(GL_TEXTURE_2D, c.depthUpTex != 0 ? c.depthUpTex : c.depthTex);
@@ -5582,6 +5803,16 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
             if (c.convLoc >= 0) glUniform1f(c.convLoc, c.depthConv);
             if (c.depthFadeLoc >= 0) glUniform1f(c.depthFadeLoc, c.depthFade);
             if (c.depthInvertLoc >= 0) glUniform1i(c.depthInvertLoc, gDepthInvert.load());
+            /* 遮挡预计算结果与单位换算（DepthRay 的 warp 按低分辨率像素计视差） */
+            if (c.offsetsLoc >= 0) glUniform1i(c.offsetsLoc, 3);
+            glActiveTexture(GL_TEXTURE3);
+            glBindTexture(GL_TEXTURE_2D, c.offsetsTex);
+            glActiveTexture(GL_TEXTURE0);
+            if (c.dispTexelsLoc >= 0) glUniform1f(c.dispTexelsLoc, c.depthDisp * (float) c.depthTexW);
+            if (c.lowResWLoc >= 0) glUniform1f(c.lowResWLoc, (float) c.depthTexW);
+            if (c.frameWLoc >= 0) glUniform1f(c.frameWLoc, (float) (c.depthUpW > 0 ? c.depthUpW : c.depthTexW));
+            if (c.srcInsetLoc >= 0) glUniform1f(c.srcInsetLoc, 0.0005f);
+            if (c.eyeIndexLoc >= 0) glUniform1f(c.eyeIndexLoc, eyeIndex == 1 ? 1.f : 0.f);
         } else {
             glUniform1i(c.depthOnLoc, 0);
         }
@@ -5992,6 +6223,7 @@ void frameLoop(VrContext &c) {
                      */
                     uploadDepthIfFresh(c);
                     if (c.depthUpDirty) {
+                        renderOffsets(c, c.depthTexW, c.depthTexH);
                         /*
                          * 上采样按 UV 采样，分辨率只影响深度边缘的锐度，不需要跟视频层同尺寸。
                          * 封顶 1280 宽：4K 片源下 5x5 窗口在全分辨率跑会把 GPU 吃掉一大块。
@@ -6711,6 +6943,12 @@ void renderThreadMain() {
         c.convLoc = glGetUniformLocation(c.program, "uConvergence");
         c.depthFadeLoc = glGetUniformLocation(c.program, "uDepthEdgeFade");
         c.depthInvertLoc = glGetUniformLocation(c.program, "uDepthInvert");
+        c.offsetsLoc = glGetUniformLocation(c.program, "uOffsets");
+        c.dispTexelsLoc = glGetUniformLocation(c.program, "uDispTexels");
+        c.lowResWLoc = glGetUniformLocation(c.program, "uLowResWidth");
+        c.frameWLoc = glGetUniformLocation(c.program, "uFrameWidth");
+        c.srcInsetLoc = glGetUniformLocation(c.program, "uSrcInset");
+        c.eyeIndexLoc = glGetUniformLocation(c.program, "uEyeIndex");
         c.circleLoc = glGetUniformLocation(c.program, "uCircle");
         c.expandLoc = glGetUniformLocation(c.program, "uExpandRange");
         c.brightLoc = glGetUniformLocation(c.program, "uBrightness");
