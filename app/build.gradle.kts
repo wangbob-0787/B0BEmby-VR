@@ -229,6 +229,7 @@ dependencies {
      */
     implementation(libs.tensorflow.lite)
     implementation(libs.tensorflow.lite.gpu)
+    implementation(libs.tensorflow.lite.gpu.api)
 
     /*
      * 【2026-10-20 16:18 父亲要求：火狐内核整套拆掉】
