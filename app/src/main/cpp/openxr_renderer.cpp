@@ -6202,7 +6202,13 @@ int ringSlotCount(int w, int h) {
     if (px <= 0) return 0;
     if (px > 11063296LL) return 0;            // 4K 以上不建环（一槽 33MB，显存吃不消）
     const int budgeted = (int) (132710400LL / (px * 4));
-    if (px <= 5636096LL) return 5;            // 1080p 及以下：5 槽封顶
+    /*
+     * 1080p 及以下给到 12 槽：一槽约 6MB，12 槽 72MB。
+     * 槽数决定环能装多长的延迟 —— 深度推理一次要 100ms 上下，5 槽只装得下
+     * 4 个帧间隔（约 56ms），配不上就只能整片关掉逐帧配对（2026-11-01 实测：
+     * 环建起来了却因为装不下而关死）。
+     */
+    if (px <= 5636096LL) return 12;
     return budgeted;
 }
 
@@ -6256,8 +6262,8 @@ void flushRing(VrContext &c) {
 /**
  * 建 / 重建环形缓冲。返回 false 表示这次用不了环，调用方走实时路径。
  *
- * ringOffForFile 是「这一片不需要再试了」：延迟需求超过环能装的长度时由
- * updateRingDelay 置位，之后同一片不再反复建环拆环（每建一次就是几十 MB 的显存抖动）。
+ * ringOffForFile 是「这一片不需要再试了」：只在明确不该建环的情况下置位，
+ * 之后同一片不再反复建环拆环（每建一次就是几十 MB 的显存抖动）。
  */
 bool ensureRing(VrContext &c, int w, int h) {
     if (c.ringFailed) {
@@ -6447,8 +6453,8 @@ void applyRingDepth(VrContext &c) {
  *
  * render lead = 从深度到站到那一帧真正上屏之间还要走的一帧（提交与合成），
  * 按 DepthRay 的「80 percent of the player's vsync」上限折算，取 0.8 个帧间隔。
- * 环装不下这个延迟时整功能关闭（它的原文：Zero age off for this file），绝不硬压延迟 ——
- * 压下来就等于永远追不上，那几帧只能出平面。
+ * 环装不下这个延迟时按环的上限截断，不整片关掉：关掉就等于退回"深度永远是最新那张"，
+ * 边缘错位立刻回来。截断的代价是画面早放一点，深度仍然逐帧配对。
  */
 void updateRingDelay(VrContext &c) {
     const double now = nowMs();
@@ -6465,11 +6471,21 @@ void updateRingDelay(VrContext &c) {
     const float wanted = fminf(200.f, p90 + leadMs);
     /* 环能装下的延迟 = (槽数 - 1) 个帧间隔：最后一槽推进去之后就没有"更晚的帧"了 */
     const float ringSpan = (float) (c.ringCount - 1) * frameMs;
+    /*
+     * 环装不下想要的延迟时，按环能装的上限截断，而不是整片关掉。
+     *
+     * DepthRay 的原文里环满了就是"early with the ring full"——画面早放一点，
+     * 深度仍然逐帧配对；关掉逐帧配对等于退回"深度永远是最新那张"，
+     * 边缘错位立刻回来（2026-11-01 父亲实测：环建起来了但立体没改善）。
+     */
     if (wanted > ringSpan) {
-        LOGI_RAW("环形缓冲：本片关掉逐帧配对（需要 %.0fms，%d 槽只装得下 %.0fms，%.1f fps）",
-                 (double) wanted, c.ringCount, (double) ringSpan, (double) (1000.f / frameMs));
-        releaseRing(c);
-        c.ringOffForFile = true;
+        static double lastClampLogMs = 0;
+        if (now - lastClampLogMs > 5000.0) {
+            lastClampLogMs = now;
+            LOGI_RAW("环形缓冲：延迟按环上限截断（想要 %.0fms，%d 槽装得下 %.0fms，%.1f fps）",
+                     (double) wanted, c.ringCount, (double) ringSpan, (double) (1000.f / frameMs));
+        }
+        c.ringDelayMs = ringSpan;
         return;
     }
     if (fabsf(wanted - c.ringDelayMs) > 1.f) {
