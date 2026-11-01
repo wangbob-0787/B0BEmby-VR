@@ -2516,7 +2516,7 @@ std::atomic<float> gStereoDisp{kStereoDispStandard};
 std::atomic<float> gStereoConv{0.5f};
 std::atomic<float> gStereoFade{0.04f};
 /* 画面环形缓冲开关（vr-tuning.txt 的 stereo_ring，默认 0 = 关闭，走直采路径） */
-std::atomic<int> gStereoRing{0};
+std::atomic<int> gStereoRing{1};
 /* 请求清空环形缓冲（seek / 换片时置 1，渲染线程取走并清零） */
 static std::atomic<int> gRingFlush{0};
 /* 各路画面是否换了新一帧（环只在有新帧时推进，否则同一帧会占满整环） */
