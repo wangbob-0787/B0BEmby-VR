@@ -56,6 +56,9 @@ object DepthEngine {
 
     private var prevDepth: ByteArray? = null
     private var inferCount = 0
+    private var refMn = 0f
+    private var refMx = 1f
+    private var refInit = false
     @Volatile private var lastOkMs = System.currentTimeMillis()
 
     private var interp: Interpreter? = null
@@ -232,7 +235,23 @@ object DepthEngine {
             if (v < mn) mn = v
             if (v > mx) mx = v
         }
-        val range = (mx - mn).let { if (it > 1e-5f) it else 1f }
+        /*
+         * 归一化用慢速跟踪的参考范围，不用这一帧自己的极值。
+         * 每帧各自拉伸会让同一场景的立体强度随画面内容起伏，看着就是"一会有一会没有"。
+         * 参考值只按 2% 的步长跟随，单帧的极值不会立刻改变整体映射。
+         */
+        if (refInit) {
+            refMn = refMn * 0.98f + mn * 0.02f
+            refMx = refMx * 0.98f + mx * 0.02f
+        } else {
+            refMn = mn
+            refMx = mx
+            refInit = true
+        }
+        val useMn = refMn
+        val useMx = if (refMx - refMn > 0.05f) refMx else refMn + 0.05f
+        val mnFinal = useMn
+        val range = useMx - useMn
         val out = ByteArray(n)
         var prev = prevDepth
         val a = smooth.coerceIn(0f, 1f)
@@ -246,7 +265,7 @@ object DepthEngine {
             var cnt = 0
             var i = 0
             while (i < n) {
-                var x = (vals[i] - mn) / range
+                var x = (vals[i] - mnFinal) / range
                 if (invert) x = 1f - x
                 acc += kotlin.math.abs(prev[i].toInt().and(0xFF) -
                         (x.coerceIn(0f, 1f) * 255f).toInt())
@@ -256,7 +275,7 @@ object DepthEngine {
             if (cnt > 0 && acc / cnt > 40) prev = null
         }
         for (i in 0 until n) {
-            var v = (vals[i] - mn) / range
+            var v = (vals[i] - mnFinal) / range
             if (invert) v = 1f - v
             var b = v.coerceIn(0f, 1f) * 255f
             /* 尺寸变了（换片源 / 模型换了）就直接用新值，别拿旧图去插值 */
