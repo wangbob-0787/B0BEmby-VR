@@ -405,11 +405,22 @@ object DepthEngine {
         ob.rewind()
         val n = outW * outH
         val vals = FloatArray(n)
+        for (i in 0 until n) vals[i] = ob.float
+        finishDepth(vals, outW, outH, seq)
+    }
+
+    /**
+     * 推理之后共用的收尾：参考范围归一化 → 切镜判定 → 时间平滑 → 交给原生。
+     *
+     * 本地和远程两条推理路径都走这里，保证两边出来的深度口径一致，
+     * 切换时才只是"清晰度和延迟"的差别，不会因为两套处理而看出别的差异。
+     */
+    private fun finishDepth(vals: FloatArray, ow: Int, oh: Int, seq: Long) {
+        val n = vals.size
         var mn = Float.MAX_VALUE
         var mx = -Float.MAX_VALUE
         for (i in 0 until n) {
-            val v = ob.float
-            vals[i] = v
+            val v = vals[i]
             if (v < mn) mn = v
             if (v > mx) mx = v
         }
@@ -477,7 +488,7 @@ object DepthEngine {
         prevDepth = out
         inferCount++
         if (inferCount % 20 == 1) {
-            Log.i(TAG, "深度推理：${lastInferMs}ms 第 ${inferCount} 次 输入 ${w}x${h}")
+            Log.i(TAG, "深度推理：${lastInferMs}ms 第 ${inferCount} 次 输入 ${ow}x${oh}")
             Log.i(TAG, "深度切镜：diff " + "%.3f".format(lastDiff) +
                     " hist " + "%.3f".format(lastHist) +
                     " corr " + "%.2f".format(lastCorr) +
@@ -485,7 +496,7 @@ object DepthEngine {
         }
         lastOkMs = System.currentTimeMillis()
         /* 帧号原样带回原生：环形缓冲靠它把深度还给"本来就是它"的那一帧 */
-        VrNative.pushDepth(out, outW, outH, seq)
+        VrNative.pushDepth(out, ow, oh, seq)
     }
 
     /**
