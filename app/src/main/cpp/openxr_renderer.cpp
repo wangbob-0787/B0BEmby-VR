@@ -2265,8 +2265,6 @@ struct VrContext {
     float ringArtifactsFeather = -1.f;
     /* 延迟自适应：深度迟到量的 90 分位数，每秒重算一次 */
     float ringDelayMs = 0.f;
-    /* 调参强制指定环延迟（毫秒，0 = 按迟到自动算）；远程推理迟到量固定，用它一次压住 */
-    std::atomic<float> gRingDelayOverride{0.f};
     std::vector<float> ringLateMs;
     long long ringDelayUpdatedMs = 0;
     float ringFrameMs = 0.f;        // 相邻两帧的间隔（估算环能装多少毫秒）
