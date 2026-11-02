@@ -64,17 +64,18 @@ object DepthEngine {
     private const val SAMPLE_STRIDE = 16
     private const val HIST_BINS = 16
 
-    /** 模型是否可用；不可用时原生保持平面出画，2D→3D 开关仍可开但没有立体 */
-    @Volatile
-    var ready = false
-    /* 远程深度服务（点 15）：长连接，断了下一帧重连 */
-    private var sock: java.net.Socket? = null
-    private var sockKey = ""
-
     /* 远程服务端的模型输入尺寸（点 15 上的 depth512.onnx 是 512x288） */
     private const val REMOTE_IN_W = 512
     private const val REMOTE_IN_H = 288
+
+    /** 模型是否可用；不可用时原生保持平面出画，2D→3D 开关仍可开但没有立体 */
+    @Volatile
+    var ready = false
         private set
+
+    /* 远程深度服务（点 15）：长连接，断了下一帧重连 */
+    private var sock: java.net.Socket? = null
+    private var sockKey = ""
 
     /** 最近一次推理耗时（毫秒），排查用 */
     @Volatile
