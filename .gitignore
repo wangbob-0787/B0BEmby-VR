@@ -18,6 +18,3 @@ app/libs/*.aar
 app/src/main/cpp/ncnn/
 app/src/main/assets/models/dptv2_s.param
 app/src/main/assets/models/dptv2_s.bin
-
-# libomp.so 由 CI 从 NDK 拷入（本机没有 NDK）
-app/src/main/jniLibs/
