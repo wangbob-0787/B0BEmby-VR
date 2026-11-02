@@ -6650,7 +6650,8 @@ void buildRingArtifacts(VrContext &c, RingSlot &s, int upW, int upH) {
     if (gStereoEdgeDense.load() == 1) {
         renderOffsets(c, c.ringUp.tex, upW, upH, upW, upH, c.ringOffsets, true);
     } else {
-        renderOffsets(c, s.depth.tex, s.depth.w, s.depth.h, c.ringOffsets, false);
+        renderOffsets(c, s.depth.tex, s.depth.w, s.depth.h,
+                      s.depth.w, s.depth.h, c.ringOffsets, false);
     }
     c.ringArtifactsSeq = s.seq;
     c.ringArtifactsLowW = gStereoEdgeDense.load() == 1 ? upW : s.depth.w;
@@ -7391,7 +7392,7 @@ void frameLoop(VrContext &c) {
                                               c.depthUp.w, c.depthUp.h, c.offsets, true);
                             } else {
                                 renderOffsets(c, c.depth.tex, c.depth.w, c.depth.h,
-                                              c.offsets, false);
+                                              c.depth.w, c.depth.h, c.offsets, false);
                             }
                         }
                         /*
