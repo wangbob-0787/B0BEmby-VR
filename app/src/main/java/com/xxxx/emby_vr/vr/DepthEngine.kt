@@ -441,17 +441,29 @@ object DepthEngine {
         val n = (cntBuf[0].toInt() and 0xFF) or ((cntBuf[1].toInt() and 0xFF) shl 8)
         if (n != batch.size) throw java.io.IOException("远程深度：批量数目对不上（$n/${batch.size}）")
         for (f in batch) {
-            val wh = ByteArray(4)
-            readFully(inp, wh, 4)
-            val ow = (wh[0].toInt() and 0xFF) or ((wh[1].toInt() and 0xFF) shl 8)
-            val oh = (wh[2].toInt() and 0xFF) or ((wh[3].toInt() and 0xFF) shl 8)
-            val cnt = ow * oh
-            if (cnt <= 0) continue
-            val depth = ByteArray(cnt)
-            readFully(inp, depth, cnt)
-            val vals = FloatArray(cnt) { (depth[it].toInt() and 0xFF) / 255f }
+            /*
+             * 回传的深度是灰度 JPEG（512x288 原始 147KB，压完约 20KB）。
+             * 解回像素后只取红通道 —— 灰度图三通道相同。
+             */
+            val whl = ByteArray(8)
+            readFully(inp, whl, 8)
+            val ow = (whl[0].toInt() and 0xFF) or ((whl[1].toInt() and 0xFF) shl 8)
+            val oh = (whl[2].toInt() and 0xFF) or ((whl[3].toInt() and 0xFF) shl 8)
+            val ln = (whl[4].toInt() and 0xFF) or ((whl[5].toInt() and 0xFF) shl 8) or
+                     ((whl[6].toInt() and 0xFF) shl 16) or ((whl[7].toInt() and 0xFF) shl 24)
+            if (ln <= 0) continue
+            val jp = ByteArray(ln)
+            readFully(inp, jp, ln)
+            val bmp = android.graphics.BitmapFactory.decodeByteArray(jp, 0, ln) ?: continue
+            val cnt = bmp.width * bmp.height
+            if (cnt <= 0) { bmp.recycle(); continue }
+            val px = if (pixBuf.size == cnt) pixBuf else IntArray(cnt).also { pixBuf = it }
+            bmp.getPixels(px, 0, bmp.width, 0, 0, bmp.width, bmp.height)
+            bmp.recycle()
+            val vals = if (valsBuf.size == cnt) valsBuf else FloatArray(cnt).also { valsBuf = it }
+            for (i in 0 until cnt) vals[i] = ((px[i] shr 16) and 0xFF) / 255f
             lastInferMs = (SystemClock.elapsedRealtime() - f.ts)
-            finishDepth(vals, ow, oh, f.seq)
+            finishDepth(vals, bmp.width, bmp.height, f.seq)
         }
         lastInferMs = SystemClock.elapsedRealtime() - t0
     }
