@@ -45,6 +45,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** 更新流程所处阶段；界面只按它显示，不各自推断 */
     var updatePhase by mutableStateOf(UpdatePhase.Idle)
+
+    /** 正在问更新源（点一下版本号就有反馈，不让父亲猜有没有响应） */
+    var updateChecking by mutableStateOf(false)
+        private set
         private set
 
     /** 下载百分比（0~100），只在 Downloading 时有意义 */
@@ -137,13 +141,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * 走不通就当作没有新版（家里网络抖动、.15 没开服务都不该在启动路径上报错）。
      */
     fun checkUpdate() {
-        if (updatePhase != UpdatePhase.Idle) return
+        if (updateChecking || updatePhase != UpdatePhase.Idle) return
+        updateChecking = true
+        updateNote = ""
         viewModelScope.launch {
-            val m = UpdateApi.fetchManifest() ?: return@launch
-            manifest = m
-            updateNote = ""
-            updatePhase = if (selfRun > 0 && m.run > selfRun) UpdatePhase.Available
-            else UpdatePhase.Idle
+            try {
+                val m = UpdateApi.fetchManifest()
+                if (m == null) {
+                    /* 问不到就明说，不装作没有新版 —— 父亲要的是"点一下就知道" */
+                    updateNote = "检查失败"
+                    return@launch
+                }
+                manifest = m
+                if (selfRun > 0 && m.run > selfRun) {
+                    updatePhase = UpdatePhase.Available
+                } else {
+                    updateNote = "已是最新"
+                }
+            } finally {
+                updateChecking = false
+                /* 提示只留三秒，别一直挂在版本号后面 */
+                val note = updateNote
+                if (note.isNotEmpty() && updatePhase == UpdatePhase.Idle) {
+                    viewModelScope.launch {
+                        kotlinx.coroutines.delay(3000)
+                        if (updatePhase == UpdatePhase.Idle && updateNote == note) updateNote = ""
+                    }
+                }
+            }
         }
     }
 
@@ -155,9 +180,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun onVersionClick() {
         when (updatePhase) {
+            /* 空闲时点版本号 = 立刻问一次更新源，不用重启 app */
+            UpdatePhase.Idle -> checkUpdate()
             UpdatePhase.Available, UpdatePhase.Failed -> startDownload()
             UpdatePhase.Downloading -> cancelDownload()
-            UpdatePhase.Idle, UpdatePhase.Installing -> Unit
+            UpdatePhase.Installing -> Unit
         }
     }
 

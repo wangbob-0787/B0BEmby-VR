@@ -268,6 +268,7 @@ fun HomeScreen(
             updatePhase = mainViewModel.updatePhase,
             updateProgress = mainViewModel.updateProgress,
             updateNote = mainViewModel.updateNote,
+            updateChecking = mainViewModel.updateChecking,
             onVersionClick = { mainViewModel.onVersionClick() },
             userInfo = userInfo,
             /*

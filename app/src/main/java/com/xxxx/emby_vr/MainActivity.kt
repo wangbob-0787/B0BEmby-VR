@@ -6270,6 +6270,12 @@ class MainActivity : ComponentActivity() {
                 currentItem = item
                 currentSeriesId = item.seriesId
                 currentSeasonId = item.seasonId
+                /*
+                 * 剧集一开始就把选集列表填好（父亲 2026-11-02）：
+                 * 以前要等打开选集菜单才去拉，起播前那几秒里菜单是空的，
+                 * 想看下一集没法直接选；现在详情一到就在后台预取，切集也不清空。
+                 */
+                if (!item.seriesId.isNullOrBlank()) loadEpisodes()
                 menuState.info = com.xxxx.emby_vr.panel.MediaInfoView(
                     /*
                      * 第一行显示**剧名**（父亲 2026-10-07）：剧集用所属剧的名字，

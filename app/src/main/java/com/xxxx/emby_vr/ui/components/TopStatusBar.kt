@@ -74,6 +74,8 @@ fun TopStatusBar(
     updatePhase: UpdatePhase = UpdatePhase.Idle,
     updateProgress: Int = 0,
     updateNote: String = "",
+    /** 正在问更新源（点一下版本号就有「检查中…」反馈） */
+    updateChecking: Boolean = false,
     onVersionClick: () -> Unit = {},
     showSearchButton: Boolean = false,
     userInfo: String? = null,
@@ -230,14 +232,19 @@ fun TopStatusBar(
                     ),
                     label = "version-alpha"
                 )
-                val clickable = updatePhase == UpdatePhase.Available ||
-                        updatePhase == UpdatePhase.Failed ||
-                        updatePhase == UpdatePhase.Downloading
-                val suffix = when (updatePhase) {
-                    UpdatePhase.Available, UpdatePhase.Failed -> "（有新版本）"
-                    UpdatePhase.Downloading -> "（正在下载 $updateProgress%）"
-                    UpdatePhase.Installing -> "（正在安装…）"
-                    UpdatePhase.Idle -> ""
+                /*
+                 * 版本号一直是可点的：空闲时点它 = 立刻问一次更新源（父亲 2026-11-02 要求，
+                 * 以前只有启动时才问，装了新包得退出重进才发现）。
+                 */
+                val clickable = true
+                val suffix = when {
+                    updateChecking -> "（检查中…）"
+                    updatePhase == UpdatePhase.Available ||
+                            updatePhase == UpdatePhase.Failed -> "（有新版本）"
+                    updatePhase == UpdatePhase.Downloading -> "（正在下载 $updateProgress%）"
+                    updatePhase == UpdatePhase.Installing -> "（正在安装…）"
+                    updateNote.isNotEmpty() -> "（$updateNote）"
+                    else -> ""
                 }
                 val alphaValue = if (updatePhase == UpdatePhase.Downloading) blink.value else 1f
                 val versionModifier = if (clickable) {

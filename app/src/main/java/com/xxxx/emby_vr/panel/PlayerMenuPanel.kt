@@ -487,8 +487,13 @@ private fun MoreMenu(menu: MenuState, playing: Boolean) {
                 menu.stereoMode == 2 -> "舒适"
                 else -> "标准"
             },
-            selected = menu.stereoMode != 0,
+            /*
+             * 这一行只是入口，不表示"当前选中"：绿色高亮只留给展开后二级菜单里的那一项
+             * （父亲 2026-11-02）。没起播时整行灰掉、点不动，和其他四项一致。
+             */
+            selected = false,
             hasSub = true,
+            enabled = playing,
             onClick = { menu.onSelect?.invoke(MenuKind.MORE, 7) },
         )
         entries.forEachIndexed { i, (k, label) ->
