@@ -191,6 +191,19 @@ object DepthEngine {
         if (!active) return
         synchronized(this) {
             if (ready) return
+            /*
+             * 远程模式不需要本地解释器：建了也用不上，还白占内存和线程。
+             * 只报一个输入尺寸给原生（尺寸决定上采样的源大小），然后就算就绪。
+             */
+            if (VrTuning.depthRemote == 1) {
+                inW = REMOTE_IN_W
+                inH = REMOTE_IN_H
+                ready = true
+                initedSig = "${VrTuning.depthGpu}|${VrTuning.depthModel}|${VrTuning.depthThreads}|1"
+                if (VrNative.loaded) VrNative.setDepthInputSize(inW, inH)
+                Log.i(TAG, "深度推理：远程模式（点 15，输入 ${inW}x${inH}），本地解释器不建")
+                return
+            }
             try {
                 val asset = modelAsset()
                 val model = loadModel(context, asset)
