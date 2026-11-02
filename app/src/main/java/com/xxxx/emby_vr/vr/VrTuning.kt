@@ -198,6 +198,19 @@ object VrTuning {
     var depthModel: Int = -1
 
     /**
+     * 深度在哪里算（父亲 2026-11-02）：0 = 头显本地（256 int8），1 = 点 15 远程（512x288）。
+     *
+     * 远程这条实测单次往返 22 毫秒（含点 15 上 18 毫秒推理），输入还大一档，
+     * 是拿来跟本地对比的；切换当场生效，不用重装。
+     */
+    @Volatile
+    var depthRemote: Int = 0
+
+    /** 远程深度服务地址（点 15 的 depth_server.py） */
+    @Volatile
+    var depthRemoteHost: String = "192.168.150.15:7799"
+
+    /**
      * 网页内核选择（2026-10-14 父亲定）：0 = 系统自带网页视图（Chromium 90，B站慢），
      * 1 = 打进应用里的火狐内核（GeckoView 158）。
      *
@@ -666,6 +679,14 @@ object VrTuning {
         raw["depth_gpu"]?.toIntOrNull()?.let {
             depthGpu = if (it == 0) 0 else 1
             applied += "深度推理 ${if (depthGpu == 1) "显卡" else "CPU"}"
+        }
+        raw["depth_remote"]?.toIntOrNull()?.let {
+            depthRemote = if (it == 1) 1 else 0
+            applied += "深度计算 ${if (depthRemote == 1) "点 15 远程" else "头显本地"}"
+        }
+        raw["depth_remote_host"]?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            depthRemoteHost = it
+            applied += "深度服务地址 $it"
         }
         raw["depth_model"]?.toIntOrNull()?.let {
             depthModel = when (it) {

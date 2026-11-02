@@ -72,6 +72,7 @@ import coil3.compose.AsyncImage
  */
 enum class MenuKind(val title: String) {
     MORE("更多"),
+    STEREO("3D 设置"),
     AUDIO("音频选择"),
     QUALITY("视频质量"),
     MODE("播放模式"),
@@ -94,7 +95,7 @@ enum class MenuKind(val title: String) {
 val MenuKind.isSubMenu: Boolean
     get() = this == MenuKind.AUDIO || this == MenuKind.QUALITY ||
         this == MenuKind.MODE || this == MenuKind.BUFFER || this == MenuKind.CINEMA_LIGHT ||
-        this == MenuKind.SEAT_ADJUST
+        this == MenuKind.SEAT_ADJUST || this == MenuKind.STEREO
 
 /**
  * 菜单里的一行（轨道 / 集数这类：显示名 + 是否当前选中）。
@@ -180,6 +181,10 @@ class MenuState {
      * 真正的值存在 vr-tuning.txt 里，这里只是界面显示用的副本。
      */
     var stereoMode by mutableStateOf(0)
+    /** 深度是不是在点 15 上算（true = 远程大模型，false = 头显本地小模型） */
+    var stereoRemote by mutableStateOf(false)
+    /** 「3D 设置」二级菜单的行：关 / 标准 / 舒适 / 远程 */
+    var stereoRows by mutableStateOf<List<MenuRowItem>>(emptyList())
     var danmakuScale by mutableStateOf(1f)
 
     /** 弹幕时间偏移（毫秒）：正 = 提前，负 = 推后（父亲 2026-10-09 要求） */
@@ -367,7 +372,8 @@ fun PlayerMenuPanel(menu: MenuState, osd: OsdState) {
      */
     val cardHeight = when (kind) {
         MenuKind.INFO, MenuKind.CAST -> Modifier.height(372.dp)
-        MenuKind.SUBTITLE, MenuKind.EPISODES, MenuKind.AUDIO -> Modifier.heightIn(max = 360.dp)
+        MenuKind.SUBTITLE, MenuKind.EPISODES, MenuKind.AUDIO, MenuKind.STEREO ->
+            Modifier.heightIn(max = 360.dp)
         else -> Modifier
     }
 
@@ -447,6 +453,7 @@ fun PlayerMenuPanel(menu: MenuState, osd: OsdState) {
                 MenuKind.DANMAKU -> DanmakuMenu(menu)
                 MenuKind.SUBTITLE -> TrackMenu(menu, menu.subtitleTracks, MenuKind.SUBTITLE)
                 MenuKind.AUDIO -> TrackMenu(menu, menu.audioTracks, MenuKind.AUDIO)
+                MenuKind.STEREO -> TrackMenu(menu, menu.stereoRows, MenuKind.STEREO)
                 MenuKind.EPISODES -> EpisodeMenu(menu)
                 MenuKind.INFO -> InfoMenu(menu)
                 MenuKind.CAST -> CastMenu(menu)
@@ -468,19 +475,20 @@ private fun MoreMenu(menu: MenuState, playing: Boolean) {
     )
     Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
         /*
-         * 3D 模式（父亲 2026-11-01）：放在最上面一行，点一下循环 关 → 标准 → 舒适。
-         * 排在最前面是因为「更多」列表本身能滚，放末尾容易被挤出可视区。
+         * 3D 设置（父亲 2026-11-02）：点进去展开二级菜单，四项：
+         * 关 / 标准 / 舒适 / 远程（远程 = 深度在点 15 上算）。
          * 行号固定 = 7，与下面四条（0..3）互不干扰。
          */
         MenuRow(
-            label = "3D 模式",
-            value = when (menu.stereoMode) {
-                1 -> "标准"
-                2 -> "舒适"
-                else -> "关"
+            label = "3D 设置",
+            value = when {
+                menu.stereoMode == 0 -> "关"
+                menu.stereoRemote -> "远程"
+                menu.stereoMode == 2 -> "舒适"
+                else -> "标准"
             },
             selected = menu.stereoMode != 0,
-            hasSub = false,
+            hasSub = true,
             onClick = { menu.onSelect?.invoke(MenuKind.MORE, 7) },
         )
         entries.forEachIndexed { i, (k, label) ->

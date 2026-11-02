@@ -67,6 +67,15 @@ object DepthEngine {
     /** 模型是否可用；不可用时原生保持平面出画，2D→3D 开关仍可开但没有立体 */
     @Volatile
     var ready = false
+    /* 远程深度服务（点 15）：长连接，断了下一帧重连 */
+    private var sock: java.net.Socket? = null
+    private var sockKey = ""
+
+    companion object {
+        /* 远程服务端的模型输入尺寸（点 15 上的 depth512.onnx 是 512x288） */
+        const val REMOTE_IN_W = 512
+        const val REMOTE_IN_H = 288
+    }
         private set
 
     /** 最近一次推理耗时（毫秒），排查用 */
@@ -166,6 +175,8 @@ object DepthEngine {
         runCatching { gpu?.close() }
         gpu = null
         ready = false
+        runCatching { sock?.close() }
+        sock = null
         prevDepth = null
         refInit = false
         inBuf = null
@@ -268,15 +279,98 @@ object DepthEngine {
             busy.set(false)
         }
         if (!busy.compareAndSet(false, true)) return
+        /*
+         * 远程模式（父亲 2026-11-02）：深度改在点 15 上算，输入更大、单次更快。
+         * 这条路径不依赖本地解释器，所以不走上面的 ready 判定。
+         */
+        val remote = VrTuning.depthRemote == 1
         worker.execute {
             try {
-                runInfer(rgba, w, h, seq)
+                if (remote) runInferRemote(rgba, w, h, seq) else runInfer(rgba, w, h, seq)
             } catch (t: Throwable) {
                 Log.e(TAG, "深度推理失败：${t.message}")
             } finally {
                 busy.set(false)
             }
         }
+    }
+
+    /**
+     * 远程深度：把这一帧缩到 512x288 的 RGB 发给点 15，拿回 uint8 深度图。
+     *
+     * 服务端是 ~/depth-service/depth_server.py（OpenVINO，单次约 18 毫秒），
+     * 局域网往返实测 22 毫秒，比头显本地跑 256 输入快五倍，输入分辨率还大一档。
+     * 连接断了下一次自动重连，绝不让 3D 整条链路卡在网络上。
+     */
+    private fun runInferRemote(rgba: ByteArray, w: Int, h: Int, seq: Long) {
+        val t0 = SystemClock.elapsedRealtime()
+        val s = ensureSocket()
+        if (s == null) {
+            lastInferMs = -1
+            return
+        }
+        val rw = REMOTE_IN_W
+        val rh = REMOTE_IN_H
+        val rgb = ByteArray(rw * rh * 3)
+        var o = 0
+        for (y in 0 until rh) {
+            val sy = (y.toLong() * h / rh).toInt()
+            val row = sy * w
+            for (x in 0 until rw) {
+                val sx = (x.toLong() * w / rw).toInt()
+                val i = (row + sx) * 4
+                rgb[o++] = rgba[i]
+                rgb[o++] = rgba[i + 1]
+                rgb[o++] = rgba[i + 2]
+            }
+        }
+        val out = s.getOutputStream()
+        val inp = s.getInputStream()
+        out.write(byteArrayOf(0x42, 0x30, 0x42, 0x44))
+        out.write(byteArrayOf((rw and 0xFF).toByte(), ((rw shr 8) and 0xFF).toByte(),
+                              (rh and 0xFF).toByte(), ((rh shr 8) and 0xFF).toByte()))
+        out.write(rgb)
+        out.flush()
+        val head = ByteArray(4)
+        readFully(inp, head, 4)
+        val ow = (head[0].toInt() and 0xFF) or ((head[1].toInt() and 0xFF) shl 8)
+        val oh = (head[2].toInt() and 0xFF) or ((head[3].toInt() and 0xFF) shl 8)
+        if (ow <= 0 || oh <= 0) return
+        val n = ow * oh
+        val depth = ByteArray(n)
+        readFully(inp, depth, n)
+        lastInferMs = SystemClock.elapsedRealtime() - t0
+        val vals = FloatArray(n) { (depth[it].toInt() and 0xFF) / 255f }
+        finishDepth(vals, ow, oh, seq)
+    }
+
+    private fun readFully(inp: java.io.InputStream, buf: ByteArray, n: Int) {
+        var off = 0
+        while (off < n) {
+            val r = inp.read(buf, off, n - off)
+            if (r <= 0) throw java.io.IOException("远程深度：连接提前关闭")
+            off += r
+        }
+    }
+
+    private fun ensureSocket(): java.net.Socket? {
+        val key = VrTuning.depthRemoteHost
+        sock?.let { if (sockKey == key && it.isConnected && !it.isClosed) return it }
+        runCatching { sock?.close() }
+        sock = null
+        sockKey = key
+        val parts = key.split(":")
+        val host = parts.getOrNull(0) ?: "192.168.150.15"
+        val port = parts.getOrNull(1)?.toIntOrNull() ?: 7799
+        return runCatching {
+            java.net.Socket().apply {
+                tcpNoDelay = true
+                connect(java.net.InetSocketAddress(host, port), 400)
+                soTimeout = 1500
+            }
+        }.onFailure {
+            Log.w(TAG, "远程深度：连不上 $key（${it.message}），下一帧再试")
+        }.getOrNull().also { sock = it }
     }
 
     private fun runInfer(rgba: ByteArray, w: Int, h: Int, seq: Long) {

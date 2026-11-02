@@ -4852,44 +4852,11 @@ class MainActivity : ComponentActivity() {
                     return
                 }
                 /*
-                 * 3D 模式（父亲 2026-11-01）：开关实时 2D→3D。
-                 * 写回 vr-tuning.txt 的 stereo3d —— 文件是唯一事实源，
-                 * 只调原生的话下一秒会被文件里的旧值覆盖回去。
+                 * 3D 设置（父亲 2026-11-02）：点这一行进二级菜单，
+                 * 里面四选一：关 / 标准 / 舒适 / 远程。
                  */
                 if (index == 7) {
-                    /*
-                     * 三态循环：关 → 标准 → 舒适 → 关。
-                     *
-                     * 两档的数值照 DepthRay 的整数千分位给：标准 6‰、舒适 4‰（同一台机器上
-                     * 它跑的是 6）。舒适档另把边缘淡出加宽，久看不累。
-                     */
-                    val next = (menuState.stereoMode + 1) % 3
-                    menuState.stereoMode = next
-                    val disp = when (next) {
-                        1 -> 0.014f
-                        2 -> 0.009f
-                        else -> 0.014f
-                    }
-                    val fade = if (next == 2) 0.06f else 0.04f
-                    com.xxxx.emby_vr.vr.VrTuning.setValue(this, "stereo_mode", next.toString())
-                    com.xxxx.emby_vr.vr.VrTuning.setValue(this, "stereo3d", if (next == 0) "0" else "1")
-                    com.xxxx.emby_vr.vr.VrTuning.setValue(this, "stereo_disp", disp.toString())
-                    com.xxxx.emby_vr.vr.VrTuning.setValue(this, "stereo_fade", fade.toString())
-                    com.xxxx.emby_vr.vr.VrNative.setTuning(
-                        com.xxxx.emby_vr.vr.VrTuning.KEY_STEREO_DISP, disp,
-                    )
-                    com.xxxx.emby_vr.vr.VrNative.setTuning(
-                        com.xxxx.emby_vr.vr.VrTuning.KEY_STEREO_FADE, fade,
-                    )
-                    com.xxxx.emby_vr.vr.VrNative.setTuning(
-                        com.xxxx.emby_vr.vr.VrTuning.KEY_STEREO3D, if (next == 0) 0f else 1f,
-                    )
-                    Log.i(TAG, "3D 模式 → " + when (next) {
-                        1 -> "标准（视差 ${disp}）"
-                        2 -> "舒适（视差 ${disp}）"
-                        else -> "关"
-                    })
-                    refreshMenuRows(kind)
+                    openMenu(com.xxxx.emby_vr.panel.MenuKind.STEREO, com.xxxx.emby_vr.panel.OsdButton.MORE)
                     return
                 }
                 /*
@@ -5085,6 +5052,11 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
+            }
+            com.xxxx.emby_vr.panel.MenuKind.STEREO -> {
+                applyStereoChoice(index)
+                refreshMenuRows(com.xxxx.emby_vr.panel.MenuKind.STEREO)
+                return
             }
             com.xxxx.emby_vr.panel.MenuKind.AUDIO -> {
                 selectedAudioIndex = audioStreamIndices.getOrNull(index)
@@ -5418,6 +5390,7 @@ class MainActivity : ComponentActivity() {
                 menuState.danmakuOffsetMs = danmakuOffsetMs
             }
             com.xxxx.emby_vr.panel.MenuKind.AUDIO -> menuState.audioTracks = buildAudioRows()
+            com.xxxx.emby_vr.panel.MenuKind.STEREO -> menuState.stereoRows = buildStereoRows()
             com.xxxx.emby_vr.panel.MenuKind.SUBTITLE -> menuState.subtitleTracks = buildSubtitleRows()
             com.xxxx.emby_vr.panel.MenuKind.EPISODES -> loadEpisodes()
             com.xxxx.emby_vr.panel.MenuKind.INFO, com.xxxx.emby_vr.panel.MenuKind.CAST ->
@@ -5960,6 +5933,50 @@ class MainActivity : ComponentActivity() {
     }
 
     /** 菜单里选完一项后刷新列表的勾选态（菜单保持打开，勾要跟着动） */
+    /**
+     * 3D 设置的四个选择（父亲 2026-11-02）：
+     * 0 = 关 · 1 = 标准 · 2 = 舒适 · 3 = 远程（深度改在点 15 上算，输入更大）。
+     *
+     * 视差照 DepthRay 的整数千分位：标准 6‰、舒适 4‰；舒适档另把边缘淡出加宽。
+     * 写回 vr-tuning.txt，文件是唯一事实源，只调原生下一秒会被文件里的旧值覆盖。
+     */
+    private fun applyStereoChoice(index: Int) {
+        val mode = if (index >= 3) 1 else index
+        val remote = index == 3
+        val disp = if (mode == 2) 0.009f else 0.014f
+        val fade = if (mode == 2) 0.06f else 0.04f
+        com.xxxx.emby_vr.vr.VrTuning.setValue(this, "stereo_mode", mode.toString())
+        com.xxxx.emby_vr.vr.VrTuning.setValue(this, "stereo3d", if (mode == 0) "0" else "1")
+        com.xxxx.emby_vr.vr.VrTuning.setValue(this, "stereo_disp", disp.toString())
+        com.xxxx.emby_vr.vr.VrTuning.setValue(this, "stereo_fade", fade.toString())
+        com.xxxx.emby_vr.vr.VrTuning.setValue(this, "depth_remote", if (remote) "1" else "0")
+        com.xxxx.emby_vr.vr.VrNative.setTuning(com.xxxx.emby_vr.vr.VrTuning.KEY_STEREO_DISP, disp)
+        com.xxxx.emby_vr.vr.VrNative.setTuning(com.xxxx.emby_vr.vr.VrTuning.KEY_STEREO_FADE, fade)
+        com.xxxx.emby_vr.vr.VrNative.setTuning(
+            com.xxxx.emby_vr.vr.VrTuning.KEY_STEREO3D, if (mode == 0) 0f else 1f,
+        )
+        menuState.stereoMode = mode
+        menuState.stereoRemote = remote
+        Log.i(TAG, "3D 设置 → " + when {
+            mode == 0 -> "关"
+            remote -> "远程（点 15 算深度，视差 $disp）"
+            mode == 2 -> "舒适（视差 $disp）"
+            else -> "标准（视差 $disp）"
+        })
+    }
+
+    /** 「3D 设置」二级菜单的四行：当前生效的那一行打勾 */
+    private fun buildStereoRows(): List<com.xxxx.emby_vr.panel.MenuRowItem> {
+        val cur = when {
+            menuState.stereoMode == 0 -> 0
+            menuState.stereoRemote -> 3
+            menuState.stereoMode == 2 -> 2
+            else -> 1
+        }
+        val labels = listOf("关", "标准", "舒适", "远程（点 15 算深度，更清晰）")
+        return labels.mapIndexed { i, s -> com.xxxx.emby_vr.panel.MenuRowItem(s, i == cur) }
+    }
+
     private fun refreshMenuRows(kind: com.xxxx.emby_vr.panel.MenuKind) {
         when (kind) {
             com.xxxx.emby_vr.panel.MenuKind.SUBTITLE ->
@@ -7663,6 +7680,7 @@ class MainActivity : ComponentActivity() {
         /* 菜单里「3D 模式」显示的档位，以调参文件为准（老配置只有 stereo3d 时按标准算） */
         menuState.stereoMode = com.xxxx.emby_vr.vr.VrTuning.value(this, "stereo_mode")?.toIntOrNull()
             ?: if (com.xxxx.emby_vr.vr.VrTuning.value(this, "stereo3d") == "1") 1 else 0
+        menuState.stereoRemote = com.xxxx.emby_vr.vr.VrTuning.value(this, "depth_remote") == "1"
         com.xxxx.emby_vr.vr.VrTuning.start(
             this,
             scope,
