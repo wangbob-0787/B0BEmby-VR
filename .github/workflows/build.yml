@@ -71,6 +71,17 @@ jobs:
           done
           ls -lh "$MODELS" | head
 
+      # ncnn 用 -fopenmp 编译，运行时要 libomp.so（NDK 只带共享版，不带进包就会
+      # dlopen 失败、整个原生库加载不了）。这里从 NDK 里拷一份进 jniLibs。
+      - name: 打包 libomp.so
+        run: |
+          set -e
+          SRC=$(ls -d $ANDROID_HOME/ndk/*/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/*/lib/linux/aarch64 2>/dev/null | head -1)
+          echo "NDK libomp: $SRC"
+          ls -l "$SRC"/libomp.so
+          mkdir -p app/src/main/jniLibs/arm64-v8a
+          cp "$SRC"/libomp.so app/src/main/jniLibs/arm64-v8a/
+
       - name: 下载 Chromium 132 内核库
         run: |
           mkdir -p app/libs
