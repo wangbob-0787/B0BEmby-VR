@@ -5950,6 +5950,15 @@ class MainActivity : ComponentActivity() {
         com.xxxx.emby_vr.vr.VrTuning.setValue(this, "stereo_disp", disp.toString())
         com.xxxx.emby_vr.vr.VrTuning.setValue(this, "stereo_fade", fade.toString())
         com.xxxx.emby_vr.vr.VrTuning.setValue(this, "depth_remote", if (remote) "1" else "0")
+        /*
+         * 远程的迟到是"网络 + 推理"两段固定开销，自动估算在配对稀疏时估不准，
+         * 直接把环延迟压到能盖住它的值；切回本地立刻恢复自动。
+         */
+        val ringDelay = if (remote) 160f else 0f
+        com.xxxx.emby_vr.vr.VrTuning.setValue(this, "stereo_ring_delay", ringDelay.toString())
+        com.xxxx.emby_vr.vr.VrNative.setTuning(
+            com.xxxx.emby_vr.vr.VrTuning.KEY_STEREO_RING_DELAY, ringDelay,
+        )
         com.xxxx.emby_vr.vr.VrNative.setTuning(com.xxxx.emby_vr.vr.VrTuning.KEY_STEREO_DISP, disp)
         com.xxxx.emby_vr.vr.VrNative.setTuning(com.xxxx.emby_vr.vr.VrTuning.KEY_STEREO_FADE, fade)
         com.xxxx.emby_vr.vr.VrNative.setTuning(
