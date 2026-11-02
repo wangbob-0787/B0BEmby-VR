@@ -483,7 +483,7 @@ private fun MoreMenu(menu: MenuState, playing: Boolean) {
             label = "3D 设置",
             value = when {
                 menu.stereoMode == 0 -> "关"
-                menu.stereoRemote -> "远程"
+                menu.stereoRemote -> if (menu.stereoMode == 2) "远程舒适" else "远程标准"
                 menu.stereoMode == 2 -> "舒适"
                 else -> "标准"
             },

@@ -84,6 +84,9 @@ object DepthEngine {
      * 复用缓冲：以前每帧都新建 rgb / vals / out 三个大数组，
      * 一秒几十帧就是几十兆垃圾，头显的 Java 堆顶不住（实测报 OutOfMemory 崩掉）。
      */
+    private var jpegBuf = java.io.ByteArrayOutputStream(64 * 1024)
+    private var pixBuf = IntArray(0)
+    private var bmpBuf: android.graphics.Bitmap? = null
     private var rgbBuf = ByteArray(0)
     private var valsBuf = FloatArray(0)
     private var outU8Buf = ByteArray(0)
@@ -346,8 +349,8 @@ object DepthEngine {
     private fun enqueueRemote(rgba: ByteArray, w: Int, h: Int, seq: Long) {
         val rw = REMOTE_IN_W
         val rh = REMOTE_IN_H
-        val need = rw * rh * 3
-        val rgb = if (rgbBuf.size == need) rgbBuf else ByteArray(need).also { rgbBuf = it }
+        val need = rw * rh
+        val pix = if (pixBuf.size == need) pixBuf else IntArray(need).also { pixBuf = it }
         var o = 0
         for (y in 0 until rh) {
             val sy = (y.toLong() * h / rh).toInt()
@@ -355,15 +358,25 @@ object DepthEngine {
             for (x in 0 until rw) {
                 val sx = (x.toLong() * w / rw).toInt()
                 val i = (row + sx) * 4
-                rgb[o++] = rgba[i]
-                rgb[o++] = rgba[i + 1]
-                rgb[o++] = rgba[i + 2]
+                pix[o++] = (0xFF shl 24) or
+                        ((rgba[i].toInt() and 0xFF) shl 16) or
+                        ((rgba[i + 1].toInt() and 0xFF) shl 8) or
+                        (rgba[i + 2].toInt() and 0xFF)
             }
         }
+        val jpeg = runCatching {
+            val bmp = bmpBuf ?: android.graphics.Bitmap.createBitmap(
+                rw, rh, android.graphics.Bitmap.Config.ARGB_8888,
+            ).also { bmpBuf = it }
+            bmp.setPixels(pix, 0, rw, 0, 0, rw, rh)
+            jpegBuf.reset()
+            bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 70, jpegBuf)
+            jpegBuf.toByteArray()
+        }.getOrNull() ?: return
         synchronized(pending) {
             /* 排太多说明网络在堵：丢掉最老的，宁可少几帧也别让深度越拖越旧 */
             while (pending.size > REMOTE_QUEUE_MAX) pending.pollFirst()
-            pending.addLast(RemoteFrame(seq, rw, rh, rgb, SystemClock.elapsedRealtime()))
+            pending.addLast(RemoteFrame(seq, rw, rh, jpeg, SystemClock.elapsedRealtime()))
         }
         ensureBatchThread()
     }
@@ -409,12 +422,15 @@ object DepthEngine {
         val s = ensureSocket() ?: return
         val out = s.getOutputStream()
         val inp = s.getInputStream()
-        val head = java.io.ByteArrayOutputStream(16 + batch.size * (4 + REMOTE_IN_W * REMOTE_IN_H * 3))
-        head.write(byteArrayOf(0x42, 0x30, 0x42, 0x4D))   // B0BM
+        val head = java.io.ByteArrayOutputStream(16 + batch.size * (6 + 40 * 1024))
+        head.write(byteArrayOf(0x42, 0x30, 0x42, 0x4A))   // B0BJ（压缩批量）
         head.write(byteArrayOf((batch.size and 0xFF).toByte(), ((batch.size shr 8) and 0xFF).toByte()))
         for (f in batch) {
+            val len = f.rgb.size
             head.write(byteArrayOf((f.w and 0xFF).toByte(), ((f.w shr 8) and 0xFF).toByte(),
-                                   (f.h and 0xFF).toByte(), ((f.h shr 8) and 0xFF).toByte()))
+                                   (f.h and 0xFF).toByte(), ((f.h shr 8) and 0xFF).toByte(),
+                                   (len and 0xFF).toByte(), ((len shr 8) and 0xFF).toByte(),
+                                   ((len shr 16) and 0xFF).toByte(), ((len shr 24) and 0xFF).toByte()))
             head.write(f.rgb)
         }
         out.write(head.toByteArray())

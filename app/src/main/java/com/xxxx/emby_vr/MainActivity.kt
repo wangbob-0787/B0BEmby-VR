@@ -5941,8 +5941,13 @@ class MainActivity : ComponentActivity() {
      * 写回 vr-tuning.txt，文件是唯一事实源，只调原生下一秒会被文件里的旧值覆盖。
      */
     private fun applyStereoChoice(index: Int) {
-        val mode = if (index >= 3) 1 else index
-        val remote = index == 3
+        /* 0 关 / 1 标准（本地）/ 2 舒适（本地）/ 3 远程标准 / 4 远程舒适 */
+        val remote = index >= 3
+        val mode = when (index) {
+            0 -> 0
+            2, 4 -> 2
+            else -> 1
+        }
         val disp = if (mode == 2) 0.009f else 0.014f
         val fade = if (mode == 2) 0.06f else 0.04f
         com.xxxx.emby_vr.vr.VrTuning.setValue(this, "stereo_mode", mode.toString())
@@ -5978,11 +5983,11 @@ class MainActivity : ComponentActivity() {
     private fun buildStereoRows(): List<com.xxxx.emby_vr.panel.MenuRowItem> {
         val cur = when {
             menuState.stereoMode == 0 -> 0
-            menuState.stereoRemote -> 3
+            menuState.stereoRemote -> if (menuState.stereoMode == 2) 4 else 3
             menuState.stereoMode == 2 -> 2
             else -> 1
         }
-        val labels = listOf("关", "标准", "舒适", "远程（点 15 算深度，更清晰）")
+        val labels = listOf("关", "标准", "舒适", "远程标准", "远程舒适")
         return labels.mapIndexed { i, s -> com.xxxx.emby_vr.panel.MenuRowItem(s, i == cur) }
     }
 
