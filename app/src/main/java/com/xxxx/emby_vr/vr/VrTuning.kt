@@ -206,6 +206,12 @@ object VrTuning {
     @Volatile
     var depthRemote: Int = 0
 
+    /**
+     * 远程一批发几帧（1~10）。默认 3：五帧摊下来的迟到会超过缓冲跨度，
+     * 配对率反而掉；三帧迟到约一百五十毫秒，正好装得下。
+     */
+    var depthBatch: Int = 3
+
     /** 远程深度服务地址（点 15 的 depth_server.py） */
     @Volatile
     var depthRemoteHost: String = "192.168.150.15:7799"
