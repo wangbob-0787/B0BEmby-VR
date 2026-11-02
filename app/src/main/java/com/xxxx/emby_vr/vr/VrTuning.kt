@@ -380,6 +380,8 @@ object VrTuning {
     const val KEY_STEREO_FEATHER = 62
     /** 环延迟强制值（毫秒，0 = 自动）；远程推理迟到固定，用它一次压住 */
     const val KEY_STEREO_RING_DELAY = 63
+    /** 边缘加密开关（1 = 偏移表按全分辨率深度算，0 = 老算法）；运行时切换 */
+    const val KEY_STEREO_EDGE_DENSE = 64
     /**
      * 抓帧的毫秒下限（0 = 纯按帧数，默认）。
      *
@@ -716,6 +718,12 @@ object VrTuning {
             if (it >= 0f && it <= 300f) {
                 VrNative.setTuning(KEY_STEREO_FEATHER, it)
                 applied += "局部液化羽化 %.0f px".format(it)
+            }
+        }
+        raw["stereo_edge_dense"]?.toFloatOrNull()?.let {
+            if (it >= 0f && it <= 1f) {
+                VrNative.setTuning(KEY_STEREO_EDGE_DENSE, it)
+                applied += if (it >= 0.5f) "边缘加密开" else "边缘加密关"
             }
         }
         raw["stereo_ring_delay"]?.toFloatOrNull()?.let {

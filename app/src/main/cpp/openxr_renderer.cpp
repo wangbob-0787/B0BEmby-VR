@@ -2266,6 +2266,7 @@ struct VrContext {
     float ringArtifactsSigma = -1.f;
     float ringArtifactsStretch = -1.f;   // 局部液化参数：改了要重算偏移表
     float ringArtifactsFeather = -1.f;
+    int ringArtifactsDense = -1;     // 边缘加密开关：变了要重算偏移表
     /* 延迟自适应：深度迟到量的 90 分位数，每秒重算一次 */
     float ringDelayMs = 0.f;
     std::vector<float> ringLateMs;
@@ -2650,6 +2651,8 @@ std::atomic<float> gStereoFeather{96.f};
  * 直接给一个能盖住它的值最省事。
  */
 std::atomic<float> gRingDelayOverride{0.f};
+/* 边缘加密：1 = 偏移表用全分辨率深度算（边缘贴得紧，算得重），0 = 用低分深度（老算法） */
+std::atomic<int> gStereoEdgeDense{1};
 std::atomic<float> gStereoSharp{1.0f};     // 分层锐化强度 0..1
 std::atomic<float> gStereoEdgeSigma{0.1f}; // 引导回归正则项 σe
 std::atomic<int> gStereoFill{1};
@@ -6635,7 +6638,8 @@ void buildRingArtifacts(VrContext &c, RingSlot &s, int upW, int upH) {
                         fabsf(c.ringArtifactsSharp - gStereoSharp.load()) < 1e-4f &&
                         fabsf(c.ringArtifactsSigma - gStereoEdgeSigma.load()) < 1e-5f &&
                         fabsf(c.ringArtifactsStretch - gStereoStretch.load()) < 1e-4f &&
-                        fabsf(c.ringArtifactsFeather - gStereoFeather.load()) < 1e-3f;
+                        fabsf(c.ringArtifactsFeather - gStereoFeather.load()) < 1e-3f &&
+                        c.ringArtifactsDense == gStereoEdgeDense.load();
     if (sameSeq && sameDisp && sameUp) return;
     /*
      * 顺序要紧：先做边缘保持上采样，再用**上采样后的全分辨率深度**算偏移表。
@@ -6643,9 +6647,13 @@ void buildRingArtifacts(VrContext &c, RingSlot &s, int upW, int upH) {
      * 不再是一格一格的方块；平坦区域靠双线性铺开，等于自动在细节处加密。
      */
     renderDepthUpsample(c, s.depth.tex, 0, s.color.tex, false, upW, upH, c.ringUp);
-    renderOffsets(c, c.ringUp.tex, upW, upH, upW, upH, c.ringOffsets, true);
+    if (gStereoEdgeDense.load() == 1) {
+        renderOffsets(c, c.ringUp.tex, upW, upH, upW, upH, c.ringOffsets, true);
+    } else {
+        renderOffsets(c, s.depth.tex, s.depth.w, s.depth.h, c.ringOffsets, false);
+    }
     c.ringArtifactsSeq = s.seq;
-    c.ringArtifactsLowW = upW;
+    c.ringArtifactsLowW = gStereoEdgeDense.load() == 1 ? upW : s.depth.w;
     c.ringArtifactsDisp = c.depthDisp;
     c.ringArtifactsConv = c.depthConv;
     c.ringArtifactsUpMode = gStereoUpMode.load();
@@ -6653,6 +6661,7 @@ void buildRingArtifacts(VrContext &c, RingSlot &s, int upW, int upH) {
     c.ringArtifactsSigma = gStereoEdgeSigma.load();
     c.ringArtifactsStretch = gStereoStretch.load();
     c.ringArtifactsFeather = gStereoFeather.load();
+    c.ringArtifactsDense = gStereoEdgeDense.load();
 }
 
 bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
@@ -6781,7 +6790,9 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
         if (useDepth) {
             const int lowW = delayed && src->lowW > 0
                                      ? src->lowW
-                                     : (c.depthUp.w > 0 ? c.depthUp.w : c.depth.w);
+                                     : ((gStereoEdgeDense.load() == 1 && c.depthUp.w > 0)
+                                            ? c.depthUp.w
+                                            : c.depth.w);
             const int frameW = delayed && src->frameW > 0
                                        ? src->frameW
                                        : (c.depthUp.w > 0 ? c.depthUp.w : c.depth.w);
@@ -7375,8 +7386,13 @@ void frameLoop(VrContext &c) {
                         if (c.depthUpDirty && c.depth.tex != 0) {
                             renderDepthUpsample(c, c.depth.tex, screenSrc, 0, webOnScreen,
                                                 upW0, upH0, c.depthUp);
-                            renderOffsets(c, c.depthUp.tex, c.depthUp.w, c.depthUp.h,
-                                          c.depthUp.w, c.depthUp.h, c.offsets, true);
+                            if (gStereoEdgeDense.load() == 1) {
+                                renderOffsets(c, c.depthUp.tex, c.depthUp.w, c.depthUp.h,
+                                              c.depthUp.w, c.depthUp.h, c.offsets, true);
+                            } else {
+                                renderOffsets(c, c.depth.tex, c.depth.w, c.depth.h,
+                                              c.offsets, false);
+                            }
                         }
                         /*
                          * 抓帧节奏按帧号（每 depthEveryN() 个新视频帧一次），
@@ -8815,6 +8831,13 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             if (value >= 0.f && value <= 300.f) {
                 gStereoFeather.store(value);
                 VLOGI("调参 → 局部液化羽化 %.0f px（按每眼 1920 源宽折算）", (double) value);
+            }
+            break;
+        /* 64 = 边缘加密（1 = 开，0 = 关）：运行时切换，下一秒重算偏移表 */
+        case 64:
+            if (value >= 0.f && value <= 1.f) {
+                gStereoEdgeDense.store(value >= 0.5f ? 1 : 0);
+                VLOGI("调参 → 边缘加密 %s", value >= 0.5f ? "开（偏移表全分辨率）" : "关（低分深度）");
             }
             break;
         /* 63 = 环延迟强制值（毫秒，0 = 按迟到自动算）：远程推理的迟到是固定开销，手动压住 */
