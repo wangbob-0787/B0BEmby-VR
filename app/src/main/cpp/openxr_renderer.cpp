@@ -6643,7 +6643,7 @@ void buildRingArtifacts(VrContext &c, RingSlot &s, int upW, int upH) {
      * 不再是一格一格的方块；平坦区域靠双线性铺开，等于自动在细节处加密。
      */
     renderDepthUpsample(c, s.depth.tex, 0, s.color.tex, false, upW, upH, c.ringUp);
-    renderOffsets(c, c.ringUp.tex, upW, upH, upW / 2, upH / 2, c.ringOffsets, true);
+    renderOffsets(c, c.ringUp.tex, upW, upH, upW, upH, c.ringOffsets, true);
     c.ringArtifactsSeq = s.seq;
     c.ringArtifactsLowW = upW;
     c.ringArtifactsDisp = c.depthDisp;
@@ -7376,7 +7376,7 @@ void frameLoop(VrContext &c) {
                             renderDepthUpsample(c, c.depth.tex, screenSrc, 0, webOnScreen,
                                                 upW0, upH0, c.depthUp);
                             renderOffsets(c, c.depthUp.tex, c.depthUp.w, c.depthUp.h,
-                                          c.depthUp.w / 2, c.depthUp.h / 2, c.offsets, true);
+                                          c.depthUp.w, c.depthUp.h, c.offsets, true);
                         }
                         /*
                          * 抓帧节奏按帧号（每 depthEveryN() 个新视频帧一次），
