@@ -2643,6 +2643,12 @@ std::atomic<int> gStereoUpMode{1};         // 0 = 双线性放大，1 = 引导�
  */
 std::atomic<float> gStereoStretch{0.65f};
 std::atomic<float> gStereoFeather{96.f};
+/*
+ * 环形缓冲延迟强制值（毫秒，0 = 按迟到自动算）。
+ * 远程推理的迟到是"网络 + 推理"两段固定开销，自动 p90 在配对稀疏时估不准，
+ * 直接给一个能盖住它的值最省事。
+ */
+std::atomic<float> gRingDelayOverride{0.f};
 std::atomic<float> gStereoSharp{1.0f};     // 分层锐化强度 0..1
 std::atomic<float> gStereoEdgeSigma{0.1f}; // 引导回归正则项 σe
 std::atomic<int> gStereoFill{1};
