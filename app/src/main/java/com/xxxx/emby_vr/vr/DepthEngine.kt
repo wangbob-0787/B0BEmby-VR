@@ -71,11 +71,9 @@ object DepthEngine {
     private var sock: java.net.Socket? = null
     private var sockKey = ""
 
-    companion object {
-        /* 远程服务端的模型输入尺寸（点 15 上的 depth512.onnx 是 512x288） */
-        const val REMOTE_IN_W = 512
-        const val REMOTE_IN_H = 288
-    }
+    /* 远程服务端的模型输入尺寸（点 15 上的 depth512.onnx 是 512x288） */
+    private const val REMOTE_IN_W = 512
+    private const val REMOTE_IN_H = 288
         private set
 
     /** 最近一次推理耗时（毫秒），排查用 */
