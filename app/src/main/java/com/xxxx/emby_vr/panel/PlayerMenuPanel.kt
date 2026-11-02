@@ -172,6 +172,14 @@ class MenuState {
      * （内核片 = 内核处理分辨率；普通片 = 服务端转码档位。父亲 2026-10-10）。
      */
     var kernelActive by mutableStateOf(false)
+
+    /**
+     * 银幕上正在放网页视频（腾讯/爱奇艺/B站/优酷）。
+     *
+     * 这类片不是 Emby 片源，osd.hasPlayback 一直是 false —— 但 3D 设置对它同样有意义
+     * （父亲 2026-11-02：打开任意一站，3D 设置要由灰变实），所以单列一个标志。
+     */
+    var webPlaying by mutableStateOf(false)
     var playMode by mutableStateOf(0)
     var danmakuOn by mutableStateOf(true)
 
@@ -443,7 +451,7 @@ fun PlayerMenuPanel(menu: MenuState, osd: OsdState) {
             Spacer(modifier = Modifier.height(14.dp))
             }
             when (kind) {
-                MenuKind.MORE -> MoreMenu(menu, osd.hasPlayback)
+                MenuKind.MORE -> MoreMenu(menu, osd.hasPlayback, menu.webPlaying)
                 MenuKind.SPEED -> SpeedMenu(menu)
                 MenuKind.QUALITY -> QualityMenu(menu)
                 MenuKind.MODE -> ModeMenu(menu)
@@ -466,7 +474,7 @@ fun PlayerMenuPanel(menu: MenuState, osd: OsdState) {
 private fun pxToDp(px: Float) = (px / 1.5f).dp
 
 @Composable
-private fun MoreMenu(menu: MenuState, playing: Boolean) {
+private fun MoreMenu(menu: MenuState, playing: Boolean, webPlaying: Boolean) {
     val entries = listOf(
         MenuKind.AUDIO to "音频选择",
         MenuKind.QUALITY to "视频质量",
@@ -493,7 +501,8 @@ private fun MoreMenu(menu: MenuState, playing: Boolean) {
              */
             selected = false,
             hasSub = true,
-            enabled = playing,
+            /* 网页视频也算"在放"：4 站任意一站打开，这一行由灰变实（父亲 2026-11-02） */
+            enabled = playing || webPlaying,
             onClick = { menu.onSelect?.invoke(MenuKind.MORE, 7) },
         )
         entries.forEachIndexed { i, (k, label) ->

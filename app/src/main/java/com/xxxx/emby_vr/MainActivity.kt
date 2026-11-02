@@ -2049,6 +2049,8 @@ class MainActivity : ComponentActivity() {
             webStartUrlState.value = null      /* 从图标进站点 = 站点首页 */
             webSiteState.value = site
             webOnScreen = true
+            /* 网页在屏 = 「更多」里的 3D 设置由灰变实（父亲 2026-11-02） */
+            menuState.webPlaying = true
             /*
              * 控制条标题行显示「正在播放：哔哩哔哩」（父亲 2026-10-13）。
              *
@@ -2080,6 +2082,7 @@ class MainActivity : ComponentActivity() {
         runOnUiThread {
             webSiteState.value = null
             webOnScreen = false
+            menuState.webPlaying = false
             /*
              * 【2026-10-16 头显实测定案：这里原来有一句 webHiddenByStream = false，是真凶】
              *
