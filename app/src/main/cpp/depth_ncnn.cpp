@@ -22,26 +22,6 @@
 
 #include <ncnn/net.h>
 
-/*
- * ncnn 的安卓预编译库引用了 libc++ 的 std::__ndk1::__hash_memory，而 NDK 自带的
- * libc++_static.a 里没有这个符号（r27、r28 都缺，实测链接报 undefined symbol）。
- * 这里补一个弱符号实现：弱符号在 libc++ 自己有定义时会被忽略，缺了才生效。
- * 用途只是给 std::hash<std::string> 之类算哈希，换成 FNV-1a 不影响正确性。
- */
-namespace std {
-inline namespace __ndk1 {
-__attribute__((weak)) size_t __hash_memory(const void *p, size_t n) noexcept {
-    const unsigned char *b = static_cast<const unsigned char *>(p);
-    size_t h = 1469598103934665603ULL;
-    for (size_t i = 0; i < n; i++) {
-        h ^= b[i];
-        h *= 1099511628211ULL;
-    }
-    return h;
-}
-}  // namespace __ndk1
-}  // namespace std
-
 #define NCNN_TAG "B0BEmbyVR"
 #define NCNN_LOGI(...) __android_log_print(ANDROID_LOG_INFO, NCNN_TAG, __VA_ARGS__)
 #define NCNN_LOGE(...) __android_log_print(ANDROID_LOG_ERROR, NCNN_TAG, __VA_ARGS__)
