@@ -60,9 +60,7 @@ android {
      * VR 影院模式（2026-10-05 起）：接官方 OpenXR，需要原生代码。
      * NDK 版本显式写死，避免 CI 上跟着 AGP 默认值漂移。
      */
-    // ncnn 的安卓预编译库是用 NDK r28 及以后编的，链接时会要 std::__ndk1::__hash_memory
-// 这个符号，r27 的 libc++ 里没有，所以整体抬到 r28（AGP 会自动下载对应 NDK）。
-    ndkVersion = "28.2.13676358"
+    ndkVersion = "27.0.12077973"
 
     externalNativeBuild {
         cmake {
