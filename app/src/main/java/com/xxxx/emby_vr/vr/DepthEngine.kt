@@ -256,7 +256,11 @@ object DepthEngine {
          * 调参换了推理后端（CPU/显卡）或模型：当场重建解释器，不用重装、不用重起播。
          * 只在两帧之间做，推理进行中不打断。
          */
-        val wantSig = "${VrTuning.depthGpu}|${VrTuning.depthModel}|${VrTuning.depthThreads}"
+        /*
+         * 远程/本地也算"后端"的一种：从远程切回本地时必须重建解释器，
+         * 否则 ready 还是 false，会一直空转不出深度（切回本地却没 3D 就是这个）。
+         */
+        val wantSig = "${VrTuning.depthGpu}|${VrTuning.depthModel}|${VrTuning.depthThreads}|${VrTuning.depthRemote}"
         if (wantSig != initedSig) {
             val ctx = appContext
             if (ctx != null && !busy.get()) {
