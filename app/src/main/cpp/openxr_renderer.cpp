@@ -6434,7 +6434,12 @@ void main() { oColor = vec4(texture(uTexture, vUv).rgb, 1.0); }
      * 起播先按 55ms 种一个延迟（DepthRay 在同一台机器上量到的值），
      * 攒够 8 个样本后一秒内改成实测 p90 —— 开头那一秒不至于一直显示最新帧、深度却还是旧的。
      */
-    c.ringDelayMs = 55.f;
+    /*
+     * 起始就按"深度大概晚一百多毫秒"给，别从 55 毫秒起步。
+     * 自适应要攒够 8 个样本才动（约一秒），这之前画面全是平面，
+     * 观感就是"打开 3D 要碰运气"。
+     */
+    c.ringDelayMs = 140.f;
     c.ringFrameMs = 0.f;
     c.ringLastPushMs = 0;
     const long long mb = (long long) n * w * h * 4 / (1024 * 1024);
@@ -6529,6 +6534,24 @@ void applyRingDepth(VrContext &c) {
         c.ringLateMs.push_back((float) (s.depthMs - s.tsMs));
         /* 样本 64：分位数要稳，样本太少一次慢推理就把延迟顶高（DepthRay 也用 64） */
         if (c.ringLateMs.size() > 64) c.ringLateMs.erase(c.ringLateMs.begin());
+        return;
+    }
+    /*
+     * 迟到超过环能装的范围（远程推理 200 毫秒、环只有一百多毫秒）：那一槽早被顶掉了。
+     * 这时候整片出平面比用一张旧深度更糟 —— 观感是"3D 时有时无、快进后半天不出来"。
+     * 退一步把这张深度给最新的、还没有深度的那一槽，等于用上一帧的立体垫着，
+     * 画面继续更新、深度略旧（DepthRay 在环满时也是这么放的）。
+     */
+    RingSlot *newest = nullptr;
+    for (RingSlot &s : c.ringSlots) {
+        if (!s.hasFrame || s.depthReady) continue;
+        if (newest == nullptr || s.tsMs > newest->tsMs) newest = &s;
+    }
+    if (newest != nullptr &&
+        uploadDepthToTarget(newest->depth, buf, w, h, newest->lowColor)) {
+        newest->depthReady = true;
+        newest->depthMs = (long long) nowMs();
+        c.ringStatStale++;
         return;
     }
     c.ringStatStale++;   // 那一槽已经被新画面顶掉了
