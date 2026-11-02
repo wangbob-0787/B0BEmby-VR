@@ -8864,6 +8864,15 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             }
             break;
         /* 64 = 边缘加密（1 = 开，0 = 关）：运行时切换，下一秒重算偏移表 */
+        /*
+         * 65：远程批量推理一批几帧（1~10）。客户端按这个值组批，
+         * 原生侧只记下来，诊断行里能对账。
+         */
+        case 65: {
+            const int n65 = (int) value;
+            if (n65 >= 1 && n65 <= 10) gDepthRemoteBatch.store(n65);
+            return;
+        }
         case 64:
             if (value >= 0.f && value <= 1.f) {
                 gStereoEdgeDense.store(value >= 0.5f ? 1 : 0);
