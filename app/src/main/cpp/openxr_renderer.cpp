@@ -2268,6 +2268,8 @@ struct VrContext {
     float ringArtifactsFeather = -1.f;
     /* 延迟自适应：深度迟到量的 90 分位数，每秒重算一次 */
     float ringDelayMs = 0.f;
+    /* 调参强制指定环延迟（毫秒，0 = 按迟到自动算）；远程推理迟到量固定，用它一次压住 */
+    std::atomic<float> gRingDelayOverride{0.f};
     std::vector<float> ringLateMs;
     long long ringDelayUpdatedMs = 0;
     float ringFrameMs = 0.f;        // 相邻两帧的间隔（估算环能装多少毫秒）
@@ -6559,6 +6561,15 @@ void updateRingDelay(VrContext &c) {
      * 深度仍然逐帧配对；关掉逐帧配对等于退回"深度永远是最新那张"，
      * 边缘错位立刻回来（2026-11-01 父亲实测：环建起来了但立体没改善）。
      */
+    /*
+     * 手动指定延迟：远程推理的迟到是"网络 + 推理"两段固定开销，
+     * 自动 p90 在配对稀疏时估不准，直接给一个能盖住它的值最省事。
+     */
+    const float ov = gRingDelayOverride.load();
+    if (ov > 1.f) {
+        c.ringDelayMs = ov < ringSpan ? ov : ringSpan;
+        return;
+    }
     if (wanted > ringSpan) {
         static double lastClampLogMs = 0;
         if (now - lastClampLogMs > 5000.0) {
@@ -8800,6 +8811,13 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             if (value >= 0.f && value <= 300.f) {
                 gStereoFeather.store(value);
                 VLOGI("调参 → 局部液化羽化 %.0f px（按每眼 1920 源宽折算）", (double) value);
+            }
+            break;
+        /* 63 = 环延迟强制值（毫秒，0 = 按迟到自动算）：远程推理的迟到是固定开销，手动压住 */
+        case 63:
+            if (value >= 0.f && value <= 1000.f) {
+                gRingDelayOverride.store(value);
+                VLOGI("调参 → 环形缓冲延迟强制 %.0fms（0 = 自动）", (double) value);
             }
             break;
         /*

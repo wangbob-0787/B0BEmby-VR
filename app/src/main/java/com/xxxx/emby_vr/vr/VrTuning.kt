@@ -378,6 +378,8 @@ object VrTuning {
     const val KEY_STEREO_STRETCH = 61
     /** 局部液化羽化半径，单位是每眼 1920 源宽的像素（默认 96） */
     const val KEY_STEREO_FEATHER = 62
+    /** 环延迟强制值（毫秒，0 = 自动）；远程推理迟到固定，用它一次压住 */
+    const val KEY_STEREO_RING_DELAY = 63
     /**
      * 抓帧的毫秒下限（0 = 纯按帧数，默认）。
      *
@@ -714,6 +716,12 @@ object VrTuning {
             if (it >= 0f && it <= 300f) {
                 VrNative.setTuning(KEY_STEREO_FEATHER, it)
                 applied += "局部液化羽化 %.0f px".format(it)
+            }
+        }
+        raw["stereo_ring_delay"]?.toFloatOrNull()?.let {
+            if (it >= 0f && it <= 1000f) {
+                VrNative.setTuning(KEY_STEREO_RING_DELAY, it)
+                applied += if (it < 1f) "环延迟自动" else "环延迟强制 %.0fms".format(it)
             }
         }
         raw["depth_every"]?.toFloatOrNull()?.let {
