@@ -234,7 +234,7 @@ object DepthEngine {
                 interp = it
                 gpu = gpuDelegate
                 ready = true
-                initedSig = "${VrTuning.depthGpu}|${VrTuning.depthModel}|${VrTuning.depthThreads}"
+                initedSig = "${VrTuning.depthGpu}|${VrTuning.depthModel}|${VrTuning.depthThreads}|${VrTuning.depthRemote}"
                 Log.i(TAG, "深度模型就绪：${asset.substringAfterLast('/')} 输入 ${inW}x${inH}，" +
                     "输出 ${outW}x${outH}，" +
                     (if (gpuDelegate != null) "显卡推理" else "CPU ${VrTuning.depthThreads} 线程"))
