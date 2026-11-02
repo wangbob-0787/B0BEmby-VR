@@ -47,6 +47,30 @@ jobs:
       # Chromium 132 内核库 212MB，超过 GitHub 单文件 100MB 上限，推不上去（实测被拒）。
       # 改成编译机上现下：从 crwebview 官方 release 拉那两个 aar 到 app/libs。
       # 只影响 CI；本地开发时项目里已经有这两个文件。
+      # ncnn 预编译静态库 + Depth Anything V2 Small 权重（69MB，不进仓库）。
+      # 只解 arm64-v8a：PICO 4 是 XR2，其他 ABI 用不上。
+      - name: 下载 ncnn 与深度模型
+        run: |
+          set -e
+          NCNN_DIR=app/src/main/cpp/ncnn
+          if [ ! -f "$NCNN_DIR/lib/libncnn.a" ]; then
+            curl -fL --retry 3 --retry-delay 5 -o /tmp/ncnn.zip \
+              https://github.com/Tencent/ncnn/releases/download/20261020/ncnn-20261020-android-vulkan.zip
+            rm -rf /tmp/ncnn && mkdir -p /tmp/ncnn && unzip -q /tmp/ncnn.zip -d /tmp/ncnn
+            mkdir -p "$NCNN_DIR/lib" "$NCNN_DIR/include"
+            cp /tmp/ncnn/ncnn-20261020-android-vulkan/arm64-v8a/lib/*.a "$NCNN_DIR/lib/"
+            cp -r /tmp/ncnn/ncnn-20261020-android-vulkan/arm64-v8a/include/* "$NCNN_DIR/include/"
+          fi
+          ls -lh "$NCNN_DIR/lib" | head
+          MODELS=app/src/main/assets/models
+          BASE=https://raw.githubusercontent.com/FeiGeChuanShu/ncnn-android-depth_anything/main/app/src/main/assets
+          for f in dptv2_s.param dptv2_s.bin; do
+            if [ ! -f "$MODELS/$f" ]; then
+              curl -fL --retry 3 --retry-delay 5 -o "$MODELS/$f" "$BASE/$f"
+            fi
+          done
+          ls -lh "$MODELS" | head
+
       - name: 下载 Chromium 132 内核库
         run: |
           mkdir -p app/libs

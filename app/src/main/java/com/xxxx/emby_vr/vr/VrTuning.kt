@@ -178,6 +178,15 @@ object VrTuning {
     var depthThreads: Int = 4
 
     /**
+     * 深度推理后端：0 = TFLite（默认），1 = ncnn + Vulkan。
+     *
+     * 两条路各带自己的模型：TFLite 用 ZipDepth，ncnn 用 Depth Anything V2 Small。
+     * 切换时上层会重建，不用重装。
+     */
+    @Volatile
+    var depthBackend: Int = 0
+
+    /**
      * 深度推理走哪条：1 = 显卡委托（默认，参考实现的路子）0 = CPU 四线程。
      *
      * 实测（2026-11-01）：CPU 上 256 int8 单次 110ms、512 fp16 单次 229ms；
@@ -365,6 +374,8 @@ object VrTuning {
     const val KEY_STEREO_STRETCH = 61
     /** 局部液化羽化半径，单位是每眼 1920 源宽的像素（默认 96） */
     const val KEY_STEREO_FEATHER = 62
+    /** 深度推理后端：0 = TFLite（默认），1 = ncnn + Vulkan（换模型换框架，对照用） */
+    const val KEY_DEPTH_BACKEND = 63
     /**
      * 抓帧的毫秒下限（0 = 纯按帧数，默认）。
      *
@@ -682,6 +693,10 @@ object VrTuning {
         raw["depth_threads"]?.toIntOrNull()?.let {
             depthThreads = it.coerceIn(1, 8)
             applied += "深度推理线程 $depthThreads（重新起播生效）"
+        }
+        raw["depth_backend"]?.toIntOrNull()?.let {
+            depthBackend = if (it == 1) 1 else 0
+            applied += "深度后端 " + if (depthBackend == 1) "ncnn" else "TFLite"
         }
         raw["stereo_stretch"]?.toFloatOrNull()?.let {
             if (it >= 0f && it <= 1f) {

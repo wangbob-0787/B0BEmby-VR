@@ -45,7 +45,7 @@ android {
      */
     androidResources {
         /* .tflite 必须不压缩：openFd 只能映射未压缩的 assets，压缩后会抛 FileNotFoundException */
-        noCompress += listOf("b0bcin", "b0benv", "tflite")
+        noCompress += listOf("b0bcin", "b0benv", "tflite", "param", "bin")
     }
 
     buildFeatures {

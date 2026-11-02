@@ -13,3 +13,8 @@ key.properties
 
 # Chromium 132 内核库（212MB，超 GitHub 限制，由 CI 现下；本地保留文件）
 app/libs/*.aar
+
+# ncnn 预编译库与 Depth Anything V2 权重（19MB + 50MB，由 CI 现下；本地保留文件）
+app/src/main/cpp/ncnn/
+app/src/main/assets/models/dptv2_s.param
+app/src/main/assets/models/dptv2_s.bin
