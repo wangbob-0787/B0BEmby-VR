@@ -6268,6 +6268,17 @@ class MainActivity : ComponentActivity() {
                 }
                 if (id != currentMediaId) return@launch   // 中途换片了，丢弃
                 currentItem = item
+                /*
+                 * 换剧才清选集（父亲 2026-11-02：同一部剧切下一集，选集不要被清空）。
+                 * 清空动作必须发生在新详情回来、能和旧剧号对比之后，不能放在起播那一刻。
+                 */
+                val sameSeries = item.seriesId != null && item.seriesId == currentSeriesId
+                if (!sameSeries) {
+                    menuState.episodes = emptyList()
+                    menuState.episodesTitle = ""
+                    episodeIds = emptyList()
+                    episodePositions = emptyList()
+                }
                 currentSeriesId = item.seriesId
                 currentSeasonId = item.seasonId
                 /*
@@ -7266,8 +7277,10 @@ class MainActivity : ComponentActivity() {
          * 所以必须清空。空菜单是诚实的「这部没有」，留着上一部的才是错的。
          * 音轨 / 字幕 / 质量三个菜单的数据源是流清单（currentStreams 等），上面已经清过。
          */
-        menuState.episodes = emptyList()
-        menuState.episodesTitle = ""
+        /*
+         * 选集不在这里清：同一部剧切下一集要保留着（父亲 2026-11-02），
+         * 真换了剧由 loadItemDetail 拿到新剧号再清。见该函数里的 sameSeries 判断。
+         */
         menuState.people = emptyList()
         menuState.info = null
         episodeIds = emptyList()
