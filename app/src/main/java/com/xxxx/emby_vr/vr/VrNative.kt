@@ -45,23 +45,6 @@ object VrNative {
 
     private external fun nativePushDepth(data: ByteArray, w: Int, h: Int, seq: Long)
 
-    /*
-     * ncnn 后端（2026-11-02 接入）：模型在原生侧加载与推理，Kotlin 只递一张 RGBA 小图。
-     * 走 Vulkan 计算；建不起来时原生侧会退回 CPU，返回值不为 0 表示这次没成功。
-     */
-    private external fun nativeNcnnInit(
-        assets: android.content.res.AssetManager,
-        param: String,
-        bin: String,
-        vulkan: Boolean,
-        inW: Int,
-        inH: Int,
-    ): Int
-
-    private external fun nativeNcnnInfer(rgba: ByteArray, w: Int, h: Int): FloatArray?
-
-    private external fun nativeNcnnRelease()
-
     private external fun nativeNotifySeek()
 
     internal fun setDepthSink(sink: Any?) {
@@ -77,39 +60,6 @@ object VrNative {
             if (loaded) nativeSetDepthInputSize(w, h)
         } catch (t: Throwable) {
             Log.e(TAG, "设置深度输入尺寸失败：${t.message}")
-        }
-    }
-
-    internal fun ncnnInit(
-        assets: android.content.res.AssetManager,
-        param: String,
-        bin: String,
-        vulkan: Boolean,
-        inW: Int,
-        inH: Int,
-    ): Int {
-        return try {
-            if (loaded) nativeNcnnInit(assets, param, bin, vulkan, inW, inH) else -1
-        } catch (t: Throwable) {
-            Log.e(TAG, "ncnn 初始化失败：${t.message}")
-            -1
-        }
-    }
-
-    internal fun ncnnInfer(rgba: ByteArray, w: Int, h: Int): FloatArray? {
-        return try {
-            if (loaded) nativeNcnnInfer(rgba, w, h) else null
-        } catch (t: Throwable) {
-            Log.e(TAG, "ncnn 推理失败：${t.message}")
-            null
-        }
-    }
-
-    internal fun ncnnRelease() {
-        try {
-            if (loaded) nativeNcnnRelease()
-        } catch (t: Throwable) {
-            Log.e(TAG, "ncnn 释放失败：${t.message}")
         }
     }
 

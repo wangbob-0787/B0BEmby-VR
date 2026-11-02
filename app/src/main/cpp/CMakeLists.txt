@@ -12,35 +12,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # 「Could not find a package configuration file provided by openxr_loader」——run 88 实测）。
 find_package(OpenXR REQUIRED CONFIG)
 
-# ncnn 深度推理（2026-11-02 接入）：预编译静态库，只带 arm64-v8a。
-# 模型跑在 Vulkan 计算上，和 TFLite 的 GPU delegate 是两条独立的路子。
-set(NCNN_DIR ${CMAKE_CURRENT_SOURCE_DIR}/ncnn)
-add_library(ncnn STATIC IMPORTED)
-set_target_properties(ncnn PROPERTIES IMPORTED_LOCATION ${NCNN_DIR}/lib/libncnn.a)
-foreach(lib glslang glslang-default-resource-limits MachineIndependent GenericCodeGen OSDependent SPIRV)
-    add_library(${lib} STATIC IMPORTED)
-    set_target_properties(${lib} PROPERTIES IMPORTED_LOCATION ${NCNN_DIR}/lib/lib${lib}.a)
-endforeach()
-
 add_library(b0bvr SHARED
         native_bridge.cpp
         openxr_renderer.cpp
-        depth_ncnn.cpp
 )
-
-target_include_directories(b0bvr PRIVATE ${NCNN_DIR}/include)
 
 target_link_libraries(b0bvr
         OpenXR::openxr_loader
-        ncnn
-        glslang
-        glslang-default-resource-limits
-        MachineIndependent
-        GenericCodeGen
-        OSDependent
-        SPIRV
-        vulkan
-        z
         EGL
         GLESv3
         android

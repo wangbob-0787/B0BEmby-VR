@@ -62,13 +62,6 @@ object DepthEngine {
     private const val CUT_CORR = 0.40f   // 相关系数低于这个值就是两张无关的图
     /** 抽样步长：每 16 个像素取一个点，256x256 上约 4096 个样本，三个量都用它算 */
     private const val SAMPLE_STRIDE = 16
-    /*
-     * ncnn 后端的输入尺寸：Depth Anything 的 patch 是 14，宽高都取 14 的倍数。
-     * 266x154 与参考实现（tachi）实测选中的档位一致，像素量只有正方形 252x252 的六成，
-     * 而 16:9 的画面不会被拉成方形再缩回去。
-     */
-    private const val NCNN_IN_W = 266
-    private const val NCNN_IN_H = 154
     private const val HIST_BINS = 16
 
     /** 模型是否可用；不可用时原生保持平面出画，2D→3D 开关仍可开但没有立体 */
@@ -167,38 +160,7 @@ object DepthEngine {
         }
     }
 
-    /** 后端/模型/线程任何一项变了都要重建解释器；切换判断用同一口径 */
-    private fun backendSig(): String =
-        "${VrTuning.depthBackend}|${VrTuning.depthGpu}|${VrTuning.depthModel}|${VrTuning.depthThreads}"
-
-    /**
-     * ncnn 后端建模型。权重 50MB，直接由原生侧从 assets 流式读，不进 Java 堆。
-     * Vulkan 建不起来时原生侧退回 CPU，返回值仍为 0。
-     */
-    private fun initNcnn(context: Context) {
-        val useVulkan = VrTuning.depthGpu == 1
-        val rc = VrNative.ncnnInit(
-            context.assets, "models/dptv2_s.param", "models/dptv2_s.bin",
-            useVulkan, NCNN_IN_W, NCNN_IN_H,
-        )
-        if (rc != 0) {
-            Log.e(TAG, "深度模型加载失败：ncnn 返回 $rc")
-            ready = false
-            return
-        }
-        inW = NCNN_IN_W
-        inH = NCNN_IN_H
-        outW = 0
-        outH = 0
-        ready = true
-        initedSig = backendSig()
-        VrNative.setDepthInputSize(inW, inH)
-        Log.i(TAG, "深度模型就绪：dptv2_s 输入 ${inW}x${inH}，后端 " +
-            (if (useVulkan) "ncnn Vulkan" else "ncnn CPU"))
-    }
-
     private fun shutdown() {
-        VrNative.ncnnRelease()
         runCatching { interp?.close() }
         interp = null
         runCatching { gpu?.close() }
@@ -220,10 +182,6 @@ object DepthEngine {
         synchronized(this) {
             if (ready) return
             try {
-                if (VrTuning.depthBackend == 1) {
-                    initNcnn(context)
-                    return
-                }
                 val asset = modelAsset()
                 val model = loadModel(context, asset)
                 val opts = Interpreter.Options().setNumThreads(VrTuning.depthThreads)
@@ -266,7 +224,7 @@ object DepthEngine {
                 interp = it
                 gpu = gpuDelegate
                 ready = true
-                initedSig = backendSig()
+                initedSig = "${VrTuning.depthGpu}|${VrTuning.depthModel}|${VrTuning.depthThreads}"
                 Log.i(TAG, "深度模型就绪：${asset.substringAfterLast('/')} 输入 ${inW}x${inH}，" +
                     "输出 ${outW}x${outH}，" +
                     (if (gpuDelegate != null) "显卡推理" else "CPU ${VrTuning.depthThreads} 线程"))
@@ -288,7 +246,7 @@ object DepthEngine {
          * 调参换了推理后端（CPU/显卡）或模型：当场重建解释器，不用重装、不用重起播。
          * 只在两帧之间做，推理进行中不打断。
          */
-        val wantSig = backendSig()
+        val wantSig = "${VrTuning.depthGpu}|${VrTuning.depthModel}|${VrTuning.depthThreads}"
         if (wantSig != initedSig) {
             val ctx = appContext
             if (ctx != null && !busy.get()) {
@@ -322,14 +280,10 @@ object DepthEngine {
     }
 
     private fun runInfer(rgba: ByteArray, w: Int, h: Int, seq: Long) {
-        if (rgba.size < w * h * 4) return
-        if (VrTuning.depthBackend == 1) {
-            runInferNcnn(rgba, w, h, seq)
-            return
-        }
         val it = interp ?: return
         val ib = inBuf ?: return
         val ob = outBuf ?: return
+        if (rgba.size < w * h * 4) return
 
         ib.rewind()
         /*
@@ -358,43 +312,11 @@ object DepthEngine {
         ob.rewind()
         val n = outW * outH
         val vals = FloatArray(n)
-        for (i in 0 until n) vals[i] = ob.float
-        finishDepth(vals, outW, outH, seq)
-    }
-
-    /**
-     * ncnn + Vulkan 后端（Depth Anything V2 Small）。
-     *
-     * 预处理和推理都在原生侧，这里只递一张缩小的 RGBA 图、拿回一维深度。
-     * 输出尺寸由模型给（和输入同宽高比），按长度开方还原成行列。
-     */
-    private fun runInferNcnn(rgba: ByteArray, w: Int, h: Int, seq: Long) {
-        val t0 = SystemClock.elapsedRealtime()
-        val vals = VrNative.ncnnInfer(rgba, w, h) ?: return
-        lastInferMs = SystemClock.elapsedRealtime() - t0
-        if (vals.isEmpty()) return
-        /*
-         * 输出和输入同尺寸（Depth Anything 是逐像素回归），按输入宽高还原；
-         * 万一模型改了尺度，就按输入的宽高比反推，绝不退化成"一维"。
-         */
-        if (vals.size == inW * inH) {
-            outW = inW
-            outH = inH
-        } else {
-            val w0 = kotlin.math.round(kotlin.math.sqrt(vals.size.toFloat() * inW / inH)).toInt()
-            outW = if (w0 > 0 && vals.size % w0 == 0) w0 else vals.size
-            outH = vals.size / outW
-        }
-        finishDepth(vals, outW, outH, seq)
-    }
-
-    /** 两条后端共用的后处理：归一化、换镜头判定、时间平滑、回传原生 */
-    private fun finishDepth(vals: FloatArray, ow: Int, oh: Int, seq: Long) {
-        val n = vals.size
         var mn = Float.MAX_VALUE
         var mx = -Float.MAX_VALUE
         for (i in 0 until n) {
-            val v = vals[i]
+            val v = ob.float
+            vals[i] = v
             if (v < mn) mn = v
             if (v > mx) mx = v
         }
@@ -470,7 +392,7 @@ object DepthEngine {
         }
         lastOkMs = System.currentTimeMillis()
         /* 帧号原样带回原生：环形缓冲靠它把深度还给"本来就是它"的那一帧 */
-        VrNative.pushDepth(out, ow, oh, seq)
+        VrNative.pushDepth(out, outW, outH, seq)
     }
 
     /**
