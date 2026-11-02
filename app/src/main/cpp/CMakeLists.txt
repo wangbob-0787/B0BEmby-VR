@@ -30,11 +30,6 @@ add_library(b0bvr SHARED
 
 target_include_directories(b0bvr PRIVATE ${NCNN_DIR}/include)
 
-# ncnn 的安卓预编译库带 OpenMP（符号 __kmpc_*），链接时必须带上 NDK 自带的运行时，
-# 否则报一堆 undefined symbol。编译和链接都要加，缺一边都不行。
-target_compile_options(b0bvr PRIVATE -fopenmp)
-target_link_options(b0bvr PRIVATE -fopenmp)
-
 target_link_libraries(b0bvr
         OpenXR::openxr_loader
         ncnn
