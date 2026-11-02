@@ -80,6 +80,13 @@ object DepthEngine {
     /* 远程深度服务（点 15）：长连接，断了下一帧重连 */
     private var sock: java.net.Socket? = null
     private var sockKey = ""
+    /*
+     * 复用缓冲：以前每帧都新建 rgb / vals / out 三个大数组，
+     * 一秒几十帧就是几十兆垃圾，头显的 Java 堆顶不住（实测报 OutOfMemory 崩掉）。
+     */
+    private var rgbBuf = ByteArray(0)
+    private var valsBuf = FloatArray(0)
+    private var outU8Buf = ByteArray(0)
     /* 远程批量：队列、批次大小、最长等待 */
     private val pending = java.util.ArrayDeque<RemoteFrame>()
     @Volatile private var batchThread: Thread? = null
@@ -339,7 +346,8 @@ object DepthEngine {
     private fun enqueueRemote(rgba: ByteArray, w: Int, h: Int, seq: Long) {
         val rw = REMOTE_IN_W
         val rh = REMOTE_IN_H
-        val rgb = ByteArray(rw * rh * 3)
+        val need = rw * rh * 3
+        val rgb = if (rgbBuf.size == need) rgbBuf else ByteArray(need).also { rgbBuf = it }
         var o = 0
         for (y in 0 until rh) {
             val sy = (y.toLong() * h / rh).toInt()
@@ -493,7 +501,7 @@ object DepthEngine {
 
         ob.rewind()
         val n = outW * outH
-        val vals = FloatArray(n)
+        val vals = if (valsBuf.size == n) valsBuf else FloatArray(n).also { valsBuf = it }
         for (i in 0 until n) vals[i] = ob.float
         finishDepth(vals, outW, outH, seq)
     }
@@ -563,7 +571,7 @@ object DepthEngine {
             jumpStreak = 0
         }
 
-        val out = ByteArray(n)
+        val out = if (outU8Buf.size == n) outU8Buf else ByteArray(n).also { outU8Buf = it }
         for (i in 0 until n) {
             var v = (vals[i] - useMn) / range
             if (invert) v = 1f - v
