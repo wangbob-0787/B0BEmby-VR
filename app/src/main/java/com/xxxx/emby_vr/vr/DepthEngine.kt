@@ -377,7 +377,12 @@ object DepthEngine {
          * 输出和输入同尺寸（Depth Anything 是逐像素回归），按输入宽高还原；
          * 万一模型改了尺度，就按输入的宽高比反推，绝不退化成"一维"。
          */
-        if (vals.size == inW * inH) {
+        val side = kotlin.math.sqrt(vals.size.toFloat()).toInt()
+        if (side > 0 && side * side == vals.size) {
+            /* 这个 ncnn 导出把输入固定成正方形了（喂 266x154 出来还是 518x518），按正方形还原 */
+            outW = side
+            outH = side
+        } else if (vals.size == inW * inH) {
             outW = inW
             outH = inH
         } else {
