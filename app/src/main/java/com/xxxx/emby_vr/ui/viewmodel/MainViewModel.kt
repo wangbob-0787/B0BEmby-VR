@@ -49,7 +49,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** 正在问更新源（点一下版本号就有反馈，不让父亲猜有没有响应） */
     var updateChecking by mutableStateOf(false)
         private set
-        private set
 
     /** 下载百分比（0~100），只在 Downloading 时有意义 */
     var updateProgress by mutableStateOf(0)
