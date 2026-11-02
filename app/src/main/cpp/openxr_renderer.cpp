@@ -2218,10 +2218,7 @@ struct VrContext {
     GLint offsetsDepthLoc = -1;
     GLint offsetsDispLoc = -1;
     GLint offsetsConvLoc = -1;
-    GLint offsetsSrcLoc = -1;       // 偏移表：源深度尺寸
-    GLint offsetsOutLoc = -1;       // 偏移表：输出尺寸
-    GLint offsetsSrcRLoc = -1;      // 偏移表：源通道（R8 取 .r）
-    GLint offsetsFeatherLoc = -1;   // 局部液化：羽化半径（源像素）
+    GLint offsetsFeatherLoc = -1;   // 局部液化：羽化半径（深度图像素）
     GLint offsetsStretchLoc = -1;   // 局部液化：背景修正权重
     GLint offsetsSamplerLoc = -1;
     RenderTarget offsets;
@@ -5849,9 +5846,8 @@ bool depthGrabDue(VrContext &c) {
  * depthTex 是这一帧自己的深度（实时路径用共享深度图，环形缓冲路径用槽里的那份），
  * 结果固定写进 c.offsets —— 同一时刻只有一帧在上屏。
  */
-void renderOffsets(VrContext &c, GLuint depthTex, int srcW, int srcH, int outW, int outH,
-                   RenderTarget &dst, bool srcIsR8) {
-    if (depthTex == 0 || srcW <= 0 || srcH <= 0 || outW <= 0 || outH <= 0) return;
+void renderOffsets(VrContext &c, GLuint depthTex, int w, int h, RenderTarget &dst) {
+    if (depthTex == 0 || w <= 0 || h <= 0) return;
 
     if (c.offsetsProg == 0) {
         static const char *vs = R"(#version 300 es
@@ -5863,41 +5859,27 @@ void main() { vUv = aUv; gl_Position = vec4(aPos.xy, 0.0, 1.0); }
         static const char *fs = R"(#version 300 es
 precision highp float;
 uniform sampler2D uDepth;
-uniform vec2 uSrcSize;      // 深度图尺寸（源）
-uniform vec2 uOutSize;      // 偏移表尺寸（输出），比源细或粗都行
-uniform int uSrcR;          // 1 = 源是 R8（取 .r），0 = 源是 RGBA（取 .a）
 uniform float uDispTexels;
 uniform float uConvergence;
-uniform float uFeather;     // 羽化半径，单位是源像素
+uniform float uFeather;     // 羽化半径，单位是深度图的像素
 uniform float uStretch;     // 背景修正权重 0..1，0 = 关（纯偏移）
 out vec4 fragColor;
-
-/* 源像素坐标（可以是小数）：偏移表比深度图细时，同一行上的采样点更密 */
-float depthAt(vec2 sp) {
-    vec2 uv = (sp + 0.5) / uSrcSize;
-    vec4 t = texture(uDepth, uv);
-    return uSrcR == 1 ? t.r : t.a;
-}
-
 void main() {
-    /*
-     * 输出像素映射回源坐标。这一步是"边缘加密"的落点：偏移表分辨率高于深度图时，
-     * 每个输出像素落在源像素之间的不同位置，边缘附近的偏移不再是一块一块的方块，
-     * 平坦区域依旧靠双线性铺开，等于在平坦处稀疏、在细节处变密。
-     */
-    vec2 sp = (gl_FragCoord.xy + 0.5) * uSrcSize / uOutSize;
+    ivec2 sz = textureSize(uDepth, 0);
+    int x = int(gl_FragCoord.x);
+    int y = int(gl_FragCoord.y);
     int reach = int(ceil(abs(uDispTexels) * max(uConvergence, 1.0 - uConvergence))) + 2;
     vec2 result = vec2(0.0);
     vec2 holes = vec2(0.0);
     for (int eye = 0; eye < 2; eye++) {
         float disp = (eye == 0) ? uDispTexels : -uDispTexels;
-        float here = depthAt(sp);
+        float here = texelFetch(uDepth, ivec2(x, y), 0).a;
         float bestD = -1.0;
         float bestOff = -disp * (here - uConvergence);
-        float pd = depthAt(vec2(clamp(sp.x - float(reach), 0.0, uSrcSize.x - 1.0), sp.y));
+        float pd = texelFetch(uDepth, ivec2(clamp(x - reach, 0, sz.x - 1), y), 0).a;
         float pe = float(-reach) + disp * (pd - uConvergence);
         for (int t = -reach + 1; t <= reach; t++) {
-            float cd = depthAt(vec2(clamp(sp.x + float(t), 0.0, uSrcSize.x - 1.0), sp.y));
+            float cd = texelFetch(uDepth, ivec2(clamp(x + t, 0, sz.x - 1), y), 0).a;
             float ce = float(t) + disp * (cd - uConvergence);
             float span = ce - pe;
             if (pe * ce <= 0.0 && abs(span) > 1e-6) {
@@ -5916,6 +5898,7 @@ void main() {
         /*
          * 局部液化：这一只眼在这一行出现空洞时，继续往两侧多找一段羽化范围，
          * 把"能覆盖本像素的背景样本"按距离衰减加权，混进偏移里。
+         * 这样洞是被附近的背景稍微拉过去补上的，而不是整幅画面一起被拉长。
          */
         if (uStretch > 0.001 && uFeather >= 1.0 && holes[eye] > 0.5) {
             int fr = int(min(uFeather, 64.0));
@@ -5923,9 +5906,10 @@ void main() {
             float osum = 0.0;
             for (int s = -1; s <= 1; s += 2) {
                 for (int t = reach + 1; t <= reach + fr; t++) {
-                    float xx = clamp(sp.x + float(s * t), 0.0, uSrcSize.x - 1.0);
-                    float cd = depthAt(vec2(xx, sp.y));
+                    int xx = clamp(x + s * t, 0, sz.x - 1);
+                    float cd = texelFetch(uDepth, ivec2(xx, y), 0).a;
                     float ce = float(s * t) + disp * (cd - uConvergence);
+                    /* 只认投影后能盖住本像素（跨过 0）的样本 */
                     if (abs(ce) > 1.5) continue;
                     float w = 1.0 - float(t - reach) / float(fr + 1);
                     wsum += w;
@@ -5948,9 +5932,6 @@ void main() {
         }
         c.offsetsSamplerLoc = glGetUniformLocation(c.offsetsProg, "uDepth");
         c.offsetsDispLoc = glGetUniformLocation(c.offsetsProg, "uDispTexels");
-        c.offsetsSrcLoc = glGetUniformLocation(c.offsetsProg, "uSrcSize");
-        c.offsetsOutLoc = glGetUniformLocation(c.offsetsProg, "uOutSize");
-        c.offsetsSrcRLoc = glGetUniformLocation(c.offsetsProg, "uSrcR");
         c.offsetsConvLoc = glGetUniformLocation(c.offsetsProg, "uConvergence");
         c.offsetsFeatherLoc = glGetUniformLocation(c.offsetsProg, "uFeather");
         c.offsetsStretchLoc = glGetUniformLocation(c.offsetsProg, "uStretch");
@@ -5962,7 +5943,7 @@ void main() {
      * 用最近邻时，256 宽的深度图铺到 2560 宽的画面就是十像素一块的方块，
      * 立体偏移跟着一块一块跳 —— 这是"边缘发虚、偶尔扭曲"的另一半来源。
      */
-    if (!ensureTarget(dst, outW, outH, GL_RGBA8, true)) return;
+    if (!ensureTarget(dst, w, h, GL_RGBA8, true)) return;
 
     GLint prevFbo = 0;
     GLint prevViewport[4] = {0, 0, 0, 0};
@@ -5970,19 +5951,16 @@ void main() {
     glGetIntegerv(GL_VIEWPORT, prevViewport);
 
     glBindFramebuffer(GL_FRAMEBUFFER, dst.fbo);
-    glViewport(0, 0, outW, outH);
+    glViewport(0, 0, w, h);
     glUseProgram(c.offsetsProg);
     glActiveTexture(GL_TEXTURE2);
     glBindTexture(GL_TEXTURE_2D, depthTex);
     glActiveTexture(GL_TEXTURE0);
-    if (c.offsetsDispLoc >= 0) glUniform1f(c.offsetsDispLoc, c.depthDisp * (float) srcW);
-    if (c.offsetsSrcLoc >= 0) glUniform2f(c.offsetsSrcLoc, (float) srcW, (float) srcH);
-    if (c.offsetsOutLoc >= 0) glUniform2f(c.offsetsOutLoc, (float) outW, (float) outH);
-    if (c.offsetsSrcRLoc >= 0) glUniform1i(c.offsetsSrcRLoc, srcIsR8 ? 1 : 0);
+    if (c.offsetsDispLoc >= 0) glUniform1f(c.offsetsDispLoc, c.depthDisp * (float) w);
     if (c.offsetsConvLoc >= 0) glUniform1f(c.offsetsConvLoc, c.depthConv);
     /* 羽化按每眼 1920 源宽折算成深度图像素，和参考实现同一个口径 */
     if (c.offsetsFeatherLoc >= 0) {
-        glUniform1f(c.offsetsFeatherLoc, gStereoFeather.load() * (float) srcW / 1920.f);
+        glUniform1f(c.offsetsFeatherLoc, gStereoFeather.load() * (float) w / 1920.f);
     }
     if (c.offsetsStretchLoc >= 0) glUniform1f(c.offsetsStretchLoc, gStereoStretch.load());
     ensureVideoLayerQuad(c);
@@ -6633,15 +6611,10 @@ void buildRingArtifacts(VrContext &c, RingSlot &s, int upW, int upH) {
                         fabsf(c.ringArtifactsStretch - gStereoStretch.load()) < 1e-4f &&
                         fabsf(c.ringArtifactsFeather - gStereoFeather.load()) < 1e-3f;
     if (sameSeq && sameDisp && sameUp) return;
-    /*
-     * 顺序要紧：先做边缘保持上采样，再用**上采样后的全分辨率深度**算偏移表。
-     * 偏移表输出半分辨率，横向采样点比原来的低分深度密一倍，边缘处的偏移
-     * 不再是一格一格的方块；平坦区域靠双线性铺开，等于自动在细节处加密。
-     */
+    renderOffsets(c, s.depth.tex, s.depth.w, s.depth.h, c.ringOffsets);
     renderDepthUpsample(c, s.depth.tex, 0, s.color.tex, false, upW, upH, c.ringUp);
-    renderOffsets(c, c.ringUp.tex, upW, upH, upW / 2, upH / 2, c.ringOffsets, true);
     c.ringArtifactsSeq = s.seq;
-    c.ringArtifactsLowW = upW;
+    c.ringArtifactsLowW = s.depth.w;
     c.ringArtifactsDisp = c.depthDisp;
     c.ringArtifactsConv = c.depthConv;
     c.ringArtifactsUpMode = gStereoUpMode.load();
@@ -6775,9 +6748,7 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
         /* 遮挡表还没算出来就先不做视差：拿不到遮挡表时采样偏移是错的 */
         const bool useDepth = wantParallax && depthTex != 0 && offsetsTex != 0 && eyeIndex >= 0;
         if (useDepth) {
-            const int lowW = delayed && src->lowW > 0
-                                     ? src->lowW
-                                     : (c.depthUp.w > 0 ? c.depthUp.w : c.depth.w);
+            const int lowW = delayed && src->lowW > 0 ? src->lowW : c.depth.w;
             const int frameW = delayed && src->frameW > 0
                                        ? src->frameW
                                        : (c.depthUp.w > 0 ? c.depthUp.w : c.depth.w);
@@ -7332,8 +7303,7 @@ void frameLoop(VrContext &c) {
                              * 否则中间两帧只能出平面，观感就是立体一帧一帧地闪。
                              */
                             if (slot.depthReady) buildRingArtifacts(c, slot, upW0, upH0);
-                            /* 偏移表是按上采样后的全分辨率深度算的，换算宽度必须跟着它走 */
-                            src.lowW = c.ringArtifactsLowW > 0 ? c.ringArtifactsLowW : slot.depth.w;
+                            src.lowW = slot.depth.w > 0 ? slot.depth.w : c.ringArtifactsLowW;
                             if (c.ringArtifactsSeq >= 0 && c.ringUp.tex != 0 &&
                                 c.ringOffsets.tex != 0) {
                                 src.depthTex = c.ringUp.tex;
@@ -7369,10 +7339,9 @@ void frameLoop(VrContext &c) {
                         /* ---- 实时路径：与环启用前完全一致 ---- */
                         uploadDepthIfFresh(c);
                         if (c.depthUpDirty && c.depth.tex != 0) {
+                            renderOffsets(c, c.depth.tex, c.depth.w, c.depth.h, c.offsets);
                             renderDepthUpsample(c, c.depth.tex, screenSrc, 0, webOnScreen,
                                                 upW0, upH0, c.depthUp);
-                            renderOffsets(c, c.depthUp.tex, c.depthUp.w, c.depthUp.h,
-                                          c.depthUp.w / 2, c.depthUp.h / 2, c.offsets, true);
                         }
                         /*
                          * 抓帧节奏按帧号（每 depthEveryN() 个新视频帧一次），
