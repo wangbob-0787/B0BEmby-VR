@@ -382,6 +382,8 @@ object VrTuning {
     const val KEY_STEREO_RING_DELAY = 63
     /** 边缘加密开关（1 = 偏移表按全分辨率深度算，0 = 老算法）；运行时切换 */
     const val KEY_STEREO_EDGE_DENSE = 64
+    /* 远程批量推理「一批几帧」：调大摊薄往返、但迟到变长；调小相反。 */
+    const val KEY_DEPTH_BATCH = 65
     /**
      * 抓帧的毫秒下限（0 = 纯按帧数，默认）。
      *
@@ -730,6 +732,13 @@ object VrTuning {
             if (it >= 0f && it <= 1000f) {
                 VrNative.setTuning(KEY_STEREO_RING_DELAY, it)
                 applied += if (it < 1f) "环延迟自动" else "环延迟强制 %.0fms".format(it)
+            }
+        }
+        raw["depth_batch"]?.toFloatOrNull()?.let {
+            val n = it.toInt().coerceIn(1, 10)
+            if (n != depthBatch) {
+                depthBatch = n
+                VrNative.setTuning(KEY_DEPTH_BATCH, n.toFloat())
             }
         }
         raw["depth_every"]?.toFloatOrNull()?.let {

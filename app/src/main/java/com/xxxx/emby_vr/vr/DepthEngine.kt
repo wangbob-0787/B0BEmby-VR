@@ -67,8 +67,8 @@ object DepthEngine {
     /* 远程服务端的模型输入尺寸（点 15 上的 depth512.onnx 是 512x288） */
     private const val REMOTE_IN_W = 512
     private const val REMOTE_IN_H = 288
-    /* 一批五帧、排到五帧或最老一帧等了 40 毫秒就发 */
-    private const val REMOTE_BATCH = 5
+    /* 一批几帧走调参（depth_batch），排满或最老一帧等了 40 毫秒就发 */
+    private const val REMOTE_BATCH_DEFAULT = 3
     private const val REMOTE_BATCH_WAIT_MS = 40L
     private const val REMOTE_QUEUE_MAX = 12
 
@@ -387,13 +387,14 @@ object DepthEngine {
             batchStop = false
             val th = Thread({
                 while (!batchStop) {
-                    val batch = ArrayList<RemoteFrame>(REMOTE_BATCH)
+                    val batchSize = VrTuning.depthBatch.coerceIn(1, 10)
+                    val batch = ArrayList<RemoteFrame>(batchSize)
                     synchronized(pending) {
                         val head = pending.peekFirst()
                         val due = head != null &&
                                   SystemClock.elapsedRealtime() - head.ts >= REMOTE_BATCH_WAIT_MS
-                        if (pending.size >= REMOTE_BATCH || due) {
-                            while (batch.size < REMOTE_BATCH && pending.isNotEmpty()) {
+                        if (pending.size >= batchSize || due) {
+                            while (batch.size < batchSize && pending.isNotEmpty()) {
                                 batch.add(pending.pollFirst()!!)
                             }
                         }

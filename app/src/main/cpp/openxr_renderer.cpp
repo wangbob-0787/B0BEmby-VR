@@ -2653,6 +2653,8 @@ std::atomic<float> gStereoFeather{96.f};
 std::atomic<float> gRingDelayOverride{0.f};
 /* 边缘加密：1 = 偏移表用全分辨率深度算（边缘贴得紧，算得重），0 = 用低分深度（老算法） */
 std::atomic<int> gStereoEdgeDense{1};
+/* 远程深度一批几帧（客户端组批用，原生侧仅记录，供诊断对账） */
+std::atomic<int> gDepthRemoteBatch{3};
 std::atomic<float> gStereoSharp{1.0f};     // 分层锐化强度 0..1
 std::atomic<float> gStereoEdgeSigma{0.1f}; // 引导回归正则项 σe
 std::atomic<int> gStereoFill{1};
