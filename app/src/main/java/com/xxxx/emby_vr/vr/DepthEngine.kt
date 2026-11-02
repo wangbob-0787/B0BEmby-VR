@@ -462,7 +462,7 @@ object DepthEngine {
         prevDepth = out
         inferCount++
         if (inferCount % 20 == 1) {
-            Log.i(TAG, "深度推理：${lastInferMs}ms 第 ${inferCount} 次 输入 ${ow}x${oh}")
+            Log.i(TAG, "深度推理：${lastInferMs}ms 第 ${inferCount} 次 输入 ${w}x${h}")
             Log.i(TAG, "深度切镜：diff " + "%.3f".format(lastDiff) +
                     " hist " + "%.3f".format(lastHist) +
                     " corr " + "%.2f".format(lastCorr) +

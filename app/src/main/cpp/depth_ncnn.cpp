@@ -154,8 +154,8 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeNcnnInfer(JNIEnv *env, jobject /*thiz*/
     const float normVals[3] = {0.01712475f, 0.017507f, 0.01742919f};
     in.substract_mean_normalize(meanVals, normVals);
 
-    /* Vulkan 开关在 Net 的 opt 上设，Extractor 没有这个接口（编译期实测） */
     ncnn::Extractor ex = gNcnn.net.create_extractor();
+    ex.set_vulkan_compute(gNcnn.vulkan);
     ex.input("image", in);
     ncnn::Mat out;
     int rc = ex.extract(gNcnn.outName.empty() ? "output" : gNcnn.outName.c_str(), out);
