@@ -67,6 +67,10 @@ object DepthEngine {
     /* 远程服务端的模型输入尺寸（点 15 上的 depth512.onnx 是 512x288） */
     private const val REMOTE_IN_W = 512
     private const val REMOTE_IN_H = 288
+    /* 一批五帧、排到五帧或最老一帧等了 40 毫秒就发 */
+    private const val REMOTE_BATCH = 5
+    private const val REMOTE_BATCH_WAIT_MS = 40L
+    private const val REMOTE_QUEUE_MAX = 12
 
     /** 模型是否可用；不可用时原生保持平面出画，2D→3D 开关仍可开但没有立体 */
     @Volatile
@@ -76,6 +80,10 @@ object DepthEngine {
     /* 远程深度服务（点 15）：长连接，断了下一帧重连 */
     private var sock: java.net.Socket? = null
     private var sockKey = ""
+    /* 远程批量：队列、批次大小、最长等待 */
+    private val pending = java.util.ArrayDeque<RemoteFrame>()
+    @Volatile private var batchThread: Thread? = null
+    @Volatile private var batchStop = false
 
     /** 最近一次推理耗时（毫秒），排查用 */
     @Volatile
@@ -174,6 +182,9 @@ object DepthEngine {
         runCatching { gpu?.close() }
         gpu = null
         ready = false
+        batchStop = true
+        batchThread = null
+        synchronized(pending) { pending.clear() }
         runCatching { sock?.close() }
         sock = null
         prevDepth = null
@@ -299,10 +310,14 @@ object DepthEngine {
          * 远程模式（父亲 2026-11-02）：深度改在点 15 上算，输入更大、单次更快。
          * 这条路径不依赖本地解释器，所以不走上面的 ready 判定。
          */
-        val remote = VrTuning.depthRemote == 1
+        if (VrTuning.depthRemote == 1) {
+            busy.set(false)
+            enqueueRemote(rgba, w, h, seq)
+            return
+        }
         worker.execute {
             try {
-                if (remote) runInferRemote(rgba, w, h, seq) else runInfer(rgba, w, h, seq)
+                runInfer(rgba, w, h, seq)
             } catch (t: Throwable) {
                 Log.e(TAG, "深度推理失败：${t.message}")
             } finally {
@@ -312,19 +327,16 @@ object DepthEngine {
     }
 
     /**
-     * 远程深度：把这一帧缩到 512x288 的 RGB 发给点 15，拿回 uint8 深度图。
+     * 远程深度（批量）：把最近几帧一起发给点 15，回来的深度按帧号各归各的帧。
      *
-     * 服务端是 ~/depth-service/depth_server.py（OpenVINO，单次约 18 毫秒），
-     * 局域网往返实测 22 毫秒，比头显本地跑 256 输入快五倍，输入分辨率还大一档。
-     * 连接断了下一次自动重连，绝不让 3D 整条链路卡在网络上。
+     * 为什么批量：头显到点 15 一个来回约 180 毫秒，而一帧推理只要 18 毫秒，
+     * 单帧发等于每帧都白等一次往返。五帧一批就是 5×18+180 毫秒，
+     * 摊到每帧五十来毫秒；批与批之间不停顿，路上时间和计算时间叠着走。
+     * 迟到会到两百多毫秒，靠原生的"迟到深度垫给最新一槽"兜住。
      */
-    private fun runInferRemote(rgba: ByteArray, w: Int, h: Int, seq: Long) {
-        val t0 = SystemClock.elapsedRealtime()
-        val s = ensureSocket()
-        if (s == null) {
-            lastInferMs = -1
-            return
-        }
+    private data class RemoteFrame(val seq: Long, val w: Int, val h: Int, val rgb: ByteArray, val ts: Long)
+
+    private fun enqueueRemote(rgba: ByteArray, w: Int, h: Int, seq: Long) {
         val rw = REMOTE_IN_W
         val rh = REMOTE_IN_H
         val rgb = ByteArray(rw * rh * 3)
@@ -340,24 +352,84 @@ object DepthEngine {
                 rgb[o++] = rgba[i + 2]
             }
         }
+        synchronized(pending) {
+            /* 排太多说明网络在堵：丢掉最老的，宁可少几帧也别让深度越拖越旧 */
+            while (pending.size > REMOTE_QUEUE_MAX) pending.pollFirst()
+            pending.addLast(RemoteFrame(seq, rw, rh, rgb, SystemClock.elapsedRealtime()))
+        }
+        ensureBatchThread()
+    }
+
+    private fun ensureBatchThread() {
+        synchronized(this) {
+            if (batchThread != null) return
+            batchStop = false
+            val th = Thread({
+                while (!batchStop) {
+                    val batch = ArrayList<RemoteFrame>(REMOTE_BATCH)
+                    synchronized(pending) {
+                        val head = pending.peekFirst()
+                        val due = head != null &&
+                                  SystemClock.elapsedRealtime() - head.ts >= REMOTE_BATCH_WAIT_MS
+                        if (pending.size >= REMOTE_BATCH || due) {
+                            while (batch.size < REMOTE_BATCH && pending.isNotEmpty()) {
+                                batch.add(pending.pollFirst()!!)
+                            }
+                        }
+                    }
+                    if (batch.isEmpty()) {
+                        Thread.sleep(3)
+                        continue
+                    }
+                    try {
+                        sendBatch(batch)
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "远程深度：一批失败（${t.message}），重连")
+                        runCatching { sock?.close() }
+                        sock = null
+                    }
+                }
+            }, "b0b-depth-remote")
+            th.isDaemon = true
+            batchThread = th
+            th.start()
+        }
+    }
+
+    private fun sendBatch(batch: List<RemoteFrame>) {
+        val t0 = SystemClock.elapsedRealtime()
+        val s = ensureSocket() ?: return
         val out = s.getOutputStream()
         val inp = s.getInputStream()
-        out.write(byteArrayOf(0x42, 0x30, 0x42, 0x44))
-        out.write(byteArrayOf((rw and 0xFF).toByte(), ((rw shr 8) and 0xFF).toByte(),
-                              (rh and 0xFF).toByte(), ((rh shr 8) and 0xFF).toByte()))
-        out.write(rgb)
+        val head = java.io.ByteArrayOutputStream(16 + batch.size * (4 + REMOTE_IN_W * REMOTE_IN_H * 3))
+        head.write(byteArrayOf(0x42, 0x30, 0x42, 0x4D))   // B0BM
+        head.write(byteArrayOf((batch.size and 0xFF).toByte(), ((batch.size shr 8) and 0xFF).toByte()))
+        for (f in batch) {
+            head.write(byteArrayOf((f.w and 0xFF).toByte(), ((f.w shr 8) and 0xFF).toByte(),
+                                   (f.h and 0xFF).toByte(), ((f.h shr 8) and 0xFF).toByte()))
+            head.write(f.rgb)
+        }
+        out.write(head.toByteArray())
         out.flush()
-        val head = ByteArray(4)
-        readFully(inp, head, 4)
-        val ow = (head[0].toInt() and 0xFF) or ((head[1].toInt() and 0xFF) shl 8)
-        val oh = (head[2].toInt() and 0xFF) or ((head[3].toInt() and 0xFF) shl 8)
-        if (ow <= 0 || oh <= 0) return
-        val n = ow * oh
-        val depth = ByteArray(n)
-        readFully(inp, depth, n)
+
+        val cntBuf = ByteArray(2)
+        readFully(inp, cntBuf, 2)
+        val n = (cntBuf[0].toInt() and 0xFF) or ((cntBuf[1].toInt() and 0xFF) shl 8)
+        if (n != batch.size) throw java.io.IOException("远程深度：批量数目对不上（$n/${batch.size}）")
+        for (f in batch) {
+            val wh = ByteArray(4)
+            readFully(inp, wh, 4)
+            val ow = (wh[0].toInt() and 0xFF) or ((wh[1].toInt() and 0xFF) shl 8)
+            val oh = (wh[2].toInt() and 0xFF) or ((wh[3].toInt() and 0xFF) shl 8)
+            val cnt = ow * oh
+            if (cnt <= 0) continue
+            val depth = ByteArray(cnt)
+            readFully(inp, depth, cnt)
+            val vals = FloatArray(cnt) { (depth[it].toInt() and 0xFF) / 255f }
+            lastInferMs = (SystemClock.elapsedRealtime() - f.ts)
+            finishDepth(vals, ow, oh, f.seq)
+        }
         lastInferMs = SystemClock.elapsedRealtime() - t0
-        val vals = FloatArray(n) { (depth[it].toInt() and 0xFF) / 255f }
-        finishDepth(vals, ow, oh, seq)
     }
 
     private fun readFully(inp: java.io.InputStream, buf: ByteArray, n: Int) {
