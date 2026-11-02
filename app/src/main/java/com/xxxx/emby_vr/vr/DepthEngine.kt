@@ -423,7 +423,7 @@ object DepthEngine {
         val out = s.getOutputStream()
         val inp = s.getInputStream()
         val head = java.io.ByteArrayOutputStream(16 + batch.size * (6 + 40 * 1024))
-        head.write(byteArrayOf(0x42, 0x30, 0x42, 0x4A))   // B0BJ（压缩批量）
+        head.write(byteArrayOf(0x42, 0x30, 0x42, 0x4B))   // B0BK（压缩上行 + 压缩回传）
         head.write(byteArrayOf((batch.size and 0xFF).toByte(), ((batch.size shr 8) and 0xFF).toByte()))
         for (f in batch) {
             val len = f.rgb.size
