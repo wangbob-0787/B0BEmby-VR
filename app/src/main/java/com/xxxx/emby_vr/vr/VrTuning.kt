@@ -66,6 +66,7 @@ import java.io.File
  * | `stereo_fill_pick` | 补洞取层：1=就近取紧邻背景（默认）0=全范围内取最远（会把远景铺进人像） | 1 |
  * | `depth_smooth` | 深度时间平滑 0~1：越大越稳越迟（洞判定逐帧翻的根子之一是深度在变） | 0.8 |
  * | `stereo_edge_thr` | 真边缘判据·深度跳变阈值：越大越保守，只在明显的深度断口上补洞 | 0.03 |
+ * | `stereo_ring_delay` | 环形缓冲延迟强制值（毫秒，0=自动）；环容量约 150ms，超过就永远配不上深度 | 0 |
  * | `stereo_edge_color` | 真边缘判据·两侧颜色差阈值：越大越保守，同色跳变不算边缘 | 0.06 |
  * | `depth_auto` | 显卡委托建不起来时是否自动换回 int8 小模型（1=换，默认；0=保持原模型跑 CPU） | 1 |
  * | `layer_boost` | 视频层增强（PICO 合成器）：0=关 1=超采样 2=超采样高 3=锐化 4=锐化高 5=自适应锐化 6=自适应锐化高 7=超分辨率（同一层只能开一种） | 7 |
@@ -431,6 +432,13 @@ object VrTuning {
 
     /** 真边缘判据：两侧颜色差阈值（默认 0.06，越大越保守、同色跳变不算边缘） */
     const val KEY_EDGE_COLOR = 72
+
+    /**
+     * 环形缓冲延迟强制值（毫秒，0 = 按深度迟到自动算）。
+     * 环容量 =（槽数-1）× 帧间隔 ≈ 150ms；自动值按 p90 迟到算，本地推理迟到约 200ms 会被
+     * 截断到环上限、深度永远配不上帧（实测配对率 1%）。给一个能盖住常见迟到、又不超容量的值。
+     */
+    const val KEY_RING_DELAY = 63
     /**
      * 抓帧的毫秒下限（0 = 纯按帧数，默认）。
      *
@@ -1007,6 +1015,9 @@ object VrTuning {
         }
         raw["stereo_edge_thr"]?.toFloatOrNull()?.let {
             VrNative.setTuning(KEY_EDGE_THR, it)
+        }
+        raw["stereo_ring_delay"]?.toFloatOrNull()?.let {
+            VrNative.setTuning(KEY_RING_DELAY, it)
         }
         raw["stereo_edge_color"]?.toFloatOrNull()?.let {
             VrNative.setTuning(KEY_EDGE_COLOR, it)
