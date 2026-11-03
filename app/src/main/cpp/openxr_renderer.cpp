@@ -505,24 +505,28 @@ void main() {
         float hole = (uEyeIndex < 0.5 ? enc.b : enc.a);
         if (uOcclusion == 1 && uFill == 1 && hole > 0.5) {
             /*
-             * 本眼在这个像素上被更近的物体挡住了，没有源像素可采。
-             * 沿扫描线**左右两个方向**都找，取其中最远的那个深度把洞铺上 ——
-             * 只搜一侧会在物体边缘留下半条缝。
+             * 本眼在这个像素上被更近的物体挡住了，没有源像素可采，只能拿旁边的背景铺。
              *
-             * 取最大值：深度纹理里一律"数值越大越远"（DepthEngine 与原生侧同一口径），
-             * 所以最远的背景是 max 不是 min。参考实现用 min，是因为它的深度方向与我们
-             * 相反；照抄 min 等于拿"最近的那层"去铺洞，洞边会被拽向近处，正好是
-             * 人像轮廓外侧逐帧游移的来源。
+             * 就近取背景：左右同时往外走，找到**第一个比本像素更远**的样本就停。
+             * 不能取整段搜索里的最远值 —— 取最远会把远处的背景（墙、远景）一路铺到
+             * 人像边缘以内，表现就是背景咬进脸里、脸的边缘被削掉、偶尔插出一个尖角。
+             * 洞区只该用紧贴它的那一层背景，内容才连续、落点才不跳。
              */
+            float here = depthAt(vUv);
+            float far = here;
+            bool found = false;
             float stepUV = FILL_PX / float(FILL_MAX) / max(uFrameWidth, 1.0);
             float reachUV = float(reach) / max(uLowResWidth, 1.0);
             int span = int(min(float(FILL_MAX), ceil(reachUV / stepUV)));
-            float far = depthAt(vUv);
             for (int i = 1; i <= FILL_MAX; i++) {
                 if (i > span) break;
                 float o = float(i) * stepUV;
-                far = max(far, texture(uDepthTex, vec2(vUv.x - o, vUv.y)).r);
-                far = max(far, texture(uDepthTex, vec2(vUv.x + o, vUv.y)).r);
+                float dl = texture(uDepthTex, vec2(vUv.x - o, vUv.y)).r;
+                float dr = texture(uDepthTex, vec2(vUv.x + o, vUv.y)).r;
+                /* 只认比本像素更远的样本（更近的属于别的表面）；同圈两层都有时取更近的那层 */
+                if (dr > here + 0.01) { far = dr; found = true; }
+                if (dl > here + 0.01) { far = found ? min(far, dl) : dl; found = true; }
+                if (found) break;
             }
             /*
              * 补洞照 DepthRay 原样：两只眼用同一种推法（不乘眼符号、固定减号）。
