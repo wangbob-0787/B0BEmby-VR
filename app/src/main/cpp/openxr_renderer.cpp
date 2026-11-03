@@ -506,8 +506,13 @@ void main() {
         if (uOcclusion == 1 && uFill == 1 && hole > 0.5) {
             /*
              * 本眼在这个像素上被更近的物体挡住了，没有源像素可采。
-             * 沿扫描线**左右两个方向**都找，取其中更远的那个深度（值越小越远），
-             * 用背景把洞铺上 —— 只搜一侧会在物体边缘留下半条缝。
+             * 沿扫描线**左右两个方向**都找，取其中最远的那个深度把洞铺上 ——
+             * 只搜一侧会在物体边缘留下半条缝。
+             *
+             * 取最大值：深度纹理里一律"数值越大越远"（DepthEngine 与原生侧同一口径），
+             * 所以最远的背景是 max 不是 min。参考实现用 min，是因为它的深度方向与我们
+             * 相反；照抄 min 等于拿"最近的那层"去铺洞，洞边会被拽向近处，正好是
+             * 人像轮廓外侧逐帧游移的来源。
              */
             float stepUV = FILL_PX / float(FILL_MAX) / max(uFrameWidth, 1.0);
             float reachUV = float(reach) / max(uLowResWidth, 1.0);
@@ -516,8 +521,8 @@ void main() {
             for (int i = 1; i <= FILL_MAX; i++) {
                 if (i > span) break;
                 float o = float(i) * stepUV;
-                far = min(far, texture(uDepthTex, vec2(vUv.x - o, vUv.y)).r);
-                far = min(far, texture(uDepthTex, vec2(vUv.x + o, vUv.y)).r);
+                far = max(far, texture(uDepthTex, vec2(vUv.x - o, vUv.y)).r);
+                far = max(far, texture(uDepthTex, vec2(vUv.x + o, vUv.y)).r);
             }
             /*
              * 补洞照 DepthRay 原样：两只眼用同一种推法（不乘眼符号、固定减号）。
@@ -543,7 +548,12 @@ void main() {
                 float dp = texture(uDepthTex, vec2(uvT.x + h, vUv.y)).r;
                 float e = (uvT.x - vUv.x) - uEyeSign * disp * (d0 - uConvergence);
                 float slope = 1.0 - uEyeSign * disp * (dp - dm) / (2.0 * h);
-                if (abs(slope) < 0.25) slope = 0.25;
+                /*
+                 * 斜率触底时保住符号：只把绝对值抬到 0.25，不能一律写成 +0.25。
+                 * 写成正数会让负斜率（深度朝反方向变）的修正方向整个反过来 ——
+                 * 本该死心不动的那一轮，反而把采样点往反方向推最多 4 个像素。
+                 */
+                if (abs(slope) < 0.25) slope = slope < 0.0 ? -0.25 : 0.25;
                 uvT.x -= clamp(e / slope, -4.0 * h, 4.0 * h);
             }
         } else {
