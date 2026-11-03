@@ -421,6 +421,8 @@ uniform int uOcclusion;         // 1 = 用预计算遮挡表（默认），0 = �
 uniform int uFill;              // 1 = 空洞沿扫描线补（默认），0 = 空洞也按偏移表走
 uniform float uFillPx;          // 补洞搜索半径（画面像素，默认 24）
 uniform int uFillPick;          // 1 = 就近取紧邻背景（默认），0 = 整个范围内取最远
+uniform float uEdgeThr;         // 真边缘判据：深度跳变阈值（低分深度单位，默认 0.03）
+uniform float uEdgeColorThr;    // 真边缘判据：两侧颜色差阈值（默认 0.06）
 uniform int uSmoothRead;        // 1 = 深度三次插值读（默认），0 = 双线性
 /*
  * 牛顿修正轮数 0..2。每轮 6 次深度采样，是每帧每眼都跑的开销；
@@ -473,6 +475,51 @@ float depthAt(vec2 uv) {
     return mix(mix(a11, a01, g0.x), mix(a10, a00, g0.x), g0.y);
 }
 
+/* 画面颜色（视频纹理或环形缓冲，跟最终采样同一个源） */
+vec3 frameAt(vec2 uv) {
+    vec2 t = uv * uUvScale + uUvBias;
+    return uUseDelayed == 1 ? texture(uDelayedTex, t).rgb : texture(uTexture, t).rgb;
+}
+
+/*
+ * 以本点为中心的 3×3 深度动态范围（最大值 − 最小值）。
+ * 与方向无关：横边、竖边、斜边、弯曲的边都会让这个小方块里同时出现前景和背景，
+ * 所以它比"横向梯度""纵向梯度"这类单方向判据可靠得多。
+ */
+float depthRange3x3(vec2 uv, vec2 dt) {
+    float mn = 1.0;
+    float mx = 0.0;
+    for (int j = -1; j <= 1; j++) {
+        for (int i = -1; i <= 1; i++) {
+            float d = texture(uDepthTex, uv + vec2(float(i), float(j)) * dt).r;
+            mn = min(mn, d);
+            mx = max(mx, d);
+        }
+    }
+    return mx - mn;
+}
+
+/*
+ * 真边缘判定：深度断口 + 边缘连续 + 两侧颜色不同，三条同时成立才算。
+ *
+ * 只看深度突变不够用：模型噪声、纹理台阶、量化残余都会产生孤立跳变，那些位置被
+ * 当成边缘去补洞，就是拿背景啃掉前景一块，而且每帧在"补/不补"之间切。
+ * 连续性用四邻域投票：真边缘是一条线，沿它走一步还是断口；噪点四周是平的。
+ * 四邻域全用 3×3 判据，所以斜边、曲边同样能通过，不依赖边朝向。
+ */
+bool isRealEdge(vec2 uv, float here) {
+    vec2 dt = 1.0 / max(vec2(textureSize(uDepthTex, 0)), vec2(1.0));
+    if (depthRange3x3(uv, dt) <= uEdgeThr) return false;
+    int hits = 0;
+    if (depthRange3x3(uv + vec2(dt.x, 0.0), dt) > uEdgeThr) hits++;
+    if (depthRange3x3(uv - vec2(dt.x, 0.0), dt) > uEdgeThr) hits++;
+    if (depthRange3x3(uv + vec2(0.0, dt.y), dt) > uEdgeThr) hits++;
+    if (depthRange3x3(uv - vec2(0.0, dt.y), dt) > uEdgeThr) hits++;
+    if (hits < 2) return false;
+    float cx = 6.0 / max(uFrameWidth, 1.0);
+    return distance(frameAt(uv - vec2(cx, 0.0)), frameAt(uv + vec2(cx, 0.0))) > uEdgeColorThr;
+}
+
 void main() {
     vec4 outColor;
     /*
@@ -505,76 +552,72 @@ void main() {
         vec4 enc = texture(uOffsets, vUv);
         float off = (uEyeIndex < 0.5 ? enc.r : enc.g) - 0.5;
         float hole = (uEyeIndex < 0.5 ? enc.b : enc.a);
-        if (uOcclusion == 1 && uFill == 1 && hole > 0.5) {
+        if (uOcclusion == 1) {
             /*
-             * 本眼在这个像素上被更近的物体挡住了，没有源像素可采，只能拿旁边的背景铺。
-             *
-             * 就近取背景：左右同时往外走，找到**第一个比本像素更远**的样本就停。
-             * 不能取整段搜索里的最远值 —— 取最远会把远处的背景（墙、远景）一路铺到
-             * 人像边缘以内，表现就是背景咬进脸里、脸的边缘被削掉、偶尔插出一个尖角。
-             * 洞区只该用紧贴它的那一层背景，内容才连续、落点才不跳。
+             * 这个像素被更近的表面挡住（偏移表标了洞）。只有洞确实压在一条真边缘上时
+             * 才换用背景补，否则照正常偏移走 —— 假洞去补就是拿背景啃掉人像一块，
+             * 而且逐帧在"补/不补"之间切，那就是肉眼看到的边缘游移。
              */
+            float offX = edgeW * off * 2.0 * float(reach) / max(uLowResWidth, 1.0);
+            bool doFill = (uFill == 1 && hole > 0.5);
             float here = depthAt(vUv);
-            float far = here;
-            bool found = false;
-            /* 搜索半径、取层策略都由 stereo_fill_px / stereo_fill_pick 运行时控制 */
-            float fillPx = clamp(uFillPx, 2.0, 96.0);
-            float stepUV = fillPx / float(FILL_MAX) / max(uFrameWidth, 1.0);
-            float reachUV = float(reach) / max(uLowResWidth, 1.0);
-            int span = int(min(float(FILL_MAX), ceil(reachUV / stepUV)));
-            for (int i = 1; i <= FILL_MAX; i++) {
-                if (i > span) break;
-                float o = float(i) * stepUV;
-                float dl = texture(uDepthTex, vec2(vUv.x - o, vUv.y)).r;
-                float dr = texture(uDepthTex, vec2(vUv.x + o, vUv.y)).r;
-                bool hl = dl > here + 0.01;
-                bool hr = dr > here + 0.01;
-                /*
-                 * uFillPick = 1：就近取紧邻背景，同圈两侧都命中时取更近的那层，找到即停；
-                 * 取最远会把远处的墙铺进人像边缘以内（背景咬脸、边缘被削、插出尖角）。
-                 * uFillPick = 0：走满整个半径取最远，留作对照。
-                 */
-                if (uFillPick == 1) {
-                    if (hl && hr) far = min(dl, dr);
-                    else if (hl) far = dl;
-                    else if (hr) far = dr;
-                    if (hl || hr) { found = true; break; }
-                } else {
-                    if (hl) far = max(far, dl);
-                    if (hr) far = max(far, dr);
+            if (doFill) doFill = isRealEdge(vUv, here);
+            if (doFill) {
+                float far = here;
+                bool found = false;
+                /* 搜索半径、取层策略由 stereo_fill_px / stereo_fill_pick 运行时控制 */
+                float fillPx = clamp(uFillPx, 2.0, 96.0);
+                float stepUV = fillPx / float(FILL_MAX) / max(uFrameWidth, 1.0);
+                float reachUV = float(reach) / max(uLowResWidth, 1.0);
+                int span = int(min(float(FILL_MAX), ceil(reachUV / stepUV)));
+                for (int i = 1; i <= FILL_MAX; i++) {
+                    if (i > span) break;
+                    float o = float(i) * stepUV;
+                    float dl = texture(uDepthTex, vec2(vUv.x - o, vUv.y)).r;
+                    float dr = texture(uDepthTex, vec2(vUv.x + o, vUv.y)).r;
+                    bool hl = dl > here + 0.01;
+                    bool hr = dr > here + 0.01;
+                    /*
+                     * uFillPick = 1：就近取紧邻背景，同圈两侧都命中时取更近的那层，找到即停；
+                     * 取最远会把远处的墙一路铺进边缘以内（背景咬脸、边缘被削、插出尖角）。
+                     * uFillPick = 0：走满整个半径取最远，留作对照。
+                     */
+                    if (uFillPick == 1) {
+                        if (hl && hr) far = min(dl, dr);
+                        else if (hl) far = dl;
+                        else if (hr) far = dr;
+                        if (hl || hr) { found = true; break; }
+                    } else {
+                        if (hl) far = max(far, dl);
+                        if (hr) far = max(far, dr);
+                    }
                 }
-            }
-            /*
-             * 补洞照 DepthRay 原样：两只眼用同一种推法（不乘眼符号、固定减号）。
-             *
-             * 洞区本来没有可信深度，按眼分别往相反方向推，会让左右眼在洞边采到
-             * 不同位置，洞边出现只有一只眼才有的缝；统一成同一个落点后，洞区贴在
-             * 银幕深度上，边缘不再一侧闪一侧稳。
-             */
-            uvT.x = vUv.x - disp * (far - uConvergence);
-        } else if (uOcclusion == 1) {
-            uvT.x = vUv.x + edgeW * off * 2.0 * float(reach) / max(uLowResWidth, 1.0);
-            /*
-             * 两次牛顿迭代：把采样点推到"落在该像素应有的视差位置"上。
-             * 斜率带 uEyeSign —— 右眼的约束方向与左眼相反，漏掉符号就是右眼被往
-             * 反方向修正最多 4 个像素，这正是"一只眼边缘发虚"的来源。
-             */
-            float h = 1.0 / max(uFrameWidth, 1.0);
-            for (int i = 0; i < 2; i++) {
-                /* 轮数由 stereo_newton 控制（0/1/2）。ES 3.0 的循环上限必须是常量，所以按上限 2 循环、提前跳出 */
-                if (i >= uNewton) break;
-                float d0 = depthAt(vec2(uvT.x, vUv.y));
-                float dm = texture(uDepthTex, vec2(uvT.x - h, vUv.y)).r;
-                float dp = texture(uDepthTex, vec2(uvT.x + h, vUv.y)).r;
-                float e = (uvT.x - vUv.x) - uEyeSign * disp * (d0 - uConvergence);
-                float slope = 1.0 - uEyeSign * disp * (dp - dm) / (2.0 * h);
+                /* 整段半径里都没有更远的样本，就别硬铺，退回正常偏移 */
+                uvT.x = found ? (vUv.x - disp * (far - uConvergence)) : (vUv.x + offX);
+            } else {
+                uvT.x = vUv.x + offX;
                 /*
-                 * 斜率触底时保住符号：只把绝对值抬到 0.25，不能一律写成 +0.25。
-                 * 写成正数会让负斜率（深度朝反方向变）的修正方向整个反过来 ——
-                 * 本该死心不动的那一轮，反而把采样点往反方向推最多 4 个像素。
+                 * 两次牛顿迭代：把采样点推到"落在该像素应有的视差位置"上。
+                 * 斜率带 uEyeSign —— 右眼的约束方向与左眼相反，漏掉符号就是右眼被往
+                 * 反方向修正最多 4 个像素，这正是"一只眼边缘发虚"的来源。
                  */
-                if (abs(slope) < 0.25) slope = slope < 0.0 ? -0.25 : 0.25;
-                uvT.x -= clamp(e / slope, -4.0 * h, 4.0 * h);
+                float h = 1.0 / max(uFrameWidth, 1.0);
+                for (int i = 0; i < 2; i++) {
+                    /* 轮数由 stereo_newton 控制（0/1/2）。ES 3.0 的循环上限必须是常量，所以按上限 2 循环、提前跳出 */
+                    if (i >= uNewton) break;
+                    float d0 = depthAt(vec2(uvT.x, vUv.y));
+                    float dm = texture(uDepthTex, vec2(uvT.x - h, vUv.y)).r;
+                    float dp = texture(uDepthTex, vec2(uvT.x + h, vUv.y)).r;
+                    float e = (uvT.x - vUv.x) - uEyeSign * disp * (d0 - uConvergence);
+                    float slope = 1.0 - uEyeSign * disp * (dp - dm) / (2.0 * h);
+                    /*
+                     * 斜率触底时保住符号：只把绝对值抬到 0.25，不能一律写成 +0.25。
+                     * 写成正数会让负斜率的修正方向整个反过来，本该不动的那一轮
+                     * 反而把采样点往反方向推最多 4 个像素。
+                     */
+                    if (abs(slope) < 0.25) slope = slope < 0.0 ? -0.25 : 0.25;
+                    uvT.x -= clamp(e / slope, -4.0 * h, 4.0 * h);
+                }
             }
         } else {
             uvT.x = vUv.x + uEyeSign * disp * (depthAt(vUv) - uConvergence);
@@ -1987,6 +2030,8 @@ struct QuadLocs {
     GLint newton = -1;
     GLint fillPx = -1;
     GLint fillPick = -1;
+    GLint edgeThr = -1;
+    GLint edgeColorThr = -1;
     GLint circle = -1, expand = -1, bright = -1, contrast = -1, sat = -1;
     GLint sharpen = -1, temp = -1, texel = -1, screenStep = -1, down = -1;
     GLint jitter = -1, testPattern = -1;
@@ -2032,6 +2077,8 @@ void fillQuadLocs(GLuint prog, QuadLocs &u) {
     u.newton = glGetUniformLocation(prog, "uNewton");
     u.fillPx = glGetUniformLocation(prog, "uFillPx");
     u.fillPick = glGetUniformLocation(prog, "uFillPick");
+    u.edgeThr = glGetUniformLocation(prog, "uEdgeThr");
+    u.edgeColorThr = glGetUniformLocation(prog, "uEdgeColorThr");
     u.circle = glGetUniformLocation(prog, "uCircle");
     u.expand = glGetUniformLocation(prog, "uExpandRange");
     u.bright = glGetUniformLocation(prog, "uBrightness");
@@ -2700,6 +2747,9 @@ std::atomic<int> gStereoNewton{2};
 /* 补洞搜索半径（画面像素）与取层策略：父亲实测补洞是边缘游移的来源，两项都要能运行时对比 */
 std::atomic<float> gStereoFillPx{24.f};
 std::atomic<int> gStereoFillPick{1};
+/* 真边缘判据：深度跳变阈值与两侧颜色差阈值，运行时可比，避免硬编码猜值 */
+std::atomic<float> gStereoEdgeThr{0.08f};
+std::atomic<float> gStereoEdgeColorThr{0.06f};
 /** 遮挡表降档的除数：调用处统一走这个，别直接读原子量（非法值当 1） */
 inline int stereoOcclDiv() {
     const int d = gStereoOcclDiv.load();
@@ -7002,6 +7052,8 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
             }
             if (u.fillPx >= 0) glUniform1f(u.fillPx, gStereoFillPx.load());
             if (u.fillPick >= 0) glUniform1i(u.fillPick, gStereoFillPick.load() == 0 ? 0 : 1);
+            if (u.edgeThr >= 0) glUniform1f(u.edgeThr, gStereoEdgeThr.load());
+            if (u.edgeColorThr >= 0) glUniform1f(u.edgeColorThr, gStereoEdgeColorThr.load());
         } else {
             glUniform1i(u.depthOn, 0);
             /*
@@ -9069,6 +9121,20 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             VLOGI("调参 → 补洞取层 %s（半径 %.0f 画面像素）",
                   gStereoFillPick.load() == 1 ? "就近取紧邻背景" : "全范围取最远",
                   gStereoFillPx.load());
+            return;
+        }
+        /* 71 = 真边缘判据的深度断口阈值（3×3 动态范围，默认 0.08）：越大越保守，补洞越少 */
+        case 71: {
+            const float t = value;
+            gStereoEdgeThr.store(t < 0.002f ? 0.002f : (t > 0.5f ? 0.5f : t));
+            VLOGI("调参 → 真边缘深度阈值 %.3f（越大越保守，补洞越少）", gStereoEdgeThr.load());
+            return;
+        }
+        /* 72 = 真边缘判据的两侧颜色差阈值（默认 0.06）：越大越保守，同色跳变不算边缘 */
+        case 72: {
+            const float t = value;
+            gStereoEdgeColorThr.store(t < 0.002f ? 0.002f : (t > 1.f ? 1.f : t));
+            VLOGI("调参 → 真边缘颜色差阈值 %.3f（越大越保守）", gStereoEdgeColorThr.load());
             return;
         }
         /* 63 = 环延迟强制值（毫秒，0 = 按迟到自动算）：远程推理的迟到是固定开销，手动压住 */
