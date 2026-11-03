@@ -65,6 +65,8 @@ import java.io.File
  * | `stereo_fill_px` | 补洞搜索半径（画面像素 2~96；洞宽≈视差量，太小跨不过洞、太大会啃前景） | 24 |
  * | `stereo_fill_pick` | 补洞取层：1=就近取紧邻背景（默认）0=全范围内取最远（会把远景铺进人像） | 1 |
  * | `depth_smooth` | 深度时间平滑 0~1：越大越稳越迟（洞判定逐帧翻的根子之一是深度在变） | 0.8 |
+ * | `stereo_edge_thr` | 真边缘判据·深度跳变阈值：越大越保守，只在明显的深度断口上补洞 | 0.03 |
+ * | `stereo_edge_color` | 真边缘判据·两侧颜色差阈值：越大越保守，同色跳变不算边缘 | 0.06 |
  * | `depth_auto` | 显卡委托建不起来时是否自动换回 int8 小模型（1=换，默认；0=保持原模型跑 CPU） | 1 |
  * | `layer_boost` | 视频层增强（PICO 合成器）：0=关 1=超采样 2=超采样高 3=锐化 4=锐化高 5=自适应锐化 6=自适应锐化高 7=超分辨率（同一层只能开一种） | 7 |
  * | `foveation` | 固定注视点渲染：0=关 1=低 2=中 3=高（边缘降精度换 GPU） | 2 |
@@ -423,6 +425,12 @@ object VrTuning {
 
     /** 深度时间平滑系数（0~1，默认 0.8）：越大越稳、越迟；补洞判定抖的根子之一是深度逐帧变 */
     const val KEY_DEPTH_SMOOTH = 70
+
+    /** 真边缘判据：深度跳变阈值（默认 0.03，越大越保守、补洞越少） */
+    const val KEY_EDGE_THR = 71
+
+    /** 真边缘判据：两侧颜色差阈值（默认 0.06，越大越保守、同色跳变不算边缘） */
+    const val KEY_EDGE_COLOR = 72
     /**
      * 抓帧的毫秒下限（0 = 纯按帧数，默认）。
      *
@@ -996,6 +1004,12 @@ object VrTuning {
         }
         raw["stereo_fill_pick"]?.toIntOrNull()?.let {
             VrNative.setTuning(KEY_STEREO_FILL_PICK, it.toFloat())
+        }
+        raw["stereo_edge_thr"]?.toFloatOrNull()?.let {
+            VrNative.setTuning(KEY_EDGE_THR, it)
+        }
+        raw["stereo_edge_color"]?.toFloatOrNull()?.let {
+            VrNative.setTuning(KEY_EDGE_COLOR, it)
         }
         raw["depth_smooth"]?.toFloatOrNull()?.let {
             DepthEngine.smooth = it.coerceIn(0f, 1f)
