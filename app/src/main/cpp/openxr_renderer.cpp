@@ -486,40 +486,12 @@ vec3 frameAt(vec2 uv) {
 }
 
 /*
- * 以本点为中心的 3×3 深度动态范围（最大值 − 最小值）。
- * 与方向无关：横边、竖边、斜边、弯曲的边都会让这个小方块里同时出现前景和背景，
- * 所以它比"横向梯度""纵向梯度"这类单方向判据可靠得多。
- */
-float depthRange3x3(vec2 uv, vec2 dt) {
-    float mn = 1.0;
-    float mx = 0.0;
-    for (int j = -1; j <= 1; j++) {
-        for (int i = -1; i <= 1; i++) {
-            float d = texture(uDepthTex, uv + vec2(float(i), float(j)) * dt).r;
-            mn = min(mn, d);
-            mx = max(mx, d);
-        }
-    }
-    return mx - mn;
-}
-
-/*
- * 真边缘判定：深度断口 + 边缘连续 + 两侧颜色不同，三条同时成立才算。
+ * 颜色判据：断口两侧的画面颜色必须确实不同。
  *
- * 只看深度突变不够用：模型噪声、纹理台阶、量化残余都会产生孤立跳变，那些位置被
- * 当成边缘去补洞，就是拿背景啃掉前景一块，而且每帧在"补/不补"之间切。
- * 连续性用四邻域投票：真边缘是一条线，沿它走一步还是断口；噪点四周是平的。
- * 四邻域全用 3×3 判据，所以斜边、曲边同样能通过，不依赖边朝向。
+ * 深度断口与连续性已经在偏移表那趟判过（每帧一次），这里只补颜色这一条 ——
+ * 每个洞像素两次取样，而不是几十次，GPU 预算才留得住。
  */
-bool isRealEdge(vec2 uv, float here) {
-    vec2 dt = 1.0 / max(vec2(textureSize(uDepthTex, 0)), vec2(1.0));
-    if (depthRange3x3(uv, dt) <= uEdgeThr) return false;
-    int hits = 0;
-    if (depthRange3x3(uv + vec2(dt.x, 0.0), dt) > uEdgeThr) hits++;
-    if (depthRange3x3(uv - vec2(dt.x, 0.0), dt) > uEdgeThr) hits++;
-    if (depthRange3x3(uv + vec2(0.0, dt.y), dt) > uEdgeThr) hits++;
-    if (depthRange3x3(uv - vec2(0.0, dt.y), dt) > uEdgeThr) hits++;
-    if (hits < 2) return false;
+bool colorEdge(vec2 uv) {
     float cx = 6.0 / max(uFrameWidth, 1.0);
     return distance(frameAt(uv - vec2(cx, 0.0)), frameAt(uv + vec2(cx, 0.0))) > uEdgeColorThr;
 }
@@ -565,7 +537,7 @@ void main() {
             float offX = edgeW * off * 2.0 * float(reach) / max(uLowResWidth, 1.0);
             bool doFill = (uFill == 1 && hole > 0.5);
             float here = depthAt(vUv);
-            if (doFill) doFill = isRealEdge(vUv, here);
+            if (doFill) doFill = colorEdge(vUv);
             if (doFill) {
                 float far = here;
                 bool found = false;
@@ -2324,6 +2296,7 @@ struct VrContext {
     GLint offsetsSrcRLoc = -1;      // 偏移表：源通道（R8 取 .r）
     GLint offsetsFeatherLoc = -1;   // 局部液化：羽化半径（源像素）
     GLint offsetsStretchLoc = -1;   // 局部液化：背景修正权重
+    GLint offsetsEdgeThrLoc = -1;   // 真边缘判据：3x3 动态范围阈值
     GLint offsetsSamplerLoc = -1;
     RenderTarget offsets;
     /*
@@ -6043,6 +6016,7 @@ uniform float uDispTexels;
 uniform float uConvergence;
 uniform float uFeather;     // 羽化半径，单位是源像素
 uniform float uStretch;     // 背景修正权重 0..1，0 = 关（纯偏移）
+uniform float uEdgeThr;     // 真边缘判据：3x3 动态范围阈值（源深度单位）
 out vec4 fragColor;
 
 /* 源像素坐标（可以是小数）：偏移表比深度图细时，同一行上的采样点更密 */
@@ -6050,6 +6024,37 @@ float depthAt(vec2 sp) {
     vec2 uv = (sp + 0.5) / uSrcSize;
     vec4 t = texture(uDepth, uv);
     return uSrcR == 1 ? t.r : t.a;
+}
+
+/*
+ * 3x3 动态范围：这个小方块里最大深度与最小深度之差。
+ * 与方向无关 —— 横边、竖边、斜边、弯边都会让方块里同时出现前景和背景。
+ */
+float depthRangeAt(vec2 sp) {
+    float mn = 1.0;
+    float mx = 0.0;
+    for (int j = -1; j <= 1; j++) {
+        for (int i = -1; i <= 1; i++) {
+            float d = depthAt(sp + vec2(float(i), float(j)));
+            mn = min(mn, d);
+            mx = max(mx, d);
+        }
+    }
+    return mx - mn;
+}
+
+/*
+ * 真边缘：本点有断口，且四邻域里至少两处也有断口（噪点四周是平的）。
+ * 判定放在偏移表这趟做 —— 每帧只跑一次，比在 warp 里按眼逐像素算便宜一倍多。
+ */
+bool depthEdgeAt(vec2 sp) {
+    if (depthRangeAt(sp) <= uEdgeThr) return false;
+    int hits = 0;
+    if (depthRangeAt(sp + vec2(1.0, 0.0)) > uEdgeThr) hits++;
+    if (depthRangeAt(sp - vec2(1.0, 0.0)) > uEdgeThr) hits++;
+    if (depthRangeAt(sp + vec2(0.0, 1.0)) > uEdgeThr) hits++;
+    if (depthRangeAt(sp - vec2(0.0, 1.0)) > uEdgeThr) hits++;
+    return hits >= 2;
 }
 
 void main() {
@@ -6062,6 +6067,8 @@ void main() {
     int reach = int(ceil(abs(uDispTexels) * max(uConvergence, 1.0 - uConvergence))) + 2;
     vec2 result = vec2(0.0);
     vec2 holes = vec2(0.0);
+    /* 深度断口 + 连续性只判一次，两眼共用；不在真边缘上的洞不标记，warp 就不会去补 */
+    const bool edgeOK = depthEdgeAt(sp);
     for (int eye = 0; eye < 2; eye++) {
         float disp = (eye == 0) ? uDispTexels : -uDispTexels;
         float here = depthAt(sp);
@@ -6085,7 +6092,7 @@ void main() {
             pe = ce;
         }
         result[eye] = bestOff;
-        holes[eye] = bestD < 0.0 ? 1.0 : 0.0;
+        holes[eye] = (bestD < 0.0 && edgeOK) ? 1.0 : 0.0;
         /*
          * 局部液化：这一只眼在这一行出现空洞时，继续往两侧多找一段羽化范围，
          * 把"能覆盖本像素的背景样本"按距离衰减加权，混进偏移里。
@@ -6127,6 +6134,7 @@ void main() {
         c.offsetsConvLoc = glGetUniformLocation(c.offsetsProg, "uConvergence");
         c.offsetsFeatherLoc = glGetUniformLocation(c.offsetsProg, "uFeather");
         c.offsetsStretchLoc = glGetUniformLocation(c.offsetsProg, "uStretch");
+        c.offsetsEdgeThrLoc = glGetUniformLocation(c.offsetsProg, "uEdgeThr");
         glUseProgram(c.offsetsProg);
         if (c.offsetsSamplerLoc >= 0) glUniform1i(c.offsetsSamplerLoc, 2);
     }
@@ -6158,6 +6166,7 @@ void main() {
         glUniform1f(c.offsetsFeatherLoc, gStereoFeather.load() * (float) srcW / 1920.f);
     }
     if (c.offsetsStretchLoc >= 0) glUniform1f(c.offsetsStretchLoc, gStereoStretch.load());
+    if (c.offsetsEdgeThrLoc >= 0) glUniform1f(c.offsetsEdgeThrLoc, gStereoEdgeThr.load());
     ensureVideoLayerQuad(c);
     glBindVertexArray(c.videoLayerVao);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
