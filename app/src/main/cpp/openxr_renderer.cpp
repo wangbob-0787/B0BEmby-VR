@@ -519,7 +519,14 @@ void main() {
                 far = min(far, texture(uDepthTex, vec2(vUv.x - o, vUv.y)).r);
                 far = min(far, texture(uDepthTex, vec2(vUv.x + o, vUv.y)).r);
             }
-            uvT.x = vUv.x + uEyeSign * disp * (far - uConvergence);
+            /*
+             * 补洞照 DepthRay 原样：两只眼用同一种推法（不乘眼符号、固定减号）。
+             *
+             * 洞区本来没有可信深度，按眼分别往相反方向推，会让左右眼在洞边采到
+             * 不同位置，洞边出现只有一只眼才有的缝；统一成同一个落点后，洞区贴在
+             * 银幕深度上，边缘不再一侧闪一侧稳。
+             */
+            uvT.x = vUv.x - disp * (far - uConvergence);
         } else if (uOcclusion == 1) {
             uvT.x = vUv.x + edgeW * off * 2.0 * float(reach) / max(uLowResWidth, 1.0);
             /*
