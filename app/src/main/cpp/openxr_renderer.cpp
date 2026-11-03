@@ -419,16 +419,7 @@ uniform float uSrcInset;        // 采样边界内缩，防边缘拉出黑边
 uniform float uEyeIndex;        // 0 = 左眼，1 = 右眼
 uniform int uOcclusion;         // 1 = 用预计算遮挡表（默认），0 = 逐像素现算深度
 uniform int uFill;              // 1 = 空洞沿扫描线补（默认），0 = 空洞也按偏移表走
-uniform float uFillPx;          // 补洞搜索半径（画面像素，默认 24）
-uniform int uFillPick;          // 1 = 就近取紧邻背景（默认），0 = 整个范围内取最远
-uniform float uEdgeThr;         // 真边缘判据：深度跳变阈值（低分深度单位，默认 0.03）
-uniform float uEdgeColorThr;    // 真边缘判据：两侧颜色差阈值（默认 0.06）
 uniform int uSmoothRead;        // 1 = 深度三次插值读（默认），0 = 双线性
-/*
- * 牛顿修正轮数 0..2。每轮 6 次深度采样，是每帧每眼都跑的开销；
- * 降到 0/1 就是"省采样换边缘精度"的对照档，必须肉眼 A/B 才知道值不值。
- */
-uniform int uNewton;
 out vec4 fragColor;
 
 /*
@@ -475,27 +466,6 @@ float depthAt(vec2 uv) {
     return mix(mix(a11, a01, g0.x), mix(a10, a00, g0.x), g0.y);
 }
 
-/* 画面颜色（视频纹理或环形缓冲，跟最终采样同一个源） */
-vec3 frameAt(vec2 uv) {
-    /*
-     * 必须走 SAMPLE_SRC：uDelayedTex / uUseDelayed 只在环版（B0B_RING）里声明，
-     * 主程序直接引用它们会让整份着色器链接失败 —— 症状是海报墙、控制条、菜单
-     * 那几层全部不显示（它们用的是主程序）。
-     */
-    return SAMPLE_SRC(uv * uUvScale + uUvBias).rgb;
-}
-
-/*
- * 颜色判据：断口两侧的画面颜色必须确实不同。
- *
- * 深度断口与连续性已经在偏移表那趟判过（每帧一次），这里只补颜色这一条 ——
- * 每个洞像素两次取样，而不是几十次，GPU 预算才留得住。
- */
-bool colorEdge(vec2 uv) {
-    float cx = 6.0 / max(uFrameWidth, 1.0);
-    return distance(frameAt(uv - vec2(cx, 0.0)), frameAt(uv + vec2(cx, 0.0))) > uEdgeColorThr;
-}
-
 void main() {
     vec4 outColor;
     /*
@@ -528,73 +498,39 @@ void main() {
         vec4 enc = texture(uOffsets, vUv);
         float off = (uEyeIndex < 0.5 ? enc.r : enc.g) - 0.5;
         float hole = (uEyeIndex < 0.5 ? enc.b : enc.a);
-        if (uOcclusion == 1) {
+        if (uOcclusion == 1 && uFill == 1 && hole > 0.5) {
             /*
-             * 这个像素被更近的表面挡住（偏移表标了洞）。只有洞确实压在一条真边缘上时
-             * 才换用背景补，否则照正常偏移走 —— 假洞去补就是拿背景啃掉人像一块，
-             * 而且逐帧在"补/不补"之间切，那就是肉眼看到的边缘游移。
+             * 本眼在这个像素上被更近的物体挡住了，没有源像素可采。
+             * 沿扫描线**左右两个方向**都找，取其中更远的那个深度（值越小越远），
+             * 用背景把洞铺上 —— 只搜一侧会在物体边缘留下半条缝。
              */
-            float offX = edgeW * off * 2.0 * float(reach) / max(uLowResWidth, 1.0);
-            bool doFill = (uFill == 1 && hole > 0.5);
-            float here = depthAt(vUv);
-            /* uEdgeColorThr <= 0 = 关掉颜色这一条 */
-            if (doFill && uEdgeColorThr > 0.0) doFill = colorEdge(vUv);
-            if (doFill) {
-                float far = here;
-                bool found = false;
-                /* 搜索半径、取层策略由 stereo_fill_px / stereo_fill_pick 运行时控制 */
-                float fillPx = clamp(uFillPx, 2.0, 96.0);
-                float stepUV = fillPx / float(FILL_MAX) / max(uFrameWidth, 1.0);
-                float reachUV = float(reach) / max(uLowResWidth, 1.0);
-                int span = int(min(float(FILL_MAX), ceil(reachUV / stepUV)));
-                for (int i = 1; i <= FILL_MAX; i++) {
-                    if (i > span) break;
-                    float o = float(i) * stepUV;
-                    float dl = texture(uDepthTex, vec2(vUv.x - o, vUv.y)).r;
-                    float dr = texture(uDepthTex, vec2(vUv.x + o, vUv.y)).r;
-                    bool hl = dl > here + 0.01;
-                    bool hr = dr > here + 0.01;
-                    /*
-                     * uFillPick = 1：就近取紧邻背景，同圈两侧都命中时取更近的那层，找到即停；
-                     * 取最远会把远处的墙一路铺进边缘以内（背景咬脸、边缘被削、插出尖角）。
-                     * uFillPick = 0：走满整个半径取最远，留作对照。
-                     */
-                    if (uFillPick == 1) {
-                        if (hl && hr) far = min(dl, dr);
-                        else if (hl) far = dl;
-                        else if (hr) far = dr;
-                        if (hl || hr) { found = true; break; }
-                    } else {
-                        if (hl) far = max(far, dl);
-                        if (hr) far = max(far, dr);
-                    }
-                }
-                /* 整段半径里都没有更远的样本，就别硬铺，退回正常偏移 */
-                uvT.x = found ? (vUv.x - disp * (far - uConvergence)) : (vUv.x + offX);
-            } else {
-                uvT.x = vUv.x + offX;
-                /*
-                 * 两次牛顿迭代：把采样点推到"落在该像素应有的视差位置"上。
-                 * 斜率带 uEyeSign —— 右眼的约束方向与左眼相反，漏掉符号就是右眼被往
-                 * 反方向修正最多 4 个像素，这正是"一只眼边缘发虚"的来源。
-                 */
-                float h = 1.0 / max(uFrameWidth, 1.0);
-                for (int i = 0; i < 2; i++) {
-                    /* 轮数由 stereo_newton 控制（0/1/2）。ES 3.0 的循环上限必须是常量，所以按上限 2 循环、提前跳出 */
-                    if (i >= uNewton) break;
-                    float d0 = depthAt(vec2(uvT.x, vUv.y));
-                    float dm = texture(uDepthTex, vec2(uvT.x - h, vUv.y)).r;
-                    float dp = texture(uDepthTex, vec2(uvT.x + h, vUv.y)).r;
-                    float e = (uvT.x - vUv.x) - uEyeSign * disp * (d0 - uConvergence);
-                    float slope = 1.0 - uEyeSign * disp * (dp - dm) / (2.0 * h);
-                    /*
-                     * 斜率触底时保住符号：只把绝对值抬到 0.25，不能一律写成 +0.25。
-                     * 写成正数会让负斜率的修正方向整个反过来，本该不动的那一轮
-                     * 反而把采样点往反方向推最多 4 个像素。
-                     */
-                    if (abs(slope) < 0.25) slope = slope < 0.0 ? -0.25 : 0.25;
-                    uvT.x -= clamp(e / slope, -4.0 * h, 4.0 * h);
-                }
+            float stepUV = FILL_PX / float(FILL_MAX) / max(uFrameWidth, 1.0);
+            float reachUV = float(reach) / max(uLowResWidth, 1.0);
+            int span = int(min(float(FILL_MAX), ceil(reachUV / stepUV)));
+            float far = depthAt(vUv);
+            for (int i = 1; i <= FILL_MAX; i++) {
+                if (i > span) break;
+                float o = float(i) * stepUV;
+                far = min(far, texture(uDepthTex, vec2(vUv.x - o, vUv.y)).r);
+                far = min(far, texture(uDepthTex, vec2(vUv.x + o, vUv.y)).r);
+            }
+            uvT.x = vUv.x + uEyeSign * disp * (far - uConvergence);
+        } else if (uOcclusion == 1) {
+            uvT.x = vUv.x + edgeW * off * 2.0 * float(reach) / max(uLowResWidth, 1.0);
+            /*
+             * 两次牛顿迭代：把采样点推到"落在该像素应有的视差位置"上。
+             * 斜率带 uEyeSign —— 右眼的约束方向与左眼相反，漏掉符号就是右眼被往
+             * 反方向修正最多 4 个像素，这正是"一只眼边缘发虚"的来源。
+             */
+            float h = 1.0 / max(uFrameWidth, 1.0);
+            for (int i = 0; i < 2; i++) {
+                float d0 = depthAt(vec2(uvT.x, vUv.y));
+                float dm = texture(uDepthTex, vec2(uvT.x - h, vUv.y)).r;
+                float dp = texture(uDepthTex, vec2(uvT.x + h, vUv.y)).r;
+                float e = (uvT.x - vUv.x) - uEyeSign * disp * (d0 - uConvergence);
+                float slope = 1.0 - uEyeSign * disp * (dp - dm) / (2.0 * h);
+                if (abs(slope) < 0.25) slope = 0.25;
+                uvT.x -= clamp(e / slope, -4.0 * h, 4.0 * h);
             }
         } else {
             uvT.x = vUv.x + uEyeSign * disp * (depthAt(vUv) - uConvergence);
@@ -2004,11 +1940,6 @@ struct QuadLocs {
     GLint depthFade = -1, offsets = -1, dispTexels = -1;
     GLint lowResW = -1, frameW = -1, srcInset = -1, eyeIndex = -1;
     GLint occl = -1, fill = -1, smoothRead = -1;
-    GLint newton = -1;
-    GLint fillPx = -1;
-    GLint fillPick = -1;
-    GLint edgeThr = -1;
-    GLint edgeColorThr = -1;
     GLint circle = -1, expand = -1, bright = -1, contrast = -1, sat = -1;
     GLint sharpen = -1, temp = -1, texel = -1, screenStep = -1, down = -1;
     GLint jitter = -1, testPattern = -1;
@@ -2051,11 +1982,6 @@ void fillQuadLocs(GLuint prog, QuadLocs &u) {
     u.occl = glGetUniformLocation(prog, "uOcclusion");
     u.fill = glGetUniformLocation(prog, "uFill");
     u.smoothRead = glGetUniformLocation(prog, "uSmoothRead");
-    u.newton = glGetUniformLocation(prog, "uNewton");
-    u.fillPx = glGetUniformLocation(prog, "uFillPx");
-    u.fillPick = glGetUniformLocation(prog, "uFillPick");
-    u.edgeThr = glGetUniformLocation(prog, "uEdgeThr");
-    u.edgeColorThr = glGetUniformLocation(prog, "uEdgeColorThr");
     u.circle = glGetUniformLocation(prog, "uCircle");
     u.expand = glGetUniformLocation(prog, "uExpandRange");
     u.bright = glGetUniformLocation(prog, "uBrightness");
@@ -2297,7 +2223,6 @@ struct VrContext {
     GLint offsetsSrcRLoc = -1;      // 偏移表：源通道（R8 取 .r）
     GLint offsetsFeatherLoc = -1;   // 局部液化：羽化半径（源像素）
     GLint offsetsStretchLoc = -1;   // 局部液化：背景修正权重
-    GLint offsetsEdgeThrLoc = -1;   // 真边缘判据：3x3 动态范围阈值
     GLint offsetsSamplerLoc = -1;
     RenderTarget offsets;
     /*
@@ -2342,7 +2267,6 @@ struct VrContext {
     float ringArtifactsStretch = -1.f;   // 局部液化参数：改了要重算偏移表
     float ringArtifactsFeather = -1.f;
     int ringArtifactsDense = -1;     // 边缘加密开关：变了要重算偏移表
-    int ringArtifactsOcclDiv = -1;   // 遮挡表降档：变了要重算偏移表
     /* 延迟自适应：深度迟到量的 90 分位数，每秒重算一次 */
     float ringDelayMs = 0.f;
     std::vector<float> ringLateMs;
@@ -2657,12 +2581,6 @@ XrLayerSettingsFlagsPICO layerBoostFlags(int mode) {
     }
 }
 std::atomic<int> gSwapWaitTimeoutMs{4};      // 等交换链图像超时（毫秒，可运行时调）
-/*
- * 播放中自动收起海报墙（默认开）。海报墙是独立合成层，常驻可见时每帧都要
- * 参与系统合成：实测这一层单独就吃掉约 20ms GPU（七层全开 FrmGpu 26.6ms，
- * 收掉它剩 8.2ms、帧率 30 → 90）。播放时它不在主视区，没有保留的必要。
- */
-std::atomic<int> gPosterPlayHide{1};
 std::atomic<int> gLayerMask{0x3F};            // bit0 视频 bit1 弹幕 bit2 logo bit3 海报墙 bit4 控制条 bit5 菜单
 /*
  * 实时 2D→3D（2026-11-01）：运行时可调的四个参数，走 vr-tuning.txt。
@@ -2708,37 +2626,6 @@ inline int depthEveryN() {
  * 高度按画面比例算，不写死 —— 宽高比变了还按 16:9 铺，采样坐标会整体歪。
  */
 constexpr int kDepthUpW = 2560;
-/*
- * 遮挡表输出分辨率的除数（调参 key 66，stereo_occl_div，1/2/4，默认 1 = 原样）。
- *
- * 遮挡表这趟的代价是"每像素每只眼沿扫描线扫 2·reach+1 步"：1080p 下一次约一亿九千万次
- * 纹理采样，是这条链路里最重的一趟 GPU pass（比深度上采样还重，而且每三帧就跑一次）。
- * 输出宽高各降一半，采样量降到四分之一。
- *
- * 为什么敢降：这张表存的是偏移量、采样走线性过滤（相邻像素的偏移本来就该插值），
- * warp 里后面还有牛顿修正把落点推回去，所以降档表现为边缘偏移略糙，而不是错位。
- * 留 1 档就是随时能退回去对照。
- */
-std::atomic<int> gStereoOcclDiv{1};
-/*
- * 牛顿修正轮数（调参 key 67，stereo_newton，0~2，默认 2 = 参考实现）。
- *
- * 每轮 6 次深度采样（depthAt 四次 + 左右邻点各一次），两轮就是 12 次。这是**每帧每眼**
- * 都在跑的开销，不是每三帧，所以它和遮挡表的定位不同。配合 stereo_smooth=0 能把正常
- * 像素的采样从 13 次压到 4 次，代价是大视差处残差多留一点（前景边缘略糊）。
- */
-std::atomic<int> gStereoNewton{2};
-/* 补洞搜索半径（画面像素）与取层策略：父亲实测补洞是边缘游移的来源，两项都要能运行时对比 */
-std::atomic<float> gStereoFillPx{24.f};
-std::atomic<int> gStereoFillPick{1};
-/* 真边缘判据：深度跳变阈值与两侧颜色差阈值，运行时可比，避免硬编码猜值 */
-std::atomic<float> gStereoEdgeThr{0.08f};
-std::atomic<float> gStereoEdgeColorThr{0.06f};
-/** 遮挡表降档的除数：调用处统一走这个，别直接读原子量（非法值当 1） */
-inline int stereoOcclDiv() {
-    const int d = gStereoOcclDiv.load();
-    return d >= 4 ? 4 : (d >= 2 ? 2 : 1);
-}
 std::atomic<float> gStereoDisp{kStereoDispStandard};
 std::atomic<float> gStereoConv{0.5f};
 std::atomic<float> gStereoFade{0.04f};
@@ -5928,41 +5815,18 @@ void main() {
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(0);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
-    /*
-     * 同步读回：这里要等 GPU 把前面排队的活干完才拿得到像素。计时留着是为了回答
-     * "要不要改成异步读回（PBO）"——那套改造会额外押后一到两帧，只有读回本身超过
-     * 5 ms 才值得。口径是 CPU 侧墙钟（含等 GPU），每 60 次打一行。
-     */
-    const double readT0 = nowMs();
     glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, c.depthGrabPixels.data());
-    const double readMs = nowMs() - readT0;
     glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
     glViewport(prevViewport[0], prevViewport[1], prevViewport[2], prevViewport[3]);
 
     JNIEnv *env = depthJniEnv(c);
     if (env == nullptr) return false;
-    const double jniT0 = nowMs();
     const jsize n = (jsize) c.depthGrabPixels.size();
     jbyteArray arr = env->NewByteArray(n);
     if (arr == nullptr) return false;
     env->SetByteArrayRegion(arr, 0, n, (const jbyte *) c.depthGrabPixels.data());
     env->CallVoidMethod(gDepthSink, gDepthSubmit, arr, (jint) W, (jint) H, (jlong) seq);
     env->DeleteLocalRef(arr);
-    {
-        static long long sGrabs = 0;
-        static double sReadSum = 0.0, sReadMax = 0.0, sJniSum = 0.0;
-        sGrabs++;
-        sReadSum += readMs;
-        sJniSum += nowMs() - jniT0;
-        if (readMs > sReadMax) sReadMax = readMs;
-        if (sGrabs % 60 == 0) {
-            VLOGI("2D→3D 抓帧：%dx%d 读回 平均 %.2f ms 最大 %.2f ms｜JNI 平均 %.2f ms（60 次统计）",
-                  W, H, sReadSum / 60.0, sReadMax, sJniSum / 60.0);
-            sReadSum = 0.0;
-            sJniSum = 0.0;
-            sReadMax = 0.0;
-        }
-    }
     return true;
 }
 
@@ -5997,7 +5861,6 @@ bool depthGrabDue(VrContext &c) {
 void renderOffsets(VrContext &c, GLuint depthTex, int srcW, int srcH, int outW, int outH,
                    RenderTarget &dst, bool srcIsR8) {
     if (depthTex == 0 || srcW <= 0 || srcH <= 0 || outW <= 0 || outH <= 0) return;
-    const double occlT0 = nowMs();
 
     if (c.offsetsProg == 0) {
         static const char *vs = R"(#version 300 es
@@ -6016,7 +5879,6 @@ uniform float uDispTexels;
 uniform float uConvergence;
 uniform float uFeather;     // 羽化半径，单位是源像素
 uniform float uStretch;     // 背景修正权重 0..1，0 = 关（纯偏移）
-uniform float uEdgeThr;     // 真边缘判据：3x3 动态范围阈值（源深度单位）
 out vec4 fragColor;
 
 /* 源像素坐标（可以是小数）：偏移表比深度图细时，同一行上的采样点更密 */
@@ -6024,37 +5886,6 @@ float depthAt(vec2 sp) {
     vec2 uv = (sp + 0.5) / uSrcSize;
     vec4 t = texture(uDepth, uv);
     return uSrcR == 1 ? t.r : t.a;
-}
-
-/*
- * 3x3 动态范围：这个小方块里最大深度与最小深度之差。
- * 与方向无关 —— 横边、竖边、斜边、弯边都会让方块里同时出现前景和背景。
- */
-float depthRangeAt(vec2 sp) {
-    float mn = 1.0;
-    float mx = 0.0;
-    for (int j = -1; j <= 1; j++) {
-        for (int i = -1; i <= 1; i++) {
-            float d = depthAt(sp + vec2(float(i), float(j)));
-            mn = min(mn, d);
-            mx = max(mx, d);
-        }
-    }
-    return mx - mn;
-}
-
-/*
- * 真边缘：本点有断口，且四邻域里至少两处也有断口（噪点四周是平的）。
- * 判定放在偏移表这趟做 —— 每帧只跑一次，比在 warp 里按眼逐像素算便宜一倍多。
- */
-bool depthEdgeAt(vec2 sp) {
-    if (depthRangeAt(sp) <= uEdgeThr) return false;
-    int hits = 0;
-    if (depthRangeAt(sp + vec2(1.0, 0.0)) > uEdgeThr) hits++;
-    if (depthRangeAt(sp - vec2(1.0, 0.0)) > uEdgeThr) hits++;
-    if (depthRangeAt(sp + vec2(0.0, 1.0)) > uEdgeThr) hits++;
-    if (depthRangeAt(sp - vec2(0.0, 1.0)) > uEdgeThr) hits++;
-    return hits >= 2;
 }
 
 void main() {
@@ -6067,9 +5898,6 @@ void main() {
     int reach = int(ceil(abs(uDispTexels) * max(uConvergence, 1.0 - uConvergence))) + 2;
     vec2 result = vec2(0.0);
     vec2 holes = vec2(0.0);
-    /* 深度断口 + 连续性只判一次，两眼共用；不在真边缘上的洞不标记，warp 就不会去补 */
-    /* uEdgeThr <= 0 = 关掉边缘门控，整趟判定都不跑（A/B 用，回到没有门控的老行为） */
-    bool edgeOK = (uEdgeThr > 0.0) ? depthEdgeAt(sp) : true;
     for (int eye = 0; eye < 2; eye++) {
         float disp = (eye == 0) ? uDispTexels : -uDispTexels;
         float here = depthAt(sp);
@@ -6093,7 +5921,7 @@ void main() {
             pe = ce;
         }
         result[eye] = bestOff;
-        holes[eye] = (bestD < 0.0 && edgeOK) ? 1.0 : 0.0;
+        holes[eye] = bestD < 0.0 ? 1.0 : 0.0;
         /*
          * 局部液化：这一只眼在这一行出现空洞时，继续往两侧多找一段羽化范围，
          * 把"能覆盖本像素的背景样本"按距离衰减加权，混进偏移里。
@@ -6135,7 +5963,6 @@ void main() {
         c.offsetsConvLoc = glGetUniformLocation(c.offsetsProg, "uConvergence");
         c.offsetsFeatherLoc = glGetUniformLocation(c.offsetsProg, "uFeather");
         c.offsetsStretchLoc = glGetUniformLocation(c.offsetsProg, "uStretch");
-        c.offsetsEdgeThrLoc = glGetUniformLocation(c.offsetsProg, "uEdgeThr");
         glUseProgram(c.offsetsProg);
         if (c.offsetsSamplerLoc >= 0) glUniform1i(c.offsetsSamplerLoc, 2);
     }
@@ -6167,42 +5994,12 @@ void main() {
         glUniform1f(c.offsetsFeatherLoc, gStereoFeather.load() * (float) srcW / 1920.f);
     }
     if (c.offsetsStretchLoc >= 0) glUniform1f(c.offsetsStretchLoc, gStereoStretch.load());
-    if (c.offsetsEdgeThrLoc >= 0) glUniform1f(c.offsetsEdgeThrLoc, gStereoEdgeThr.load());
     ensureVideoLayerQuad(c);
     glBindVertexArray(c.videoLayerVao);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(0);
     glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
     glViewport(prevViewport[0], prevViewport[1], prevViewport[2], prevViewport[3]);
-
-    /*
-     * A/B 对账：这是链路里最贵的 GPU pass，每 60 次打一行，行里带档位与理论采样量，
-     * 切档前后直接对比数字，不用靠感觉。
-     *
-     * 计时口径是 **CPU 提交耗时**（含驱动排队），不是 GPU 执行时间：GPU 打满时队列
-     * 堵住，这段会一起变长，所以拿它比 A/B 的相对差异可信；报绝对 GPU 耗时会偏小。
-     */
-    {
-        static long long sCalls = 0;
-        static double sMsSum = 0.0;
-        static double sMsMax = 0.0;
-        const double ms = nowMs() - occlT0;
-        sCalls++;
-        sMsSum += ms;
-        if (ms > sMsMax) sMsMax = ms;
-        if (sCalls % 60 == 0) {
-            const int reach = (int) ceilf(fabsf(c.depthDisp * (float) srcW) *
-                                          (c.depthConv > 1.f - c.depthConv
-                                                   ? c.depthConv : 1.f - c.depthConv)) + 2;
-            const double taps = (double) outW * (double) outH * 2.0 * (double) (2 * reach - 1);
-            VLOGI("2D→3D 遮挡表：输出 %dx%d（源 %dx%d，降 %d 档）reach=%d 约 %.2f 亿次采样/次"
-                  "｜最近 60 次 平均 %.2f ms 最大 %.2f ms",
-                  outW, outH, srcW, srcH, stereoOcclDiv(), reach, taps / 1e8,
-                  sMsSum / 60.0, sMsMax);
-            sMsSum = 0.0;
-            sMsMax = 0.0;
-        }
-    }
 }
 
 /**
@@ -6871,28 +6668,22 @@ void buildRingArtifacts(VrContext &c, RingSlot &s, int upW, int upH) {
                         fabsf(c.ringArtifactsSigma - gStereoEdgeSigma.load()) < 1e-5f &&
                         fabsf(c.ringArtifactsStretch - gStereoStretch.load()) < 1e-4f &&
                         fabsf(c.ringArtifactsFeather - gStereoFeather.load()) < 1e-3f &&
-                        c.ringArtifactsDense == gStereoEdgeDense.load() &&
-                        c.ringArtifactsOcclDiv == stereoOcclDiv();
+                        c.ringArtifactsDense == gStereoEdgeDense.load();
     if (sameSeq && sameDisp && sameUp) return;
     /*
      * 顺序要紧：先做边缘保持上采样，再用**上采样后的全分辨率深度**算偏移表。
      * 偏移表输出半分辨率，横向采样点比原来的低分深度密一倍，边缘处的偏移
      * 不再是一格一格的方块；平坦区域靠双线性铺开，等于自动在细节处加密。
-     *
-     * 输出尺寸再由 stereo_occl_div 降档：那趟是这条链路里最贵的 pass（每像素每眼扫
-     * 2·reach+1 步），降半档采样量就到四分之一。偏移表按 UV 采样，与自身分辨率解耦，
-     * 所以降档只影响偏移精度、不影响对齐。
      */
-    const int div = stereoOcclDiv();
-    const bool dense = gStereoEdgeDense.load() == 1;
     renderDepthUpsample(c, s.depth.tex, 0, s.color.tex, false, upW, upH, c.ringUp);
-    const int srcW = dense ? upW : s.depth.w;
-    const int srcH = dense ? upH : s.depth.h;
-    renderOffsets(c, dense ? c.ringUp.tex : s.depth.tex, srcW, srcH,
-                  std::max(64, srcW / div), std::max(36, srcH / div),
-                  c.ringOffsets, dense);
+    if (gStereoEdgeDense.load() == 1) {
+        renderOffsets(c, c.ringUp.tex, upW, upH, upW, upH, c.ringOffsets, true);
+    } else {
+        renderOffsets(c, s.depth.tex, s.depth.w, s.depth.h,
+                      s.depth.w, s.depth.h, c.ringOffsets, false);
+    }
     c.ringArtifactsSeq = s.seq;
-    c.ringArtifactsLowW = dense ? upW : s.depth.w;
+    c.ringArtifactsLowW = gStereoEdgeDense.load() == 1 ? upW : s.depth.w;
     c.ringArtifactsDisp = c.depthDisp;
     c.ringArtifactsConv = c.depthConv;
     c.ringArtifactsUpMode = gStereoUpMode.load();
@@ -6901,7 +6692,6 @@ void buildRingArtifacts(VrContext &c, RingSlot &s, int upW, int upH) {
     c.ringArtifactsStretch = gStereoStretch.load();
     c.ringArtifactsFeather = gStereoFeather.load();
     c.ringArtifactsDense = gStereoEdgeDense.load();
-    c.ringArtifactsOcclDiv = div;
 }
 
 bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
@@ -7067,14 +6857,6 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
             if (u.occl >= 0) glUniform1i(u.occl, gStereoOccl.load());
             if (u.fill >= 0) glUniform1i(u.fill, gStereoFill.load());
             if (u.smoothRead >= 0) glUniform1i(u.smoothRead, gStereoSmooth.load());
-            if (u.newton >= 0) {
-                const int n = gStereoNewton.load();
-                glUniform1i(u.newton, n < 0 ? 0 : (n > 2 ? 2 : n));
-            }
-            if (u.fillPx >= 0) glUniform1f(u.fillPx, gStereoFillPx.load());
-            if (u.fillPick >= 0) glUniform1i(u.fillPick, gStereoFillPick.load() == 0 ? 0 : 1);
-            if (u.edgeThr >= 0) glUniform1f(u.edgeThr, gStereoEdgeThr.load());
-            if (u.edgeColorThr >= 0) glUniform1f(u.edgeColorThr, gStereoEdgeColorThr.load());
         } else {
             glUniform1i(u.depthOn, 0);
             /*
@@ -7634,19 +7416,12 @@ void frameLoop(VrContext &c) {
                         if (c.depthUpDirty && c.depth.tex != 0) {
                             renderDepthUpsample(c, c.depth.tex, screenSrc, 0, webOnScreen,
                                                 upW0, upH0, c.depthUp);
-                            /*
-                             * 遮挡表输出尺寸按 stereo_occl_div 降档：这趟每像素每眼
-                             * 沿扫描线扫 2·reach+1 步，降半档就把采样量砍到四分之一。
-                             */
-                            const int div = stereoOcclDiv();
                             if (gStereoEdgeDense.load() == 1) {
                                 renderOffsets(c, c.depthUp.tex, c.depthUp.w, c.depthUp.h,
-                                              std::max(64, c.depthUp.w / div),
-                                              std::max(36, c.depthUp.h / div), c.offsets, true);
+                                              c.depthUp.w, c.depthUp.h, c.offsets, true);
                             } else {
                                 renderOffsets(c, c.depth.tex, c.depth.w, c.depth.h,
-                                              std::max(64, c.depth.w / div),
-                                              std::max(36, c.depth.h / div), c.offsets, false);
+                                              c.depth.w, c.depth.h, c.offsets, false);
                             }
                         }
                         /*
@@ -7781,8 +7556,7 @@ void frameLoop(VrContext &c) {
          */
         c.panelLayer.submitted = false;
         if (c.panelLayerOk && (gLayerMask.load() & 8) != 0 && c.panelActive.load() &&
-            c.panelShown.load() && c.panelHasFrame.load() && c.panelTex != 0 &&
-            !(c.videoActive.load() && gPosterPlayHide.load() == 1)) {
+            c.panelShown.load() && c.panelHasFrame.load() && c.panelTex != 0) {
             if (buildQuadLayer(c, c.panelLayer, 1920, 1080, "海报墙")) {
                 /*
                  * 2026-10-14 **撤销**"内容没变就跳过重画"：父亲装上实测——海报墙会抖动。
@@ -9105,66 +8879,6 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
                 VLOGI("调参 → 边缘加密 %s", value >= 0.5f ? "开（偏移表全分辨率）" : "关（低分深度）");
             }
             break;
-        /*
-         * 66 = 遮挡表降档（1/2/4）。这趟是链路里最贵的 GPU pass，降半档采样量到四分之一；
-         * 切档后每 60 次会打一行"遮挡表"统计，直接对比输出尺寸与耗时。
-         */
-        case 66: {
-            const int d = (int) value;
-            gStereoOcclDiv.store(d >= 4 ? 4 : (d >= 2 ? 2 : 1));
-            VLOGI("调参 → 遮挡表降 %d 档（输出宽高各 /%d，采样量 /%d）",
-                  gStereoOcclDiv.load(), gStereoOcclDiv.load(), gStereoOcclDiv.load() * gStereoOcclDiv.load());
-            return;
-        }
-        /*
-         * 67 = 牛顿修正轮数（0~2）。配合 stereo_smooth 决定每像素每眼采几次深度：
-         * 三次插值(4) + 两轮修正(12) = 13 次；关插值 + 一轮 = 7 次；关插值 + 零轮 = 5 次。
-         */
-        case 67: {
-            const int n = (int) value;
-            gStereoNewton.store(n < 0 ? 0 : (n > 2 ? 2 : n));
-            const int smooth = gStereoSmooth.load();
-            const int taps = 1 + (smooth == 1 ? 4 : 1) + gStereoNewton.load() * (smooth == 1 ? 6 : 3);
-            VLOGI("调参 → 牛顿修正 %d 轮（深度读取 %s）→ 正常像素每眼约 %d 次采样",
-                  gStereoNewton.load(), smooth == 1 ? "三次插值" : "双线性", taps);
-            return;
-        }
-        /* 68 = 补洞搜索半径（画面像素，默认 24）：洞宽≈视差量，半径要够跨过洞，但别越界啃到前景 */
-        case 68: {
-            const float px = value;
-            gStereoFillPx.store(px < 2.f ? 2.f : (px > 96.f ? 96.f : px));
-            VLOGI("调参 → 补洞搜索半径 %.0f 画面像素（%s）", gStereoFillPx.load(),
-                  gStereoFillPick.load() == 1 ? "就近取紧邻背景" : "全范围取最远");
-            return;
-        }
-        /* 69 = 补洞取层策略：1 = 就近取紧邻背景（默认），0 = 全范围内取最远（对照） */
-        case 69: {
-            gStereoFillPick.store((int) value == 0 ? 0 : 1);
-            VLOGI("调参 → 补洞取层 %s（半径 %.0f 画面像素）",
-                  gStereoFillPick.load() == 1 ? "就近取紧邻背景" : "全范围取最远",
-                  gStereoFillPx.load());
-            return;
-        }
-        /* 71 = 真边缘判据的深度断口阈值（3×3 动态范围，默认 0.08）：越大越保守，补洞越少 */
-        case 71: {
-            const float t = value;
-            gStereoEdgeThr.store(t < 0.002f ? 0.002f : (t > 0.5f ? 0.5f : t));
-            VLOGI("调参 → 真边缘深度阈值 %.3f（越大越保守，补洞越少）", gStereoEdgeThr.load());
-            return;
-        }
-        /* 72 = 真边缘判据的两侧颜色差阈值（默认 0.06）：越大越保守，同色跳变不算边缘 */
-        case 72: {
-            const float t = value;
-            gStereoEdgeColorThr.store(t < 0.002f ? 0.002f : (t > 1.f ? 1.f : t));
-            VLOGI("调参 → 真边缘颜色差阈值 %.3f（越大越保守）", gStereoEdgeColorThr.load());
-            return;
-        }
-        /* 73 = 播放中自动收起海报墙：1 = 收（默认，省一整层合成），0 = 一直挂着（对照） */
-        case 73: {
-            gPosterPlayHide.store((int) value == 0 ? 0 : 1);
-            VLOGI("调参 → 播放中海报墙 %s", gPosterPlayHide.load() == 1 ? "自动收起（省一层合成）" : "常驻");
-            return;
-        }
         /* 63 = 环延迟强制值（毫秒，0 = 按迟到自动算）：远程推理的迟到是固定开销，手动压住 */
         case 63:
             if (value >= 0.f && value <= 1000.f) {
