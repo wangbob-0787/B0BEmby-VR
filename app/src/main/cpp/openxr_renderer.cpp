@@ -420,6 +420,11 @@ uniform float uEyeIndex;        // 0 = 左眼，1 = 右眼
 uniform int uOcclusion;         // 1 = 用预计算遮挡表（默认），0 = 逐像素现算深度
 uniform int uFill;              // 1 = 空洞沿扫描线补（默认），0 = 空洞也按偏移表走
 uniform int uSmoothRead;        // 1 = 深度三次插值读（默认），0 = 双线性
+/*
+ * 牛顿修正轮数 0..2。每轮 6 次深度采样，是每帧每眼都跑的开销；
+ * 降到 0/1 就是"省采样换边缘精度"的对照档，必须肉眼 A/B 才知道值不值。
+ */
+uniform int uNewton;
 out vec4 fragColor;
 
 /*
@@ -524,6 +529,8 @@ void main() {
              */
             float h = 1.0 / max(uFrameWidth, 1.0);
             for (int i = 0; i < 2; i++) {
+                /* 轮数由 stereo_newton 控制（0/1/2）。ES 3.0 的循环上限必须是常量，所以按上限 2 循环、提前跳出 */
+                if (i >= uNewton) break;
                 float d0 = depthAt(vec2(uvT.x, vUv.y));
                 float dm = texture(uDepthTex, vec2(uvT.x - h, vUv.y)).r;
                 float dp = texture(uDepthTex, vec2(uvT.x + h, vUv.y)).r;
@@ -1940,6 +1947,7 @@ struct QuadLocs {
     GLint depthFade = -1, offsets = -1, dispTexels = -1;
     GLint lowResW = -1, frameW = -1, srcInset = -1, eyeIndex = -1;
     GLint occl = -1, fill = -1, smoothRead = -1;
+    GLint newton = -1;
     GLint circle = -1, expand = -1, bright = -1, contrast = -1, sat = -1;
     GLint sharpen = -1, temp = -1, texel = -1, screenStep = -1, down = -1;
     GLint jitter = -1, testPattern = -1;
@@ -1982,6 +1990,7 @@ void fillQuadLocs(GLuint prog, QuadLocs &u) {
     u.occl = glGetUniformLocation(prog, "uOcclusion");
     u.fill = glGetUniformLocation(prog, "uFill");
     u.smoothRead = glGetUniformLocation(prog, "uSmoothRead");
+    u.newton = glGetUniformLocation(prog, "uNewton");
     u.circle = glGetUniformLocation(prog, "uCircle");
     u.expand = glGetUniformLocation(prog, "uExpandRange");
     u.bright = glGetUniformLocation(prog, "uBrightness");
@@ -2267,6 +2276,7 @@ struct VrContext {
     float ringArtifactsStretch = -1.f;   // 局部液化参数：改了要重算偏移表
     float ringArtifactsFeather = -1.f;
     int ringArtifactsDense = -1;     // 边缘加密开关：变了要重算偏移表
+    int ringArtifactsOcclDiv = -1;   // 遮挡表降档：变了要重算偏移表
     /* 延迟自适应：深度迟到量的 90 分位数，每秒重算一次 */
     float ringDelayMs = 0.f;
     std::vector<float> ringLateMs;
@@ -2626,6 +2636,31 @@ inline int depthEveryN() {
  * 高度按画面比例算，不写死 —— 宽高比变了还按 16:9 铺，采样坐标会整体歪。
  */
 constexpr int kDepthUpW = 2560;
+/*
+ * 遮挡表输出分辨率的除数（调参 key 66，stereo_occl_div，1/2/4，默认 1 = 原样）。
+ *
+ * 遮挡表这趟的代价是"每像素每只眼沿扫描线扫 2·reach+1 步"：1080p 下一次约一亿九千万次
+ * 纹理采样，是这条链路里最重的一趟 GPU pass（比深度上采样还重，而且每三帧就跑一次）。
+ * 输出宽高各降一半，采样量降到四分之一。
+ *
+ * 为什么敢降：这张表存的是偏移量、采样走线性过滤（相邻像素的偏移本来就该插值），
+ * warp 里后面还有牛顿修正把落点推回去，所以降档表现为边缘偏移略糙，而不是错位。
+ * 留 1 档就是随时能退回去对照。
+ */
+std::atomic<int> gStereoOcclDiv{1};
+/*
+ * 牛顿修正轮数（调参 key 67，stereo_newton，0~2，默认 2 = 参考实现）。
+ *
+ * 每轮 6 次深度采样（depthAt 四次 + 左右邻点各一次），两轮就是 12 次。这是**每帧每眼**
+ * 都在跑的开销，不是每三帧，所以它和遮挡表的定位不同。配合 stereo_smooth=0 能把正常
+ * 像素的采样从 13 次压到 4 次，代价是大视差处残差多留一点（前景边缘略糊）。
+ */
+std::atomic<int> gStereoNewton{2};
+/** 遮挡表降档的除数：调用处统一走这个，别直接读原子量（非法值当 1） */
+inline int stereoOcclDiv() {
+    const int d = gStereoOcclDiv.load();
+    return d >= 4 ? 4 : (d >= 2 ? 2 : 1);
+}
 std::atomic<float> gStereoDisp{kStereoDispStandard};
 std::atomic<float> gStereoConv{0.5f};
 std::atomic<float> gStereoFade{0.04f};
@@ -5815,18 +5850,41 @@ void main() {
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(0);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    /*
+     * 同步读回：这里要等 GPU 把前面排队的活干完才拿得到像素。计时留着是为了回答
+     * "要不要改成异步读回（PBO）"——那套改造会额外押后一到两帧，只有读回本身超过
+     * 5 ms 才值得。口径是 CPU 侧墙钟（含等 GPU），每 60 次打一行。
+     */
+    const double readT0 = nowMs();
     glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, c.depthGrabPixels.data());
+    const double readMs = nowMs() - readT0;
     glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
     glViewport(prevViewport[0], prevViewport[1], prevViewport[2], prevViewport[3]);
 
     JNIEnv *env = depthJniEnv(c);
     if (env == nullptr) return false;
+    const double jniT0 = nowMs();
     const jsize n = (jsize) c.depthGrabPixels.size();
     jbyteArray arr = env->NewByteArray(n);
     if (arr == nullptr) return false;
     env->SetByteArrayRegion(arr, 0, n, (const jbyte *) c.depthGrabPixels.data());
     env->CallVoidMethod(gDepthSink, gDepthSubmit, arr, (jint) W, (jint) H, (jlong) seq);
     env->DeleteLocalRef(arr);
+    {
+        static long long sGrabs = 0;
+        static double sReadSum = 0.0, sReadMax = 0.0, sJniSum = 0.0;
+        sGrabs++;
+        sReadSum += readMs;
+        sJniSum += nowMs() - jniT0;
+        if (readMs > sReadMax) sReadMax = readMs;
+        if (sGrabs % 60 == 0) {
+            VLOGI("2D→3D 抓帧：%dx%d 读回 平均 %.2f ms 最大 %.2f ms｜JNI 平均 %.2f ms（60 次统计）",
+                  W, H, sReadSum / 60.0, sReadMax, sJniSum / 60.0);
+            sReadSum = 0.0;
+            sJniSum = 0.0;
+            sReadMax = 0.0;
+        }
+    }
     return true;
 }
 
@@ -5861,6 +5919,7 @@ bool depthGrabDue(VrContext &c) {
 void renderOffsets(VrContext &c, GLuint depthTex, int srcW, int srcH, int outW, int outH,
                    RenderTarget &dst, bool srcIsR8) {
     if (depthTex == 0 || srcW <= 0 || srcH <= 0 || outW <= 0 || outH <= 0) return;
+    const double occlT0 = nowMs();
 
     if (c.offsetsProg == 0) {
         static const char *vs = R"(#version 300 es
@@ -6000,6 +6059,35 @@ void main() {
     glBindVertexArray(0);
     glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
     glViewport(prevViewport[0], prevViewport[1], prevViewport[2], prevViewport[3]);
+
+    /*
+     * A/B 对账：这是链路里最贵的 GPU pass，每 60 次打一行，行里带档位与理论采样量，
+     * 切档前后直接对比数字，不用靠感觉。
+     *
+     * 计时口径是 **CPU 提交耗时**（含驱动排队），不是 GPU 执行时间：GPU 打满时队列
+     * 堵住，这段会一起变长，所以拿它比 A/B 的相对差异可信；报绝对 GPU 耗时会偏小。
+     */
+    {
+        static long long sCalls = 0;
+        static double sMsSum = 0.0;
+        static double sMsMax = 0.0;
+        const double ms = nowMs() - occlT0;
+        sCalls++;
+        sMsSum += ms;
+        if (ms > sMsMax) sMsMax = ms;
+        if (sCalls % 60 == 0) {
+            const int reach = (int) ceilf(fabsf(c.depthDisp * (float) srcW) *
+                                          (c.depthConv > 1.f - c.depthConv
+                                                   ? c.depthConv : 1.f - c.depthConv)) + 2;
+            const double taps = (double) outW * (double) outH * 2.0 * (double) (2 * reach - 1);
+            VLOGI("2D→3D 遮挡表：输出 %dx%d（源 %dx%d，降 %d 档）reach=%d 约 %.2f 亿次采样/次"
+                  "｜最近 60 次 平均 %.2f ms 最大 %.2f ms",
+                  outW, outH, srcW, srcH, stereoOcclDiv(), reach, taps / 1e8,
+                  sMsSum / 60.0, sMsMax);
+            sMsSum = 0.0;
+            sMsMax = 0.0;
+        }
+    }
 }
 
 /**
@@ -6668,22 +6756,28 @@ void buildRingArtifacts(VrContext &c, RingSlot &s, int upW, int upH) {
                         fabsf(c.ringArtifactsSigma - gStereoEdgeSigma.load()) < 1e-5f &&
                         fabsf(c.ringArtifactsStretch - gStereoStretch.load()) < 1e-4f &&
                         fabsf(c.ringArtifactsFeather - gStereoFeather.load()) < 1e-3f &&
-                        c.ringArtifactsDense == gStereoEdgeDense.load();
+                        c.ringArtifactsDense == gStereoEdgeDense.load() &&
+                        c.ringArtifactsOcclDiv == stereoOcclDiv();
     if (sameSeq && sameDisp && sameUp) return;
     /*
      * 顺序要紧：先做边缘保持上采样，再用**上采样后的全分辨率深度**算偏移表。
      * 偏移表输出半分辨率，横向采样点比原来的低分深度密一倍，边缘处的偏移
      * 不再是一格一格的方块；平坦区域靠双线性铺开，等于自动在细节处加密。
+     *
+     * 输出尺寸再由 stereo_occl_div 降档：那趟是这条链路里最贵的 pass（每像素每眼扫
+     * 2·reach+1 步），降半档采样量就到四分之一。偏移表按 UV 采样，与自身分辨率解耦，
+     * 所以降档只影响偏移精度、不影响对齐。
      */
+    const int div = stereoOcclDiv();
+    const bool dense = gStereoEdgeDense.load() == 1;
     renderDepthUpsample(c, s.depth.tex, 0, s.color.tex, false, upW, upH, c.ringUp);
-    if (gStereoEdgeDense.load() == 1) {
-        renderOffsets(c, c.ringUp.tex, upW, upH, upW, upH, c.ringOffsets, true);
-    } else {
-        renderOffsets(c, s.depth.tex, s.depth.w, s.depth.h,
-                      s.depth.w, s.depth.h, c.ringOffsets, false);
-    }
+    const int srcW = dense ? upW : s.depth.w;
+    const int srcH = dense ? upH : s.depth.h;
+    renderOffsets(c, dense ? c.ringUp.tex : s.depth.tex, srcW, srcH,
+                  std::max(64, srcW / div), std::max(36, srcH / div),
+                  c.ringOffsets, dense);
     c.ringArtifactsSeq = s.seq;
-    c.ringArtifactsLowW = gStereoEdgeDense.load() == 1 ? upW : s.depth.w;
+    c.ringArtifactsLowW = dense ? upW : s.depth.w;
     c.ringArtifactsDisp = c.depthDisp;
     c.ringArtifactsConv = c.depthConv;
     c.ringArtifactsUpMode = gStereoUpMode.load();
@@ -6692,6 +6786,7 @@ void buildRingArtifacts(VrContext &c, RingSlot &s, int upW, int upH) {
     c.ringArtifactsStretch = gStereoStretch.load();
     c.ringArtifactsFeather = gStereoFeather.load();
     c.ringArtifactsDense = gStereoEdgeDense.load();
+    c.ringArtifactsOcclDiv = div;
 }
 
 bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
@@ -6857,6 +6952,10 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
             if (u.occl >= 0) glUniform1i(u.occl, gStereoOccl.load());
             if (u.fill >= 0) glUniform1i(u.fill, gStereoFill.load());
             if (u.smoothRead >= 0) glUniform1i(u.smoothRead, gStereoSmooth.load());
+            if (u.newton >= 0) {
+                const int n = gStereoNewton.load();
+                glUniform1i(u.newton, n < 0 ? 0 : (n > 2 ? 2 : n));
+            }
         } else {
             glUniform1i(u.depthOn, 0);
             /*
@@ -7416,12 +7515,19 @@ void frameLoop(VrContext &c) {
                         if (c.depthUpDirty && c.depth.tex != 0) {
                             renderDepthUpsample(c, c.depth.tex, screenSrc, 0, webOnScreen,
                                                 upW0, upH0, c.depthUp);
+                            /*
+                             * 遮挡表输出尺寸按 stereo_occl_div 降档：这趟每像素每眼
+                             * 沿扫描线扫 2·reach+1 步，降半档就把采样量砍到四分之一。
+                             */
+                            const int div = stereoOcclDiv();
                             if (gStereoEdgeDense.load() == 1) {
                                 renderOffsets(c, c.depthUp.tex, c.depthUp.w, c.depthUp.h,
-                                              c.depthUp.w, c.depthUp.h, c.offsets, true);
+                                              std::max(64, c.depthUp.w / div),
+                                              std::max(36, c.depthUp.h / div), c.offsets, true);
                             } else {
                                 renderOffsets(c, c.depth.tex, c.depth.w, c.depth.h,
-                                              c.depth.w, c.depth.h, c.offsets, false);
+                                              std::max(64, c.depth.w / div),
+                                              std::max(36, c.depth.h / div), c.offsets, false);
                             }
                         }
                         /*
@@ -8879,6 +8985,30 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
                 VLOGI("调参 → 边缘加密 %s", value >= 0.5f ? "开（偏移表全分辨率）" : "关（低分深度）");
             }
             break;
+        /*
+         * 66 = 遮挡表降档（1/2/4）。这趟是链路里最贵的 GPU pass，降半档采样量到四分之一；
+         * 切档后每 60 次会打一行"遮挡表"统计，直接对比输出尺寸与耗时。
+         */
+        case 66: {
+            const int d = (int) value;
+            gStereoOcclDiv.store(d >= 4 ? 4 : (d >= 2 ? 2 : 1));
+            VLOGI("调参 → 遮挡表降 %d 档（输出宽高各 /%d，采样量 /%d）",
+                  gStereoOcclDiv.load(), gStereoOcclDiv.load(), gStereoOcclDiv.load() * gStereoOcclDiv.load());
+            return;
+        }
+        /*
+         * 67 = 牛顿修正轮数（0~2）。配合 stereo_smooth 决定每像素每眼采几次深度：
+         * 三次插值(4) + 两轮修正(12) = 13 次；关插值 + 一轮 = 7 次；关插值 + 零轮 = 5 次。
+         */
+        case 67: {
+            const int n = (int) value;
+            gStereoNewton.store(n < 0 ? 0 : (n > 2 ? 2 : n));
+            const int smooth = gStereoSmooth.load();
+            const int taps = 1 + (smooth == 1 ? 4 : 1) + gStereoNewton.load() * (smooth == 1 ? 6 : 3);
+            VLOGI("调参 → 牛顿修正 %d 轮（深度读取 %s）→ 正常像素每眼约 %d 次采样",
+                  gStereoNewton.load(), smooth == 1 ? "三次插值" : "双线性", taps);
+            return;
+        }
         /* 63 = 环延迟强制值（毫秒，0 = 按迟到自动算）：远程推理的迟到是固定开销，手动压住 */
         case 63:
             if (value >= 0.f && value <= 1000.f) {

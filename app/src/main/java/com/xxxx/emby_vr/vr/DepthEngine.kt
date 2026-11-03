@@ -51,6 +51,16 @@ object DepthEngine {
     }
 
     /**
+     * 显卡委托建不起来时要不要自动换回 int8 小模型（`vr-tuning.txt` 的 `depth_auto`，默认开）。
+     *
+     * 默认组合是"显卡推理 + 512×288 fp16 自动档"：显卡那条路一旦建不起来，代码原本是
+     * 静默退回 CPU、却仍用大模型 —— 那是 CPU 上最慢的一条组合（比 int8 小模型慢一倍）。
+     * 打开这个开关就换回小模型；关掉是为了 A/B 对照"大模型跑 CPU 到底差多少"。
+     */
+    @Volatile
+    var autoFallback: Boolean = true
+
+    /**
      * 换镜头检测的三个量（照 DepthRay 的 depth cut 口径）。
      *
      * 单看一个量都不稳：差值对整体亮度变化过敏，直方图看不到空间结构，相关受过曝/过暗
@@ -99,6 +109,14 @@ object DepthEngine {
     @Volatile
     var lastInferMs = 0L
         private set
+
+    /*
+     * 推理耗时统计：每 20 次打一行平均/最大，A/B 切档（模型、线程、委托、遮挡表档位）
+     * 之后直接对比数字，不靠一次测量下结论 —— 单次最快值会被缓存和调度带偏。
+     */
+    private var inferSumMs = 0L
+    private var inferMaxMs = 0L
+    private var inferSamples = 0
 
     /**
      * Kotlin 侧要不要把归一化后的深度取反（1 − v）。
@@ -199,6 +217,9 @@ object DepthEngine {
         sock = null
         prevDepth = null
         refInit = false
+        inferSumMs = 0L
+        inferMaxMs = 0L
+        inferSamples = 0
         inBuf = null
         outBuf = null
         inW = 0
@@ -226,8 +247,8 @@ object DepthEngine {
                 return
             }
             try {
-                val asset = modelAsset()
-                val model = loadModel(context, asset)
+                var asset = modelAsset()
+                var model = loadModel(context, asset)
                 val opts = Interpreter.Options().setNumThreads(VrTuning.depthThreads)
                 /*
                  * 显卡委托：建不起来（老驱动、显存不足、机型不支持）就安静退回 CPU，
@@ -243,6 +264,16 @@ object DepthEngine {
                     }.onFailure {
                         Log.w(TAG, "深度推理：显卡委托建不起来，退回 CPU（${it.message}）")
                     }.getOrNull()
+                }
+                /*
+                 * 退回 CPU 时别继续跑大模型：fp16 那款是给显卡准备的，跑在 CPU 上比 int8
+                 * 小模型慢一倍，是这块芯片上最差的一条组合。换模型只在这里做一次，
+                 * 不进热路径。
+                 */
+                if (gpuDelegate == null && autoFallback && asset.contains("512x288")) {
+                    Log.w(TAG, "深度推理：显卡委托不可用，自动换回 int8 小模型（depth_auto=0 可关掉）")
+                    asset = "models/zipdepth_256_int8dr.tflite"
+                    model = loadModel(context, asset)
                 }
                 val it = Interpreter(model, opts)
 
@@ -527,6 +558,9 @@ object DepthEngine {
         val t0 = SystemClock.elapsedRealtime()
         it.run(ib, ob)
         lastInferMs = SystemClock.elapsedRealtime() - t0
+        inferSumMs += lastInferMs
+        inferSamples++
+        if (lastInferMs > inferMaxMs) inferMaxMs = lastInferMs
 
         ob.rewind()
         val n = outW * outH
@@ -614,7 +648,17 @@ object DepthEngine {
         prevDepth = out
         inferCount++
         if (inferCount % 20 == 1) {
-            Log.i(TAG, "深度推理：${lastInferMs}ms 第 ${inferCount} 次 输入 ${ow}x${oh}")
+            /*
+             * 一行把 A/B 需要的三样都带上：本次耗时、最近 20 次的平均/最大、当前档位。
+             * 平均比单次可信 —— 单次最快值会被缓存和调度带偏。
+             */
+            val avg = if (inferSamples > 0) inferSumMs / inferSamples else 0L
+            Log.i(TAG, "深度推理：本次 ${lastInferMs}ms｜最近 $inferSamples 次 平均 ${avg}ms 最大 ${inferMaxMs}ms"
+                    + "｜后端 ${if (gpu != null) "显卡委托" else "CPU ${VrTuning.depthThreads} 线程"}"
+                    + "｜模型 ${if (inW == 512) "512x288" else "${inH}x${inW}"} 深度 ${ow}x${oh}")
+            inferSumMs = 0L
+            inferMaxMs = 0L
+            inferSamples = 0
             Log.i(TAG, "深度切镜：diff " + "%.3f".format(lastDiff) +
                     " hist " + "%.3f".format(lastHist) +
                     " corr " + "%.2f".format(lastCorr) +
