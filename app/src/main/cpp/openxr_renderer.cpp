@@ -6705,6 +6705,9 @@ void buildRingArtifacts(VrContext &c, RingSlot &s, int upW, int upH) {
  * 内容变了就把交换链每张图都写成新内容（连画几张），之后内容不变才能安全跳过。
  * 任何一张没写成（acquire 失败）→ 关掉跳过，退回每帧照画，避免出现旧内容导致的抖动。
  */
+bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex, bool videoLayerPass,
+                     bool skipDrawIfWritten, int eyeIndex, const StereoSrc *src);
+
 static void prefillLayerImages(VrContext &c, VideoLayerBuf &L, GLuint tex,
                                bool videoLayerPass, bool *preferSkip) {
     /* 新内容至少要先写进一张图，否则这一帧屏幕上还是旧内容 */
