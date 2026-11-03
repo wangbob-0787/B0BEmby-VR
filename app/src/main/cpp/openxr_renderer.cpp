@@ -477,8 +477,12 @@ float depthAt(vec2 uv) {
 
 /* 画面颜色（视频纹理或环形缓冲，跟最终采样同一个源） */
 vec3 frameAt(vec2 uv) {
-    vec2 t = uv * uUvScale + uUvBias;
-    return uUseDelayed == 1 ? texture(uDelayedTex, t).rgb : texture(uTexture, t).rgb;
+    /*
+     * 必须走 SAMPLE_SRC：uDelayedTex / uUseDelayed 只在环版（B0B_RING）里声明，
+     * 主程序直接引用它们会让整份着色器链接失败 —— 症状是海报墙、控制条、菜单
+     * 那几层全部不显示（它们用的是主程序）。
+     */
+    return SAMPLE_SRC(uv * uUvScale + uUvBias).rgb;
 }
 
 /*
