@@ -419,6 +419,8 @@ uniform float uSrcInset;        // 采样边界内缩，防边缘拉出黑边
 uniform float uEyeIndex;        // 0 = 左眼，1 = 右眼
 uniform int uOcclusion;         // 1 = 用预计算遮挡表（默认），0 = 逐像素现算深度
 uniform int uFill;              // 1 = 空洞沿扫描线补（默认），0 = 空洞也按偏移表走
+uniform float uFillPx;          // 补洞搜索半径（画面像素，默认 24）
+uniform int uFillPick;          // 1 = 就近取紧邻背景（默认），0 = 整个范围内取最远
 uniform int uSmoothRead;        // 1 = 深度三次插值读（默认），0 = 双线性
 /*
  * 牛顿修正轮数 0..2。每轮 6 次深度采样，是每帧每眼都跑的开销；
@@ -515,7 +517,9 @@ void main() {
             float here = depthAt(vUv);
             float far = here;
             bool found = false;
-            float stepUV = FILL_PX / float(FILL_MAX) / max(uFrameWidth, 1.0);
+            /* 搜索半径、取层策略都由 stereo_fill_px / stereo_fill_pick 运行时控制 */
+            float fillPx = clamp(uFillPx, 2.0, 96.0);
+            float stepUV = fillPx / float(FILL_MAX) / max(uFrameWidth, 1.0);
             float reachUV = float(reach) / max(uLowResWidth, 1.0);
             int span = int(min(float(FILL_MAX), ceil(reachUV / stepUV)));
             for (int i = 1; i <= FILL_MAX; i++) {
@@ -523,10 +527,22 @@ void main() {
                 float o = float(i) * stepUV;
                 float dl = texture(uDepthTex, vec2(vUv.x - o, vUv.y)).r;
                 float dr = texture(uDepthTex, vec2(vUv.x + o, vUv.y)).r;
-                /* 只认比本像素更远的样本（更近的属于别的表面）；同圈两层都有时取更近的那层 */
-                if (dr > here + 0.01) { far = dr; found = true; }
-                if (dl > here + 0.01) { far = found ? min(far, dl) : dl; found = true; }
-                if (found) break;
+                bool hl = dl > here + 0.01;
+                bool hr = dr > here + 0.01;
+                /*
+                 * uFillPick = 1：就近取紧邻背景，同圈两侧都命中时取更近的那层，找到即停；
+                 * 取最远会把远处的墙铺进人像边缘以内（背景咬脸、边缘被削、插出尖角）。
+                 * uFillPick = 0：走满整个半径取最远，留作对照。
+                 */
+                if (uFillPick == 1) {
+                    if (hl && hr) far = min(dl, dr);
+                    else if (hl) far = dl;
+                    else if (hr) far = dr;
+                    if (hl || hr) { found = true; break; }
+                } else {
+                    if (hl) far = max(far, dl);
+                    if (hr) far = max(far, dr);
+                }
             }
             /*
              * 补洞照 DepthRay 原样：两只眼用同一种推法（不乘眼符号、固定减号）。
@@ -1969,6 +1985,8 @@ struct QuadLocs {
     GLint lowResW = -1, frameW = -1, srcInset = -1, eyeIndex = -1;
     GLint occl = -1, fill = -1, smoothRead = -1;
     GLint newton = -1;
+    GLint fillPx = -1;
+    GLint fillPick = -1;
     GLint circle = -1, expand = -1, bright = -1, contrast = -1, sat = -1;
     GLint sharpen = -1, temp = -1, texel = -1, screenStep = -1, down = -1;
     GLint jitter = -1, testPattern = -1;
@@ -2012,6 +2030,8 @@ void fillQuadLocs(GLuint prog, QuadLocs &u) {
     u.fill = glGetUniformLocation(prog, "uFill");
     u.smoothRead = glGetUniformLocation(prog, "uSmoothRead");
     u.newton = glGetUniformLocation(prog, "uNewton");
+    u.fillPx = glGetUniformLocation(prog, "uFillPx");
+    u.fillPick = glGetUniformLocation(prog, "uFillPick");
     u.circle = glGetUniformLocation(prog, "uCircle");
     u.expand = glGetUniformLocation(prog, "uExpandRange");
     u.bright = glGetUniformLocation(prog, "uBrightness");
@@ -2684,6 +2704,9 @@ std::atomic<int> gStereoOcclDiv{1};
  * 像素的采样从 13 次压到 4 次，代价是大视差处残差多留一点（前景边缘略糊）。
  */
 std::atomic<int> gStereoNewton{2};
+/* 补洞搜索半径（画面像素）与取层策略：父亲实测补洞是边缘游移的来源，两项都要能运行时对比 */
+std::atomic<float> gStereoFillPx{24.f};
+std::atomic<int> gStereoFillPick{1};
 /** 遮挡表降档的除数：调用处统一走这个，别直接读原子量（非法值当 1） */
 inline int stereoOcclDiv() {
     const int d = gStereoOcclDiv.load();
@@ -6988,6 +7011,8 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
                 const int n = gStereoNewton.load();
                 glUniform1i(u.newton, n < 0 ? 0 : (n > 2 ? 2 : n));
             }
+            if (u.fillPx >= 0) glUniform1f(u.fillPx, gStereoFillPx.load());
+            if (u.fillPick >= 0) glUniform1i(u.fillPick, gStereoFillPick.load() == 0 ? 0 : 1);
         } else {
             glUniform1i(u.depthOn, 0);
             /*
@@ -9066,6 +9091,22 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             const int taps = 1 + (smooth == 1 ? 4 : 1) + gStereoNewton.load() * (smooth == 1 ? 6 : 3);
             VLOGI("调参 → 牛顿修正 %d 轮（深度读取 %s）→ 正常像素每眼约 %d 次采样",
                   gStereoNewton.load(), smooth == 1 ? "三次插值" : "双线性", taps);
+            return;
+        }
+        /* 68 = 补洞搜索半径（画面像素，默认 24）：洞宽≈视差量，半径要够跨过洞，但别越界啃到前景 */
+        case 68: {
+            const float px = value;
+            gStereoFillPx.store(px < 2.f ? 2.f : (px > 96.f ? 96.f : px));
+            VLOGI("调参 → 补洞搜索半径 %.0f 画面像素（%s）", gStereoFillPx.load(),
+                  gStereoFillPick.load() == 1 ? "就近取紧邻背景" : "全范围取最远");
+            return;
+        }
+        /* 69 = 补洞取层策略：1 = 就近取紧邻背景（默认），0 = 全范围内取最远（对照） */
+        case 69: {
+            gStereoFillPick.store((int) value == 0 ? 0 : 1);
+            VLOGI("调参 → 补洞取层 %s（半径 %.0f 画面像素）",
+                  gStereoFillPick.load() == 1 ? "就近取紧邻背景" : "全范围取最远",
+                  gStereoFillPx.load());
             return;
         }
         /* 63 = 环延迟强制值（毫秒，0 = 按迟到自动算）：远程推理的迟到是固定开销，手动压住 */

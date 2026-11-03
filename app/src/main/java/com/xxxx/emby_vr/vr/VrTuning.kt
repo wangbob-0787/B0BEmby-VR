@@ -62,6 +62,9 @@ import java.io.File
  * | `stereo_smooth` | 深度读取：1=三次插值（默认）0=双线性（台阶对照） | 1 |
  * | `stereo_occl_div` | 遮挡表降档：1=原样（默认）2=宽高各减半（采样量 1/4）4=再减半 | 1 |
  * | `stereo_newton` | 牛顿修正轮数 0~2（每轮 6 次深度采样，每帧每眼都跑） | 2 |
+ * | `stereo_fill_px` | 补洞搜索半径（画面像素 2~96；洞宽≈视差量，太小跨不过洞、太大会啃前景） | 24 |
+ * | `stereo_fill_pick` | 补洞取层：1=就近取紧邻背景（默认）0=全范围内取最远（会把远景铺进人像） | 1 |
+ * | `depth_smooth` | 深度时间平滑 0~1：越大越稳越迟（洞判定逐帧翻的根子之一是深度在变） | 0.8 |
  * | `depth_auto` | 显卡委托建不起来时是否自动换回 int8 小模型（1=换，默认；0=保持原模型跑 CPU） | 1 |
  * | `layer_boost` | 视频层增强（PICO 合成器）：0=关 1=超采样 2=超采样高 3=锐化 4=锐化高 5=自适应锐化 6=自适应锐化高 7=超分辨率（同一层只能开一种） | 7 |
  * | `foveation` | 固定注视点渲染：0=关 1=低 2=中 3=高（边缘降精度换 GPU） | 2 |
@@ -411,6 +414,15 @@ object VrTuning {
      * 三次插值 + 两轮 = 13 次/像素/眼；双线性 + 一轮 = 7 次；双线性 + 零轮 = 5 次。
      */
     const val KEY_STEREO_NEWTON = 67
+
+    /** 补洞搜索半径（画面像素，2~96，默认 24）：洞宽≈视差量，太小跨不过洞、太大会啃到前景 */
+    const val KEY_STEREO_FILL_PX = 68
+
+    /** 补洞取层：1 = 就近取紧邻背景（默认），0 = 全范围取最远（对照，会把远景铺进人像） */
+    const val KEY_STEREO_FILL_PICK = 69
+
+    /** 深度时间平滑系数（0~1，默认 0.8）：越大越稳、越迟；补洞判定抖的根子之一是深度逐帧变 */
+    const val KEY_DEPTH_SMOOTH = 70
     /**
      * 抓帧的毫秒下限（0 = 纯按帧数，默认）。
      *
@@ -978,6 +990,16 @@ object VrTuning {
         }
         raw["stereo_newton"]?.toIntOrNull()?.let {
             VrNative.setTuning(KEY_STEREO_NEWTON, it.toFloat())
+        }
+        raw["stereo_fill_px"]?.toFloatOrNull()?.let {
+            VrNative.setTuning(KEY_STEREO_FILL_PX, it)
+        }
+        raw["stereo_fill_pick"]?.toIntOrNull()?.let {
+            VrNative.setTuning(KEY_STEREO_FILL_PICK, it.toFloat())
+        }
+        raw["depth_smooth"]?.toFloatOrNull()?.let {
+            DepthEngine.smooth = it.coerceIn(0f, 1f)
+            Log.i(TAG, "调参 → 深度时间平滑 ${DepthEngine.smooth}")
             applied += "牛顿修正 $it 轮"
         }
         raw["depth_auto"]?.toIntOrNull()?.let {
