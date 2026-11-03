@@ -67,6 +67,7 @@ import java.io.File
  * | `depth_smooth` | 深度时间平滑 0~1：越大越稳越迟（洞判定逐帧翻的根子之一是深度在变） | 0.8 |
  * | `stereo_edge_thr` | 真边缘判据·深度跳变阈值：越大越保守，只在明显的深度断口上补洞 | 0.03 |
  * | `stereo_edge_color` | 真边缘判据·两侧颜色差阈值：越大越保守，同色跳变不算边缘 | 0.06 |
+ * | `poster_play_hide` | 播放中自动收起海报墙：1=收（默认，省一整层合成）0=常驻（对照） | 1 |
  * | `depth_auto` | 显卡委托建不起来时是否自动换回 int8 小模型（1=换，默认；0=保持原模型跑 CPU） | 1 |
  * | `layer_boost` | 视频层增强（PICO 合成器）：0=关 1=超采样 2=超采样高 3=锐化 4=锐化高 5=自适应锐化 6=自适应锐化高 7=超分辨率（同一层只能开一种） | 7 |
  * | `foveation` | 固定注视点渲染：0=关 1=低 2=中 3=高（边缘降精度换 GPU） | 2 |
@@ -431,6 +432,9 @@ object VrTuning {
 
     /** 真边缘判据：两侧颜色差阈值（默认 0.06，越大越保守、同色跳变不算边缘） */
     const val KEY_EDGE_COLOR = 72
+
+    /** 播放中自动收起海报墙：1 = 收（默认，省一整层合成，实测 30→90 帧），0 = 常驻 */
+    const val KEY_POSTER_PLAY_HIDE = 73
     /**
      * 抓帧的毫秒下限（0 = 纯按帧数，默认）。
      *
@@ -1007,6 +1011,9 @@ object VrTuning {
         }
         raw["stereo_edge_thr"]?.toFloatOrNull()?.let {
             VrNative.setTuning(KEY_EDGE_THR, it)
+        }
+        raw["poster_play_hide"]?.toIntOrNull()?.let {
+            VrNative.setTuning(KEY_POSTER_PLAY_HIDE, it.toFloat())
         }
         raw["stereo_edge_color"]?.toFloatOrNull()?.let {
             VrNative.setTuning(KEY_EDGE_COLOR, it)

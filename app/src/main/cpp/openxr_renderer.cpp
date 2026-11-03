@@ -2657,6 +2657,12 @@ XrLayerSettingsFlagsPICO layerBoostFlags(int mode) {
     }
 }
 std::atomic<int> gSwapWaitTimeoutMs{4};      // 等交换链图像超时（毫秒，可运行时调）
+/*
+ * 播放中自动收起海报墙（默认开）。海报墙是独立合成层，常驻可见时每帧都要
+ * 参与系统合成：实测这一层单独就吃掉约 20ms GPU（七层全开 FrmGpu 26.6ms，
+ * 收掉它剩 8.2ms、帧率 30 → 90）。播放时它不在主视区，没有保留的必要。
+ */
+std::atomic<int> gPosterPlayHide{1};
 std::atomic<int> gLayerMask{0x3F};            // bit0 视频 bit1 弹幕 bit2 logo bit3 海报墙 bit4 控制条 bit5 菜单
 /*
  * 实时 2D→3D（2026-11-01）：运行时可调的四个参数，走 vr-tuning.txt。
@@ -7775,7 +7781,8 @@ void frameLoop(VrContext &c) {
          */
         c.panelLayer.submitted = false;
         if (c.panelLayerOk && (gLayerMask.load() & 8) != 0 && c.panelActive.load() &&
-            c.panelShown.load() && c.panelHasFrame.load() && c.panelTex != 0) {
+            c.panelShown.load() && c.panelHasFrame.load() && c.panelTex != 0 &&
+            !(c.videoActive.load() && gPosterPlayHide.load() == 1)) {
             if (buildQuadLayer(c, c.panelLayer, 1920, 1080, "海报墙")) {
                 /*
                  * 2026-10-14 **撤销**"内容没变就跳过重画"：父亲装上实测——海报墙会抖动。
@@ -9150,6 +9157,12 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             const float t = value;
             gStereoEdgeColorThr.store(t < 0.002f ? 0.002f : (t > 1.f ? 1.f : t));
             VLOGI("调参 → 真边缘颜色差阈值 %.3f（越大越保守）", gStereoEdgeColorThr.load());
+            return;
+        }
+        /* 73 = 播放中自动收起海报墙：1 = 收（默认，省一整层合成），0 = 一直挂着（对照） */
+        case 73: {
+            gPosterPlayHide.store((int) value == 0 ? 0 : 1);
+            VLOGI("调参 → 播放中海报墙 %s", gPosterPlayHide.load() == 1 ? "自动收起（省一层合成）" : "常驻");
             return;
         }
         /* 63 = 环延迟强制值（毫秒，0 = 按迟到自动算）：远程推理的迟到是固定开销，手动压住 */
