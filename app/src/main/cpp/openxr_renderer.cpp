@@ -6493,13 +6493,6 @@ void ensureDepthTexture(VrContext &c) {
  * 本可以放 15 槽，但没有意义：延迟再长只是多等，所以封在 5 槽。
  * 槽数直接决定环能装多长的延迟，写死会在大分辨率上把延迟截断。
  */
-/*
- * 环槽数运行时可调（0 = 按画面尺寸自动）。
- * 槽数决定环能装多长的延迟：(槽数-1) × 帧间隔。72 帧下 12 槽只有 153ms，
- * 而本地推理的深度迟到 p90 是 181ms，差一截就永远配不上（实测配对率 1%）。
- */
-std::atomic<int> gRingSlotsOverride{0};
-
 int ringSlotCount(int w, int h) {
     const long long px = (long long) w * h;
     if (px <= 0) return 0;
@@ -6515,14 +6508,8 @@ int ringSlotCount(int w, int h) {
      * 12 槽：一槽约 6MB，共 72MB。试过加到 16 槽（96MB），
      * 头显那边内存直接被压满、报 OutOfMemory 崩掉，退回来。
      */
-    const int autoN = (px <= 5636096LL) ? 12 : budgeted;
-    const int ov = gRingSlotsOverride.load();
-    if (ov >= 2) {
-        int n = ov < 14 ? ov : 14;   // 16 槽在 1920×800 上把头显内存压满崩过，封顶 14
-        if (budgeted > 0 && n > budgeted) n = budgeted;
-        if (n >= 2) return n;
-    }
-    return autoN;
+    if (px <= 5636096LL) return 12;
+    return budgeted;
 }
 
 /**
@@ -6591,13 +6578,12 @@ bool ensureRing(VrContext &c, int w, int h) {
         ringSkip(c, 2, "这一片的延迟超过环能装的长度（DepthRay 的 zero age off），不再配对");
         return false;
     }
-    const int nWant = ringSlotCount(w, h);
-    if (c.ringActive && c.ringW == w && c.ringH == h && c.ringCount == nWant) {
+    if (c.ringActive && c.ringW == w && c.ringH == h) {
         c.ringSkipCode = 0;
         return true;
     }
     releaseRing(c);
-    const int n = nWant;
+    const int n = ringSlotCount(w, h);
     if (n < 2) {
         /*
          * 1 槽装不下任何延迟（环能装的延迟 = (槽数-1) 个帧间隔），2 槽起才有意义。
@@ -9202,16 +9188,6 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             const float t = value;
             gStereoEdgeColorThr.store(t < 0.002f ? 0.002f : (t > 1.f ? 1.f : t));
             VLOGI("调参 → 真边缘颜色差阈值 %.3f（越大越保守）", gStereoEdgeColorThr.load());
-            return;
-        }
-        /*
-         * 74 = 环槽数（0 = 按画面尺寸自动，2..14 手动）。
-         * 槽数变了会在下一帧自动重建环（短暂黑一下），用于把容量调到能盖住深度迟到。
-         */
-        case 74: {
-            const int n = (int) lroundf(value);
-            gRingSlotsOverride.store(n >= 2 ? n : 0);
-            VLOGI("调参 → 环槽数 %d（0 = 自动）", gRingSlotsOverride.load());
             return;
         }
         /* 63 = 环延迟强制值（毫秒，0 = 按迟到自动算）：远程推理的迟到是固定开销，手动压住 */
