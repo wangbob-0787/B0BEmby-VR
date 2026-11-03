@@ -537,7 +537,8 @@ void main() {
             float offX = edgeW * off * 2.0 * float(reach) / max(uLowResWidth, 1.0);
             bool doFill = (uFill == 1 && hole > 0.5);
             float here = depthAt(vUv);
-            if (doFill) doFill = colorEdge(vUv);
+            /* uEdgeColorThr <= 0 = 关掉颜色这一条 */
+            if (doFill && uEdgeColorThr > 0.0) doFill = colorEdge(vUv);
             if (doFill) {
                 float far = here;
                 bool found = false;
@@ -6061,7 +6062,8 @@ void main() {
     vec2 result = vec2(0.0);
     vec2 holes = vec2(0.0);
     /* 深度断口 + 连续性只判一次，两眼共用；不在真边缘上的洞不标记，warp 就不会去补 */
-    bool edgeOK = depthEdgeAt(sp);
+    /* uEdgeThr <= 0 = 关掉边缘门控，整趟判定都不跑（A/B 用，回到没有门控的老行为） */
+    bool edgeOK = (uEdgeThr > 0.0) ? depthEdgeAt(sp) : true;
     for (int eye = 0; eye < 2; eye++) {
         float disp = (eye == 0) ? uDispTexels : -uDispTexels;
         float here = depthAt(sp);
