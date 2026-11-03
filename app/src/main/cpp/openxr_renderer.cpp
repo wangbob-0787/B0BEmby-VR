@@ -2621,7 +2621,9 @@ std::atomic<bool> gPanelFrameChanged{true};
  * 这次先把**所有交换链图都写成新内容**，之后没变化才允许跳过；写不满就退回每帧照画。
  */
 static bool gPanelContentNew = true;   // 本帧海报墙纹理来了新内容
-static bool gPanelPreferSkip = false;  // 所有交换链图都已写过新内容，可安全跳过重画
+static bool gPanelPreferSkip = false;
+/* 面板复用开关：1=内容不变就不重画（默认）0=每帧照画（用来确认滚动/刷新的问题是否由复用引起） */
+std::atomic<int> gPanelReuse{1};  // 所有交换链图都已写过新内容，可安全跳过重画
 
 /** 统计周期内所有交换链等待（双眼/视频层/弹幕层）累计毫秒，读后清零 */
 double gSwapWaitMs = 0.0;
@@ -7816,7 +7818,10 @@ void frameLoop(VrContext &c) {
                  * 相关零件（gPanelFrameChanged / skipDrawIfWritten / writtenIdx）保留备用，
                  * 这里不再启用 —— 要重返这条优化，得先做"一次写满所有交换链图"的预填。
                  */
-                if (gPanelContentNew || !gPanelPreferSkip) {
+                if (gPanelReuse.load() == 0) {
+                    /* 开关关掉：回到每帧照画（复用出问题时用这一档） */
+                    c.panelLayer.submitted = renderQuadLayer(c, c.panelLayer, c.panelTex, false);
+                } else if (gPanelContentNew || !gPanelPreferSkip) {
                     /* 有新内容（或上一次没写满）：连画几张把交换链每张图都写成新内容 */
                     prefillLayerImages(c, c.panelLayer, c.panelTex, false, &gPanelPreferSkip);
                     c.panelLayer.submitted = true;
@@ -9190,6 +9195,11 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             VLOGI("调参 → 真边缘颜色差阈值 %.3f（越大越保守）", gStereoEdgeColorThr.load());
             return;
         }
+        /* 75 = 面板复用开关（1=内容不变就不重画，默认；0=每帧照画） */
+        case 75:
+            gPanelReuse.store(value >= 0.5f ? 1 : 0);
+            VLOGI("调参 → 面板复用 %d（0 = 每帧照画）", gPanelReuse.load());
+            return;
         /* 63 = 环延迟强制值（毫秒，0 = 按迟到自动算）：远程推理的迟到是固定开销，手动压住 */
         case 63:
             if (value >= 0.f && value <= 1000.f) {

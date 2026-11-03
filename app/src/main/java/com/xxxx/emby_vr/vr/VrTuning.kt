@@ -439,6 +439,9 @@ object VrTuning {
      * 截断到环上限、深度永远配不上帧（实测配对率 1%）。给一个能盖住常见迟到、又不超容量的值。
      */
     const val KEY_RING_DELAY = 63
+
+    /** 面板复用开关：1=海报墙内容不变就不重画（默认）；0=每帧照画（滚动/刷新异常时用来对照） */
+    const val KEY_PANEL_REUSE = 75
     /**
      * 抓帧的毫秒下限（0 = 纯按帧数，默认）。
      *
@@ -782,6 +785,9 @@ object VrTuning {
                 VrNative.setTuning(KEY_STEREO_EDGE_DENSE, it)
                 applied += if (it >= 0.5f) "边缘加密开" else "边缘加密关"
             }
+        }
+        raw["panel_reuse"]?.toFloatOrNull()?.let {
+            VrNative.setTuning(KEY_PANEL_REUSE, it)
         }
         raw["stereo_ring_delay"]?.toFloatOrNull()?.let {
             if (it >= 0f && it <= 1000f) {
