@@ -2539,6 +2539,13 @@ std::function<void()> gVideoUpdate;
  * 要不要把整张 1920×1080 重画进图层（静止时省掉这一趟）。
  */
 std::atomic<bool> gPanelFrameChanged{true};
+/*
+ * 海报墙静态内容复用（2026-11-03）：内容没变时不再重画整张 1920×1080。
+ * 2026-10-14 试过直接跳过，父测"海报墙抖动"——交换链多张图轮转，跳过的图还留着旧内容。
+ * 这次先把**所有交换链图都写成新内容**，之后没变化才允许跳过；写不满就退回每帧照画。
+ */
+static bool gPanelContentNew = true;   // 本帧海报墙纹理来了新内容
+static bool gPanelPreferSkip = false;  // 所有交换链图都已写过新内容，可安全跳过重画
 
 /** 统计周期内所有交换链等待（双眼/视频层/弹幕层）累计毫秒，读后清零 */
 double gSwapWaitMs = 0.0;
@@ -6694,6 +6701,26 @@ void buildRingArtifacts(VrContext &c, RingSlot &s, int upW, int upH) {
     c.ringArtifactsDense = gStereoEdgeDense.load();
 }
 
+/*
+ * 内容变了就把交换链每张图都写成新内容（连画几张），之后内容不变才能安全跳过。
+ * 任何一张没写成（acquire 失败）→ 关掉跳过，退回每帧照画，避免出现旧内容导致的抖动。
+ */
+static void prefillLayerImages(VrContext &c, VideoLayerBuf &L, GLuint tex,
+                               bool videoLayerPass, bool *preferSkip) {
+    /* 新内容至少要先写进一张图，否则这一帧屏幕上还是旧内容 */
+    if (!renderQuadLayer(c, L, tex, videoLayerPass)) { *preferSkip = false; return; }
+    bool allWritten = false;
+    for (int pass = 0; pass < 8; ++pass) {
+        allWritten = !L.writtenIdx.empty();
+        for (size_t i = 0; i < L.writtenIdx.size(); ++i) {
+            if (!L.writtenIdx[i]) { allWritten = false; break; }
+        }
+        if (allWritten) break;
+        if (!renderQuadLayer(c, L, tex, videoLayerPass)) break;
+    }
+    *preferSkip = allWritten;
+}
+
 bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
                      bool videoLayerPass, bool skipDrawIfWritten = false,
                      int eyeIndex = -1, const StereoSrc *src = nullptr) {
@@ -7319,11 +7346,13 @@ void frameLoop(VrContext &c) {
                  * 画面来源这一帧要不要进槽：只在真来了新帧时推进，否则 72Hz 的渲染
                  * 会把同一帧重复拷三次，环被同一帧占满，延迟的粒度变成"三帧一跳"。
                  */
+                bool panelNew = false;
                 const bool newSourceFrame = webOnScreen
                                                     ? gWebFrameChanged.exchange(false)
                                                     : (panelOnScreen
-                                                               ? gPanelFrameChanged.exchange(false)
+                                                               ? (panelNew = gPanelFrameChanged.exchange(false))
                                                                : gVideoFrameChanged.exchange(false));
+                gPanelContentNew = panelNew;
                 /*
                  * 深度的帧号只在新画面到时推进：抓帧节奏按视频帧数算，不按渲染帧数。
                  * 在 3 的整数倍处回绕，取模的判断因此永远成立。
@@ -7566,8 +7595,15 @@ void frameLoop(VrContext &c) {
                  * 相关零件（gPanelFrameChanged / skipDrawIfWritten / writtenIdx）保留备用，
                  * 这里不再启用 —— 要重返这条优化，得先做"一次写满所有交换链图"的预填。
                  */
-                gPanelFrameChanged.store(false);
-                c.panelLayer.submitted = renderQuadLayer(c, c.panelLayer, c.panelTex, false);
+                if (gPanelContentNew || !gPanelPreferSkip) {
+                    /* 有新内容（或上一次没写满）：连画几张把交换链每张图都写成新内容 */
+                    prefillLayerImages(c, c.panelLayer, c.panelTex, false, &gPanelPreferSkip);
+                    c.panelLayer.submitted = true;
+                } else {
+                    /* 内容没变：只 acquire 一张原样交回，省掉整张 blit */
+                    c.panelLayer.submitted =
+                            renderQuadLayer(c, c.panelLayer, c.panelTex, false, true);
+                }
             }
         }
 
