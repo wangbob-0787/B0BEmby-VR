@@ -60,6 +60,9 @@ import java.io.File
  * | `stereo_fill` | 空洞填充：1=沿扫描线找背景补（默认）0=洞也按偏移表走（出白点时对照） | 1 |
  * | `stereo_occl` | 遮挡表：1=用预计算偏移（默认）0=逐像素现算（偏移表算错时对照） | 1 |
  * | `stereo_smooth` | 深度读取：1=三次插值（默认）0=双线性（台阶对照） | 1 |
+ * | `stereo_occl_div` | 遮挡表降档：1=原样（默认）2=宽高各减半（采样量 1/4）4=再减半 | 1 |
+ * | `stereo_newton` | 牛顿修正轮数 0~2（每轮 6 次深度采样，每帧每眼都跑） | 2 |
+ * | `depth_auto` | 显卡委托建不起来时是否自动换回 int8 小模型（1=换，默认；0=保持原模型跑 CPU） | 1 |
  * | `layer_boost` | 视频层增强（PICO 合成器）：0=关 1=超采样 2=超采样高 3=锐化 4=锐化高 5=自适应锐化 6=自适应锐化高 7=超分辨率（同一层只能开一种） | 7 |
  * | `foveation` | 固定注视点渲染：0=关 1=低 2=中 3=高（边缘降精度换 GPU） | 2 |
  * | `adaptive_res` | 自适应分辨率：0=关 1=高画质 2=平衡 3=省电（这版只上报与记录建议值） | 2 |
@@ -393,6 +396,21 @@ object VrTuning {
     const val KEY_STEREO_EDGE_DENSE = 64
     /* 远程批量推理「一批几帧」：调大摊薄往返、但迟到变长；调小相反。 */
     const val KEY_DEPTH_BATCH = 65
+    /**
+     * 遮挡表降档（1 / 2 / 4，默认 1 = 原样）。
+     *
+     * 遮挡表是链路里最贵的 GPU pass：每像素每只眼沿扫描线扫 2·reach+1 步，
+     * 1080p 下一次约一亿九千万次纹理采样，而且每三帧就跑一次。输出宽高各 /2，
+     * 采样量降到 1/4。偏移表按 UV 采样、与自身分辨率解耦，降档只损失偏移精度。
+     */
+    const val KEY_STEREO_OCCL_DIV = 66
+    /**
+     * 牛顿修正轮数（0~2，默认 2 = 参考实现）。
+     *
+     * 每轮 6 次深度采样，而且是每帧每眼都跑。配合 KEY_STEREO_SMOOTH 决定采样预算：
+     * 三次插值 + 两轮 = 13 次/像素/眼；双线性 + 一轮 = 7 次；双线性 + 零轮 = 5 次。
+     */
+    const val KEY_STEREO_NEWTON = 67
     /**
      * 抓帧的毫秒下限（0 = 纯按帧数，默认）。
      *
@@ -948,6 +966,23 @@ object VrTuning {
         raw["stereo_smooth"]?.toIntOrNull()?.let {
             VrNative.setTuning(KEY_STEREO_SMOOTH, it.toFloat())
             applied += "深度读取 " + if (it != 0) "三次插值" else "双线性"
+        }
+        /* 提速 A/B 两档（2026-11-03）：遮挡表降档、牛顿修正轮数，改了当场生效并在日志里对账 */
+        raw["stereo_occl_div"]?.toIntOrNull()?.let {
+            VrNative.setTuning(KEY_STEREO_OCCL_DIV, it.toFloat())
+            applied += "遮挡表降档 " + when {
+                it >= 4 -> "4（采样 1/16）"
+                it >= 2 -> "2（采样 1/4）"
+                else -> "关（原样）"
+            }
+        }
+        raw["stereo_newton"]?.toIntOrNull()?.let {
+            VrNative.setTuning(KEY_STEREO_NEWTON, it.toFloat())
+            applied += "牛顿修正 $it 轮"
+        }
+        raw["depth_auto"]?.toIntOrNull()?.let {
+            DepthEngine.autoFallback = it != 0
+            applied += "显卡委托失败回退 " + if (it != 0) "开（换 int8 小模型）" else "关（保持原模型跑 CPU）"
         }
 
         if (!wrote) return applied
