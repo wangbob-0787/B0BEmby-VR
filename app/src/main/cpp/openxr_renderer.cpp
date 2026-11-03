@@ -6061,7 +6061,7 @@ void main() {
     vec2 result = vec2(0.0);
     vec2 holes = vec2(0.0);
     /* 深度断口 + 连续性只判一次，两眼共用；不在真边缘上的洞不标记，warp 就不会去补 */
-    const bool edgeOK = depthEdgeAt(sp);
+    bool edgeOK = depthEdgeAt(sp);
     for (int eye = 0; eye < 2; eye++) {
         float disp = (eye == 0) ? uDispTexels : -uDispTexels;
         float here = depthAt(sp);
