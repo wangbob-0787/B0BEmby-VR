@@ -6705,25 +6705,6 @@ void buildRingArtifacts(VrContext &c, RingSlot &s, int upW, int upH) {
  * 内容变了就把交换链每张图都写成新内容（连画几张），之后内容不变才能安全跳过。
  * 任何一张没写成（acquire 失败）→ 关掉跳过，退回每帧照画，避免出现旧内容导致的抖动。
  */
-bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex, bool videoLayerPass,
-                     bool skipDrawIfWritten, int eyeIndex, const StereoSrc *src);
-
-static void prefillLayerImages(VrContext &c, VideoLayerBuf &L, GLuint tex,
-                               bool videoLayerPass, bool *preferSkip) {
-    /* 新内容至少要先写进一张图，否则这一帧屏幕上还是旧内容 */
-    if (!renderQuadLayer(c, L, tex, videoLayerPass)) { *preferSkip = false; return; }
-    bool allWritten = false;
-    for (int pass = 0; pass < 8; ++pass) {
-        allWritten = !L.writtenIdx.empty();
-        for (size_t i = 0; i < L.writtenIdx.size(); ++i) {
-            if (!L.writtenIdx[i]) { allWritten = false; break; }
-        }
-        if (allWritten) break;
-        if (!renderQuadLayer(c, L, tex, videoLayerPass)) break;
-    }
-    *preferSkip = allWritten;
-}
-
 bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
                      bool videoLayerPass, bool skipDrawIfWritten = false,
                      int eyeIndex = -1, const StereoSrc *src = nullptr) {
@@ -6958,6 +6939,24 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
     L.index = idx;
     return true;
 }
+
+static void prefillLayerImages(VrContext &c, VideoLayerBuf &L, GLuint tex,
+                               bool videoLayerPass, bool *preferSkip) {
+    /* 新内容至少要先写进一张图，否则这一帧屏幕上还是旧内容 */
+    if (!renderQuadLayer(c, L, tex, videoLayerPass)) { *preferSkip = false; return; }
+    bool allWritten = false;
+    for (int pass = 0; pass < 8; ++pass) {
+        allWritten = !L.writtenIdx.empty();
+        for (size_t i = 0; i < L.writtenIdx.size(); ++i) {
+            if (!L.writtenIdx[i]) { allWritten = false; break; }
+        }
+        if (allWritten) break;
+        if (!renderQuadLayer(c, L, tex, videoLayerPass)) break;
+    }
+    *preferSkip = allWritten;
+}
+
+
 
 /**
  * 把视频层刷成纯黑并提交（换片清屏，父亲 2026-10-07 实测）。
