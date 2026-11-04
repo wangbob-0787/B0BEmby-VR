@@ -7091,9 +7091,13 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
 
     /*
      * Warp 输出缩放：视差 Warp 先画进低分辨率中间缓冲，再由边缘感知上采样放大进交换链。
-     * 只对视频层生效 —— 弹幕/画廊层没有十几份深度采样，不需要走这条路。
+     *
+     * 三个前提缺一不可：只对视频层、只在 3D 打开时、且中间缓冲建好了。
+     * 3D 关闭时必须走全分辨率直通 —— 2D 的清晰度不许被 3D 的实现方式污染，
+     * 这是父亲立过的硬规矩。
      */
-    const bool lowResWarp = videoLayerPass && L.srcFbo != 0 && L.srcW > 0 && L.srcH > 0;
+    const bool lowResWarp = videoLayerPass && gStereo3d.load() != 0 &&
+                            L.srcFbo != 0 && L.srcW > 0 && L.srcH > 0;
 
     glBindFramebuffer(GL_FRAMEBUFFER, lowResWarp ? L.srcFbo : L.fbos[idx]);
     glViewport(0, 0, lowResWarp ? L.srcW : L.width, lowResWarp ? L.srcH : L.height);
