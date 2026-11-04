@@ -2624,6 +2624,7 @@ static bool gPanelContentNew = true;   // 本帧海报墙纹理来了新内容
 static bool gPanelPreferSkip = false;
 /* 面板复用开关：1=内容不变就不重画（默认）0=每帧照画（用来确认滚动/刷新的问题是否由复用引起） */
 std::atomic<int> gPanelReuse{1};  // 所有交换链图都已写过新内容，可安全跳过重画
+std::atomic<float> gWarpScale{1.0f};  // Warp 输出缩放（1.0=全分辨率；0.8=视频层交换链 80%）
 
 /** 统计周期内所有交换链等待（双眼/视频层/弹幕层）累计毫秒，读后清零 */
 double gSwapWaitMs = 0.0;
@@ -7506,6 +7507,12 @@ void frameLoop(VrContext &c) {
                 vw = (int32_t) ((float) vw * k);
                 vh = (int32_t) ((float) vh * k);
             }
+            /* 76：Warp 输出缩放（3D 时视频层交换链按此比例缩，像素处理量降；2D 不受影响） */
+            if (gStereo3d.load() != 0 && gWarpScale.load() < 1.0f) {
+                const float ws = gWarpScale.load();
+                vw = (int32_t) ((float) vw * ws);
+                vh = (int32_t) ((float) vh * ws);
+            }
             if (vw >= 64 && vh >= 64 && buildQuadLayer(c, c.videoLayer, vw, vh, "视频层")) {
                 const GLuint screenSrc = webOnScreen
                                              ? c.webTex
@@ -9199,6 +9206,13 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
         case 75:
             gPanelReuse.store(value >= 0.5f ? 1 : 0);
             VLOGI("调参 → 面板复用 %d（0 = 每帧照画）", gPanelReuse.load());
+            return;
+        /* 76 = Warp 输出缩放（1.0 = 全分辨率；<1 = 视频层交换链按比例缩，像素处理量降） */
+        case 76:
+            if (value >= 0.4f && value <= 1.0f) {
+                gWarpScale.store(value);
+                VLOGI("调参 → warp 缩放 %.2f（视频层交换链按此比例缩）", (double) value);
+            }
             return;
         /* 63 = 环延迟强制值（毫秒，0 = 按迟到自动算）：远程推理的迟到是固定开销，手动压住 */
         case 63:

@@ -442,6 +442,9 @@ object VrTuning {
 
     /** 面板复用开关：1=海报墙内容不变就不重画（默认）；0=每帧照画（滚动/刷新异常时用来对照） */
     const val KEY_PANEL_REUSE = 75
+
+    /** Warp 输出缩放：1.0=全分辨率；0.8=视频层交换链 80%（像素处理量减 36%，边缘感知上采样时用） */
+    const val KEY_WARP_SCALE = 76
     /**
      * 抓帧的毫秒下限（0 = 纯按帧数，默认）。
      *
@@ -788,6 +791,10 @@ object VrTuning {
         }
         raw["panel_reuse"]?.toFloatOrNull()?.let {
             VrNative.setTuning(KEY_PANEL_REUSE, it)
+        }
+        raw["warp_scale"]?.toFloatOrNull()?.let {
+            VrNative.setTuning(KEY_WARP_SCALE, it)
+            applied += "warp缩放 $it"
         }
         raw["stereo_ring_delay"]?.toFloatOrNull()?.let {
             if (it >= 0f && it <= 1000f) {
