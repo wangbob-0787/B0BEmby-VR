@@ -429,6 +429,13 @@ uniform int uSmoothRead;        // 1 = 深度三次插值读（默认），0 = �
  * 降到 0/1 就是"省采样换边缘精度"的对照档，必须肉眼 A/B 才知道值不值。
  */
 uniform int uNewton;
+/*
+ * 条件牛顿：第一轮迭代后残差 |e| 小于该阈值就认为已收敛，不再跑第二轮。
+ * 单位与 e 一致（UV，0..1），约 0.002 ≈ 4 个画面像素 @1920。
+ * 平坦区域第一轮 e 本来就小，直接停 → 省第二轮那 6 次深度采样；
+ * 高梯度（边缘）e 大，照常跑满。这是"自适应采样"，比全局削牛顿轮数保边缘。
+ */
+uniform float uNewtonEps;
 out vec4 fragColor;
 
 /*
@@ -594,6 +601,11 @@ void main() {
                      */
                     if (abs(slope) < 0.25) slope = slope < 0.0 ? -0.25 : 0.25;
                     uvT.x -= clamp(e / slope, -4.0 * h, 4.0 * h);
+                    /*
+                     * 条件牛顿：第一轮后残差够小 → 已收敛，不跑第二轮。
+                     * 省下第二轮那 6 次深度采样；高梯度像素 e 大，照常跑满。
+                     */
+                    if (i == 0 && abs(e) < uNewtonEps) break;
                 }
             }
         } else {
@@ -2005,6 +2017,7 @@ struct QuadLocs {
     GLint lowResW = -1, frameW = -1, srcInset = -1, eyeIndex = -1;
     GLint occl = -1, fill = -1, smoothRead = -1;
     GLint newton = -1;
+    GLint newtonEps = -1;
     GLint fillPx = -1;
     GLint fillPick = -1;
     GLint edgeThr = -1;
@@ -2052,6 +2065,7 @@ void fillQuadLocs(GLuint prog, QuadLocs &u) {
     u.fill = glGetUniformLocation(prog, "uFill");
     u.smoothRead = glGetUniformLocation(prog, "uSmoothRead");
     u.newton = glGetUniformLocation(prog, "uNewton");
+    u.newtonEps = glGetUniformLocation(prog, "uNewtonEps");
     u.fillPx = glGetUniformLocation(prog, "uFillPx");
     u.fillPick = glGetUniformLocation(prog, "uFillPick");
     u.edgeThr = glGetUniformLocation(prog, "uEdgeThr");
@@ -2731,6 +2745,11 @@ std::atomic<int> gStereoOcclDiv{1};
  * 像素的采样从 13 次压到 4 次，代价是大视差处残差多留一点（前景边缘略糊）。
  */
 std::atomic<int> gStereoNewton{2};
+/*
+ * 条件牛顿残差阈值（调参 key，stereo_newton_eps，默认 0.002 ≈ 4 画面像素 @1920）。
+ * 第一轮迭代后 |e| < 该值就停，不跑第二轮；高梯度（边缘）e 大照常跑满。
+ */
+std::atomic<float> gStereoNewtonEps{0.002f};
 /* 补洞搜索半径（画面像素）与取层策略：父亲实测补洞是边缘游移的来源，两项都要能运行时对比 */
 std::atomic<float> gStereoFillPx{24.f};
 std::atomic<int> gStereoFillPick{1};
@@ -7078,6 +7097,7 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
                 const int n = gStereoNewton.load();
                 glUniform1i(u.newton, n < 0 ? 0 : (n > 2 ? 2 : n));
             }
+            if (u.newtonEps >= 0) glUniform1f(u.newtonEps, gStereoNewtonEps.load());
             if (u.fillPx >= 0) glUniform1f(u.fillPx, gStereoFillPx.load());
             if (u.fillPick >= 0) glUniform1i(u.fillPick, gStereoFillPick.load() == 0 ? 0 : 1);
             if (u.edgeThr >= 0) glUniform1f(u.edgeThr, gStereoEdgeThr.load());
@@ -9173,6 +9193,14 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             const int taps = 1 + (smooth == 1 ? 4 : 1) + gStereoNewton.load() * (smooth == 1 ? 6 : 3);
             VLOGI("调参 → 牛顿修正 %d 轮（深度读取 %s）→ 正常像素每眼约 %d 次采样",
                   gStereoNewton.load(), smooth == 1 ? "三次插值" : "双线性", taps);
+            return;
+        }
+        /* 73 = 条件牛顿残差阈值（UV 单位，默认 0.002）：第一轮收敛就停，省第二轮采样 */
+        case 73: {
+            const float eps = value;
+            gStereoNewtonEps.store(eps < 0.0005f ? 0.0005f : (eps > 0.02f ? 0.02f : eps));
+            VLOGI("调参 → 条件牛顿阈值 %.4f（第一轮 |e| 小于该值就停，不跑第二轮）",
+                  gStereoNewtonEps.load());
             return;
         }
         /* 68 = 补洞搜索半径（画面像素，默认 24）：洞宽≈视差量，半径要够跨过洞，但别越界啃到前景 */

@@ -418,6 +418,12 @@ object VrTuning {
      */
     const val KEY_STEREO_NEWTON = 67
 
+    /**
+     * 条件牛顿残差阈值（UV 单位，默认 0.002 ≈ 4 画面像素 @1920）。
+     * 第一轮迭代后 |e| < 该值就停（省第二轮 6 次采样）；高梯度边缘 e 大照常跑满。
+     */
+    const val KEY_STEREO_NEWTON_EPS = 73
+
     /** 补洞搜索半径（画面像素，2~96，默认 24）：洞宽≈视差量，太小跨不过洞、太大会啃到前景 */
     const val KEY_STEREO_FILL_PX = 68
 
@@ -1012,6 +1018,13 @@ object VrTuning {
         }
         raw["stereo_newton"]?.toIntOrNull()?.let {
             VrNative.setTuning(KEY_STEREO_NEWTON, it.toFloat())
+        }
+        /* 条件牛顿残差阈值（2026-11-04）：第一轮收敛就停，省第二轮采样 */
+        raw["stereo_newton_eps"]?.toFloatOrNull()?.let {
+            if (it >= 0f && it <= 0.02f) {
+                VrNative.setTuning(KEY_STEREO_NEWTON_EPS, it)
+                applied += "条件牛顿阈值 " + it
+            }
         }
         raw["stereo_fill_px"]?.toFloatOrNull()?.let {
             VrNative.setTuning(KEY_STEREO_FILL_PX, it)
