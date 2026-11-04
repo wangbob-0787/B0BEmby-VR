@@ -443,8 +443,16 @@ object VrTuning {
     /** 面板复用开关：1=海报墙内容不变就不重画（默认）；0=每帧照画（滚动/刷新异常时用来对照） */
     const val KEY_PANEL_REUSE = 75
 
-    /** Warp 输出缩放：1.0=全分辨率；0.8=视频层交换链 80%（像素处理量减 36%，边缘感知上采样时用） */
+    /**
+     * Warp 输出缩放：1.0=全分辨率；0.65=视差 Warp 只在 65% 像素上算，再边缘感知放大回全分辨率。
+     *
+     * 缩的只是「每像素十几份深度采样」那一段最贵的计算，交换链始终全分辨率，
+     * 所以文字/UI 不受影响，画面边缘靠上采样的深度一致性权重保住。
+     */
     const val KEY_WARP_SCALE = 76
+
+    /** 上采样的深度差惩罚强度：越大越"只认同深度的邻点"，边缘更硬但可能出现锯齿 */
+    const val KEY_WARP_EDGE_SIGMA = 77
     /**
      * 抓帧的毫秒下限（0 = 纯按帧数，默认）。
      *
@@ -795,6 +803,12 @@ object VrTuning {
         raw["warp_scale"]?.toFloatOrNull()?.let {
             VrNative.setTuning(KEY_WARP_SCALE, it)
             applied += "warp缩放 $it"
+        }
+        raw["warp_edge_sigma"]?.toFloatOrNull()?.let {
+            if (it >= 0f && it <= 0.5f) {
+                VrNative.setTuning(KEY_WARP_EDGE_SIGMA, it)
+                applied += "上采样边缘 $it"
+            }
         }
         raw["stereo_ring_delay"]?.toFloatOrNull()?.let {
             if (it >= 0f && it <= 1000f) {

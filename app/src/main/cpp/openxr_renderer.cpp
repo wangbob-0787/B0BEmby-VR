@@ -1478,6 +1478,16 @@ struct VideoLayerBuf {
      */
     std::vector<char> writtenIdx;
     uint32_t index = 0;              // 本帧写好待提交的那张
+    /*
+     * Warp 的低分辨率中间缓冲。
+     *
+     * warp_scale < 1 时，视差 Warp 画进这块更小的纹理，再由边缘感知上采样
+     * 放大进交换链。交换链本身保持全分辨率 —— 交给系统合成器的始终是全尺寸图，
+     * 缩小的只有"每像素十几份深度采样"那一段最贵的计算。
+     */
+    GLuint srcTex = 0;
+    GLuint srcFbo = 0;
+    int32_t srcW = 0, srcH = 0;
 };
 
 /** 一块虚拟屏的摆位：中心、朝向（偏航 + 仰角）、宽度（米） */
@@ -2625,6 +2635,8 @@ static bool gPanelPreferSkip = false;
 /* 面板复用开关：1=内容不变就不重画（默认）0=每帧照画（用来确认滚动/刷新的问题是否由复用引起） */
 std::atomic<int> gPanelReuse{1};  // 所有交换链图都已写过新内容，可安全跳过重画
 std::atomic<float> gWarpScale{1.0f};  // Warp 输出缩放（1.0=全分辨率；0.8=视频层交换链 80%）
+/* 上采样的深度差惩罚强度：深度图是 0..1 归一化，0.03 = 差 3% 就压掉大半权重 */
+std::atomic<float> gWarpEdgeSigma{0.03f};
 
 /** 统计周期内所有交换链等待（双眼/视频层/弹幕层）累计毫秒，读后清零 */
 double gSwapWaitMs = 0.0;
@@ -5547,7 +5559,16 @@ void ensureVideoLayerQuad(VrContext &c) {
  */
 bool buildQuadLayer(VrContext &c, VideoLayerBuf &L, int32_t w, int32_t h,
                     const char *what) {
-    if (L.built && L.width == w && L.height == h) return true;
+    /*
+     * 重建判据带上中间缓冲宽度：warp_scale 改了要重建成新尺寸，
+     * 否则上采样会按旧步长取样，边缘权重错位。
+     */
+    const float wantScale = gWarpScale.load();
+    const bool wantLowRes = wantScale > 0.f && wantScale < 0.999f;
+    const int32_t wantSrcW = wantLowRes
+            ? std::max(16, (int32_t) ((float) w * wantScale))
+            : 0;
+    if (L.built && L.width == w && L.height == h && L.srcW == wantSrcW) return true;
 
     if (L.handle != XR_NULL_HANDLE) {
         api.DestroySwapchain(L.handle);
@@ -5620,6 +5641,52 @@ bool buildQuadLayer(VrContext &c, VideoLayerBuf &L, int32_t w, int32_t h,
         }
     }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    /*
+     * 中间缓冲：warp_scale < 1 时先把视差 Warp 画进这块更小的纹理。
+     * 格式必须跟交换链一致 —— 着色器已经输出编码后的值，若中间缓冲用线性格式，
+     * 采样再写进 sRGB 交换链会被硬件二次编码，画面整体变暗。
+     */
+    if (L.srcTex) { glDeleteTextures(1, &L.srcTex); L.srcTex = 0; }
+    if (L.srcFbo) { glDeleteFramebuffers(1, &L.srcFbo); L.srcFbo = 0; }
+    L.srcW = 0;
+    L.srcH = 0;
+    const float ws = gWarpScale.load();
+    if (ws > 0.f && ws < 0.999f) {
+        GLint texFmt = GL_RGBA8;
+        glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(L.images[0].image));
+        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_INTERNAL_FORMAT, &texFmt);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        L.srcW = (int32_t) ((float) w * ws);
+        L.srcH = (int32_t) ((float) h * ws);
+        if (L.srcW < 16) L.srcW = 16;
+        if (L.srcH < 16) L.srcH = 16;
+        glGenTextures(1, &L.srcTex);
+        glBindTexture(GL_TEXTURE_2D, L.srcTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, texFmt, L.srcW, L.srcH, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glGenFramebuffers(1, &L.srcFbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, L.srcFbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, L.srcTex, 0);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+            LOGE("%s 中间缓冲不完整（%dx%d），退回全分辨率 warp", what, L.srcW, L.srcH);
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            glDeleteFramebuffers(1, &L.srcFbo);
+            L.srcFbo = 0;
+            glDeleteTextures(1, &L.srcTex);
+            L.srcTex = 0;
+            L.srcW = 0;
+            L.srcH = 0;
+        } else {
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            VLOGI("%s 中间缓冲 %dx%d（warp 缩放 %.2f，上采样回 %dx%d）",
+                  what, L.srcW, L.srcH, (double) ws, w, h);
+        }
+    }
     L.width = w;
     L.height = h;
     L.built = true;
@@ -6908,6 +6975,80 @@ void buildRingArtifacts(VrContext &c, RingSlot &s, int upW, int upH) {
     c.ringArtifactsOcclDiv = div;
 }
 
+/**
+ * 边缘感知上采样程序（Warp 输出缩放的配套一趟）。
+ *
+ * 不复用主着色器：主程序有两种采样器版本（OES 外部纹理 / 普通 2D），
+ * 0 号单元上绑的是 2D 纹理而程序声明 samplerExternalOES 时，驱动整次绘制作废
+ * （整层黑）—— 这是本项目踩过的坑。这里采样器固定 sampler2D。
+ *
+ * 权重 = 空间双线性 × 深度一致性：跨深度边界的邻点按 |ΔD| 指数衰减被压掉，
+ * 于是前景/背景交界只吃同侧样本，轮廓不会糊成一条斜坡。
+ */
+GLuint ensureWarpUpsampleProgram() {
+    static GLuint prog = 0;
+    static GLint srcLoc = -1, depthLoc = -1, texelLoc = -1, sigmaLoc = -1, hasDepthLoc = -1;
+    if (prog != 0) return prog;
+    static const char *vs = R"(#version 300 es
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec2 aUv;
+out vec2 vUv;
+void main() { vUv = aUv; gl_Position = vec4(aPos.xy, 0.0, 1.0); }
+)";
+    static const char *fs = R"(#version 300 es
+precision mediump float;
+in vec2 vUv;
+uniform sampler2D uSrc;
+uniform sampler2D uDepth;
+uniform vec2 uSrcTexel;
+uniform float uEdgeSigma;
+uniform int uHasDepth;
+out vec4 oColor;
+void main() {
+    vec2 p = vUv / uSrcTexel - 0.5;
+    vec2 b = (floor(p) + 0.5) * uSrcTexel;
+    vec2 f = fract(p);
+    vec2 o00 = b + vec2(-0.5, -0.5) * uSrcTexel;
+    vec2 o10 = b + vec2(0.5, -0.5) * uSrcTexel;
+    vec2 o01 = b + vec2(-0.5, 0.5) * uSrcTexel;
+    vec2 o11 = b + vec2(0.5, 0.5) * uSrcTexel;
+    float w00 = (1.0 - f.x) * (1.0 - f.y);
+    float w10 = f.x * (1.0 - f.y);
+    float w01 = (1.0 - f.x) * f.y;
+    float w11 = f.x * f.y;
+    if (uHasDepth == 1 && uEdgeSigma > 0.0) {
+        float dc = texture(uDepth, vUv).r;
+        float s = 1.0 / uEdgeSigma;
+        w00 *= exp(-abs(texture(uDepth, o00).r - dc) * s);
+        w10 *= exp(-abs(texture(uDepth, o10).r - dc) * s);
+        w01 *= exp(-abs(texture(uDepth, o01).r - dc) * s);
+        w11 *= exp(-abs(texture(uDepth, o11).r - dc) * s);
+    }
+    float ws = w00 + w10 + w01 + w11;
+    if (ws < 1e-5) { oColor = vec4(texture(uSrc, vUv).rgb, 1.0); return; }
+    vec3 acc = texture(uSrc, o00).rgb * w00 + texture(uSrc, o10).rgb * w10
+             + texture(uSrc, o01).rgb * w01 + texture(uSrc, o11).rgb * w11;
+    oColor = vec4(acc / ws, 1.0);
+}
+)";
+    prog = buildProgramFrom(vs, fs);
+    if (prog == 0) {
+        LOGE("上采样着色器编译失败，warp 缩放退回全分辨率");
+        return 0;
+    }
+    srcLoc = glGetUniformLocation(prog, "uSrc");
+    depthLoc = glGetUniformLocation(prog, "uDepth");
+    texelLoc = glGetUniformLocation(prog, "uSrcTexel");
+    sigmaLoc = glGetUniformLocation(prog, "uEdgeSigma");
+    hasDepthLoc = glGetUniformLocation(prog, "uHasDepth");
+    glUseProgram(prog);
+    if (srcLoc >= 0) glUniform1i(srcLoc, 0);
+    if (depthLoc >= 0) glUniform1i(depthLoc, 1);
+    glUseProgram(0);
+    VLOGI("上采样着色器就绪（边缘感知，2D 采样器）");
+    return prog;
+}
+
 /*
  * 内容变了就把交换链每张图都写成新内容（连画几张），之后内容不变才能安全跳过。
  * 任何一张没写成（acquire 失败）→ 关掉跳过，退回每帧照画，避免出现旧内容导致的抖动。
@@ -6948,8 +7089,14 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
 
     ensureVideoLayerQuad(c);
 
-    glBindFramebuffer(GL_FRAMEBUFFER, L.fbos[idx]);
-    glViewport(0, 0, L.width, L.height);
+    /*
+     * Warp 输出缩放：视差 Warp 先画进低分辨率中间缓冲，再由边缘感知上采样放大进交换链。
+     * 只对视频层生效 —— 弹幕/画廊层没有十几份深度采样，不需要走这条路。
+     */
+    const bool lowResWarp = videoLayerPass && L.srcFbo != 0 && L.srcW > 0 && L.srcH > 0;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, lowResWarp ? L.srcFbo : L.fbos[idx]);
+    glViewport(0, 0, lowResWarp ? L.srcW : L.width, lowResWarp ? L.srcH : L.height);
     /*
      * GL 状态显式清零（2026-10-09，ChatGPT 复查时指出）：
      *
@@ -7100,6 +7247,45 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
     glBindVertexArray(c.videoLayerVao);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(0);
+
+    /*
+     * 边缘感知上采样：把刚画好的低分辨率 warp 结果放大进交换链。
+     *
+     * 画面调整、色域、锐化都已在前一趟做完，这一趟只加权放大，所以不用主程序
+     * （主程序有两种采样器版本，绑 2D 纹理配 OES 声明会整层画不出来）。
+     */
+    if (lowResWarp) {
+        const GLuint upProg = ensureWarpUpsampleProgram();
+        if (upProg != 0) {
+            static GLint upTexel = -1, upSigma = -1, upHasDepth = -1;
+            if (upTexel < 0) {
+                upTexel = glGetUniformLocation(upProg, "uSrcTexel");
+                upSigma = glGetUniformLocation(upProg, "uEdgeSigma");
+                upHasDepth = glGetUniformLocation(upProg, "uHasDepth");
+            }
+            const GLuint depthTex = (delayed && src != nullptr && src->depthTex != 0)
+                                            ? src->depthTex
+                                            : c.depthUp.tex;
+            const GLuint depthBind = depthTex != 0 ? depthTex : L.srcTex;
+            glBindFramebuffer(GL_FRAMEBUFFER, L.fbos[idx]);
+            glViewport(0, 0, L.width, L.height);
+            glUseProgram(upProg);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, L.srcTex);
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, depthBind);
+            glActiveTexture(GL_TEXTURE0);
+            if (upTexel >= 0) {
+                glUniform2f(upTexel, 1.f / (float) L.srcW, 1.f / (float) L.srcH);
+            }
+            if (upSigma >= 0) glUniform1f(upSigma, gWarpEdgeSigma.load());
+            if (upHasDepth >= 0) glUniform1i(upHasDepth, depthTex != 0 ? 1 : 0);
+            glBindVertexArray(c.videoLayerVao);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            glBindVertexArray(0);
+            glUseProgram(prog);
+        }
+    }
 
     /*
      * 片名 logo 叠在视频之上（同一张合成图里）—— 父亲定的：logo 与视频一层。
@@ -7507,12 +7693,8 @@ void frameLoop(VrContext &c) {
                 vw = (int32_t) ((float) vw * k);
                 vh = (int32_t) ((float) vh * k);
             }
-            /* 76：Warp 输出缩放（3D 时视频层交换链按此比例缩，像素处理量降；2D 不受影响） */
-            if (gStereo3d.load() != 0 && gWarpScale.load() < 1.0f) {
-                const float ws = gWarpScale.load();
-                vw = (int32_t) ((float) vw * ws);
-                vh = (int32_t) ((float) vh * ws);
-            }
+            /* 76：Warp 输出缩放改由视频层的低分辨率中间缓冲承担（见 VideoLayerBuf::srcTex），
+             * 交换链始终保持全分辨率 —— 交给系统合成器的必须是最清晰的那一版。 */
             if (vw >= 64 && vh >= 64 && buildQuadLayer(c, c.videoLayer, vw, vh, "视频层")) {
                 const GLuint screenSrc = webOnScreen
                                              ? c.webTex
@@ -9207,11 +9389,18 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             gPanelReuse.store(value >= 0.5f ? 1 : 0);
             VLOGI("调参 → 面板复用 %d（0 = 每帧照画）", gPanelReuse.load());
             return;
-        /* 76 = Warp 输出缩放（1.0 = 全分辨率；<1 = 视频层交换链按比例缩，像素处理量降） */
+        /* 76 = Warp 输出缩放（1.0 = 全分辨率；<1 = 视差 Warp 只在这么多像素上算） */
         case 76:
             if (value >= 0.4f && value <= 1.0f) {
                 gWarpScale.store(value);
-                VLOGI("调参 → warp 缩放 %.2f（视频层交换链按此比例缩）", (double) value);
+                VLOGI("调参 → warp 缩放 %.2f（视差计算按此比例降采样）", (double) value);
+            }
+            return;
+        /* 77 = 上采样的深度差惩罚强度（0 = 纯双线性，越大边缘越硬） */
+        case 77:
+            if (value >= 0.f && value <= 0.5f) {
+                gWarpEdgeSigma.store(value);
+                VLOGI("调参 → 上采样边缘强度 %.3f", (double) value);
             }
             return;
         /* 63 = 环延迟强制值（毫秒，0 = 按迟到自动算）：远程推理的迟到是固定开销，手动压住 */
