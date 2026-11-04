@@ -5586,6 +5586,8 @@ bool buildQuadLayer(VrContext &c, VideoLayerBuf &L, int32_t w, int32_t h,
     const int64_t candidates[2] = {GL_SRGB8_ALPHA8, GL_RGBA8};
     const int candN = (gForceRgba8.load() != 0) ? 1 : 2;
     bool created = false;
+    /* 记下实际用上的格式：中间缓冲必须与交换链同格式，否则采样再写入会被二次编码 */
+    int64_t usedFmt = GL_RGBA8;
     for (int ci = 0; ci < candN; ci++) {
         const int64_t fmt = candidates[gForceRgba8.load() != 0 ? 1 : ci];
         XrSwapchainCreateInfo sci{XR_TYPE_SWAPCHAIN_CREATE_INFO};
@@ -5599,6 +5601,7 @@ bool buildQuadLayer(VrContext &c, VideoLayerBuf &L, int32_t w, int32_t h,
         sci.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
         if (XR_SUCCEEDED(api.CreateSwapchain(c.session, &sci, &L.handle))) {
             created = true;
+            usedFmt = fmt;
             break;
         }
         L.handle = XR_NULL_HANDLE;
@@ -5652,17 +5655,13 @@ bool buildQuadLayer(VrContext &c, VideoLayerBuf &L, int32_t w, int32_t h,
     L.srcH = 0;
     const float ws = gWarpScale.load();
     if (ws > 0.f && ws < 0.999f) {
-        GLint texFmt = GL_RGBA8;
-        glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(L.images[0].image));
-        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_INTERNAL_FORMAT, &texFmt);
-        glBindTexture(GL_TEXTURE_2D, 0);
         L.srcW = (int32_t) ((float) w * ws);
         L.srcH = (int32_t) ((float) h * ws);
         if (L.srcW < 16) L.srcW = 16;
         if (L.srcH < 16) L.srcH = 16;
         glGenTextures(1, &L.srcTex);
         glBindTexture(GL_TEXTURE_2D, L.srcTex);
-        glTexImage2D(GL_TEXTURE_2D, 0, texFmt, L.srcW, L.srcH, 0,
+        glTexImage2D(GL_TEXTURE_2D, 0, (GLint) usedFmt, L.srcW, L.srcH, 0,
                      GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
