@@ -7568,6 +7568,16 @@ void frameLoop(VrContext &c) {
                                                     : (panelOnScreen
                                                                ? (panelNew = gPanelFrameChanged.exchange(false))
                                                                : gVideoFrameChanged.exchange(false));
+                /*
+                 * 面板内容更新要独立于"面板在屏"消费：播放中面板不在屏（或不在光柱
+                 * 这一侧）时，上面的分支走 video/web，gPanelFrameChanged 没被消费，
+                 * gPanelContentNew 卡在上一次的值，复用判定永远走"只 acquire"，
+                 * 面板停在旧内容——11-03 播放后海报墙滚不动的回归根因。
+                 * 面板不在屏也要照常消费，切集/回首页/滚动才能刷新。
+                 */
+                if (!panelOnScreen) {
+                    panelNew = gPanelFrameChanged.exchange(false) || panelNew;
+                }
                 gPanelContentNew = panelNew;
                 /*
                  * 深度的帧号只在新画面到时推进：抓帧节奏按视频帧数算，不按渲染帧数。
