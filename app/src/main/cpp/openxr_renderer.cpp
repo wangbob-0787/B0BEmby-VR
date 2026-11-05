@@ -128,7 +128,7 @@ struct XrApi {
  * 全部只影响对应的新特性，任一为 0 都不影响原有画面。
  */
 std::atomic<int> gExtLayerSettings{0};
-std::atomic<int> gExtFoveation{0};
+std::atomic<int> gExtFoveation{1};
 std::atomic<int> gExtAdaptiveRes{0};
 
 XrApi api;
@@ -2744,7 +2744,7 @@ constexpr int kDepthUpW = 2560;
  * warp 里后面还有牛顿修正把落点推回去，所以降档表现为边缘偏移略糙，而不是错位。
  * 留 1 档就是随时能退回去对照。
  */
-std::atomic<int> gStereoOcclDiv{1};
+std::atomic<int> gStereoOcclDiv{4};
 /*
  * 牛顿修正轮数（调参 key 67，stereo_newton，0~2，默认 2 = 参考实现）。
  *
@@ -2782,7 +2782,7 @@ std::atomic<int> gStereoUpMode{1};         // 0 = 双线性放大，1 = 引导�
  *  - 羽化 96 px（按每眼 1920 源宽折算）是参考实现的默认值。
  */
 std::atomic<float> gStereoStretch{0.65f};
-std::atomic<float> gStereoFeather{96.f};
+std::atomic<float> gStereoFeather{16.f};
 /*
  * 环形缓冲延迟强制值（毫秒，0 = 按迟到自动算）。
  * 远程推理的迟到是"网络 + 推理"两段固定开销，自动 p90 在配对稀疏时估不准，
@@ -4858,7 +4858,12 @@ void updateScreenLightFromVideo(VrContext &c) {
         gCinemaLuma.store(gCinemaLuma.load() * (1.f - k));
         return;
     }
-    if ((gLightTick++ % 4) != 0) return;
+    /*
+     * 读回 16×16 会强制整条 GL 流水线排空（同步等待），代价与读 1MB 一样 ——
+     * 而它只喂影院底光的亮度/色调，后面还有一阶平滑，晚两三帧完全无感。
+     * 所以这里放宽到每 12 帧一次，把排空次数压到原来的三分之一。
+     */
+    if ((gLightTick++ % 12) != 0) return;
 
     if (gLightFbo == 0) {
         glGenFramebuffers(1, &gLightFbo);
