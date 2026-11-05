@@ -173,6 +173,12 @@ class MenuState {
      */
     var kernelActive by mutableStateOf(false)
 
+    /** 当前是不是网页流（内核宽度档位与杜比 P5 不同） */
+    var isWeb by mutableStateOf(false)
+
+    /** 当前是不是杜比 P5（宽度上限 1920，档位只有两档） */
+    var isP5 by mutableStateOf(false)
+
     /**
      * 银幕上正在放网页视频（腾讯/爱奇艺/B站/优酷）。
      *
@@ -298,21 +304,39 @@ val QUALITY_STEPS = listOf(
     1_000_000 to "768",
 )
 
-/** 内核路径下的档位说明（内核片这个菜单控制"内核跑多大"，不是码率） */
-val KERNEL_QUALITY_VALUES = listOf(
-    "内核 1280 宽（上限）",
-    "内核 1080 宽",
-    "内核 1024 宽",
-    "内核 768 宽",
+/**
+ * 视频质量菜单的档位：按当前播放路径给出**不同的档数和名字**。
+ *
+ * 三条路能控制的东西根本不是一回事，用同一套四档会骗人：
+ *   · Emby 普通片（系统播放器）：档位 = 让服务器转码到什么码率，宽度不受限；
+ *   · 杜比 P5（内核）：档位 = 内核处理宽度，实测 1920 是这台的上限（2048 就掉到 33 帧并出黑纹）；
+ *   · 网络视频（内核）：档位 = 内核处理宽度，最高能到片源的 4096。
+ * 3D 每眼宽度单列一条参数，等实测出档位再进菜单。
+ */
+val EMBY_QUALITY_STEPS = QUalitySteps(
+    listOf(0 to "原画", 10_000_000 to "1080", 5_000_000 to "1024", 1_000_000 to "768"),
+    listOf("服务端不限制（片源原码率）", "服务端转码 10 Mbps", "服务端转码 5 Mbps", "服务端转码 1 Mbps"),
+)
+val P5_QUALITY_STEPS = QUalitySteps(
+    listOf(1920 to "1920", 1280 to "1280"),
+    listOf("内核 1920 宽（这台的上限）", "内核 1280 宽"),
+)
+val WEB_QUALITY_STEPS = QUalitySteps(
+    listOf(4096 to "4096", 2560 to "2560", 1920 to "1920"),
+    listOf("内核 4096 宽（片源原尺寸）", "内核 2560 宽", "内核 1920 宽"),
 )
 
-/** 普通路径下的档位说明（这里是真的让服务端转码出流） */
-val NORMAL_QUALITY_VALUES = listOf(
-    "直推不转码",
-    "转码 ≈10 兆",
-    "转码 ≈5 兆",
-    "转码 ≈1 兆",
-)
+/** 一套档位：值（码率或宽度）+ 标签 + 行尾说明 */
+class QUalitySteps(val entries: List<Pair<Int, String>>, val hints: List<String>)
+
+/** 按路径取档位表 */
+fun qualityStepsFor(kernelActive: Boolean, isWeb: Boolean, isP5: Boolean): QUalitySteps =
+    when {
+        !kernelActive -> EMBY_QUALITY_STEPS
+        isP5 -> P5_QUALITY_STEPS
+        isWeb -> WEB_QUALITY_STEPS
+        else -> P5_QUALITY_STEPS
+    }
 
 /** 播放模式 */
 val PLAY_MODE_STEPS = listOf("列表循环", "单集循环", "播完停止")
@@ -509,11 +533,9 @@ private fun MoreMenu(menu: MenuState, playing: Boolean, webPlaying: Boolean) {
             MenuRow(
                 label = label,
                 value = when (k) {
-                    MenuKind.QUALITY -> if (menu.kernelActive) {
-                        KERNEL_QUALITY_VALUES.getOrNull(menu.quality) ?: ""
-                    } else {
-                        NORMAL_QUALITY_VALUES.getOrNull(menu.quality) ?: ""
-                    }
+                    MenuKind.QUALITY ->
+                        qualityStepsFor(menu.kernelActive, menu.isWeb, menu.isP5)
+                            .hints.getOrNull(menu.quality) ?: ""
                     MenuKind.MODE -> PLAY_MODE_STEPS.getOrNull(menu.playMode) ?: ""
                     MenuKind.AUDIO -> menu.audioTracks.firstOrNull { it.selected }?.label ?: ""
                     else -> {
@@ -725,15 +747,12 @@ private fun SpeedMenu(menu: MenuState) {    Column(modifier = Modifier.verticalS
 @Composable
 private fun QualityMenu(menu: MenuState) {
     Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-        QUALITY_STEPS.forEachIndexed { i, (_, label) ->
+        val steps = qualityStepsFor(menu.kernelActive, menu.isWeb, menu.isP5)
+        steps.entries.forEachIndexed { i, (_, label) ->
             MenuRow(
                 label = label,
                 // 行尾写清这一档在当前路径下到底是什么意思（内核=跑多大；普通=转码多少兆）
-                value = if (menu.kernelActive) {
-                    KERNEL_QUALITY_VALUES.getOrNull(i) ?: ""
-                } else {
-                    NORMAL_QUALITY_VALUES.getOrNull(i) ?: ""
-                },
+                value = steps.hints.getOrNull(i) ?: "",
                 selected = menu.quality == i,
                 onClick = { menu.onSelect?.invoke(MenuKind.QUALITY, i) },
             )

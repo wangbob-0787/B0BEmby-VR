@@ -5183,7 +5183,14 @@ class MainActivity : ComponentActivity() {
              * 两种进内核的情形（杜比 P5 / 因为选了图片字幕）**一样处理：都留在内核里**。
              * 尤其图片字幕那类，一旦退回系统播放器字幕就没了（英文片没字幕没法看）。
              */
-            val w = kernelWidthForQuality(qualityIndex)
+            /* 内核路径：档位的值就是"内核跑多宽"，按当前是 P5 还是网页流取不同档位表 */
+            val steps = com.xxxx.emby_vr.panel.qualityStepsFor(
+                kernelActive = true,
+                isWeb = webStreamSite != null,
+                isP5 = com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource,
+            )
+            val w = steps.entries.getOrNull(qualityIndex)?.first
+                ?: kernelWidthForQuality(qualityIndex)
             val ok = applyKernelWidth(w)
             Log.i(
                 TAG,
@@ -5427,6 +5434,9 @@ class MainActivity : ComponentActivity() {
         // 内核片「视频质量」= 内核跑多大；普通片才是转码档位（父亲 2026-10-10）。
         // 放在这里：无论打开哪个菜单（含"更多"那条当前值）都能拿到正确的说明。
         menuState.kernelActive = ctl.kernelActive
+        /* 档位按路径分表：网页流与杜比 P5 各自不同，见 qualityStepsFor 的说明 */
+        menuState.isWeb = webStreamSite != null
+        menuState.isP5 = com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource
         when (kind) {
             com.xxxx.emby_vr.panel.MenuKind.SPEED -> menuState.speed = playSpeed
             /* 影厅亮度面板：数值由菜单状态自己带着（menuState.cinemaBright），这里不用填 */
