@@ -2646,6 +2646,32 @@ std::atomic<int> gPanelReuse{1};  // 所有交换链图都已写过新内容，�
 std::atomic<float> gWarpScale{1.0f};  // Warp 输出缩放（1.0=全分辨率；0.8=视频层交换链 80%）
 /* 上采样的深度差惩罚强度：深度图是 0..1 归一化，0.03 = 差 3% 就压掉大半权重 */
 std::atomic<float> gWarpEdgeSigma{0.03f};
+/*
+ * 视频帧序号：只在真的来了新视频帧时 +1。
+ *
+ * 视频 24/25 帧、屏幕 72 帧，每三个屏幕帧只有一个是新画面；拿它当缓存键，
+ * 没新画的那些帧就不必重算一遍视差（每像素十几次深度采样）。
+ */
+std::atomic<long long> gVideoFrameSeq{0};
+
+/*
+ * 视频层 Warp 结果缓存（每只眼一张）。
+ *
+ * 交换链的图是轮转的，跳过重画会让各张图内容不一致、肉眼看就是抖 —— 所以不能
+ * "不画"，而是"算一次、拷 N 次"：warp 只在视频有新帧时跑一趟写进这里，
+ * 其余帧把这它原样拷进当次 acquire 到的那张交换链图。拷贝每像素 1 次采样，
+ * 与 warp 的十几次不是一个量级。
+ */
+struct VideoWarpCache {
+    GLuint tex = 0;
+    GLuint fbo = 0;
+    int w = 0, h = 0;
+    long long key = -1;
+    long long dispKey = 0;
+};
+static VideoWarpCache gVCache[2];
+static GLuint gCopy2dProg = 0;
+static GLint gCopy2dLoc = -1;
 
 /** 统计周期内所有交换链等待（双眼/视频层/弹幕层）累计毫秒，读后清零 */
 double gSwapWaitMs = 0.0;
@@ -7103,6 +7129,69 @@ void buildRingArtifacts(VrContext &c, RingSlot &s, int upW, int upH) {
     c.ringArtifactsOcclDiv = div;
 }
 
+/** 全屏 2D 拷贝程序（视频层缓存的交付用；采样器固定 sampler2D） */
+GLuint ensureCopy2dProg() {
+    if (gCopy2dProg != 0) return gCopy2dProg;
+    static const char *vs = R"(#version 300 es
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec2 aUv;
+out vec2 vUv;
+void main() { vUv = aUv; gl_Position = vec4(aPos.xy, 0.0, 1.0); }
+)";
+    static const char *fs = R"(#version 300 es
+precision mediump float;
+in vec2 vUv;
+uniform sampler2D uSrc;
+out vec4 oColor;
+void main() { oColor = vec4(texture(uSrc, vUv).rgb, 1.0); }
+)";
+    gCopy2dProg = buildProgramFrom(vs, fs);
+    if (gCopy2dProg == 0) {
+        LOGE("拷贝着色器建不起来，视频帧复用停用");
+        return 0;
+    }
+    gCopy2dLoc = glGetUniformLocation(gCopy2dProg, "uSrc");
+    glUseProgram(gCopy2dProg);
+    if (gCopy2dLoc >= 0) glUniform1i(gCopy2dLoc, 0);
+    glUseProgram(0);
+    return gCopy2dProg;
+}
+
+/** 保证视频层缓存与目标同尺寸（尺寸变了就重建） */
+bool ensureVideoCache(VideoWarpCache &vc, int32_t w, int32_t h, GLint fmt) {
+    if (vc.tex != 0 && vc.w == w && vc.h == h) return true;
+    if (vc.tex) { glDeleteTextures(1, &vc.tex); vc.tex = 0; }
+    if (vc.fbo) { glDeleteFramebuffers(1, &vc.fbo); vc.fbo = 0; }
+    glGenTextures(1, &vc.tex);
+    glBindTexture(GL_TEXTURE_2D, vc.tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, fmt, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glGenFramebuffers(1, &vc.fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, vc.fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, vc.tex, 0);
+    const bool ok = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (!ok) {
+        if (vc.fbo) glDeleteFramebuffers(1, &vc.fbo);
+        if (vc.tex) glDeleteTextures(1, &vc.tex);
+        vc.fbo = 0;
+        vc.tex = 0;
+        vc.w = vc.h = 0;
+        vc.key = -1;
+        LOGE("视频层缓存建不起来（%dx%d），退回每帧重算", w, h);
+        return false;
+    }
+    vc.w = w;
+    vc.h = h;
+    vc.key = -1;
+    VLOGI("视频层缓存就绪 %dx%d（同一视频帧只算一次 warp）", w, h);
+    return true;
+}
+
 /**
  * 边缘感知上采样程序（Warp 输出缩放的配套一趟）。
  *
@@ -7231,7 +7320,57 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
     const bool lowResWarp = videoLayerPass && gStereo3d.load() != 0 &&
                             L.srcFbo != 0 && L.srcW > 0 && L.srcH > 0;
 
-    glBindFramebuffer(GL_FRAMEBUFFER, lowResWarp ? L.srcFbo : L.fbos[idx]);
+    /*
+     * 视频层缓存：同一个视频帧只算一次 warp。
+     *
+     * 判断"这个画面算过没有"不能用渲染帧号 —— 屏幕 72 帧、视频 24 帧，三次里有两次
+     * 是同一张画面。用视频帧序号当键，命中时只做一次全屏拷贝；没命中才跑完整 warp，
+     * 结果留在缓存里供随后的两次屏幕帧复用。
+     * 视差/汇聚这些参数变了也要作废，否则改了参数画面不跟着变。
+     */
+    const bool useVCache = videoLayerPass && gStereo3d.load() != 0 && prog != 0;
+    VideoWarpCache &vc = gVCache[eyeIndex > 0 ? 1 : 0];
+    bool cacheHit = false;
+    long long vKey = -1;
+    if (useVCache) {
+        const long long dispKey = (long long) (c.depthDisp * 100000.f) +
+                                  (long long) (c.depthConv * 100000.f);
+        if (ensureVideoCache(vc, L.width, L.height, GL_RGBA8)) {
+            vKey = gVideoFrameSeq.load();
+            cacheHit = (vc.key == vKey && vc.dispKey == dispKey);
+            vc.dispKey = dispKey;
+        }
+    }
+    if (cacheHit && ensureCopy2dProg() != 0) {
+        /* 命中：把缓存原样拷进这一张交换链图，跳过整套视差计算 */
+        glBindFramebuffer(GL_FRAMEBUFFER, L.fbos[idx]);
+        glViewport(0, 0, L.width, L.height);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_STENCIL_TEST);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_BLEND);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glUseProgram(gCopy2dProg);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, vc.tex);
+        if (gCopy2dLoc >= 0) glUniform1i(gCopy2dLoc, 0);
+        glBindVertexArray(c.videoLayerVao);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glBindVertexArray(0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        if (gSyncMode.load() == 1) {
+            glFinish();
+        } else {
+            glFlush();
+        }
+        XrSwapchainImageReleaseInfo cri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+        if (XR_FAILED(api.ReleaseSwapchainImage(L.handle, &cri))) return false;
+        L.index = idx;
+        return true;
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER,
+                      lowResWarp ? L.srcFbo : (useVCache ? vc.fbo : L.fbos[idx]));
     glViewport(0, 0, lowResWarp ? L.srcW : L.width, lowResWarp ? L.srcH : L.height);
     /*
      * GL 状态显式清零（2026-10-09，ChatGPT 复查时指出）：
@@ -7398,7 +7537,7 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
                 upTexel = glGetUniformLocation(upProg, "uSrcTexel");
                 upSigma = glGetUniformLocation(upProg, "uEdgeSigma");
             }
-            glBindFramebuffer(GL_FRAMEBUFFER, L.fbos[idx]);
+            glBindFramebuffer(GL_FRAMEBUFFER, useVCache ? vc.fbo : L.fbos[idx]);
             glViewport(0, 0, L.width, L.height);
             glUseProgram(upProg);
             glActiveTexture(GL_TEXTURE0);
@@ -7412,6 +7551,24 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
             glBindVertexArray(0);
             glUseProgram(prog);
         }
+    }
+
+    /*
+     * 有缓存时，warp（或上采样）的结果这会儿在 vc.fbo 里：拷进当次 acquire 的
+     * 交换链图，并记下"这一视频帧已经算过"，后面的两次屏幕帧就能直接命中。
+     */
+    if (useVCache && vc.tex != 0 && ensureCopy2dProg() != 0) {
+        glBindFramebuffer(GL_FRAMEBUFFER, L.fbos[idx]);
+        glViewport(0, 0, L.width, L.height);
+        glUseProgram(gCopy2dProg);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, vc.tex);
+        if (gCopy2dLoc >= 0) glUniform1i(gCopy2dLoc, 0);
+        glBindVertexArray(c.videoLayerVao);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glBindVertexArray(0);
+        glUseProgram(prog);
+        vc.key = vKey;
     }
 
     /*
@@ -7890,6 +8047,7 @@ void frameLoop(VrContext &c) {
                                                                ? (panelNew = gPanelFrameChanged.exchange(false))
                                                                : gVideoFrameChanged.exchange(false));
                 gPanelContentNew = panelNew;
+                if (newSourceFrame) gVideoFrameSeq.fetch_add(1);
                 /*
                  * 深度的帧号只在新画面到时推进：抓帧节奏按视频帧数算，不按渲染帧数。
                  * 在 3 的整数倍处回绕，取模的判断因此永远成立。
