@@ -5188,6 +5188,7 @@ class MainActivity : ComponentActivity() {
                 kernelActive = true,
                 isWeb = webStreamSite != null,
                 isP5 = com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource,
+                stereo3d = com.xxxx.emby_vr.vr.VrTuning.stereo3dOn,
             )
             val w = steps.entries.getOrNull(qualityIndex)?.first
                 ?: kernelWidthForQuality(qualityIndex)
@@ -5437,6 +5438,7 @@ class MainActivity : ComponentActivity() {
         /* 档位按路径分表：网页流与杜比 P5 各自不同，见 qualityStepsFor 的说明 */
         menuState.isWeb = webStreamSite != null
         menuState.isP5 = com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource
+        menuState.stereo3d = com.xxxx.emby_vr.vr.VrTuning.stereo3dOn
         when (kind) {
             com.xxxx.emby_vr.panel.MenuKind.SPEED -> menuState.speed = playSpeed
             /* 影厅亮度面板：数值由菜单状态自己带着（menuState.cinemaBright），这里不用填 */

@@ -179,6 +179,9 @@ class MenuState {
     /** 当前是不是杜比 P5（宽度上限 1920，档位只有两档） */
     var isP5 by mutableStateOf(false)
 
+    /** 实时 2D→3D 是否开着（开时档位换成"每眼宽度"） */
+    var stereo3d by mutableStateOf(false)
+
     /**
      * 银幕上正在放网页视频（腾讯/爱奇艺/B站/优酷）。
      *
@@ -325,13 +328,28 @@ val WEB_QUALITY_STEPS = QUalitySteps(
     listOf(4096 to "4096", 2560 to "2560", 1920 to "1920"),
     listOf("内核 4096 宽（片源原尺寸）", "内核 2560 宽", "内核 1920 宽"),
 )
+/*
+ * 3D 开着时用的档位 = 每只眼的宽度。三条路都并到这里，因为每眼宽度是 3D 的全局参数，
+ * 与片源来自哪里无关。实测参考：每眼 3840 掉到 22 帧（GPU 45ms），每眼 1920 能稳 72。
+ */
+val STEREO3D_QUALITY_STEPS = QUalitySteps(
+    listOf(1920 to "1920", 1536 to "1536", 1280 to "1280"),
+    listOf("每眼 1920 宽（实测可稳 72）", "每眼 1536 宽", "每眼 1280 宽"),
+)
 
 /** 一套档位：值（码率或宽度）+ 标签 + 行尾说明 */
 class QUalitySteps(val entries: List<Pair<Int, String>>, val hints: List<String>)
 
 /** 按路径取档位表 */
-fun qualityStepsFor(kernelActive: Boolean, isWeb: Boolean, isP5: Boolean): QUalitySteps =
+fun qualityStepsFor(
+    kernelActive: Boolean,
+    isWeb: Boolean,
+    isP5: Boolean,
+    stereo3d: Boolean = false,
+): QUalitySteps =
     when {
+        /* 3D 最优先：每眼宽度与片源来自哪里无关 */
+        stereo3d -> STEREO3D_QUALITY_STEPS
         !kernelActive -> EMBY_QUALITY_STEPS
         isP5 -> P5_QUALITY_STEPS
         isWeb -> WEB_QUALITY_STEPS
@@ -534,7 +552,7 @@ private fun MoreMenu(menu: MenuState, playing: Boolean, webPlaying: Boolean) {
                 label = label,
                 value = when (k) {
                     MenuKind.QUALITY ->
-                        qualityStepsFor(menu.kernelActive, menu.isWeb, menu.isP5)
+                        qualityStepsFor(menu.kernelActive, menu.isWeb, menu.isP5, menu.stereo3d)
                             .hints.getOrNull(menu.quality) ?: ""
                     MenuKind.MODE -> PLAY_MODE_STEPS.getOrNull(menu.playMode) ?: ""
                     MenuKind.AUDIO -> menu.audioTracks.firstOrNull { it.selected }?.label ?: ""
@@ -747,7 +765,7 @@ private fun SpeedMenu(menu: MenuState) {    Column(modifier = Modifier.verticalS
 @Composable
 private fun QualityMenu(menu: MenuState) {
     Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-        val steps = qualityStepsFor(menu.kernelActive, menu.isWeb, menu.isP5)
+        val steps = qualityStepsFor(menu.kernelActive, menu.isWeb, menu.isP5, menu.stereo3d)
         steps.entries.forEachIndexed { i, (_, label) ->
             MenuRow(
                 label = label,
