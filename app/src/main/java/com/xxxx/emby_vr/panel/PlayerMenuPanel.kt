@@ -332,7 +332,7 @@ val P5_QUALITY_STEPS = QUalitySteps(
 val WEB_QUALITY_STEPS = QUalitySteps(
     /* 第一档叫"原画"：宽度不限制，按片源原尺寸给内核（最高 4096） */
     listOf(4096 to "原画", 2560 to "2560", 1920 to "1920"),
-    listOf("", "内核 2560 宽", "内核 1920 宽"),
+    listOf("", "内核2560宽", "内核1920宽"),
 )
 /*
  * 3D 开着时用的档位 = 每只眼的宽度。三条路都并到这里，因为每眼宽度是 3D 的全局参数，

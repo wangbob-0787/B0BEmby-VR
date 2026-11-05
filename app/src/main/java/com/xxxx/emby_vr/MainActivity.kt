@@ -1706,30 +1706,9 @@ class MainActivity : ComponentActivity() {
          */
         if (webPlayingNow) {
             /*
-             * 【2026-10-22 10:40 父亲：爱奇艺这一集画面比例不对，高度不对】
-             *
-             * 根因：网页流的画布尺寸是照交接载荷里的 width/height 定的（我们按"1080P 档"填了
-             * 1920x1080），但这一集实际是 **1920x800**（2.4:1）。内核把 1920x800 画进 1920x1080
-             * 的画布，上下各留 140px 黑边 —— 观感就是"高度不对"。
-             * 第一帧出来后内核会报真实尺寸，这里按真实尺寸把画布改一次（宽度按 1920 封顶）。
+             * 画布按内核真实尺寸重设只有一处（播放侧每秒一次的循环），这里不再重复做：
+             * 两处同时按不同上限重设，切档结果会被另一处顶回去（切 2560 而画布仍回 4096）。
              */
-            run {
-                val vs = try { mpvBackend?.videoSize() } catch (_: Throwable) { null }
-                if (vs != null && vs.first > 0 && vs.second > 0) {
-                    val cap = com.xxxx.emby_vr.vr.VrTuning.rawMaxW.let {
-                        if (it > 0) it.coerceAtMost(com.xxxx.emby_vr.vr.VrTuning.VIDEO_W_HARD_CAP) else com.xxxx.emby_vr.vr.VrTuning.VIDEO_W_HARD_CAP
-                    }
-                    val vw = if (vs.first > cap) cap else vs.first
-                    val vh = (vs.second.toLong() * vw / vs.first).toInt().coerceAtLeast(64)
-                    if (vw != webCanvasW || vh != webCanvasH) {
-                        webCanvasW = vw
-                        webCanvasH = vh
-                        runCatching { renderer.setVideoBufferSize(vw, vh) }
-                        runCatching { mpvBackend?.setSurfaceSize(vw, vh) }
-                        Log.i(TAG, "网页流画布按真实尺寸重设 → ${vw}x$vh（内核报 ${vs.first}x${vs.second}）")
-                    }
-                }
-            }
             /* 尺寸要等第一帧才准，所以每秒复核一次，把分辨率补进标题 */
             val base = webTitleBase
             if (base.isNotEmpty()) {
@@ -1966,12 +1945,31 @@ class MainActivity : ComponentActivity() {
      * 片名由扩展从页面标题带过来；站点名按接管来源取（B站 / 腾讯 / 爱奇艺…）。
      */
     /** 内核解出来的真实分辨率，拼到「正在播放」后面（父亲 2026-10-19 20:58 定） */
+    /**
+     * 控制条标题里的分辨率尾巴。
+     *
+     * 网络视频（网页流 / 内核）只认内核报出的尺寸：当前档位按画质菜单那一档算出实际宽度，
+     * 与片源不同时把片源一并写出来 ——「2560×1073（原 4096×1716）」，
+     * 一眼能看出切档生效了没有。
+     */
     private fun resSuffix(): String {
-        /* 网页流走内核：尺寸以内核认出来的为准（第一帧之后才有值）；
-           内核还没报就退回 PlaybackFlags（Emby 直连那一路）。 */
         val ks = try { mpvBackend?.videoSize() } catch (_: Throwable) { null }
-        val w = ks?.first ?: com.xxxx.emby_vr.player.PlaybackFlags.videoWidth
-        val h = ks?.second ?: com.xxxx.emby_vr.player.PlaybackFlags.videoHeight
+        val srcW = ks?.first ?: 0
+        val srcH = ks?.second ?: 0
+        if (webPlayingNow || webStreamSite != null) {
+            if (srcW < 64 || srcH < 64) return ""
+            val tier = com.xxxx.emby_vr.panel.qualityStepsFor(
+                kernelActive = true,
+                isWeb = true,
+                isP5 = false,
+                stereo3d = com.xxxx.emby_vr.vr.VrTuning.stereo3dOn,
+            ).entries.getOrNull(qualityIndex)?.first ?: srcW
+            val w = if (tier in 64 until srcW) tier else srcW
+            val h = (srcH.toLong() * w / srcW).toInt().coerceAtLeast(64)
+            return if (w == srcW) " ${w}×${h}" else " ${w}×${h}（原 ${srcW}×${srcH}）"
+        }
+        val w = if (srcW > 0) srcW else com.xxxx.emby_vr.player.PlaybackFlags.videoWidth
+        val h = if (srcH > 0) srcH else com.xxxx.emby_vr.player.PlaybackFlags.videoHeight
         return if (w > 0 && h > 0) " ${w}×${h}" else ""
     }
 
@@ -2181,20 +2179,30 @@ class MainActivity : ComponentActivity() {
                  * Emby 片子自己报的尺寸也和探测值不一致时以真实帧为准。
                  */
                 mpvBackend?.videoSize()?.let { (vw, vh) ->
-                    com.xxxx.emby_vr.vr.VrNative.setVideoSize(vw, vh)
                     /*
-                     * 画布尺寸与银幕比例必须同源同拍：两者差出一个比例，画面就变形
-                     * （1080 高的输出贴进 2.35:1 的银幕 = 纵向压扁）。
-                     * 内核先按真实尺寸重建窗口，银幕再改到同比例，两边同高。
-                     * 这条每秒跑一次，谁交来的地址都走同一处，不按来源分叉。
-                     * 只对网页交来的流做这一步：Emby 片子的内核画布由它自己的起播逻辑定，别插手。
+                     * 大屏纹理尺寸必须按「切完档的目标宽度」下给 native：每秒再按片源原尺寸
+                     * 灌一次，菜单切到 2560 也会被这条立刻顶回 4096。
+                     * 非网页路径没有调宽度的余地，按片源真实尺寸走。
                      */
+                    var blitW = vw
+                    var blitH = vh
                     if (webPlayingNow || webStreamSite != null) run {
-                        val cap = com.xxxx.emby_vr.vr.VrTuning.rawMaxW.let {
-                        if (it > 0) it.coerceAtMost(com.xxxx.emby_vr.vr.VrTuning.VIDEO_W_HARD_CAP) else com.xxxx.emby_vr.vr.VrTuning.VIDEO_W_HARD_CAP
-                    }
+                        /*
+                         * 上限必须是「画质菜单当前那一档」，不能再是 rawMaxW 全局上限：
+                         * 那条重设会把切档结果立刻顶回原画宽度。
+                         */
+                        val tier = com.xxxx.emby_vr.panel.qualityStepsFor(
+                            kernelActive = true,
+                            isWeb = true,
+                            isP5 = false,
+                            stereo3d = com.xxxx.emby_vr.vr.VrTuning.stereo3dOn,
+                        ).entries.getOrNull(qualityIndex)?.first
+                            ?: com.xxxx.emby_vr.vr.VrTuning.VIDEO_W_HARD_CAP
+                        val cap = tier.coerceAtMost(kKernelWidthCap)
                         val bw = if (vw > cap) cap else vw
                         val bh = (vh.toLong() * bw / vw).toInt().coerceAtLeast(64)
+                        blitW = bw
+                        blitH = bh
                         if (bw != webCanvasW || bh != webCanvasH) {
                             webCanvasW = bw
                             webCanvasH = bh
@@ -2203,6 +2211,7 @@ class MainActivity : ComponentActivity() {
                             Log.i(TAG, "内核画布按真实尺寸重设 → ${bw}x$bh（内核报 ${vw}x$vh）")
                         }
                     }
+                    runCatching { com.xxxx.emby_vr.vr.VrNative.setVideoSize(blitW, blitH) }
                     /*
                      * 尺寸到手就标记"已知"：揭幕要等这个标记（2026-10-20，
                      * 免得第一次接管时把"先按 16:9 建的画面"揭给人看，看着是拉扁的）。
@@ -5248,20 +5257,28 @@ class MainActivity : ComponentActivity() {
         val m = mpvBackend ?: return false
         val w = requested.coerceAtMost(kKernelWidthCap)   // 硬卡上限
         /*
-         * 片源尺寸按当前这条路取：网页流的宽高不在 PlaybackFlags 里（那是 Emby 的播放信息），
-         * 用它会算错比例、甚至把画面压成 1920 —— 之前切档"大屏幕没变化"就是这个原因。
+         * 片源真实尺寸只有一个来源：内核报出的画面尺寸（video-params）。
+         * 网页画布与 Emby 播放信息都可能缺、也可能过期，拿它们算会把 4096 的片子算成 1920
+         * （表现为切 2560 实际给 1920、切回原画回不去、比例被压扁）。
+         * 内核还没报出来就不动，等下一拍再切。
          */
-        val srcW = (if (webStreamSite != null) webCanvasW else
-            com.xxxx.emby_vr.player.PlaybackFlags.videoWidth).takeIf { it > 0 }
-            ?: m.videoSize()?.first ?: 1920
-        val srcH = (if (webStreamSite != null) webCanvasH else
-            com.xxxx.emby_vr.player.PlaybackFlags.videoHeight).takeIf { it > 0 }
-            ?: m.videoSize()?.second ?: 1080
+        val real = m.videoSize()
+        if (real == null || real.first < 64 || real.second < 64) {
+            Log.w(TAG, "内核还没报出画面尺寸，画质切档推迟")
+            return false
+        }
+        val srcW = real.first
+        val srcH = real.second
         val vw = if (srcW > w) w else srcW
         val vh = (srcH.toLong() * vw / srcW).toInt().coerceAtLeast(64)
         renderer.setVideoBufferSize(vw, vh)
         m.setSurfaceSize(vw, vh)
-        Log.i(TAG, "内核处理分辨率 → ${vw}x${vh}（档位上限宽 $w）")
+        /*
+         * 大屏纹理的像素尺寸只在起播时下过 native（VrNative.setVideoSize），切档不下就等于
+         * 没切 —— 诊断里「每眼=4096×1716」一直不变，屏幕自然不跟着动。
+         */
+        runCatching { com.xxxx.emby_vr.vr.VrNative.setVideoSize(vw, vh) }
+        Log.i(TAG, "内核处理分辨率 → ${vw}x${vh}（档位上限宽 $w，片源 ${srcW}x$srcH）")
         return true
     }
 
