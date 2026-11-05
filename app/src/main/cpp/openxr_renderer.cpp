@@ -6986,7 +6986,7 @@ void buildRingArtifacts(VrContext &c, RingSlot &s, int upW, int upH) {
  */
 GLuint ensureWarpUpsampleProgram() {
     static GLuint prog = 0;
-    static GLint srcLoc = -1, depthLoc = -1, texelLoc = -1, sigmaLoc = -1, hasDepthLoc = -1;
+    static GLint srcLoc = -1, texelLoc = -1, sigmaLoc = -1;
     if (prog != 0) return prog;
     static const char *vs = R"(#version 300 es
 layout(location = 0) in vec3 aPos;
@@ -6998,36 +6998,43 @@ void main() { vUv = aUv; gl_Position = vec4(aPos.xy, 0.0, 1.0); }
 precision mediump float;
 in vec2 vUv;
 uniform sampler2D uSrc;
-uniform sampler2D uDepth;
 uniform vec2 uSrcTexel;
 uniform float uEdgeSigma;
-uniform int uHasDepth;
 out vec4 oColor;
 void main() {
-    vec2 p = vUv / uSrcTexel - 0.5;
+    /*
+     * 中间缓冲是普通 2D 纹理，v=0 在底部；而顶点里的 vUv 是按"v=0 在顶部"给的
+     * （视频 OES 纹理的约定）。不翻这一步，放大回去的画面会上下颠倒。
+     */
+    vec2 uv = vec2(vUv.x, 1.0 - vUv.y);
+    vec2 p = uv / uSrcTexel - 0.5;
     vec2 b = (floor(p) + 0.5) * uSrcTexel;
     vec2 f = fract(p);
-    vec2 o00 = b + vec2(-0.5, -0.5) * uSrcTexel;
-    vec2 o10 = b + vec2(0.5, -0.5) * uSrcTexel;
-    vec2 o01 = b + vec2(-0.5, 0.5) * uSrcTexel;
-    vec2 o11 = b + vec2(0.5, 0.5) * uSrcTexel;
+    vec3 c00 = texture(uSrc, b + vec2(-0.5, -0.5) * uSrcTexel).rgb;
+    vec3 c10 = texture(uSrc, b + vec2(0.5, -0.5) * uSrcTexel).rgb;
+    vec3 c01 = texture(uSrc, b + vec2(-0.5, 0.5) * uSrcTexel).rgb;
+    vec3 c11 = texture(uSrc, b + vec2(0.5, 0.5) * uSrcTexel).rgb;
     float w00 = (1.0 - f.x) * (1.0 - f.y);
     float w10 = f.x * (1.0 - f.y);
     float w01 = (1.0 - f.x) * f.y;
     float w11 = f.x * f.y;
-    if (uHasDepth == 1 && uEdgeSigma > 0.0) {
-        float dc = texture(uDepth, vUv).r;
+    /*
+     * 边缘判据用画面亮度而不是深度图：深度是 256×256 的低分辨率模型产物，
+     * 放大到像素级本身就是糊的，拿它判边反而把轮廓拉歪；亮度差在轮廓处
+     * 一定存在，且不需要额外的纹理采样（每像素固定 4 次，纹理单元不再爆）。
+     */
+    if (uEdgeSigma > 0.0) {
+        vec3 lu = vec3(0.2126, 0.7152, 0.0722);
+        float lb = dot(c00 * w00 + c10 * w10 + c01 * w01 + c11 * w11, lu);
         float s = 1.0 / uEdgeSigma;
-        w00 *= exp(-abs(texture(uDepth, o00).r - dc) * s);
-        w10 *= exp(-abs(texture(uDepth, o10).r - dc) * s);
-        w01 *= exp(-abs(texture(uDepth, o01).r - dc) * s);
-        w11 *= exp(-abs(texture(uDepth, o11).r - dc) * s);
+        w00 *= exp(-abs(dot(c00, lu) - lb) * s);
+        w10 *= exp(-abs(dot(c10, lu) - lb) * s);
+        w01 *= exp(-abs(dot(c01, lu) - lb) * s);
+        w11 *= exp(-abs(dot(c11, lu) - lb) * s);
     }
     float ws = w00 + w10 + w01 + w11;
-    if (ws < 1e-5) { oColor = vec4(texture(uSrc, vUv).rgb, 1.0); return; }
-    vec3 acc = texture(uSrc, o00).rgb * w00 + texture(uSrc, o10).rgb * w10
-             + texture(uSrc, o01).rgb * w01 + texture(uSrc, o11).rgb * w11;
-    oColor = vec4(acc / ws, 1.0);
+    if (ws < 1e-5) { oColor = vec4(c00, 1.0); return; }
+    oColor = vec4((c00 * w00 + c10 * w10 + c01 * w01 + c11 * w11) / ws, 1.0);
 }
 )";
     prog = buildProgramFrom(vs, fs);
@@ -7036,15 +7043,12 @@ void main() {
         return 0;
     }
     srcLoc = glGetUniformLocation(prog, "uSrc");
-    depthLoc = glGetUniformLocation(prog, "uDepth");
     texelLoc = glGetUniformLocation(prog, "uSrcTexel");
     sigmaLoc = glGetUniformLocation(prog, "uEdgeSigma");
-    hasDepthLoc = glGetUniformLocation(prog, "uHasDepth");
     glUseProgram(prog);
     if (srcLoc >= 0) glUniform1i(srcLoc, 0);
-    if (depthLoc >= 0) glUniform1i(depthLoc, 1);
     glUseProgram(0);
-    VLOGI("上采样着色器就绪（边缘感知，2D 采样器）");
+    VLOGI("上采样着色器就绪（亮度引导，每像素 4 次采样）");
     return prog;
 }
 
@@ -7260,29 +7264,20 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
     if (lowResWarp) {
         const GLuint upProg = ensureWarpUpsampleProgram();
         if (upProg != 0) {
-            static GLint upTexel = -1, upSigma = -1, upHasDepth = -1;
+            static GLint upTexel = -1, upSigma = -1;
             if (upTexel < 0) {
                 upTexel = glGetUniformLocation(upProg, "uSrcTexel");
                 upSigma = glGetUniformLocation(upProg, "uEdgeSigma");
-                upHasDepth = glGetUniformLocation(upProg, "uHasDepth");
             }
-            const GLuint depthTex = (delayed && src != nullptr && src->depthTex != 0)
-                                            ? src->depthTex
-                                            : c.depthUp.tex;
-            const GLuint depthBind = depthTex != 0 ? depthTex : L.srcTex;
             glBindFramebuffer(GL_FRAMEBUFFER, L.fbos[idx]);
             glViewport(0, 0, L.width, L.height);
             glUseProgram(upProg);
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, L.srcTex);
-            glActiveTexture(GL_TEXTURE1);
-            glBindTexture(GL_TEXTURE_2D, depthBind);
-            glActiveTexture(GL_TEXTURE0);
             if (upTexel >= 0) {
                 glUniform2f(upTexel, 1.f / (float) L.srcW, 1.f / (float) L.srcH);
             }
             if (upSigma >= 0) glUniform1f(upSigma, gWarpEdgeSigma.load());
-            if (upHasDepth >= 0) glUniform1i(upHasDepth, depthTex != 0 ? 1 : 0);
             glBindVertexArray(c.videoLayerVao);
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
             glBindVertexArray(0);
