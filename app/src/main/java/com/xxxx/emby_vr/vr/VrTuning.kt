@@ -112,6 +112,15 @@ object VrTuning {
      * 试宽度用：改完不用重装，动一下画质菜单就按新值重建。Emby 的杜比视界片另走
      * videoSurfaceMaxW —— 那条链要单独压低保黑纹不出，不能和这里共用一个数。
      */
+    /**
+     * 视频层宽度的绝对上限（全工程唯一一处）。
+     *
+     * 各处只允许引用这个名字，不要再写 1920/3840/4096 这类数字 —— 之前散在七八处，
+     * 放开一次要改一片、还漏过两次（系统播放器那条硬编码 1920 就漏了）。
+     * 4096 是 DCI 4K 的宽度，再高没有现实片源。
+     */
+    const val VIDEO_W_HARD_CAP = 4096
+
     @Volatile
     var rawMaxW: Int = 1920
 
@@ -478,6 +487,9 @@ object VrTuning {
      * 3840 跑，GPU 帧时间 31~45ms、掉到 22 帧；收到 1920 才回得到 72。
      */
     const val KEY_STEREO_EYE_W = 79
+
+    /** 视频层宽度绝对上限（默认 4096）：2D/3D/网页/Emby 四条路都受它约束 */
+    const val KEY_VIDEO_MAX_W = 80
     /**
      * 抓帧的毫秒下限（0 = 纯按帧数，默认）。
      *
@@ -832,6 +844,12 @@ object VrTuning {
         raw["warp_scale"]?.toFloatOrNull()?.let {
             VrNative.setTuning(KEY_WARP_SCALE, it)
             applied += "warp缩放 $it"
+        }
+        raw["video_max_w"]?.toIntOrNull()?.let {
+            if (it in 640..8192) {
+                VrNative.setTuning(KEY_VIDEO_MAX_W, it.toFloat())
+                applied += "宽度绝对上限 $it"
+            }
         }
         raw["stereo_eye_w"]?.toIntOrNull()?.let {
             if (it >= 0 && it <= 3840) {

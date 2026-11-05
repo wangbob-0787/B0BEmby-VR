@@ -2929,6 +2929,14 @@ std::atomic<int> gTestPattern{0};       // 1 = 用固定测试图替代视频纹
  * 两者独立：银幕大小没缩，只是视频像素密度让了一步，画面略软换稳定。
  */
 std::atomic<int> gVideoLayerMaxW{1280};
+/*
+ * 视频层宽度的绝对上限（全工程唯一一处，vr-tuning 的 video_max_w 可改）。
+ *
+ * 之前这个数散在 Kotlin 与 native 共八九处、还硬编码过 1920/3840，放开宽度时
+ * 漏改一处就白忙一场（系统播放器那条就把 4K 卡在半分辨率）。现在所有上限逻辑
+ * 都读这一个值，默认 4096（DCI 4K 宽）。
+ */
+std::atomic<int> gVideoMaxW{4096};
 std::atomic<int> gNoDownsample{0};      // 1 = 关掉视频降采样分支（只做单次纹理采样）
 std::atomic<int> gNoJitter{0};          // 1 = 抖动种子固定（排除逐帧变化输入）
 std::atomic<int> gForceRgba8{0};        // 1 = 视频层交换链强制 GL_RGBA8（不试 sRGB）
@@ -7972,8 +7980,8 @@ void frameLoop(VrContext &c) {
             int32_t vh = (webOnScreen || panelOnScreen)
                              ? (int32_t) kPanelPxH
                              : (int32_t) lroundf(1.f / fmaxf(1e-6f, c.texelY.load()));
-            /* 4096 而非 3840：片源里有 DCI 4K（4096×1716），3840 会把它压掉一截 */
-            constexpr int32_t kMaxVideoW = 4096;
+            /* 宽度上限读全局（默认 4096，可调）：只有这一处定义，别的分支都引用它 */
+            const int32_t kMaxVideoW = gVideoMaxW.load();
             constexpr int32_t kMaxVideoH = 2160;
             int32_t capW = kMaxVideoW;
             /* video_layer_max_w：把视频层交换链压到指定宽度（0 = 按视频原分辨率）。
@@ -9706,6 +9714,13 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             if (value >= 0.4f && value <= 1.0f) {
                 gWarpScale.store(value);
                 VLOGI("调参 → warp 缩放 %.2f（视差计算按此比例降采样）", (double) value);
+            }
+            return;
+        /* 80 = 视频层宽度绝对上限（默认 4096；DCI 4K 是 4096 宽） */
+        case 80:
+            if (value >= 640.f && value <= 8192.f) {
+                gVideoMaxW.store((int) value);
+                VLOGI("调参 → 视频层宽度绝对上限 %d", (int) value);
             }
             return;
         /* 79 = 3D 每眼宽度上限（0 = 不限制；实测 1920 稳 72，3840 掉到 22 帧） */
