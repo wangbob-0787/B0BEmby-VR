@@ -5042,7 +5042,16 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
         static uint32_t jitterTick = 0;
         glUniform1f(c.jitterLoc, (float) (jitterTick++ % 64u) * 1.7f);
     }
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    /*
+     * 影院独立成层后，眼缓冲里只剩光柱与光点；深度附件只有 drawCinema 会碰，
+     * 那一支不通时清它是纯浪费（2290×2400×2 眼每帧一遍）。
+     */
+    const bool cinemaInEye = (!c.cinemaEyesOk || gCinemaLayerMode.load() == 0);
+    if (cinemaInEye) {
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    } else {
+        glClear(GL_COLOR_BUFFER_BIT);
+    }
 
     const Mat4 proj = perspectiveFromFov(view.fov, 0.05f, 100.f);
     const Mat4 view4 = viewMatrixFromPose(view.pose);
@@ -5051,7 +5060,7 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
      * 还是原来的图层顺序，一层层叠上去，不受影厅遮挡影响。
      */
     /* 独立层模式下影厅不画在这里（画在下面那层），否则会糊住面板 */
-    if (!c.cinemaEyesOk || gCinemaLayerMode.load() == 0) {
+    if (cinemaInEye) {
         drawCinema(proj, view4, view.pose.position);
     }
     if (c.program != 0 && c.mvpLoc >= 0) {
@@ -5950,6 +5959,70 @@ bool ensurePlaceholder(VrContext &c) {
  * seq 是这次抓帧属于环形缓冲里的哪一帧（-1 = 实时路径）。它跟着推理结果回到原生，
  * 让深度落在**它自己那一帧**的槽上 —— 装错槽就是用别人的深度变形这一帧。
  */
+/*
+ * 抓帧的异步读回槽。
+ *
+ * 同步 glReadPixels 等的是"整条 GL 流水线排空"，不只是拷 256KB —— GPU 队列里
+ * 前几帧的活没干完，这一拷就把 CPU 一起按在那里等（实测平均 8ms、峰值 35ms）。
+ * 改成先读进 PBO、下一帧靠 fence 问一句"好了没"，CPU 就不再被阻塞。
+ */
+struct DepthGrabSlot {
+    GLuint pbo = 0;
+    GLsync fence = nullptr;
+    long long seq = -1;
+    int w = 0, h = 0;
+    bool inFlight = false;
+};
+static DepthGrabSlot gGrabSlots[3];
+static int gGrabWrite = 0;
+
+/** 把已经读进 PBO 的帧取出来投给深度模型 —— 没就绪就跳过，绝不等待 */
+static void fetchDepthGrab(VrContext &c) {
+    for (int i = 0; i < 3; i++) {
+        DepthGrabSlot &g = gGrabSlots[i];
+        if (!g.inFlight || g.fence == nullptr) continue;
+        const GLenum st = glClientWaitSync(g.fence, 0, 0);
+        if (st == GL_TIMEOUT_EXPIRED) continue;   // GPU 还没画完，下一帧再看
+        glDeleteSync(g.fence);
+        g.fence = nullptr;
+        g.inFlight = false;
+        if (st != GL_ALREADY_SIGNALED && st != GL_CONDITION_SATISFIED) continue;
+        const size_t bytes = (size_t) g.w * g.h * 4;
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, g.pbo);
+        void *ptr = glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, (GLsizeiptr) bytes,
+                                     GL_MAP_READ_BIT);
+        if (ptr == nullptr) {
+            /* Adreno 上映射一张仍在被写的 PBO 会返回空指针且不报 GL 错误 */
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+            continue;
+        }
+        if (c.depthGrabPixels.size() != bytes) c.depthGrabPixels.assign(bytes, 0);
+        memcpy(c.depthGrabPixels.data(), ptr, bytes);
+        glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+        if (c.depthGrabW != g.w || c.depthGrabH != g.h) {
+            c.depthGrabW = g.w;
+            c.depthGrabH = g.h;
+        }
+        /* 低分彩色按帧号回填到对应环槽：深度上采样要用"这一帧"的颜色做引导 */
+        for (size_t k = 0; k < c.ringSlots.size(); k++) {
+            if (c.ringSlots[k].hasFrame && c.ringSlots[k].seq == g.seq) {
+                c.ringSlots[k].lowColor = c.depthGrabPixels;
+                break;
+            }
+        }
+        JNIEnv *env = depthJniEnv(c);
+        if (env == nullptr || gDepthSink == nullptr) continue;
+        const jsize n = (jsize) bytes;
+        jbyteArray arr = env->NewByteArray(n);
+        if (arr == nullptr) continue;
+        env->SetByteArrayRegion(arr, 0, n, (const jbyte *) c.depthGrabPixels.data());
+        env->CallVoidMethod(gDepthSink, gDepthSubmit, arr, (jint) g.w, (jint) g.h,
+                            (jlong) g.seq);
+        env->DeleteLocalRef(arr);
+    }
+}
+
 bool grabDepthFrame(VrContext &c, GLuint srcTex, bool webCrop, bool fromSlot, long long seq) {
     const int W = gDepthInputW.load();
     const int H = gDepthInputH.load();
@@ -6006,7 +6079,18 @@ void main() {
         c.depthGrabW = W;
         c.depthGrabH = H;
         c.depthGrabPixels.assign((size_t) W * H * 4, 0);
-        VLOGI("2D→3D：抓帧缓冲 %dx%d 就绪", W, H);
+        for (int i = 0; i < 3; i++) {
+            DepthGrabSlot &g = gGrabSlots[i];
+            if (g.fence) { glDeleteSync(g.fence); g.fence = nullptr; }
+            if (g.pbo == 0) glGenBuffers(1, &g.pbo);
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, g.pbo);
+            glBufferData(GL_PIXEL_PACK_BUFFER, (GLsizeiptr) ((size_t) W * H * 4),
+                         nullptr, GL_STREAM_READ);
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+            g.inFlight = false;
+            g.seq = -1;
+        }
+        VLOGI("2D→3D：抓帧缓冲 %dx%d 与 3 个异步读回槽就绪", W, H);
     }
     ensureVideoLayerQuad(c);
 
@@ -6040,33 +6124,42 @@ void main() {
      * "要不要改成异步读回（PBO）"——那套改造会额外押后一到两帧，只有读回本身超过
      * 5 ms 才值得。口径是 CPU 侧墙钟（含等 GPU），每 60 次打一行。
      */
+    /*
+     * 读进 PBO 就返回：最后一个参数是缓冲内偏移 0，不是指针。
+     * 真的取像素放到 fetchDepthGrab()，那时 fence 早就好了，CPU 不再空等。
+     */
+    DepthGrabSlot &slot = gGrabSlots[gGrabWrite];
+    if (slot.pbo == 0) {
+        glGenBuffers(1, &slot.pbo);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.pbo);
+        glBufferData(GL_PIXEL_PACK_BUFFER, (GLsizeiptr) ((size_t) W * H * 4), nullptr,
+                     GL_STREAM_READ);
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    }
     const double readT0 = nowMs();
-    glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, c.depthGrabPixels.data());
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.pbo);
+    glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, (void *) 0);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    if (slot.fence) { glDeleteSync(slot.fence); slot.fence = nullptr; }
+    slot.fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    slot.seq = seq;
+    slot.w = W;
+    slot.h = H;
+    slot.inFlight = true;
+    gGrabWrite = (gGrabWrite + 1) % 3;
     const double readMs = nowMs() - readT0;
     glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
     glViewport(prevViewport[0], prevViewport[1], prevViewport[2], prevViewport[3]);
-
-    JNIEnv *env = depthJniEnv(c);
-    if (env == nullptr) return false;
-    const double jniT0 = nowMs();
-    const jsize n = (jsize) c.depthGrabPixels.size();
-    jbyteArray arr = env->NewByteArray(n);
-    if (arr == nullptr) return false;
-    env->SetByteArrayRegion(arr, 0, n, (const jbyte *) c.depthGrabPixels.data());
-    env->CallVoidMethod(gDepthSink, gDepthSubmit, arr, (jint) W, (jint) H, (jlong) seq);
-    env->DeleteLocalRef(arr);
     {
         static long long sGrabs = 0;
-        static double sReadSum = 0.0, sReadMax = 0.0, sJniSum = 0.0;
+        static double sReadSum = 0.0, sReadMax = 0.0;
         sGrabs++;
         sReadSum += readMs;
-        sJniSum += nowMs() - jniT0;
         if (readMs > sReadMax) sReadMax = readMs;
         if (sGrabs % 60 == 0) {
-            VLOGI("2D→3D 抓帧：%dx%d 读回 平均 %.2f ms 最大 %.2f ms｜JNI 平均 %.2f ms（60 次统计）",
-                  W, H, sReadSum / 60.0, sReadMax, sJniSum / 60.0);
+            VLOGI("2D→3D 抓帧：%dx%d 投递 PBO 平均 %.2f ms 最大 %.2f ms（异步，不再等 GPU）",
+                  W, H, sReadSum / 60.0, sReadMax);
             sReadSum = 0.0;
-            sJniSum = 0.0;
             sReadMax = 0.0;
         }
     }
@@ -6821,9 +6914,8 @@ void pushRingFrame(VrContext &c, GLuint oesSrc) {
      */
     if (depthGrabDue(c)) {
         c.depthLastGrabMs = (long long) now;
-        if (grabDepthFrame(c, s.color.tex, false, true, s.seq)) {
-            s.lowColor = c.depthGrabPixels;
-        } else {
+        /* 像素是异步读回来的，低分彩色由 fetchDepthGrab 按同一帧号回填 */
+        if (!grabDepthFrame(c, s.color.tex, false, true, s.seq)) {
             s.lowColor.clear();
         }
     } else {
@@ -7637,6 +7729,11 @@ void frameLoop(VrContext &c) {
         }
         XrFrameBeginInfo fbi{XR_TYPE_FRAME_BEGIN_INFO};
         api.BeginFrame(c.session, &fbi);
+        /*
+         * 先收上一轮的抓帧结果：这时候 GPU 早画完了，取像素不花等待时间；
+         * 放在帧首是为了让它早于本帧的任何 GL 提交，绝不挡后面的活。
+         */
+        if (gDepthSink != nullptr) fetchDepthGrab(c);
         const auto frameStart = std::chrono::steady_clock::now();
         auto tVideo = frameStart;
         auto tUi = frameStart;
