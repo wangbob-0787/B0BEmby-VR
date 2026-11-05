@@ -1684,7 +1684,9 @@ class MainActivity : ComponentActivity() {
             run {
                 val vs = try { mpvBackend?.videoSize() } catch (_: Throwable) { null }
                 if (vs != null && vs.first > 0 && vs.second > 0) {
-                    val cap = 1920
+                    val cap = com.xxxx.emby_vr.vr.VrTuning.rawMaxW.let {
+                        if (it > 0) it.coerceAtMost(3840) else 3840
+                    }
                     val vw = if (vs.first > cap) cap else vs.first
                     val vh = (vs.second.toLong() * vw / vs.first).toInt().coerceAtLeast(64)
                     if (vw != webCanvasW || vh != webCanvasH) {
@@ -2156,7 +2158,9 @@ class MainActivity : ComponentActivity() {
                      * 只对网页交来的流做这一步：Emby 片子的内核画布由它自己的起播逻辑定，别插手。
                      */
                     if (webPlayingNow || webStreamSite != null) run {
-                        val cap = 1920
+                        val cap = com.xxxx.emby_vr.vr.VrTuning.rawMaxW.let {
+                        if (it > 0) it.coerceAtMost(3840) else 3840
+                    }
                         val bw = if (vw > cap) cap else vw
                         val bh = (vh.toLong() * bw / vw).toInt().coerceAtLeast(64)
                         if (bw != webCanvasW || bh != webCanvasH) {
@@ -3672,7 +3676,9 @@ class MainActivity : ComponentActivity() {
                                  * 里给 1920x800 的画面上下补黑边，再整块贴到 2.4:1 的银幕上 ——
                                  * 看着就是被拉宽/拉扁（父亲 2026-10-26 00:15 现场：比例改了、画布没改）。
                                  */
-                                val cap = 1920
+                                val cap = com.xxxx.emby_vr.vr.VrTuning.rawMaxW.let {
+                        if (it > 0) it.coerceAtMost(3840) else 3840
+                    }
                                 val bw = if (vw > cap) cap else vw
                                 val bh = (vh.toLong() * bw / vw).toInt().coerceAtLeast(64)
                                 if (bw != webCanvasW || bh != webCanvasH) {
