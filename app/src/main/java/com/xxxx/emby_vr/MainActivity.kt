@@ -1721,7 +1721,8 @@ class MainActivity : ComponentActivity() {
             return
         }
         val t = itemTitleOf(currentItem)
-        if (t.isNotEmpty()) osdState.title = t
+        /* 与网络视频同一口径：片名后面跟「实际 W×H（原 片源 W×H）」 */
+        if (t.isNotEmpty()) osdState.title = t + resSuffix()
     }
 
     /** 最近 300ms 面板刚吃过指针 / 点击 / 滚动：这一下扳机归面板 */
@@ -1966,11 +1967,26 @@ class MainActivity : ComponentActivity() {
             ).entries.getOrNull(qualityIndex)?.first ?: srcW
             val w = if (tier in 64 until srcW) tier else srcW
             val h = (srcH.toLong() * w / srcW).toInt().coerceAtLeast(64)
-            return if (w == srcW) " ${w}×${h}" else " ${w}×${h}（原 ${srcW}×${srcH}）"
+            /*
+             * 显示口径（父亲 2026-11-05 定）：始终写成「实际 W×H（原 片源 W×H）」。
+             * 片源只有 720 / 1080 时三个档位实际上限都一样，括号两边相同 ——
+             * 相同也照写，看得出来"切了没变化"是因为片源就这么多，不是切档没生效。
+             */
+            return " ${w}×${h}（原 ${srcW}×${srcH}）"
         }
-        val w = if (srcW > 0) srcW else com.xxxx.emby_vr.player.PlaybackFlags.videoWidth
-        val h = if (srcH > 0) srcH else com.xxxx.emby_vr.player.PlaybackFlags.videoHeight
-        return if (w > 0 && h > 0) " ${w}×${h}" else ""
+        /*
+         * Emby 普通片：当前 = 播放器正在解的那一路（服务端转码后可能变小），
+         * 原 = 片源分辨率。两个都拿不到就不写，免得写出假数字。
+         */
+        val srcW0 = com.xxxx.emby_vr.player.PlaybackFlags.videoWidth
+        val srcH0 = com.xxxx.emby_vr.player.PlaybackFlags.videoHeight
+        val vf = try { player?.videoFormat } catch (_: Throwable) { null }
+        val curW = vf?.width ?: 0
+        val curH = vf?.height ?: 0
+        val w = if (curW > 0) curW else srcW0
+        val h = if (curH > 0) curH else srcH0
+        if (w <= 0 || h <= 0) return ""
+        return if (srcW0 > 0 && srcH0 > 0) " ${w}×${h}（原 ${srcW0}×${srcH0}）" else " ${w}×${h}"
     }
 
     private fun applyWebStreamTitle(obj: org.json.JSONObject?) {
@@ -2187,18 +2203,7 @@ class MainActivity : ComponentActivity() {
                     var blitW = vw
                     var blitH = vh
                     if (webPlayingNow || webStreamSite != null) run {
-                        /*
-                         * 上限必须是「画质菜单当前那一档」，不能再是 rawMaxW 全局上限：
-                         * 那条重设会把切档结果立刻顶回原画宽度。
-                         */
-                        val tier = com.xxxx.emby_vr.panel.qualityStepsFor(
-                            kernelActive = true,
-                            isWeb = true,
-                            isP5 = false,
-                            stereo3d = com.xxxx.emby_vr.vr.VrTuning.stereo3dOn,
-                        ).entries.getOrNull(qualityIndex)?.first
-                            ?: com.xxxx.emby_vr.vr.VrTuning.VIDEO_W_HARD_CAP
-                        val cap = tier.coerceAtMost(kKernelWidthCap)
+                        val cap = webLayerWidthCap()
                         val bw = if (vw > cap) cap else vw
                         val bh = (vh.toLong() * bw / vw).toInt().coerceAtLeast(64)
                         blitW = bw
@@ -3716,10 +3721,11 @@ class MainActivity : ComponentActivity() {
                                  * 只改银幕比例、画布还停在 1920x1080 时，mpv 会在 16:9 的画布
                                  * 里给 1920x800 的画面上下补黑边，再整块贴到 2.4:1 的银幕上 ——
                                  * 看着就是被拉宽/拉扁（父亲 2026-10-26 00:15 现场：比例改了、画布没改）。
+                                 *
+                                 * 宽度上限与切档用同一个来源（webLayerWidthCap）：这里按全局上限算，
+                                 * 会把用户刚切好的 2560 每半秒顶回 4096。
                                  */
-                                val cap = com.xxxx.emby_vr.vr.VrTuning.rawMaxW.let {
-                        if (it > 0) it.coerceAtMost(com.xxxx.emby_vr.vr.VrTuning.VIDEO_W_HARD_CAP) else com.xxxx.emby_vr.vr.VrTuning.VIDEO_W_HARD_CAP
-                    }
+                                val cap = webLayerWidthCap()
                                 val bw = if (vw > cap) cap else vw
                                 val bh = (vh.toLong() * bw / vw).toInt().coerceAtLeast(64)
                                 if (bw != webCanvasW || bh != webCanvasH) {
@@ -5280,6 +5286,23 @@ class MainActivity : ComponentActivity() {
         runCatching { com.xxxx.emby_vr.vr.VrNative.setVideoSize(vw, vh) }
         Log.i(TAG, "内核处理分辨率 → ${vw}x${vh}（档位上限宽 $w，片源 ${srcW}x$srcH）")
         return true
+    }
+
+    /**
+     * 网页流这一拍视频层能跑多宽 = 画质菜单当前那一档，再受全局上限约束。
+     *
+     * 每秒循环与起播后 30 秒的纠正都调这里。两处各自按自己的算法改画布时，
+     * 一处按档位、一处按全局上限，结果就是每半秒互相顶回去：菜单停在 2560 而大屏
+     * 反复在 4096 与 2560 之间重建。
+     */
+    private fun webLayerWidthCap(): Int {
+        val tier = com.xxxx.emby_vr.panel.qualityStepsFor(
+            kernelActive = true,
+            isWeb = true,
+            isP5 = false,
+            stereo3d = com.xxxx.emby_vr.vr.VrTuning.stereo3dOn,
+        ).entries.getOrNull(qualityIndex)?.first ?: com.xxxx.emby_vr.vr.VrTuning.VIDEO_W_HARD_CAP
+        return tier.coerceAtMost(kKernelWidthCap)
     }
 
     private fun bitrateForQuality(): Int {
