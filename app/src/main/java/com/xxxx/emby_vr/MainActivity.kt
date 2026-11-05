@@ -1093,12 +1093,34 @@ class MainActivity : ComponentActivity() {
     private fun techLineOf(): String {
         val v = currentStreams.firstOrNull { it.type.equals("Video", ignoreCase = true) }
         val a = currentStreams.firstOrNull { it.type.equals("Audio", ignoreCase = true) }
-        val size = if (v?.width != null && v.height != null) "${v.width}×${v.height}" else null
+        /*
+         * 显示"大屏幕实际按多大上屏"，不是片源写着多少 —— 两者在 4K 片源 + 宽度上限
+         * 之下经常不一致，父亲要一眼看得出实际跑的是哪一档。
+         * 算法与原生侧同源：P5 走 video_surface_w，其余走 raw_max_w，3D 再叠每眼上限。
+         */
+        val size = screenSizeOf(v?.width, v?.height)
         return listOfNotNull(
             v?.displayTitle?.takeIf { it.isNotBlank() },
             size,
             a?.displayTitle?.takeIf { it.isNotBlank() },
         ).joinToString(" · ")
+    }
+
+    /** 大屏幕实际显示的像素尺寸（受当前宽度上限约束，见 techLineOf 的说明） */
+    private fun screenSizeOf(srcW: Int?, srcH: Int?): String? {
+        if (srcW == null || srcH == null || srcW <= 0 || srcH <= 0) return null
+        val vr = com.xxxx.emby_vr.vr.VrTuning
+        var cap = if (com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource) {
+            vr.videoSurfaceMaxW.let { if (it > 0) it else 1920 }
+        } else {
+            vr.rawMaxW.let { if (it > 0) it else vr.VIDEO_W_HARD_CAP }
+        }
+        if (vr.stereo3dOn && vr.stereoEyeW > 0 && cap > vr.stereoEyeW) cap = vr.stereoEyeW
+        val w = if (srcW > cap) cap else srcW
+        val h = (srcH.toLong() * w / srcW).toInt().coerceAtLeast(1)
+        val shown = "${w}×$h"
+        /* 被压过就一并标出片源尺寸，免得看不出差别来 */
+        return if (w != srcW) "$shown（片源 ${srcW}×$srcH）" else shown
     }
 
     /**

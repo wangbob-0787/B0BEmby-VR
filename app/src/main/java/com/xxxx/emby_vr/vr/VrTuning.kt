@@ -124,6 +124,14 @@ object VrTuning {
     @Volatile
     var rawMaxW: Int = 1920
 
+    /** 3D 每眼宽度上限（与 native 的 stereo_eye_w 同步，界面按它算"实际显示多大"） */
+    @Volatile
+    var stereoEyeW: Int = 1920
+
+    /** 实时 2D→3D 是否开着（界面显示实际分辨率时要按它判断走哪条上限） */
+    @Volatile
+    var stereo3dOn: Boolean = false
+
     /** 地面坡度（2026-10-22）：每往前走 1 米视线变化多少米；默认按影厅实测 0.35（0 = 平地） */
     @Volatile
     var floorSlope: Float = 0.35f
@@ -853,6 +861,7 @@ object VrTuning {
         }
         raw["stereo_eye_w"]?.toIntOrNull()?.let {
             if (it >= 0 && it <= 3840) {
+                stereoEyeW = it
                 VrNative.setTuning(KEY_STEREO_EYE_W, it.toFloat())
                 applied += "3D每眼宽度 $it"
             }
@@ -1024,6 +1033,7 @@ object VrTuning {
         }
         /* 实时 2D→3D（2026-11-01）：开关与三个手感参数 */
         raw["stereo3d"]?.toIntOrNull()?.let {
+            stereo3dOn = it != 0
             VrNative.setTuning(KEY_STEREO3D, it.toFloat())
             applied += "实时 2D→3D " + if (it != 0) "开" else "关"
         }
