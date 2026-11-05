@@ -1953,44 +1953,60 @@ class MainActivity : ComponentActivity() {
      * 一眼能看出切档生效了没有、有没有被降分辨率。
      */
     private fun resSuffix(): String {
+        val stereo = com.xxxx.emby_vr.vr.VrTuning.stereo3dOn
+        val isWeb = webPlayingNow || webStreamSite != null
         val ks = try { mpvBackend?.videoSize() } catch (_: Throwable) { null }
-        val srcW = ks?.first ?: 0
-        val srcH = ks?.second ?: 0
+        val kernelW = ks?.first ?: 0
+        val kernelH = ks?.second ?: 0
+        val kernelNow = kernelW >= 64 && kernelH >= 64
         /*
-         * 内核在跑（已报出片源尺寸）就一律按档位算实际宽度：网页流、杜比 P5、图形字幕
-         * 三者的档位表不同，但「档位 = 内核处理宽度」这条语义相同。
-         * 原来只对网页流这么算，P5 片就退回片源尺寸，控制条写着 3840×1608 而大屏实际
-         * 只有 1920×804。
+         * 源与「当前实际」分开取：
+         *  · 内核在跑（网络视频 / 杜比 P5 / 图形字幕）→ 片源与当前都以内核报的为准；
+         *  · 系统播放器（Emby 普通片、3D 播普通片）→ 当前取播放器正在解的那一路，
+         *    片源取探片源时的记录（服务端转码时两者会不同）。
          */
-        if (srcW >= 64 && srcH >= 64) {
+        val srcW: Int
+        val srcH: Int
+        var curW: Int
+        var curH: Int
+        if (kernelNow) {
+            srcW = kernelW
+            srcH = kernelH
+            curW = kernelW
+            curH = kernelH
+        } else {
+            srcW = com.xxxx.emby_vr.player.PlaybackFlags.videoWidth
+            srcH = com.xxxx.emby_vr.player.PlaybackFlags.videoHeight
+            val vf = try { player?.videoFormat } catch (_: Throwable) { null }
+            curW = vf?.width?.takeIf { it > 0 } ?: srcW
+            curH = vf?.height?.takeIf { it > 0 } ?: srcH
+        }
+        if (curW <= 0 || curH <= 0) return ""
+        /*
+         * 实际宽度要按档位收一次 —— 只有两种情况档位的值表示宽度：
+         * 内核这条路，以及 3D（每眼宽度）。Emby 普通片非 3D 时档位是码率，不能往里套。
+         * 3D 走系统播放器时视频层也会被压到每眼宽度，原来这里没算，控制条就把片源
+         * 3840×1608 当成实际值显示。
+         */
+        if (kernelNow || stereo) {
             val tier = com.xxxx.emby_vr.panel.qualityStepsFor(
-                kernelActive = true,
-                isWeb = webPlayingNow || webStreamSite != null,
+                kernelActive = kernelNow,
+                isWeb = isWeb,
                 isP5 = com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource,
-                stereo3d = com.xxxx.emby_vr.vr.VrTuning.stereo3dOn,
-            ).entries.getOrNull(qualityIndex)?.first ?: srcW
-            val w = if (tier in 64 until srcW) tier else srcW
-            val h = (srcH.toLong() * w / srcW).toInt().coerceAtLeast(64)
-            /*
-             * 显示口径（父亲 2026-11-05 定）：始终写成「实际 W×H（原 片源 W×H）」。
-             * 片源只有 720 / 1080 时三个档位实际上限都一样，括号两边相同 ——
-             * 相同也照写，看得出来"切了没变化"是因为片源就这么多，不是切档没生效。
-             */
-            return " ${w}×${h}（原 ${srcW}×${srcH}）"
+                stereo3d = stereo,
+            ).entries.getOrNull(qualityIndex)?.first ?: 0
+            if (tier >= 64 && tier < curW) {
+                curH = (curH.toLong() * tier / curW).toInt().coerceAtLeast(64)
+                curW = tier
+            }
         }
         /*
-         * Emby 普通片：当前 = 播放器正在解的那一路（服务端转码后可能变小），
-         * 原 = 片源分辨率。两个都拿不到就不写，免得写出假数字。
+         * 显示口径（父亲 2026-11-05 定）：始终写成「实际 W×H（原 片源 W×H）」。
+         * 片源只有 720 / 1080 时三个档位实际上限都一样，括号两边相同 ——
+         * 相同也照写，看得出来"切了没变化"是因为片源就这么多，不是切档没生效。
          */
-        val srcW0 = com.xxxx.emby_vr.player.PlaybackFlags.videoWidth
-        val srcH0 = com.xxxx.emby_vr.player.PlaybackFlags.videoHeight
-        val vf = try { player?.videoFormat } catch (_: Throwable) { null }
-        val curW = vf?.width ?: 0
-        val curH = vf?.height ?: 0
-        val w = if (curW > 0) curW else srcW0
-        val h = if (curH > 0) curH else srcH0
-        if (w <= 0 || h <= 0) return ""
-        return if (srcW0 > 0 && srcH0 > 0) " ${w}×${h}（原 ${srcW0}×${srcH0}）" else " ${w}×${h}"
+        return if (srcW >= 64 && srcH >= 64) " ${curW}×${curH}（原 ${srcW}×${srcH}）"
+        else " ${curW}×${curH}"
     }
 
     private fun applyWebStreamTitle(obj: org.json.JSONObject?) {
