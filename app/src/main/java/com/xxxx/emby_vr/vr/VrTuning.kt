@@ -122,7 +122,7 @@ object VrTuning {
     const val VIDEO_W_HARD_CAP = 4096
 
     @Volatile
-    var rawMaxW: Int = 1920
+    var rawMaxW: Int = 0   // 0 = 按片源原尺寸（2026-11-05 实测 4K/DCI 4K 都能稳 72）
 
     /** 3D 每眼宽度上限（与 native 的 stereo_eye_w 同步，界面按它算"实际显示多大"） */
     @Volatile

@@ -945,7 +945,7 @@ std::atomic<int> gCinemaOn{1};
  * 关掉能把帧率从 54~60 抬到 65~68、GPU 占用从 96% 掉到 55~60%，说明这层的填充
  * 开销实打实，值得单独给一个可调档位。
  */
-std::atomic<float> gCinemaScale{0.75f};
+std::atomic<float> gCinemaScale{0.5f};
 /**
  * 影厅画在哪一层（vr-tuning 的 cinema_layer）：
  *   1 = 独立底层（默认，父亲要的正解：谁都不挡谁）
@@ -2646,7 +2646,7 @@ std::atomic<bool> gPanelFrameChanged{true};
 static bool gPanelContentNew = true;   // 本帧海报墙纹理来了新内容
 static bool gPanelPreferSkip = false;
 /* 面板复用开关：1=内容不变就不重画（默认）0=每帧照画（用来确认滚动/刷新的问题是否由复用引起） */
-std::atomic<int> gPanelReuse{1};  // 所有交换链图都已写过新内容，可安全跳过重画
+std::atomic<int> gPanelReuse{0};  // 0 = 每帧照画（复用档会让海报墙滚不动）
 std::atomic<float> gWarpScale{1.0f};  // Warp 输出缩放（1.0=全分辨率；0.8=视频层交换链 80%）
 /* 上采样的深度差惩罚强度：深度图是 0..1 归一化，0.03 = 差 3% 就压掉大半权重 */
 std::atomic<float> gWarpEdgeSigma{0.03f};
