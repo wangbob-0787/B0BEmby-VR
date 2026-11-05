@@ -765,7 +765,7 @@ object VrTuning {
         flag("hide_projection", KEY_HIDE_PROJECTION, "投影层不提交（只留 quad 层）")
         flag("test_pattern", KEY_TEST_PATTERN, "固定测试图（切断解码输入链）")
         raw["raw_max_w"]?.toIntOrNull()?.let {
-            rawMaxW = it.coerceIn(0, 3840)
+            rawMaxW = it.coerceIn(0, 4096)
             applied += "原画宽度上限 ${rawMaxW}（0=片源原尺寸）"
         }
         raw["video_layer_max_w"]?.toFloatOrNull()?.let {

@@ -1685,7 +1685,7 @@ class MainActivity : ComponentActivity() {
                 val vs = try { mpvBackend?.videoSize() } catch (_: Throwable) { null }
                 if (vs != null && vs.first > 0 && vs.second > 0) {
                     val cap = com.xxxx.emby_vr.vr.VrTuning.rawMaxW.let {
-                        if (it > 0) it.coerceAtMost(3840) else 3840
+                        if (it > 0) it.coerceAtMost(4096) else 3840
                     }
                     val vw = if (vs.first > cap) cap else vs.first
                     val vh = (vs.second.toLong() * vw / vs.first).toInt().coerceAtLeast(64)
@@ -2159,7 +2159,7 @@ class MainActivity : ComponentActivity() {
                      */
                     if (webPlayingNow || webStreamSite != null) run {
                         val cap = com.xxxx.emby_vr.vr.VrTuning.rawMaxW.let {
-                        if (it > 0) it.coerceAtMost(3840) else 3840
+                        if (it > 0) it.coerceAtMost(4096) else 3840
                     }
                         val bw = if (vw > cap) cap else vw
                         val bh = (vh.toLong() * bw / vw).toInt().coerceAtLeast(64)
@@ -3677,7 +3677,7 @@ class MainActivity : ComponentActivity() {
                                  * 看着就是被拉宽/拉扁（父亲 2026-10-26 00:15 现场：比例改了、画布没改）。
                                  */
                                 val cap = com.xxxx.emby_vr.vr.VrTuning.rawMaxW.let {
-                        if (it > 0) it.coerceAtMost(3840) else 3840
+                        if (it > 0) it.coerceAtMost(4096) else 3840
                     }
                                 val bw = if (vw > cap) cap else vw
                                 val bh = (vh.toLong() * bw / vw).toInt().coerceAtLeast(64)
@@ -4077,7 +4077,7 @@ class MainActivity : ComponentActivity() {
                  */
                 val cap = if (webFirst != null) {
                     com.xxxx.emby_vr.vr.VrTuning.rawMaxW.let {
-                        if (it > 0) it.coerceAtMost(3840) else 3840
+                        if (it > 0) it.coerceAtMost(4096) else 3840
                     }
                 } else {
                     com.xxxx.emby_vr.vr.VrTuning.videoSurfaceMaxW.let {
@@ -4390,7 +4390,7 @@ class MainActivity : ComponentActivity() {
                         }
                     } else {
                         com.xxxx.emby_vr.vr.VrTuning.rawMaxW.let {
-                            if (it > 0) it.coerceAtMost(3840) else 3840
+                            if (it > 0) it.coerceAtMost(4096) else 3840
                         }
                     },
                 )
@@ -4633,7 +4633,7 @@ class MainActivity : ComponentActivity() {
              */
             com.xxxx.emby_vr.vr.VrNative.setVideoLayerMaxW(
                 com.xxxx.emby_vr.vr.VrTuning.rawMaxW.let {
-                    if (it > 0) it.coerceAtMost(3840) else 3840
+                    if (it > 0) it.coerceAtMost(4096) else 3840
                 },
             )
             // 外挂 ASS 是弹幕还是片子自带字幕 —— 后台看内容定（父亲 2026-10-09）
@@ -5183,7 +5183,7 @@ class MainActivity : ComponentActivity() {
      */
     private val kKernelWidthCap: Int
         get() = com.xxxx.emby_vr.vr.VrTuning.rawMaxW.let {
-            if (it > 0) it.coerceAtMost(3840) else 3840
+            if (it > 0) it.coerceAtMost(4096) else 3840
         }
 
     /**

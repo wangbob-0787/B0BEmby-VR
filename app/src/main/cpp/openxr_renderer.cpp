@@ -7972,7 +7972,8 @@ void frameLoop(VrContext &c) {
             int32_t vh = (webOnScreen || panelOnScreen)
                              ? (int32_t) kPanelPxH
                              : (int32_t) lroundf(1.f / fmaxf(1e-6f, c.texelY.load()));
-            constexpr int32_t kMaxVideoW = 3840;
+            /* 4096 而非 3840：片源里有 DCI 4K（4096×1716），3840 会把它压掉一截 */
+            constexpr int32_t kMaxVideoW = 4096;
             constexpr int32_t kMaxVideoH = 2160;
             int32_t capW = kMaxVideoW;
             /* video_layer_max_w：把视频层交换链压到指定宽度（0 = 按视频原分辨率）。
