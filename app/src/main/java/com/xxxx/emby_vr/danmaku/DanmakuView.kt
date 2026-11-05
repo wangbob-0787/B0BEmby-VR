@@ -169,14 +169,11 @@ class DanmakuView(context: Context) : View(context) {
      * 这里按文字实测宽度推算"完全滚出屏幕"所需时间,取两者较大值 → 弹幕完整地从屏幕外滚入、再完整滚出。
      */
     /**
-     * 【2026-10-22 21:43 r912 崩溃定案：字号/文本过长把系统绘图算溢出】
+     * 弹幕文本进画布前的两道闸：字号夹 10~200、文本按完整码点截断。
      *
-     * 现场：`Fatal signal 6 (SIGABRT) in tid danmaku-painter`，
-     * Abort message = `ubsan: add-overflow`，Java 栈顶是
-     * `Paint.nGetTextAdvances ← Paint.measureText ← DanmakuView.effectiveEndMs(DanmakuView.kt:177)`
-     * —— ASS 里的字号（乘上缩放后）或弹幕文本长度离谱时，
-     * Skia/Minikin 的定点加法溢出，线程直接 abort、整个 App 被杀。
-     * 字号夹在 10~200，文本截到 400 字；被夹过就打一行日志，方便下次复盘。
+     * 起因：绘制线程 SIGABRT（`ubsan: add-overflow`，栈顶 `getTextAdvances`），
+     * 系统排版库对离谱的字号与文本长度没有防护，溢出即 abort 整个进程。
+     * 字号与长度这两道闸留着；宽度计算已不再依赖系统排版库（见 `estimateTextWidth`）。
      */
     private val MAX_TEXT_CHARS = 200
 
@@ -214,19 +211,29 @@ class DanmakuView(context: Context) : View(context) {
         return out.toString()
     }
 
+    /**
+     * 滚动弹幕的文本宽度估算，不调系统排版库。
+     *
+     * 只用于判断"这条弹幕什么时候完全滚出画面"，误差几帧看不出来。换掉
+     * `Paint.measureText` 的原因：这台设备上那条调用对部分文本会让 libminikin
+     * 整数溢出直接 SIGABRT，整个进程被杀（`ubsan: add-overflow`，栈顶
+     * `getTextAdvances`），Java 侧的 try/catch 拦不住原生 abort。
+     */
+    private fun estimateTextWidth(text: String, sizePx: Float): Float {
+        val n = text.codePointCount(0, text.length).coerceAtMost(MAX_TEXT_CHARS)
+        /* 一个码点按一个字宽（1em）算：中文正好，西文偏宽 —— 偏宽只会让弹幕多走
+           一小段屏外，偏窄会让人眼看着弹幕在屏幕里凭空消失。 */
+        return n * sizePx
+    }
+
     private fun effectiveEndMs(item: DanmakuItem, scale: Float): Long {
         if (!item.isMove) return item.endMs
         val spanMs = (item.endMs - item.startMs).coerceAtLeast(1L)
         val dx = item.x1 - item.x2
         if (dx <= 0f) return item.endMs
-        fillPaint.textSize = safeTextSize(item.style.fontSize * scale, "滚动弹幕")
-        val textWidthInPlayRes = try {
-            fillPaint.measureText(safeText(item.text)) / scale.coerceAtLeast(0.01f)
-        } catch (e: Throwable) {
-            /* 真量不出来就退回原时长，宁可早一点消失，也不能把 App 弄崩 */
-            android.util.Log.w("B0BEmbyVR", "弹幕：量字宽失败（" + e + "）→ 用原始时长")
-            return item.endMs
-        }
+        val textSize = safeTextSize(item.style.fontSize * scale, "滚动弹幕")
+        val textWidthInPlayRes =
+            estimateTextWidth(safeText(item.text), textSize) / scale.coerceAtLeast(0.01f)
         val speed = dx / spanMs                       // PlayRes 单位 / 毫秒
         if (speed <= 0f) return item.endMs
         val fullExitMs = ((item.x1 + textWidthInPlayRes) / speed).toLong()
@@ -407,7 +414,12 @@ class DanmakuView(context: Context) : View(context) {
 
     private fun drawItem(canvas: Canvas, item: DanmakuItem, nowMs: Long, scale: Float) {
         val span = (item.endMs - item.startMs).coerceAtLeast(1L)
-        val progress = ((nowMs - item.startMs).toFloat() / span).coerceIn(0f, 1f)
+        /*
+         * 进度不夹在 1：ASS 的 \move 终点常常还在画面里（如 x2 = -810 只是"计划终点"），
+         * 夹住就会让弹幕停在左边缘、等推算的消失时刻一到凭空不见。放开上界让它
+         * 按同一速度继续往左走，走出画面由下面的越界判断接管。
+         */
+        val progress = ((nowMs - item.startMs).toFloat() / span).coerceAtLeast(0f)
 
         val x: Float
         val y: Float
