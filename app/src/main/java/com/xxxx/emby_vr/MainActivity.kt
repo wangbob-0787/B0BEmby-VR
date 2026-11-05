@@ -1110,11 +1110,21 @@ class MainActivity : ComponentActivity() {
     private fun screenSizeOf(srcW: Int?, srcH: Int?): String? {
         if (srcW == null || srcH == null || srcW <= 0 || srcH <= 0) return null
         val vr = com.xxxx.emby_vr.vr.VrTuning
+        /* 实际宽度取"当前选中那一档"与上限的较小者：切了 2560 就该显示 2560 */
         var cap = if (com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource) {
             vr.videoSurfaceMaxW.let { if (it > 0) it else 1920 }
         } else {
             vr.rawMaxW.let { if (it > 0) it else vr.VIDEO_W_HARD_CAP }
         }
+        val p5 = com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource
+        val steps = com.xxxx.emby_vr.panel.qualityStepsFor(
+            kernelActive = ctl.kernelActive,
+            isWeb = webStreamSite != null,
+            isP5 = p5,
+            stereo3d = vr.stereo3dOn,
+        )
+        val picked = steps.entries.getOrNull(qualityIndex)?.first ?: 0
+        if (picked > 0 && cap > picked) cap = picked
         if (vr.stereo3dOn && vr.stereoEyeW > 0 && cap > vr.stereoEyeW) cap = vr.stereoEyeW
         val w = if (srcW > cap) cap else srcW
         val h = (srcH.toLong() * w / srcW).toInt().coerceAtLeast(1)
@@ -5236,9 +5246,17 @@ class MainActivity : ComponentActivity() {
     /** 立刻把内核的处理分辨率改成「宽 w」（高度按片源比例算），不重起播 */
     private fun applyKernelWidth(requested: Int): Boolean {
         val m = mpvBackend ?: return false
-        val w = requested.coerceAtMost(kKernelWidthCap)   // 硬卡上限，不许超 1280
-        val srcW = com.xxxx.emby_vr.player.PlaybackFlags.videoWidth.takeIf { it > 0 } ?: 1920
-        val srcH = com.xxxx.emby_vr.player.PlaybackFlags.videoHeight.takeIf { it > 0 } ?: 1080
+        val w = requested.coerceAtMost(kKernelWidthCap)   // 硬卡上限
+        /*
+         * 片源尺寸按当前这条路取：网页流的宽高不在 PlaybackFlags 里（那是 Emby 的播放信息），
+         * 用它会算错比例、甚至把画面压成 1920 —— 之前切档"大屏幕没变化"就是这个原因。
+         */
+        val srcW = (if (webStreamSite != null) webCanvasW else
+            com.xxxx.emby_vr.player.PlaybackFlags.videoWidth).takeIf { it > 0 }
+            ?: m.videoSize()?.first ?: 1920
+        val srcH = (if (webStreamSite != null) webCanvasH else
+            com.xxxx.emby_vr.player.PlaybackFlags.videoHeight).takeIf { it > 0 }
+            ?: m.videoSize()?.second ?: 1080
         val vw = if (srcW > w) w else srcW
         val vh = (srcH.toLong() * vw / srcW).toInt().coerceAtLeast(64)
         renderer.setVideoBufferSize(vw, vh)
