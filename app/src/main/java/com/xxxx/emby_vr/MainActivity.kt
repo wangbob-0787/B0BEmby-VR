@@ -4383,7 +4383,16 @@ class MainActivity : ComponentActivity() {
                  * 给它 1920（父亲 2026-10-09）。
                  */
                 com.xxxx.emby_vr.vr.VrNative.setVideoLayerMaxW(
-                    if (com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource) 1280 else 1920,
+                    if (com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource) {
+                        /* P5 那条链单独压：上限走 video_surface_w（试黑纹就是试这个数） */
+                        com.xxxx.emby_vr.vr.VrTuning.videoSurfaceMaxW.let {
+                            if (it > 0) it else 1280
+                        }
+                    } else {
+                        com.xxxx.emby_vr.vr.VrTuning.rawMaxW.let {
+                            if (it > 0) it.coerceAtMost(3840) else 3840
+                        }
+                    },
                 )
                 /* 网页流不向 Emby 报进度（它不属于 Emby 库；报了会把上一部片子的身份写进去） */
                 if (!isWeb) startPlaybackReporting()
@@ -4622,7 +4631,11 @@ class MainActivity : ComponentActivity() {
              * 系统播放器路径 GPU 只要 1.8~2.4ms，视频层可以放开到 1920（2026-10-09）：
              * 只有内核那条（杜比视界 Profile 5）才需要压到 1280 换稳定。
              */
-            com.xxxx.emby_vr.vr.VrNative.setVideoLayerMaxW(1920)
+            com.xxxx.emby_vr.vr.VrNative.setVideoLayerMaxW(
+                com.xxxx.emby_vr.vr.VrTuning.rawMaxW.let {
+                    if (it > 0) it.coerceAtMost(3840) else 3840
+                },
+            )
             // 外挂 ASS 是弹幕还是片子自带字幕 —— 后台看内容定（父亲 2026-10-09）
             probeExternalAssForDanmaku()
             picking = false
