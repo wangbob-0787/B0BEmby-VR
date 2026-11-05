@@ -7143,7 +7143,10 @@ precision mediump float;
 in vec2 vUv;
 uniform sampler2D uSrc;
 out vec4 oColor;
-void main() { oColor = vec4(texture(uSrc, vUv).rgb, 1.0); }
+void main() {
+    /* 缓存是普通 2D 纹理（v=0 在底部），而顶点里的 vUv 按"v=0 在顶部"给，必须翻一次 */
+    oColor = vec4(texture(uSrc, vec2(vUv.x, 1.0 - vUv.y)).rgb, 1.0);
+}
 )";
     gCopy2dProg = buildProgramFrom(vs, fs);
     if (gCopy2dProg == 0) {
