@@ -453,6 +453,14 @@ object VrTuning {
 
     /** 上采样的深度差惩罚强度：越大越"只认同深度的邻点"，边缘更硬但可能出现锯齿 */
     const val KEY_WARP_EDGE_SIGMA = 77
+
+    /**
+     * 影厅图层的渲染比例：0.4~1.0，默认 0.75。
+     *
+     * 影厅是暗场低模，缩小渲染再让合成器放大，肉眼几乎看不出；实测关掉影厅能把
+     * 帧率从 54~60 抬到 65~68、GPU 占用从 96% 掉到 55~60%，这一层值得单独给档位。
+     */
+    const val KEY_CINEMA_SCALE = 78
     /**
      * 抓帧的毫秒下限（0 = 纯按帧数，默认）。
      *
@@ -803,6 +811,12 @@ object VrTuning {
         raw["warp_scale"]?.toFloatOrNull()?.let {
             VrNative.setTuning(KEY_WARP_SCALE, it)
             applied += "warp缩放 $it"
+        }
+        raw["cinema_scale"]?.toFloatOrNull()?.let {
+            if (it >= 0.4f && it <= 1.0f) {
+                VrNative.setTuning(KEY_CINEMA_SCALE, it)
+                applied += "影厅比例 $it"
+            }
         }
         raw["warp_edge_sigma"]?.toFloatOrNull()?.let {
             if (it >= 0f && it <= 0.5f) {

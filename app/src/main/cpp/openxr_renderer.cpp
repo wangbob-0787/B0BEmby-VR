@@ -935,6 +935,14 @@ std::atomic<int> gSeat{0};
 /** 影厅环境总开关（0 = 回到黑背景，出问题时可远程关掉） */
 std::atomic<int> gCinemaOn{1};
 /**
+ * 影厅图层的渲染分辨率比例（0.4~1.0，默认 0.75）。
+ *
+ * 影厅是暗场低模，缩小渲染再交给合成器放大，肉眼几乎看不出；而实测把影厅整个
+ * 关掉能把帧率从 54~60 抬到 65~68、GPU 占用从 96% 掉到 55~60%，说明这层的填充
+ * 开销实打实，值得单独给一个可调档位。
+ */
+std::atomic<float> gCinemaScale{0.75f};
+/**
  * 影厅画在哪一层（vr-tuning 的 cinema_layer）：
  *   1 = 独立底层（默认，父亲要的正解：谁都不挡谁）
  *   0 = 画进主投影层（老路：会挡住海报墙/控制条/视频，只作应急对照）
@@ -2113,6 +2121,7 @@ struct VrContext {
      */
     std::vector<EyeSwapchain> cinemaEyes;
     bool cinemaEyesOk = false;
+    float cinemaScaleUsed = 0.f;   // 当前影厅交换链按哪个比例建的（改档位要重建）
     int64_t eyeFormat = 0;
     std::vector<XrViewConfigurationView> viewConfigs;
 
@@ -4694,9 +4703,32 @@ void pumpEvents(VrContext &c) {
 /* drawCinema 在后面定义，这里先用一声明（影厅图层要在它前面调用） */
 void drawCinema(const Mat4 &proj, const Mat4 &view, const XrVector3f &eyePos);
 
+/** 拆掉影厅图层的交换链（改渲染比例时重建用） */
+void destroyCinemaSwapchains(VrContext &c) {
+    for (size_t i = 0; i < c.cinemaEyes.size(); i++) {
+        EyeSwapchain &ce = c.cinemaEyes[i];
+        for (uint32_t k = 0; k < ce.fbos.size(); k++) {
+            if (ce.fbos[k]) glDeleteFramebuffers(1, &ce.fbos[k]);
+        }
+        for (uint32_t k = 0; k < ce.depthRbos.size(); k++) {
+            if (ce.depthRbos[k]) glDeleteRenderbuffers(1, &ce.depthRbos[k]);
+        }
+        ce.fbos.clear();
+        ce.depthRbos.clear();
+        if (ce.handle != XR_NULL_HANDLE) {
+            api.DestroySwapchain(ce.handle);
+            ce.handle = XR_NULL_HANDLE;
+        }
+    }
+    c.cinemaEyesOk = false;
+    c.cinemaScaleUsed = 0.f;
+}
+
 /** 建影厅图层的交换链（分辨率按 scale 缩一点：影厅是暗场，省下来的 GPU 留给正片） */
 bool createCinemaSwapchains(VrContext &c, float scale) {
-    if (c.cinemaEyesOk) return true;
+    if (c.cinemaEyesOk && fabsf(c.cinemaScaleUsed - scale) < 0.001f) return true;
+    if (c.cinemaEyesOk) destroyCinemaSwapchains(c);
+    c.cinemaScaleUsed = scale;
     c.cinemaEyes.clear();
     c.cinemaEyes.resize(c.eyes.size());
     for (size_t i = 0; i < c.eyes.size(); i++) {
@@ -8109,6 +8141,11 @@ void frameLoop(VrContext &c) {
                  * 失败就整帧不提交这一层，不影响别的图层。
                  */
                 cinemaLayerOk = false;
+                /* 渲染比例改了就按新尺寸重建（调参文件改完一秒内生效，不用重装） */
+                if (gCinemaLayerMode.load() != 0 && gCinemaOn.load() != 0 &&
+                    fabsf(c.cinemaScaleUsed - gCinemaScale.load()) > 0.001f) {
+                    createCinemaSwapchains(c, gCinemaScale.load());
+                }
                 {
                     static double lastGate = 0.0;
                     if (nowMs() - lastGate > 3000.0) {
@@ -8599,7 +8636,7 @@ void renderThreadMain() {
              * 影厅单独占一层（0.75 倍分辨率：暗场细节看不太出来，省下的 GPU 给正片）。
              * 建失败就退回"画进主投影层"的老路（会糊住面板，但至少看得到影厅）。
              */
-            createCinemaSwapchains(c, 0.75f);
+            createCinemaSwapchains(c, gCinemaScale.load());
         }
         fillQuadLocs(c.program, c.quadU);
         c.mvpLoc = c.quadU.mvp;
@@ -9392,6 +9429,14 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             if (value >= 0.4f && value <= 1.0f) {
                 gWarpScale.store(value);
                 VLOGI("调参 → warp 缩放 %.2f（视差计算按此比例降采样）", (double) value);
+            }
+            return;
+        /* 78 = 影厅图层渲染比例（0.4~1.0；越小越省填充，画质影响肉眼几乎看不出） */
+        case 78:
+            if (value >= 0.4f && value <= 1.0f) {
+                gCinemaScale.store(value);
+                VLOGI("调参 → 影厅渲染比例 %.2f（下次渲染按新尺寸重建交换链）",
+                      (double) value);
             }
             return;
         /* 77 = 上采样的深度差惩罚强度（0 = 纯双线性，越大边缘越硬） */
