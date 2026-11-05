@@ -319,7 +319,7 @@ val QUALITY_STEPS = listOf(
 val EMBY_QUALITY_STEPS = QUalitySteps(
     listOf(0 to "原画", 10_000_000 to "1080", 5_000_000 to "1024", 1_000_000 to "768"),
     listOf(
-        "不转码，按片源原尺寸/原码率",
+        "",
         "服务端转码 10 Mbps",
         "服务端转码 5 Mbps",
         "服务端转码 1 Mbps",
@@ -327,12 +327,12 @@ val EMBY_QUALITY_STEPS = QUalitySteps(
 )
 val P5_QUALITY_STEPS = QUalitySteps(
     listOf(1920 to "1920", 1280 to "1280"),
-    listOf("内核 1920 宽（这台的上限）", "内核 1280 宽"),
+    listOf("", "内核 1280 宽"),
 )
 val WEB_QUALITY_STEPS = QUalitySteps(
     /* 第一档叫"原画"：宽度不限制，按片源原尺寸给内核（最高 4096） */
     listOf(4096 to "原画", 2560 to "2560", 1920 to "1920"),
-    listOf("按片源原尺寸（最高 4096）", "内核 2560 宽", "内核 1920 宽"),
+    listOf("", "内核 2560 宽", "内核 1920 宽"),
 )
 /*
  * 3D 开着时用的档位 = 每只眼的宽度。三条路都并到这里，因为每眼宽度是 3D 的全局参数，
@@ -346,7 +346,7 @@ val WEB_QUALITY_STEPS = QUalitySteps(
  */
 val STEREO3D_QUALITY_STEPS = QUalitySteps(
     listOf(1920 to "1920", 1536 to "1536", 1280 to "1280"),
-    listOf("每眼 1920 宽（实测 69~71 帧）", "每眼 1536 宽（未实测）", "每眼 1280 宽（未实测）"),
+    listOf("", "每眼 1536 宽", "每眼 1280 宽"),
 )
 
 /** 一套档位：值（码率或宽度）+ 标签 + 行尾说明 */
