@@ -1945,24 +1945,28 @@ class MainActivity : ComponentActivity() {
      * 网页流接管后往控制条写「站点-片名」（父亲 2026-10-16）。
      * 片名由扩展从页面标题带过来；站点名按接管来源取（B站 / 腾讯 / 爱奇艺…）。
      */
-    /** 内核解出来的真实分辨率，拼到「正在播放」后面（父亲 2026-10-19 20:58 定） */
     /**
      * 控制条标题里的分辨率尾巴。
      *
-     * 网络视频（网页流 / 内核）只认内核报出的尺寸：当前档位按画质菜单那一档算出实际宽度，
-     * 与片源不同时把片源一并写出来 ——「2560×1073（原 4096×1716）」，
-     * 一眼能看出切档生效了没有。
+     * 内核这条链（网络视频 / 杜比 P5 / 图形字幕）只认内核报出的片源尺寸，
+     * 实际显示宽度按画质档位算：写成「实际 W×H（原 片源 W×H）」，
+     * 一眼能看出切档生效了没有、有没有被降分辨率。
      */
     private fun resSuffix(): String {
         val ks = try { mpvBackend?.videoSize() } catch (_: Throwable) { null }
         val srcW = ks?.first ?: 0
         val srcH = ks?.second ?: 0
-        if (webPlayingNow || webStreamSite != null) {
-            if (srcW < 64 || srcH < 64) return ""
+        /*
+         * 内核在跑（已报出片源尺寸）就一律按档位算实际宽度：网页流、杜比 P5、图形字幕
+         * 三者的档位表不同，但「档位 = 内核处理宽度」这条语义相同。
+         * 原来只对网页流这么算，P5 片就退回片源尺寸，控制条写着 3840×1608 而大屏实际
+         * 只有 1920×804。
+         */
+        if (srcW >= 64 && srcH >= 64) {
             val tier = com.xxxx.emby_vr.panel.qualityStepsFor(
                 kernelActive = true,
-                isWeb = true,
-                isP5 = false,
+                isWeb = webPlayingNow || webStreamSite != null,
+                isP5 = com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource,
                 stereo3d = com.xxxx.emby_vr.vr.VrTuning.stereo3dOn,
             ).entries.getOrNull(qualityIndex)?.first ?: srcW
             val w = if (tier in 64 until srcW) tier else srcW
@@ -4030,6 +4034,11 @@ class MainActivity : ComponentActivity() {
              */
 
             if (isWeb || com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder) {
+                /*
+                 * 起播时画质档位归位到第一档：上一条片子选的档位（比如 Emby 片的「1 兆」= 第 3 档）
+                 * 带到 P5 这条只有两档的路上就没有对应项，菜单里一个都不亮。
+                 */
+                qualityIndex = 0
                 Log.i(TAG, "起播走 mpv 内核（杜比视界 Profile 5 或选了图形字幕，片源 ${com.xxxx.emby_vr.player.PlaybackFlags.videoDescriptor}，" +
                     "版本 ${com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionProfile ?: "未探到"}）")
                 mpvBackend?.stop()

@@ -294,17 +294,17 @@ val SPEED_STEPS = listOf(0.5f, 1.0f, 1.5f, 2.0f)
 
 /** 视频质量档位：值 = 码率上限（0 表示原画不转码）。
  *
- *  标签**两个路径统一**成「原画 / 1080 / 1024 / 768」（父亲 2026-10-10）：
- *   · 普通片：三档 = 让服务端转码到该档（约 10 / 5 / 1 兆），原画 = 直推不转码；
- *   · 内核片（杜比 P5 / 图片字幕）：三档 = 内核处理分辨率上限 1080 / 1024 / 768 宽，
- *     原画 = 内核 1280 宽（1280 是上限，超了出黑纹）。
- *  每个档位具体是什么意思，写在行尾的 value 里（见下面两个 VALUES 表），不会含糊。
+ *  标签按**实际能控制的东西**写，不写假分辨率（父亲 2026-11-05 定）：
+ *   · Emby 普通片：只发码率上限，转成多宽由服务端按码率自己定 —— 所以叫「原画 / 10 兆 / 5 兆 / 1 兆」，
+ *     实际分辨率看控制条上显示的当前值；
+ *   · 内核片（杜比 P5 / 图片字幕）：控的是内核处理宽度，见下面 P5 表；
+ *   · 网络视频（内核）：控的是内核处理宽度，见 WEB 表。
  */
 val QUALITY_STEPS = listOf(
     0 to "原画",
-    10_000_000 to "1080",
-    5_000_000 to "1024",
-    1_000_000 to "768",
+    10_000_000 to "10 兆",
+    5_000_000 to "5 兆",
+    1_000_000 to "1 兆",
 )
 
 /**
@@ -317,13 +317,8 @@ val QUALITY_STEPS = listOf(
  * 3D 每眼宽度单列一条参数，等实测出档位再进菜单。
  */
 val EMBY_QUALITY_STEPS = QUalitySteps(
-    listOf(0 to "原画", 10_000_000 to "1080", 5_000_000 to "1024", 1_000_000 to "768"),
-    listOf(
-        "",
-        "服务端转码 10 Mbps",
-        "服务端转码 5 Mbps",
-        "服务端转码 1 Mbps",
-    ),
+    listOf(0 to "原画", 10_000_000 to "10 兆", 5_000_000 to "5 兆", 1_000_000 to "1 兆"),
+    listOf("", "", "", ""),
 )
 val P5_QUALITY_STEPS = QUalitySteps(
     listOf(1920 to "1920", 1280 to "1280"),
@@ -563,9 +558,15 @@ private fun MoreMenu(menu: MenuState, playing: Boolean, webPlaying: Boolean) {
             MenuRow(
                 label = label,
                 value = when (k) {
+                    /*
+                     * 一级菜单要能看出二级里选的是哪一项：档位说明优先，
+                     * 没写说明的档（原画 / 各码率档）就用档名本身，不能留空。
+                     */
                     MenuKind.QUALITY ->
-                        qualityStepsFor(menu.kernelActive, menu.isWeb, menu.isP5, menu.stereo3d)
-                            .hints.getOrNull(menu.quality) ?: ""
+                        qualityStepsFor(menu.kernelActive, menu.isWeb, menu.isP5, menu.stereo3d).let { s ->
+                            s.hints.getOrNull(menu.quality)?.takeIf { it.isNotBlank() }
+                                ?: s.entries.getOrNull(menu.quality)?.second ?: ""
+                        }
                     MenuKind.MODE -> PLAY_MODE_STEPS.getOrNull(menu.playMode) ?: ""
                     MenuKind.AUDIO -> menu.audioTracks.firstOrNull { it.selected }?.label ?: ""
                     else -> {
