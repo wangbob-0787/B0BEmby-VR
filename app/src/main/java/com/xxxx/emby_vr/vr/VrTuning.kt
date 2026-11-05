@@ -106,6 +106,15 @@ object VrTuning {
     @Volatile
     var videoSurfaceMaxW: Int = 1280
 
+    /**
+     * 「原画」档与网页流的宽度上限（0 = 按片源原分辨率，最高 3840）。
+     *
+     * 试宽度用：改完不用重装，动一下画质菜单就按新值重建。Emby 的杜比视界片另走
+     * videoSurfaceMaxW —— 那条链要单独压低保黑纹不出，不能和这里共用一个数。
+     */
+    @Volatile
+    var rawMaxW: Int = 1920
+
     /** 地面坡度（2026-10-22）：每往前走 1 米视线变化多少米；默认按影厅实测 0.35（0 = 平地） */
     @Volatile
     var floorSlope: Float = 0.35f
@@ -747,6 +756,10 @@ object VrTuning {
         }
         flag("hide_projection", KEY_HIDE_PROJECTION, "投影层不提交（只留 quad 层）")
         flag("test_pattern", KEY_TEST_PATTERN, "固定测试图（切断解码输入链）")
+        raw["raw_max_w"]?.toIntOrNull()?.let {
+            rawMaxW = it.coerceIn(0, 3840)
+            applied += "原画宽度上限 ${rawMaxW}（0=片源原尺寸）"
+        }
         raw["video_layer_max_w"]?.toFloatOrNull()?.let {
             VrNative.setTuning(KEY_VIDEO_LAYER_MAX_W, it)
             applied += "视频层宽度上限 ${it.toInt()}（0=原分辨率）"

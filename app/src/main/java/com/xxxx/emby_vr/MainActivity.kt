@@ -4064,8 +4064,18 @@ class MainActivity : ComponentActivity() {
                  * 银幕画布本身只有 1920 宽，按 1920 解出来的画面就是"银幕用够"的程度，
                  * 再高的分辨率肉眼看不到，只会把显存吃光。
                  */
-                val cap = if (webFirst != null) 1920
-                else com.xxxx.emby_vr.vr.VrTuning.videoSurfaceMaxW.let { if (it > 0) it else 1920 }
+                /*
+                 * 两条链的上限各自可调：
+                 *   网页流 / 原画档 → raw_max_w（0 = 按片源，最高 3840）
+                 *   Emby 片源（含杜比视界 P5）→ video_surface_w（那条链要单独压低保黑纹）
+                 */
+                val cap = if (webFirst != null) {
+                    com.xxxx.emby_vr.vr.VrTuning.rawMaxW.let {
+                        if (it > 0) it.coerceAtMost(3840) else 3840
+                    }
+                } else {
+                    VrTuning.videoSurfaceMaxW.let { if (it > 0) it else 1920 }
+                }
                 val vw = if (srcW > cap) cap else srcW
                 val vh = (srcH.toLong() * vw / srcW).toInt().coerceAtLeast(64)
                 renderer.setVideoBufferSize(vw, vh)
@@ -5146,23 +5156,27 @@ class MainActivity : ComponentActivity() {
     /**
      * 内核处理分辨率的**硬上限：1280 宽**（父亲 2026-10-10 明确：超过就出黑纹）。
      *
-     * 所有档位、所有入口都被这个值卡住 —— 即使以后有人加了更大的档位、
-     * 或者调参文件写了更大的 `video_surface_w`，也不会真的把内核推过这条线。
+     * 这一条原来写死 1280（治黑纹时代留下的），结果网页 4K 也被一并压在这个宽度上。
+     * 现在改成运行时可调：`raw_max_w`（0 = 按片源原分辨率，最高 3840），
+     * 调完动一下画质菜单就按新值重建，不用重装 —— 试到哪一档不出黑纹为止。
      */
-    private val kKernelWidthCap = 1280
+    private val kKernelWidthCap: Int
+        get() = com.xxxx.emby_vr.vr.VrTuning.rawMaxW.let {
+            if (it > 0) it.coerceAtMost(3840) else 3840
+        }
 
     /**
      * 画质档位 → **内核（mpv）处理分辨率的上限宽度**（父亲 2026-10-10 定）。
      *
      * 内核那条链每帧开销与像素量成正比，所以档位在这里的语义是"内核跑多大"：
-     *   原画          → 1280（**就是上限**，最高画质）
+     *   原画          → raw_max_w 当前值（可调到片源原分辨率，最高 3840）
      *   1080p 10 兆   → 1080
      *   1080p 5 兆    → 1024
      *   1080p 1 兆    → 768
      */
     private fun kernelWidthForQuality(index: Int): Int =
         (when (index) {
-            0 -> 1280
+            0 -> kKernelWidthCap      // 原画 = 当前上限（运行时可调）
             1 -> 1080
             2 -> 1024
             else -> 768
@@ -5178,8 +5192,7 @@ class MainActivity : ComponentActivity() {
         val vh = (srcH.toLong() * vw / srcW).toInt().coerceAtLeast(64)
         renderer.setVideoBufferSize(vw, vh)
         m.setSurfaceSize(vw, vh)
-        com.xxxx.emby_vr.vr.VrTuning.videoSurfaceMaxW = w
-        Log.i(TAG, "内核处理分辨率 → ${vw}x${vh}（上限宽 $w，硬上限 $kKernelWidthCap）")
+        Log.i(TAG, "内核处理分辨率 → ${vw}x${vh}（档位上限宽 $w）")
         return true
     }
 
