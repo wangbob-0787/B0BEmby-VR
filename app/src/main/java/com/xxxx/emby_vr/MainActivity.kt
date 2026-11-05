@@ -4074,7 +4074,9 @@ class MainActivity : ComponentActivity() {
                         if (it > 0) it.coerceAtMost(3840) else 3840
                     }
                 } else {
-                    VrTuning.videoSurfaceMaxW.let { if (it > 0) it else 1920 }
+                    com.xxxx.emby_vr.vr.VrTuning.videoSurfaceMaxW.let {
+                        if (it > 0) it else 1920
+                    }
                 }
                 val vw = if (srcW > cap) cap else srcW
                 val vh = (srcH.toLong() * vw / srcW).toInt().coerceAtLeast(64)
