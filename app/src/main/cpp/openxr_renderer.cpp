@@ -536,10 +536,14 @@ void main() {
              */
             float offX = edgeW * off * 2.0 * float(reach) / max(uLowResWidth, 1.0);
             bool doFill = (uFill == 1 && hole > 0.5);
-            float here = depthAt(vUv);
             /* uEdgeColorThr <= 0 = 关掉颜色这一条 */
             if (doFill && uEdgeColorThr > 0.0) doFill = colorEdge(vUv);
             if (doFill) {
+                /*
+                 * 这一读只有补洞分支用得到。放在分支外会让每个像素都白付 4 次深度采样
+                 * （uSmoothRead=1 时 depthAt 走三次插值），而绝大多数像素根本不补洞。
+                 */
+                float here = depthAt(vUv);
                 float far = here;
                 bool found = false;
                 /* 搜索半径、取层策略由 stereo_fill_px / stereo_fill_pick 运行时控制 */
