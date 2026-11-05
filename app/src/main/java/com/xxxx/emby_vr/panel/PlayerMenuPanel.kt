@@ -318,7 +318,12 @@ val QUALITY_STEPS = listOf(
  */
 val EMBY_QUALITY_STEPS = QUalitySteps(
     listOf(0 to "原画", 10_000_000 to "1080", 5_000_000 to "1024", 1_000_000 to "768"),
-    listOf("服务端不限制（片源原码率）", "服务端转码 10 Mbps", "服务端转码 5 Mbps", "服务端转码 1 Mbps"),
+    listOf(
+        "不转码，按片源原尺寸/原码率",
+        "服务端转码 10 Mbps",
+        "服务端转码 5 Mbps",
+        "服务端转码 1 Mbps",
+    ),
 )
 val P5_QUALITY_STEPS = QUalitySteps(
     listOf(1920 to "1920", 1280 to "1280"),
