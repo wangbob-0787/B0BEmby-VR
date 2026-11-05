@@ -470,6 +470,14 @@ object VrTuning {
      * 帧率从 54~60 抬到 65~68、GPU 占用从 96% 掉到 55~60%，这一层值得单独给档位。
      */
     const val KEY_CINEMA_SCALE = 78
+
+    /**
+     * 3D 每只眼的宽度上限（0 = 不限制）。
+     *
+     * 2D 一条链、3D 两条链，同一个宽度在 3D 下像素量翻倍：实测 4K 片源按每眼
+     * 3840 跑，GPU 帧时间 31~45ms、掉到 22 帧；收到 1920 才回得到 72。
+     */
+    const val KEY_STEREO_EYE_W = 79
     /**
      * 抓帧的毫秒下限（0 = 纯按帧数，默认）。
      *
@@ -824,6 +832,12 @@ object VrTuning {
         raw["warp_scale"]?.toFloatOrNull()?.let {
             VrNative.setTuning(KEY_WARP_SCALE, it)
             applied += "warp缩放 $it"
+        }
+        raw["stereo_eye_w"]?.toIntOrNull()?.let {
+            if (it >= 0 && it <= 3840) {
+                VrNative.setTuning(KEY_STEREO_EYE_W, it.toFloat())
+                applied += "3D每眼宽度 $it"
+            }
         }
         raw["cinema_scale"]?.toFloatOrNull()?.let {
             if (it >= 0.4f && it <= 1.0f) {

@@ -2736,6 +2736,14 @@ constexpr float kStereoDispComfort = 9.f / 1000.f;     // 舒适档 9‰
  */
 constexpr int kStereo3dEyeW = 2560;
 /*
+ * 3D 时每只眼的宽度上限（运行时可调，vr-tuning 的 stereo_eye_w）。
+ *
+ * 必须和 2D 分开：2D 一条链、3D 两条链，同一个宽度在 3D 下像素量翻倍。
+ * 实测 4K 片源在 3D 下按每眼 3840 跑，GPU 帧时间 31~45ms、掉到 22 帧；
+ * 收到 1920 才回得到 72。
+ */
+std::atomic<int> gStereoEyeW{1920};
+/*
  * 深度抓帧节奏：每这么多个新视频帧推理一次（DepthRay 日志：depth every 3rd frame）。
  *
  * 为什么不是每帧：推理在 CPU 上占四个核，每帧都抓会和渲染线程的读回、解码抢 CPU；
@@ -7979,6 +7987,11 @@ void frameLoop(VrContext &c) {
              */
             if (userCap <= 0 && gStereo3d.load() != 0) userCap = kStereo3dEyeW;
             if (userCap > 0) capW = userCap;
+            /* 3D 时再压一道每眼上限：两条链同时跑，像素量是 2D 的两倍 */
+            if (gStereo3d.load() != 0) {
+                const int eyeW = gStereoEyeW.load();
+                if (eyeW > 0 && capW > eyeW) capW = eyeW;
+            }
             if (vw > capW || vh > kMaxVideoH) {
                 const float k = fminf((float) capW / (float) vw,
                                       (float) kMaxVideoH / (float) vh);
@@ -9692,6 +9705,13 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             if (value >= 0.4f && value <= 1.0f) {
                 gWarpScale.store(value);
                 VLOGI("调参 → warp 缩放 %.2f（视差计算按此比例降采样）", (double) value);
+            }
+            return;
+        /* 79 = 3D 每眼宽度上限（0 = 不限制；实测 1920 稳 72，3840 掉到 22 帧） */
+        case 79:
+            if (value >= 0.f && value <= 3840.f) {
+                gStereoEyeW.store((int) value);
+                VLOGI("调参 → 3D 每眼宽度上限 %d", (int) value);
             }
             return;
         /* 78 = 影厅图层渲染比例（0.4~1.0；越小越省填充，画质影响肉眼几乎看不出） */
