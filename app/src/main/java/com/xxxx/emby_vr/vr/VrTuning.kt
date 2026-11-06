@@ -213,6 +213,19 @@ object VrTuning {
     var depthThreads: Int = 4
 
     /**
+     * 深度推理后端（调参 depth_backend，默认 0）。
+     *
+     * 0 = 默认（XNNPACK）。整型动态范围量化的卷积在 XNNPACK 上没有快内核，实测 113ms。
+     * 1 = NNAPI 委托。参考实现（DepthRay）在同一颗芯片上「cpu, input 256x256」推理 45ms，
+     *     它用的模型文件与我们完全相同，差别只能在驱动层的整型加速 —— NNAPI 就是那一层。
+     * 2 = 关掉 XNNPACK。对照档：用来判断默认那条到底有没有把加速用上。
+     *
+     * 改文件后要重新起播才生效（解释器只在开 3D 时建一次）。
+     */
+    @Volatile
+    var depthBackend: Int = 0
+
+    /**
      * 深度推理走哪条：1 = 显卡委托（默认，参考实现的路子）0 = CPU 四线程。
      *
      * 实测（2026-11-01）：CPU 上 256 int8 单次 110ms、512 fp16 单次 229ms；
@@ -827,6 +840,18 @@ object VrTuning {
         raw["depth_threads"]?.toIntOrNull()?.let {
             depthThreads = it.coerceIn(1, 8)
             applied += "深度推理线程 $depthThreads（重新起播生效）"
+        }
+        raw["depth_backend"]?.toIntOrNull()?.let {
+            depthBackend = when (it) {
+                1 -> 1
+                2 -> 2
+                else -> 0
+            }
+            applied += "深度后端 " + when (depthBackend) {
+                1 -> "NNAPI"
+                2 -> "关闭 XNNPACK"
+                else -> "默认"
+            }
         }
         raw["stereo_stretch"]?.toFloatOrNull()?.let {
             if (it >= 0f && it <= 1f) {

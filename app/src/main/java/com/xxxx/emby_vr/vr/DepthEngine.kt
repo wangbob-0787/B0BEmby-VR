@@ -7,6 +7,7 @@ import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
 import org.tensorflow.lite.gpu.CompatibilityList
 import org.tensorflow.lite.gpu.GpuDelegate
+import org.tensorflow.lite.nnapi.NnApiDelegate
 import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -160,6 +161,7 @@ object DepthEngine {
     private var initedSig = ""
     /** 显卡委托对象：必须自己留着，解释器关闭后再关它 */
     private var gpu: GpuDelegate? = null
+    private var nnapi: NnApiDelegate? = null
     private var inW = 0
     private var inH = 0
     private var outW = 0
@@ -209,6 +211,8 @@ object DepthEngine {
         interp = null
         runCatching { gpu?.close() }
         gpu = null
+        runCatching { nnapi?.close() }
+        nnapi = null
         ready = false
         batchStop = true
         batchThread = null
@@ -266,6 +270,19 @@ object DepthEngine {
                     }.getOrNull()
                 }
                 /*
+                 * NNAPI 委托（调参 depth_backend=1）：参考实现在同一颗芯片上用处理器跑到
+                 * 45 毫秒，我们走 XNNPACK 是 113 毫秒，模型文件却是同一个 —— 差别只能在
+                 * 驱动层整型加速，这条路就是那一层。建不起来就当没设，不换模型。
+                 */
+                if (gpuDelegate == null && VrTuning.depthBackend == 1) {
+                    nnapi = runCatching { NnApiDelegate() }
+                        .onFailure { Log.w(TAG, "深度推理：NNAPI 委托建不起来（${it.message}）") }
+                        .getOrNull()
+                    nnapi?.let { opts.addDelegate(it) }
+                }
+                /* depth_backend=2：关掉 XNNPACK，对照默认那条到底有没有把加速用上 */
+                if (VrTuning.depthBackend == 2) opts.setUseXNNPACK(false)
+                /*
                  * 退回 CPU 时别继续跑大模型：fp16 那款是给显卡准备的，跑在 CPU 上比 int8
                  * 小模型慢一倍，是这块芯片上最差的一条组合。换模型只在这里做一次，
                  * 不进热路径。
@@ -299,10 +316,15 @@ object DepthEngine {
                 interp = it
                 gpu = gpuDelegate
                 ready = true
-                initedSig = "${VrTuning.depthGpu}|${VrTuning.depthModel}|${VrTuning.depthThreads}|${VrTuning.depthRemote}"
+                initedSig = "${VrTuning.depthGpu}|${VrTuning.depthModel}|${VrTuning.depthThreads}|${VrTuning.depthRemote}|${VrTuning.depthBackend}"
+                val backendName = when {
+                    gpuDelegate != null -> "显卡推理"
+                    nnapi != null -> "NNAPI 委托"
+                    VrTuning.depthBackend == 2 -> "CPU ${VrTuning.depthThreads} 线程（已关 XNNPACK）"
+                    else -> "CPU ${VrTuning.depthThreads} 线程"
+                }
                 Log.i(TAG, "深度模型就绪：${asset.substringAfterLast('/')} 输入 ${inW}x${inH}，" +
-                    "输出 ${outW}x${outH}，" +
-                    (if (gpuDelegate != null) "显卡推理" else "CPU ${VrTuning.depthThreads} 线程"))
+                    "输出 ${outW}x${outH}，$backendName")
                 VrNative.setDepthInputSize(inW, inH)
             } catch (t: Throwable) {
                 Log.e(TAG, "深度模型加载失败：${t.message}")
