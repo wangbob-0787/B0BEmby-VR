@@ -2686,7 +2686,8 @@ double gSwapWaitMs = 0.0;
  * 参数写在 /sdcard/Android/data/com.xxxx.emby_vr/files/vr-tuning.txt，
  * 界面层每秒读一次，变化就调这里的接口。戴着调参比反复编译划算得多。
  */
-std::atomic<float> gSuperSample{1.25f};      // 双眼渲染超采样倍数（下次起播生效）
+/* 默认 1.0 是实测值：3D 全开时 1.25 让显卡每帧 21.3ms（72Hz 预算 13.9），帧率掉到 50 并出黑纹 */
+std::atomic<float> gSuperSample{1.0f};      // 双眼渲染超采样倍数（下次起播生效）
 /*
  * PICO 官方合成层能力（父亲 2026-10-14：「1、2、3 都做」）。
  *
@@ -2694,7 +2695,8 @@ std::atomic<float> gSuperSample{1.25f};      // 双眼渲染超采样倍数（�
  * 而 GPU 吃紧正是黑纹（重投影）的根因。官方这三个能力都跑在合成器里，代价固定。
  * 三个都能在 vr-tuning.txt 里改（layer_boost / foveation / adaptive_res）。
  */
-std::atomic<int> gLayerBoost{7};      // 视频层增强：0关 1超采样 2超采样高 3锐化 4锐化高 5自适应锐化 6自适应锐化高 7超分辨率
+/* 默认关：合成器那条增强链和 3D 抢同一块显卡，开着时显卡占用 99%、帧率在预算边缘抖 */
+std::atomic<int> gLayerBoost{0};      // 视频层增强：0关 1超采样 2超采样高 3锐化 4锐化高 5自适应锐化 6自适应锐化高 7超分辨率
 std::atomic<int> gFoveationLevel{2};  // 固定注视点渲染：0关 1低 2中 3高
 std::atomic<int> gAdaptiveRes{2};     // 自适应分辨率：0关 1高画质 2平衡 3省电
 XrFoveationProfileFB gFoveationProfile = XR_NULL_HANDLE;
@@ -2783,13 +2785,14 @@ constexpr int kDepthUpW = 2560;
  */
 std::atomic<int> gStereoOcclDiv{4};
 /*
- * 牛顿修正轮数（调参 key 67，stereo_newton，0~2，默认 2 = 参考实现）。
+ * 牛顿修正轮数（调参 key 67，stereo_newton，0~2，默认 1）。
  *
- * 每轮 6 次深度采样（depthAt 四次 + 左右邻点各一次），两轮就是 12 次。这是**每帧每眼**
- * 都在跑的开销，不是每三帧，所以它和遮挡表的定位不同。配合 stereo_smooth=0 能把正常
- * 像素的采样从 13 次压到 4 次，代价是大视差处残差多留一点（前景边缘略糊）。
+ * 每轮 6 次深度采样（depthAt 四次 + 左右邻点各一次），两轮就是 12 次，**每帧每眼**都跑。
+ * 默认取 1 是实测换来的：3D 全开时两轮让显卡每帧 14.4~17.5ms，超出 72Hz 的 13.9ms 预算，
+ * 表现是帧率 56~65 抖动加黑纹；降到一轮后显卡 9.6~11.4ms、迟到帧 0、帧率钉死 72。
+ * 代价是大视差处残差多留一点，前景边缘略糙。
  */
-std::atomic<int> gStereoNewton{2};
+std::atomic<int> gStereoNewton{1};
 /* 补洞搜索半径（画面像素）与取层策略：父亲实测补洞是边缘游移的来源，两项都要能运行时对比 */
 std::atomic<float> gStereoFillPx{24.f};
 std::atomic<int> gStereoFillPick{1};
