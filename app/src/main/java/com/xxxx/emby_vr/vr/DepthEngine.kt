@@ -347,7 +347,7 @@ object DepthEngine {
          * 远程/本地也算"后端"的一种：从远程切回本地时必须重建解释器，
          * 否则 ready 还是 false，会一直空转不出深度（切回本地却没 3D 就是这个）。
          */
-        val wantSig = "${VrTuning.depthGpu}|${VrTuning.depthModel}|${VrTuning.depthThreads}|${VrTuning.depthRemote}"
+        val wantSig = "${VrTuning.depthGpu}|${VrTuning.depthModel}|${VrTuning.depthThreads}|${VrTuning.depthRemote}|${VrTuning.depthBackend}"
         if (wantSig != initedSig) {
             val ctx = appContext
             if (ctx != null && !busy.get()) {
