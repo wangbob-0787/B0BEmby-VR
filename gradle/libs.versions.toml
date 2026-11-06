@@ -20,7 +20,7 @@ nanohttpd = "2.3.1"
 # Khronos 官方 Android OpenXR loader（prefab 包，含头文件与 .so）
 openxrLoader = "1.1.49"
 # 实时 2D→3D 的深度模型运行时（ZipDepth 的 .tflite 用）
-tensorflowLite = "2.16.1"
+tensorflowLite = "2.17.0"
 
 [libraries]
 libmpv = { group = "dev.jdtech.mpv", name = "libmpv", version.ref = "libmpv" }
