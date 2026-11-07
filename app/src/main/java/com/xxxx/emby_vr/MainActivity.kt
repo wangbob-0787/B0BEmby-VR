@@ -3683,14 +3683,14 @@ class MainActivity : ComponentActivity() {
     private fun playWebStream(obj: org.json.JSONObject) {
         lastWebDeliverAt = System.currentTimeMillis()
         /*
-         * 网页流不经过「探测片源是不是杜比视界」那段（EmbyApi.getPlaybackInfo），
-         * 那几个标记是进程级的，播过一部杜比片后会一直留着 —— 菜单因此把这部网页片
-         * 当成 P5，显示 1920/1280 两档宽度（父亲 2026-11-07 报「画质菜单显示错的」）。
-         * 交付网页流这一刻认定：不是杜比视界片源，内核宽度按网页那套档位走。
+         * 网页流起播也走同一套换片清场（父亲 2026-11-07）。
+         *
+         * 以前这里只复位银幕比例和画布记账，其余"跟着上一部片子走"的东西全留着：
+         * 流清单、字幕表、片名 logo、菜单里的信息/演职人员、片头时间轴、杜比格式标记。
+         * 结果是网页里换片后，菜单显示上一部那套（P5 的 1920/1280）、字幕飘着上一部的台词。
+         * 清场统一在 clearForNewMedia 一处做，Emby 片与网页片不再各清各的。
          */
-        com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource = false
-        com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionProfile = null
-        com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder = false
+        clearForNewMedia()
         chainLog(
             "⑧起播",
             "站=" + siteTagOf(obj) + " 集=" + obj.optString("ep").ifBlank { obj.optString("vid") } +
@@ -5528,8 +5528,13 @@ class MainActivity : ComponentActivity() {
         // 放在这里：无论打开哪个菜单（含"更多"那条当前值）都能拿到正确的说明。
         menuState.kernelActive = ctl.kernelActive
         /* 档位按路径分表：网页流与杜比 P5 各自不同，见 qualityStepsFor 的说明 */
-        menuState.isWeb = webStreamSite != null
-        menuState.isP5 = com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource
+        menuState.isWeb = webStreamSite != null || webPlayingNow
+        /*
+         * 网页流一律不算杜比 P5（父亲 2026-11-07）：那条路根本没有杜比视界，
+         * 标记只可能来自上一部 Emby 片。这里再挡一道，清场漏了也不会显示错档位。
+         */
+        menuState.isP5 = com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource &&
+            !menuState.isWeb
         menuState.stereo3d = com.xxxx.emby_vr.vr.VrTuning.stereo3dOn
         when (kind) {
             com.xxxx.emby_vr.panel.MenuKind.SPEED -> menuState.speed = playSpeed
@@ -7383,7 +7388,14 @@ class MainActivity : ComponentActivity() {
         kernelFallbackDone = false
         kernelFallbackJob?.cancel()
         kernelFallbackJob = null
-        val hadPlayback = player != null || currentMediaId.isNotBlank()
+        /*
+         * hadPlayback 要算上内核与网页流（父亲 2026-11-07）：
+         * 网页流/内核播放时 player 与 currentMediaId 都可能是空的，原来只按这两项判，
+         * 结果是"网页里换片"走了起播分支、旧的那一路没人停 —— 旧字幕轨、旧流还在，
+         * 新片旁边飘着上一部的台词。
+         */
+        val hadPlayback = player != null || currentMediaId.isNotBlank() ||
+            mpvBackend != null || webStreamSite != null || webPlayingNow
         if (hadPlayback) {
             Log.i(TAG, "换片：停掉旧片、清空银幕 / 弹幕 / 字幕 / logo，等新片起播")
             /*
@@ -7490,6 +7502,12 @@ class MainActivity : ComponentActivity() {
          * 不清的话下一部片子会莫名其妙走内核。
          */
         com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForImageSubs = false
+        /*
+         * 片源格式判定属于「上一部」的结论，换片这一刻一并丢掉（父亲 2026-11-07）：
+         * 杜比视界标记残留会让这一部普通片被当成 P5，画质菜单显示 1920/1280 两档、
+         * 解码路径也可能被带偏。清成未知，由本次取播放信息重新探。
+         */
+        com.xxxx.emby_vr.player.PlaybackFlags.clearSourceFormat()
         /*
          * 等待期这一层要露出来 —— 它上面要显示「即将播放：片名」那行提示
          * （弹幕内容与 logo 仍然等第一帧，见 logoBitmapProvider 的门控）。

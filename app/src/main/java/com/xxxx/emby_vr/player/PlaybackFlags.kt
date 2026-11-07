@@ -79,12 +79,24 @@ object PlaybackFlags {
      */
     var mediaSourceId: String? = null
 
+    /**
+     * 丢掉「上一部片源」的格式判定。
+     *
+     * 这几个字段是**本次探测的结果**，不是设置项：新片起播前必须先清成"未知"，
+     * 由本次探测重新赋值。不清就会拿上一部的结论去决定这一部走哪条解码、
+     * 画质菜单显示哪套档位（父亲 2026-11-07 现场：网页里播普通片，
+     * 菜单还是上一部杜比片的 1920/1280 两档）。
+     */
+    fun clearSourceFormat() {
+        dolbyVisionSource = false
+        dolbyVisionProfile = null
+        useKernelDecoder = false
+        videoDescriptor = null
+    }
+
     fun reset() {
         forceKernelForImageSubs = false
-        dolbyVisionSource = false
-        useKernelDecoder = false
-        dolbyVisionProfile = null
-        videoDescriptor = null
+        clearSourceFormat()
         videoAspect = null
         videoWidth = 0
         videoHeight = 0
