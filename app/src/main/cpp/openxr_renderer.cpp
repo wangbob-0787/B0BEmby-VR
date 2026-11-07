@@ -8222,13 +8222,26 @@ void frameLoop(VrContext &c) {
                     const long long nowD = (long long) nowMs();
                     if (nowD - lastDiagMs >= 1000) {
                         lastDiagMs = nowD;
+                        /*
+                         * 偏移表 / 上采样报**当前真正在用的那一份**（父亲 2026-11-07）。
+                         *
+                         * 环形缓冲启用时着色器读槽内那套（ringUp / ringOffsets），
+                         * 而这里原来固定报 c.offsets / c.depthUp —— 两者在环路径根本不建，
+                         * 日志于是永远写「偏移表=0 上采样=0」，看着像没开，实际在跑，
+                         * 排查时会把方向带偏。
+                         */
+                        const GLuint diagOffsets = c.ringActive ? c.ringOffsets.tex : c.offsets.tex;
+                        const GLuint diagDepthUp = c.ringActive ? c.ringUp.tex : c.depthUp.tex;
                         VLOGI("3D 诊断：开关=%d 环=%d 左层=%d 深度图=%d 偏移表=%d 上采样=%d"
                               " 深度龄=%lldms 视差=%.4f 每眼=%dx%d 上采样目标=%dx%d"
-                              "｜环开关=%d 环程序=%d 环跳过码=%d 环槽=%d",
+                              " 深度分辨率=%dx%d｜环开关=%d 环程序=%d 环跳过码=%d 环槽=%d",
                               gStereo3d.load(), c.ringActive ? 1 : 0, c.videoLayerROk ? 1 : 0,
-                              c.depth.tex != 0 ? 1 : 0, c.offsets.tex != 0 ? 1 : 0,
-                              c.depthUp.tex != 0 ? 1 : 0, dAge, (double) c.depthDisp,
-                              vw, vh, upW0, upH0, gStereoRing.load(), c.ringProg != 0 ? 1 : 0,
+                              c.depth.tex != 0 ? 1 : 0, diagOffsets != 0 ? 1 : 0,
+                              diagDepthUp != 0 ? 1 : 0, dAge, (double) c.depthDisp,
+                              vw, vh, upW0, upH0,
+                              c.ringActive ? c.ringUp.w : c.depthUp.w,
+                              c.ringActive ? c.ringUp.h : c.depthUp.h,
+                              gStereoRing.load(), c.ringProg != 0 ? 1 : 0,
                               c.ringSkipCode, c.ringCount);
                     }
                 }
