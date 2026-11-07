@@ -360,7 +360,13 @@ fun qualityStepsFor(
         !kernelActive -> EMBY_QUALITY_STEPS
         isP5 -> P5_QUALITY_STEPS
         isWeb -> WEB_QUALITY_STEPS
-        else -> P5_QUALITY_STEPS
+        /*
+         * 其余情形一律是「按内核处理宽度调档」：网页流，以及选了图形字幕被推上内核的
+         * Emby 片子。这里曾经兜底给 P5 档，而 P5 标记是进程级残留（网页流根本不经过
+         * 探测杜比那段代码），结果是网页里播普通片、画质菜单却显示 P5 的 1920/1280 两档。
+         * P5 档只属于确认过是 Profile 5 的片源，不能当默认值。
+         */
+        else -> WEB_QUALITY_STEPS
     }
 
 /** 播放模式 */

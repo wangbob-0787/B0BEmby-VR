@@ -3682,6 +3682,15 @@ class MainActivity : ComponentActivity() {
 
     private fun playWebStream(obj: org.json.JSONObject) {
         lastWebDeliverAt = System.currentTimeMillis()
+        /*
+         * 网页流不经过「探测片源是不是杜比视界」那段（EmbyApi.getPlaybackInfo），
+         * 那几个标记是进程级的，播过一部杜比片后会一直留着 —— 菜单因此把这部网页片
+         * 当成 P5，显示 1920/1280 两档宽度（父亲 2026-11-07 报「画质菜单显示错的」）。
+         * 交付网页流这一刻认定：不是杜比视界片源，内核宽度按网页那套档位走。
+         */
+        com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource = false
+        com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionProfile = null
+        com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder = false
         chainLog(
             "⑧起播",
             "站=" + siteTagOf(obj) + " 集=" + obj.optString("ep").ifBlank { obj.optString("vid") } +
