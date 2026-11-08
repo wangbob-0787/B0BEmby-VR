@@ -5222,8 +5222,20 @@ class MainActivity : ComponentActivity() {
 
     /** 视频质量：换码率上限重起播（服务端据此决定转码档位） */
     private fun applyQuality(index: Int) {
-        qualityIndex = index.coerceIn(0, com.xxxx.emby_vr.panel.QUALITY_STEPS.size - 1)
-        Log.i(TAG, "视频质量 → ${com.xxxx.emby_vr.panel.QUALITY_STEPS[qualityIndex].second}")
+        /*
+         * 上限必须按**当前这一条播放路径**的档位表来夹，不能用固定的四档表：
+         * 各路径档位数不同（Emby 五档、网页三档、P5 两档、3D 三档），用错表的结果是
+         * 多出来的档位点不上 —— 2026-11-08 父亲实测「点 1 兆跳到 5 兆」，就是这里
+         * 按四档夹、而 Emby 已改成五档。
+         */
+        val table = com.xxxx.emby_vr.panel.qualityStepsFor(
+            kernelActive = ctl.kernelActive,
+            isWeb = webStreamSite != null,
+            isP5 = com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource,
+            stereo3d = com.xxxx.emby_vr.vr.VrTuning.stereo3dOn,
+        )
+        qualityIndex = index.coerceIn(0, (table.entries.size - 1).coerceAtLeast(0))
+        Log.i(TAG, "视频质量 → ${table.entries.getOrNull(qualityIndex)?.second ?: qualityIndex}")
         /*
          * 内核（Profile 5）路径**不重起播**（2026-10-09 父亲要求）。
          * 这条菜单改的是「让 Emby 转码到什么码率」，而 P5 走直链、服务端不推流，
@@ -5340,7 +5352,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun bitrateForQuality(): Int {
-        val v = com.xxxx.emby_vr.panel.QUALITY_STEPS.getOrNull(qualityIndex)?.first ?: 0
+        /* 这里的码率上限只对 Emby 取流有意义，所以取 Emby 那条表（不是固定的四档表） */
+        val v = com.xxxx.emby_vr.panel.EMBY_QUALITY_STEPS.entries.getOrNull(qualityIndex)?.first ?: 0
         return if (v <= 0) 200_000_000 else v
     }
 
