@@ -229,6 +229,8 @@ object DepthEngine {
         inW = 0
         inH = 0
         busy.set(false)
+        /* 释放后签名必须清空：否则下次 init 失败或中途换配置时，wantSig 与旧签名相等就再也不重建 */
+        initedSig = ""
         if (VrNative.loaded) VrNative.setDepthInputSize(0, 0)
         Log.i(TAG, "深度推理：3D 已关，解释器释放（推理线程收工）")
     }
@@ -245,7 +247,16 @@ object DepthEngine {
                 inW = REMOTE_IN_W
                 inH = REMOTE_IN_H
                 ready = true
-                initedSig = "${VrTuning.depthGpu}|${VrTuning.depthModel}|${VrTuning.depthThreads}|1"
+                /*
+                 * 签名必须与 submitFrame 的 wantSig **逐段一致**（2026-11-08 修）。
+                 *
+                 * 原来这里只拼了四段（少了 depthBackend），而 wantSig 是五段 —— 两者永远
+                 * 不相等，于是每一帧都判「后端换了」→ shutdown + init 无限循环：日志里
+                 * 「3D 已关」和「远程模式」交替刷屏，深度帧一次都没发出去，点 15 上一个
+                 * 连接都没有。表现就是深度就绪长期 0、快进后 3D 起不来、看着看着立体消失。
+                 */
+                initedSig = "${VrTuning.depthGpu}|${VrTuning.depthModel}|" +
+                        "${VrTuning.depthThreads}|${VrTuning.depthRemote}|${VrTuning.depthBackend}"
                 if (VrNative.loaded) VrNative.setDepthInputSize(inW, inH)
                 Log.i(TAG, "深度推理：远程模式（点 15，输入 ${inW}x${inH}），本地解释器不建")
                 return
