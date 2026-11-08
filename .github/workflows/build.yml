@@ -50,25 +50,22 @@ jobs:
       - name: 下载 Chromium 132 内核库
         run: |
           mkdir -p app/libs
-          BASE=https://github.com/wuruxu/crwebview/releases/download/2.0.0
-          # 三个大文件在 2026-11-08 对直连持续返回 504（重试 8 次仍 504，不是短时抖动），
-          # 小文件正常 —— 所以按文件逐个换源，直连失败就走镜像。ghproxy.net 实测可下。
-          MIRRORS=("" "https://ghproxy.net/" "https://gh-proxy.com/")
+          # 2026-11-08：crwebview 那几个大资产的浏览器下载链路持续 504（直连与三个镜像全挂，
+          # 重试 8 次仍 504），但同一资产走 API 通道（/releases/assets/<id> + octet-stream）
+          # 返回 206，可正常下 —— 所以这里改走 API，不再拼下载链接。公开仓库免令牌即可。
+          API=https://api.github.com/repos/wuruxu/crwebview
+          LIST=$(curl -sS --retry 5 --retry-all-errors "$API/releases/tags/2.0.0" \
+                 | python3 -c 'import json,sys;d=json.load(sys.stdin);print("\n".join("%s\t%s"%(a["name"],a["id"]) for a in d["assets"]))')
+          if [ -z "$LIST" ]; then echo "::error::拿不到 crwebview 资产清单"; exit 1; fi
           for f in android_crwebview_webkit.WebView-v2.0.0.aar android_webview_resources-debug.aar content-debug.aar ui-debug.aar embedder_support_resources-debug.aar; do
             [ -f "app/libs/$f" ] && continue
-            ok=0
-            for m in "${MIRRORS[@]}"; do
-              echo "下载 $f（${m:-GitHub 直连}）"
-              if curl -fL --retry 3 --retry-delay 5 --retry-all-errors -o "app/libs/$f" "${m}${BASE}/$f" \
-                 && unzip -tq "app/libs/$f" >/dev/null 2>&1; then
-                ok=1; break
-              fi
-              rm -f "app/libs/$f"
-            done
-            if [ "$ok" != 1 ]; then
-              echo "::error::$f 所有来源都失败"
-              exit 1
-            fi
+            id=$(printf '%s\n' "$LIST" | awk -F'\t' -v n="$f" '$1==n{print $2}')
+            if [ -z "$id" ]; then echo "::error::清单里没有 $f"; exit 1; fi
+            echo "下载 $f（asset $id）"
+            curl -fL --retry 8 --retry-delay 10 --retry-all-errors \
+                 -H "Accept: application/octet-stream" \
+                 -o "app/libs/$f" "$API/releases/assets/$id"
+            unzip -tq "app/libs/$f" >/dev/null 2>&1 || { echo "::error::$f 下载不完整"; exit 1; }
           done
           ls -lh app/libs/
 
