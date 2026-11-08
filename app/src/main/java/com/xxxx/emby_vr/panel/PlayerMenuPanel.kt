@@ -317,8 +317,11 @@ val QUALITY_STEPS = listOf(
  * 3D 每眼宽度单列一条参数，等实测出档位再进菜单。
  */
 val EMBY_QUALITY_STEPS = QUalitySteps(
-    listOf(0 to "原画", 10_000_000 to "10 兆", 5_000_000 to "5 兆", 1_000_000 to "1 兆"),
-    listOf("", "", "", ""),
+    listOf(
+        0 to "原画", 30_000_000 to "30 兆", 10_000_000 to "10 兆",
+        5_000_000 to "5 兆", 1_000_000 to "1 兆",
+    ),
+    listOf("", "", "", "", ""),
 )
 val P5_QUALITY_STEPS = QUalitySteps(
     listOf(1920 to "1920", 1280 to "1280"),
