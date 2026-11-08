@@ -703,9 +703,24 @@ object EmbyApi {
              *     比"请服务端烧字幕"（要转码、实测还不烧）干净得多。
              */
             val hdr10Base = looksProfile8 || looksProfile7
+            /*
+             * 纯 HDR10 片源（不带杜比）也走内核（父亲 2026-11-08 实测）。
+             *
+             * 系统解码器把 PQ 信号原样吐出来，而渲染链没有一处做 HDR→SDR 转换，结果整片
+             * 发灰、红色发暗。《兰香如故》S01E02 = 2160p WEB-DL HDR H265 60fps 就是这种。
+             * 同一片用官方客户端**直通也发灰**，只有强制转码才正常 —— 说明发灰是"直通"
+             * 造成的，不是我们独有。客户端侧的正解是交给内核，由 libplacebo 做亮度映射，
+             * 原文件直推、服务端零参与。性能已由两条现成经验背书：网页 4K 走内核、腾讯
+             * 4K60 也走内核，都跑得动。
+             */
+            val isPlainHdr10 = !isDolbyVision && (
+                nameLooksHdr || probeDesc?.contains("HDR", ignoreCase = true) == true
+                )
             val useKernel = (isDolbyVision && (looksProfile5 || !hdr10Base)) ||
+                isPlainHdr10 ||
                 com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForImageSubs
-            Log.i(TAG, "片源判定：杜比视界=$isDolbyVision 版本=$dvProfile HDR10打底=$hdr10Base 走内核=$useKernel" +
+            Log.i(TAG, "片源判定：杜比视界=$isDolbyVision 版本=$dvProfile HDR10打底=$hdr10Base " +
+                "纯HDR10=$isPlainHdr10 走内核=$useKernel" +
                 "（按名=$dvByName 按流=$dvByStream）path=${sourcePath.takeLast(70)}")
             com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource = isDolbyVision
             com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionProfile = dvProfile
