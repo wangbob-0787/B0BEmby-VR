@@ -315,10 +315,10 @@ val SPEED_STEPS = listOf(0.5f, 1.0f, 1.5f, 2.0f)
  */
 val EMBY_QUALITY_STEPS = QUalitySteps(
     listOf(
-        0 to "原画", 30_000_000 to "30 兆", 10_000_000 to "10 兆",
+        0 to "原画", 40_000_000 to "40 兆", 30_000_000 to "30 兆", 10_000_000 to "10 兆",
         5_000_000 to "5 兆", 1_000_000 to "1 兆",
     ),
-    listOf("", "", "", "", ""),
+    listOf("", "", "", "", "", ""),
 )
 val P5_QUALITY_STEPS = QUalitySteps(
     listOf(1920 to "1920", 1280 to "1280"),
