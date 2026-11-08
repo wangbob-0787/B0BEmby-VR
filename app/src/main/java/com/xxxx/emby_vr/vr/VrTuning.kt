@@ -693,7 +693,7 @@ object VrTuning {
         /* 四个开关（杜比零拷贝 / 爱奇艺接管 / 网页缓存 / 网页零拷贝）解析在 applyFlags */
         applied += applyFlags(raw)
 
-        applied += applyNative(raw)
+        applied += applyNative(raw, prev)
 
         raw.filterKeys { it.startsWith("mpv_") }.forEach { (k, v) ->
             if (prev[k] == v) return@forEach          // 值没变 → 不重发（重设内核属性会崩）
@@ -724,7 +724,17 @@ object VrTuning {
     }
 
     /** 原生侧参数：超采样 / 等交换链超时 / 层掩码 */
-    private fun applyNative(raw: Map<String, String>): List<String> {
+    /**
+     * 把原生侧参数灌进去。
+     *
+     * [prev] 是上一次的文件内容：轮询重放时传它，用来区分"这个键真的变了"和"整份重放"。
+     * 运行时状态类开关（目前是 3D 开关）只有值变了才下发，否则改别的键会把正在播的 3D 关掉。
+     * 启动时传空表，一切照旧全量下发。
+     */
+    private fun applyNative(
+        raw: Map<String, String>,
+        prev: Map<String, String> = emptyMap(),
+    ): List<String> {
         val applied = mutableListOf<String>()
         raw["super_sample"]?.toFloatOrNull()?.let {
             VrNative.setTuning(KEY_SUPER_SAMPLE, it)
@@ -1057,10 +1067,20 @@ object VrTuning {
             applied += "跟随观影位 " + if (it != 0) "开" else "关"
         }
         /* 实时 2D→3D（2026-11-01）：开关与三个手感参数 */
-        raw["stereo3d"]?.toIntOrNull()?.let {
-            stereo3dOn = it != 0
-            VrNative.setTuning(KEY_STEREO3D, it.toFloat())
-            applied += "实时 2D→3D " + if (it != 0) "开" else "关"
+        /*
+         * 3D 开关只在**文件里这个键真的变了**时才下发（父亲 2026-11-08 实测：3D 会自己消失，
+         * 再切一次才回来）。
+         *
+         * 根因：轮询拿到文件变化就整份重放原生参数，而 3D 开关是"运行时状态"—— 菜单里切换
+         * 会立刻下发并把结果写回文件，但文件里这一行若是旧值（比如手改别的键之前是关），
+         * 任何一次重放都会把正在看的 3D 按旧值关掉。改别的键不该影响正在播的 3D。
+         */
+        if (prev["stereo3d"] != raw["stereo3d"]) {
+            raw["stereo3d"]?.toIntOrNull()?.let {
+                stereo3dOn = it != 0
+                VrNative.setTuning(KEY_STEREO3D, it.toFloat())
+                applied += "实时 2D→3D " + if (it != 0) "开" else "关"
+            }
         }
         raw["stereo_disp"]?.toFloatOrNull()?.let {
             VrNative.setTuning(KEY_STEREO_DISP, it)
