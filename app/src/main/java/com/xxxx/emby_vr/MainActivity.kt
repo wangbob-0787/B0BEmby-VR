@@ -3697,6 +3697,15 @@ class MainActivity : ComponentActivity() {
          * 清场统一在 clearForNewMedia 一处做，Emby 片与网页片不再各清各的。
          */
         clearForNewMedia()
+        /*
+         * 清掉上一部 Emby 片子的编号（父亲 2026-11-11）。
+         *
+         * clearForNewMedia 只清流清单与菜单数据，不动这个编号；网页流起播不经过
+         * playMedia，于是它一直留着上一部片子的值。凡是「拿 currentMediaId 去 Emby
+         * 查东西」的逻辑（片详情、字幕轨、弹幕回退）都会查到旧片，表现就是播腾讯时
+         * 飘出上一部剧的弹幕/字幕。
+         */
+        currentMediaId = ""
         chainLog(
             "⑧起播",
             "站=" + siteTagOf(obj) + " 集=" + obj.optString("ep").ifBlank { obj.optString("vid") } +
@@ -4797,9 +4806,18 @@ class MainActivity : ComponentActivity() {
                 replaying = false
                 startOsdTicker()
                 startPosTicker()
-                // 弹幕与片名 logo：起播后就去拉，任何一步失败都不影响播放
-                loadDanmaku()
-                loadItemDetail()
+                /*
+                 * 弹幕与片名 logo：起播后就去拉，任何一步失败都不影响播放。
+                 *
+                 * 网页流不拉（父亲 2026-11-11）：那时 currentMediaId 还是上一部 Emby 片子的
+                 * 编号，拉回来的是**旧片**的详情与字幕清单 —— 旧片那份 `.弹幕.ass` 就作为
+                 * 字幕轨被内核加载，播腾讯时画面上飘着上一部剧的字幕。网页流没有 Emby
+                 * 条目可拉，弹幕走弹幕服务、字幕走网页自己那一路。
+                 */
+                if (!isWeb) {
+                    loadDanmaku()
+                    loadItemDetail()
+                }
             }
             if (useVrScreen) {
                 // 播放时贴视频画面、收起面板（VR 原生播放屏）
@@ -5059,12 +5077,18 @@ class MainActivity : ComponentActivity() {
                  * 直接按它来决定"要不要走内核"，不用再点一次字幕菜单。
                  */
                 runCatching {
-                    val st = currentStreams.firstOrNull { it.index == selectedSubtitleIndex }
-                    rememberSubtitleChoice(
-                        mediaId = currentMediaId,
-                        index = selectedSubtitleIndex,
-                        isImage = st != null && isImageSubtitle(st),
-                    )
+                    /*
+                     * 网页流没有 Emby 条目（currentMediaId 已清空）——不写这次的选择，
+                     * 否则会用空编号覆盖掉真实片子的字幕记忆。
+                     */
+                    if (currentMediaId.isNotBlank()) {
+                        val st = currentStreams.firstOrNull { it.index == selectedSubtitleIndex }
+                        rememberSubtitleChoice(
+                            mediaId = currentMediaId,
+                            index = selectedSubtitleIndex,
+                            isImage = st != null && isImageSubtitle(st),
+                        )
+                    }
                 }
                 /*
                  * 勾选要**立刻就位**（2026-10-09 父亲实测：原来不打钩，得关掉菜单再打开才看见）。
