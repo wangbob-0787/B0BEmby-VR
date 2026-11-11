@@ -531,12 +531,19 @@ object EmbyApi {
         selectedSubtitleIndex: Int? = null,
         disableHevc: Boolean = false,
         maxStreamingBitrate: Int = 200_000_000,
+        /** 画质档位的输出分辨率上限（0 = 不限） */
+        maxWidth: Int = 0,
+        maxHeight: Int = 0,
+        /** 画质档位强制转码（见 EMBY_QUALITY_TIERS 的说明） */
+        forceTranscode: Boolean = false,
         /** 指定版本（媒体源）；null = 由服务端给第一个 */
         mediaSourceId: String? = null,
     ): MediaDto = withContext(Dispatchers.IO) {
         var targetId = mediaId
         try {
-            val body = buildPlaybackInfoBody(context, disableHevc, maxStreamingBitrate)
+            val body = buildPlaybackInfoBody(
+                context, disableHevc, maxStreamingBitrate, maxWidth, maxHeight, forceTranscode
+            )
 
             // 专辑/艺人本身不可播放：Emby 对 MusicAlbum 的 PlaybackInfo 直接 500
             // （"Unable to cast object of type 'MusicAlbum' to type 'IHasMediaSources'"，2026-09-27 实测）。
@@ -571,6 +578,11 @@ object EmbyApi {
                     // 禁止直连原始文件:直连(拉网盘原始 mp4/mkv)时播放器拿不到 HDR 色彩信息,
                     // 屏幕收到的是无色彩标记的画面 → 发灰。改由服务端转封装成 HLS/TS 后再播。
                     "&EnableDirectPlay=false" +
+                    /*
+                     * 强制转码档（4K）还要把「直通(只换封装)」也关掉。只关 DirectPlay 时，
+                     * 服务端仍可能视频原样 copy 只换封装，同样不做 HDR→SDR 转换。
+                     */
+                    (if (forceTranscode) "&EnableDirectStream=false&AllowVideoStreamCopy=false" else "") +
                     "&X-Emby-Token=$apiKey" +
                     "&X-Emby-Language=zh-cn" +
                     "&reqformat=json" +
@@ -1166,7 +1178,20 @@ object EmbyApi {
     private fun buildPlaybackInfoBody(
         context: Context,
         disableHevc: Boolean = false,
-        maxStreamingBitrate: Int = 200_000_000
+        maxStreamingBitrate: Int = 200_000_000,
+        /*
+         * 输出分辨率上限（0 = 不限，按设备能力）。
+         *
+         * 只发码率是不够的：服务端按自己的规则决定降到多宽，实测请求 4K + 35 兆仍回 1920，
+         * 所以画质档位里的「4K / 1080p / 720p」必须落到 MaxCanvas 上，服务端才会照着转。
+         */
+        maxWidth: Int = 0,
+        maxHeight: Int = 0,
+        /*
+         * 强制服务端转码。4K 档码率（40 兆）高于片源码率，服务端默认判断「不用转」→ 原样直通，
+         * 而直通不做 HDR→SDR 转换，HDR 片就发灰。只有强制转码才会走 tonemap 输出正确颜色。
+         */
+        forceTranscode: Boolean = false
     ): JsonObject {
         try {
             val capabilities = getDeviceCapabilities(context)
@@ -1218,8 +1243,8 @@ object EmbyApi {
                 addProperty("MaxStaticBitrate", maxStreamingBitrate)
                 addProperty("MaxStreamingBitrate", maxStreamingBitrate)
                 addProperty("MusicStreamingTranscodingBitrate", 192000)
-                addProperty("MaxCanvasWidth", capabilities.maxCanvasWidth)
-                addProperty("MaxCanvasHeight", capabilities.maxCanvasHeight)
+                addProperty("MaxCanvasWidth", if (maxWidth > 0) maxWidth else capabilities.maxCanvasWidth)
+                addProperty("MaxCanvasHeight", if (maxHeight > 0) maxHeight else capabilities.maxCanvasHeight)
 
                 add("DirectPlayProfiles", JsonArray().apply {
                     add(JsonObject().apply {

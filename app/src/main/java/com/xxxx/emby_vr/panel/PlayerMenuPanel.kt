@@ -313,12 +313,35 @@ val SPEED_STEPS = listOf(0.5f, 1.0f, 1.5f, 2.0f)
  *   · 网络视频（内核）：档位 = 内核处理宽度，最高能到片源的 4096。
  * 3D 每眼宽度单列一条参数，等实测出档位再进菜单。
  */
+/** Emby 普通片的一档画质：服务端转码输出的分辨率上限 + 码率上限 + 是否强制转码。
+ *
+ *  父亲 2026-11-11 按官方客户端口径重定：官方每一档都是「分辨率 + 码率」组合
+ *  （4K 最低 40 兆，1080p 从 10 到 60 兆），只发码率时服务端自己决定降到多宽 —— 实测
+ *  请求 4K + 35 兆仍回 1920。所以分辨率必须和码率一起发。
+ *
+ *  forceTranscode：4K 档码率高于常见片源码率（本库 4K 片约 15 兆），服务端会判断
+ *  「不用转」而原样直通；直通不做 HDR→SDR 转换，HDR 片发灰。4K 档因此必须强制转码。
+ */
+data class EmbyQualityTier(
+    val bitrate: Int,
+    val maxWidth: Int,
+    val maxHeight: Int,
+    val forceTranscode: Boolean,
+    val label: String,
+)
+
+/** Emby 普通片的画质档位（顺序即菜单顺序，索引与 qualityIndex 一致） */
+val EMBY_QUALITY_TIERS = listOf(
+    EmbyQualityTier(0, 0, 0, false, "原画"),
+    EmbyQualityTier(40_000_000, 3840, 2160, true, "4K · 40 兆"),
+    EmbyQualityTier(20_000_000, 1920, 1080, false, "1080p · 20 兆"),
+    EmbyQualityTier(10_000_000, 1920, 1080, false, "1080p · 10 兆"),
+    EmbyQualityTier(4_000_000, 1280, 720, false, "720p · 4 兆"),
+)
+
 val EMBY_QUALITY_STEPS = QUalitySteps(
-    listOf(
-        0 to "原画", 40_000_000 to "40 兆", 30_000_000 to "30 兆", 10_000_000 to "10 兆",
-        5_000_000 to "5 兆", 1_000_000 to "1 兆",
-    ),
-    listOf("", "", "", "", "", ""),
+    EMBY_QUALITY_TIERS.map { it.bitrate to it.label },
+    EMBY_QUALITY_TIERS.map { "" },
 )
 val P5_QUALITY_STEPS = QUalitySteps(
     listOf(1920 to "1920", 1280 to "1280"),

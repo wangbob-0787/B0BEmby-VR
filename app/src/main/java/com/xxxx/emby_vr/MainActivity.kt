@@ -3158,6 +3158,9 @@ class MainActivity : ComponentActivity() {
                     selectedAudioIndex = selectedAudioIndex,
                     selectedSubtitleIndex = selectedSubtitleIndex,
                     maxStreamingBitrate = bitrateForQuality(),
+                    maxWidth = embyTier().maxWidth,
+                    maxHeight = embyTier().maxHeight,
+                    forceTranscode = embyTier().forceTranscode,
                     disableHevc = forceH264,
                     mediaSourceId = com.xxxx.emby_vr.player.PlaybackFlags.mediaSourceId,
                 )
@@ -3188,6 +3191,9 @@ class MainActivity : ComponentActivity() {
                             selectedAudioIndex = alt,
                             selectedSubtitleIndex = selectedSubtitleIndex,
                             maxStreamingBitrate = bitrateForQuality(),
+                            maxWidth = embyTier().maxWidth,
+                            maxHeight = embyTier().maxHeight,
+                            forceTranscode = embyTier().forceTranscode,
                             disableHevc = forceH264,
                             mediaSourceId = com.xxxx.emby_vr.player.PlaybackFlags.mediaSourceId,
                         )
@@ -5356,6 +5362,11 @@ class MainActivity : ComponentActivity() {
         val v = com.xxxx.emby_vr.panel.EMBY_QUALITY_STEPS.entries.getOrNull(qualityIndex)?.first ?: 0
         return if (v <= 0) 200_000_000 else v
     }
+
+    /** 当前画质档的完整定义（码率之外还有分辨率上限与是否强制转码，见 EMBY_QUALITY_TIERS） */
+    private fun embyTier(): com.xxxx.emby_vr.panel.EmbyQualityTier =
+        com.xxxx.emby_vr.panel.EMBY_QUALITY_TIERS.getOrNull(qualityIndex)
+            ?: com.xxxx.emby_vr.panel.EMBY_QUALITY_TIERS.first()
 
     /** 播放模式：列表循环 / 单集循环 / 播完停止 */
     private fun applyPlayMode(index: Int) {
