@@ -30,6 +30,10 @@ mkdir -p deps && cd deps
 # lua
 if [ ! -d lua ]; then
 	mkdir lua
+	# lua.org 在 GitHub runner 上 TLS 握手经常失败（2026-11-13 内核编译两次卡在这里），
+	# 改用 Lua 官方镜像 tecgraf；两处都不通时再回 lua.org。
+	$WGET https://web.tecgraf.puc-rio.br/lua/ftp/lua-$v_lua.tar.gz -O - | \
+		tar -xz -C lua --strip-components=1 || \
 	$WGET http://www.lua.org/ftp/lua-$v_lua.tar.gz -O - | \
 		tar -xz -C lua --strip-components=1
 fi
