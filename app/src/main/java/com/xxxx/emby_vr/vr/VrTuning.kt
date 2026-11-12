@@ -194,6 +194,15 @@ object VrTuning {
     var dvZeroCopy: Int = 0
 
     /**
+     * 测量开关：1 = 让内核**不做**杜比视界颜色还原（加 `vf=format=dolbyvision=no`）。
+     *
+     * 只用于量"颜色还原吃掉多少毫秒"：关掉后杜比片会偏色，不能当日常档位用。
+     * 起播时读取，改文件后要重新起播。
+     */
+    @Volatile
+    var dvOff: Int = 0
+
+    /**
      * 弹幕画布宽度（2026-10-14 父亲定）：默认 **1920**，与银幕本身的 1920 宽对齐。
      *
      * 原来写死 2560 —— 比银幕还大三分之一，多出来的像素在 VR 里根本看不见，
@@ -624,6 +633,12 @@ object VrTuning {
     /** 界面 / 网页层开关：起播与轮询共用一份解析，避免两处漂移 */
     private fun applyFlags(raw: Map<String, String>): List<String> {
         val applied = mutableListOf<String>()
+        raw["dv_off"]?.toIntOrNull()?.let {
+            if (it != dvOff) {
+                dvOff = it
+                applied += "杜比还原=" + if (it != 0) "关（仅测量用）" else "开"
+            }
+        }
         raw["dv_zerocopy"]?.toIntOrNull()?.let {
             if (it != dvZeroCopy) {
                 dvZeroCopy = it

@@ -278,6 +278,14 @@ class MpvBackend(private val context: Context) {
                      * 老渲染器 `gpu` 不做杜比视界还原，且渲染上下文没配对。
                      * 现在按资料给的可用组合来：新渲染器 + OpenGL + android 上下文。
                      */
+                    /*
+                     * 测量开关（dv_off=1）：让内核跳过杜比视界颜色还原，只保留解码与上屏。
+                     * 目的是量出还原这一道占多少毫秒（2026-11-13 父亲要求）。关掉后杜比片偏色，
+                     * 仅用于测量，不作日常档位。
+                     */
+                    if (com.xxxx.emby_vr.vr.VrTuning.dvOff != 0) {
+                        MPVLib.setOptionString("vf", "format=dolbyvision=no")
+                    }
                     MPVLib.setOptionString("vo", "gpu-next")
                     MPVLib.setOptionString("gpu-context", "android")
                     MPVLib.setOptionString("gpu-api", "opengl")
