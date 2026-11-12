@@ -538,15 +538,35 @@ void main() {
             bool doFill = (uFill == 1 && hole > 0.5);
             /* uEdgeColorThr <= 0 = 关掉颜色这一条 */
             if (doFill && uEdgeColorThr > 0.0) doFill = colorEdge(vUv);
-            if (doFill) {
+            if (doFill && uFillPick >= 2) {
                 /*
-                 * 这一读只有补洞分支用得到。放在分支外会让每个像素都白付 4 次深度采样
-                 * （uSmoothRead=1 时 depthAt 走三次插值），而绝大多数像素根本不补洞。
+                 * 补洞改成 4XVR 的"按误差挑源点"（2026-11-13 父亲判断"补得不好"后改）。
+                 *
+                 * 原做法是在变形之后回头找"更远的深度"当来源，本质是事后打补丁：挑哪一层、
+                 * 挑多远、挑到没有，全靠阈值，边缘因此有过渡带和游移。
+                 * 改成的做法不分"洞"和"非洞"：在 ±reach 里铺 13 个候选源点，每个都用当前
+                 * 视差投回屏幕，取落点离本像素最近的那个。洞像素自然落到最近的合法表面上，
+                 * 不需要判断层级，也不会把整片背景铺进人像边缘。
+                 */
+                float eyeDisp = disp * uEyeSign;
+                float searchUV = float(reach) / max(uLowResWidth, 1.0);
+                float bestErr = 1e9;
+                float bestX = vUv.x + offX;
+                for (int i = 0; i <= 12; i++) {
+                    float fx = clamp(vUv.x + searchUV * (float(i) / 6.0 - 1.0), 0.0, 1.0);
+                    float z = depthAt(vec2(fx, vUv.y));
+                    float src = clamp(fx - eyeDisp * (z - uConvergence), 0.0, 1.0);
+                    float e = abs(src - vUv.x);
+                    if (e < bestErr) { bestErr = e; bestX = fx; }
+                }
+                uvT.x = bestX;
+            } else if (doFill) {
+                /*
+                 * 旧路径（uFillPick 0/1）：沿扫描线找更远的深度补，留作对照。
                  */
                 float here = depthAt(vUv);
                 float far = here;
                 bool found = false;
-                /* 搜索半径、取层策略由 stereo_fill_px / stereo_fill_pick 运行时控制 */
                 float fillPx = clamp(uFillPx, 2.0, 96.0);
                 float stepUV = fillPx / float(FILL_MAX) / max(uFrameWidth, 1.0);
                 float reachUV = float(reach) / max(uLowResWidth, 1.0);
@@ -558,11 +578,6 @@ void main() {
                     float dr = texture(uDepthTex, vec2(vUv.x + o, vUv.y)).r;
                     bool hl = dl > here + 0.01;
                     bool hr = dr > here + 0.01;
-                    /*
-                     * uFillPick = 1：就近取紧邻背景，同圈两侧都命中时取更近的那层，找到即停；
-                     * 取最远会把远处的墙一路铺进边缘以内（背景咬脸、边缘被削、插出尖角）。
-                     * uFillPick = 0：走满整个半径取最远，留作对照。
-                     */
                     if (uFillPick == 1) {
                         if (hl && hr) far = min(dl, dr);
                         else if (hl) far = dl;
@@ -573,7 +588,6 @@ void main() {
                         if (hr) far = max(far, dr);
                     }
                 }
-                /* 整段半径里都没有更远的样本，就别硬铺，退回正常偏移 */
                 uvT.x = found ? (vUv.x - disp * (far - uConvergence)) : (vUv.x + offX);
             } else {
                 uvT.x = vUv.x + offX;
@@ -2799,7 +2813,7 @@ std::atomic<int> gStereoOcclDiv{4};
 std::atomic<int> gStereoNewton{1};
 /* 补洞搜索半径（画面像素）与取层策略：父亲实测补洞是边缘游移的来源，两项都要能运行时对比 */
 std::atomic<float> gStereoFillPx{24.f};
-std::atomic<int> gStereoFillPick{1};
+std::atomic<int> gStereoFillPick{2};
 /* 真边缘判据：深度跳变阈值与两侧颜色差阈值，运行时可比，避免硬编码猜值 */
 std::atomic<float> gStereoEdgeThr{0.08f};
 std::atomic<float> gStereoEdgeColorThr{0.06f};
@@ -7531,7 +7545,7 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
                 glUniform1i(u.newton, n < 0 ? 0 : (n > 2 ? 2 : n));
             }
             if (u.fillPx >= 0) glUniform1f(u.fillPx, gStereoFillPx.load());
-            if (u.fillPick >= 0) glUniform1i(u.fillPick, gStereoFillPick.load() == 0 ? 0 : 1);
+            if (u.fillPick >= 0) glUniform1i(u.fillPick, gStereoFillPick.load());
             if (u.edgeThr >= 0) glUniform1f(u.edgeThr, gStereoEdgeThr.load());
             if (u.edgeColorThr >= 0) glUniform1f(u.edgeColorThr, gStereoEdgeColorThr.load());
         } else {
@@ -9707,7 +9721,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
         }
         /* 69 = 补洞取层策略：1 = 就近取紧邻背景（默认），0 = 全范围内取最远（对照） */
         case 69: {
-            gStereoFillPick.store((int) value == 0 ? 0 : 1);
+            gStereoFillPick.store((int) value < 0 ? 0 : ((int) value > 2 ? 2 : (int) value));
             VLOGI("调参 → 补洞取层 %s（半径 %.0f 画面像素）",
                   gStereoFillPick.load() == 1 ? "就近取紧邻背景" : "全范围取最远",
                   gStereoFillPx.load());
