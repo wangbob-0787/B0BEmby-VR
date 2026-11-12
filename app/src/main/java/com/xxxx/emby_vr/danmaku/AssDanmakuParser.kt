@@ -45,6 +45,8 @@ object AssDanmakuParser {
     private val POS_RE = Regex("""\\pos\(\s*(-?[\d.]+)\s*,\s*(-?[\d.]+)\s*\)""")
     // 右花括号必须转义:裸 } 在部分 JDK 的 Pattern 里会抛 PatternSyntaxException(曾导致播放页闪退)
     private val TAG_RE = Regex("""\{[^}]*\}""")
+    /* 行内颜色覆盖 `{\c&HBBGGRR&}`：弹幕服务端给每条彩色弹幕写的就是这个标签 */
+    private val LINE_COLOR_RE = Regex("""\\c&H([0-9A-Fa-f]{6})&""")
     private val TIME_RE = Regex("""(\d+):(\d{1,2}):(\d{1,2})[.:](\d{1,2})""")
 
     fun parse(raw: String): DanmakuTrack {
@@ -93,9 +95,21 @@ object AssDanmakuParser {
                         if (parts.size >= 10) {
                             val start = parseTime(parts[1]) ?: continue
                             val end = parseTime(parts[2]) ?: continue
-                            val style = styles[parts[3].trim()]
+                            val baseStyle = styles[parts[3].trim()]
                                 ?: DanmakuStyle(48f, Color.WHITE, Color.BLACK, 1.5f, 7)
                             val rawText = parts[9]
+                            // 行内 `\c&HBBGGRR&` 覆盖样式色（同一条弹幕可以带自己的颜色）
+                            val style = LINE_COLOR_RE.find(rawText)
+                                ?.groupValues?.get(1)?.toLongOrNull(16)
+                                ?.let { v ->
+                                    baseStyle.copy(
+                                        primaryColor = Color.rgb(
+                                            (v and 0xFF).toInt(),
+                                            ((v shr 8) and 0xFF).toInt(),
+                                            ((v shr 16) and 0xFF).toInt(),
+                                        )
+                                    )
+                                } ?: baseStyle
                             val content = TAG_RE.replace(rawText, "").trim()
                             if (content.isEmpty()) continue
                             val move = MOVE_RE.find(rawText)
