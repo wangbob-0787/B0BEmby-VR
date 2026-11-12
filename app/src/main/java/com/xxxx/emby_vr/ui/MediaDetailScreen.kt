@@ -348,9 +348,13 @@ fun MediaDetailScreen(
                             )
                         )
 
-                        // 元数据两行文字（官方形态：剧集/电影一致）
-                        //   第一行 ★评分  年份-现在  于 制作方  分级
-                        //   第二行 类型 · N 播出季（电影没有季，只显示类型）
+                        /*
+                         * 元数据一行（照官方网页版 2026-11-12）：
+                         *   剧集  ★7.3   2022 - 现在   Amazon Studios   共 2 季   US:TV-14   动作冒险
+                         *   电影  ★8.4   2002   3小时55分钟   PG-13   冒险
+                         * 官方是同一行空格分隔；原来我们排两行、还带「于」字，比官方松散。
+                         * 电影才显示片长（官方剧集页不显示集均时长）。
+                         */
                         val yearText = when {
                             mediaInfo.productionYear == null -> null
                             mediaInfo.status.equals("Continuing", ignoreCase = true) ->
@@ -359,42 +363,74 @@ fun MediaDetailScreen(
                         }
                         val studioName = mediaInfo.seriesStudio
                             ?: mediaInfo.studios?.firstOrNull()?.name
-                        val metaLine1 = listOfNotNull(
+                        val seasonCount = seasons?.size ?: 0
+                        val metaLine = listOfNotNull(
                             mediaInfo.communityRating?.let { "★$it" },
                             yearText,
-                            studioName?.takeIf { it.isNotBlank() }?.let { "于 $it" },
-                            mediaInfo.officialRating?.takeIf { it.isNotBlank() }
+                            if (!mediaInfo.isSeries) mediaInfo.runTimeTicks
+                                ?.takeIf { it > 0 }?.let { Utils.formatRuntimeFromTicks(it) } else null,
+                            studioName?.takeIf { it.isNotBlank() },
+                            if (seasonCount > 0) "共 $seasonCount 季" else null,
+                            mediaInfo.officialRating?.takeIf { it.isNotBlank() },
+                            mediaInfo.genres?.firstOrNull()?.takeIf { it.isNotBlank() }
                         ).joinToString("    ")
-                        val seasonCount = seasons?.size ?: 0
-                        val metaLine2 = listOfNotNull(
-                            mediaInfo.genres?.firstOrNull()?.takeIf { it.isNotBlank() },
-                            if (seasonCount > 0) "$seasonCount 播出季" else null
-                        ).joinToString(" · ")
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            if (metaLine1.isNotBlank()) Text(
-                                text = metaLine1,
-                                color = Color.White.copy(alpha = 0.92f),
-                                fontSize = 15.sp
-                            )
-                            if (metaLine2.isNotBlank()) Text(
-                                text = metaLine2,
-                                color = Color.White.copy(alpha = 0.72f),
-                                fontSize = 15.sp
+                        if (metaLine.isNotBlank()) Text(
+                            text = metaLine,
+                            color = Color.White.copy(alpha = 0.92f),
+                            fontSize = 15.sp,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+
+                        // 标语（官方：简介上方单独一行）
+                        mediaInfo.taglines?.firstOrNull()?.takeIf { it.isNotBlank() }?.let { tagline ->
+                            Text(
+                                text = tagline,
+                                color = Color.White,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Medium
                             )
                         }
 
-                        // Overview —— 官方顺序是「标题 → 元数据 → 简介 → 按钮」（父亲 2026-10-02）
-                        mediaInfo.overview?.let { overview ->
+                        /*
+                         * 简介默认 3 行 + 「更多」（照官方网页版）。展开后显示全文，可再收起。
+                         * 记录的是"这一页是否展开"，切条目自动复位。
+                         */
+                        var overviewExpanded by remember(mediaInfo.id) { mutableStateOf(false) }
+                        mediaInfo.overview?.takeIf { it.isNotBlank() }?.let { overview ->
                             Text(
                                 text = overview,
                                 style = MaterialTheme.typography.bodyLarge.copy(
                                     color = Color.White.copy(alpha = 0.9f),
                                     lineHeight = TextUnit(1.5f, TextUnitType.Em)
                                 ),
-                                maxLines = 5,
+                                maxLines = if (overviewExpanded) 20 else 3,
                                 overflow = TextOverflow.Ellipsis
                             )
+                            if (overview.length > 90) {
+                                Text(
+                                    text = if (overviewExpanded) "收起" else "更多",
+                                    color = Color(0xFF2FD57C),
+                                    fontSize = 15.sp,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .clickable { overviewExpanded = !overviewExpanded }
+                                        .padding(vertical = 2.dp, horizontal = 4.dp)
+                                )
+                            }
                         }
+
+                        // 导演单独一行（官方电影页：简介下方，演职人员之前）
+                        crewPeople.filter { it.type.equals("Director", true) }
+                            .mapNotNull { it.name }
+                            .takeIf { it.isNotEmpty() }
+                            ?.let { names ->
+                                Text(
+                                    text = "导演：${names.joinToString("、")}",
+                                    color = Color.White.copy(alpha = 0.8f),
+                                    fontSize = 15.sp
+                                )
+                            }
 
                         /*
                          * 版本下拉（父亲 2026-10-28 定）：点这一行展开全部版本，每行写明
@@ -924,7 +960,12 @@ fun MediaDetailScreen(
                     }
                 }
 
-                // Details Box (Bottom)
+                /*
+                 * 其他信息（照官方网页版 2026-11-12）：
+                 *   类型 / 标签 / 工作室 / 数据库链接（IMDb、TheMovieDb、Trakt）/ 媒体信息（路径、体积、入库时间）
+                 * 原来这一块叫「详情」，混着首播、结束、状态与原始 ProviderIds 键值 —— 官方不显示这些，
+                 * 而且标语已经在标题下面单独画过，这里不再重复。
+                 */
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -934,52 +975,47 @@ fun MediaDetailScreen(
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text(
-                            text = stringResource(R.string.details),
+                            text = "其他信息",
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Bold,
                                 color = Color.White
                             )
                         )
 
-                        // Meta Rows
+                        MetaRow("类型", mediaInfo.genres?.joinToString(", ").orEmpty())
                         MetaRow(
-                            stringResource(R.string.genres),
-                            mediaInfo.genres?.joinToString(", ") ?: ""
-                        )
-
-                        val studios =
-                            mediaInfo.studios?.mapNotNull { it.name }?.joinToString(", ")
-                        MetaRow(stringResource(R.string.studios), studios ?: "")
-
-                        MetaRow(
-                            stringResource(R.string.premiere),
-                            Utils.formatDate(mediaInfo.premiereDate)
+                            "标签",
+                            (mediaInfo.tags ?: mediaInfo.tagItems?.mapNotNull { it.name })
+                                ?.joinToString(", ").orEmpty()
                         )
                         MetaRow(
-                            stringResource(R.string.end),
-                            Utils.formatDate(mediaInfo.dateCreated)
+                            "工作室",
+                            mediaInfo.studios?.mapNotNull { it.name }?.joinToString(", ").orEmpty()
                         )
                         MetaRow(
-                            stringResource(R.string.status),
-                            mediaInfo.status ?: ""
+                            "数据库链接",
+                            mediaInfo.externalUrls?.mapNotNull { it.name }?.joinToString(", ").orEmpty()
                         )
-                        MetaRow(
-                            stringResource(R.string.tagline),
-                            mediaInfo.taglines?.joinToString(", ") ?: ""
-                        )
-
-                        val providerIds = mediaInfo.providerIds
-                        val providersStr =
-                            providerIds?.entries?.joinToString(" · ") { "${it.key}: ${it.value}" }
-                        MetaRow(stringResource(R.string.provider_ids), providersStr ?: "")
-
-                        MetaRow(stringResource(R.string.path), mediaInfo.path ?: "")
+                        /*
+                         * 媒体信息（官方：路径 + 体积 + 入库时间）。
+                         * 体积优先取当前版本的文件大小，取不到再看条目自带的 Size。
+                         */
+                        val curSize = mediaInfo.mediaSources?.firstOrNull()?.size ?: mediaInfo.size
+                        val sizeText = curSize?.takeIf { it > 0 }?.let {
+                            String.format("%.1f GB", it / 1024.0 / 1024.0 / 1024.0)
+                        }
+                        val mediaBits = listOfNotNull(
+                            mediaInfo.path?.takeIf { it.isNotBlank() },
+                            sizeText,
+                            Utils.formatDate(mediaInfo.dateCreated).takeIf { it.isNotBlank() }?.let { "添加于 $it" }
+                        ).joinToString("\n")
+                        MetaRow("媒体信息", mediaBits)
 
                         if (mediaInfo.isSeries) {
                             val seasonCount = seasons?.size ?: 0
                             val episodeCount = episodes?.size ?: 0
                             MetaRow(
-                                stringResource(R.string.counts),
+                                "季 / 集",
                                 "$seasonCount ${stringResource(R.string.seasons)} · $episodeCount ${
                                     stringResource(R.string.episodes)
                                 }"

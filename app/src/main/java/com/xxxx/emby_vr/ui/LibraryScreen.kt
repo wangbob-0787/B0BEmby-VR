@@ -15,6 +15,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -200,15 +202,10 @@ fun LibraryScreen(
                 modifier = Modifier.padding(start = 16.dp)
             )
 
-            if (libraryItems != null && totalCount > 0) {
-                Text(
-                    // 原来写「42/3456」，没有标签没有单位，读不出是什么（父亲 2026-10-13）
-                    text = "共 $totalCount 部",
-                    // 原来 bodyMedium（14sp）压 70% 白，父亲说右上角字太小 → 提到 16sp / 85% 白
-                    fontSize = 16.sp,
-                    color = Color.White.copy(alpha = 0.85f)
-                )
-            }
+            /*
+             * 条目数从右上角移到工具栏左侧（照官方库页：`共 934 项` 与播放/排序同一行）。
+             * 官方右上角只有投屏与账号按钮，没有计数。
+             */
         }
 
         Row(
@@ -218,9 +215,114 @@ fun LibraryScreen(
             horizontalArrangement = Arrangement.Start,
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // 共 N 项（官方：工具栏最左，白 85%，16sp）
+            if (libraryItems != null && totalCount > 0) {
+                Text(
+                    text = "共 $totalCount 项",
+                    fontSize = 16.sp,
+                    color = Color.White.copy(alpha = 0.85f),
+                    modifier = Modifier.padding(end = 16.dp)
+                )
+            }
+
+            /*
+             * 播放 / 随机播放（照官方库页工具栏）。
+             * 库里的条目类型混着电影、剧集、合集：
+             *   · 电影/频道 → 直接进播放页
+             *   · 剧集/合集 → 没有单一"播放"语义，交给详情页（官方对剧集库的播放键也是进剧集）
+             */
+            val firstPlayable = libraryItems?.firstOrNull { !it.id.isNullOrEmpty() }
+            val doPlayAll: () -> Unit = {
+                firstPlayable?.let { it ->
+                    val id = it.id ?: return@let
+                    if (it.type.equals("Series", true) || it.type.equals("BoxSet", true)) {
+                        onNavigateToSeries(id)
+                    } else {
+                        onNavigateToPlayer(id)
+                    }
+                }
+            }
+            val doShuffle: () -> Unit = {
+                val pick = libraryItems?.filter { !it.id.isNullOrEmpty() }?.randomOrNull()
+                pick?.let { it ->
+                    val id = it.id ?: return@let
+                    if (it.type.equals("Series", true) || it.type.equals("BoxSet", true)) {
+                        onNavigateToSeries(id)
+                    } else {
+                        onNavigateToPlayer(id)
+                    }
+                }
+            }
+
             Surface(
-                onClick = { showSortDialog = true },
+                onClick = doPlayAll,
                 shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(50)),
+                scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
+                colors = ClickableSurfaceDefaults.colors(
+                    containerColor = Color.White.copy(alpha = 0.15f),
+                    contentColor = Color.White,
+                    focusedContainerColor = VrHoverBg,
+                    focusedContentColor = Color.White,
+                ),
+                border = ClickableSurfaceDefaults.border(
+                    focusedBorder = androidx.tv.material3.Border(
+                        BorderStroke(0.dp, Color.Transparent)
+                    )
+                ),
+                modifier = Modifier
+                    .padding(end = 8.dp)
+                    .vrClickTarget(key = "lib:play", hoverRadius = 24.dp, onActivate = doPlayAll)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PlayArrow,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = Color.White
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(text = "播放", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                }
+            }
+
+            Surface(
+                onClick = doShuffle,
+                shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(50)),
+                scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
+                colors = ClickableSurfaceDefaults.colors(
+                    containerColor = Color.White.copy(alpha = 0.15f),
+                    contentColor = Color.White,
+                    focusedContainerColor = VrHoverBg,
+                    focusedContentColor = Color.White,
+                ),
+                border = ClickableSurfaceDefaults.border(
+                    focusedBorder = androidx.tv.material3.Border(
+                        BorderStroke(0.dp, Color.Transparent)
+                    )
+                ),
+                modifier = Modifier
+                    .padding(end = 12.dp)
+                    .vrClickTarget(key = "lib:shuffle", hoverRadius = 24.dp, onActivate = doShuffle)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Shuffle,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = Color.White
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(text = "随机播放", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                }
+            }
+
+
                 /*
                  * 关掉 TV 自带的焦点放大（父亲 2026-10-04：VR 里不要电视版那套放大）。
                  *
@@ -414,7 +516,8 @@ fun LibraryScreen(
                                  * 详情页卡走的是 isMyLibrary=true 分支，副标题整个不画。
                                  * 数据靠 EmbyApi.getLibraryList 的 Fields=CurrentProgram 带回来。
                                  */
-                                subtitleOverride = if (isLiveTv) item.currentProgram?.name else null,
+                                // 库里卡片只显示年份（照官方库页），分级不再画在卡下
+                                subtitleOverride = if (isLiveTv) item.currentProgram?.name else item.productionYear?.toString(),
                                 imageScale = if (isLiveTv) ContentScale.Fit else ContentScale.Crop,
                                 serverUrl = serverUrl,
                                 onItemClick = {

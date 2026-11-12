@@ -53,6 +53,7 @@ data class BaseItemDto(
     @SerializedName("Studios") val studios: List<NameGuidPairDto>? = null,
     @SerializedName("GenreItems") val genreItems: List<NameGuidPairDto>? = null,
     @SerializedName("TagItems") val tagItems: List<NameGuidPairDto>? = null,
+    @SerializedName("Tags") val tags: List<String>? = null,
     @SerializedName("LocalTrailerCount") val localTrailerCount: Int? = null,
     @SerializedName("UserData") val userData: UserDataDto? = null,
     // 直播频道（Type=TvChannel）专用：频道号 + 正在播出的节目（首页「电视直播」那行直接显示）

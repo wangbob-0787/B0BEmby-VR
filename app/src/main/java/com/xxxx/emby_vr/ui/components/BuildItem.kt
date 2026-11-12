@@ -364,7 +364,9 @@ fun BuildItem(
                     )
                 }
 
-                if (!isMyLibrary) {
+                // subtitleOverride 是**替换**语义：宿主给了副标题就不再画默认那行
+                //（媒体库网格要的是"只有年份"，官方库页的卡就是这样；给 null 的页面行为不变）
+                if (!isMyLibrary && subtitleOverride.isNullOrBlank()) {
                     val subTitle = if (item.parentIndexNumber != null) {
                         "S${item.parentIndexNumber}:E${item.indexNumber} ${item.name}"
                     } else if (item.type == "Actor") {
