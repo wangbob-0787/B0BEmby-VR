@@ -54,8 +54,13 @@ jobs:
           # 重试 8 次仍 504），但同一资产走 API 通道（/releases/assets/<id> + octet-stream）
           # 返回 206，可正常下 —— 所以这里改走 API，不再拼下载链接。公开仓库免令牌即可。
           API=https://api.github.com/repos/wuruxu/crwebview
-          LIST=$(curl -sS --retry 5 --retry-all-errors "$API/releases/tags/2.0.0" \
-                 | python3 -c 'import json,sys;d=json.load(sys.stdin);print("\n".join("%s\t%s"%(a["name"],a["id"]) for a in d["assets"]))')
+          # 2026-11-13：不带令牌调这个接口会被限流（今晚连编十几次后返回体里没有 assets，
+          # 脚本 KeyError 直接判失败）。改用编译机自带的 GITHUB_TOKEN，并把返回体容错打印出来。
+          LIST=$(curl -sS --retry 5 --retry-all-errors \
+                 -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+                 -H "Accept: application/vnd.github+json" \
+                 "$API/releases/tags/2.0.0" \
+                 | python3 -c 'import json,sys;d=json.load(sys.stdin);print("\n".join("%s\t%s"%(a["name"],a["id"]) for a in d.get("assets",[])))')
           if [ -z "$LIST" ]; then echo "::error::拿不到 crwebview 资产清单"; exit 1; fi
           for f in android_crwebview_webkit.WebView-v2.0.0.aar android_webview_resources-debug.aar content-debug.aar ui-debug.aar embedder_support_resources-debug.aar; do
             [ -f "app/libs/$f" ] && continue
