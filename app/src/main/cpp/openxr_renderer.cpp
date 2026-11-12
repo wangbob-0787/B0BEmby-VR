@@ -496,6 +496,55 @@ bool colorEdge(vec2 uv) {
     return distance(frameAt(uv - vec2(cx, 0.0)), frameAt(uv + vec2(cx, 0.0))) > uEdgeColorThr;
 }
 
+/*
+ * 4XVR 的立体变形函数（2026-11-12 从其 libvr4p-oculus.so 提取的 GLSL 原文移植）。
+ *
+ * 三条要点缺一不可，少一条就是几倍采样：
+ *  1. 先算一次原位置；误差不到半像素就直接用 —— 平滑表面根本不进搜索。
+ *  2. 搜索只有 13 个候选（i/6-1 铺满 ±reach），不是逐像素扫。
+ *  3. 候选点的深度用双线性读（texelFetch 四次），不是三次插值。
+ * 命中判据也照原文：候选误差在容差内且深度更远者优先，全都不在容差内才比误差。
+ */
+float depthAtBilinear(vec2 p) {
+    vec2 sz = vec2(textureSize(uDepthTex, 0));
+    vec2 q = clamp(p, 0.0, 1.0) * sz - 0.5;
+    vec2 b = floor(q);
+    vec2 f = q - b;
+    vec2 hi = sz - vec2(1.0);
+    float a = texelFetch(uDepthTex, ivec2(clamp(b, vec2(0.0), hi)), 0).r;
+    float c = texelFetch(uDepthTex, ivec2(clamp(b + vec2(1.0, 0.0), vec2(0.0), hi)), 0).r;
+    float d = texelFetch(uDepthTex, ivec2(clamp(b + vec2(0.0, 1.0), vec2(0.0), hi)), 0).r;
+    float e = texelFetch(uDepthTex, ivec2(clamp(b + vec2(1.0, 1.0), vec2(0.0), hi)), 0).r;
+    return mix(mix(a, c, f.x), mix(d, e, f.x), f.y);
+}
+
+vec2 warpedXvr(vec2 p, float eye) {
+    float fade = smoothstep(0.0, 0.035, min(p.x, 1.0 - p.x));
+    float disp = eye * uDisp * fade;
+    if (abs(disp) < 1e-6) return p;
+
+    float h = 1.0 / max(uFrameWidth, 1.0);
+    float source = clamp(p.x - disp * (depthAtBilinear(p) - uConvergence), 0.0, 1.0);
+    float bestDepth = depthAtBilinear(vec2(source, p.y));
+    float bestError = abs(source + disp * (bestDepth - uConvergence) - p.x);
+    if (bestError > 0.5 * h) {
+        float reach = abs(disp) * max(uConvergence, 1.0 - uConvergence) + h;
+        float tolerance = max(0.75 * h, reach / 12.0);
+        for (int i = 0; i <= 12; i++) {
+            float x = clamp(p.x + reach * (float(i) / 6.0 - 1.0), 0.0, 1.0);
+            float z = depthAtBilinear(vec2(x, p.y));
+            float error = abs(x + disp * (z - uConvergence) - p.x);
+            bool candidateValid = error <= tolerance;
+            bool bestValid = bestError <= tolerance;
+            if ((candidateValid && (!bestValid || z > bestDepth)) ||
+                (!candidateValid && !bestValid && error < bestError)) {
+                source = x; bestDepth = z; bestError = error;
+            }
+        }
+    }
+    return vec2(source, p.y);
+}
+
 void main() {
     vec4 outColor;
     /*
@@ -506,7 +555,10 @@ void main() {
      * 把视差算到黑边上。
      */
     vec2 uvT = vUv;
-    if (uDepthOn == 1) {
+    if (uDepthOn == 1 && uFillPick >= 2) {
+        /* 照 4XVR 的整条立体变形走：不做遮挡表、不做牛顿修正 */
+        uvT = warpedXvr(vUv, uEyeSign);
+    } else if (uDepthOn == 1) {
         /*
          * 立体视差：照 DepthRay 的立体着色器移植。
          *
@@ -538,28 +590,7 @@ void main() {
             bool doFill = (uFill == 1 && hole > 0.5);
             /* uEdgeColorThr <= 0 = 关掉颜色这一条 */
             if (doFill && uEdgeColorThr > 0.0) doFill = colorEdge(vUv);
-            if (doFill && uFillPick >= 2) {
-                /*
-                 * 照 4XVR 的补洞：不看"哪一层更远"，而是把 ±reach 内每个候选源点用当前
-                 * 视差反投影回屏幕，取落点离本像素最近的那个当来源。空洞像素因此落到最近
-                 * 的合法表面上，不会把整片背景铺进人像边缘 —— 边缘拉丝就是这么来的。
-                 *
-                 * 候选按低分辨率深度像素走：深度图只有几百宽，按帧像素走等于把同一次搜索
-                 * 重复几十遍，采样数白付。
-                 */
-                float eyeDisp = disp * uEyeSign;
-                float searchUV = float(reach) / max(uLowResWidth, 1.0);
-                float bestErr = 1e9;
-                float bestX = vUv.x + offX;
-                for (int i = -FILL_MAX; i <= FILL_MAX; i++) {
-                    float fx = clamp(vUv.x + (float(i) / float(FILL_MAX)) * searchUV, 0.0, 1.0);
-                    float z = depthAt(vec2(fx, vUv.y));
-                    float src = clamp(fx - eyeDisp * (z - uConvergence), 0.0, 1.0);
-                    float e = abs(src - vUv.x);
-                    if (e < bestErr) { bestErr = e; bestX = fx; }
-                }
-                uvT.x = bestX;
-            } else if (doFill) {
+            if (doFill) {
                 /*
                  * 这一读只有补洞分支用得到。放在分支外会让每个像素都白付 4 次深度采样
                  * （uSmoothRead=1 时 depthAt 走三次插值），而绝大多数像素根本不补洞。
