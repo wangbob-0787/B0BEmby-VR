@@ -2922,16 +2922,16 @@ std::atomic<int> gSyncMode{0};
 std::atomic<int> gRefreshHz{0};
 
 /*
- * 播放时该请求的刷新率：一律 90。
+ * 播放时该请求的刷新率：2D 走 90，3D 回 72。
  *
- * 之前播放降到 72 是为了多给每帧 2.8ms 预算，但 4XVR 在 3D 下同样跑 90Hz，
- * 显卡每帧 21ms 也照跑（迟到由系统重投影补），观感反而更顺——说明"降到 72"
- * 省下的预算换不来稳定性，只换来更粗的节拍。按 90 走，用实测判断迟到是否可接受；
- * 调参 key 5 仍可强钉 72/90 做对照。
+ * 2026-11-12 实测：3D 改 90 后黑纹持续出现（父亲当场判定），与 10-09 那次一致。
+ * 4XVR 同样跑 90 却干净，说明它的余量或提交结构与我们不同，不能照搬它的刷新率。
+ * 2D 每帧 9~10ms，90Hz 的 11.1ms 预算装得下，保留 90 让推镜更顺。
+ * 调参 refresh_hz 可强钉 72/90 做对照。
  */
 inline float targetRefreshHz(bool videoActive) {
-    (void) videoActive;
-    return 90.f;
+    if (!videoActive) return 90.f;
+    return gStereo3d.load() != 0 ? 72.f : 90.f;
 }
 
 /*
