@@ -496,55 +496,6 @@ bool colorEdge(vec2 uv) {
     return distance(frameAt(uv - vec2(cx, 0.0)), frameAt(uv + vec2(cx, 0.0))) > uEdgeColorThr;
 }
 
-/*
- * 4XVR 的立体变形函数（2026-11-12 从其 libvr4p-oculus.so 提取的 GLSL 原文移植）。
- *
- * 三条要点缺一不可，少一条就是几倍采样：
- *  1. 先算一次原位置；误差不到半像素就直接用 —— 平滑表面根本不进搜索。
- *  2. 搜索只有 13 个候选（i/6-1 铺满 ±reach），不是逐像素扫。
- *  3. 候选点的深度用双线性读（texelFetch 四次），不是三次插值。
- * 命中判据也照原文：候选误差在容差内且深度更远者优先，全都不在容差内才比误差。
- */
-float depthAtBilinear(vec2 p) {
-    vec2 sz = vec2(textureSize(uDepthTex, 0));
-    vec2 q = clamp(p, 0.0, 1.0) * sz - 0.5;
-    vec2 b = floor(q);
-    vec2 f = q - b;
-    vec2 hi = sz - vec2(1.0);
-    float a = texelFetch(uDepthTex, ivec2(clamp(b, vec2(0.0), hi)), 0).r;
-    float c = texelFetch(uDepthTex, ivec2(clamp(b + vec2(1.0, 0.0), vec2(0.0), hi)), 0).r;
-    float d = texelFetch(uDepthTex, ivec2(clamp(b + vec2(0.0, 1.0), vec2(0.0), hi)), 0).r;
-    float e = texelFetch(uDepthTex, ivec2(clamp(b + vec2(1.0, 1.0), vec2(0.0), hi)), 0).r;
-    return mix(mix(a, c, f.x), mix(d, e, f.x), f.y);
-}
-
-vec2 warpedXvr(vec2 p, float eye) {
-    float fade = smoothstep(0.0, 0.035, min(p.x, 1.0 - p.x));
-    float disp = eye * uDisp * fade;
-    if (abs(disp) < 1e-6) return p;
-
-    float h = 1.0 / max(uFrameWidth, 1.0);
-    float source = clamp(p.x - disp * (depthAtBilinear(p) - uConvergence), 0.0, 1.0);
-    float bestDepth = depthAtBilinear(vec2(source, p.y));
-    float bestError = abs(source + disp * (bestDepth - uConvergence) - p.x);
-    if (bestError > 0.5 * h) {
-        float reach = abs(disp) * max(uConvergence, 1.0 - uConvergence) + h;
-        float tolerance = max(0.75 * h, reach / 12.0);
-        for (int i = 0; i <= 12; i++) {
-            float x = clamp(p.x + reach * (float(i) / 6.0 - 1.0), 0.0, 1.0);
-            float z = depthAtBilinear(vec2(x, p.y));
-            float error = abs(x + disp * (z - uConvergence) - p.x);
-            bool candidateValid = error <= tolerance;
-            bool bestValid = bestError <= tolerance;
-            if ((candidateValid && (!bestValid || z > bestDepth)) ||
-                (!candidateValid && !bestValid && error < bestError)) {
-                source = x; bestDepth = z; bestError = error;
-            }
-        }
-    }
-    return vec2(source, p.y);
-}
-
 void main() {
     vec4 outColor;
     /*
@@ -555,10 +506,7 @@ void main() {
      * 把视差算到黑边上。
      */
     vec2 uvT = vUv;
-    if (uDepthOn == 1 && uFillPick >= 2) {
-        /* 照 4XVR 的整条立体变形走：不做遮挡表、不做牛顿修正 */
-        uvT = warpedXvr(vUv, uEyeSign);
-    } else if (uDepthOn == 1) {
+    if (uDepthOn == 1) {
         /*
          * 立体视差：照 DepthRay 的立体着色器移植。
          *
@@ -2788,12 +2736,11 @@ std::atomic<int> gStereo3d{0};
 constexpr float kStereoDispStandard = 14.f / 1000.f;   // 标准档 14‰（6 那档肉眼看不出立体）
 constexpr float kStereoDispComfort = 9.f / 1000.f;     // 舒适档 9‰
 /*
- * 每眼 DIBR 输出的宽度上限。取 3072 是照 4XVR 的实测值：它播放时系统日志里
- * 左右的画面缓冲是 3072x1286（2026-11-12 22:25 抓 swapchain 创建记录），我们此前 2560。
+ * 每眼 DIBR 输出的宽度上限（DepthRay 日志：video eye 2560x1440 capped from 3840x2160）。
  * 这是**每只眼**的宽度：双眼是两次独立的 2560 宽绘制，不是两只眼合计 2560。
  * 只在 3D 分支生效，2D 播放保持视频原分辨率。
  */
-constexpr int kStereo3dEyeW = 3072;
+constexpr int kStereo3dEyeW = 2560;
 /*
  * 3D 时每只眼的宽度上限（运行时可调，vr-tuning 的 stereo_eye_w）。
  *
@@ -2821,14 +2768,10 @@ inline int depthEveryN() {
     return n < 1 ? 1 : (n > 6 ? 6 : n);
 }
 /*
- * 深度上采样目标的宽度。高度按画面比例算，不写死 —— 宽高比变了还按 16:9 铺，
- * 采样坐标会整体歪。
- *
- * 不铺到每眼 2560 宽：深度是低频信号，一个深度值管一大片，铺满只多一次全屏 pass，
- * 且后面按像素采样时纹理缓存命中率掉下来（4XVR 的深度只有 640×360，跑得比我们省）。
- * 边缘锐度由 warp 内的邻域修正承担，不靠深度图分辨率。
+ * 深度上采样目标的宽度（与每眼 DIBR 输出同宽，DepthRay 的链路就是这么铺的）。
+ * 高度按画面比例算，不写死 —— 宽高比变了还按 16:9 铺，采样坐标会整体歪。
  */
-constexpr int kDepthUpW = 1280;
+constexpr int kDepthUpW = 2560;
 /*
  * 遮挡表输出分辨率的除数（调参 key 66，stereo_occl_div，1/2/4，默认 1 = 原样）。
  *
@@ -2852,7 +2795,7 @@ std::atomic<int> gStereoOcclDiv{4};
 std::atomic<int> gStereoNewton{1};
 /* 补洞搜索半径（画面像素）与取层策略：父亲实测补洞是边缘游移的来源，两项都要能运行时对比 */
 std::atomic<float> gStereoFillPx{24.f};
-std::atomic<int> gStereoFillPick{2};
+std::atomic<int> gStereoFillPick{1};
 /* 真边缘判据：深度跳变阈值与两侧颜色差阈值，运行时可比，避免硬编码猜值 */
 std::atomic<float> gStereoEdgeThr{0.08f};
 std::atomic<float> gStereoEdgeColorThr{0.06f};
@@ -2947,23 +2890,10 @@ std::atomic<int> gSyncMode{0};
  * 刷新率档（父亲 2026-10-08：PICO 4 面板在 72Hz 下偶发横向黑线，
  * 官方论坛与 Reddit 都有同类报告，且多出现在「平面银幕 + 72Hz」场景）。
  *
- * 0 = 按默认策略（见 targetRefreshHz）
+ * 0 = 按原逻辑（播放 72Hz / 界面 90Hz）
  * 72 / 90 = 固定该刷新率。运行时改立即生效，用来对照黑线。
  */
 std::atomic<int> gRefreshHz{0};
-
-/*
- * 播放时该请求的刷新率：2D 走 90，3D 回 72。
- *
- * 2026-11-12 实测：3D 改 90 后黑纹持续出现（父亲当场判定），与 10-09 那次一致。
- * 4XVR 同样跑 90 却干净，说明它的余量或提交结构与我们不同，不能照搬它的刷新率。
- * 2D 每帧 9~10ms，90Hz 的 11.1ms 预算装得下，保留 90 让推镜更顺。
- * 调参 refresh_hz 可强钉 72/90 做对照。
- */
-inline float targetRefreshHz(bool videoActive) {
-    if (!videoActive) return 90.f;
-    return gStereo3d.load() != 0 ? 72.f : 90.f;
-}
 
 /*
  * 跳过提交的计数（父亲 2026-10-08：「场景里有时候会出现黑纹」）。
@@ -7597,7 +7527,7 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
                 glUniform1i(u.newton, n < 0 ? 0 : (n > 2 ? 2 : n));
             }
             if (u.fillPx >= 0) glUniform1f(u.fillPx, gStereoFillPx.load());
-            if (u.fillPick >= 0) glUniform1i(u.fillPick, gStereoFillPick.load());
+            if (u.fillPick >= 0) glUniform1i(u.fillPick, gStereoFillPick.load() == 0 ? 0 : 1);
             if (u.edgeThr >= 0) glUniform1f(u.edgeThr, gStereoEdgeThr.load());
             if (u.edgeColorThr >= 0) glUniform1f(u.edgeColorThr, gStereoEdgeColorThr.load());
         } else {
@@ -9359,7 +9289,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetVideoActive(JNIEnv *env, jobject /* 
      */
     if (g.requestRefreshRate != nullptr && g.session != XR_NULL_HANDLE) {
         const int fixed = gRefreshHz.load();
-        const float hz = fixed > 0 ? (float) fixed : targetRefreshHz(g.videoActive.load());
+        const float hz = fixed > 0 ? (float) fixed : (g.videoActive.load() ? 72.f : 90.f);
         const XrResult rr = g.requestRefreshRate(g.session, hz);
         VLOGI("刷新率 → %.0fHz（结果 %d，档位 %d）", (double) hz, (int) rr, fixed);
     }
@@ -9768,16 +9698,14 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             const float px = value;
             gStereoFillPx.store(px < 2.f ? 2.f : (px > 96.f ? 96.f : px));
             VLOGI("调参 → 补洞搜索半径 %.0f 画面像素（%s）", gStereoFillPx.load(),
-                  gStereoFillPick.load() == 2 ? "误差搜索（4XVR 口径）"
-                      : (gStereoFillPick.load() == 1 ? "就近取紧邻背景" : "全范围取最远"));
+                  gStereoFillPick.load() == 1 ? "就近取紧邻背景" : "全范围取最远");
             return;
         }
         /* 69 = 补洞取层策略：1 = 就近取紧邻背景（默认），0 = 全范围内取最远（对照） */
         case 69: {
-            gStereoFillPick.store((int) value < 0 ? 0 : ((int) value > 2 ? 2 : (int) value));
+            gStereoFillPick.store((int) value == 0 ? 0 : 1);
             VLOGI("调参 → 补洞取层 %s（半径 %.0f 画面像素）",
-                  gStereoFillPick.load() == 2 ? "误差搜索（4XVR 口径）"
-                      : (gStereoFillPick.load() == 1 ? "就近取紧邻背景" : "全范围取最远"),
+                  gStereoFillPick.load() == 1 ? "就近取紧邻背景" : "全范围取最远",
                   gStereoFillPx.load());
             return;
         }
@@ -9972,7 +9900,8 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             const int hz = (int) value;
             gRefreshHz.store(hz);
             if (g.requestRefreshRate != nullptr && g.session != XR_NULL_HANDLE) {
-                const float want = hz > 0 ? (float) hz : targetRefreshHz(g.videoActive.load());
+                const float want = hz > 0 ? (float) hz
+                                          : (g.videoActive.load() ? 72.f : 90.f);
                 const XrResult rr = g.requestRefreshRate(g.session, want);
                 VLOGI("调参 → 刷新率档 %d，立即请求 %.0fHz（结果 %d）", hz, (double) want,
                      (int) rr);

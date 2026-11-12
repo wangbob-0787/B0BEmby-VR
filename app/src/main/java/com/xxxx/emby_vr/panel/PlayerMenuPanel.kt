@@ -343,14 +343,9 @@ val EMBY_QUALITY_STEPS = QUalitySteps(
     EMBY_QUALITY_TIERS.map { it.bitrate to it.label },
     EMBY_QUALITY_TIERS.map { "" },
 )
-/*
- * 杜比 P5 的档位就是内核处理宽度。1920 曾经是实测上限（2048 掉到 33 帧），
- * 但那是 GPU 超支年代的数字；深度上采样降档、弹幕画布收窄之后有余量，
- * 2560 重新放回来给父亲实测。
- */
 val P5_QUALITY_STEPS = QUalitySteps(
-    listOf(2560 to "2560", 1920 to "1920", 1280 to "1280"),
-    listOf("", "", "内核 1280 宽"),
+    listOf(1920 to "1920", 1280 to "1280"),
+    listOf("", "内核 1280 宽"),
 )
 val WEB_QUALITY_STEPS = QUalitySteps(
     /* 第一档叫"原画"：宽度不限制，按片源原尺寸给内核（最高 4096） */
@@ -365,12 +360,11 @@ val WEB_QUALITY_STEPS = QUalitySteps(
  *   每眼 1920 → 69~71 帧、GPU 11~16ms（可用）
  *   每眼 2560 → 41~48 帧、GPU 19~28ms（超预算一倍）
  *   每眼 3840 → 22 帧、GPU 31~45ms（更差）
- * 所以 1920 是当时的稳妥档；2026-11-12 父亲要求对齐 4XVR 的 4K 观感，
- * 重新把 2560 放进档位表（默认仍是它，实测掉帧就往下选 1920）。
+ * 所以最高档定在 1920，再往上没有意义。下面两档是给发热降频时留的余量。
  */
 val STEREO3D_QUALITY_STEPS = QUalitySteps(
-    listOf(3072 to "3072", 2560 to "2560", 1920 to "1920", 1280 to "1280"),
-    listOf("每眼 3072 宽（对齐 4XVR 实测缓冲）", "", "", "每眼 1280 宽"),
+    listOf(1920 to "1920", 1536 to "1536", 1280 to "1280"),
+    listOf("", "每眼 1536 宽", "每眼 1280 宽"),
 )
 
 /** 一套档位：值（码率或宽度）+ 标签 + 行尾说明 */

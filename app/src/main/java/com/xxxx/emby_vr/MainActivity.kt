@@ -1151,7 +1151,7 @@ class MainActivity : ComponentActivity() {
         if (aspect <= 0.2f || aspect > 6f) return
         lastDanmakuAspect = aspect
         val w = com.xxxx.emby_vr.vr.VrTuning.danmakuCanvasW
-        val h = Math.round(w.toFloat() / aspect).coerceIn(360, 3200)
+        val h = Math.round(w.toFloat() / aspect).coerceIn(600, 3200)
         if (w == danmakuCanvasW && h == danmakuCanvasH) return
         danmakuCanvasW = w
         danmakuCanvasH = h
