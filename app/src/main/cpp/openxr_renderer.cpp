@@ -6987,6 +6987,25 @@ void main() { oColor = vec4(texture(uTexture, vUv).rgb, 1.0); }
  * 抓帧必须用槽里的副本，不能用解码器纹理：解码器纹理下一帧就被换掉了，推理要的却是
  * "这一帧"；用解码器纹理抓，深度就成了后面某一帧的，配对白做。
  */
+/*
+ * 三维播放时给"画面进槽"加一道节流（2026-11-13 父亲拍板：不追 72 帧，优先配对率）。
+ *
+ * 配对率的天花板 = 画面帧间隔 ÷ 深度耗时。深度一次约 50ms，72Hz 下帧间隔 14ms，
+ * 上限只有 28%，实测 16% 已经贴着上限 —— 这也是画面里"同一深度裂成两块"的接缝来源。
+ * 把进槽节奏限到 30 帧（间隔 33ms），上限提到 66%，画面帧才有机会配到自己的深度。
+ *
+ * 只节流"进槽"，渲染仍是 72Hz、头动照常跟手；中间那些帧复用槽里已有的画面。
+ */
+static long long gRingPushLastMs = 0;
+static bool ringPushDue(VrContext &c) {
+    if (gStereo3d.load() == 0) return true;          // 2D 不节流
+    const double now = (double) nowMs();
+    const double gapMs = 1000.0 / 30.0;              // 30 帧
+    if (gRingPushLastMs != 0 && (now - (double) gRingPushLastMs) < gapMs) return false;
+    gRingPushLastMs = (long long) now;
+    return true;
+}
+
 void pushRingFrame(VrContext &c, GLuint oesSrc) {
     RingSlot &s = c.ringSlots[(size_t) c.ringNext];
     c.ringNext = (c.ringNext + 1) % c.ringCount;
@@ -8192,7 +8211,7 @@ void frameLoop(VrContext &c) {
                     }
                     if (c.depthOn && c.ringActive) {
                         /* ---- 环形缓冲路径：画面与深度都来自同一个槽 ---- */
-                        if (newSourceFrame) pushRingFrame(c, screenSrc);
+                        if (newSourceFrame && ringPushDue(c)) pushRingFrame(c, screenSrc);
                         applyRingDepth(c);
                         updateRingDelay(c);
                         const int shown = pickRingSlot(c);
