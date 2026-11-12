@@ -200,7 +200,7 @@ object VrTuning {
      * 却要在每帧被整张拷进图层。降到 1920 后画布像素少四成四，弹幕清晰度不变。
      * 改这一个数不用重起播，播放中每秒轮询一次、立刻重建画布。
      */
-    var danmakuCanvasW: Int = 1920
+    var danmakuCanvasW: Int = 1280
 
     /**
      * 深度推理线程数（1~8，默认 4）。

@@ -343,9 +343,14 @@ val EMBY_QUALITY_STEPS = QUalitySteps(
     EMBY_QUALITY_TIERS.map { it.bitrate to it.label },
     EMBY_QUALITY_TIERS.map { "" },
 )
+/*
+ * 杜比 P5 的档位就是内核处理宽度。1920 曾经是实测上限（2048 掉到 33 帧），
+ * 但那是 GPU 超支年代的数字；深度上采样降档、弹幕画布收窄之后有余量，
+ * 2560 重新放回来给父亲实测。
+ */
 val P5_QUALITY_STEPS = QUalitySteps(
-    listOf(1920 to "1920", 1280 to "1280"),
-    listOf("", "内核 1280 宽"),
+    listOf(2560 to "2560", 1920 to "1920", 1280 to "1280"),
+    listOf("", "", "内核 1280 宽"),
 )
 val WEB_QUALITY_STEPS = QUalitySteps(
     /* 第一档叫"原画"：宽度不限制，按片源原尺寸给内核（最高 4096） */

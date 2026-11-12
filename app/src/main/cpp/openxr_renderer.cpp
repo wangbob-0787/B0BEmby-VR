@@ -2894,10 +2894,21 @@ std::atomic<int> gSyncMode{0};
  * 刷新率档（父亲 2026-10-08：PICO 4 面板在 72Hz 下偶发横向黑线，
  * 官方论坛与 Reddit 都有同类报告，且多出现在「平面银幕 + 72Hz」场景）。
  *
- * 0 = 按原逻辑（播放 72Hz / 界面 90Hz）
+ * 0 = 按默认策略（见 targetRefreshHz）
  * 72 / 90 = 固定该刷新率。运行时改立即生效，用来对照黑线。
  */
 std::atomic<int> gRefreshHz{0};
+
+/*
+ * 播放时该请求的刷新率。按实际负载分档，不按"播放就该 72"一刀切：
+ *   2D 实测显卡每帧 9~10ms，90Hz 的 11.1ms 预算装得下，多出的节拍让推镜/摇镜更顺；
+ *   3D 实测 17~19ms，90Hz 只会换来更多迟到帧（迟到就是重投影，也就是黑纹），维持 72。
+ * 界面仍然是 90。
+ */
+inline float targetRefreshHz(bool videoActive) {
+    if (!videoActive) return 90.f;
+    return gStereo3d.load() != 0 ? 72.f : 90.f;
+}
 
 /*
  * 跳过提交的计数（父亲 2026-10-08：「场景里有时候会出现黑纹」）。
@@ -9293,7 +9304,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetVideoActive(JNIEnv *env, jobject /* 
      */
     if (g.requestRefreshRate != nullptr && g.session != XR_NULL_HANDLE) {
         const int fixed = gRefreshHz.load();
-        const float hz = fixed > 0 ? (float) fixed : (g.videoActive.load() ? 72.f : 90.f);
+        const float hz = fixed > 0 ? (float) fixed : targetRefreshHz(g.videoActive.load());
         const XrResult rr = g.requestRefreshRate(g.session, hz);
         VLOGI("刷新率 → %.0fHz（结果 %d，档位 %d）", (double) hz, (int) rr, fixed);
     }
@@ -9904,8 +9915,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             const int hz = (int) value;
             gRefreshHz.store(hz);
             if (g.requestRefreshRate != nullptr && g.session != XR_NULL_HANDLE) {
-                const float want = hz > 0 ? (float) hz
-                                          : (g.videoActive.load() ? 72.f : 90.f);
+                const float want = hz > 0 ? (float) hz : targetRefreshHz(g.videoActive.load());
                 const XrResult rr = g.requestRefreshRate(g.session, want);
                 VLOGI("调参 → 刷新率档 %d，立即请求 %.0fHz（结果 %d）", hz, (double) want,
                      (int) rr);
