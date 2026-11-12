@@ -2736,11 +2736,12 @@ std::atomic<int> gStereo3d{0};
 constexpr float kStereoDispStandard = 14.f / 1000.f;   // 标准档 14‰（6 那档肉眼看不出立体）
 constexpr float kStereoDispComfort = 9.f / 1000.f;     // 舒适档 9‰
 /*
- * 每眼 DIBR 输出的宽度上限（DepthRay 日志：video eye 2560x1440 capped from 3840x2160）。
+ * 每眼 DIBR 输出的宽度上限。取 3072 是照 4XVR 的实测值：它播放时系统日志里
+ * 左右的画面缓冲是 3072x1286（2026-11-12 22:25 抓 swapchain 创建记录），我们此前 2560。
  * 这是**每只眼**的宽度：双眼是两次独立的 2560 宽绘制，不是两只眼合计 2560。
  * 只在 3D 分支生效，2D 播放保持视频原分辨率。
  */
-constexpr int kStereo3dEyeW = 2560;
+constexpr int kStereo3dEyeW = 3072;
 /*
  * 3D 时每只眼的宽度上限（运行时可调，vr-tuning 的 stereo_eye_w）。
  *
