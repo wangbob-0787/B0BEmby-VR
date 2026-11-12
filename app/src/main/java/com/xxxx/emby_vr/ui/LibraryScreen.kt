@@ -226,32 +226,20 @@ fun LibraryScreen(
             }
 
             /*
-             * 播放 / 随机播放（照官方库页工具栏）。
-             * 库里的条目类型混着电影、剧集、合集：
-             *   · 电影/频道 → 直接进播放页
-             *   · 剧集/合集 → 没有单一"播放"语义，交给详情页（官方对剧集库的播放键也是进剧集）
+             * 播放：从库里的第一项开始（剧集/合集没有单一"播放"语义，交给详情页；电影/频道直接进播放页）。
+             * 随机播放：随机取一项，规则同上。
              */
-            val firstPlayable = libraryItems?.firstOrNull { !it.id.isNullOrEmpty() }
-            val doPlayAll: () -> Unit = {
-                firstPlayable?.let { it ->
-                    val id = it.id ?: return@let
-                    if (it.type.equals("Series", true) || it.type.equals("BoxSet", true)) {
-                        onNavigateToSeries(id)
-                    } else {
-                        onNavigateToPlayer(id)
-                    }
+            fun openPick(pick: BaseItemDto?) {
+                val pid = pick?.id ?: return
+                if (pick.type.equals("Series", true) || pick.type.equals("BoxSet", true)) {
+                    onNavigateToSeries(pid)
+                } else {
+                    onNavigateToPlayer(pid)
                 }
             }
+            val doPlayAll: () -> Unit = { openPick(libraryItems?.firstOrNull { !it.id.isNullOrEmpty() }) }
             val doShuffle: () -> Unit = {
-                val pick = libraryItems?.filter { !it.id.isNullOrEmpty() }?.randomOrNull()
-                pick?.let { it ->
-                    val id = it.id ?: return@let
-                    if (it.type.equals("Series", true) || it.type.equals("BoxSet", true)) {
-                        onNavigateToSeries(id)
-                    } else {
-                        onNavigateToPlayer(id)
-                    }
-                }
+                openPick(libraryItems?.filter { !it.id.isNullOrEmpty() }?.randomOrNull())
             }
 
             Surface(
@@ -322,7 +310,9 @@ fun LibraryScreen(
                 }
             }
 
-
+            Surface(
+                onClick = { showSortDialog = true },
+                shape = ClickableSurfaceDefaults.shape(shape = RoundedCornerShape(50)),
                 /*
                  * 关掉 TV 自带的焦点放大（父亲 2026-10-04：VR 里不要电视版那套放大）。
                  *
