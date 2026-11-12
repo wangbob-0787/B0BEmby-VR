@@ -286,6 +286,15 @@ class MpvBackend(private val context: Context) {
                     if (com.xxxx.emby_vr.vr.VrTuning.dvOff != 0) {
                         MPVLib.setOptionString("vf", "format=dolbyvision=no")
                     }
+                    /*
+                     * 关掉每帧的峰值亮度统计（2026-11-13）。
+                     *
+                     * 实测：同一部杜比 P5 片、同样每眼 1920，开着颜色还原显卡每帧 21ms、
+                     * 12 帧；把还原整条关掉后 10.4ms、满帧 72。而普通片每眼 4096 都能满帧。
+                     * 说明这道开销压在还原链上。峰值统计是这条链里最贵的一步，且对观感影响小，
+                     * 先关它看能省多少。
+                     */
+                    MPVLib.setOptionString("hdr-compute-peak", "no")
                     MPVLib.setOptionString("vo", "gpu-next")
                     MPVLib.setOptionString("gpu-context", "android")
                     MPVLib.setOptionString("gpu-api", "opengl")
