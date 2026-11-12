@@ -295,16 +295,14 @@ class MpvBackend(private val context: Context) {
                      * 而普通片 4096 宽都能满帧 —— 差的全在这一套。
                      *
                      * 这几项合起来就是把"多余的那半截"关掉，杜比塑形（查表）保留，颜色仍然正确：
-                     *   tone-mapping=clip        最简单的映射，不做曲线拟合
                      *   hdr-compute-peak=no      不做每帧峰值统计（这步最贵）
-                     *   gamut-mapping-mode=clip  色域超界直接截断，不做软映射
-                     *   dither-depth=no          关抖动（8 位输出才需要的补偿）
                      *   deband=no                关去色带
+                     *
+                     * 2026-11-13 01:10 父亲实测：把 tone-mapping 换成 clip、色域改成硬截断后，
+                     * P5 片颜色开始"一会儿偏蓝、一会儿偏黄、一会儿正常" —— 硬截断在暗场和高亮
+                     * 处色相会往两边跑。所以色调映射与色域映射保持内核默认，只留关峰值统计这一项。
                      */
-                    MPVLib.setOptionString("tone-mapping", "clip")
                     MPVLib.setOptionString("hdr-compute-peak", "no")
-                    MPVLib.setOptionString("gamut-mapping-mode", "clip")
-                    MPVLib.setOptionString("dither-depth", "no")
                     MPVLib.setOptionString("deband", "no")
                     MPVLib.setOptionString("vo", "gpu-next")
                     MPVLib.setOptionString("gpu-context", "android")
