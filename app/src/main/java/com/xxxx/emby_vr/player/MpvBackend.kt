@@ -287,14 +287,25 @@ class MpvBackend(private val context: Context) {
                         MPVLib.setOptionString("vf", "format=dolbyvision=no")
                     }
                     /*
-                     * 关掉每帧的峰值亮度统计（2026-11-13）。
+                     * 把色彩管理链瘦到只剩杜比塑形（2026-11-13 父亲要求"一次改到位"）。
                      *
-                     * 实测：同一部杜比 P5 片、同样每眼 1920，开着颜色还原显卡每帧 21ms、
-                     * 12 帧；把还原整条关掉后 10.4ms、满帧 72。而普通片每眼 4096 都能满帧。
-                     * 说明这道开销压在还原链上。峰值统计是这条链里最贵的一步，且对观感影响小，
-                     * 先关它看能省多少。
+                     * 依据：4XVR 的颜色还原就是三张查找表查三次，后面只乘一个矩阵，没有峰值
+                     * 统计、没有色调映射、没有色域映射、没有抖动。我们这边是一整套色彩管理，
+                     * 实测同一部 P5 片、同样每眼 1920：整条开 21ms / 12 帧，整条关 10.4ms / 满帧，
+                     * 而普通片 4096 宽都能满帧 —— 差的全在这一套。
+                     *
+                     * 这几项合起来就是把"多余的那半截"关掉，杜比塑形（查表）保留，颜色仍然正确：
+                     *   tone-mapping=clip        最简单的映射，不做曲线拟合
+                     *   hdr-compute-peak=no      不做每帧峰值统计（这步最贵）
+                     *   gamut-mapping-mode=clip  色域超界直接截断，不做软映射
+                     *   dither-depth=no          关抖动（8 位输出才需要的补偿）
+                     *   deband=no                关去色带
                      */
+                    MPVLib.setOptionString("tone-mapping", "clip")
                     MPVLib.setOptionString("hdr-compute-peak", "no")
+                    MPVLib.setOptionString("gamut-mapping-mode", "clip")
+                    MPVLib.setOptionString("dither-depth", "no")
+                    MPVLib.setOptionString("deband", "no")
                     MPVLib.setOptionString("vo", "gpu-next")
                     MPVLib.setOptionString("gpu-context", "android")
                     MPVLib.setOptionString("gpu-api", "opengl")
