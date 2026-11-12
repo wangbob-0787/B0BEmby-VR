@@ -538,7 +538,28 @@ void main() {
             bool doFill = (uFill == 1 && hole > 0.5);
             /* uEdgeColorThr <= 0 = 关掉颜色这一条 */
             if (doFill && uEdgeColorThr > 0.0) doFill = colorEdge(vUv);
-            if (doFill) {
+            if (doFill && uFillPick >= 2) {
+                /*
+                 * 照 4XVR 的补洞：不看"哪一层更远"，而是把 ±reach 内每个候选源点用当前
+                 * 视差反投影回屏幕，取落点离本像素最近的那个当来源。空洞像素因此落到最近
+                 * 的合法表面上，不会把整片背景铺进人像边缘 —— 边缘拉丝就是这么来的。
+                 *
+                 * 候选按低分辨率深度像素走：深度图只有几百宽，按帧像素走等于把同一次搜索
+                 * 重复几十遍，采样数白付。
+                 */
+                float eyeDisp = disp * uEyeSign;
+                float searchUV = float(reach) / max(uLowResWidth, 1.0);
+                float bestErr = 1e9;
+                float bestX = vUv.x + offX;
+                for (int i = -FILL_MAX; i <= FILL_MAX; i++) {
+                    float fx = clamp(vUv.x + (float(i) / float(FILL_MAX)) * searchUV, 0.0, 1.0);
+                    float z = depthAt(vec2(fx, vUv.y));
+                    float src = clamp(fx - eyeDisp * (z - uConvergence), 0.0, 1.0);
+                    float e = abs(src - vUv.x);
+                    if (e < bestErr) { bestErr = e; bestX = fx; }
+                }
+                uvT.x = bestX;
+            } else if (doFill) {
                 /*
                  * 这一读只有补洞分支用得到。放在分支外会让每个像素都白付 4 次深度采样
                  * （uSmoothRead=1 时 depthAt 走三次插值），而绝大多数像素根本不补洞。
@@ -2800,7 +2821,7 @@ std::atomic<int> gStereoOcclDiv{4};
 std::atomic<int> gStereoNewton{1};
 /* 补洞搜索半径（画面像素）与取层策略：父亲实测补洞是边缘游移的来源，两项都要能运行时对比 */
 std::atomic<float> gStereoFillPx{24.f};
-std::atomic<int> gStereoFillPick{1};
+std::atomic<int> gStereoFillPick{2};
 /* 真边缘判据：深度跳变阈值与两侧颜色差阈值，运行时可比，避免硬编码猜值 */
 std::atomic<float> gStereoEdgeThr{0.08f};
 std::atomic<float> gStereoEdgeColorThr{0.06f};
@@ -7545,7 +7566,7 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
                 glUniform1i(u.newton, n < 0 ? 0 : (n > 2 ? 2 : n));
             }
             if (u.fillPx >= 0) glUniform1f(u.fillPx, gStereoFillPx.load());
-            if (u.fillPick >= 0) glUniform1i(u.fillPick, gStereoFillPick.load() == 0 ? 0 : 1);
+            if (u.fillPick >= 0) glUniform1i(u.fillPick, gStereoFillPick.load());
             if (u.edgeThr >= 0) glUniform1f(u.edgeThr, gStereoEdgeThr.load());
             if (u.edgeColorThr >= 0) glUniform1f(u.edgeColorThr, gStereoEdgeColorThr.load());
         } else {
@@ -9716,14 +9737,16 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             const float px = value;
             gStereoFillPx.store(px < 2.f ? 2.f : (px > 96.f ? 96.f : px));
             VLOGI("调参 → 补洞搜索半径 %.0f 画面像素（%s）", gStereoFillPx.load(),
-                  gStereoFillPick.load() == 1 ? "就近取紧邻背景" : "全范围取最远");
+                  gStereoFillPick.load() == 2 ? "误差搜索（4XVR 口径）"
+                      : (gStereoFillPick.load() == 1 ? "就近取紧邻背景" : "全范围取最远"));
             return;
         }
         /* 69 = 补洞取层策略：1 = 就近取紧邻背景（默认），0 = 全范围内取最远（对照） */
         case 69: {
-            gStereoFillPick.store((int) value == 0 ? 0 : 1);
+            gStereoFillPick.store((int) value < 0 ? 0 : ((int) value > 2 ? 2 : (int) value));
             VLOGI("调参 → 补洞取层 %s（半径 %.0f 画面像素）",
-                  gStereoFillPick.load() == 1 ? "就近取紧邻背景" : "全范围取最远",
+                  gStereoFillPick.load() == 2 ? "误差搜索（4XVR 口径）"
+                      : (gStereoFillPick.load() == 1 ? "就近取紧邻背景" : "全范围取最远"),
                   gStereoFillPx.load());
             return;
         }
