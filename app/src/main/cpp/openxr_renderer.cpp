@@ -85,9 +85,17 @@ static bool g_doviLogged = false;
 static void doviProbeShared()
 {
     if (!g_doviFlat) {
-        g_doviFlat  = (volatile float *) dlsym(RTLD_DEFAULT, "b0b_dovi_flat");
-        g_doviReady = (volatile int *)   dlsym(RTLD_DEFAULT, "b0b_dovi_ready");
-        g_doviSeq   = (volatile int *)   dlsym(RTLD_DEFAULT, "b0b_dovi_seq");
+        /*
+         * 必须先按名字取到内核那个库的句柄再查符号（2026-11-13 实测）：
+         * RTLD_DEFAULT 只搜全局作用域，而 libavcodec 是随 libmpv 以 LOCAL 组加载的，
+         * 在那里查永远是空 —— 表现就是「参数通道一直没日志」。
+         */
+        void *h = dlopen("libavcodec.so", RTLD_LAZY | RTLD_NOLOAD);
+        if (!h) h = dlopen("libavcodec.so", RTLD_LAZY);
+        if (!h) return;
+        g_doviFlat  = (volatile float *) dlsym(h, "b0b_dovi_flat");
+        g_doviReady = (volatile int *)   dlsym(h, "b0b_dovi_ready");
+        g_doviSeq   = (volatile int *)   dlsym(h, "b0b_dovi_seq");
     }
     if (!g_doviFlat || !g_doviReady || !*g_doviReady || !g_doviSeq) return;
     const int seq = *g_doviSeq;
