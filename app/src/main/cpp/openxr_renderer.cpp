@@ -8156,6 +8156,20 @@ void frameLoop(VrContext &c) {
              * 这是唯一为 3D 引入的分辨率上限，只写在 3D 分支里：3D 关掉时 userCap 原样
              * 取调参值（默认 0），视频层回到片源原分辨率，2D 清晰度一点不受影响。
              */
+            /*
+             * 2D 也不再按片源原分辨率出图层（2026-11-13）。
+             *
+             * 银幕在单眼画面里只占一千多像素宽，把 4K 原样贴上去，多出来的像素
+             * 在被采样时全被丢掉 —— 这正是 4K 片源下 2560 掉到 17~54ms 的原因，
+             * 也是 4XVR「按屏幕像素还原」省下来的那部分。
+             *
+             * 所以 2D 的上限改成「每眼宽度」：片源多大都一样，图层只做到屏幕需要的尺寸。
+             * 调参 video_surface_w 仍可覆盖（>0 时按给定值）。
+             */
+            if (userCap <= 0 && gStereo3d.load() == 0) {
+                const int eyeW = gStereoEyeW.load();
+                if (eyeW > 0) userCap = eyeW;
+            }
             if (userCap <= 0 && gStereo3d.load() != 0) userCap = kStereo3dEyeW;
             if (userCap > 0) capW = userCap;
             /* 3D 时再压一道每眼上限：两条链同时跑，像素量是 2D 的两倍 */
