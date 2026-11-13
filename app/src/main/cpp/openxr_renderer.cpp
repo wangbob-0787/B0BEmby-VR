@@ -28,6 +28,7 @@
 
 #include <android/log.h>
 #include <jni.h>
+#include <dlfcn.h>
 
 /*
  * 头文件顺序有讲究（run 91 实测踩坑）：
@@ -64,6 +65,38 @@
 
 #define TAG "B0BEmbyVR-Native"
 #define LOGI_RAW(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
+
+/*
+ * 杜比逐帧参数：内核（libavcodec 里的 mediacodec 补丁）把每帧的还原参数写进
+ * 默认可见性的全局符号，这里按需取地址。取不到（还没起播 / 内核没打补丁）
+ * 就保持空指针，原有画面逻辑不受影响。
+ *
+ * 为什么不用 JNI：解码线程里 FindClass 拿不到应用的类加载器，取到的会是空。
+ */
+static volatile float *g_doviFlat = nullptr;
+static volatile int   *g_doviReady = nullptr;
+static volatile int   *g_doviSeq = nullptr;
+static int g_doviLastSeq = -1;
+static bool g_doviLogged = false;
+
+static void doviProbeShared()
+{
+    if (!g_doviFlat) {
+        g_doviFlat  = (volatile float *) dlsym(RTLD_DEFAULT, "b0b_dovi_flat");
+        g_doviReady = (volatile int *)   dlsym(RTLD_DEFAULT, "b0b_dovi_ready");
+        g_doviSeq   = (volatile int *)   dlsym(RTLD_DEFAULT, "b0b_dovi_seq");
+    }
+    if (!g_doviFlat || !g_doviReady || !*g_doviReady || !g_doviSeq) return;
+    const int seq = *g_doviSeq;
+    if (seq == g_doviLastSeq) return;
+    g_doviLastSeq = seq;
+    if (!g_doviLogged) {
+        g_doviLogged = true;
+        LOGI("杜比参数已接通：seq=%d 版本=%.0f 通道=%.0f", seq,
+             (double) g_doviFlat[0], (double) g_doviFlat[1]);
+    }
+}
+
 /*
  * 排查日志开关（父亲 2026-10-30 定：日志一行不删，只加开关）。
  * vr-tuning.txt 写 log_verbose=1 才输出排查日志，默认关（写日志会拖渲染线程）。
@@ -5015,6 +5048,7 @@ void updateScreenLightFromVideo(VrContext &c) {
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_BLEND);
     glClearColor(0.f, 0.f, 0.f, 1.f);
+
     glClear(GL_COLOR_BUFFER_BIT);
 
     glUseProgram(c.program);
@@ -5022,6 +5056,7 @@ void updateScreenLightFromVideo(VrContext &c) {
     glUniformMatrix4fv(c.mvpLoc, 1, GL_FALSE, id.m);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_EXTERNAL_OES, c.videoTex);
+    doviProbeShared();
     if (c.texLoc >= 0) glUniform1i(c.texLoc, 0);
     if (c.useTexLoc >= 0) glUniform1i(c.useTexLoc, 1);
     if (c.circleLoc >= 0) glUniform1i(c.circleLoc, 0);
