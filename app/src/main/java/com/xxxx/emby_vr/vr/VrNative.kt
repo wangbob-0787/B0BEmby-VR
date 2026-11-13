@@ -38,8 +38,14 @@ object VrNative {
      */
     private external fun nativeSetDoviSkip(on: Int)
 
+    /** 由渲染层做杜比还原（1=开，内核同时跳过）。 */
+    private external fun nativeSetDvRendererReshape(on: Int)
+
     /** 杜比还原开关的外部入口（1=跳过还原，仅供测量）。 */
     fun setDoviSkip(on: Boolean) = runCatching { nativeSetDoviSkip(if (on) 1 else 0) }
+
+    /** 由渲染层做杜比还原（内核会同时跳过还原）。 */
+    fun setDvRendererReshape(on: Boolean) = runCatching { nativeSetDvRendererReshape(if (on) 1 else 0) }
 
     /** 运行时可调参数（key 见 VrTuning.KEY_*） */
     private external fun nativeSetTuning(key: Int, value: Float)

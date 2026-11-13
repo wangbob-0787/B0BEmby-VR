@@ -20,6 +20,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <cstring>
@@ -77,6 +78,8 @@ static volatile float *g_doviFlat = nullptr;
 static volatile int   *g_doviReady = nullptr;
 static volatile int   *g_doviSeq = nullptr;
 static int g_doviLastSeq = -1;
+/* 是否由渲染层做杜比还原（2026-11-13）。默认关：内核还原是已验证的路。 */
+static std::atomic<int> gDvRendererReshape{0};
 static bool g_doviLogged = false;
 
 static void doviProbeShared()
@@ -95,6 +98,18 @@ static void doviProbeShared()
         LOGI_RAW("杜比参数已接通：seq=%d 版本=%.0f 通道=%.0f", seq,
              (double) g_doviFlat[0], (double) g_doviFlat[1]);
     }
+}
+
+/**
+ * 渲染层杜比还原的开关（2026-11-13）。
+ * 打开时同时给内核置 B0B_DOVI_SKIP=1，让内核不再做还原 —— 否则两边都算一遍。
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetDvRendererReshape(JNIEnv * /* env */,
+                                                              jobject /* this */, jint on) {
+    gDvRendererReshape.store(on ? 1 : 0);
+    setenv("B0B_DOVI_SKIP", on ? "1" : "0", 1);
+    LOGI_RAW("渲染层杜比还原 → %d（内核跳过=%d）", on ? 1 : 0, on ? 1 : 0);
 }
 
 /*
@@ -396,6 +411,13 @@ uniform vec2 uScreenStep;     // 银幕上一个屏幕像素对应的 UV 步长�
 uniform int uDownsample;      // 1 = 视频降采样（4×4 盒式平均）
 uniform float uJitter;        // 每帧变的抖动种子（打散 8 位量化的色带）
 uniform int uTestPattern;     // 1 = 用固定测试图替代视频纹理（黑纹诊断，2026-10-09）
+/*
+ * 杜比视界还原（2026-11-13）：内核把每帧参数拍平成 96 个 float，这里整段上传。
+ * 布局：0=版本 1=通道数；之后每通道 26 个 —— 1 个分段数 + 8 个分段点 + 8×3 段系数。
+ * 打开时（uDvReshape=1）本着色器自己算还原，内核那边同时跳过还原（B0B_DOVI_SKIP）。
+ */
+uniform int uDvReshape;       // 1 = 由本着色器做杜比还原
+uniform float uDv[96];        // 拍平后的还原参数
 uniform samplerExternalOES uTexture;
 /*
  * 延迟画面（环形缓冲，stereo_ring 开启时才有）：解码器交出来的是 OES 外部纹理，
@@ -799,6 +821,42 @@ void main() {
             }
         } else {
             c = SAMPLE_SRC(uvT);
+        }
+        /*
+         * 杜比视界还原（2026-11-13）：输入是内核交出来的 IPT-PQ 信号（8 位）。
+         * 三步跟 4XVR 一致：逐通道分段多项式 → 固定矩阵 → PQ 逆曲线，最后走 Hable。
+         * 逐像素只做几次乘加，不做循环搜索 —— 这是 4XVR 比我们省的地方。
+         */
+        if (uDvReshape == 1 && uDv[0] > 0.5) {
+            vec3 sig = clamp(c.rgb, 0.0, 1.0);
+            vec3 out3 = sig;
+            for (int ch = 0; ch < 3; ch++) {
+                int base = 2 + ch * 26;
+                int pivCount = int(uDv[base] + 0.5);
+                float x = sig[ch];
+                float y = x;
+                /* 段选择：找最后一个 x >= pivots[i]，pivots[0] 是最低段起点 */
+                int seg = 0;
+                for (int k = 1; k < 8; k++) {
+                    if (k < pivCount && x >= uDv[base + k]) seg = k - 1;
+                }
+                int c0 = base + 9 + seg * 3;
+                y = (uDv[c0 + 2] * x + uDv[c0 + 1]) * x + uDv[c0];
+                out3[ch] = clamp(y, 0.0, 1.0);
+            }
+            /* PQ 逆曲线（ST2084 EOTF）→ 线性光 */
+            const float M1 = 1.0 / 0.1593017578125;
+            const float M2 = 1.0 / 78.84375;
+            const float C1 = 0.8359375;
+            const float C2 = 18.8515625;
+            const float C3 = 18.6875;
+            vec3 p = clamp(out3, 0.0, 1.0);
+            vec3 pw = pow(p, vec3(M2));
+            vec3 lin = pow(max(pw - C1, 0.0) / max(C2 - C3 * pw, 1e-5), vec3(M1));
+            /* Hable 曲线（4XVR 同款常数）→ 显示 gamma */
+            const float A = 0.15, B = 0.50, Cc = 0.10, D = 0.20, E = 0.02, F = 0.30;
+            vec3 t = (lin * (A * lin + Cc * B) + D * E) / (lin * (A * lin + B) + D * F) - E / F;
+            c = vec4(clamp(pow(t, vec3(1.0 / 2.2)), 0.0, 1.0), 1.0);
         }
         if (uExpandRange == 1) {
             /*
@@ -2165,6 +2223,7 @@ struct QuadLocs {
     GLint circle = -1, expand = -1, bright = -1, contrast = -1, sat = -1;
     GLint sharpen = -1, temp = -1, texel = -1, screenStep = -1, down = -1;
     GLint jitter = -1, testPattern = -1;
+    GLint dvReshape = -1, dvParams = -1;   // 杜比还原：开关 + 每帧参数（2026-11-13）
     GLint delayed = -1, useDelayed = -1;   // 只有 B0B_RING 版有
 };
 
@@ -2221,6 +2280,8 @@ void fillQuadLocs(GLuint prog, QuadLocs &u) {
     u.down = glGetUniformLocation(prog, "uDownsample");
     u.jitter = glGetUniformLocation(prog, "uJitter");
     u.testPattern = glGetUniformLocation(prog, "uTestPattern");
+    u.dvReshape = glGetUniformLocation(prog, "uDvReshape");
+    u.dvParams = glGetUniformLocation(prog, "uDv");
     u.delayed = glGetUniformLocation(prog, "uDelayedTex");   // 只有 B0B_RING 版有
     u.useDelayed = glGetUniformLocation(prog, "uUseDelayed");
 }
@@ -2285,6 +2346,8 @@ struct VrContext {
     GLint downLoc = -1;            // uDownsample：是否对视频做盒式降采样
     GLint jitterLoc = -1;          // uJitter：抖动种子
     GLint testPatternLoc = -1;     // uTestPattern：固定测试图（黑纹诊断）
+    GLint dvReshapeLoc = -1;       // uDvReshape：1 = 由渲染层做杜比还原
+    GLint dvParamsLoc = -1;        // uDv[96]：内核上传的还原参数
     GLuint vbo = 0;                // 单位方块（面板 / 光点）
     /*
      * 手柄放着不动就把激光收起来（父亲 2026-10-07）。
@@ -5091,6 +5154,15 @@ void updateScreenLightFromVideo(VrContext &c) {
     if (c.expandLoc >= 0) glUniform1i(c.expandLoc, 0);
     if (c.downLoc >= 0) glUniform1i(c.downLoc, 0);
     if (c.testPatternLoc >= 0) glUniform1i(c.testPatternLoc, 0);
+    /*
+     * 杜比还原参数（2026-11-13）：只在开关打开、且内核已经交出参数时才上传；
+     * 否则 uDvReshape 保持 0，着色器走原来的路，画面与现在完全一致。
+     */
+    if (c.dvReshapeLoc >= 0 && c.dvParamsLoc >= 0) {
+        const bool dvOn = gDvRendererReshape.load() != 0 && g_doviFlat && g_doviReady && *g_doviReady;
+        glUniform1i(c.dvReshapeLoc, dvOn ? 1 : 0);
+        if (dvOn) glUniform1fv(c.dvParamsLoc, 96, (const GLfloat *) g_doviFlat);
+    }
     if (c.brightLoc >= 0) glUniform1f(c.brightLoc, 0.f);
     if (c.contrastLoc >= 0) glUniform1f(c.contrastLoc, 1.f);
     if (c.satLoc >= 0) glUniform1f(c.satLoc, 1.f);
@@ -9137,6 +9209,8 @@ void renderThreadMain() {
         c.downLoc = c.quadU.down;
         c.jitterLoc = c.quadU.jitter;
         c.testPatternLoc = c.quadU.testPattern;
+        c.dvReshapeLoc = c.quadU.dvReshape;
+        c.dvParamsLoc = c.quadU.dvParams;
         /*
          * 带延迟画面的那版程序：只给视频层用。建不起来就把 stereo_ring 关死，
          * 环那条路一帧都不走（画面回到现在的直采路径）。

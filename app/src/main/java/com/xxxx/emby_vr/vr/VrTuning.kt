@@ -141,6 +141,9 @@ object VrTuning {
      */
     @Volatile
     var doviZeroCopy: Boolean = false
+    /** 杜比还原由渲染层做（内核跳过）；打开时内核输出改成 PQ/BT.2020 直出。 */
+    @Volatile
+    var doviRendererReshape: Boolean = false
 
     /** 3D 每眼宽度上限（与 native 的 stereo_eye_w 同步，界面按它算"实际显示多大"） */
     @Volatile
@@ -852,6 +855,11 @@ object VrTuning {
         flag("no_jitter", KEY_NO_JITTER, "抖动固定")
         flag("force_rgba8", KEY_FORCE_RGBA8, "视频层强制 GL_RGBA8")
         flag("no_postfx", KEY_NO_POSTFX, "画质增强全关")
+        raw["dovi_renderer_reshape"]?.toIntOrNull()?.let {
+            doviRendererReshape = it != 0
+            VrNative.setDvRendererReshape(it != 0)
+            applied += "杜比还原 ${if (it != 0) "渲染层" else "内核"}"
+        }
         raw["dovi_skip_reshape"]?.toIntOrNull()?.let {
             VrNative.setDoviSkip(it != 0)
             applied += "杜比还原 ${if (it != 0) "跳过（仅测量）" else "开启"}"

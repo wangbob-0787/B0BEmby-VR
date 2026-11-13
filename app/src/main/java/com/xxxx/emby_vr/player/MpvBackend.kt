@@ -361,8 +361,19 @@ class MpvBackend(private val context: Context) {
                      * 别去暗示显示端切 HDR（前一版设过 yes，在 VR 这层没有意义还可能添乱）。
                      */
                     MPVLib.setOptionString("target-colorspace-hint", "no")
-                    MPVLib.setOptionString("target-prim", "bt.709")
-                    MPVLib.setOptionString("target-trc", "gamma2.2")
+                    /*
+                     * 杜比还原交给渲染层时（dovi_renderer_reshape=1），内核只负责
+                     * 解码与色彩空间搬运，不要替我们做 PQ→SDR 的映射：目标设成 PQ /
+                     * BT.2020，还原与色调曲线由渲染层那一段着色器完成。
+                     */
+                    if (com.xxxx.emby_vr.vr.VrTuning.doviRendererReshape) {
+                        MPVLib.setOptionString("target-prim", "bt.2020")
+                        MPVLib.setOptionString("target-trc", "pq")
+                        MPVLib.setOptionString("tone-mapping", "clip")
+                    } else {
+                        MPVLib.setOptionString("target-prim", "bt.709")
+                        MPVLib.setOptionString("target-trc", "gamma2.2")
+                    }
                     /*
                      * 色调曲线改用 Hable。依据：4XVR 的颜色链最后就是一条 Hable
                      * （`toneMapDolby()` 里 A=0.15 B=0.50 C=0.10 D=0.20 E=0.02 F=0.30），
