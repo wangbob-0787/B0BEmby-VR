@@ -94,6 +94,8 @@ static long gDvFileMtime = 0;
 
 static void dvLoadFromFile()
 {
+    static bool once;
+    if (!once) { once = true; LOGI_RAW("读取杜比参数：调用到了"); }
     const char *path = getenv("B0B_DOVI_PATH");
     if (!path || !path[0]) return;
     struct stat st;
@@ -5343,6 +5345,11 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
 
     glBindFramebuffer(GL_FRAMEBUFFER, eye.fbos[imageIndex]);
     glViewport(0, 0, eye.width, eye.height);
+    /*
+     * 每眼渲染开头读一次杜比参数（2026-11-13）。放在这里而不是只放视频层绘制里，
+     * 是因为那条路径在某些状态下不跑（面板遮挡、起播瞬间），参数就永远读不到。
+     */
+    doviProbeShared();
     /*
      * 背景透明（alpha 0）：视频走独立图层之后，我们这一层必须让出银幕那块位置，
      * 不然整幅清屏色会把系统合成的视频盖住（配合投影层的源透明度标志）。
