@@ -92,7 +92,7 @@ static void doviProbeShared()
     g_doviLastSeq = seq;
     if (!g_doviLogged) {
         g_doviLogged = true;
-        LOGI("杜比参数已接通：seq=%d 版本=%.0f 通道=%.0f", seq,
+        LOGI_RAW("杜比参数已接通：seq=%d 版本=%.0f 通道=%.0f", seq,
              (double) g_doviFlat[0], (double) g_doviFlat[1]);
     }
 }
