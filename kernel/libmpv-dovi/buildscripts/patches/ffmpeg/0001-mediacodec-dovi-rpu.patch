@@ -2,7 +2,7 @@ diff --git a/libavcodec/mediacodecdec.c b/libavcodec/mediacodecdec.c
 index cc55b30..2e82104 100644
 --- a/libavcodec/mediacodecdec.c
 +++ b/libavcodec/mediacodecdec.c
-@@ -39,12 +39,24 @@
+@@ -39,12 +39,31 @@
  #include "h264_parse.h"
  #include "h264_ps.h"
  #include "hevc/parse.h"
@@ -15,6 +15,13 @@ index cc55b30..2e82104 100644
  #include "mediacodecdec_common.h"
  
 +#define MEDIACODEC_DOVI_FIFO_MAX 512
++
++/* 杜比逐帧参数共享区：内核写、渲染层读。
++ * 用默认可见性的全局符号，渲染层用 dlsym(RTLD_DEFAULT, ...) 取地址，
++ * 不走 JNI —— 解码线程里 FindClass 拿不到 app 的类加载器。 */
++__attribute__((visibility("default"))) volatile int b0b_dovi_ready;
++__attribute__((visibility("default"))) volatile int b0b_dovi_seq;
++__attribute__((visibility("default"))) volatile float b0b_dovi_flat[96];
 +/* Number of RPUs parsed before the metadata is frozen (see attach). */
 +#define MEDIACODEC_DOVI_FREEZE_AFTER 8
 +
@@ -27,7 +34,7 @@ index cc55b30..2e82104 100644
  typedef struct MediaCodecH264DecContext {
  
      AVClass *avclass;
-@@ -57,8 +69,46 @@ typedef struct MediaCodecH264DecContext {
+@@ -57,8 +76,46 @@ typedef struct MediaCodecH264DecContext {
      int amlogic_mpeg2_api23_workaround;
  
      int use_ndk_codec;
@@ -74,7 +81,7 @@ index cc55b30..2e82104 100644
  static av_cold int mediacodec_decode_close(AVCodecContext *avctx)
  {
      MediaCodecH264DecContext *s = avctx->priv_data;
-@@ -68,6 +118,7 @@ static av_cold int mediacodec_decode_close(AVCodecContext *avctx)
+@@ -68,6 +125,7 @@ static av_cold int mediacodec_decode_close(AVCodecContext *avctx)
  
      av_packet_unref(&s->buffered_pkt);
  
@@ -82,12 +89,39 @@ index cc55b30..2e82104 100644
      return 0;
  }
  
-@@ -308,6 +359,323 @@ static int common_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
+@@ -308,6 +366,351 @@ static int common_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
  }
  #endif
  
 +
 +/* ------------------------- Dolby Vision RPU injection ------------------ */
++
++/* 把一帧的映射参数按约定拍平成 float 数组（见 docs/4xvr-reverse §7）。 */
++static void mediacodec_dovi_publish(const AVDOVIMetadata *md)
++{
++    int n = 3, k;
++    if (!md)
++        return;
++    b0b_dovi_flat[0] = 1.0f;
++    b0b_dovi_flat[1] = 3.0f;
++    for (int c = 0; c < 3; c++) {
++        const AVDOVIDataMapping *m = &md->mapping[c];
++        int piv = m->num_pivots;
++        if (piv < 1) piv = 1;
++        if (piv > 9) piv = 9;
++        b0b_dovi_flat[n++] = (float) piv;
++        for (k = 0; k < 8; k++)
++            b0b_dovi_flat[n++] = k < piv ? (float) m->pivots[k] : 0.0f;
++        for (k = 0; k < 8; k++) {
++            const float *c3 = k < piv - 1 ? m->poly_coeffs[k] : (const float[3]){0};
++            b0b_dovi_flat[n++] = c3[0];
++            b0b_dovi_flat[n++] = c3[1];
++            b0b_dovi_flat[n++] = c3[2];
++        }
++    }
++    b0b_dovi_seq++;
++    b0b_dovi_ready = 1;
++}
 +
 +static av_cold void mediacodec_dovi_fifo_clear(MediaCodecH264DecContext *s)
 +{
@@ -373,6 +407,7 @@ index cc55b30..2e82104 100644
 +    }
 +
 +    av_frame_new_side_data_from_buf(frame, AV_FRAME_DATA_DOVI_METADATA, buf);
++    mediacodec_dovi_publish((const AVDOVIMetadata *)e->md);
 +
 +    if (pts != AV_NOPTS_VALUE && e->pts != AV_NOPTS_VALUE) {
 +        int64_t d = pts - e->pts;
@@ -406,7 +441,7 @@ index cc55b30..2e82104 100644
  static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
  {
      int ret;
-@@ -461,6 +829,12 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -461,6 +864,12 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
             "MediaCodec started successfully: codec = %s, ret = %d\n",
             s->ctx->codec_name, ret);
  
@@ -419,7 +454,7 @@ index cc55b30..2e82104 100644
      sdk_int = ff_Build_SDK_INT(avctx);
      /* ff_Build_SDK_INT can fail when target API < 24 and JVM isn't available.
       * If we don't check sdk_int > 0, the workaround might be enabled by
-@@ -503,6 +877,8 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+@@ -503,6 +912,8 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
  
      /* poll for new frame */
      ret = ff_mediacodec_dec_receive(avctx, s->ctx, frame, false);
@@ -428,7 +463,7 @@ index cc55b30..2e82104 100644
      if (ret != AVERROR(EAGAIN))
          return ret;
  
-@@ -514,6 +890,8 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+@@ -514,6 +925,8 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
              if (index < 0) {
                  /* no space, block for an output frame to appear */
                  ret = ff_mediacodec_dec_receive(avctx, s->ctx, frame, true);
@@ -437,7 +472,7 @@ index cc55b30..2e82104 100644
                  /* Try again if both input port and output port return EAGAIN.
                   * If no data is consumed and no frame in output, it can make
                   * both avcodec_send_packet() and avcodec_receive_frame()
-@@ -554,14 +932,22 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+@@ -554,14 +967,22 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
  
          /* fetch new packet or eof */
          ret = ff_decode_get_packet(avctx, &s->buffered_pkt);
@@ -462,7 +497,7 @@ index cc55b30..2e82104 100644
          } else if (ret < 0) {
              return ret;
          }
-@@ -576,6 +962,8 @@ static void mediacodec_decode_flush(AVCodecContext *avctx)
+@@ -576,6 +997,8 @@ static void mediacodec_decode_flush(AVCodecContext *avctx)
  
      av_packet_unref(&s->buffered_pkt);
  
