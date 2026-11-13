@@ -3269,19 +3269,18 @@ class MainActivity : ComponentActivity() {
                      */
                     dvSource && com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder &&
                         method != "DirectPlay" -> {
-                        val tc = source?.transcodingUrl.orEmpty()
-                        val videoCopied = Regex("[?&]VideoCodec=copy", RegexOption.IGNORE_CASE)
-                            .containsMatchIn(tc)
-                        val vcodec = Regex("[?&]VideoCodec=([^&]+)", RegexOption.IGNORE_CASE)
-                            .find(tc)?.groupValues?.getOrNull(1) ?: "?"
-                        if (videoCopied) {
-                            Log.i(TAG, "杜比视界片：服务端只转音频/换封装（VideoCodec=$vcodec）→ 保持转码")
-                            source?.transcodingUrl ?: source?.directStreamUrl
-                        } else {
-                            Log.i(TAG, "杜比视界片：服务端要重编码视频（$method，VideoCodec=$vcodec）→ 换直连，避免偏色")
-                            lastPlayMethod = "DirectPlay"
-                            source?.directStreamUrl ?: source?.transcodingUrl
-                        }
+                        /*
+                         * 杜比 P5 一律直连原文件（2026-11-13）。
+                         *
+                         * 原来按 VideoCodec=copy 判断"只换封装就保持转码"，实测这条路
+                         * 给的是 1920 宽的 HLS 分片，每帧杜比元数据被重新封装后长度与
+                         * 源文件对不上（头显日志里切出来的元数据比源文件多几字节、结尾
+                         * 标记不是 0x80），还原按错误场景的曲线跑，颜色随场景漂移。
+                         * 直连原文件后元数据与画面对得上，还原链才成立。
+                         */
+                        Log.i(TAG, "杜比 P5：直连原文件（转封装会丢每帧元数据）")
+                        lastPlayMethod = "DirectPlay"
+                        "/videos/$targetId/stream?Static=true&MediaSourceId=${source?.id.orEmpty()}"
                     }
                     method == "DirectPlay" -> source?.directStreamUrl
                     else -> source?.transcodingUrl ?: source?.directStreamUrl
