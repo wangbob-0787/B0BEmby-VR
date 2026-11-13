@@ -363,7 +363,12 @@ class MpvBackend(private val context: Context) {
                     MPVLib.setOptionString("target-colorspace-hint", "no")
                     MPVLib.setOptionString("target-prim", "bt.709")
                     MPVLib.setOptionString("target-trc", "gamma2.2")
-                    MPVLib.setOptionString("tone-mapping", "bt.2390")
+                    /*
+                     * 色调曲线改用 Hable。依据：4XVR 的颜色链最后就是一条 Hable
+                     * （`toneMapDolby()` 里 A=0.15 B=0.50 C=0.10 D=0.20 E=0.02 F=0.30），
+                     * 比 libplacebo 默认的 bt.2390 便宜，也更接近它看到的画面。
+                     */
+                    MPVLib.setOptionString("tone-mapping", "hable")
                     /*
                      * 关键：关掉 HDR 逐帧峰值检测。
                      * 默认 auto 对 HDR 源会逐帧统计画面峰值，色调映射曲线跟着每帧变，
