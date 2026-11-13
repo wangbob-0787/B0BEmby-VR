@@ -82,7 +82,7 @@ index cc55b30..2e82104 100644
      return 0;
  }
  
-@@ -308,6 +359,330 @@ static int common_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
+@@ -308,6 +359,323 @@ static int common_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
  }
  #endif
  
@@ -176,20 +176,13 @@ index cc55b30..2e82104 100644
 +    }
 +
 +    /* 判断是不是 4 字节长度前缀（mp4/mkv 走这条，annex-B 走另一条） */
++    /* 封装判定：4 字节长度前缀的首个长度必须落在包内。
++     * 之前按"整包刚好走完"判，包尾带几点填充就判错，每帧都靠事后重切兜底。 */
 +    {
-+        size_t o = 0;
-+        int ok = 1;
-+        while (o + 4 <= (size_t)pkt->size) {
-+            uint32_t len = AV_RB32(pkt->data + o);
-+            if (!len || o + 4 + len > (size_t)pkt->size) { ok = 0; break; }
-+            o += 4 + len;
-+        }
-+        /* 包尾常带几点填充，按"刚好走完"判会误判成 annex-B，
-+         * 于是每帧都靠事后重找结尾兜底。留 16 字节余量即认 AVCC。 */
-+        if (ok && ((size_t)pkt->size == o || (size_t)pkt->size - o < 16))
++        uint32_t len0 = pkt->size >= 4 ? AV_RB32(pkt->data) : 0;
++        if (len0 >= 4 && (size_t)len0 + 4 <= (size_t)pkt->size)
 +            nal_length_size = 4;
 +    }
-+
 +    if (nal_length_size != 4) {
 +        av_fast_malloc(&s->dovi_join, &s->dovi_join_cap,
 +                       pkt->size + AV_INPUT_BUFFER_PADDING_SIZE);
@@ -413,7 +406,7 @@ index cc55b30..2e82104 100644
  static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
  {
      int ret;
-@@ -461,6 +836,12 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -461,6 +829,12 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
             "MediaCodec started successfully: codec = %s, ret = %d\n",
             s->ctx->codec_name, ret);
  
@@ -426,7 +419,7 @@ index cc55b30..2e82104 100644
      sdk_int = ff_Build_SDK_INT(avctx);
      /* ff_Build_SDK_INT can fail when target API < 24 and JVM isn't available.
       * If we don't check sdk_int > 0, the workaround might be enabled by
-@@ -503,6 +884,8 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+@@ -503,6 +877,8 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
  
      /* poll for new frame */
      ret = ff_mediacodec_dec_receive(avctx, s->ctx, frame, false);
@@ -435,7 +428,7 @@ index cc55b30..2e82104 100644
      if (ret != AVERROR(EAGAIN))
          return ret;
  
-@@ -514,6 +897,8 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+@@ -514,6 +890,8 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
              if (index < 0) {
                  /* no space, block for an output frame to appear */
                  ret = ff_mediacodec_dec_receive(avctx, s->ctx, frame, true);
@@ -444,7 +437,7 @@ index cc55b30..2e82104 100644
                  /* Try again if both input port and output port return EAGAIN.
                   * If no data is consumed and no frame in output, it can make
                   * both avcodec_send_packet() and avcodec_receive_frame()
-@@ -554,14 +939,22 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+@@ -554,14 +932,22 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
  
          /* fetch new packet or eof */
          ret = ff_decode_get_packet(avctx, &s->buffered_pkt);
@@ -469,7 +462,7 @@ index cc55b30..2e82104 100644
          } else if (ret < 0) {
              return ret;
          }
-@@ -576,6 +969,8 @@ static void mediacodec_decode_flush(AVCodecContext *avctx)
+@@ -576,6 +962,8 @@ static void mediacodec_decode_flush(AVCodecContext *avctx)
  
      av_packet_unref(&s->buffered_pkt);
  
