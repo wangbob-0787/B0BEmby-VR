@@ -343,9 +343,13 @@ val EMBY_QUALITY_STEPS = QUalitySteps(
     EMBY_QUALITY_TIERS.map { it.bitrate to it.label },
     EMBY_QUALITY_TIERS.map { "" },
 )
+/*
+ * 杜比片（P5）的清晰度档：按「内核处理宽度」给画面定档，父亲在播放时自己切。
+ * 2560 实测满帧（每帧 6~7ms），是这台设备的甜点；3840 掉到十几帧，不列。
+ */
 val P5_QUALITY_STEPS = QUalitySteps(
-    listOf(1920 to "1920", 1280 to "1280"),
-    listOf("", "内核 1280 宽"),
+    listOf(2560 to "2560", 1920 to "1920", 1280 to "1280"),
+    listOf("推荐", "省算力", "最省"),
 )
 val WEB_QUALITY_STEPS = QUalitySteps(
     /* 第一档叫"原画"：宽度不限制，按片源原尺寸给内核（最高 4096） */
