@@ -8090,6 +8090,13 @@ class MainActivity : ComponentActivity() {
             }
         }.onFailure { Log.w(TAG, "影厅资源准备失败：${it.message}") }
 
+        /*
+         * 杜比参数交接文件（2026-11-13）：内核写、渲染层读。
+         * 必须在开始 VR 之前设好，内核那边是按这个环境变量落盘的。
+         */
+        com.xxxx.emby_vr.vr.VrNative.setDoviParamPath(
+            java.io.File(filesDir, "dovi_params.bin").absolutePath,
+        )
         val vrOk = com.xxxx.emby_vr.vr.VrNative.startVr(this)
         Log.i(TAG, "OpenXR 会话启动: $vrOk")
         // 光柱输入回推（VR 模式下唯一的输入源：指向 / 扳机 / 摇杆 / B 键）

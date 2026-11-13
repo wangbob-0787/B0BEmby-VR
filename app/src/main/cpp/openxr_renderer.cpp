@@ -21,6 +21,8 @@
 #include <memory>
 #include <mutex>
 #include <cstdlib>
+#include <cstdio>
+#include <sys/stat.h>
 #include <cstring>
 #include <string>
 #include <cstring>
@@ -82,8 +84,44 @@ static int g_doviLastSeq = -1;
 static std::atomic<int> gDvRendererReshape{0};
 static bool g_doviLogged = false;
 
+/*
+ * 从内核写的参数文件读进来（路径由应用启动时通过环境变量 B0B_DOVI_PATH 给它）。
+ * 只在文件变化时读一次；读失败就保持空，着色器继续走原路。
+ */
+static float gDvFileBuf[96];
+static volatile float *g_doviFlatFile = nullptr;
+static long gDvFileMtime = 0;
+
+static void dvLoadFromFile()
+{
+    const char *path = getenv("B0B_DOVI_PATH");
+    if (!path || !path[0]) return;
+    struct stat st;
+    if (stat(path, &st) != 0) return;
+    if (st.st_mtime == gDvFileMtime) { g_doviFlat = g_doviFlatFile; return; }
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return;
+    size_t got = fread(gDvFileBuf, sizeof(float), 96, fp);
+    fclose(fp);
+    if (got < 3) return;
+    gDvFileMtime = st.st_mtime;
+    g_doviFlatFile = gDvFileBuf;
+    g_doviFlat = g_doviFlatFile;
+    gDvRendererReshape.store(1);            /* 参数到了就启用渲染层还原 */
+    if (!g_doviLogged) {
+        g_doviLogged = true;
+        LOGI_RAW("杜比参数已接通（文件）：版本=%.0f 通道=%.0f", (double) gDvFileBuf[0], (double) gDvFileBuf[1]);
+    }
+}
+
 static void doviProbeShared()
 {
+    /*
+     * 文件交接（2026-11-13 定）：FFmpeg 的链接脚本把全局符号藏了，dlsym 两次都取不到，
+     * 改成内核把参数写到应用指定的文件里，这里每隔 250ms 看一次改动时间。
+     * 参数是按镜头变的，不需要每帧读。
+     */
+    if (!g_doviFlat) dvLoadFromFile();
     if (!g_doviFlat) {
         /*
          * 必须先按名字取到内核那个库的句柄再查符号（2026-11-13 实测）：
@@ -105,6 +143,22 @@ static void doviProbeShared()
         g_doviLogged = true;
         LOGI_RAW("杜比参数已接通：seq=%d 版本=%.0f 通道=%.0f", seq,
              (double) g_doviFlat[0], (double) g_doviFlat[1]);
+    }
+}
+
+/**
+ * 指定杜比参数文件路径（2026-11-13）：内核（libavcodec）按这个环境变量写，
+ * 渲染层按同一个路径读。必须在起播前调用。
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetDoviParamPath(JNIEnv *env, jobject /* this */,
+                                                          jstring path) {
+    if (!path) return;
+    const char *p = env->GetStringUTFChars(path, nullptr);
+    if (p) {
+        setenv("B0B_DOVI_PATH", p, 1);
+        LOGI_RAW("杜比参数文件：%s", p);
+        env->ReleaseStringUTFChars(path, p);
     }
 }
 
