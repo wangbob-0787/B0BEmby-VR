@@ -74,6 +74,19 @@ jobs:
           done
           ls -lh app/libs/
 
+      # 杜比内核（libmpv + 我们自己的 dovi 补丁）也从 Release 拉。
+      #
+      # 原来把 44MB 的 aar 提交在仓库里，每改一次内核就要本地上传一次，
+      # 推送要等好几分钟，期间 GitHub 上还看不到编译任务。
+      # 现在客户端编译时现下：内核工作流编完发到 kernel-dovi Release，
+      # 这边引用同一份产物，改内核不必再动客户端仓库。
+      - name: 下载杜比内核
+        run: |
+          mkdir -p app/libs
+          curl -fL --retry 5 --retry-all-errors -o app/libs/libmpv-dovi.aar \
+            "https://github.com/wangbob-0787/B0BEmby-VR/releases/download/kernel-dovi/libmpv-release.aar"
+          unzip -tq app/libs/libmpv-dovi.aar
+
       - name: 写入 Emby 配置
         env:
           EMBY_API_KEY: ${{ secrets.EMBY_API_KEY }}
