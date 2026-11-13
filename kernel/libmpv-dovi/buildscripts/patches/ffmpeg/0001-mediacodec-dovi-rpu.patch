@@ -76,7 +76,7 @@ index cc55b30..2e82104 100644
      return 0;
  }
  
-@@ -308,6 +353,268 @@ static int common_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
+@@ -308,6 +353,287 @@ static int common_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
  }
  #endif
  
@@ -186,6 +186,10 @@ index cc55b30..2e82104 100644
 +        return;
 +    }
 +
++    if (!s->dovi_diag_frames)
++        av_log(avctx, AV_LOG_INFO, "dovi: scan pkt=%d nals=%d nls=%d\n",
++               pkt->size, s->dovi_pkt.nb_nals, nal_length_size);
++
 +    for (int i = s->dovi_pkt.nb_nals - 1; i >= 0; i--) {
 +        H2645NAL *nal = &s->dovi_pkt.nals[i];
 +
@@ -195,6 +199,21 @@ index cc55b30..2e82104 100644
 +            continue;
 +
 +        ret = ff_dovi_rpu_parse(&s->dovi_ctx, nal->data + 2, nal->size - 2, 0);
++        if (ret < 0) {
++            /* 有的封装把 RPU 与后面的字节连成一段，长度比真实 RPU 长：
++             * 从后往前找合法的 0x80 结尾重切，能解析就采用。 */
++            for (int k = nal->size - 1; k > 3; k--) {
++                if (nal->data[k] != 0x80)
++                    continue;
++                if (ff_dovi_rpu_parse(&s->dovi_ctx, nal->data + 2, k - 1, 0) >= 0) {
++                    av_log(avctx, AV_LOG_INFO,
++                           "dovi: rpu re-cut end=%d size=%d raw=%d\n",
++                           k, nal->size, nal->raw_size);
++                    ret = 0;
++                    break;
++                }
++            }
++        }
 +        if (ret < 0) {
 +            av_log(avctx, AV_LOG_WARNING,
 +                   "dovi: parse fail ret=%d pkt=%d nals=%d raw=%d size=%d hdr=%02x%02x%02x%02x"
@@ -345,7 +364,7 @@ index cc55b30..2e82104 100644
  static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
  {
      int ret;
-@@ -461,6 +768,12 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -461,6 +787,12 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
             "MediaCodec started successfully: codec = %s, ret = %d\n",
             s->ctx->codec_name, ret);
  
@@ -358,7 +377,7 @@ index cc55b30..2e82104 100644
      sdk_int = ff_Build_SDK_INT(avctx);
      /* ff_Build_SDK_INT can fail when target API < 24 and JVM isn't available.
       * If we don't check sdk_int > 0, the workaround might be enabled by
-@@ -503,6 +816,8 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+@@ -503,6 +835,8 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
  
      /* poll for new frame */
      ret = ff_mediacodec_dec_receive(avctx, s->ctx, frame, false);
@@ -367,7 +386,7 @@ index cc55b30..2e82104 100644
      if (ret != AVERROR(EAGAIN))
          return ret;
  
-@@ -514,6 +829,8 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+@@ -514,6 +848,8 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
              if (index < 0) {
                  /* no space, block for an output frame to appear */
                  ret = ff_mediacodec_dec_receive(avctx, s->ctx, frame, true);
@@ -376,7 +395,7 @@ index cc55b30..2e82104 100644
                  /* Try again if both input port and output port return EAGAIN.
                   * If no data is consumed and no frame in output, it can make
                   * both avcodec_send_packet() and avcodec_receive_frame()
-@@ -554,14 +871,22 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+@@ -554,14 +890,22 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
  
          /* fetch new packet or eof */
          ret = ff_decode_get_packet(avctx, &s->buffered_pkt);
@@ -401,7 +420,7 @@ index cc55b30..2e82104 100644
          } else if (ret < 0) {
              return ret;
          }
-@@ -576,6 +901,8 @@ static void mediacodec_decode_flush(AVCodecContext *avctx)
+@@ -576,6 +920,8 @@ static void mediacodec_decode_flush(AVCodecContext *avctx)
  
      av_packet_unref(&s->buffered_pkt);
  
