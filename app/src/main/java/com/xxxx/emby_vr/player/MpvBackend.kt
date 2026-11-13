@@ -432,6 +432,18 @@ class MpvBackend(private val context: Context) {
                     MPVLib.setOptionString("deband", "no")
                     MPVLib.setOptionString("scale", "bilinear")
                     MPVLib.setOptionString("cscale", "bilinear")
+                    /*
+                     * 线性光缩放与抗混叠核都在采样前多做一次转换/多抽几次样，4K 贴到
+                     * 银幕这种倍率下看不出差别，关掉直接省算力（2026-11-13）。
+                     */
+                    MPVLib.setOptionString("linear-downscaling", "no")
+                    MPVLib.setOptionString("correct-downscaling", "no")
+                    MPVLib.setOptionString("sigmoid-upscaling", "no")
+                    /*
+                     * 目标峰值写死 100：peak 留 auto 会按每帧统计走，既贵又让整幅明暗
+                     * 随内容呼吸（父亲 2026-11-13 报「亮的地方有点过曝」也与此有关）。
+                     */
+                    MPVLib.setOptionString("target-peak", "100")
                     MPVLib.setOptionString("vd-lavc-threads", "0")
                     /*
                      * 调参文件里的内核选项放最后应用 —— 覆盖上面的默认值
