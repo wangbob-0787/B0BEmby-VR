@@ -124,6 +124,16 @@ object VrTuning {
     @Volatile
     var rawMaxW: Int = 0   // 0 = 按片源原尺寸（2026-11-05 实测 4K/DCI 4K 都能稳 72）
 
+    /**
+     * 杜比片是否走零拷贝解码（0 = 先拷一份再渲染，1 = 解码器直接给渲染）。
+     *
+     * 拷贝那条每帧要搬一张 4K 画面（十几兆），直连原片后这是 GPU 贴顶的主因；
+     * 零拷贝省掉这一趟，但历史上出现过共享缓冲读写不同步的横向黑纹。
+     * 用调参文件 `dovi_zerocopy=1` 打开试，黑纹若回来改回 0。
+     */
+    @Volatile
+    var doviZeroCopy: Boolean = false
+
     /** 3D 每眼宽度上限（与 native 的 stereo_eye_w 同步，界面按它算"实际显示多大"） */
     @Volatile
     var stereoEyeW: Int = 1920
@@ -834,6 +844,10 @@ object VrTuning {
         flag("no_jitter", KEY_NO_JITTER, "抖动固定")
         flag("force_rgba8", KEY_FORCE_RGBA8, "视频层强制 GL_RGBA8")
         flag("no_postfx", KEY_NO_POSTFX, "画质增强全关")
+        raw["dovi_zerocopy"]?.toIntOrNull()?.let {
+            doviZeroCopy = it != 0
+            applied += "杜比零拷贝解码 ${if (doviZeroCopy) "开" else "关"}"
+        }
         raw["video_surface_w"]?.toIntOrNull()?.let {
             videoSurfaceMaxW = it
             applied += "视频处理宽度上限 $it（0=1920）"

@@ -339,7 +339,16 @@ class MpvBackend(private val context: Context) {
                      * 试过但无效：glFlush（run 303）、glFinish（run 304 同步档）、
                      * 降画质到 720p、关视频独立层、加大内核缓冲、换刷新率档。
                      */
-                    MPVLib.setOptionString("hwdec", "mediacodec-copy")
+                    /*
+                     * 2026-11-13 父亲定「避免搬来搬去」：直连 4K 之后每帧多搬十几兆，
+                     * 一秒三百多兆，是 GPU 贴顶的主要原因。先试回零拷贝实测一次——
+                     * 当时那条共享缓冲不同步的问题，现在的 gpu-next + android 上下文
+                     * 会自己挂同步栅栏，值得重测；黑纹若回来立刻退回 copy。
+                     */
+                    MPVLib.setOptionString(
+                        "hwdec",
+                        if (com.xxxx.emby_vr.vr.VrTuning.doviZeroCopy) "mediacodec" else "mediacodec-copy"
+                    )
                     /*
                      * 关掉 ffmpeg 的直出渲染（direct rendering）。
                      * 杜比视界的 RPU 元数据挂在帧的附加数据上，直出模式下会被丢掉，
@@ -984,6 +993,39 @@ class MpvBackend(private val context: Context) {
         Log.i(TAG, "内核画面参数：格式=${p("video-format")} 解码=${p("hwdec-current")} " +
             "编码=${p("video-codec")} 帧率=${p("container-fps")}")
         Log.i(TAG, "内核色彩参数：${p("video-params").replace("\n", " ")}")
+        inferHdrWhenUntagged()
+    }
+
+    /**
+     * 片源没带色彩标记时，按「10 位 + 1080p 以上」推断成 HDR10（BT.2020 / PQ）。
+     *
+     * 4XVR 不靠标记也能正确出 HDR：它按内容自己判。我们这条链是信标记的，
+     * 缺标记就按普通视频算，画面发灰。这里只在确实没有标记时补一次，
+     * 带标记的片一律不动。
+     */
+    private fun inferHdrWhenUntagged() {
+        fun p(k: String): String = try {
+            MPVLib.getPropertyString(k) ?: ""
+        } catch (_: Throwable) {
+            ""
+        }
+        val primaries = p("video-params/primaries").lowercase()
+        val gamma = p("video-params/gamma").lowercase()
+        val pixfmt = p("video-params/pixelformat").lowercase()
+        val h = try { MPVLib.getPropertyInt("video-params/h") } catch (_: Throwable) { 0 }
+        val tagged = primaries.isNotEmpty() && primaries != "-" &&
+            primaries != "auto" && primaries != "unknown"
+        // 1080p 的 HDR/杜比片同样常见，门槛放在 1080p，不按 4K 卡
+        if (tagged || h < 1000 || !pixfmt.contains("10")) return
+        Log.i(TAG, "片源无色彩标记（$pixfmt ${h}p，primaries=$primaries gamma=$gamma）→ 按 HDR10 推断")
+        try {
+            MPVLib.setPropertyString(
+                "vf",
+                "setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc"
+            )
+        } catch (e: Throwable) {
+            Log.w(TAG, "补 HDR 标记失败：${e.message}")
+        }
     }
 
     /** 是否已经吃进流、开始出画 */
