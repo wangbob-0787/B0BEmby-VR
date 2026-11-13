@@ -27,7 +27,7 @@ index cc55b30..2e82104 100644
  typedef struct MediaCodecH264DecContext {
  
      AVClass *avclass;
-@@ -57,8 +69,40 @@ typedef struct MediaCodecH264DecContext {
+@@ -57,8 +69,46 @@ typedef struct MediaCodecH264DecContext {
      int amlogic_mpeg2_api23_workaround;
  
      int use_ndk_codec;
@@ -48,6 +48,12 @@ index cc55b30..2e82104 100644
 +    uint8_t *dovi_frozen;
 +    int dovi_frozen_size;
 +    int dovi_seen;
++    /* 跨包拼接缓冲：解码器收到的包可能把一帧切开，余料留到下一个包 */
++    uint8_t *dovi_accum;
++    int dovi_accum_len;
++    int dovi_accum_cap;
++    uint8_t *dovi_join;
++    int dovi_join_cap;
 +    /* Diagnostics: how the per-frame RPU lookup lines up with output PTS. */
 +    int dovi_diag_frames;
 +    int64_t dovi_diag_min;
@@ -68,7 +74,7 @@ index cc55b30..2e82104 100644
  static av_cold int mediacodec_decode_close(AVCodecContext *avctx)
  {
      MediaCodecH264DecContext *s = avctx->priv_data;
-@@ -68,6 +112,7 @@ static av_cold int mediacodec_decode_close(AVCodecContext *avctx)
+@@ -68,6 +118,7 @@ static av_cold int mediacodec_decode_close(AVCodecContext *avctx)
  
      av_packet_unref(&s->buffered_pkt);
  
@@ -76,7 +82,7 @@ index cc55b30..2e82104 100644
      return 0;
  }
  
-@@ -308,6 +353,287 @@ static int common_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
+@@ -308,6 +359,324 @@ static int common_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
  }
  #endif
  
@@ -96,6 +102,9 @@ index cc55b30..2e82104 100644
 +    av_freep(&s->dovi_frozen);
 +    s->dovi_frozen_size = 0;
 +    s->dovi_seen = 0;
++    av_freep(&s->dovi_accum);
++    s->dovi_accum_len = 0;
++    av_freep(&s->dovi_join);
 +    ff_h2645_packet_uninit(&s->dovi_pkt);
 +    ff_dovi_ctx_unref(&s->dovi_ctx);
 +}
@@ -140,6 +149,7 @@ index cc55b30..2e82104 100644
 +    int flags = H2645_FLAG_SMALL_PADDING;
 +    int nal_length_size = 0;
 +    int64_t pts;
++    int off = 0, out = 0;
 +
 +    if (!s->hevc_dovi || pkt->size <= 4)
 +        return;
@@ -165,30 +175,63 @@ index cc55b30..2e82104 100644
 +        }
 +    }
 +
-+    /* Detect matroska/MP4 4-byte length prefixes; annex-B otherwise. */
++    /* 判断是不是 4 字节长度前缀（mp4/mkv 走这条，annex-B 走另一条） */
 +    {
-+        size_t off = 0;
++        size_t o = 0;
 +        int ok = 1;
-+        while (off + 4 <= (size_t)pkt->size) {
-+            uint32_t len = AV_RB32(pkt->data + off);
-+            if (!len || off + 4 + len > (size_t)pkt->size) { ok = 0; break; }
-+            off += 4 + len;
++        while (o + 4 <= (size_t)pkt->size) {
++            uint32_t len = AV_RB32(pkt->data + o);
++            if (!len || o + 4 + len > (size_t)pkt->size) { ok = 0; break; }
++            o += 4 + len;
 +        }
-+        if (ok && off == (size_t)pkt->size)
++        if (ok && o == (size_t)pkt->size)
 +            nal_length_size = 4;
 +    }
 +
++    if (nal_length_size != 4) {
++        av_fast_malloc(&s->dovi_join, &s->dovi_join_cap,
++                       pkt->size + AV_INPUT_BUFFER_PADDING_SIZE);
++        if (!s->dovi_join)
++            return;
++        memcpy(s->dovi_join, pkt->data, pkt->size);
++        out = pkt->size;
++    } else {
++        /* 跨包拼接：解码器收到的包有时把一帧切成几段，末尾的 RPU 被截断，
++         * 解析器就报非法（实测尾部标记对不上）。余料留到下一个包，拼成完整 NAL。 */
++        av_fast_malloc(&s->dovi_accum, &s->dovi_accum_cap,
++                       s->dovi_accum_len + pkt->size + AV_INPUT_BUFFER_PADDING_SIZE);
++        if (!s->dovi_accum)
++            return;
++        memcpy(s->dovi_accum + s->dovi_accum_len, pkt->data, pkt->size);
++        s->dovi_accum_len += pkt->size;
++
++        av_fast_malloc(&s->dovi_join, &s->dovi_join_cap,
++                       s->dovi_accum_len + AV_INPUT_BUFFER_PADDING_SIZE);
++        if (!s->dovi_join)
++            return;
++        while (off + 4 <= s->dovi_accum_len) {
++            uint32_t len = AV_RB32(s->dovi_accum + off);
++            if (!len || off + 4 + (int)len > s->dovi_accum_len)
++                break;
++            memcpy(s->dovi_join + out, s->dovi_accum + off, 4 + len);
++            out += 4 + (int)len;
++            off += 4 + (int)len;
++        }
++        if (off > 0) {
++            memmove(s->dovi_accum, s->dovi_accum + off, s->dovi_accum_len - off);
++            s->dovi_accum_len -= off;
++        }
++        if (out <= 0)
++            return;
++    }
++
 +    ff_h2645_packet_uninit(&s->dovi_pkt);
-+    ret = ff_h2645_packet_split(&s->dovi_pkt, pkt->data, pkt->size, avctx,
++    ret = ff_h2645_packet_split(&s->dovi_pkt, s->dovi_join, out, avctx,
 +                                nal_length_size, AV_CODEC_ID_HEVC, flags);
 +    if (ret < 0) {
 +        ff_h2645_packet_uninit(&s->dovi_pkt);
 +        return;
 +    }
-+
-+    if (!s->dovi_diag_frames)
-+        av_log(avctx, AV_LOG_INFO, "dovi: scan pkt=%d nals=%d nls=%d\n",
-+               pkt->size, s->dovi_pkt.nb_nals, nal_length_size);
 +
 +    for (int i = s->dovi_pkt.nb_nals - 1; i >= 0; i--) {
 +        H2645NAL *nal = &s->dovi_pkt.nals[i];
@@ -364,7 +407,7 @@ index cc55b30..2e82104 100644
  static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
  {
      int ret;
-@@ -461,6 +787,12 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -461,6 +830,12 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
             "MediaCodec started successfully: codec = %s, ret = %d\n",
             s->ctx->codec_name, ret);
  
@@ -377,7 +420,7 @@ index cc55b30..2e82104 100644
      sdk_int = ff_Build_SDK_INT(avctx);
      /* ff_Build_SDK_INT can fail when target API < 24 and JVM isn't available.
       * If we don't check sdk_int > 0, the workaround might be enabled by
-@@ -503,6 +835,8 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+@@ -503,6 +878,8 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
  
      /* poll for new frame */
      ret = ff_mediacodec_dec_receive(avctx, s->ctx, frame, false);
@@ -386,7 +429,7 @@ index cc55b30..2e82104 100644
      if (ret != AVERROR(EAGAIN))
          return ret;
  
-@@ -514,6 +848,8 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+@@ -514,6 +891,8 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
              if (index < 0) {
                  /* no space, block for an output frame to appear */
                  ret = ff_mediacodec_dec_receive(avctx, s->ctx, frame, true);
@@ -395,7 +438,7 @@ index cc55b30..2e82104 100644
                  /* Try again if both input port and output port return EAGAIN.
                   * If no data is consumed and no frame in output, it can make
                   * both avcodec_send_packet() and avcodec_receive_frame()
-@@ -554,14 +890,22 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+@@ -554,14 +933,22 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
  
          /* fetch new packet or eof */
          ret = ff_decode_get_packet(avctx, &s->buffered_pkt);
@@ -420,7 +463,7 @@ index cc55b30..2e82104 100644
          } else if (ret < 0) {
              return ret;
          }
-@@ -576,6 +920,8 @@ static void mediacodec_decode_flush(AVCodecContext *avctx)
+@@ -576,6 +963,8 @@ static void mediacodec_decode_flush(AVCodecContext *avctx)
  
      av_packet_unref(&s->buffered_pkt);
  
