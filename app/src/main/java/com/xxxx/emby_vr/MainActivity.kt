@@ -3261,7 +3261,28 @@ class MainActivity : ComponentActivity() {
                  * 真需要转码才播得了的片，由起播看门狗改走自带内核（内核拉原文件）。
                  */
                 val dvSource = com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource
+                /*
+                 * 内核直接拉 strm 里写的原始地址（父亲 2026-11-13 定）：
+                 * 杜比 P5 必须有每帧元数据，服务端转封装会把元数据段落重排；
+                 * 带图形字幕（PGS/VobSub）的片，服务端要烧字幕就得转码，画面还被降分辨率。
+                 * 这两种都让内核直连源地址，其余照旧走服务端。
+                 */
+                val graphicSub = source?.mediaStreams?.any { st ->
+                    st.type.equals("Subtitle", true) && (st.codec ?: "").lowercase().let {
+                        it.contains("pgs") || it.contains("dvdsub") || it.contains("dvbsub")
+                    }
+                } ?: false
+                val strmPath = source?.path
+                val strmDirectUrl = if (
+                    (dvSource && com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder || graphicSub) &&
+                    strmPath?.endsWith(".strm") == true
+                ) fetchStrmUrl(strmPath) else null
                 val path0 = when {
+                    strmDirectUrl != null -> {
+                        Log.i(TAG, "走 strm 原始地址：$strmDirectUrl")
+                        lastPlayMethod = "DirectPlay"
+                        strmDirectUrl
+                    }
                     /*
                      * 只有 Profile 5 才换直连：那一版系统解不出画面。
                      * 8.1 / 7 的基础层就是普通 HDR10，照常交给系统播放器，
@@ -3280,7 +3301,7 @@ class MainActivity : ComponentActivity() {
                          */
                         Log.i(TAG, "杜比 P5：直连原文件（转封装会丢每帧元数据）")
                         lastPlayMethod = "DirectPlay"
-                        "/videos/$targetId/stream?Static=true&MediaSourceId=${source?.id.orEmpty()}"
+                        "/videos/$mediaId/stream?Static=true&MediaSourceId=${source?.id.orEmpty()}"
                     }
                     method == "DirectPlay" -> source?.directStreamUrl
                     else -> source?.transcodingUrl ?: source?.directStreamUrl
@@ -3291,11 +3312,15 @@ class MainActivity : ComponentActivity() {
                     return@launch
                 }
                 var path = path0
-                // 直链缺 api_key 时补上（Emby 视频直链默认不带 token）
-                if (!path.contains("api_key=")) {
-                    path += (if (path.contains("?")) "&" else "?") + "api_key=${userToken()}"
+                val url = if (path.startsWith("http")) {
+                    path
+                } else {
+                    // 直链缺 api_key 时补上（Emby 视频直链默认不带 token）
+                    if (!path.contains("api_key=")) {
+                        path += (if (path.contains("?")) "&" else "?") + "api_key=${userToken()}"
+                    }
+                    "${userServer()}/emby$path"
                 }
-                val url = "${userServer()}/emby$path"
                 withContext(Dispatchers.Main) {
                     startPlayer(url, mediaId, effectiveStart / 10_000L)
                 }
@@ -6816,6 +6841,27 @@ class MainActivity : ComponentActivity() {
      * 路径：/sdcard/Android/data/com.xxxx.emby_vr/files/vr-manual-stream.json
      * （用 adb push 写，不需要应用申请存储权限；地址有效期约 2 小时，用完即删。）
      */
+    /**
+     * 取 strm 里写的原始播放地址（.15 上的只读接口）。
+     * 拿不到返回 null，调用方回退服务端那条路。
+     */
+    private suspend fun fetchStrmUrl(path: String): String? = withContext(Dispatchers.IO) {
+        try {
+            val host = userServer().substringAfter("://").substringBefore(":").substringBefore("/")
+            val q = java.net.URLEncoder.encode(path, "UTF-8")
+            val conn = (java.net.URL("http://$host:7791/strm?path=$q")
+                .openConnection() as java.net.HttpURLConnection).apply {
+                connectTimeout = 4000
+                readTimeout = 4000
+            }
+            val body = conn.inputStream.bufferedReader().use { it.readText() }
+            Regex("\"url\"\\s*:\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1)
+        } catch (e: Exception) {
+            Log.w(TAG, "取 strm 直链失败：${e.message}")
+            null
+        }
+    }
+
     private fun userServer(): String = embySession.serverUrl ?: BuildConfig.EMBY_SERVER
 
     private fun playbackReportBody(
