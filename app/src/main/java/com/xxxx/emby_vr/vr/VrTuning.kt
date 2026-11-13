@@ -848,6 +848,10 @@ object VrTuning {
         flag("no_jitter", KEY_NO_JITTER, "抖动固定")
         flag("force_rgba8", KEY_FORCE_RGBA8, "视频层强制 GL_RGBA8")
         flag("no_postfx", KEY_NO_POSTFX, "画质增强全关")
+        raw["dovi_skip_reshape"]?.toIntOrNull()?.let {
+            VrNative.setDoviSkip(it != 0)
+            applied += "杜比还原 ${if (it != 0) "跳过（仅测量）" else "开启"}"
+        }
         raw["dovi_zerocopy"]?.toIntOrNull()?.let {
             doviZeroCopy = it != 0
             applied += "杜比零拷贝解码 ${if (doviZeroCopy) "开" else "关"}"

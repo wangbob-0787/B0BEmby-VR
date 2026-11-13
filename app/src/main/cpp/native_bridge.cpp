@@ -33,3 +33,22 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeProbe(JNIEnv *env, jobject /* this */) 
     LOGI("%s", buf);
     return env->NewStringUTF(buf);
 }
+
+/*
+ * 杜比还原的总开关（给内核里的 libplacebo 读）。
+ *
+ * 为什么要它：想量「还原本身占多少开销」，只能用 vf=format=dolbyvision=no 关掉，
+ * 但那条会往滤镜链插一层，实测比还原本身还慢（2026-11-13）。改成导出这个全局
+ * 符号，libplacebo 的 pl_shader_dovi_reshape 用 dlsym 取到就直接返回，
+ * 不额外插任何滤镜。
+ *
+ * 必须显式 default 可见性：NDK 默认 -fvisibility=hidden，隐藏了对手 .so 找不到。
+ */
+extern "C" __attribute__((visibility("default"))) int b0b_dovi_skip = 0;
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetDoviSkip(JNIEnv * /* env */, jobject /* this */,
+                                                     jint on) {
+    b0b_dovi_skip = on ? 1 : 0;
+    LOGI("杜比还原开关置为 %d", b0b_dovi_skip);
+}

@@ -32,6 +32,15 @@ object VrNative {
 
     private external fun nativeSetPanelActive(active: Boolean)
 
+    /**
+     * 杜比还原总开关（1=跳过还原，用于量还原本身的开销）。
+     * 走内核里的 libplacebo，不插滤镜，所以不带来额外开销。
+     */
+    private external fun nativeSetDoviSkip(on: Int)
+
+    /** 杜比还原开关的外部入口（1=跳过还原，仅供测量）。 */
+    fun setDoviSkip(on: Boolean) = runCatching { nativeSetDoviSkip(if (on) 1 else 0) }
+
     /** 运行时可调参数（key 见 VrTuning.KEY_*） */
     private external fun nativeSetTuning(key: Int, value: Float)
 

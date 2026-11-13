@@ -1,0 +1,40 @@
+--- a/src/shaders/colorspace.c
++++ b/src/shaders/colorspace.c
+@@ -15,6 +15,7 @@
+  * License along with libplacebo. If not, see <http://www.gnu.org/licenses/>.
+  */
+ 
++#include <dlfcn.h>
+ #include <math.h>
+ 
+ #include "cache.h"
+@@ -103,12 +104,29 @@
+ }
+ #endif
+ 
++/* B0BEmby: 运行时可跳过杜比还原，用于量「还原本身占多少开销」。
++ * 开关由应用侧的可执行文件导出同名全局变量，这里按需取地址；取不到就照常还原。
++ * 走全局符号而不是 mpv 选项：加 vf 会插一层滤镜，实测比还原本身还慢。 */
++static int b0b_dovi_skip_enabled(void)
++{
++    static int *flag;
++    static int looked;
++    if (!looked) {
++        flag = (int *) dlsym(RTLD_DEFAULT, "b0b_dovi_skip");
++        looked = 1;
++    }
++    return flag && *flag;
++}
++
+ void pl_shader_dovi_reshape(pl_shader sh, const struct pl_dovi_metadata *data)
+ {
+ #ifdef PL_HAVE_DOVI
+     if (!sh_require(sh, PL_SHADER_SIG_COLOR, 0, 0) || !data)
+         return;
+ 
++    if (b0b_dovi_skip_enabled())
++        return;
++
+     sh_describe(sh, "reshaping");
+     GLSL("// pl_shader_reshape                  \n"
+          "{                                     \n"
