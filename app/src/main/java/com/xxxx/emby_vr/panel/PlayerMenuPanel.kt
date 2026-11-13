@@ -348,8 +348,8 @@ val EMBY_QUALITY_STEPS = QUalitySteps(
  * 2560 实测满帧（每帧 6~7ms），是这台设备的甜点；3840 掉到十几帧，不列。
  */
 val P5_QUALITY_STEPS = QUalitySteps(
-    listOf(2560 to "2560", 1920 to "1920", 1280 to "1280"),
-    listOf("推荐", "省算力", "最省"),
+    listOf(3840 to "4K", 2560 to "2560", 1920 to "1920", 1280 to "1280"),
+    listOf("最清晰（吃力）", "清晰", "推荐", "最省算力"),
 )
 val WEB_QUALITY_STEPS = QUalitySteps(
     /* 第一档叫"原画"：宽度不限制，按片源原尺寸给内核（最高 4096） */
