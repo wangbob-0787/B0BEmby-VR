@@ -136,7 +136,7 @@ index cc55b30..2e82104 100644
 +    b0b_dovi_ready = 1;
 +}
 +
-++static av_cold void mediacodec_dovi_fifo_clear(MediaCodecH264DecContext *s)
++static av_cold void mediacodec_dovi_fifo_clear(MediaCodecH264DecContext *s)
 +{
 +    for (int i = 0; i < s->dovi_fifo_len; i++)
 +        av_free(s->dovi_fifo[i].md);
