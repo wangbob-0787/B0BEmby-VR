@@ -92,7 +92,7 @@ index cc55b30..2e82104 100644
      return 0;
  }
  
-@@ -308,6 +369,378 @@ static int common_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
+@@ -308,6 +369,387 @@ static int common_set_extradata(AVCodecContext *avctx, FFAMediaFormat *format)
  }
  #endif
  
@@ -142,12 +142,21 @@ index cc55b30..2e82104 100644
 +     * 只在参数变化时写一次，不是每帧都写。
 +     */
 +    {
++        static int logged, logged2;
 +        const char *path = getenv("B0B_DOVI_PATH");
++        if (!logged) {
++            logged = 1;
++            av_log(NULL, AV_LOG_INFO, "dovi: publish 路径=%s\n", path ? path : "(空)");
++        }
 +        if (path && path[0]) {
 +            FILE *fp = fopen(path, "wb");
 +            if (fp) {
 +                fwrite(b0b_dovi_flat, sizeof(float), (size_t) n, fp);
 +                fclose(fp);
++                if (!logged2) { logged2 = 1; av_log(NULL, AV_LOG_INFO, "dovi: 参数已写出 %d 个 float\n", n); }
++            } else if (!logged2) {
++                logged2 = 1;
++                av_log(NULL, AV_LOG_WARNING, "dovi: 参数文件打不开 %s\n", path);
 +            }
 +        }
 +    }
@@ -471,7 +480,7 @@ index cc55b30..2e82104 100644
  static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
  {
      int ret;
-@@ -461,6 +894,12 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
+@@ -461,6 +903,12 @@ static av_cold int mediacodec_decode_init(AVCodecContext *avctx)
             "MediaCodec started successfully: codec = %s, ret = %d\n",
             s->ctx->codec_name, ret);
  
@@ -484,7 +493,7 @@ index cc55b30..2e82104 100644
      sdk_int = ff_Build_SDK_INT(avctx);
      /* ff_Build_SDK_INT can fail when target API < 24 and JVM isn't available.
       * If we don't check sdk_int > 0, the workaround might be enabled by
-@@ -503,6 +942,8 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+@@ -503,6 +951,8 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
  
      /* poll for new frame */
      ret = ff_mediacodec_dec_receive(avctx, s->ctx, frame, false);
@@ -493,7 +502,7 @@ index cc55b30..2e82104 100644
      if (ret != AVERROR(EAGAIN))
          return ret;
  
-@@ -514,6 +955,8 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+@@ -514,6 +964,8 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
              if (index < 0) {
                  /* no space, block for an output frame to appear */
                  ret = ff_mediacodec_dec_receive(avctx, s->ctx, frame, true);
@@ -502,7 +511,7 @@ index cc55b30..2e82104 100644
                  /* Try again if both input port and output port return EAGAIN.
                   * If no data is consumed and no frame in output, it can make
                   * both avcodec_send_packet() and avcodec_receive_frame()
-@@ -554,14 +997,22 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+@@ -554,14 +1006,22 @@ static int mediacodec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
  
          /* fetch new packet or eof */
          ret = ff_decode_get_packet(avctx, &s->buffered_pkt);
@@ -527,7 +536,7 @@ index cc55b30..2e82104 100644
          } else if (ret < 0) {
              return ret;
          }
-@@ -576,6 +1027,8 @@ static void mediacodec_decode_flush(AVCodecContext *avctx)
+@@ -576,6 +1036,8 @@ static void mediacodec_decode_flush(AVCodecContext *avctx)
  
      av_packet_unref(&s->buffered_pkt);
  
