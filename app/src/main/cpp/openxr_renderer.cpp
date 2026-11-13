@@ -756,19 +756,47 @@ void main() {
              * 所以用高斯加权取 16 点 —— 中心那个点权重最高，邻域次之，角上最低。
              * 既压住了缩小时的混叠（不再闪），又尽量把细节点状物留住。
              */
-            float w[16] = float[16](
-                    1.0, 2.0, 2.0, 1.0,
-                    2.0, 4.0, 4.0, 2.0,
-                    2.0, 4.0, 4.0, 2.0,
-                    1.0, 2.0, 2.0, 1.0);
+            /*
+             * 采样点数按缩小倍率自适应（2026-11-13）。
+             *
+             * 16 点固定是给「4K 贴到约 1/3 宽」那种狠缩小准备的。上屏宽度提到 1920、
+             * 2560 之后缩小倍率降到 2 倍以内，16 次取样就是白花：每像素 16 次纹理读，
+             * 正好是宽度一涨就掉帧的原因（2560 实测 17~54ms）。
+             *
+             * 判据用两个现成的 uniform：uTexel 是片源一个像素的 UV 步长，
+             * uScreenStep 是屏幕一个像素的 UV 步长，两者之比就是缩小倍率。
+             *   倍率 ≤ 1.5：一次双线性就够（自己就覆盖了邻近像素）
+             *   倍率 ≤ 2.5：2×2 四点
+             *   更大：仍用 16 点，保住「细线不闪、亮点不糊」的观感
+             */
+            float ratio = length(uScreenStep) / max(length(uTexel), 1e-6);
             vec3 acc = vec3(0.0);
-            for (int i = 0; i < 4; i++) {
-                for (int j = 0; j < 4; j++) {
-                    vec2 o = (vec2(float(i), float(j)) - vec2(1.5)) * 0.5 * uScreenStep;
-                    acc += SAMPLE_SRC(uvT + o).rgb * w[i * 4 + j];
+            if (ratio <= 1.5) {
+                acc = SAMPLE_SRC(uvT).rgb;
+                c = vec4(acc, 1.0);
+            } else if (ratio <= 2.5) {
+                float w4[4] = float[4](1.0, 2.0, 2.0, 4.0);
+                for (int i = 0; i < 2; i++) {
+                    for (int j = 0; j < 2; j++) {
+                        vec2 o = (vec2(float(i), float(j)) - vec2(0.5)) * uScreenStep;
+                        acc += SAMPLE_SRC(uvT + o).rgb * w4[i * 2 + j];
+                    }
                 }
+                c = vec4(acc / 9.0, 1.0);
+            } else {
+                float w[16] = float[16](
+                        1.0, 2.0, 2.0, 1.0,
+                        2.0, 4.0, 4.0, 2.0,
+                        2.0, 4.0, 4.0, 2.0,
+                        1.0, 2.0, 2.0, 1.0);
+                for (int i = 0; i < 4; i++) {
+                    for (int j = 0; j < 4; j++) {
+                        vec2 o = (vec2(float(i), float(j)) - vec2(1.5)) * 0.5 * uScreenStep;
+                        acc += SAMPLE_SRC(uvT + o).rgb * w[i * 4 + j];
+                    }
+                }
+                c = vec4(acc / 36.0, 1.0);
             }
-            c = vec4(acc / 36.0, 1.0);
         } else {
             c = SAMPLE_SRC(uvT);
         }
