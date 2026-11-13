@@ -8,7 +8,7 @@
  #include <math.h>
  
  #include "cache.h"
-@@ -103,12 +104,29 @@
+@@ -103,12 +104,24 @@
  }
  #endif
  
