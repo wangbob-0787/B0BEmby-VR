@@ -892,35 +892,53 @@ void main() {
          * 逐像素只做几次乘加，不做循环搜索 —— 这是 4XVR 比我们省的地方。
          */
         if (uDvReshape == 1 && uDv[0] > 0.5) {
+            /*
+             * 杜比 Profile 5 还原（2026-11-13）。
+             * 顺序照 4XVR 的实现：逐通道分段多项式 → PQ 逆曲线 → IPT→BT.2020 矩阵
+             * → Hable 色调曲线 → gamma，最后归一化到 0~1。
+             * 上一版漏了矩阵那一步、又在 Hable 之后多乘一次 gamma，所以整幅发浅。
+             */
             vec3 sig = clamp(c.rgb, 0.0, 1.0);
             vec3 out3 = sig;
             for (int ch = 0; ch < 3; ch++) {
                 int base = 2 + ch * 26;
                 int pivCount = int(uDv[base] + 0.5);
                 float x = sig[ch];
-                float y = x;
-                /* 段选择：找最后一个 x >= pivots[i]，pivots[0] 是最低段起点 */
                 int seg = 0;
                 for (int k = 1; k < 8; k++) {
                     if (k < pivCount && x >= uDv[base + k]) seg = k - 1;
                 }
                 int c0 = base + 9 + seg * 3;
-                y = (uDv[c0 + 2] * x + uDv[c0 + 1]) * x + uDv[c0];
-                out3[ch] = clamp(y, 0.0, 1.0);
+                out3[ch] = clamp((uDv[c0 + 2] * x + uDv[c0 + 1]) * x + uDv[c0], 0.0, 1.0);
             }
-            /* PQ 逆曲线（ST2084 EOTF）→ 线性光 */
+            /* PQ 逆曲线（ST2084 EOTF），得到 0~1 的线性光 */
             const float M1 = 1.0 / 0.1593017578125;
             const float M2 = 1.0 / 78.84375;
             const float C1 = 0.8359375;
             const float C2 = 18.8515625;
             const float C3 = 18.6875;
-            vec3 p = clamp(out3, 0.0, 1.0);
-            vec3 pw = pow(p, vec3(M2));
+            vec3 pw = pow(clamp(out3, 0.0, 1.0), vec3(M2));
             vec3 lin = pow(max(pw - C1, 0.0) / max(C2 - C3 * pw, 1e-5), vec3(M1));
-            /* Hable 曲线（4XVR 同款常数）→ 显示 gamma */
+            /*
+             * IPT → BT.2020：Profile 5 的还原矩阵是固定常数（解码方向，即编码矩阵的逆）。
+             * 这一步上一版整段漏了，是"颜色发浅"的主因。
+             */
+            const mat3 iptTo2020 = mat3(
+                 1.8502, -1.1383,  0.2384,
+                 0.3668,  0.6439, -0.0107,
+                 0.0,     0.0,     1.0);
+            vec3 rgbLin = clamp(lin * iptTo2020, 0.0, 1.0);
+            /*
+             * Hable 曲线（4XVR 同款常数），按 hable(1) 归一化后再取 gamma，
+             * 保证白点落在 1.0，不会整幅发灰。
+             */
             const float A = 0.15, B = 0.50, Cc = 0.10, D = 0.20, E = 0.02, F = 0.30;
-            vec3 t = (lin * (A * lin + Cc * B) + D * E) / (lin * (A * lin + B) + D * F) - E / F;
-            c = vec4(clamp(pow(t, vec3(1.0 / 2.2)), 0.0, 1.0), 1.0);
+            vec3 t = (rgbLin * (A * rgbLin + Cc * B) + D * E) / (rgbLin * (A * rgbLin + B) + D * F) - E / F;
+            const float wNum = (1.0 * (A + Cc * B) + D * E);
+            const float wDen = (1.0 * (A + B) + D * F);
+            const float wNorm = wNum / wDen - E / F;
+            t = clamp(t / max(wNorm, 1e-5), 0.0, 1.0);
+            c = vec4(pow(t, vec3(1.0 / 2.2)), 1.0);
         }
         if (uExpandRange == 1) {
             /*
