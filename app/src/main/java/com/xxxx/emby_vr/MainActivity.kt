@@ -8095,7 +8095,10 @@ class MainActivity : ComponentActivity() {
          * 必须在开始 VR 之前设好，内核那边是按这个环境变量落盘的。
          */
         com.xxxx.emby_vr.vr.VrNative.setDoviParamPath(
-            java.io.File(filesDir, "dovi_params.bin").absolutePath,
+            java.io.File(
+                getExternalFilesDir(null) ?: filesDir,
+                "dovi_params.bin",
+            ).absolutePath,
         )
         val vrOk = com.xxxx.emby_vr.vr.VrNative.startVr(this)
         Log.i(TAG, "OpenXR 会话启动: $vrOk")
