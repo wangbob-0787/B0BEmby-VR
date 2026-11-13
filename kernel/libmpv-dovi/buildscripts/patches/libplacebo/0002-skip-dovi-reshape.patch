@@ -4,7 +4,7 @@
   * License along with libplacebo. If not, see <http://www.gnu.org/licenses/>.
   */
  
-+#include <dlfcn.h>
++#include <stdlib.h>
  #include <math.h>
  
  #include "cache.h"
@@ -13,17 +13,12 @@
  #endif
  
 +/* B0BEmby: 运行时可跳过杜比还原，用于量「还原本身占多少开销」。
-+ * 开关由应用侧的可执行文件导出同名全局变量，这里按需取地址；取不到就照常还原。
-+ * 走全局符号而不是 mpv 选项：加 vf 会插一层滤镜，实测比还原本身还慢。 */
++ * 开关走环境变量：进程级，跨 .so 可见，不受符号可见性影响。
++ * 不用 mpv 的 vf 选项：加 vf 会插一层滤镜，实测比还原本身还慢。 */
 +static int b0b_dovi_skip_enabled(void)
 +{
-+    static int *flag;
-+    static int looked;
-+    if (!looked) {
-+        flag = (int *) dlsym(RTLD_DEFAULT, "b0b_dovi_skip");
-+        looked = 1;
-+    }
-+    return flag && *flag;
++    const char *v = getenv("B0B_DOVI_SKIP");
++    return v && v[0] == '1';
 +}
 +
  void pl_shader_dovi_reshape(pl_shader sh, const struct pl_dovi_metadata *data)

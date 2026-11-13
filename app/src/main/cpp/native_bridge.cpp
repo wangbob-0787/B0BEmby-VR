@@ -12,6 +12,7 @@
  *  - loader prefab 包：org.khronos.openxr:openxr_loader_for_android
  */
 #include <cstdio>
+#include <cstdlib>
 #include <jni.h>
 #include <android/log.h>
 #include <openxr/openxr.h>
@@ -50,5 +51,11 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetDoviSkip(JNIEnv * /* env */, jobject /* this */,
                                                      jint on) {
     b0b_dovi_skip = on ? 1 : 0;
+    /*
+     * 真正起作用的是环境变量：内核里的 libplacebo 是另一个 .so，用 dlsym 找本库的
+     * 符号会受 RTLD_LOCAL 影响（Java 的 loadLibrary 是 LOCAL），取不到。环境变量是
+     * 进程级的，跨 .so 一定可见。
+     */
+    setenv("B0B_DOVI_SKIP", on ? "1" : "0", 1);
     LOGI("杜比还原开关置为 %d", b0b_dovi_skip);
 }
