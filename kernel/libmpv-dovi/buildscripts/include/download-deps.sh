@@ -10,7 +10,10 @@ mkdir -p deps && cd deps
 [ ! -d mbedtls ] && git clone --depth 1 --branch v$v_mbedtls --recurse-submodules https://github.com/Mbed-TLS/mbedtls.git mbedtls
 
 # dav1d
-[ ! -d dav1d ] && git clone --depth 1 --branch $v_dav1d https://code.videolan.org/videolan/dav1d.git dav1d
+# videolan 的自建 GitLab 会整站 502（2026-11-13 内核编到一半被它打断两次），
+# 优先走 GitHub 官方镜像，镜像也不通再回头试原址。
+[ ! -d dav1d ] && { git clone --depth 1 --branch $v_dav1d https://github.com/videolan/dav1d.git dav1d ||
+                     git clone --depth 1 --branch $v_dav1d https://code.videolan.org/videolan/dav1d.git dav1d; }
 
 # ffmpeg
 [ ! -d ffmpeg ] && git clone --depth 1 --branch n$v_ffmpeg https://github.com/FFmpeg/FFmpeg.git ffmpeg
@@ -38,7 +41,8 @@ if [ ! -d lua ]; then
 		tar -xz -C lua --strip-components=1
 fi
 
-[ ! -d libplacebo ] && git clone --depth 1 --branch v$v_libplacebo --recurse-submodules https://code.videolan.org/videolan/libplacebo.git libplacebo
+[ ! -d libplacebo ] && { git clone --depth 1 --branch v$v_libplacebo --recurse-submodules https://github.com/haasn/libplacebo.git libplacebo ||
+    git clone --depth 1 --branch v$v_libplacebo --recurse-submodules https://code.videolan.org/videolan/libplacebo.git libplacebo; }
 
 # mpv
 [ ! -d mpv ] && git clone --depth 1 --branch v$v_mpv https://github.com/mpv-player/mpv.git mpv
