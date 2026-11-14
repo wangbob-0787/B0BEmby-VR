@@ -8,11 +8,7 @@ name: build-ffmpeg-full
 # 产出：Release 标签 `ffmpeg-full` 下的 tar.gz（ffmpeg + 依赖的 so）
 
 on:
-  workflow_dispatch:
-  push:
-    paths:
-      - ".github/workflows/ffmpeg-full.yml"
-      - "kernel/ffmpeg-src71/**"
+  workflow_dispatch:        # 手动触发（改完这里也别自动跑，一次十几分钟，别刷）
 
 jobs:
   build:
