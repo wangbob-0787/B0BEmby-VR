@@ -38,9 +38,12 @@ jobs:
           sudo ninja -C build install
           sudo ldconfig
 
+      - name: 取 ffmpeg 源码
+        run: git clone --depth 1 --branch n7.1 https://github.com/FFmpeg/FFmpeg.git /tmp/ffmpeg
+
       - name: 编 ffmpeg（完整版）
         run: |
-          cd kernel/ffmpeg-src71
+          cd /tmp/ffmpeg
           ./configure --enable-gpl --enable-libplacebo --enable-vulkan \
             --enable-libx264 --enable-libx265 --enable-libass \
             --disable-doc --disable-debug
@@ -50,9 +53,9 @@ jobs:
       - name: 打包
         run: |
           mkdir -p out
-          cp kernel/ffmpeg-src71/ffmpeg out/
+          cp /tmp/ffmpeg/ffmpeg out/
           # 静态化不了的库一起带上，避免目标机缺库
-          for lib in $(ldd kernel/ffmpeg-src71/ffmpeg | grep -o '/[^ ]*' | grep -E 'libplacebo|libx264|libx265|libass'); do
+          for lib in $(ldd /tmp/ffmpeg/ffmpeg | grep -o '/[^ ]*' | grep -E 'libplacebo|libx264|libx265|libass'); do
             cp -L "$lib" out/ || true
           done
           tar czf ffmpeg-full-linux64.tar.gz -C out .
