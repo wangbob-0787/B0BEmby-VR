@@ -19,7 +19,7 @@ jobs:
       - name: 装依赖
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq build-essential meson ninja-build pkg-config \
+          sudo apt-get install -y -qq build-essential meson ninja-build pkg-config nasm yasm \
             libvulkan-dev libshaderc-dev \
             libx264-dev libx265-dev libass-dev libfreetype6-dev \
             libgnutls28-dev libunistring-dev
