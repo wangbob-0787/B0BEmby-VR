@@ -5965,10 +5965,18 @@ bool buildQuadLayer(VrContext &c, VideoLayerBuf &L, int32_t w, int32_t h,
     if (L.built && L.width == w && L.height == h && L.srcW == wantSrcW) return true;
 
     if (L.handle != XR_NULL_HANDLE) {
+        /*
+         * 必须先删帧缓冲，再销毁交换链（2026-11-14 实测泄漏）：
+         * 每个 FBO 都把交换链的纹理挂在颜色附着点上，FBO 还在时那张纹理不会被回收
+         * —— 表现就是每次切清晰度泄漏一整块 4K 纹理（实测一次 +103MB，切两次就崩）。
+         */
+        for (GLuint fb : L.fbos) {
+            if (fb) glDeleteFramebuffers(1, &fb);
+        }
+        L.fbos.clear();
         api.DestroySwapchain(L.handle);
         L.handle = XR_NULL_HANDLE;
         L.built = false;
-        L.fbos.clear();
         L.images.clear();
     }
 
