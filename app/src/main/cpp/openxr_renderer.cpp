@@ -2985,45 +2985,58 @@ std::atomic<float> gSuperSample{1.0f};
 #define GL_TIME_ELAPSED 0x88BF      /* GL_TIME_ELAPSED_EXT，GLES 头里不一定有 */
 #endif
 namespace {
+/*
+ * GPU 分段计时（2026-11-14 第二版）。
+ * 上一版直接复用同一个查询对象、边用边读，结果跨帧累加出 4 秒的假峰值。
+ * 现在每段用 4 组查询的环形缓冲：每帧写一组，另一头读已经算完的那组，
+ * 写入与读回永不撞同一个对象。
+ */
 struct GpuSegTimer {
-    GLuint q[2]{0, 0};
+    static const int kSlots = 4;
+    GLuint q[kSlots][2]{{0, 0}, {0, 0}, {0, 0}, {0, 0}};
     bool inited = false;
     bool running = false;
-    bool pending = false;
+    int wi = 0, ri = 0, pending = 0;
     double sum = 0.0, peak = 0.0;
     int n = 0;
 
+    void init() {
+        for (int i = 0; i < kSlots; i++) glGenQueries(2, q[i]);
+        inited = true;
+    }
+
     void begin() {
-        if (!inited) {
-            glGenQueries(2, q);
-            inited = true;
-        }
-        if (pending) readBack();          /* 先取上一帧结果，避免队列堆积 */
-        if (!q[0]) return;
-        glBeginQuery(GL_TIME_ELAPSED, q[0]);
+        if (!inited) init();
+        if (pending == kSlots) drainOne();     /* 环满了先消化一组，避免覆盖未读结果 */
+        glBeginQuery(GL_TIME_ELAPSED, q[wi][0]);
         running = true;
     }
 
     void end() {
-        if (!running) return;
+        if (!running) return;              /* 这一段这帧没开始，别去结束别人的查询 */
         glEndQuery(GL_TIME_ELAPSED);
         running = false;
-        pending = true;
+        wi = (wi + 1) % kSlots;
+        pending++;
     }
 
-    void readBack() {
-        if (!pending) return;
-        pending = false;
+    void drainOne() {
+        if (pending == 0) return;
         GLuint avail = 0;
-        glGetQueryObjectuiv(q[0], GL_QUERY_RESULT_AVAILABLE, &avail);
-        if (!avail) return;               /* 还没算完就下一帧再说 */
+        glGetQueryObjectuiv(q[ri][0], GL_QUERY_RESULT_AVAILABLE, &avail);
+        if (!avail) return;
         GLuint ns = 0;
-        /* 用 32 位读：单段耗时最大几十毫秒（<4.29 秒上限），够用且兼容 GLES3 */
-        glGetQueryObjectuiv(q[0], GL_QUERY_RESULT, &ns);
+        glGetQueryObjectuiv(q[ri][0], GL_QUERY_RESULT, &ns);
         const double ms = (double) ns / 1e6;
         sum += ms;
         if (ms > peak) peak = ms;
         n++;
+        ri = (ri + 1) % kSlots;
+        pending--;
+    }
+
+    void drainAll() {
+        for (int i = 0; i < kSlots; i++) drainOne();
     }
 
     void logOnce(const char *what) {
@@ -9160,9 +9173,9 @@ void frameLoop(VrContext &c) {
             if (std::chrono::duration<double, std::milli>(now - statLast).count() > 3000.0 &&
                 statFrames > 0) {
                 const double n = (double) statFrames;
-                /* 有提前 return 的帧会让某段计时没闭合，跨帧累计出几秒的假峰值 —— 这里兜底闭合 */
+                /* 提前 return 的帧会让某段没闭合：先补齐，再读回已完成的结果 */
                 gGpuVideo.end(); gGpuUi.end(); gGpuEnd.end();
-                gGpuVideo.readBack(); gGpuUi.readBack(); gGpuEnd.readBack();
+                gGpuVideo.drainAll(); gGpuUi.drainAll(); gGpuEnd.drainAll();
                 gGpuVideo.logOnce("视频层"); gGpuUi.logOnce("界面"); gGpuEnd.logOnce("双眼");
                 VLOGI("帧统计（均/峰 毫秒）：周期 %.1f/%.1f 视频 %.1f/%.1f 界面 %.1f/%.1f "
                      "双眼 %.1f/%.1f 收尾 %.1f/%.1f | 帧 %.1f/%.1f，%.0f 帧里 %d 帧超 11ms，"
