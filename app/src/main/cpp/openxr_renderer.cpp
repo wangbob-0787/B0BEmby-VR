@@ -109,7 +109,12 @@ static void dvLoadFromFile()
     gDvFileMtime = st.st_mtime;
     g_doviFlatFile = gDvFileBuf;
     g_doviFlat = g_doviFlatFile;
-    gDvRendererReshape.store(1);            /* 参数到了就启用渲染层还原 */
+    /*
+     * 注意：这里**不能**顺手把渲染层还原打开（2026-11-14 教训）。
+     * 之前写成"参数读到就 store(1)"，等于把调参开关架空 —— 一旦文件存在，
+     * 无论开关写 0 都按渲染层算，导致后面所有颜色调整都没生效、也查不出原因。
+     * 开关只由 dovi_renderer_reshape 决定。
+     */
     if (!g_doviLogged) {
         g_doviLogged = true;
         LOGI_RAW("杜比参数已接通（文件）：版本=%.0f 通道=%.0f", (double) gDvFileBuf[0], (double) gDvFileBuf[1]);
