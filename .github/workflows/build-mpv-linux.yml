@@ -14,7 +14,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential meson ninja-build pkg-config git \
             libass-dev libdrm-dev libx11-dev libxext-dev libxrandr-dev libegl1-mesa-dev \
-            libgles2-mesa-dev libgbm-dev libvulkan-dev vulkan-headers libshaderc-dev \
+            libgles2-mesa-dev libgbm-dev libvulkan-dev libshaderc-dev \
             glslang-tools libarchive-dev libluajit-5.1-dev libjpeg-dev libzimg-dev \
             libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev
 
