@@ -1,0 +1,105 @@
+--- a/src/shaders/colorspace.c
++++ b/src/shaders/colorspace.c
+@@ -128,6 +128,102 @@
+         return;
+ 
+     sh_describe(sh, "reshaping");
++    /*
++     * 查表路径（2026-11-14）：P5 的还原全是多项式（实测 60 秒内 mapping 全部为多项式）。
++     * 逐像素求值要沿 8 段做系数选择，代价随分辨率放大；这里先在 CPU 上把每条曲线
++     * 采样成定长表，像素端只做一次查表 + 线性插值。
++     *
++     * 自校验：置环境变量 B0B_DOVI_LUT_DIFF=1 时，同一帧同时算「细表(4096)」与「粗表(256)」，
++     * 把两者差异放大 32 倍画出来。全黑=一致，亮点=该处不一致。
++     */
++#define B0B_DOVI_LUT_N 256
++#define B0B_DOVI_LUT_FINE 1024
++    {
++        bool lut_ok = true;
++        for (int c = 0; c < 3; c++) {
++            const struct pl_reshape_data *comp = &data->comp[c];
++            if (!comp->num_pivots) { lut_ok = false; break; }
++            for (int i = 0; i < comp->num_pivots - 1; i++)
++                if (comp->method[i] != 0) { lut_ok = false; break; }
++            if (!lut_ok) break;
++        }
++        if (lut_ok && !getenv("B0B_DOVI_NO_LUT")) {
++            static float lut[3 * B0B_DOVI_LUT_N];
++            static float fine[3 * B0B_DOVI_LUT_FINE];
++            const bool diff = getenv("B0B_DOVI_LUT_DIFF") != NULL;
++            for (int c = 0; c < 3; c++) {
++                const struct pl_reshape_data *comp = &data->comp[c];
++                for (int i = 0; i < B0B_DOVI_LUT_N; i++) {
++                    float x = (float) i / (B0B_DOVI_LUT_N - 1);
++                    int seg = 0;
++                    for (int k = 0; k < comp->num_pivots - 1; k++)
++                        if (x >= comp->pivots[k]) seg = k;
++                    const float *cf = comp->poly_coeffs[seg];
++                    lut[c * B0B_DOVI_LUT_N + i] = (cf[2] * x + cf[1]) * x + cf[0];
++                }
++                if (diff) {
++                    for (int i = 0; i < B0B_DOVI_LUT_FINE; i++) {
++                        float x = (float) i / (B0B_DOVI_LUT_FINE - 1);
++                        int seg = 0;
++                        for (int k = 0; k < comp->num_pivots - 1; k++)
++                            if (x >= comp->pivots[k]) seg = k;
++                        const float *cf = comp->poly_coeffs[seg];
++                        fine[c * B0B_DOVI_LUT_FINE + i] = (cf[2] * x + cf[1]) * x + cf[0];
++                    }
++                }
++            }
++            ident_t luts = sh_var(sh, (struct pl_shader_var) {
++                .data = lut,
++                .var = {
++                    .name = "dovi_lut", .type = PL_VAR_FLOAT,
++                    .dim_v = 1, .dim_m = 1, .dim_a = 3 * B0B_DOVI_LUT_N,
++                },
++            });
++            GLSL("// dovi LUT                          \n"
++                 "vec3 lutpos = clamp(color.rgb, 0.0, 1.0) * float(%d - 1); \n"
++                 "vec3 out_lut; \n"
++                 "for (int ch = 0; ch < 3; ch++) { \n"
++                 "    float p = lutpos[ch]; \n"
++                 "    float i0 = floor(p); \n"
++                 "    float f = p - i0; \n"
++                 "    int base = ch * %d; \n"
++                 "    int idx0 = base + int(i0); \n"
++                 "    int idx1 = min(idx0 + 1, base + %d - 1); \n"
++                 "    out_lut[ch] = mix("$"[idx0], "$"[idx1], f); \n"
++                 "} \n",
++                 B0B_DOVI_LUT_N, B0B_DOVI_LUT_N, B0B_DOVI_LUT_N, luts, luts);
++            if (diff) {
++                ident_t fines = sh_var(sh, (struct pl_shader_var) {
++                    .data = fine,
++                    .var = {
++                        .name = "dovi_fine", .type = PL_VAR_FLOAT,
++                        .dim_v = 1, .dim_m = 1, .dim_a = 3 * B0B_DOVI_LUT_FINE,
++                    },
++                });
++                GLSL("vec3 finepos = clamp(color.rgb, 0.0, 1.0) * float(%d - 1); \n"
++                     "vec3 out_fine; \n"
++                     "for (int ch3 = 0; ch3 < 3; ch3++) { \n"
++                     "    float p3 = finepos[ch3]; \n"
++                     "    float j0 = floor(p3); \n"
++                     "    float f3 = p3 - j0; \n"
++                     "    int b3 = ch3 * %d; \n"
++                     "    int k0 = b3 + int(j0); \n"
++                     "    int k1 = min(k0 + 1, b3 + %d - 1); \n"
++                     "    out_fine[ch3] = mix("$"[k0], "$"[k1], f3); \n"
++                     "} \n"
++                     "color.rgb = clamp(abs(out_fine - out_lut) * 32.0, 0.0, 1.0); \n",
++                     B0B_DOVI_LUT_FINE, B0B_DOVI_LUT_FINE, B0B_DOVI_LUT_FINE, fines, fines);
++                sh_describe(sh, "reshaping(lut-diff)");
++                return;
++            }
++            GLSL("color.rgb = out_lut; \n");
++            sh_describe(sh, "reshaping(lut)");
++            return;
++        }
++    }
++#undef B0B_DOVI_LUT_N
++#undef B0B_DOVI_LUT_FINE
++
+     GLSL("// pl_shader_reshape                  \n"
+          "{                                     \n"
+          "vec3 sig;                             \n"
