@@ -2974,7 +2974,67 @@ double gSwapWaitMs = 0.0;
  * 界面层每秒读一次，变化就调这里的接口。戴着调参比反复编译划算得多。
  */
 /* 默认 1.0 是实测值：3D 全开时 1.25 让显卡每帧 21.3ms（72Hz 预算 13.9），帧率掉到 50 并出黑纹 */
-std::atomic<float> gSuperSample{1.0f};      // 双眼渲染超采样倍数（下次起播生效）
+std::atomic<float> gSuperSample{1.0f};
+/*
+ * GPU 分步计时（2026-11-14）。
+ * 动机：4K 档 CPU 分项都只有零点几毫秒，帧却掉了，说明时间花在显卡上；
+ * 只有量 GPU 各段耗时才能知道砍哪一步。
+ * 做法：三段（视频层 / 界面 / 收尾）各用一对计时查询，结果异步读回，不打断流水线。
+ */
+#ifndef GL_TIME_ELAPSED
+#define GL_TIME_ELAPSED 0x88BF      /* GL_TIME_ELAPSED_EXT，GLES 头里不一定有 */
+#endif
+namespace {
+struct GpuSegTimer {
+    GLuint q[2]{0, 0};
+    bool inited = false;
+    bool running = false;
+    bool pending = false;
+    double sum = 0.0, peak = 0.0;
+    int n = 0;
+
+    void begin() {
+        if (!inited) {
+            glGenQueries(2, q);
+            inited = true;
+        }
+        if (pending) readBack();          /* 先取上一帧结果，避免队列堆积 */
+        if (!q[0]) return;
+        glBeginQuery(GL_TIME_ELAPSED, q[0]);
+        running = true;
+    }
+
+    void end() {
+        if (!running) return;
+        glEndQuery(GL_TIME_ELAPSED);
+        running = false;
+        pending = true;
+    }
+
+    void readBack() {
+        if (!pending) return;
+        pending = false;
+        GLuint avail = 0;
+        glGetQueryObjectuiv(q[0], GL_QUERY_RESULT_AVAILABLE, &avail);
+        if (!avail) return;               /* 还没算完就下一帧再说 */
+        GLuint ns = 0;
+        /* 用 32 位读：单段耗时最大几十毫秒（<4.29 秒上限），够用且兼容 GLES3 */
+        glGetQueryObjectuiv(q[0], GL_QUERY_RESULT, &ns);
+        const double ms = (double) ns / 1e6;
+        sum += ms;
+        if (ms > peak) peak = ms;
+        n++;
+    }
+
+    void logOnce(const char *what) {
+        if (n < 30) return;
+        VLOGI("GPU %s：均 %.2f 峰 %.2f 毫秒（%d 帧）", what, sum / n, peak, n);
+        sum = 0.0; peak = 0.0; n = 0;
+    }
+};
+GpuSegTimer gGpuVideo, gGpuUi, gGpuEnd;
+}
+      // 双眼渲染超采样倍数（下次起播生效）
 /*
  * PICO 官方合成层能力（父亲 2026-10-14：「1、2、3 都做」）。
  *
@@ -8254,6 +8314,8 @@ void frameLoop(VrContext &c) {
         auto tVideo = frameStart;
         auto tUi = frameStart;
         auto tEyes = frameStart;
+        /* GPU 分段计时：视频层（帧开头 → tVideo）、界面（tVideo → tUi）、双眼（tUi → tEyes） */
+        gGpuVideo.begin();
 
         /*
          * 取面板新一帧。必须在渲染线程做（与面板纹理同一个 GL 上下文），
@@ -8622,7 +8684,9 @@ void frameLoop(VrContext &c) {
          * 先渲染它，视频层才知道要不要兜底把弹幕画回自己身上。
          */
         c.danmakuLayer.submitted = false;
+        gGpuVideo.end();
         tVideo = std::chrono::steady_clock::now();
+        gGpuUi.begin();
 
         if ((gLayerMask.load() & 2) != 0 && c.danmakuLayerOk && c.danmakuVisible.load() &&
             c.danmakuHasFrame.load() &&
@@ -8731,7 +8795,9 @@ void frameLoop(VrContext &c) {
 
         // 手柄状态（诊断阶段：变化即打日志，先看清 PICO 到底发哪些事件）
         c.frameDisplayTime = fs.predictedDisplayTime;
+        gGpuUi.end();
         tUi = std::chrono::steady_clock::now();
+        gGpuEnd.begin();   /* 双眼渲染段 */
         syncInput(c);
         pushInput(c);   // 光柱指向 / 扳机 / 摇杆 / B 键 → Java（VR 模式的输入通道）
         if (c.aimValid[0] || c.aimValid[1]) {
@@ -8833,6 +8899,7 @@ void frameLoop(VrContext &c) {
                         }
                     }
                 }
+                gGpuEnd.end();       /* 双眼渲染段结束 */
                 tEyes = std::chrono::steady_clock::now();
                 rendered = eyesOk;
                 if (rendered && loggedFrames < 3) {
@@ -9093,6 +9160,8 @@ void frameLoop(VrContext &c) {
             if (std::chrono::duration<double, std::milli>(now - statLast).count() > 3000.0 &&
                 statFrames > 0) {
                 const double n = (double) statFrames;
+                gGpuVideo.readBack(); gGpuUi.readBack(); gGpuEnd.readBack();
+                gGpuVideo.logOnce("视频层"); gGpuUi.logOnce("界面"); gGpuEnd.logOnce("双眼");
                 VLOGI("帧统计（均/峰 毫秒）：周期 %.1f/%.1f 视频 %.1f/%.1f 界面 %.1f/%.1f "
                      "双眼 %.1f/%.1f 收尾 %.1f/%.1f | 帧 %.1f/%.1f，%.0f 帧里 %d 帧超 11ms，"
                      "等交换链平均 %.2f｜当前参数 超采样 %.2f 超时 %dms 掩码 0x%x"
