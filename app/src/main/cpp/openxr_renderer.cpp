@@ -9160,6 +9160,8 @@ void frameLoop(VrContext &c) {
             if (std::chrono::duration<double, std::milli>(now - statLast).count() > 3000.0 &&
                 statFrames > 0) {
                 const double n = (double) statFrames;
+                /* 有提前 return 的帧会让某段计时没闭合，跨帧累计出几秒的假峰值 —— 这里兜底闭合 */
+                gGpuVideo.end(); gGpuUi.end(); gGpuEnd.end();
                 gGpuVideo.readBack(); gGpuUi.readBack(); gGpuEnd.readBack();
                 gGpuVideo.logOnce("视频层"); gGpuUi.logOnce("界面"); gGpuEnd.logOnce("双眼");
                 VLOGI("帧统计（均/峰 毫秒）：周期 %.1f/%.1f 视频 %.1f/%.1f 界面 %.1f/%.1f "

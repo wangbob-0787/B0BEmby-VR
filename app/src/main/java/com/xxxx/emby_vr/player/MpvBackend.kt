@@ -375,11 +375,11 @@ class MpvBackend(private val context: Context) {
                         MPVLib.setOptionString("target-trc", "gamma2.2")
                     }
                     /*
-                     * 色调曲线改用 Hable。依据：4XVR 的颜色链最后就是一条 Hable
+                     * 色调曲线用 bt.2390（2026-11-14 父亲实测：Hable 高光过曝）。原依据：4XVR 的颜色链最后是 Hable
                      * （`toneMapDolby()` 里 A=0.15 B=0.50 C=0.10 D=0.20 E=0.02 F=0.30），
                      * 比 libplacebo 默认的 bt.2390 便宜，也更接近它看到的画面。
                      */
-                    MPVLib.setOptionString("tone-mapping", "hable")
+                    MPVLib.setOptionString("tone-mapping", "bt.2390")
                     /*
                      * 关键：关掉 HDR 逐帧峰值检测。
                      * 默认 auto 对 HDR 源会逐帧统计画面峰值，色调映射曲线跟着每帧变，
@@ -454,7 +454,7 @@ class MpvBackend(private val context: Context) {
                      * 目标峰值写死 100：peak 留 auto 会按每帧统计走，既贵又让整幅明暗
                      * 随内容呼吸（父亲 2026-11-13 报「亮的地方有点过曝」也与此有关）。
                      */
-                    MPVLib.setOptionString("target-peak", "100")
+                    MPVLib.setOptionString("target-peak", "150")
                     MPVLib.setOptionString("vd-lavc-threads", "0")
                     /*
                      * 调参文件里的内核选项放最后应用 —— 覆盖上面的默认值
