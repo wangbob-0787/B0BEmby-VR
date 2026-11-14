@@ -37,7 +37,16 @@ jobs:
       - name: 取 ffmpeg 源码
         run: git clone --depth 1 --branch n7.1 https://github.com/FFmpeg/FFmpeg.git /tmp/ffmpeg
 
+      - name: 放宽 vulkan 版本号（系统里是 1.3.275，ffmpeg 要 1.3.277+）
+        run: |
+          mkdir -p /tmp/pc
+          cp "$(pkg-config --variable=pcfiledir vulkan)/vulkan.pc" /tmp/pc/
+          sed -i 's/^Version:.*/Version: 1.3.300/' /tmp/pc/vulkan.pc
+          grep Version /tmp/pc/vulkan.pc
+
       - name: 编 ffmpeg（完整版）
+        env:
+          PKG_CONFIG_PATH: /tmp/pc:/usr/local/lib/x86_64-linux-gnu/pkgconfig
         run: |
           cd /tmp/ffmpeg
           ./configure --enable-gpl --enable-libplacebo --enable-vulkan \
