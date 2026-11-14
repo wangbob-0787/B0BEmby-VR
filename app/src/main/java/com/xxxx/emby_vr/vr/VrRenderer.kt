@@ -213,13 +213,31 @@ class VrRenderer(
         Log.i(TAG, "视频管线就绪: videoTex=$videoTex")
     }
 
-    /** 视频帧到达后取最新帧（播放中每帧调） */
+    /**
+     * 视频帧到达后取最新帧（播放中每帧调）。
+     *
+     * 这里同时统计「取帧」本身的耗时（2026-11-14）：4K 档 CPU 侧每帧要 50ms，
+     * 而渲染线程那边的分项都只有零点几毫秒，所以怀疑开销在这一步（解码器缓冲 → 纹理），
+     * 只有把它单独计时才能证实。
+     */
+    private var vidUpdSum = 0.0
+    private var vidUpdMax = 0.0
+    private var vidUpdCount = 0
+
     private fun updateVideoFrame() {
         val st = surfaceTexture ?: return
+        val t0 = System.nanoTime()
         try {
             st.updateTexImage()
         } catch (e: Exception) {
             Log.w(TAG, "updateTexImage 失败: ${e.message}")
+        }
+        val dt = (System.nanoTime() - t0) / 1e6
+        vidUpdSum += dt
+        if (dt > vidUpdMax) vidUpdMax = dt
+        if (++vidUpdCount >= 60) {
+            Log.i(TAG, "取帧耗时（均/峰 毫秒）：%.2f/%.2f".format(vidUpdSum / vidUpdCount, vidUpdMax))
+            vidUpdSum = 0.0; vidUpdMax = 0.0; vidUpdCount = 0
         }
     }
 

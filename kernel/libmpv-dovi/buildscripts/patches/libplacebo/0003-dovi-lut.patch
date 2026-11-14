@@ -1,6 +1,14 @@
 --- a/src/shaders/colorspace.c
 +++ b/src/shaders/colorspace.c
-@@ -128,6 +128,102 @@
+@@ -20,6 +20,7 @@
+ 
+ #include "cache.h"
+ #include "colorspace.h"
++#include <stdio.h>
+ #include "shaders.h"
+ 
+ #include <libplacebo/shaders/colorspace.h>
+@@ -128,6 +129,108 @@
          return;
  
      sh_describe(sh, "reshaping");
@@ -93,6 +101,12 @@
 +                return;
 +            }
 +            GLSL("color.rgb = out_lut; \n");
++            /* 一次性确认到底走了哪条路（排查用，不刷屏） */
++            static bool b0b_lut_logged;
++            if (!b0b_lut_logged) {
++                b0b_lut_logged = true;
++                fprintf(stderr, "dovi: 走查表路径（%d 级）\n", B0B_DOVI_LUT_N);
++            }
 +            sh_describe(sh, "reshaping(lut)");
 +            return;
 +        }
