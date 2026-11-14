@@ -1,0 +1,65 @@
+name: build-ffmpeg-full
+
+# 编一个「带杜比还原能力」的完整版 ffmpeg，供服务端试用。
+#
+# 为什么在云端编：本机（.18）缺 Vulkan 着色器编译依赖、也没有可用的显卡；
+# GitHub 机器联网与依赖都齐，编出来的成品下到 .15 直接跑。
+#
+# 产出：Release 标签 `ffmpeg-full` 下的 tar.gz（ffmpeg + 依赖的 so）
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/ffmpeg-full.yml"
+      - "kernel/ffmpeg-src71/**"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 装依赖
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential meson ninja-build pkg-config \
+            libvulkan-dev libshaderc-dev glslang-tools \
+            libx264-dev libx265-dev libass-dev libfreetype6-dev \
+            libgnutls28-dev libunistring-dev
+
+      - name: 编 libplacebo（开杜比支持）
+        run: |
+          git clone --depth 1 --branch v7.349.0 https://github.com/haasn/libplacebo.git /tmp/libplacebo
+          cd /tmp/libplacebo
+          meson setup build -Ddovi=enabled -Dvulkan=enabled -Dglslang=disabled \
+            -Dshaderc=enabled -Ddemos=false -Dtests=false -Dopengl=disabled
+          ninja -C build
+          sudo ninja -C build install
+          sudo ldconfig
+
+      - name: 编 ffmpeg（完整版）
+        run: |
+          cd kernel/ffmpeg-src71
+          ./configure --enable-gpl --enable-libplacebo --enable-vulkan \
+            --enable-libx264 --enable-libx265 --enable-libass \
+            --disable-doc --disable-debug
+          make -j"$(nproc)"
+          ldd ffmpeg | grep -o '/[^ ]*libplacebo[^ ]*' || true
+
+      - name: 打包
+        run: |
+          mkdir -p out
+          cp kernel/ffmpeg-src71/ffmpeg out/
+          # 静态化不了的库一起带上，避免目标机缺库
+          for lib in $(ldd kernel/ffmpeg-src71/ffmpeg | grep -o '/[^ ]*' | grep -E 'libplacebo|libx264|libx265|libass'); do
+            cp -L "$lib" out/ || true
+          done
+          tar czf ffmpeg-full-linux64.tar.gz -C out .
+
+      - name: 上传
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ffmpeg-full
+          name: ffmpeg-full
+          files: ffmpeg-full-linux64.tar.gz
