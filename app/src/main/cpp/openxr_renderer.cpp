@@ -88,7 +88,7 @@ static bool g_doviLogged = false;
  * 从内核写的参数文件读进来（路径由应用启动时通过环境变量 B0B_DOVI_PATH 给它）。
  * 只在文件变化时读一次；读失败就保持空，着色器继续走原路。
  */
-static float gDvFileBuf[96];
+static float gDvFileBuf[128];
 static volatile float *g_doviFlatFile = nullptr;
 static long gDvFileMtime = 0;
 
@@ -103,7 +103,7 @@ static void dvLoadFromFile()
     if (st.st_mtime == gDvFileMtime) { g_doviFlat = g_doviFlatFile; return; }
     FILE *fp = fopen(path, "rb");
     if (!fp) return;
-    size_t got = fread(gDvFileBuf, sizeof(float), 96, fp);
+    size_t got = fread(gDvFileBuf, sizeof(float), 128, fp);
     fclose(fp);
     if (got < 3) return;
     gDvFileMtime = st.st_mtime;
@@ -481,7 +481,7 @@ uniform int uTestPattern;     // 1 = 用固定测试图替代视频纹理（黑�
  * 打开时（uDvReshape=1）本着色器自己算还原，内核那边同时跳过还原（B0B_DOVI_SKIP）。
  */
 uniform int uDvReshape;       // 1 = 由本着色器做杜比还原
-uniform float uDv[96];        // 拍平后的还原参数
+uniform float uDv[128];       // 拍平后的还原参数（96 + 颜色矩阵 21）
 uniform samplerExternalOES uTexture;
 /*
  * 延迟画面（环形缓冲，stereo_ring 开启时才有）：解码器交出来的是 OES 外部纹理，
@@ -923,11 +923,15 @@ void main() {
              * IPT → BT.2020：Profile 5 的还原矩阵是固定常数（解码方向，即编码矩阵的逆）。
              * 这一步上一版整段漏了，是"颜色发浅"的主因。
              */
-            const mat3 iptTo2020 = mat3(
-                 1.8502, -1.1383,  0.2384,
-                 0.3668,  0.6439, -0.0107,
-                 0.0,     0.0,     1.0);
-            vec3 rgbLin = clamp(lin * iptTo2020, 0.0, 1.0);
+            /*
+             * 还原矩阵从参数里取（版本 2 起，偏移 96）：内核把 RPU 里的 rgb_to_lms
+             * 求逆后写出来。之前这里用我推测的固定常数，导致整幅偏冷偏蓝。
+             */
+            mat3 lmsToRgb = mat3(
+                 uDv[96], uDv[99], uDv[102],
+                 uDv[97], uDv[100], uDv[103],
+                 uDv[98], uDv[101], uDv[104]);
+            vec3 rgbLin = clamp(lin * lmsToRgb, 0.0, 1.0);
             /*
              * Hable 曲线（4XVR 同款常数），按 hable(1) 归一化后再取 gamma，
              * 保证白点落在 1.0，不会整幅发灰。
@@ -5243,7 +5247,7 @@ void updateScreenLightFromVideo(VrContext &c) {
     if (c.dvReshapeLoc >= 0 && c.dvParamsLoc >= 0) {
         const bool dvOn = gDvRendererReshape.load() != 0 && g_doviFlat && g_doviReady && *g_doviReady;
         glUniform1i(c.dvReshapeLoc, dvOn ? 1 : 0);
-        if (dvOn) glUniform1fv(c.dvParamsLoc, 96, (const GLfloat *) g_doviFlat);
+        if (dvOn) glUniform1fv(c.dvParamsLoc, 128, (const GLfloat *) g_doviFlat);
     }
     if (c.brightLoc >= 0) glUniform1f(c.brightLoc, 0.f);
     if (c.contrastLoc >= 0) glUniform1f(c.contrastLoc, 1.f);
