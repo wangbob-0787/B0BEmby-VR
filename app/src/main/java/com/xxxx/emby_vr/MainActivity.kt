@@ -8197,7 +8197,8 @@ class MainActivity : ComponentActivity() {
 
         val pipe = com.xxxx.emby_vr.player.VideoPipe()
         videoPipe = pipe
-        val ok = pipe.start(url, emptyMap(), surface)
+        // 画面以 mpv 报的播放位置为准做同步，音频走它、画面跟它；续播位置两边要一致
+        val ok = pipe.start(url, emptyMap(), surface, { m.positionSec() }, startSec)
         if (ok) {
             Log.i(TAG, "自管解码起播：画面交给 VideoPipe，mpv 只留音频")
         } else {

@@ -39,6 +39,9 @@ class VideoPipe {
     private var thread: Thread? = null
     private val running = AtomicBoolean(false)
 
+    /** 播放位置来源（音频侧）。为空时按自己的时间戳放。 */
+    @Volatile private var clockProvider: (() -> Double)? = null
+
     /** 解码出来的实际宽高，起播后才有值 */
     @Volatile var videoWidth = 0
         private set
@@ -56,11 +59,22 @@ class VideoPipe {
      * @param headers 需要带给服务器的头（Emby 的 token 走这个，别拼进 URL）
      * @param surface 目标画面。必须来自渲染线程建的那张 OES 纹理对应的 SurfaceTexture，
      *                否则画面会贴到别处或者干脆不显示
+     * @param clock   播放位置（秒）。音频由 mpv 播，画面以它为准做同步：超前就等、
+     *                落后就立刻放。传 null 时退回按自己的时间戳走（会与音频漂移）。
+     * @param startSec 起播位置（秒）。续播时两边必须从同一处开始，否则画面会把前面的
+     *                内容快速冲过去才追上声音。
      * @return 起播是否成功（失败原因写 [lastError]）
      */
-    fun start(url: String, headers: Map<String, String>, surface: Surface): Boolean {
+    fun start(
+        url: String,
+        headers: Map<String, String>,
+        surface: Surface,
+        clock: (() -> Double)? = null,
+        startSec: Double = 0.0,
+    ): Boolean {
         stop()
         lastError = null
+        clockProvider = clock
         return try {
             val ex = MediaExtractor()
             if (headers.isEmpty()) {
@@ -87,6 +101,12 @@ class VideoPipe {
                 return false
             }
             ex.selectTrack(trackIndex)
+            if (startSec > 0.5) {
+                // 续播：跳到与声音相同的位置。不按关键帧对齐会从更早的地方开始，
+                // 那样画面要先冲过一段才追上声音。
+                ex.seekTo((startSec * 1_000_000.0).toLong(), MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+                Log.i(TAG, "跳到 ${"%.1f".format(startSec)} 秒起播")
+            }
             extractor = ex
 
             val mime = format.getString(MediaFormat.KEY_MIME)!!
@@ -125,16 +145,6 @@ class VideoPipe {
         val info = MediaCodec.BufferInfo()
         var inputDone = false
         var outputDone = false
-        /*
-         * 按时间轴放（2026-11-15 父亲实测「画面是快进速度」后加的）。
-         *
-         * 解码器出帧的速度远快于真实播放速度，直接把每一帧都送出去就是快放。
-         * 这里用码流自带的显示时间戳对齐墙钟：第一帧记下基准，之后每帧算「现在该不该出现」，
-         * 没到点就等。音频由 mpv 按同一份时间轴播放，所以两边能对上。
-         */
-        var basePtsUs = -1L
-        var baseWallUs = 0L
-        var firstFrame = true
 
         while (running.get() && !outputDone) {
             if (!inputDone) {
@@ -158,15 +168,7 @@ class VideoPipe {
             val outIdx = codec.dequeueOutputBuffer(info, DEQUEUE_TIMEOUT_US)
             when {
                 outIdx >= 0 -> {
-                    holdUntil(info.presentationTimeUs, firstFrame,
-                              onFirstFrame = {
-                                  if (basePtsUs < 0) {
-                                      basePtsUs = info.presentationTimeUs
-                                      baseWallUs = System.nanoTime() / 1000L
-                                  }
-                                  firstFrame = false
-                              },
-                              basePtsUs, baseWallUs)
+                    syncToClock(info.presentationTimeUs)
                     /*
                      * releaseOutputBuffer(true)：把这一帧真正送到 Surface。
                      * 这一步就是把画面交给 OES 纹理的时刻，之后渲染层 updateTexImage()
@@ -191,31 +193,27 @@ class VideoPipe {
     }
 
     /**
-     * 等到这一帧该出现的时间点再返回。
+     * 让这一帧对上音频的位置。
      *
-     * 落后就立刻放（不补帧、不追进度）——追进度只会造成画面跳跃；
-     * 超前最多等 200 毫秒，防止时间戳异常时把线程挂死。
+     * 音频在 mpv 那边播，它报的播放位置就是权威时间。视频这边每帧拿自己的时间戳跟它比：
+     *   · 超前 → 等到该出现的那一刻（最多等 200 毫秒，防时间戳异常把线程挂死）
+     *   · 落后 → 立刻放，不追不跳
+     *
+     * 为什么不用「自己第一帧 + 墙钟」那套：两边起点不同（mpv 可能已经起播一段、
+     * 我们又要先打开流再初始化解码器），固定偏移会让音画差一截而且越跑越歪
+     * （2026-11-15 父亲实测「画面声音不同步」）。
      */
-    private fun holdUntil(
-        ptsUs: Long,
-        isFirst: Boolean,
-        onFirstFrame: () -> Unit,
-        basePtsUs: Long,
-        baseWallUs: Long,
-    ) {
-        if (isFirst || basePtsUs < 0) {
-            onFirstFrame()
-            return
-        }
-        val nowUs = System.nanoTime() / 1000L
-        val dueUs = baseWallUs + (ptsUs - basePtsUs)
-        val waitUs = dueUs - nowUs
-        if (waitUs in 1..200_000L) {
-            try {
-                Thread.sleep(waitUs / 1000L, ((waitUs % 1000L) * 1000L).toInt())
-            } catch (t: InterruptedException) {
-                Thread.currentThread().interrupt()
-            }
+    private fun syncToClock(ptsUs: Long) {
+        val clk = clockProvider?.invoke() ?: return
+        if (clk <= 0.0) return
+        val ptsSec = ptsUs / 1_000_000.0
+        val lead = ptsSec - clk          // >0 画面超前
+        if (lead <= 0.02) return         // 已到点或落后：直接放
+        val waitMs = (lead * 1000.0).toLong().coerceAtMost(200L)
+        try {
+            Thread.sleep(waitMs)
+        } catch (t: InterruptedException) {
+            Thread.currentThread().interrupt()
         }
     }
 
