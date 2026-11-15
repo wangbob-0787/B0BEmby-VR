@@ -366,20 +366,38 @@ class MpvBackend(private val context: Context) {
                      * 解码与色彩空间搬运，不要替我们做 PQ→SDR 的映射：目标设成 PQ /
                      * BT.2020，还原与色调曲线由渲染层那一段着色器完成。
                      */
+                    /*
+                     * 杜比还原交给渲染层时（`dovi_renderer_reshape=1`），内核只当搬运工：
+                     * 读文件、解码、把画面交给渲染层，**一点颜色都不许自己动**。
+                     *
+                     * 三条参数缺一不可（2026-11-15 父亲定的分工：第一条路只管读和解码，
+                     * 第二条路只管颜色）：
+                     *   · `format=dolbyvision=no`  不做杜比重塑，保持原始信号
+                     *   · `setparams=...bt2020nc`  把信号标记改成普通视频，
+                     *     否则 libplacebo 会按 IPT 解释并自己转成 RGB —— 之前
+                     *     「渲染层还原颜色不对」就是栽在这一步（11-14 的结论）
+                     *   · `tone-mapping=clip` + `target-peak=10000`  不压高光、不映射
+                     */
                     if (com.xxxx.emby_vr.vr.VrTuning.doviRendererReshape) {
+                        MPVLib.setOptionString(
+                            "vf",
+                            "format=dolbyvision=no," +
+                                "setparams=color_primaries=bt2020:color_trc=smpte2084:" +
+                                "colorspace=bt2020nc",
+                        )
                         MPVLib.setOptionString("target-prim", "bt.2020")
                         MPVLib.setOptionString("target-trc", "pq")
                         MPVLib.setOptionString("tone-mapping", "clip")
+                        MPVLib.setOptionString("target-peak", "10000")
                     } else {
                         MPVLib.setOptionString("target-prim", "bt.709")
                         MPVLib.setOptionString("target-trc", "gamma2.2")
+                        /*
+                         * 色调曲线只有这条（内核自己还原）路上才用 bt.2390。
+                         * 原依据：2026-11-14 父亲实测 Hable 高光过曝。
+                         */
+                        MPVLib.setOptionString("tone-mapping", "bt.2390")
                     }
-                    /*
-                     * 色调曲线用 bt.2390（2026-11-14 父亲实测：Hable 高光过曝）。原依据：4XVR 的颜色链最后是 Hable
-                     * （`toneMapDolby()` 里 A=0.15 B=0.50 C=0.10 D=0.20 E=0.02 F=0.30），
-                     * 比 libplacebo 默认的 bt.2390 便宜，也更接近它看到的画面。
-                     */
-                    MPVLib.setOptionString("tone-mapping", "bt.2390")
                     /*
                      * 关键：关掉 HDR 逐帧峰值检测。
                      * 默认 auto 对 HDR 源会逐帧统计画面峰值，色调映射曲线跟着每帧变，
