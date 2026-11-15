@@ -142,6 +142,18 @@ object VrTuning {
      */
     @Volatile
     var doviZeroCopy: Boolean = false
+    /**
+     * 打开自管解码（`videopipe=1`）：视频改由 [com.xxxx.emby_vr.player.VideoPipe] 解，
+     * MediaCodec 直接解到画面纹理，mpv 只管音频与播放控制。
+     *
+     * 为什么另开一条：mpv 的输出层在 4K 上要跑完整套色彩管理、每帧还多搬一趟，
+     * 实测 4096 档 68ms；4XVR 同级只要 14~22ms。绕开那一层是唯一能追平的做法。
+     *
+     * 默认关。新链路任何一步没跑通，把它改回 0 就回到原来的路，不用重装。
+     */
+    @Volatile
+    var videoPipeOn: Boolean = false
+
     /** 杜比还原由渲染层做（内核跳过）；打开时内核输出改成 PQ/BT.2020 直出。 */
     @Volatile
     var doviRendererReshape: Boolean = false
@@ -665,6 +677,13 @@ object VrTuning {
             if (it != dvZeroCopy) {
                 dvZeroCopy = it
                 applied += "杜比零拷贝=" + it
+            }
+        }
+        raw["videopipe"]?.toIntOrNull()?.let {
+            val on = it == 1
+            if (on != videoPipeOn) {
+                videoPipeOn = on
+                applied += if (on) "自管解码=开（下次起播生效）" else "自管解码=关（下次起播生效）"
             }
         }
         raw["web_iqiyi"]?.toIntOrNull()?.let {

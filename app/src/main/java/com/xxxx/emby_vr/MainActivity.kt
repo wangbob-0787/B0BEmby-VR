@@ -4277,7 +4277,21 @@ class MainActivity : ComponentActivity() {
                         /* 起播前先到的分片，这会儿播放器有了，补接上去（2026-10-18） */
                         if (webFragMode) flushPendingFrags()
                     } else {
-                        m.play(directUrl, startMs / 1000.0)
+                        /*
+                         * 自管解码（`videopipe=1`，默认关）。
+                         *
+                         * 打开后：视频交给 VideoPipe 用 MediaCodec 直接解到同一张画面纹理，
+                         * mpv 只管音频与播放控制（`vid=no`）。绕开 mpv 的输出层是追平 4XVR
+                         * 的唯一办法 —— 那一层在 4K 上跑整套色彩管理、每帧还多搬一趟。
+                         *
+                         * 两条路都要发起播：音频还得靠 mpv 走，位置也由它对齐；
+                         * 画面这一段改由 VideoPipe 供。
+                         */
+                        if (com.xxxx.emby_vr.vr.VrTuning.videoPipeOn) {
+                            startSelfVideoPipe(directUrl, startMs / 1000.0, surface, m)
+                        } else {
+                            m.play(directUrl, startMs / 1000.0)
+                        }
                     }
                     /*
                      * 起播时把用户选的缓冲档位下给 mpv（父亲 2026-10-11 问内核这边缓冲起没起作用）。
@@ -8144,6 +8158,46 @@ class MainActivity : ComponentActivity() {
      * 同一时刻只有一条内核在跑 —— 走 mpv 时 player 为 null，反之亦然。
      */
     private var mpvBackend: com.xxxx.emby_vr.player.MpvBackend? = null
+
+    /**
+     * 自管解码（`videopipe=1` 时才有实例）。
+     *
+     * 打开后视频由它解到画面纹理，mpv 只留音频与播放控制。
+     * 关掉时恒为 null，行为与原来完全一致。
+     */
+    private var videoPipe: com.xxxx.emby_vr.player.VideoPipe? = null
+
+    /**
+     * 自管解码起播：画面交给 [VideoPipe]，音频与播放控制仍归 mpv。
+     *
+     * 为什么两条一起跑：位置、时长、音轨切换、字幕、进度上报现在全在 mpv 那条路上，
+     * 一次性搬过来风险太大。先只把「画面」这一段换掉，其余不动，出问题好定位。
+     *
+     * `vid=no` 必须用属性接口（`setPropertyString`）——`setOptionString` 只在 mpv
+     * 初始化之前有效，播出中调等于没调且不报错（r560 实测过这个坑）。两者都走
+     * MpvBackend 的单线程队列，所以顺序上 loadfile 一定在它前面。
+     */
+    private fun startSelfVideoPipe(
+        url: String,
+        startSec: Double,
+        surface: android.view.Surface,
+        m: com.xxxx.emby_vr.player.MpvBackend,
+    ) {
+        videoPipe?.stop()
+        videoPipe = null
+
+        m.play(url, startSec)
+        m.setOptionRuntime("vid", "no")
+
+        val pipe = com.xxxx.emby_vr.player.VideoPipe()
+        videoPipe = pipe
+        val ok = pipe.start(url, emptyMap(), surface)
+        if (ok) {
+            Log.i(TAG, "自管解码起播：画面交给 VideoPipe，mpv 只留音频")
+        } else {
+            Log.e(TAG, "自管解码起播失败（${com.xxxx.emby_vr.player.VideoPipe.lastError}），银幕不会有内容")
+        }
+    }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
