@@ -8223,7 +8223,7 @@ class MainActivity : ComponentActivity() {
         audioPipe = audio
         val aOk = audio.start(url, emptyMap(), startSec)
         if (!aOk) {
-            Log.e(TAG, "自管音频起播失败（${com.xxxx.emby_vr.player.AudioPipe.lastError}）")
+            Log.e(TAG, "自管音频起播失败（${audio.lastError}）")
         }
 
         val pipe = com.xxxx.emby_vr.player.VideoPipe()
