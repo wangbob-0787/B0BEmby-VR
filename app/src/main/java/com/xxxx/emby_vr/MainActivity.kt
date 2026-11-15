@@ -7017,6 +7017,11 @@ class MainActivity : ComponentActivity() {
             runCatching { it.stop() }
         }
         mpvBackend = null
+        // 自管解码同样要收：它在往同一张画面纹理里送帧，留着会和下一次起播抢画面
+        videoPipe?.let {
+            runCatching { it.stop() }
+        }
+        videoPipe = null
         mpvSubtitleJob?.cancel()
         mpvSubtitleJob = null
         seekTargetMs = null
