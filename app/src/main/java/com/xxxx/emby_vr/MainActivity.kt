@@ -8192,7 +8192,8 @@ class MainActivity : ComponentActivity() {
         videoPipe = null
 
         m.play(url, startSec)
-        m.setOptionRuntime("vid", "no")
+        // setOptionRuntime 是伴生对象上的方法（内核属性接口），必须按类名调
+        com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("vid", "no")
 
         val pipe = com.xxxx.emby_vr.player.VideoPipe()
         videoPipe = pipe
