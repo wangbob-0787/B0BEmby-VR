@@ -16,7 +16,7 @@ jobs:
             libass-dev libdrm-dev libx11-dev libxext-dev libxrandr-dev libegl1-mesa-dev \
             libgles2-mesa-dev libgbm-dev libvulkan-dev libshaderc-dev \
             glslang-tools libarchive-dev libluajit-5.1-dev libjpeg-dev libzimg-dev \
-            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev
+            libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev libswscale-dev libswresample-dev
 
       - name: 编 libplacebo（带杜比还原）
         run: |
