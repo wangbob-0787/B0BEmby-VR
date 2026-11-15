@@ -41,7 +41,7 @@ jobs:
           cp /tmp/mpv/build/mpv out/
           cp /tmp/mpv/build/libmpv.so* out/ 2>/dev/null || true
           mkdir -p out/include
-          HDR=$(find /tmp/mpv -type d -path '*include/mpv' | head -1)
+          HDR=$(dirname "$(find /tmp/mpv -name client.h | head -1)")
           echo "headers: $HDR"
           cp "$HDR"/*.h out/include/
           ldd /tmp/mpv/build/mpv | grep -E "libplacebo|libav|libsw" || true
