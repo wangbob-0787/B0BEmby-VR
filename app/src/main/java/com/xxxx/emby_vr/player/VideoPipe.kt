@@ -118,13 +118,23 @@ class VideoPipe {
         }
     }
 
-    /** 解码主循环：喂码流、取画面，直到停止或码流结束。 */
+    /** 解码主循环：喂码流、取画面，按时间轴送出去，直到停止或码流结束。 */
     private fun pump() {
         val ex = extractor ?: return
         val codec = decoder ?: return
         val info = MediaCodec.BufferInfo()
         var inputDone = false
         var outputDone = false
+        /*
+         * 按时间轴放（2026-11-15 父亲实测「画面是快进速度」后加的）。
+         *
+         * 解码器出帧的速度远快于真实播放速度，直接把每一帧都送出去就是快放。
+         * 这里用码流自带的显示时间戳对齐墙钟：第一帧记下基准，之后每帧算「现在该不该出现」，
+         * 没到点就等。音频由 mpv 按同一份时间轴播放，所以两边能对上。
+         */
+        var basePtsUs = -1L
+        var baseWallUs = 0L
+        var firstFrame = true
 
         while (running.get() && !outputDone) {
             if (!inputDone) {
@@ -148,6 +158,15 @@ class VideoPipe {
             val outIdx = codec.dequeueOutputBuffer(info, DEQUEUE_TIMEOUT_US)
             when {
                 outIdx >= 0 -> {
+                    holdUntil(info.presentationTimeUs, firstFrame,
+                              onFirstFrame = {
+                                  if (basePtsUs < 0) {
+                                      basePtsUs = info.presentationTimeUs
+                                      baseWallUs = System.nanoTime() / 1000L
+                                  }
+                                  firstFrame = false
+                              },
+                              basePtsUs, baseWallUs)
                     /*
                      * releaseOutputBuffer(true)：把这一帧真正送到 Surface。
                      * 这一步就是把画面交给 OES 纹理的时刻，之后渲染层 updateTexImage()
@@ -169,6 +188,35 @@ class VideoPipe {
             }
         }
         Log.i(TAG, "解码循环结束，共 $decodedFrames 帧")
+    }
+
+    /**
+     * 等到这一帧该出现的时间点再返回。
+     *
+     * 落后就立刻放（不补帧、不追进度）——追进度只会造成画面跳跃；
+     * 超前最多等 200 毫秒，防止时间戳异常时把线程挂死。
+     */
+    private fun holdUntil(
+        ptsUs: Long,
+        isFirst: Boolean,
+        onFirstFrame: () -> Unit,
+        basePtsUs: Long,
+        baseWallUs: Long,
+    ) {
+        if (isFirst || basePtsUs < 0) {
+            onFirstFrame()
+            return
+        }
+        val nowUs = System.nanoTime() / 1000L
+        val dueUs = baseWallUs + (ptsUs - basePtsUs)
+        val waitUs = dueUs - nowUs
+        if (waitUs in 1..200_000L) {
+            try {
+                Thread.sleep(waitUs / 1000L, ((waitUs % 1000L) * 1000L).toInt())
+            } catch (t: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+        }
     }
 
     /** 停止并释放。可重复调用。 */
