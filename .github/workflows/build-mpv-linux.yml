@@ -31,7 +31,7 @@ jobs:
         run: |
           git clone --depth 1 --branch v0.39.0 https://github.com/mpv-player/mpv.git /tmp/mpv
           cd /tmp/mpv
-          meson setup build --prefix=/usr/local -Dvulkan=enabled
+          meson setup build --prefix=/usr/local -Dvulkan=enabled -Dlibmpv=true
           ninja -C build -j"$(nproc)"
           ./build/mpv --version
 
@@ -39,6 +39,8 @@ jobs:
         run: |
           mkdir -p out
           cp /tmp/mpv/build/mpv out/
+          cp /tmp/mpv/build/libmpv.so* out/ 2>/dev/null || true
+          mkdir -p out/include && cp /tmp/mpv/include/mpv/*.h out/include/
           ldd /tmp/mpv/build/mpv | grep -E "libplacebo|libav|libsw" || true
           tar czf mpv-linux-x86_64.tar.gz -C out .
           ls -lh mpv-linux-x86_64.tar.gz
