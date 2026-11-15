@@ -168,13 +168,25 @@ class VideoPipe {
             val outIdx = codec.dequeueOutputBuffer(info, DEQUEUE_TIMEOUT_US)
             when {
                 outIdx >= 0 -> {
-                    syncToClock(info.presentationTimeUs)
                     /*
-                     * releaseOutputBuffer(true)：把这一帧真正送到 Surface。
-                     * 这一步就是把画面交给 OES 纹理的时刻，之后渲染层 updateTexImage()
-                     * 才拿得到新内容。
+                     * 定时输出：把「这一帧该在哪一刻显示」交给系统排，而不是自己 sleep 等。
+                     *
+                     * 为什么不能 sleep（2026-11-15 父亲实测「声音连续、画面不连续、跳帧」）：
+                     * 解码线程一睡就没人喂输入，解码器饿着，输出自然断续。
+                     * releaseOutputBuffer(index, renderTimestampNs) 让 Surface 到点才显示，
+                     * 循环该跑多快跑多快，流控交给解码器自己的缓冲。
+                     *
+                     * 时间基准是 mpv 报的播放位置；落后（算出负值）就立刻显示、不追不跳。
                      */
-                    codec.releaseOutputBuffer(outIdx, true)
+                    val clk = clockProvider?.invoke() ?: -1.0
+                    if (clk > 0.0) {
+                        val ptsSec = info.presentationTimeUs / 1_000_000.0
+                        val delayNs = ((ptsSec - clk) * 1_000_000_000.0).toLong()
+                            .coerceIn(-2_000_000_000L, 2_000_000_000L)
+                        codec.releaseOutputBuffer(outIdx, System.nanoTime() + delayNs)
+                    } else {
+                        codec.releaseOutputBuffer(outIdx, true)
+                    }
                     decodedFrames++
                     if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
                         outputDone = true
@@ -190,31 +202,6 @@ class VideoPipe {
             }
         }
         Log.i(TAG, "解码循环结束，共 $decodedFrames 帧")
-    }
-
-    /**
-     * 让这一帧对上音频的位置。
-     *
-     * 音频在 mpv 那边播，它报的播放位置就是权威时间。视频这边每帧拿自己的时间戳跟它比：
-     *   · 超前 → 等到该出现的那一刻（最多等 200 毫秒，防时间戳异常把线程挂死）
-     *   · 落后 → 立刻放，不追不跳
-     *
-     * 为什么不用「自己第一帧 + 墙钟」那套：两边起点不同（mpv 可能已经起播一段、
-     * 我们又要先打开流再初始化解码器），固定偏移会让音画差一截而且越跑越歪
-     * （2026-11-15 父亲实测「画面声音不同步」）。
-     */
-    private fun syncToClock(ptsUs: Long) {
-        val clk = clockProvider?.invoke() ?: return
-        if (clk <= 0.0) return
-        val ptsSec = ptsUs / 1_000_000.0
-        val lead = ptsSec - clk          // >0 画面超前
-        if (lead <= 0.02) return         // 已到点或落后：直接放
-        val waitMs = (lead * 1000.0).toLong().coerceAtMost(200L)
-        try {
-            Thread.sleep(waitMs)
-        } catch (t: InterruptedException) {
-            Thread.currentThread().interrupt()
-        }
     }
 
     /** 停止并释放。可重复调用。 */
