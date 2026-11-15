@@ -31,8 +31,7 @@ jobs:
         run: |
           git clone --depth 1 --branch v0.39.0 https://github.com/mpv-player/mpv.git /tmp/mpv
           cd /tmp/mpv
-          meson setup build --prefix=/usr/local -Dlibplacebo=enabled -Dvulkan=enabled \
-            -Dcplayer=true -Dlibmpv=true -Dbuild-date=false -Dtests=false
+          meson setup build --prefix=/usr/local -Dvulkan=enabled
           ninja -C build -j"$(nproc)"
           ./build/mpv --version
 
