@@ -7022,6 +7022,10 @@ class MainActivity : ComponentActivity() {
             runCatching { it.stop() }
         }
         videoPipe = null
+        audioPipe?.let {
+            runCatching { it.stop() }
+        }
+        audioPipe = null
         mpvSubtitleJob?.cancel()
         mpvSubtitleJob = null
         seekTargetMs = null
@@ -8173,6 +8177,14 @@ class MainActivity : ComponentActivity() {
     private var videoPipe: com.xxxx.emby_vr.player.VideoPipe? = null
 
     /**
+     * 自管音频（`videopipe=1` 时才有实例）。
+     *
+     * 声音也自己解，P5 片子就只走一条路、一个时间源。它还兼任画面的时间基准：
+     * [VideoPipe] 拿它的 clockSec 对齐，音画天然同步。
+     */
+    private var audioPipe: com.xxxx.emby_vr.player.AudioPipe? = null
+
+    /**
      * 自管解码起播：画面交给 [VideoPipe]，音频与播放控制仍归 mpv。
      *
      * 为什么两条一起跑：位置、时长、音轨切换、字幕、进度上报现在全在 mpv 那条路上，
@@ -8190,17 +8202,36 @@ class MainActivity : ComponentActivity() {
     ) {
         videoPipe?.stop()
         videoPipe = null
+        audioPipe?.stop()
+        audioPipe = null
 
+        /*
+         * 声音也自己解（2026-11-15 父亲定）。
+         *
+         * 原来只换画面、声音留 mpv：同一个文件两条连接，实测起播时声音先出、画面要等
+         * 二十秒。全自己解之后只有一条路、一个时间源，音画天然同步，
+         * 也不用再拿 mpv 的播放位置去对齐画面。
+         *
+         * mpv 这版仍照常起播：时长、进度上报、暂停、切轨还都挂在它身上，
+         * 一次性搬完风险太大。等自管这条路稳定了再把它摘掉。
+         */
         m.play(url, startSec)
-        // setOptionRuntime 是伴生对象上的方法（内核属性接口），必须按类名调
-        com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("vid", "no")
+        // 声音不再交给 mpv，否则会有两路声音叠在一起
+        com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("aid", "no")
+
+        val audio = com.xxxx.emby_vr.player.AudioPipe()
+        audioPipe = audio
+        val aOk = audio.start(url, emptyMap(), startSec)
+        if (!aOk) {
+            Log.e(TAG, "自管音频起播失败（${com.xxxx.emby_vr.player.AudioPipe.lastError}）")
+        }
 
         val pipe = com.xxxx.emby_vr.player.VideoPipe()
         videoPipe = pipe
-        // 画面以 mpv 报的播放位置为准做同步，音频走它、画面跟它；续播位置两边要一致
-        val ok = pipe.start(url, emptyMap(), surface, { m.positionSec() }, startSec)
+        // 画面以自管音频的时钟为准：同一个时间源，天生同步
+        val ok = pipe.start(url, emptyMap(), surface, { audio.clockSec }, startSec)
         if (ok) {
-            Log.i(TAG, "自管解码起播：画面交给 VideoPipe，mpv 只留音频")
+            Log.i(TAG, "自管解码起播：画面走 VideoPipe、声音走 AudioPipe（mpv 只留元数据）")
         } else {
             Log.e(TAG, "自管解码起播失败（${com.xxxx.emby_vr.player.VideoPipe.lastError}），银幕不会有内容")
         }
