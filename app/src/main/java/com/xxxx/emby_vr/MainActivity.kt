@@ -8216,7 +8216,12 @@ class MainActivity : ComponentActivity() {
          * 一次性搬完风险太大。等自管这条路稳定了再把它摘掉。
          */
         m.play(url, startSec)
-        // 声音不再交给 mpv，否则会有两路声音叠在一起
+        /*
+         * 声音和画面都自己解了，内核不解任何一路：留着它会为同一个文件再开一条连接、
+         * 还多占一份 GPU（2026-11-15 实测：只留音频那路也会让画面起播晚二十秒）。
+         * 它现在只负责读容器头，供时长、进度上报、暂停、切轨这些还在它身上的功能。
+         */
+        com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("vid", "no")
         com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("aid", "no")
 
         val audio = com.xxxx.emby_vr.player.AudioPipe()
@@ -8229,7 +8234,15 @@ class MainActivity : ComponentActivity() {
         val pipe = com.xxxx.emby_vr.player.VideoPipe()
         videoPipe = pipe
         // 画面以自管音频的时钟为准：同一个时间源，天生同步
-        val ok = pipe.start(url, emptyMap(), surface, { audio.clockSec }, startSec)
+        /*
+         * 参数交给自管解码去解、去落盘：内核这版不解视频，也就没人写这份文件了
+         * （渲染层的 dvLoadFromFile 读的就是它）。
+         */
+        val doviPath = java.io.File(
+            getExternalFilesDir(null) ?: filesDir,
+            "dovi_params.bin",
+        ).absolutePath
+        val ok = pipe.start(url, emptyMap(), surface, { audio.clockSec }, startSec, doviPath)
         if (ok) {
             Log.i(TAG, "自管解码起播：画面走 VideoPipe、声音走 AudioPipe（mpv 只留元数据）")
         } else {

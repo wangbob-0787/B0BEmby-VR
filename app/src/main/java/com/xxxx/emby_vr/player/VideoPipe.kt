@@ -42,6 +42,23 @@ class VideoPipe {
     /** 播放位置来源（音频侧）。为空时按自己的时间戳放。 */
     @Volatile private var clockProvider: (() -> Double)? = null
 
+    /**
+     * 杜比参数落盘路径（与内核那份同一个文件，渲染层读它做还原）。
+     *
+     * 自管解码之后内核不再解视频，也就没人写这份参数了 —— 这里补上：
+     * 每帧从码流里解出 RPU，参数变了才落盘（渲染层按 mtime 判断要不要重读）。
+     */
+    @Volatile private var doviParamPath: String? = null
+
+    /** 上一份写出去的参数，用来判断变没变 */
+    private var lastDovi: FloatArray? = null
+
+    /** 复用的取样缓冲：每帧临时 new 一个几 MB 的数组会把 GC 拖垮 */
+    private val sampleBuf = ByteArray(8 * 1024 * 1024)
+
+    /** 参数落盘的最小间隔（帧）：每帧都写会让渲染层每帧重读文件 */
+    private var doviWriteSkip = 0
+
     /** 解码出来的实际宽高，起播后才有值 */
     @Volatile var videoWidth = 0
         private set
@@ -71,10 +88,14 @@ class VideoPipe {
         surface: Surface,
         clock: (() -> Double)? = null,
         startSec: Double = 0.0,
+        doviPath: String? = null,
     ): Boolean {
         stop()
         lastError = null
         clockProvider = clock
+        doviParamPath = doviPath
+        lastDovi = null
+        doviWriteSkip = 0
         return try {
             val ex = MediaExtractor()
             if (headers.isEmpty()) {
@@ -159,6 +180,13 @@ class VideoPipe {
                         inputDone = true
                     } else {
                         val pts = ex.sampleTime
+                        /*
+                         * 趁这帧还在手里，先解出杜比参数。
+                         *
+                         * 必须在 queueInputBuffer 之前读：入队之后缓冲归解码器所有，
+                         * 内容随时可能被改写。
+                         */
+                        harvestDovi(buf, size)
                         codec.queueInputBuffer(inIdx, 0, size, pts, 0)
                         ex.advance()
                     }
@@ -202,6 +230,39 @@ class VideoPipe {
             }
         }
         Log.i(TAG, "解码循环结束，共 $decodedFrames 帧")
+    }
+
+    /**
+     * 从这一帧的码流里解出杜比还原参数，变了就落盘给渲染层。
+     *
+     * 为什么要节流：这批参数每帧都在变（实测相隔 12 秒两次采样 md5 不同），
+     * 但每帧写一次文件、渲染层每帧再读一次，等于拿磁盘当内存用。
+     * 隔几帧写一次足够 —— 颜色参数的变化人眼跟不上。
+     */
+    private fun harvestDovi(buf: java.nio.ByteBuffer, size: Int) {
+        val path = doviParamPath ?: return
+        if (size <= 0 || size > sampleBuf.size) return
+        if (doviWriteSkip > 0) {
+            doviWriteSkip--
+            return
+        }
+        try {
+            buf.position(0)
+            buf.get(sampleBuf, 0, size)
+            val params = DoviRpu.parseFrame(sampleBuf, size) ?: return
+            val prev = lastDovi
+            if (prev != null && prev.contentEquals(params)) return
+            lastDovi = params
+            doviWriteSkip = 3
+            java.io.File(path).outputStream().use { out ->
+                val bb = java.nio.ByteBuffer.allocate(params.size * 4)
+                    .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                params.forEach { bb.putFloat(it) }
+                out.write(bb.array())
+            }
+        } catch (t: Throwable) {
+            // 解析失败不影响播放，下一帧再试
+        }
     }
 
     /** 停止并释放。可重复调用。 */
