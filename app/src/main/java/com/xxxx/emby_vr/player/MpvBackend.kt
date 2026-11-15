@@ -1040,7 +1040,12 @@ class MpvBackend(private val context: Context) {
         val primaries = p("video-params/primaries").lowercase()
         val gamma = p("video-params/gamma").lowercase()
         val pixfmt = p("video-params/pixelformat").lowercase()
-        val h = try { MPVLib.getPropertyInt("video-params/h") } catch (_: Throwable) { 0 }
+        /*
+         * getPropertyInt 返回的是可空的 Integer：内核还没报出高度时它给 null，
+         * 直接拿去比较就是 NullPointerException（2026-11-15 实测崩溃在 h < 1000 那一行）。
+         * 所以这里必须补成 0，而不是让 try/catch 兜——null 不是异常，catch 接不住。
+         */
+        val h = (try { MPVLib.getPropertyInt("video-params/h") } catch (_: Throwable) { null }) ?: 0
         val tagged = primaries.isNotEmpty() && primaries != "-" &&
             primaries != "auto" && primaries != "unknown"
         // 1080p 的 HDR/杜比片同样常见，门槛放在 1080p，不按 4K 卡
