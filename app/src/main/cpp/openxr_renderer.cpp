@@ -7865,8 +7865,15 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
      */
     doviProbeShared();
     if (u.dvReshape >= 0 && u.dvParams >= 0) {
-        const bool dvOn = videoLayerPass && gDvRendererReshape.load() != 0 &&
-                          g_doviFlat && g_doviReady && *g_doviReady;
+        /*
+         * 判据只看「有没有参数」和「开关开没开」。
+         *
+         * 不要再要求 g_doviReady —— 那是内核全局符号那条老通道的标志，改成文件交接
+         * 之后它根本取不到（内核那边没有导出或符号不可见），一要求就等于把还原
+         * 永远关着。实测证据：日志早就打出「杜比参数已接通（文件）：版本=2 通道=3」，
+         * 参数一直在，却被这个条件挡在门外。
+         */
+        const bool dvOn = videoLayerPass && gDvRendererReshape.load() != 0 && g_doviFlat;
         glUniform1i(u.dvReshape, dvOn ? 1 : 0);
         if (dvOn) glUniform1fv(u.dvParams, 128, (const GLfloat *) g_doviFlat);
     }
