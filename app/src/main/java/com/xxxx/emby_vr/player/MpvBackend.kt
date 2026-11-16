@@ -587,7 +587,12 @@ class MpvBackend(private val context: Context) {
         post { MPVLib.command(arrayOf("loadfile", url, "append-play")) }
     }
 
-    fun play(url: String, startSec: Double = 0.0) {
+    /**
+     * @param startPaused 加载后先不出声（自管解码用）：画面由我们解，首帧出来之前
+     *                    不能先放声音，否则声音跑在画面前面就是音画不同步。
+     *                    由调用方在首帧到位后 [setPaused] 放开。
+     */
+    fun play(url: String, startSec: Double = 0.0, startPaused: Boolean = false) {
         ensureCreated(context)
         beginPolling()
         loadGen += 1
@@ -647,7 +652,7 @@ class MpvBackend(private val context: Context) {
                     }
                 }, 1500L)
             }
-            setPaused(false)
+            setPaused(startPaused)
         } catch (t: Throwable) {
             Log.e(TAG, "起播失败: ${t.message}")
         }

@@ -61,6 +61,20 @@ class VideoPipe {
     /** 上一份写出去的参数，用来判断变没变 */
     private var lastDovi: FloatArray? = null
 
+    /**
+     * 首帧之后的闸门：返回 true 时先把画面停住（声音还没开始，画面不能自己往前跑）。
+     *
+     * 自管解码起播时，第一帧解出来要立刻显示，但后面不能继续放 —— 声音那边还挂在
+     * 起播位置等我们，画面先跑就变成有画无声的假播放，等声音放开再对齐会明显跳一下。
+     */
+    @Volatile private var holdGate: (() -> Boolean)? = null
+
+    /** 首帧已送进画面。用来通知外面放开声音。 */
+    @Volatile private var firstFrameOut = false
+
+    /** 首帧出来时回调一次（外面在这里放开声音） */
+    @Volatile private var onFirstFrame: (() -> Unit)? = null
+
     /** 复用的取样缓冲：每帧临时 new 一个几 MB 的数组会把 GC 拖垮 */
     private val sampleBuf = ByteArray(8 * 1024 * 1024)
 
@@ -106,12 +120,17 @@ class VideoPipe {
         clockValid: (() -> Boolean)? = null,
         startSec: Double = 0.0,
         doviPath: String? = null,
+        holdGate: (() -> Boolean)? = null,
+        onFirstFrame: (() -> Unit)? = null,
     ): Boolean {
         stop()
         lastError = null
         clockProvider = clock
         clockValidProvider = clockValid
         doviParamPath = doviPath
+        this.holdGate = holdGate
+        this.onFirstFrame = onFirstFrame
+        firstFrameOut = false
         lastDovi = null
         doviWriteSkip = 0
         /*
@@ -197,6 +216,21 @@ class VideoPipe {
         var outputDone = false
 
         while (running.get() && !outputDone) {
+            /*
+             * 首帧已经显示、但外面还没放开声音：停在这里什么都不做。
+             *
+             * 不能继续取输出缓冲 —— 那会一路按自走时钟把画面放下去，声音却还在起播点，
+             * 放开的瞬间要么跳帧要么追帧，两种都难看。停住解码器自然形成背压。
+             */
+            if (firstFrameOut && holdGate?.invoke() == true) {
+                try {
+                    Thread.sleep(5)
+                } catch (t: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    break
+                }
+                continue
+            }
             if (!inputDone) {
                 val inIdx = codec.dequeueInputBuffer(DEQUEUE_TIMEOUT_US)
                 if (inIdx >= 0) {
@@ -256,6 +290,10 @@ class VideoPipe {
                     val delayNs = (dueNs - nowNs).coerceIn(-2_000_000_000L, 80_000_000L)
                     codec.releaseOutputBuffer(outIdx, System.nanoTime() + delayNs)
                     decodedFrames++
+                    if (!firstFrameOut) {
+                        firstFrameOut = true
+                        runCatching { onFirstFrame?.invoke() }
+                    }
                     if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
                         outputDone = true
                     }
@@ -315,6 +353,9 @@ class VideoPipe {
     /** 停止并释放。可重复调用。 */
     fun stop() {
         running.set(false)
+        holdGate = null
+        onFirstFrame = null
+        firstFrameOut = false
         thread?.let {
             try {
                 it.join(600)

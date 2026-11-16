@@ -8186,6 +8186,14 @@ class MainActivity : ComponentActivity() {
      */
     private var videoPipe: com.xxxx.emby_vr.player.VideoPipe? = null
 
+    /**
+     * 自管解码起播时，声音要等画面首帧。
+     *
+     * 为 true 时：画面只放第一帧然后停住，声音也挂在校起播位置不发。
+     * 首帧到位后置 false 并放开声音，两路从同一时刻起步。
+     */
+    private val selfPipeWaitingFirstFrame = java.util.concurrent.atomic.AtomicBoolean(false)
+
 
     /**
      * 自管解码起播：画面交给 [VideoPipe]，音频与播放控制仍归 mpv。
@@ -8226,7 +8234,13 @@ class MainActivity : ComponentActivity() {
          */
         m.attachSurface(null)
         com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("vo", "null")
-        m.play(url, startSec)
+        /*
+         * 加载后先不出声（2026-11-16 父亲实测「画面还没出来声音就出来了」）：
+         * 声音由内核出，它一加载就能放；画面要我们自己解，首帧晚一两秒。
+         * 不等的话声音就先跑，两者错开一两秒。
+         */
+        selfPipeWaitingFirstFrame.set(true)
+        m.play(url, startSec, startPaused = true)
         com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("vid", "no")
 
         val doviPath = java.io.File(
@@ -8238,8 +8252,18 @@ class MainActivity : ComponentActivity() {
         // 时钟用内核报的播放位置：它正常加载后这个值是准的
         val ok = pipe.start(
             url, emptyMap(), surface, { m.positionSec() }, { true }, startSec, doviPath,
+            holdGate = { selfPipeWaitingFirstFrame.get() },
+            onFirstFrame = {
+                /* 画面第一帧已经送到银幕，现在放开声音，两路从同一时刻走 */
+                selfPipeWaitingFirstFrame.set(false)
+                m.setPaused(false)
+                Log.i(TAG, "自管解码首帧已出，放开声音")
+            },
         )
         if (!ok) {
+            /* 画面这条路起不来就别把声音扣着，否则整部片没声 */
+            selfPipeWaitingFirstFrame.set(false)
+            m.setPaused(false)
             Log.e(TAG, "自管解码起播失败（${com.xxxx.emby_vr.player.VideoPipe.lastError}），银幕不会有内容")
         }
     }
