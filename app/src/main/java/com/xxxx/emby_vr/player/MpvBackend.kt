@@ -303,6 +303,11 @@ class MpvBackend(private val context: Context) {
                      * 处色相会往两边跑。所以色调映射与色域映射保持内核默认，只留关峰值统计这一项。
                      */
                     MPVLib.setOptionString("hdr-compute-peak", "no")
+                    /*
+                     * 播放器自身日志只开「加载」与「音频输出」两块（2026-11-16）：
+                     * 加载失败时它只在 info 级别说明原因，默认级别看不到；全开 all=v 又会冲掉 logcat。
+                     */
+                    MPVLib.setOptionString("msg-level", "all=warn,cplayer=info,ao=info,demux=info")
                     MPVLib.setOptionString("deband", "no")
                     MPVLib.setOptionString("vo", "gpu-next")
                     MPVLib.setOptionString("gpu-context", "android")

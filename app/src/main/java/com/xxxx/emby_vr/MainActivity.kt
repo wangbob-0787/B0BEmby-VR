@@ -8251,9 +8251,18 @@ class MainActivity : ComponentActivity() {
          * 声音由内核出，它一加载就能放；画面要我们自己解，首帧晚一两秒。
          * 不等的话声音就先跑，两者错开一两秒。
          */
+        /*
+         * 「关视频轨」必须排在 loadfile 之前（2026-11-16 实测）。
+         *
+         * 排在后面时，内核是按「有视频轨、但没有表面也没有 vo」去打开文件的，
+         * 它据此判成没有可播数据，整条加载直接失败 —— 表现就是没声音、时长拿不到、
+         * 进度恒 0、快进无效，而画面由我们自己解还照旧在跑，看起来"速度偏快"。
+         * 先把视频轨关掉再加载，它就只走音频这一条路。
+         */
+        com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("vid", "no")
+        com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("audio-display", "no")
         selfPipeWaitingFirstFrame.set(true)
         m.play(url, startSec, startPaused = true)
-        com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("vid", "no")
 
         val doviPath = java.io.File(
             getExternalFilesDir(null) ?: filesDir,
