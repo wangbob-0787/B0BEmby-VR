@@ -90,7 +90,7 @@ static bool g_doviLogged = false;
  */
 static float gDvFileBuf[128];
 static volatile float *g_doviFlatFile = nullptr;
-static long gDvFileMtime = 0;
+static long long gDvFileStamp = -1;   /* 秒+纳秒合成，秒级时间戳抓不到同秒内的更新 */
 
 static void dvLoadFromFile()
 {
@@ -100,13 +100,14 @@ static void dvLoadFromFile()
     if (!path || !path[0]) return;
     struct stat st;
     if (stat(path, &st) != 0) return;
-    if (st.st_mtime == gDvFileMtime) { g_doviFlat = g_doviFlatFile; return; }
+    const long long stamp = (long long) st.st_mtim.tv_sec * 1000000000LL + st.st_mtim.tv_nsec;
+    if (stamp == gDvFileStamp) { g_doviFlat = g_doviFlatFile; return; }
     FILE *fp = fopen(path, "rb");
     if (!fp) return;
     size_t got = fread(gDvFileBuf, sizeof(float), 128, fp);
     fclose(fp);
     if (got < 3) return;
-    gDvFileMtime = st.st_mtime;
+    gDvFileStamp = stamp;
     g_doviFlatFile = gDvFileBuf;
     g_doviFlat = g_doviFlatFile;
     /*
@@ -128,7 +129,13 @@ static void doviProbeShared()
      * 改成内核把参数写到应用指定的文件里，这里每隔 250ms 看一次改动时间。
      * 参数是按镜头变的，不需要每帧读。
      */
-    if (!g_doviFlat) dvLoadFromFile();
+    /*
+     * 每帧都问一次（内部按修改时间判断是否重读）。
+     *
+     * 原来这里是 `if (!g_doviFlat)`，第一次读到参数之后指针就不为空，
+     * 于是永不再读 —— 逐帧参数实际被冻在第一次那份上，换镜头也不更新。
+     */
+    dvLoadFromFile();
     if (!g_doviFlat) {
         /*
          * 必须先按名字取到内核那个库的句柄再查符号（2026-11-13 实测）：
@@ -911,7 +918,9 @@ void main() {
                 int pivCount = int(uDv[base] + 0.5);
                 float x = sig[ch];
                 int seg = 0;
-                for (int k = 1; k < 8; k++) {
+                /* 9 个分段点 = 8 段；原来 k<8 时第 8 段永远选不到，
+                 * 最亮那一段一直用前一段的系数。 */
+                for (int k = 1; k <= 8; k++) {
                     if (k < pivCount && x >= uDv[base + k]) seg = k - 1;
                 }
                 int c0 = base + 9 + seg * 3;
@@ -967,7 +976,8 @@ void main() {
             t = clamp(t / max(wNorm, 1e-5), 0.0, 1.0);
             c = vec4(pow(t, vec3(1.0 / 2.2)), 1.0);
         }
-        if (uExpandRange == 1) {
+        /* 杜比还原这条路进来的信号本来就是全幅，做完还原的 RGB 不能再扩一次 */
+        if (uExpandRange == 1 && uDvReshape != 1) {
             /*
              * 父亲 2026-10-06：「视频还是灰蒙蒙，像蒙了一层纱」。
              *
@@ -7883,8 +7893,9 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
          * 永远关着。实测证据：日志早就打出「杜比参数已接通（文件）：版本=2 通道=3」，
          * 参数一直在，却被这个条件挡在门外。
          */
+        /* 版本 1 = 客户端自管解码写的（只有曲线）；版本 2 = 内核写的（曲线后面还带两份矩阵） */
         const bool dvOn = videoLayerPass && gDvRendererReshape.load() != 0 && g_doviFlat &&
-                          g_doviFlat[0] >= 0.5f && g_doviFlat[0] < 1.5f;
+                          g_doviFlat[0] >= 0.5f && g_doviFlat[0] < 2.5f;
         glUniform1i(u.dvReshape, dvOn ? 1 : 0);
         if (dvOn) glUniform1fv(u.dvParams, 128, (const GLfloat *) g_doviFlat);
     }

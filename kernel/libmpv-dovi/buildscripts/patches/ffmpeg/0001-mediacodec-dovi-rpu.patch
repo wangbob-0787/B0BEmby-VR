@@ -106,7 +106,7 @@ index cc55b30..2e82104 100644
 +{
 +    const AVDOVIRpuDataHeader *hdr;
 +    const AVDOVIDataMapping *map;
-+    int n = 3;
++    int n = 2;                                 /* 与着色器 base=2+ch*33 对齐 */
 +
 +    if (!md)
 +        return;
