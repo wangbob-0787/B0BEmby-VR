@@ -3711,6 +3711,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun playWebStream(obj: org.json.JSONObject) {
+        /* 网页流标记（2026-11-16）：供内核判定"不要按 HDR10 推断" */
+        com.xxxx.emby_vr.player.PlaybackFlags.webSource = true
         lastWebDeliverAt = System.currentTimeMillis()
         /*
          * 网页流起播也走同一套换片清场（父亲 2026-11-07）。
@@ -4566,6 +4568,8 @@ class MainActivity : ComponentActivity() {
                 )
                 /* 网页流不向 Emby 报进度（它不属于 Emby 库；报了会把上一部片子的身份写进去） */
                 if (!isWeb) startPlaybackReporting()
+                /* Emby 片走内核：清掉网页标记（2026-11-16） */
+                com.xxxx.emby_vr.player.PlaybackFlags.webSource = false
                 Log.i(TAG, "开始播放（内核）: $title url=${url.take(160)}")
                 return
             }
@@ -8234,6 +8238,8 @@ class MainActivity : ComponentActivity() {
      * MpvBackend 的单线程队列，所以顺序上 loadfile 一定在它前面。
      */
     private fun startSelfVideoPipe(
+        /* 非网页流：清掉网页标记（2026-11-16） */
+        com.xxxx.emby_vr.player.PlaybackFlags.webSource = false
         url: String,
         startSec: Double,
         surface: android.view.Surface,

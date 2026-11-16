@@ -1076,6 +1076,15 @@ class MpvBackend(private val context: Context) {
         val h = (try { MPVLib.getPropertyInt("video-params/h") } catch (_: Throwable) { null }) ?: 0
         val tagged = primaries.isNotEmpty() && primaries != "-" &&
             primaries != "auto" && primaries != "unknown"
+        /*
+         * 网页流（B站/腾讯/爱奇艺）一律不推断（2026-11-16 父亲实测：一张本该纯红的
+         * 片头被推断成 HDR10 后变成土红、整体发灰）。这些平台的 SDR 10 位流很常见，
+         * 没有标记就是 SDR，按普通视频走。
+         */
+        if (com.xxxx.emby_vr.player.PlaybackFlags.webSource) {
+            Log.i(TAG, "网页流：不做 HDR10 推断（无标记按 SDR 处理）")
+            return
+        }
         // 1080p 的 HDR/杜比片同样常见，门槛放在 1080p，不按 4K 卡
         if (tagged || h < 1000 || !pixfmt.contains("10")) return
         Log.i(TAG, "片源无色彩标记（$pixfmt ${h}p，primaries=$primaries gamma=$gamma）→ 按 HDR10 推断")
