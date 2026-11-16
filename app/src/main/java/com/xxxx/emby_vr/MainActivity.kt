@@ -4300,7 +4300,17 @@ class MainActivity : ComponentActivity() {
                             ).readLines().firstOrNull { it.startsWith("videopipe=") }
                                 ?.substringAfter("=")?.trim()?.toIntOrNull() == 1
                         }.getOrDefault(false) || com.xxxx.emby_vr.vr.VrTuning.videoPipeOn
-                        Log.i(TAG, "起播分支判定：自管解码=$pipeOn")
+                        /*
+                         * 新路径只给杜比 P5（2026-11-16 父亲定）。
+                         *
+                         * 自管解码那条路目前只对 P5 验证过颜色正确；普通片子走它会偏色
+                         * （与杜比无关，是这条路自己的色彩处理还没做对）。所以这里再加一道
+                         * 按片源的门：不是 P5 就一律交给内核，与 videopipe 开关无关。
+                         */
+                        val isP5Source = com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource &&
+                            com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionProfile?.contains("50") == true
+                        val useSelfPipe = pipeOn && isP5Source
+                        Log.i(TAG, "起播分支判定：开关=$pipeOn 本片P5=$isP5Source 自管解码=$useSelfPipe")
                         /*
                          * 换片先把上一部片的杜比痕迹清干净（2026-11-16 父亲实测：
                          * 非 P5 的片子被上一部 P5 的参数带偏，整幅变成色块）。
@@ -4313,7 +4323,7 @@ class MainActivity : ComponentActivity() {
                             ).delete()
                         }
                         com.xxxx.emby_vr.vr.VrNative.setDoviStreamActive(false)
-                        if (pipeOn) {
+                        if (useSelfPipe) {
                             startSelfVideoPipe(directUrl, startMs / 1000.0, surface, m)
                         } else {
                             m.play(directUrl, startMs / 1000.0)
