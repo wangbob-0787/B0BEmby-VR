@@ -383,26 +383,17 @@ class MpvBackend(private val context: Context) {
                      *     「渲染层还原颜色不对」就是栽在这一步（11-14 的结论）
                      *   · `tone-mapping=clip` + `target-peak=10000`  不压高光、不映射
                      */
-                    if (com.xxxx.emby_vr.vr.VrTuning.doviRendererReshape) {
-                        MPVLib.setOptionString(
-                            "vf",
-                            "format=dolbyvision=no," +
-                                "setparams=color_primaries=bt2020:color_trc=smpte2084:" +
-                                "colorspace=bt2020nc",
-                        )
-                        MPVLib.setOptionString("target-prim", "bt.2020")
-                        MPVLib.setOptionString("target-trc", "pq")
-                        MPVLib.setOptionString("tone-mapping", "clip")
-                        MPVLib.setOptionString("target-peak", "10000")
-                    } else {
-                        MPVLib.setOptionString("target-prim", "bt.709")
-                        MPVLib.setOptionString("target-trc", "gamma2.2")
-                        /*
-                         * 色调曲线只有这条（内核自己还原）路上才用 bt.2390。
-                         * 原依据：2026-11-14 父亲实测 Hable 高光过曝。
-                         */
-                        MPVLib.setOptionString("tone-mapping", "bt.2390")
-                    }
+                    /*
+                     * 初始化只铺「普通视频」的色彩目标：SDR 输出。
+                     *
+                     * 杜比渲染层那条路（目标 PQ / BT.2020）**不能在初始化时设**（2026-11-16
+                     * 父亲实测：播过一部 P5 之后，普通片和网页视频全被这套目标带偏发灰）。
+                     * 这些选项对整个进程生效，而它只对 P5 那一条路成立，所以改由
+                     * `applyDoviPipeline(true/false)` 在每次起播前按片源切换。
+                     */
+                    MPVLib.setOptionString("target-prim", "bt.709")
+                    MPVLib.setOptionString("target-trc", "gamma2.2")
+                    MPVLib.setOptionString("tone-mapping", "bt.2390")
                     /*
                      * 关键：关掉 HDR 逐帧峰值检测。
                      * 默认 auto 对 HDR 源会逐帧统计画面峰值，色调映射曲线跟着每帧变，
@@ -736,6 +727,37 @@ class MpvBackend(private val context: Context) {
         if (cVideoW > 0 && cVideoH > 0) (cVideoW to cVideoH) else null
 
     fun currentSubtitleText(): String = cSubText
+
+    /**
+     * 按片源切换色彩目标（2026-11-16）。必须在每次 loadfile **之前**调用。
+     *
+     * @param doviRenderer true = 本次是杜比 P5、颜色由渲染层算：内核只当搬运工，
+     *                     不做杜比重塑、不做色调映射，输出标成 PQ/BT.2020；
+     *                     false = 其余所有片源：输出 SDR（bt.709 / gamma2.2），
+     *                     由内核自己完成任何 HDR→SDR 映射。
+     *
+     * 为什么必须每次切：这些是进程级选项，只设一次就会一直生效 —— 结果是
+     * 「播过 P5 之后，普通片和网页视频都被按 PQ 解释」，画面发灰、饱和度掉一大截。
+     */
+    fun applyDoviPipeline(doviRenderer: Boolean) {
+        if (doviRenderer) {
+            setOptionRuntime(
+                "vf",
+                "format=dolbyvision=no," +
+                    "setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc",
+            )
+            setOptionRuntime("target-prim", "bt.2020")
+            setOptionRuntime("target-trc", "pq")
+            setOptionRuntime("tone-mapping", "clip")
+            setOptionRuntime("target-peak", "10000")
+        } else {
+            /* 清掉滤镜链：留着它普通片会少一层正常处理 */
+            setOptionRuntime("vf", "")
+            setOptionRuntime("target-prim", "bt.709")
+            setOptionRuntime("target-trc", "gamma2.2")
+            setOptionRuntime("tone-mapping", "bt.2390")
+        }
+    }
 
     /** 读任意内核属性（诊断用）。读不到返回 null，不抛。 */
     fun prop(name: String): String? = try { MPVLib.getPropertyString(name) } catch (_: Throwable) { null }

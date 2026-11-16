@@ -4576,6 +4576,8 @@ class MainActivity : ComponentActivity() {
                 /* Emby 片走内核：清掉网页标记与杜比状态（2026-11-16） */
                 com.xxxx.emby_vr.player.PlaybackFlags.webSource = false
                 clearDoviState()
+                /* 本次不走渲染层还原：色彩目标切回 SDR（2026-11-16） */
+                com.xxxx.emby_vr.player.MpvBackend.applyDoviPipeline(false)
                 Log.i(TAG, "开始播放（内核）: $title url=${url.take(160)}")
                 return
             }
@@ -8255,29 +8257,16 @@ class MainActivity : ComponentActivity() {
         videoPipe = null
 
         /*
-         * 内核负责声音与播放控制，我们只接管画面。
+         * 内核只出声，画面由我们画（2026-11-16 定）。
          *
-         * **只关视频轨，绝对不要连音频轨一起关**（2026-11-16 父亲实测「进度条停在 0、
-         * 没声音」）：两个轨都关掉，mpv 会认为这个文件没什么可播，于是根本不加载 ——
-         * 轨道清单为空、播放位置永远是 0，画面也就失去了时间基准。
-         * 音频这版没有自管实现（系统缺 EAC3 解码器），本来就该由内核出声。
-         */
-        /*
-         * 画面归我们，内核连表面都不要挂 —— 只做音频与播放控制。
+         * 做法就是一件：`vid=no`（不渲染视频轨），**表面照挂、vo 不改成 null**。
          *
-         * 之前只设了 vid=no，但表面还挂着：内核打开文件后发现视频轨被禁、
-         * 音频轨又因为要往那块表面上配视频链而走不通，直接判「没有可播数据」，
-         * 报 `finished playback, no audio or video data played`，
-         * 于是没声音、时长拿不到、进度恒 0（2026-11-16 日志实锤）。
-         *
-         * 摘掉表面 + vo 置 null，它就不会去建画面链，只走音频这一条。
-         */
-        m.attachSurface(null)
-        com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("vo", "null")
-        /*
-         * 加载后先不出声（2026-11-16 父亲实测「画面还没出来声音就出来了」）：
-         * 声音由内核出，它一加载就能放；画面要我们自己解，首帧晚一两秒。
-         * 不等的话声音就先跑，两者错开一两秒。
+         * 走过的两条弯路，都留在这里免再踩：
+         *   · 把视频轨和音频轨一起关 → 内核认为文件没东西可播，根本不加载；
+         *   · 摘掉表面 + `vo=null` → 内核加载后没有输出设备，直接回到 idle
+         *     （日志实锤：`idle=yes core=yes path=null`，时长与位置全是 null，
+         *     于是没声音、进度恒 0、画面自己跑，观感就是"速度失控"）。
+         * 保留一个合法的输出设备，它才会真的把文件打开、报时长、给位置。
          */
         /*
          * 「关视频轨」必须排在 loadfile 之前（2026-11-16 实测）。
@@ -8287,6 +8276,8 @@ class MainActivity : ComponentActivity() {
          * 进度恒 0、快进无效，而画面由我们自己解还照旧在跑，看起来"速度偏快"。
          * 先把视频轨关掉再加载，它就只走音频这一条路。
          */
+        /* 本次是 P5、颜色由渲染层算：内核只当搬运工（2026-11-16 按片源切换） */
+        com.xxxx.emby_vr.player.MpvBackend.applyDoviPipeline(true)
         com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("vid", "no")
         /*
          * 起播后连查三次内核状态（2026-11-16）：这条路的"没声音"是内核压根没加载文件，
