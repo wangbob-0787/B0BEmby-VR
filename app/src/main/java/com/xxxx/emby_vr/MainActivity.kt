@@ -8214,6 +8214,18 @@ class MainActivity : ComponentActivity() {
          * 轨道清单为空、播放位置永远是 0，画面也就失去了时间基准。
          * 音频这版没有自管实现（系统缺 EAC3 解码器），本来就该由内核出声。
          */
+        /*
+         * 画面归我们，内核连表面都不要挂 —— 只做音频与播放控制。
+         *
+         * 之前只设了 vid=no，但表面还挂着：内核打开文件后发现视频轨被禁、
+         * 音频轨又因为要往那块表面上配视频链而走不通，直接判「没有可播数据」，
+         * 报 `finished playback, no audio or video data played`，
+         * 于是没声音、时长拿不到、进度恒 0（2026-11-16 日志实锤）。
+         *
+         * 摘掉表面 + vo 置 null，它就不会去建画面链，只走音频这一条。
+         */
+        m.attachSurface(null)
+        com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("vo", "null")
         m.play(url, startSec)
         com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("vid", "no")
 
