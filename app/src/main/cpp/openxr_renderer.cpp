@@ -91,6 +91,14 @@ static bool g_doviLogged = false;
 static float gDvFileBuf[128];
 static volatile float *g_doviFlatFile = nullptr;
 static long long gDvFileStamp = -1;   /* 秒+纳秒合成，秒级时间戳抓不到同秒内的更新 */
+/*
+ * 参数文件此刻是否代表「正在播的这部片」（2026-11-16）。
+ *
+ * 文件只在播杜比片源时存在（自管解码起播会先删旧文件），所以文件不在就等于
+ * 当前不是杜比片源。必须用它来否决还原：内存里那 128 个浮点是上一部片的，
+ * 留下继续套用会让普通片源也走杜比链路，画面完全不对。
+ */
+static bool gDvFileValid = false;
 
 static void dvLoadFromFile()
 {
@@ -99,7 +107,14 @@ static void dvLoadFromFile()
     const char *path = getenv("B0B_DOVI_PATH");
     if (!path || !path[0]) return;
     struct stat st;
-    if (stat(path, &st) != 0) return;
+    if (stat(path, &st) != 0) {
+        if (gDvFileValid) {
+            gDvFileValid = false;
+            gDvFileStamp = -1;
+            LOGI_RAW("杜比参数文件已消失，还原关闭（当前片源不是杜比）");
+        }
+        return;
+    }
     const long long stamp = (long long) st.st_mtim.tv_sec * 1000000000LL + st.st_mtim.tv_nsec;
     if (stamp == gDvFileStamp) { g_doviFlat = g_doviFlatFile; return; }
     FILE *fp = fopen(path, "rb");
@@ -108,6 +123,7 @@ static void dvLoadFromFile()
     fclose(fp);
     if (got < 3) return;
     gDvFileStamp = stamp;
+    gDvFileValid = true;
     g_doviFlatFile = gDvFileBuf;
     g_doviFlat = g_doviFlatFile;
     /*
@@ -5396,7 +5412,8 @@ void updateScreenLightFromVideo(VrContext &c) {
      * 否则 uDvReshape 保持 0，着色器走原来的路，画面与现在完全一致。
      */
     if (c.dvReshapeLoc >= 0 && c.dvParamsLoc >= 0) {
-        const bool dvOn = gDvRendererReshape.load() != 0 && g_doviFlat && g_doviReady && *g_doviReady;
+        const bool dvOn = gDvRendererReshape.load() != 0 && gDvFileValid && g_doviFlat &&
+                          g_doviReady && *g_doviReady;
         glUniform1i(c.dvReshapeLoc, dvOn ? 1 : 0);
         if (dvOn) glUniform1fv(c.dvParamsLoc, 128, (const GLfloat *) g_doviFlat);
     }
@@ -7939,8 +7956,8 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
          * 参数一直在，却被这个条件挡在门外。
          */
         /* 版本 1 = 客户端自管解码写的（只有曲线）；版本 2 = 内核写的（曲线后面还带两份矩阵） */
-        const bool dvOn = videoLayerPass && gDvRendererReshape.load() != 0 && g_doviFlat &&
-                          g_doviFlat[0] >= 0.5f && g_doviFlat[0] < 2.5f;
+        const bool dvOn = videoLayerPass && gDvRendererReshape.load() != 0 && gDvFileValid &&
+                          g_doviFlat && g_doviFlat[0] >= 0.5f && g_doviFlat[0] < 2.5f;
         glUniform1i(u.dvReshape, dvOn ? 1 : 0);
         if (dvOn) glUniform1fv(u.dvParams, 128, (const GLfloat *) g_doviFlat);
     }

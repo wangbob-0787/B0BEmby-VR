@@ -67,9 +67,19 @@ jobs:
             id=$(printf '%s\n' "$LIST" | awk -F'\t' -v n="$f" '$1==n{print $2}')
             if [ -z "$id" ]; then echo "::error::清单里没有 $f"; exit 1; fi
             echo "下载 $f（asset $id）"
-            curl -fL --retry 8 --retry-delay 10 --retry-all-errors \
-                 -H "Accept: application/octet-stream" \
-                 -o "app/libs/$f" "$API/releases/assets/$id"
+            # 2026-11-16：只走 API 通道会整片 403（同一步前一小时还能过）——匿名调
+            # /releases/assets/<id> 也算 api.github.com 的额度，编译机出口 IP 被限流就
+            # 一律 403。改成「浏览器直链优先、API 兜底」，两条都失败才判死。
+            ok=0
+            for src in \
+              "https://github.com/wuruxu/crwebview/releases/download/2.0.0/$f" \
+              "$API/releases/assets/$id"; do
+              if curl -fL --retry 4 --retry-delay 5 --retry-all-errors \
+                   -H "Accept: application/octet-stream" \
+                   -o "app/libs/$f" "$src"; then ok=1; break; fi
+              echo "通道失败：$src"
+            done
+            [ "$ok" = 1 ] || { echo "::error::$f 两条通道都下不下来"; exit 1; }
             unzip -tq "app/libs/$f" >/dev/null 2>&1 || { echo "::error::$f 下载不完整"; exit 1; }
           done
           ls -lh app/libs/
