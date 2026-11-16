@@ -7022,10 +7022,6 @@ class MainActivity : ComponentActivity() {
             runCatching { it.stop() }
         }
         videoPipe = null
-        audioPipe?.let {
-            runCatching { it.stop() }
-        }
-        audioPipe = null
         mpvSubtitleJob?.cancel()
         mpvSubtitleJob = null
         seekTargetMs = null
@@ -8176,13 +8172,6 @@ class MainActivity : ComponentActivity() {
      */
     private var videoPipe: com.xxxx.emby_vr.player.VideoPipe? = null
 
-    /**
-     * 自管音频（`videopipe=1` 时才有实例）。
-     *
-     * 声音也自己解，P5 片子就只走一条路、一个时间源。它还兼任画面的时间基准：
-     * [VideoPipe] 拿它的 clockSec 对齐，音画天然同步。
-     */
-    private var audioPipe: com.xxxx.emby_vr.player.AudioPipe? = null
 
     /**
      * 自管解码起播：画面交给 [VideoPipe]，音频与播放控制仍归 mpv。
@@ -8202,61 +8191,43 @@ class MainActivity : ComponentActivity() {
     ) {
         videoPipe?.stop()
         videoPipe = null
-        audioPipe?.stop()
-        audioPipe = null
 
         /*
-         * 声音也自己解（2026-11-15 父亲定）。
+         * 画面先起，声音等第一帧。
          *
-         * 原来只换画面、声音留 mpv：同一个文件两条连接，实测起播时声音先出、画面要等
-         * 二十秒。全自己解之后只有一条路、一个时间源，音画天然同步，
-         * 也不用再拿 mpv 的播放位置去对齐画面。
+         * 父亲 2026-11-16 定的口径：宁可多等一会儿，也不要「听着声音看黑屏二十秒」。
+         * 音频这一路仍归内核（系统没有 EAC3 解码器，自己解不了这类片源），
+         * 所以顺序是：起画面 → 等首帧 → 再让内核出声。
          *
-         * mpv 这版仍照常起播：时长、进度上报、暂停、切轨还都挂在它身上，
-         * 一次性搬完风险太大。等自管这条路稳定了再把它摘掉。
-         */
-        /*
-         * 先自己起音频，成功之后才让内核闭嘴 —— 顺序不能反。
-         *
-         * 反过来的话，自管音频一旦失败（片源的音频编码未必被系统解码器支持，
-         * 例如 TrueHD / DTS 这类），内核那一路已经被静音，用户就彻底没声音了
-         * （2026-11-16 父亲实测「没声音」）。现在是失败就自动回到内核出声。
-         */
-        val audio = com.xxxx.emby_vr.player.AudioPipe()
-        audioPipe = audio
-        val aOk = audio.start(url, emptyMap(), startSec)
-        if (!aOk) Log.e(TAG, "自管音频起播失败，改由内核出声：${audio.lastError}")
-
-        m.play(url, startSec)
-        /*
-         * 画面一律自己解，所以内核的视频轨不用开：留着它会为同一个文件再开一条连接、
-         * 还多占一份 GPU（2026-11-15 实测：只留音频那路也会让画面起播晚二十秒）。
-         * 内核只负责读容器头，供时长、进度上报、暂停、切轨这些还在它身上的功能。
-         */
-        com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("vid", "no")
-        if (aOk) com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("aid", "no")
-
-        val pipe = com.xxxx.emby_vr.player.VideoPipe()
-        videoPipe = pipe
-        // 画面以自管音频的时钟为准：同一个时间源，天生同步
-        /*
-         * 参数交给自管解码去解、去落盘：内核这版不解视频，也就没人写这份文件了
-         * （渲染层的 dvLoadFromFile 读的就是它）。
+         * `vid=no` 一律关：画面归我们，留着内核的视频轨只是白占一条连接和一份 GPU。
          */
         val doviPath = java.io.File(
             getExternalFilesDir(null) ?: filesDir,
             "dovi_params.bin",
         ).absolutePath
-                val ok = if (aOk) {
-            pipe.start(url, emptyMap(), surface, { audio.clockSec }, { audio.clockValid }, startSec, doviPath)
-        } else {
-            // 音频这条路没起来，退回用内核报的播放位置做基准，否则画面会一路快进
-            pipe.start(url, emptyMap(), surface, { m.positionSec() }, { true }, startSec, doviPath)
+        val pipe = com.xxxx.emby_vr.player.VideoPipe()
+        videoPipe = pipe
+        // 时钟用内核报的播放位置（声音由它出），首帧之前它的值是 0，不影响起播
+        val ok = pipe.start(
+            url, emptyMap(), surface, { m.positionSec() }, { true }, startSec, doviPath,
+        )
+        if (!ok) {
+            Log.e(TAG, "自管解码起播失败（${pipe.lastError}），银幕不会有内容")
+            com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("vid", "no")
+            m.play(url, startSec)
+            return
         }
-        if (ok) {
-            Log.i(TAG, "自管解码起播：画面走 VideoPipe、声音走 AudioPipe（mpv 只留元数据）")
-        } else {
-            Log.e(TAG, "自管解码起播失败（${com.xxxx.emby_vr.player.VideoPipe.lastError}），银幕不会有内容")
+
+        scope.launch {
+            var waited = 0
+            while (waited < 25000 && pipe.decodedFrames == 0L && videoPipe === pipe) {
+                kotlinx.coroutines.delay(100)
+                waited += 100
+            }
+            if (videoPipe !== pipe) return@launch
+            Log.i(TAG, "画面首帧就绪（等了 ${waited}ms），开始出声")
+            m.play(url, startSec)
+            com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("vid", "no")
         }
     }
 
