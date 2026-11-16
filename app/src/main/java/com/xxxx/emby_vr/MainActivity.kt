@@ -8207,15 +8207,15 @@ class MainActivity : ComponentActivity() {
         videoPipe = null
 
         /*
-         * 内核**立刻**加载，只是先不出声。
+         * 内核负责声音与播放控制，我们只接管画面。
          *
-         * 时长、进度上报、快进快退、字幕轨这些全挂在它身上；晚加载它们就都是死的
-         * （2026-11-16 父亲实测：进度不走、无法快进快退）。所以顺序是：
-         * 先让它把文件打开（静音）→ 我们自己解画面 → 画面首帧到了再放开声音。
+         * **只关视频轨，绝对不要连音频轨一起关**（2026-11-16 父亲实测「进度条停在 0、
+         * 没声音」）：两个轨都关掉，mpv 会认为这个文件没什么可播，于是根本不加载 ——
+         * 轨道清单为空、播放位置永远是 0，画面也就失去了时间基准。
+         * 音频这版没有自管实现（系统缺 EAC3 解码器），本来就该由内核出声。
          */
         m.play(url, startSec)
         com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("vid", "no")
-        com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("aid", "no")
 
         val doviPath = java.io.File(
             getExternalFilesDir(null) ?: filesDir,
@@ -8223,25 +8223,12 @@ class MainActivity : ComponentActivity() {
         ).absolutePath
         val pipe = com.xxxx.emby_vr.player.VideoPipe()
         videoPipe = pipe
-        // 时钟用内核报的播放位置：它一直有文件在，位置是准的
+        // 时钟用内核报的播放位置：它正常加载后这个值是准的
         val ok = pipe.start(
             url, emptyMap(), surface, { m.positionSec() }, { true }, startSec, doviPath,
         )
         if (!ok) {
             Log.e(TAG, "自管解码起播失败（${com.xxxx.emby_vr.player.VideoPipe.lastError}），银幕不会有内容")
-            com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("aid", "auto")
-            return
-        }
-
-        scope.launch {
-            var waited = 0
-            while (waited < 25000 && pipe.decodedFrames == 0L && videoPipe === pipe) {
-                kotlinx.coroutines.delay(100)
-                waited += 100
-            }
-            if (videoPipe !== pipe) return@launch
-            Log.i(TAG, "画面首帧就绪（等了 ${waited}ms），放开声音")
-            com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("aid", "auto")
         }
     }
 
