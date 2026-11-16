@@ -3713,6 +3713,14 @@ class MainActivity : ComponentActivity() {
     private fun playWebStream(obj: org.json.JSONObject) {
         /* 网页流标记（2026-11-16）：供内核判定"不要按 HDR10 推断" */
         com.xxxx.emby_vr.player.PlaybackFlags.webSource = true
+        /*
+         * 网页流也要把杜比状态清掉（2026-11-16 父亲实测：网页视频和普通片都被上一部
+         * P5 的还原参数连带偏色）。这一路原来没做清场，标志一直留着。
+         */
+        com.xxxx.emby_vr.vr.VrNative.setDoviStreamActive(false)
+        runCatching {
+            java.io.File(getExternalFilesDir(null) ?: filesDir, "dovi_params.bin").delete()
+        }
         lastWebDeliverAt = System.currentTimeMillis()
         /*
          * 网页流起播也走同一套换片清场（父亲 2026-11-07）。
