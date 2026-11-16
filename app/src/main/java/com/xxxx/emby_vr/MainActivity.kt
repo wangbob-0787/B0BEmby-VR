@@ -8215,21 +8215,26 @@ class MainActivity : ComponentActivity() {
          * mpv 这版仍照常起播：时长、进度上报、暂停、切轨还都挂在它身上，
          * 一次性搬完风险太大。等自管这条路稳定了再把它摘掉。
          */
-        m.play(url, startSec)
         /*
-         * 声音和画面都自己解了，内核不解任何一路：留着它会为同一个文件再开一条连接、
-         * 还多占一份 GPU（2026-11-15 实测：只留音频那路也会让画面起播晚二十秒）。
-         * 它现在只负责读容器头，供时长、进度上报、暂停、切轨这些还在它身上的功能。
+         * 先自己起音频，成功之后才让内核闭嘴 —— 顺序不能反。
+         *
+         * 反过来的话，自管音频一旦失败（片源的音频编码未必被系统解码器支持，
+         * 例如 TrueHD / DTS 这类），内核那一路已经被静音，用户就彻底没声音了
+         * （2026-11-16 父亲实测「没声音」）。现在是失败就自动回到内核出声。
          */
-        com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("vid", "no")
-        com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("aid", "no")
-
         val audio = com.xxxx.emby_vr.player.AudioPipe()
         audioPipe = audio
         val aOk = audio.start(url, emptyMap(), startSec)
-        if (!aOk) {
-            Log.e(TAG, "自管音频起播失败（${audio.lastError}）")
-        }
+        if (!aOk) Log.e(TAG, "自管音频起播失败，改由内核出声：${audio.lastError}")
+
+        m.play(url, startSec)
+        /*
+         * 画面一律自己解，所以内核的视频轨不用开：留着它会为同一个文件再开一条连接、
+         * 还多占一份 GPU（2026-11-15 实测：只留音频那路也会让画面起播晚二十秒）。
+         * 内核只负责读容器头，供时长、进度上报、暂停、切轨这些还在它身上的功能。
+         */
+        com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("vid", "no")
+        if (aOk) com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("aid", "no")
 
         val pipe = com.xxxx.emby_vr.player.VideoPipe()
         videoPipe = pipe
@@ -8242,7 +8247,12 @@ class MainActivity : ComponentActivity() {
             getExternalFilesDir(null) ?: filesDir,
             "dovi_params.bin",
         ).absolutePath
-        val ok = pipe.start(url, emptyMap(), surface, { audio.clockSec }, startSec, doviPath)
+                val ok = if (aOk) {
+            pipe.start(url, emptyMap(), surface, { audio.clockSec }, { audio.clockValid }, startSec, doviPath)
+        } else {
+            // 音频这条路没起来，退回用内核报的播放位置做基准，否则画面会一路快进
+            pipe.start(url, emptyMap(), surface, { m.positionSec() }, { true }, startSec, doviPath)
+        }
         if (ok) {
             Log.i(TAG, "自管解码起播：画面走 VideoPipe、声音走 AudioPipe（mpv 只留元数据）")
         } else {

@@ -43,6 +43,14 @@ class VideoPipe {
     @Volatile private var clockProvider: (() -> Double)? = null
 
     /**
+     * 这个时钟是否已经可用。
+     *
+     * 不能用「位置 > 0」判断：起播位置本身可能就是 0，那样会被当成「时钟还没开始」
+     * 而跳过同步，画面一路快进（2026-11-16 父亲实测「播放速度没控制」）。
+     */
+    @Volatile private var clockValidProvider: (() -> Boolean)? = null
+
+    /**
      * 杜比参数落盘路径（与内核那份同一个文件，渲染层读它做还原）。
      *
      * 自管解码之后内核不再解视频，也就没人写这份参数了 —— 这里补上：
@@ -58,6 +66,9 @@ class VideoPipe {
 
     /** 参数落盘的最小间隔（帧）：每帧都写会让渲染层每帧重读文件 */
     private var doviWriteSkip = 0
+
+    /** 解不出参数的前几帧各打一条日志，别刷屏 */
+    private var doviMissLog = 0
 
     /** 解码出来的实际宽高，起播后才有值 */
     @Volatile var videoWidth = 0
@@ -87,12 +98,14 @@ class VideoPipe {
         headers: Map<String, String>,
         surface: Surface,
         clock: (() -> Double)? = null,
+        clockValid: (() -> Boolean)? = null,
         startSec: Double = 0.0,
         doviPath: String? = null,
     ): Boolean {
         stop()
         lastError = null
         clockProvider = clock
+        clockValidProvider = clockValid
         doviParamPath = doviPath
         lastDovi = null
         doviWriteSkip = 0
@@ -206,8 +219,8 @@ class VideoPipe {
                      *
                      * 时间基准是 mpv 报的播放位置；落后（算出负值）就立刻显示、不追不跳。
                      */
-                    val clk = clockProvider?.invoke() ?: -1.0
-                    if (clk > 0.0) {
+                    val clk = clockProvider?.invoke()
+                    if (clk != null && clockValidProvider?.invoke() != false) {
                         val ptsSec = info.presentationTimeUs / 1_000_000.0
                         val delayNs = ((ptsSec - clk) * 1_000_000_000.0).toLong()
                             .coerceIn(-2_000_000_000L, 2_000_000_000L)
@@ -249,9 +262,16 @@ class VideoPipe {
         try {
             buf.position(0)
             buf.get(sampleBuf, 0, size)
-            val params = DoviRpu.parseFrame(sampleBuf, size) ?: return
+            val params = DoviRpu.parseFrame(sampleBuf, size)
+            if (params == null) {
+                if (doviMissLog++ < 3) Log.w(TAG, "这帧没解出杜比参数（size=$size）")
+                return
+            }
             val prev = lastDovi
             if (prev != null && prev.contentEquals(params)) return
+            if (lastDovi == null) {
+                Log.i(TAG, "杜比参数已解出：分段数=${params[2].toInt()} 通道=${params[1].toInt()}")
+            }
             lastDovi = params
             doviWriteSkip = 3
             java.io.File(path).outputStream().use { out ->

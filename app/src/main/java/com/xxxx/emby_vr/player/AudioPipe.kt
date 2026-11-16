@@ -36,6 +36,15 @@ class AudioPipe {
     @Volatile var clockSec: Double = 0.0
         private set
 
+    /**
+     * 时钟是否可用。
+     *
+     * 不能拿「clockSec > 0」当判据：起播位置本身可能就是 0，那样画面会以为时钟没开始，
+     * 跳过同步一路快进（2026-11-16 父亲实测「播放速度没控制」）。
+     */
+    @Volatile var clockValid = false
+        private set
+
     /** 起播时的绝对位置（续播要从这里算起） */
     @Volatile private var baseSec: Double = 0.0
 
@@ -122,6 +131,7 @@ class AudioPipe {
             track = t
 
             Log.i(TAG, "起播 $mime ${sampleRate}Hz ${channels}声道")
+            clockValid = true
             running.set(true)
             thread = Thread({ pump() }, "AudioPipe").apply {
                 priority = Thread.NORM_PRIORITY + 3
