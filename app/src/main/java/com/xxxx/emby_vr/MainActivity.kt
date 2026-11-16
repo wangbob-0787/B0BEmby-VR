@@ -8238,13 +8238,13 @@ class MainActivity : ComponentActivity() {
      * MpvBackend 的单线程队列，所以顺序上 loadfile 一定在它前面。
      */
     private fun startSelfVideoPipe(
-        /* 非网页流：清掉网页标记（2026-11-16） */
-        com.xxxx.emby_vr.player.PlaybackFlags.webSource = false
         url: String,
         startSec: Double,
         surface: android.view.Surface,
         m: com.xxxx.emby_vr.player.MpvBackend,
     ) {
+        /* 非网页流：清掉网页标记（2026-11-16） */
+        com.xxxx.emby_vr.player.PlaybackFlags.webSource = false
         videoPipe?.stop()
         videoPipe = null
 
