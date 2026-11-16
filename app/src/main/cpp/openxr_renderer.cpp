@@ -906,7 +906,8 @@ void main() {
             vec3 sig = clamp(c.rgb, 0.0, 1.0);
             vec3 out3 = sig;
             for (int ch = 0; ch < 3; ch++) {
-                int base = 2 + ch * 26;
+                // 步长必须与写入侧一致：1 分段数 + 8 分段点 + 8×3 系数 = 33
+                int base = 2 + ch * 33;
                 int pivCount = int(uDv[base] + 0.5);
                 float x = sig[ch];
                 int seg = 0;
@@ -7873,7 +7874,8 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
          * 永远关着。实测证据：日志早就打出「杜比参数已接通（文件）：版本=2 通道=3」，
          * 参数一直在，却被这个条件挡在门外。
          */
-        const bool dvOn = videoLayerPass && gDvRendererReshape.load() != 0 && g_doviFlat;
+        const bool dvOn = videoLayerPass && gDvRendererReshape.load() != 0 && g_doviFlat &&
+                          g_doviFlat[0] >= 0.5f && g_doviFlat[0] < 1.5f;
         glUniform1i(u.dvReshape, dvOn ? 1 : 0);
         if (dvOn) glUniform1fv(u.dvParams, 128, (const GLfloat *) g_doviFlat);
     }

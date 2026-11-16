@@ -24,7 +24,13 @@ package com.xxxx.emby_vr.player
 object DoviRpu {
 
     private const val CHANNELS = 3
-    private const val PER_CHANNEL = 26
+    /**
+     * 每通道占多少 float：1 个分段数 + 8 个分段点 + 8 段各 3 个系数 = 33。
+     *
+     * 这里原来写 26 —— 装不下 8 段系数，分段数到 7 以上时第三通道直接数组越界，
+     * 异常被上层吞掉，结果「参数一帧都没写出去」，着色器自然还原不了。
+     */
+    private const val PER_CHANNEL = 33
     private const val NAL_TYPE_DOVI_RPU = 62
 
     /**

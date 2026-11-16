@@ -114,6 +114,14 @@ class VideoPipe {
         doviParamPath = doviPath
         lastDovi = null
         doviWriteSkip = 0
+        /*
+         * 起播先删旧参数文件。
+         *
+         * 内核那边也往同一个路径写过参数，但格式与版本号都不一样；留着它，
+         * 渲染层在本进程写出第一份之前会一直读到那份错位的数据，
+         * 而「版本>0.5」这种宽松判断拦不住（内核写 2 也过），画面就偏紫。
+         */
+        runCatching { doviPath?.let { java.io.File(it).delete() } }
         basePtsSec = -1.0
         baseWallNs = 0L
         lastCorrectionNs = 0L
