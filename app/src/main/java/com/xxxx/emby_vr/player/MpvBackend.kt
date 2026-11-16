@@ -76,7 +76,13 @@ class MpvBackend(private val context: Context) {
                 setOptionRuntime("vf", "")
                 setOptionRuntime("target-prim", "bt.709")
                 setOptionRuntime("target-trc", "gamma2.2")
-                setOptionRuntime("tone-mapping", "bt.2390")
+                /*
+                 * spline + 目标亮度 800（2026-11-16 父亲逐档实测的结果）。
+                 * bt.2390 会把中间调压成一片、暗部被抬起来，观感比浏览器灰；
+                 * spline 的跨度与浏览器一致（实测量得两者对比度 0.36 vs 0.35）。
+                 */
+                setOptionRuntime("tone-mapping", "spline")
+                setOptionRuntime("target-peak", "800")
             }
         }
 
