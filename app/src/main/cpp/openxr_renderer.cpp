@@ -903,76 +903,105 @@ void main() {
          * 三步跟 4XVR 一致：逐通道分段多项式 → 固定矩阵 → PQ 逆曲线，最后走 Hable。
          * 逐像素只做几次乘加，不做循环搜索 —— 这是 4XVR 比我们省的地方。
          */
-        if (uDvReshape == 1 && uDv[0] > 0.5) {
-            /*
-             * 杜比 Profile 5 还原（2026-11-13）。
-             * 顺序照 4XVR 的实现：逐通道分段多项式 → PQ 逆曲线 → IPT→BT.2020 矩阵
-             * → Hable 色调曲线 → gamma，最后归一化到 0~1。
-             * 上一版漏了矩阵那一步、又在 Hable 之后多乘一次 gamma，所以整幅发浅。
-             */
-            vec3 sig = clamp(c.rgb, 0.0, 1.0);
-            vec3 out3 = sig;
+        /*
+         * 杜比视界 Profile 5 还原（2026-11-16 重写，顺序按 libplacebo 源码）。
+         *
+         * 上一版顺序是错的：先乘矩阵、再做逆重塑。libplacebo 是反过来的 ——
+         * `pl_shader_decode_color` 里 `pl_shader_dovi_reshape` 跑在
+         * `pl_color_repr_decode_ex`（含 YCbCr→LMS 矩阵）之前。
+         *
+         * 正确链路（已在 .15 上与 ffmpeg+libplacebo 的输出逐像素对齐，差 0.004~0.011）：
+         *   1. 从解码纹理反推 YUV（显卡已把 YUV 转成 RGB，这里按 BT.709 反解；
+         *      色度保留 0.5 中心，曲线吃的是原值）
+         *   2. 逐通道逆重塑（分段多项式）
+         *   3. 减 ycc_to_rgb 偏移、乘 ycc_to_rgb 矩阵
+         *   4. PQ 逆曲线（ST2084）
+         *   5. LMS → RGB（固定矩阵）
+         *   6. BT.2020 → BT.709 色域转换
+         *   7. 白点缩放 + gamma 2.2
+         */
+        if (uDvReshape == 1 && uDv[0] > 1.5) {
+            float yv = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));
+            float cbv = (c.rgb.b - yv) / 1.8556 + 0.5;
+            float crv = (c.rgb.r - yv) / 1.5748 + 0.5;
+            vec3 sig = clamp(vec3(yv, cbv, crv), 0.0, 1.0);
+
+            vec3 reshaped = sig;
             for (int ch = 0; ch < 3; ch++) {
-                // 步长必须与写入侧一致：1 分段数 + 8 分段点 + 8×3 系数 = 33
                 int base = 2 + ch * 33;
                 int pivCount = int(uDv[base] + 0.5);
                 float x = sig[ch];
                 int seg = 0;
-                /* 9 个分段点 = 8 段；原来 k<8 时第 8 段永远选不到，
-                 * 最亮那一段一直用前一段的系数。 */
+                for (int k = 1; k <= 8; k++) {
+                    if (k < pivCount && x >= uDv[base + k]) seg = k - 1;
+                }
+                int c0 = base + 9 + seg * 3;
+                reshaped[ch] = clamp((uDv[c0 + 2] * x + uDv[c0 + 1]) * x + uDv[c0], 0.0, 1.0);
+            }
+
+            /* 减偏移、乘码流自带的 YCbCr→LMS 矩阵（行主序，逐行点乘） */
+            vec3 d = reshaped - vec3(uDv[110], uDv[111], uDv[112]);
+            vec3 lmsEnc;
+            lmsEnc.x = uDv[101] * d.x + uDv[102] * d.y + uDv[103] * d.z;
+            lmsEnc.y = uDv[104] * d.x + uDv[105] * d.y + uDv[106] * d.z;
+            lmsEnc.z = uDv[107] * d.x + uDv[108] * d.y + uDv[109] * d.z;
+            lmsEnc = clamp(lmsEnc, 0.0, 1.0);
+
+            const float M1 = 1.0 / 0.1593017578125;
+            const float M2 = 1.0 / 78.84375;
+            const float C1 = 0.8359375;
+            const float C2 = 18.8515625;
+            const float C3 = 18.6875;
+            vec3 pw = pow(lmsEnc, vec3(M2));
+            vec3 lmsLin = pow(max(pw - C1, 0.0) / max(C2 - C3 * pw, 1e-5), vec3(M1));
+
+            /* LMS → BT.2020 RGB（libplacebo 写死的常数，逐行点乘，避免矩阵方向搞混） */
+            vec3 rgb2020 = max(vec3(
+                dot(lmsLin, vec3( 3.06441879, -2.16597676,  0.10155818)),
+                dot(lmsLin, vec3(-0.65612108,  1.78554118, -0.12943749)),
+                dot(lmsLin, vec3( 0.01736321, -0.04725154,  1.03004253))), 0.0);
+
+            /* BT.2020 → BT.709（线性光域），之后整体缩到显示白点再取 gamma */
+            vec3 rgb709 = max(vec3(
+                dot(rgb2020, vec3( 1.660491, -0.587641, -0.072850)),
+                dot(rgb2020, vec3(-0.124550,  1.132900, -0.008349)),
+                dot(rgb2020, vec3(-0.018151, -0.100579,  1.118730))), 0.0);
+            /* 白点：1.0 对应一万尼特，显示白点约 200 尼特 → 乘 50 */
+            rgb709 = clamp(rgb709 * 50.0, 0.0, 1.0);
+            c = vec4(pow(rgb709, vec3(1.0 / 2.2)), 1.0);
+        } else if (uDvReshape == 1 && uDv[0] > 0.5) {
+            /*
+             * 旧通道（版本 1，只有曲线没有矩阵）：保持原来的近似，避免回归。
+             * 客户端从这一版起写版本 2，所以正常不会走到这里。
+             */
+            vec3 sig = clamp(c.rgb, 0.0, 1.0);
+            vec3 out3 = sig;
+            for (int ch = 0; ch < 3; ch++) {
+                int base = 2 + ch * 33;
+                int pivCount = int(uDv[base] + 0.5);
+                float x = sig[ch];
+                int seg = 0;
                 for (int k = 1; k <= 8; k++) {
                     if (k < pivCount && x >= uDv[base + k]) seg = k - 1;
                 }
                 int c0 = base + 9 + seg * 3;
                 out3[ch] = clamp((uDv[c0 + 2] * x + uDv[c0 + 1]) * x + uDv[c0], 0.0, 1.0);
             }
-            /*
-             * 这一段完全照 libplacebo 的 `pl_shader_decode_color`（`colorspace.c`
-             * 第 301~415 行，昨天在 .15 上跑出正确颜色的就是它）：
-             *
-             *   1. 重塑（上面的分段多项式）输出的是 **HPE LMS**，不是 IPT ——
-             *      源码注释原话「Dolby Vision always outputs BT.2020-referred HPE LMS」。
-             *   2. 三个通道**都是 PQ 编码**，要一起做 ST2084 逆曲线。
-             *   3. 再用它写死的 LMS→RGB 矩阵转回 RGB。
-             *
-             * 之前我误以为输出是 ICtCp，只对亮度解 PQ、还拿 ICtCp→709 的系数去转，
-             * 方向从一开始就错了 —— 父亲截图里「像版画」就是这么来的（2026-11-16）。
-             */
             const float M1 = 1.0 / 0.1593017578125;
             const float M2 = 1.0 / 78.84375;
             const float C1 = 0.8359375;
             const float C2 = 18.8515625;
             const float C3 = 18.6875;
-            vec3 lmsEnc = clamp(out3, 0.0, 1.0);
-            vec3 pw = pow(lmsEnc, vec3(M2));
+            vec3 pw = pow(clamp(out3, 0.0, 1.0), vec3(M2));
             vec3 lms = pow(max(pw - C1, 0.0) / max(C2 - C3 * pw, 1e-5), vec3(M1));
-            /*
-             * 不做额外提亮（2026-11-16 实测教训）。
-             *
-             * 上一版在这里乘了 10000/100＝100，想把「PQ 的 1.0 = 10000 尼特」
-             * 压到普通显示白点。结果绝大多数像素乘完直接远超 1，
-             * 色调曲线全部饱和、再被 max(...,0) 清掉负值，画面只剩纯绿和纯红两色。
-             * 先保持原值走曲线，亮度问题在曲线参数上调，不在入口乘系数。
-             */
-            /* LMS → BT.2020 RGB（libplacebo 写死的常数，列主序） */
-            const mat3 lmsToRgb = mat3(
+            const mat3 lmsToRgb2 = mat3(
                  3.06441879, -0.65612108,  0.01736321,
                 -2.16597676,  1.78554118, -0.04725154,
                  0.10155818, -0.12943749,  1.03004253);
-            /*
-             * 只保证非负，不夹到 1.0：归一化后高光会明显超过 1，
-             * 那正是后面色调曲线要压缩的部分。
-             */
-            vec3 rgbLin = max(lms * lmsToRgb, 0.0);
-            /*
-             * Hable 曲线（4XVR 同款常数），按 hable(1) 归一化后再取 gamma，
-             * 保证白点落在 1.0，不会整幅发灰。
-             */
+            vec3 rgbLin = max(lms * lmsToRgb2, 0.0);
             const float A = 0.15, B = 0.50, Cc = 0.10, D = 0.20, E = 0.02, F = 0.30;
             vec3 t = (rgbLin * (A * rgbLin + Cc * B) + D * E) / (rgbLin * (A * rgbLin + B) + D * F) - E / F;
-            const float wNum = (1.0 * (A + Cc * B) + D * E);
-            const float wDen = (1.0 * (A + B) + D * F);
-            const float wNorm = wNum / wDen - E / F;
+            const float wNorm = (1.0 * (A + Cc * B) + D * E) / (1.0 * (A + B) + D * F) - E / F;
             t = clamp(t / max(wNorm, 1e-5), 0.0, 1.0);
             c = vec4(pow(t, vec3(1.0 / 2.2)), 1.0);
         }

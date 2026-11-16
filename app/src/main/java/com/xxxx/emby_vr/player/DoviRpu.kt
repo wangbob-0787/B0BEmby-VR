@@ -11,14 +11,16 @@ package com.xxxx.emby_vr.player
  * "Dolby Vision RPUs masquerade as unregistered NALs of type 62"），
  * 跳过 2 字节 NAL 头就是 RPU 数据本身。
  *
- * 输出格式与内核交出来的那份完全一致（渲染层的 `dvLoadFromFile` 按这个读）：
+ * 输出格式（版本 2：曲线之后追加两份颜色矩阵与偏移，渲染层按同一套读）：
+ *
+```
  * ```
- * [0] 版本 = 1
+ * [0] 版本 = 2
  * [1] 通道数 = 3
- * 之后每个通道 26 个 float：
- *   +0      分段数
- *   +1..+8  分段点
- *   +9 起   每段 3 个多项式系数（段 i 从 +9+i*3 开始）
+ * 之后每个通道 33 个 float：1 分段数 + 8 分段点 + 8×3 系数
+ * [+101..+109] ycc_to_rgb 矩阵（行主序）
+ * [+110..+112] ycc_to_rgb 偏移
+ * [+113..+121] rgb_to_lms 矩阵（行主序）
  * ```
  */
 object DoviRpu {
@@ -31,6 +33,10 @@ object DoviRpu {
      * 异常被上层吞掉，结果「参数一帧都没写出去」，着色器自然还原不了。
      */
     private const val PER_CHANNEL = 33
+
+    /** 版本 2 在曲线之后追加的 21 个 float（9 + 3 + 9） */
+    private const val COLOR_BLOCK = 21
+    private const val COLOR_OFFSET = 2 + CHANNELS * PER_CHANNEL
     private const val NAL_TYPE_DOVI_RPU = 62
 
     /**
@@ -205,8 +211,8 @@ object DoviRpu {
         r.ue()                                  // num_x_partitions_minus1
         r.ue()                                  // num_y_partitions_minus1
 
-        val out = FloatArray(2 + CHANNELS * PER_CHANNEL)
-        out[0] = 1f
+        val out = FloatArray(2 + CHANNELS * PER_CHANNEL + COLOR_BLOCK)
+        out[0] = 2f
         out[1] = CHANNELS.toFloat()
         val scale = ((1 shl blBitDepth) - 1).toFloat()
 
@@ -235,6 +241,23 @@ object DoviRpu {
                 out[o + 1] = co[1]
                 out[o + 2] = co[2]
             }
+        }
+        /*
+         * 颜色元数据（DM）：两份矩阵 + 三个偏移。
+         *
+         * 这是杜比还原里最关键的一段 —— 曲线吃的是解码出来的 YUV 原值，之后要先减去
+         * 这里的偏移、再乘 ycc_to_rgb 才进 PQ。矩阵解析失败就返回 null（宁可这条路
+         * 不生效，也不要用错矩阵出偏色）。
+         */
+        if (dmMetaPresent != 0) {
+            r.ue()                                  // affected_dm_id
+            r.ue()                                  // current_dm_id
+            r.ue()                                  // scene_refresh_flag
+            for (i in 0 until 9) out[COLOR_OFFSET + i] = r.sbits(16) / 8192f
+            for (i in 0 until 3) out[COLOR_OFFSET + 9 + i] = r.v(32L).toFloat() / 268435456f
+            for (i in 0 until 9) out[COLOR_OFFSET + 12 + i] = r.sbits(16) / 16384f
+        } else {
+            return null
         }
         return out
     }
@@ -269,6 +292,12 @@ object DoviRpu {
         }
 
         fun v(n: Int): Int = u(n)
+
+        /** 定长有符号取值（杜比的矩阵系数是 16 位有符号定点）。 */
+        fun sbits(n: Int): Int {
+            val raw = u(n)
+            return if (raw and (1 shl (n - 1)) != 0) raw - (1 shl n) else raw
+        }
 
         /** 定长取值，最长 32 位（系数的小数位可能一次给到 32 位）。 */
         fun v(n: Long): Long {
