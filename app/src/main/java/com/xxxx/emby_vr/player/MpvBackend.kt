@@ -737,6 +737,9 @@ class MpvBackend(private val context: Context) {
 
     fun currentSubtitleText(): String = cSubText
 
+    /** 读任意内核属性（诊断用）。读不到返回 null，不抛。 */
+    fun prop(name: String): String? = try { MPVLib.getPropertyString(name) } catch (_: Throwable) { null }
+
     fun positionSec(): Double = cTimePos
 
     /** 总时长（秒） */

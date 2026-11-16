@@ -3710,17 +3710,24 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun playWebStream(obj: org.json.JSONObject) {
-        /* 网页流标记（2026-11-16）：供内核判定"不要按 HDR10 推断" */
-        com.xxxx.emby_vr.player.PlaybackFlags.webSource = true
-        /*
-         * 网页流也要把杜比状态清掉（2026-11-16 父亲实测：网页视频和普通片都被上一部
-         * P5 的还原参数连带偏色）。这一路原来没做清场，标志一直留着。
-         */
+    /**
+     * 起播前清掉上一部片留下的杜比状态（2026-11-16）。
+     *
+     * 三条起播路径（Emby 内核 / Emby 新路径 / 网页流）都要先过这一刀：
+     * 不清的话，上一部 P5 的逐帧参数会被套到普通片子或网页流上，整幅偏色。
+     */
+    private fun clearDoviState() {
         com.xxxx.emby_vr.vr.VrNative.setDoviStreamActive(false)
         runCatching {
             java.io.File(getExternalFilesDir(null) ?: filesDir, "dovi_params.bin").delete()
         }
+    }
+
+    private fun playWebStream(obj: org.json.JSONObject) {
+        /* 网页流标记（2026-11-16）：供内核判定"不要按 HDR10 推断" */
+        com.xxxx.emby_vr.player.PlaybackFlags.webSource = true
+        /* 网页流也要清场（2026-11-16）：否则被上一部 P5 的参数连带偏色 */
+        clearDoviState()
         lastWebDeliverAt = System.currentTimeMillis()
         /*
          * 网页流起播也走同一套换片清场（父亲 2026-11-07）。
@@ -4321,18 +4328,8 @@ class MainActivity : ComponentActivity() {
                             com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionProfile?.contains("50") == true
                         val useSelfPipe = pipeOn && isP5Source
                         Log.i(TAG, "起播分支判定：开关=$pipeOn 本片P5=$isP5Source 自管解码=$useSelfPipe")
-                        /*
-                         * 换片先把上一部片的杜比痕迹清干净（2026-11-16 父亲实测：
-                         * 非 P5 的片子被上一部 P5 的参数带偏，整幅变成色块）。
-                         * 两条分支都要清：新路径与内核路径都有可能起播。
-                         */
-                        runCatching {
-                            java.io.File(
-                                getExternalFilesDir(null) ?: filesDir,
-                                "dovi_params.bin",
-                            ).delete()
-                        }
-                        com.xxxx.emby_vr.vr.VrNative.setDoviStreamActive(false)
+                        /* 换片先清掉上一部片的杜比痕迹（2026-11-16） */
+                        clearDoviState()
                         if (useSelfPipe) {
                             startSelfVideoPipe(directUrl, startMs / 1000.0, surface, m)
                         } else {
@@ -4576,8 +4573,9 @@ class MainActivity : ComponentActivity() {
                 )
                 /* 网页流不向 Emby 报进度（它不属于 Emby 库；报了会把上一部片子的身份写进去） */
                 if (!isWeb) startPlaybackReporting()
-                /* Emby 片走内核：清掉网页标记（2026-11-16） */
+                /* Emby 片走内核：清掉网页标记与杜比状态（2026-11-16） */
                 com.xxxx.emby_vr.player.PlaybackFlags.webSource = false
+                clearDoviState()
                 Log.i(TAG, "开始播放（内核）: $title url=${url.take(160)}")
                 return
             }
@@ -8290,6 +8288,23 @@ class MainActivity : ComponentActivity() {
          * 先把视频轨关掉再加载，它就只走音频这一条路。
          */
         com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("vid", "no")
+        /*
+         * 起播后连查三次内核状态（2026-11-16）：这条路的"没声音"是内核压根没加载文件，
+         * 但它不报错。把 idle/path/时长/音轨都打出来，下次一看就知道卡在哪一步。
+         */
+        for (delay in longArrayOf(1200L, 3000L, 6000L)) {
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                runCatching {
+                    Log.i(
+                        TAG,
+                        "内核状态[${delay}ms] idle=${m.prop("idle-active")} core=${m.prop("core-idle")} " +
+                            "path=${m.prop("path")} 时长=${m.prop("duration")} " +
+                            "音轨=${m.prop("audio-codec-name")} 位置=${m.prop("time-pos")} " +
+                            "错误=${m.prop("mpv-version")}",
+                    )
+                }
+            }, delay)
+        }
         com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("audio-display", "no")
         selfPipeWaitingFirstFrame.set(true)
         m.play(url, startSec, startPaused = true)
