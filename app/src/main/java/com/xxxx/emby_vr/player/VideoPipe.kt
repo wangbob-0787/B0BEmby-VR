@@ -70,6 +70,11 @@ class VideoPipe {
     /** 解不出参数的前几帧各打一条日志，别刷屏 */
     private var doviMissLog = 0
 
+    /** 画面自己的时钟基准（墙钟连续走，播放器位置只用来纠偏） */
+    private var basePtsSec = -1.0
+    private var baseWallNs = 0L
+    private var lastCorrectionNs = 0L
+
     /** 解码出来的实际宽高，起播后才有值 */
     @Volatile var videoWidth = 0
         private set
@@ -109,6 +114,9 @@ class VideoPipe {
         doviParamPath = doviPath
         lastDovi = null
         doviWriteSkip = 0
+        basePtsSec = -1.0
+        baseWallNs = 0L
+        lastCorrectionNs = 0L
         return try {
             val ex = MediaExtractor()
             if (headers.isEmpty()) {
@@ -212,25 +220,33 @@ class VideoPipe {
                     /*
                      * 定时输出：把「这一帧该在哪一刻显示」交给系统排，而不是自己 sleep 等。
                      *
-                     * 为什么不能 sleep（2026-11-15 父亲实测「声音连续、画面不连续、跳帧」）：
-                     * 解码线程一睡就没人喂输入，解码器饿着，输出自然断续。
-                     * releaseOutputBuffer(index, renderTimestampNs) 让 Surface 到点才显示，
-                     * 循环该跑多快跑多快，流控交给解码器自己的缓冲。
-                     *
-                     * 时间基准是 mpv 报的播放位置；落后（算出负值）就立刻显示、不追不跳。
+                     * 时间基准用**自己的墙钟连续走**，播放器的位置只用来偶尔纠偏
+                     * （2026-11-16 父亲实测「速度一会快一会慢」）：
+                     * 逐帧去读播放器的位置，而它缓冲时那个值本身在跳，画面就跟着跳。
+                     * 这与弹幕时钟是同一条定式 —— 时钟自己走，播放器的值只做平滑纠偏。
                      */
-                    val clk = clockProvider?.invoke()
-                    if (clk != null && clockValidProvider?.invoke() != false) {
-                        val ptsSec = info.presentationTimeUs / 1_000_000.0
-                        /*
-                         * 等待要有上限（2026-11-16 父亲实测「播放速度是慢速」）：
-                         * 两边进度一旦差开（播放器还在缓冲、位置停在起点），
-                         * 按差值等就是每帧等好几百毫秒，画面变成慢放。
-                         * 最多等 80 毫秒 —— 比一帧周期略长，够纠偏，不会拖住。
-                         */
-                        val delayNs = ((ptsSec - clk) * 1_000_000_000.0).toLong()
-                            .coerceIn(-2_000_000_000L, 80_000_000L)
-                        codec.releaseOutputBuffer(outIdx, System.nanoTime() + delayNs)
+                    val ptsSec = info.presentationTimeUs / 1_000_000.0
+                    val nowNs = System.nanoTime()
+                    if (basePtsSec < 0.0) {
+                        basePtsSec = ptsSec
+                        baseWallNs = nowNs
+                    }
+                    // 播放器给的秒数，每半秒拿来校一次基准
+                    if (nowNs - lastCorrectionNs > 500_000_000L) {
+                        lastCorrectionNs = nowNs
+                        val clk = clockProvider?.invoke() ?: -1.0
+                        if (clk > 0.0) {
+                            val localNow = basePtsSec + (nowNs - baseWallNs) / 1_000_000_000.0
+                            if (kotlin.math.abs(localNow - clk) > 0.8) {
+                                // 偏离太多：直接把基准挪到播放器位置
+                                basePtsSec = clk - (nowNs - baseWallNs) / 1_000_000_000.0
+                            }
+                        }
+                    }
+                    val dueNs = baseWallNs + ((ptsSec - basePtsSec) * 1_000_000_000.0).toLong()
+                    // 最多等 80 毫秒：比一帧周期略长，够纠偏又不会拖住画面
+                    val delayNs = (dueNs - nowNs).coerceIn(-2_000_000_000L, 80_000_000L)
+                    codec.releaseOutputBuffer(outIdx, System.nanoTime() + delayNs)
                     } else {
                         codec.releaseOutputBuffer(outIdx, true)
                     }
