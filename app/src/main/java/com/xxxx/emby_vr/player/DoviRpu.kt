@@ -124,9 +124,23 @@ object DoviRpu {
         return out.copyOf(o)
     }
 
-    /** 解析 RPU 位流，取出三个通道的分段多项式。 */
+    /**
+     * 解析 RPU 位流，取出三个通道的分段多项式。
+     *
+     * 字段顺序与取位规则全部照 ffmpeg 的 `dovi_rpudec.c`（我们的内核就是用它还原的，
+     * 颜色正确）。三处容易写错、且都已经在 2026-11-16 的离线验证里踩过：
+     *
+     *  1. 位流第一个字节是 **0x19 前缀**（ffmpeg 的 `VALIDATE(rpu[0], 25, 25)`），
+     *     必须跳过它再读，否则 rpu_type 会读成 6，整段错位。
+     *  2. `ext_mapping_idc` **不是独立字段**，它藏在 `el_bit_depth_minus8` 的高 8 位里。
+     *  3. 分段点是**差分**的，每读一个要累加；系数是「有符号指数哥伦布 + 定长小数位」，
+     *     不是定长有符号整数。
+     */
     private fun parseRpu(rpu: ByteArray): FloatArray? {
-        val r = BitReader(rpu)
+        // 0x19 前缀：没有它说明这不是我们认识的 RPU，直接放弃
+        if (rpu.isEmpty() || (rpu[0].toInt() and 0xFF) != 0x19) return null
+
+        val r = BitReader(rpu, 8)
 
         val rpuType = r.u(6)
         if (rpuType != 2) return null
@@ -137,53 +151,49 @@ object DoviRpu {
 
         var blBitDepth = 10
         var coeffDenomLen = 0
-        if (seqInfo != 0) {
-            r.bit()                             // chroma_resampling_explicit_filter_flag
-            val coeffDataType = r.u(2)
-            if (coeffDataType == 0) {
-                coeffDenomLen = r.ue()
-            } else if (coeffDataType == 1) {
-                coeffDenomLen = 32
-            } else {
-                return null
-            }
-            r.u(2)                              // vdr_rpu_normalized_idc
-            r.bit()                             // bl_video_full_range_flag
-            if (rpuFormat and 0x700 == 0) {
-                blBitDepth = r.ue() + 8
-                val elDepth = r.ue()
-                r.u(5)                          // ext_mapping_idc 低 5 位
-                r.u(3)                          // ext_mapping_idc 高 3 位
-                r.ue()                          // vdr_bit_depth_minus8
-                r.bit()                         // spatial_resampling_filter_flag
-                r.u(3)                          // reserved_zero_3bits
-                r.bit()                         // el_spatial_resampling_filter_flag
-                r.bit()                         // disable_residual_flag
-                if (elDepth <= 0) return null
-            }
+        if (seqInfo == 0) return null           // ffmpeg 对缺 seq info 的流直接不支持
+        r.bit()                                 // chroma_resampling_explicit_filter_flag
+        val coeffDataType = r.u(2)
+        when (coeffDataType) {
+            0 -> coeffDenomLen = r.ue()
+            1 -> coeffDenomLen = 32             // 浮点系数，分母取满精度
+            else -> return null
         }
-        r.bit()                                 // vdr_dm_metadata_present_flag
-        if (r.bit() != 0) r.ue()                // use_prev_vdr_rpu_flag → prev_vdr_rpu_id
+        if (coeffDenomLen <= 0 || coeffDenomLen > 32) return null
+        r.u(2)                                  // vdr_rpu_normalized_idc
+        r.bit()                                 // bl_video_full_range_flag
+        if (rpuFormat and 0x700 != 0) return null   // P7/P8 的格式，这条路不处理
+        blBitDepth = r.ue() + 8
+        val elRaw = r.ue()
+        val extMappingIdc = elRaw ushr 8
+        val elDepthMinus8 = elRaw and 0xFF
+        r.ue()                                  // vdr_bit_depth_minus8
+        r.bit()                                 // spatial_resampling_filter_flag
+        r.u(3)                                  // dm_compression
+        r.bit()                                 // el_spatial_resampling_filter_flag
+        val disableResidual = r.bit()
+        if (blBitDepth !in 8..16 || elDepthMinus8 !in 0..8 || extMappingIdc > 0xFF) return null
 
-        /*
-         * 到这里是 rpu_data_mapping。分段点按「底图层位深」给，系数按 coefficient_log2_denom_len 给。
-         */
+        val dmMetaPresent = r.bit()
+        if (r.bit() != 0) r.ue()                // use_prev_vdr_rpu → prev_vdr_rpu_id
+        if (disableResidual == 0) return null   // 有残留层（P7）不在这条路上处理
+
         r.ue()                                  // vdr_rpu_id
         r.ue()                                  // mapping_color_space
         r.ue()                                  // mapping_chroma_format_idc
 
-        val pivots = Array(CHANNELS) { IntArray(0) }
-        for (c in 0 until CHANNELS) {
-            val n = r.ue() + 2                  // num_pivots_minus2
-            if (n < 2 || n > 9) return null
+        val maxPivots = 9
+        val pivots = Array(3) { IntArray(0) }
+        for (c in 0 until 3) {
+            val n = r.ue() + 2
+            if (n !in 2..maxPivots) return null
             val p = IntArray(n)
-            for (i in 0 until n) p[i] = r.v(blBitDepth)
+            var acc = 0
+            for (i in 0 until n) {
+                acc += r.u(blBitDepth)          // 差分累加
+                p[i] = acc
+            }
             pivots[c] = p
-        }
-
-        // Profile 7 才有的 NLQ 段；P5 走到这里时 disable_residual_flag 为真，跳过
-        if (rpuFormat and 0x700 == 0) {
-            // 该分支只在有残留层时才有内容，P5 不进入；这里保守地不做任何读取
         }
 
         r.ue()                                  // num_x_partitions_minus1
@@ -192,49 +202,51 @@ object DoviRpu {
         val out = FloatArray(2 + CHANNELS * PER_CHANNEL)
         out[0] = 1f
         out[1] = CHANNELS.toFloat()
+        val scale = ((1 shl blBitDepth) - 1).toFloat()
 
-        val maxPivots = (pivots.maxOfOrNull { it.size } ?: 0).coerceAtMost(9)
-        for (c in 0 until CHANNELS) {
+        for (c in 0 until 3) {
             val base = 2 + c * PER_CHANNEL
             val p = pivots[c]
             val pieces = p.size - 1
             out[base] = p.size.toFloat()
-            for (i in 0 until maxPivots.coerceAtMost(8)) {
-                out[base + 1 + i] =
-                    if (i < p.size) (p[i].toFloat() / ((1 shl blBitDepth) - 1).toFloat())
-                    else 1e9f
+            for (i in 0 until 8) {
+                out[base + 1 + i] = if (i < p.size) p[i] / scale else 1e9f
             }
             for (seg in 0 until pieces) {
                 val idc = r.ue()
-                if (idc != 0) return null      // MMR 暂不支持，P5 实际用的是多项式
-                // 多项式：order_minus1 + 三个系数（带符号，精度由 coefficient_log2_denom_len 决定）
-                val order = r.ue()
-                if (order > 2) return null
-                val c0 = signedVar(r, coeffDenomLen)
-                val c1 = signedVar(r, coeffDenomLen)
-                var c2 = 0.0f
-                if (order >= 1) c2 = signedVar(r, coeffDenomLen)
+                if (idc != 0) return null       // 多项式之外（MMR）不走这条路
+                val orderMinus1 = r.ue()
+                if (orderMinus1 > 1) return null
+                if (orderMinus1 == 0 && r.bit() != 0) return null   // 线性插值标志，未支持
+                // 多项式阶 = orderMinus1 + 1；系数个数 = 阶 + 1（最多 3 个）
+                val nCoef = orderMinus1 + 2
+                val co = FloatArray(3)
+                for (k in 0 until nCoef.coerceAtMost(3)) {
+                    co[k] = seCoef(r, coeffDenomLen)
+                }
                 val o = base + 9 + seg * 3
-                out[o] = c0
-                out[o + 1] = c1
-                out[o + 2] = c2
+                out[o] = co[0]
+                out[o + 1] = co[1]
+                out[o + 2] = co[2]
             }
         }
         return out
     }
 
-    /** 带符号的定长整数：最高位是符号。 */
-    private fun signedVar(r: BitReader, bits: Int): Float {
-        if (bits <= 0) return 0f
-        val raw = r.v(bits)
-        val signBit = 1 shl (bits - 1)
-        val v = if (raw and signBit != 0) raw - (1 shl bits) else raw
-        return v.toFloat() / (1L shl bits).toFloat()
+    /**
+     * 有符号系数：指数哥伦布给整数部分，再跟 `denom` 位小数，整体按 2^denom 缩放。
+     * 与 ffmpeg 的 `get_se_coef` 一致。
+     */
+    private fun seCoef(r: BitReader, denom: Int): Float {
+        val ipart = r.se()
+        val fpart = if (denom > 0) r.v(denom.toLong()) else 0L
+        val v = (ipart shl denom) or fpart
+        return v.toFloat() / (1L shl denom).toFloat()
     }
 
     /** 大端位读取器（杜比的位流就是 MSB 优先）。 */
-    private class BitReader(private val buf: ByteArray) {
-        private var pos = 0
+    private class BitReader(private val buf: ByteArray, startBit: Int = 0) {
+        private var pos = startBit
 
         fun bit(): Int {
             val byteIdx = pos ushr 3
@@ -252,6 +264,18 @@ object DoviRpu {
 
         fun v(n: Int): Int = u(n)
 
+        /** 定长取值，最长 32 位（系数的小数位可能一次给到 32 位）。 */
+        fun v(n: Long): Long {
+            var v = 0L
+            var left = n
+            while (left > 0) {
+                val take = if (left > 24) 24 else left.toInt()
+                v = (v shl take) or (u(take).toLong() and ((1L shl take) - 1))
+                left -= take
+            }
+            return v
+        }
+
         /** 无符号指数哥伦布。 */
         fun ue(): Int {
             var zeros = 0
@@ -259,9 +283,15 @@ object DoviRpu {
                 zeros++
                 if (zeros > 31) throw IllegalStateException("ue 过长")
             }
-            var v = 1
-            repeat(zeros) { v = (v shl 1) or bit() }
-            return v - 1
+            var v = 1L
+            repeat(zeros) { v = (v shl 1) or bit().toLong() }
+            return (v - 1).toInt()
+        }
+
+        /** 有符号指数哥伦布：偶数取负、奇数取正（ffmpeg 的 get_se_golomb）。 */
+        fun se(): Long {
+            val k = ue().toLong()
+            return if (k and 1L == 1L) (k + 1) / 2 else -(k / 2)
         }
     }
 }
