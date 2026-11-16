@@ -90,6 +90,8 @@ static std::atomic<int> gDvRendererReshape{0};
  * 就会被套到普通片子上，整幅画面变成色块。
  */
 static std::atomic<int> gDvStreamActive{0};
+/* 画面直出（定位用，2026-11-16）：跳过全部颜色处理与输出转换，直接吐取样值。 */
+std::atomic<int> gRawVideo{0};
 static bool g_doviLogged = false;
 
 /*
@@ -3422,7 +3424,6 @@ std::atomic<int> gLastLayerCount{0};    // 上一帧实际提交给 xrEndFrame �
  */
 std::atomic<int> gHideProjection{0};    // 1 = 不提交投影层（只留 quad 层）—— ChatGPT 点名的判定实验
 std::atomic<int> gTestPattern{0};       // 1 = 用固定测试图替代视频纹理（切断解码输入链）
-std::atomic<int> gRawVideo{0};          // 1 = 视频层直接吐原始取样值（跳过全部处理与输出转换）
 /*
  * 视频层交换链宽度上限。0 = 按视频原分辨率（4K 片源就是 3840，很贵）。
  *
