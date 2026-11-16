@@ -7152,7 +7152,13 @@ class MainActivity : ComponentActivity() {
      */
     private fun syncSelectedSubtitleFromPlayer() {
         val p = player ?: return
-        if (ctl.kernelActive) return
+        /*
+         * 内核在放画面时这一路不适用（字幕也归内核）。
+         * 但自管解码那条路（videoPipe 在跑）例外：画面是我们画的、字幕仍由播放器解析后
+         * 由我们绘制，这时必须回填，否则就是父亲 2026-11-16 实测的
+         * 「字幕在画面上显示着，菜单里一项都没勾」。
+         */
+        if (ctl.kernelActive && videoPipe == null) return
         /*
          * 转码时服务端只推**请求里那一条**字幕轨（父亲 2026-10-11），播放器选中的必然是
          * 用户要的那条；这里再按语言回填会串到同语言的另一条（简/繁都是 chi）→ 菜单勾选
@@ -8281,6 +8287,12 @@ class MainActivity : ComponentActivity() {
         val pipe = com.xxxx.emby_vr.player.VideoPipe()
         videoPipe = pipe
         // 时钟用内核报的播放位置：它正常加载后这个值是准的
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
+            { runCatching { syncSelectedSubtitleFromPlayer() } }, 2500,
+        )
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
+            { runCatching { syncSelectedSubtitleFromPlayer() } }, 6000,
+        )
         val ok = pipe.start(
             url, emptyMap(), surface, { m.positionSec() }, { true }, startSec, doviPath,
             holdGate = { selfPipeWaitingFirstFrame.get() },
@@ -8293,6 +8305,11 @@ class MainActivity : ComponentActivity() {
             /*
              * 只有真的从码流里解出 RPU 参数，才允许渲染层走杜比还原。
              * 非 P5 片源解不出参数，这个回调就不会来 —— 它们永远不进新路径。
+             */
+            /*
+             * 自管解码这条路没有 ExoPlayer 的轨道回调，字幕是播放器按语言自动挑的，
+             * 菜单勾选得自己补一刀（父亲 2026-11-16：字幕显示着、菜单没勾）。
+             * 挑轨发生在加载之后一两秒，两次尝试足够。
              */
             onDoviParams = {
                 com.xxxx.emby_vr.vr.VrNative.setDoviStreamActive(true)
