@@ -487,7 +487,15 @@ void main() {
 const char *kQuadFs = R"(
 #version 300 es
 #extension GL_OES_EGL_image_external_essl3 : require
-precision mediump float;
+/*
+ * 必须是 highp（2026-11-16 定）。
+ *
+ * 杜比还原里有一段 PQ 逆曲线是 pow(x, 1/0.1593) ≈ x^6.28：输入只要带 1e-3 的相对误差，
+ * 出来就是 6e-3 以上，再乘上 50 倍白点、走 gamma，平滑渐变会碎成一块块，色相跟着跳。
+ * fp16（mediump）的尾数只有 10 位，正好落在这个量级 —— 表现就是「画面有一圈圈绿/红斑块，
+ * 而同样的算法在服务器上按双精度算完全正常」。
+ */
+precision highp float;
 in vec2 vUv;
 uniform vec4 uColor;
 uniform int uUseTexture;
