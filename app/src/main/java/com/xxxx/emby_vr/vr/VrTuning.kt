@@ -116,6 +116,14 @@ object VrTuning {
     var videoSurfaceMaxW: Int = 1920
 
     /**
+     * 是否允许「片源没色彩标记且 10 位 ≥1080p」时推断成 HDR10（2026-11-16）。
+     *
+     * 默认关：父亲实测改过这套推断之后网页视频开始发灰，先关掉做对照。
+     * 调参文件写 `infer_hdr10=1` 可重新打开。
+     */
+    var inferHdr10: Boolean = false
+
+    /**
      * 「原画」档与网页流的宽度上限（0 = 按片源原分辨率，最高 3840）。
      *
      * 试宽度用：改完不用重装，动一下画质菜单就按新值重建。Emby 的杜比视界片另走
@@ -875,6 +883,10 @@ object VrTuning {
         flag("no_jitter", KEY_NO_JITTER, "抖动固定")
         flag("force_rgba8", KEY_FORCE_RGBA8, "视频层强制 GL_RGBA8")
         flag("no_postfx", KEY_NO_POSTFX, "画质增强全关")
+        raw["infer_hdr10"]?.toIntOrNull()?.let {
+            inferHdr10 = it != 0
+            applied += "HDR10 推断 $it"
+        }
         raw["raw_video"]?.toIntOrNull()?.let {
             VrNative.setRawVideo(it != 0)
             applied += "画面直出 $it"

@@ -1088,6 +1088,14 @@ class MpvBackend(private val context: Context) {
             Log.i(TAG, "网页流：不做 HDR10 推断（无标记按 SDR 处理）")
             return
         }
+        /*
+         * 推断总开关（2026-11-16）：父亲反馈「改 HDR10 之前没有发灰」，先默认关掉做对照，
+         * 调参文件写 infer_hdr10=1 才开。
+         */
+        if (!com.xxxx.emby_vr.vr.VrTuning.inferHdr10) {
+            Log.i(TAG, "HDR10 推断已关闭（infer_hdr10=0）")
+            return
+        }
         // 1080p 的 HDR/杜比片同样常见，门槛放在 1080p，不按 4K 卡
         if (tagged || h < 1000 || !pixfmt.contains("10")) return
         Log.i(TAG, "片源无色彩标记（$pixfmt ${h}p，primaries=$primaries gamma=$gamma）→ 按 HDR10 推断")
