@@ -7856,6 +7856,20 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
     if (u.sat >= 0) glUniform1f(u.sat, fxOff ? 1.f : c.saturation.load());
     if (u.sharpen >= 0) glUniform1f(u.sharpen, fxOff ? 0.f : c.sharpen.load());
     if (u.temp >= 0) glUniform1f(u.temp, fxOff ? 0.f : c.temperature.load());
+    /*
+     * 杜比还原：开关与每帧参数（2026-11-16）。
+     *
+     * 这里原来**没有**上传这两项 —— 只有诊断探测那条路传过，所以着色器里的还原分支
+     * 在主画面上从来没进过，颜色必然偏紫。参数由自管解码从码流里解出来写文件，
+     * dvLoadFromFile 按 mtime 判断要不要重读。
+     */
+    doviProbeShared();
+    if (u.dvReshape >= 0 && u.dvParams >= 0) {
+        const bool dvOn = videoLayerPass && gDvRendererReshape.load() != 0 &&
+                          g_doviFlat && g_doviReady && *g_doviReady;
+        glUniform1i(u.dvReshape, dvOn ? 1 : 0);
+        if (dvOn) glUniform1fv(u.dvParams, 128, (const GLfloat *) g_doviFlat);
+    }
     if (u.texel >= 0) glUniform2f(u.texel, c.texelX.load(), c.texelY.load());
     if (u.jitter >= 0) {
         if (gNoJitter.load() != 0) {

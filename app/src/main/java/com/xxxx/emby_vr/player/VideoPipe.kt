@@ -222,8 +222,14 @@ class VideoPipe {
                     val clk = clockProvider?.invoke()
                     if (clk != null && clockValidProvider?.invoke() != false) {
                         val ptsSec = info.presentationTimeUs / 1_000_000.0
+                        /*
+                         * 等待要有上限（2026-11-16 父亲实测「播放速度是慢速」）：
+                         * 两边进度一旦差开（播放器还在缓冲、位置停在起点），
+                         * 按差值等就是每帧等好几百毫秒，画面变成慢放。
+                         * 最多等 80 毫秒 —— 比一帧周期略长，够纠偏，不会拖住。
+                         */
                         val delayNs = ((ptsSec - clk) * 1_000_000_000.0).toLong()
-                            .coerceIn(-2_000_000_000L, 2_000_000_000L)
+                            .coerceIn(-2_000_000_000L, 80_000_000L)
                         codec.releaseOutputBuffer(outIdx, System.nanoTime() + delayNs)
                     } else {
                         codec.releaseOutputBuffer(outIdx, true)
