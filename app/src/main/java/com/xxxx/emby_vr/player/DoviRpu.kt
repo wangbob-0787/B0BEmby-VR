@@ -43,8 +43,41 @@ object DoviRpu {
         }
     }
 
-    /** 扫 NAL 找类型 62，返回去掉防竞争字节之后的 RPU 数据。 */
+    /**
+     * 扫 NAL 找类型 62，返回去掉防竞争字节之后的 RPU 数据。
+     *
+     * 两种封装都要认（2026-11-16 实测「一帧都没解出来」的根源）：
+     *   · **长度前缀**：MP4/MKV 里的常见形态，每段是 4 字节大端长度 + NAL
+     *   · **起始码**：Annex-B 流，每段前是 00 00 01
+     * 之前只按起始码找，而解复用器交出来的是长度前缀，于是 size 几千几万的帧
+     * 一个都匹配不上。
+     */
     private fun findRpu(data: ByteArray, len: Int): ByteArray? {
+        findLengthPrefixed(data, len)?.let { return it }
+        return findStartCode(data, len)
+    }
+
+    /** 长度前缀封装：一路读 4 字节长度往下走，遇到类型 62 就取出来。 */
+    private fun findLengthPrefixed(data: ByteArray, len: Int): ByteArray? {
+        var p = 0
+        var guard = 0
+        while (p + 5 <= len && guard++ < 256) {
+            val n = ((data[p].toInt() and 0xFF) shl 24) or
+                ((data[p + 1].toInt() and 0xFF) shl 16) or
+                ((data[p + 2].toInt() and 0xFF) shl 8) or
+                (data[p + 3].toInt() and 0xFF)
+            if (n <= 0 || p + 4 + n > len) return null
+            val type = (data[p + 4].toInt() shr 1) and 0x3F
+            if (type == NAL_TYPE_DOVI_RPU && n > 3) {
+                // NAL 头 2 字节，之后是 RPU 位流（可能要再去防竞争字节）
+                return stripEmulation(data, p + 6, p + 4 + n)
+            }
+            p += 4 + n
+        }
+        return null
+    }
+
+    private fun findStartCode(data: ByteArray, len: Int): ByteArray? {
         var i = 0
         while (i + 4 < len) {
             // 起始码是 00 00 01（四字节的 00 00 00 01 也走这条，多出来的 0 不影响）

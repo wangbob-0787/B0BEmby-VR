@@ -4287,7 +4287,21 @@ class MainActivity : ComponentActivity() {
                          * 两条路都要发起播：音频还得靠 mpv 走，位置也由它对齐；
                          * 画面这一段改由 VideoPipe 供。
                          */
-                        if (com.xxxx.emby_vr.vr.VrTuning.videoPipeOn) {
+                        /*
+                         * 起播这一刻直接读文件判断，不依赖调参轮询的当前状态。
+                         *
+                         * 轮询是周期性的，起播落在两次轮询之间时会读到旧值，
+                         * 表现就是「文件里明明写了 videopipe=1，跑的却是老链路」。
+                         */
+                        val pipeOn = runCatching {
+                            java.io.File(
+                                getExternalFilesDir(null) ?: filesDir,
+                                "vr-tuning.txt",
+                            ).readLines().firstOrNull { it.startsWith("videopipe=") }
+                                ?.substringAfter("=")?.trim()?.toIntOrNull() == 1
+                        }.getOrDefault(false) || com.xxxx.emby_vr.vr.VrTuning.videoPipeOn
+                        Log.i(TAG, "起播分支判定：自管解码=$pipeOn")
+                        if (pipeOn) {
                             startSelfVideoPipe(directUrl, startMs / 1000.0, surface, m)
                         } else {
                             m.play(directUrl, startMs / 1000.0)
@@ -8193,28 +8207,29 @@ class MainActivity : ComponentActivity() {
         videoPipe = null
 
         /*
-         * 画面先起，声音等第一帧。
+         * 内核**立刻**加载，只是先不出声。
          *
-         * 父亲 2026-11-16 定的口径：宁可多等一会儿，也不要「听着声音看黑屏二十秒」。
-         * 音频这一路仍归内核（系统没有 EAC3 解码器，自己解不了这类片源），
-         * 所以顺序是：起画面 → 等首帧 → 再让内核出声。
-         *
-         * `vid=no` 一律关：画面归我们，留着内核的视频轨只是白占一条连接和一份 GPU。
+         * 时长、进度上报、快进快退、字幕轨这些全挂在它身上；晚加载它们就都是死的
+         * （2026-11-16 父亲实测：进度不走、无法快进快退）。所以顺序是：
+         * 先让它把文件打开（静音）→ 我们自己解画面 → 画面首帧到了再放开声音。
          */
+        m.play(url, startSec)
+        com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("vid", "no")
+        com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("aid", "no")
+
         val doviPath = java.io.File(
             getExternalFilesDir(null) ?: filesDir,
             "dovi_params.bin",
         ).absolutePath
         val pipe = com.xxxx.emby_vr.player.VideoPipe()
         videoPipe = pipe
-        // 时钟用内核报的播放位置（声音由它出），首帧之前它的值是 0，不影响起播
+        // 时钟用内核报的播放位置：它一直有文件在，位置是准的
         val ok = pipe.start(
             url, emptyMap(), surface, { m.positionSec() }, { true }, startSec, doviPath,
         )
         if (!ok) {
             Log.e(TAG, "自管解码起播失败（${com.xxxx.emby_vr.player.VideoPipe.lastError}），银幕不会有内容")
-            com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("vid", "no")
-            m.play(url, startSec)
+            com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("aid", "auto")
             return
         }
 
@@ -8225,9 +8240,8 @@ class MainActivity : ComponentActivity() {
                 waited += 100
             }
             if (videoPipe !== pipe) return@launch
-            Log.i(TAG, "画面首帧就绪（等了 ${waited}ms），开始出声")
-            m.play(url, startSec)
-            com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("vid", "no")
+            Log.i(TAG, "画面首帧就绪（等了 ${waited}ms），放开声音")
+            com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("aid", "auto")
         }
     }
 
