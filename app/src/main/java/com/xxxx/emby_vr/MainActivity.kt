@@ -8240,6 +8240,31 @@ class MainActivity : ComponentActivity() {
      */
     private val selfPipeWaitingFirstFrame = java.util.concurrent.atomic.AtomicBoolean(false)
 
+    /** 自管解码当前的地址与目标表面：跳转时要按新位置重建解码器。 */
+    private var selfPipeUrl: String? = null
+    private var selfPipeSurface: android.view.Surface? = null
+
+    /**
+     * 按新位置重启自管解码（2026-11-16）。
+     *
+     * 画面是我们自己解的，内核跳转对它无效 —— 不重启的话画面留在原处，
+     * 声音却跳走了（父亲实测：「一快进就回到 0，音画不同步」）。
+     * 重建解码器会短暂黑一下，但位置是准的。
+     */
+    private fun restartVideoPipeAt(sec: Double) {
+        val url = selfPipeUrl ?: return
+        val surface = selfPipeSurface ?: return
+        val pipe = videoPipe ?: return
+        val m = mpvBackend ?: return
+        pipe.start(
+            url, emptyMap(), surface, { m.positionSec() }, { true }, sec,
+            java.io.File(getExternalFilesDir(null) ?: filesDir, "dovi_params.bin").absolutePath,
+            holdGate = { false },
+            onFirstFrame = { },
+            onDoviParams = { com.xxxx.emby_vr.vr.VrNative.setDoviStreamActive(true) },
+        )
+    }
+
 
     /**
      * 自管解码起播：画面交给 [VideoPipe]，音频与播放控制仍归 mpv。
@@ -8284,6 +8309,16 @@ class MainActivity : ComponentActivity() {
          */
         /* 本次是 P5、颜色由渲染层算：内核只当搬运工（2026-11-16 按片源切换） */
         com.xxxx.emby_vr.player.MpvBackend.applyDoviPipeline(true)
+        /*
+         * 内核只出声时**不能开循环**（2026-11-16 实测）：视频轨被关掉后内核很快判定
+         * `video=eof`，循环设置会让它从头重放 —— 控制条走到 50 秒左右跳回 0、声音重来。
+         */
+        m.setLoopFile(false)
+        /* 跳转同时通知自管解码器，否则画面留在原地、声音跳走 */
+        ctl.pipeSeek = { ms ->
+            val sec = (ms / 1000.0).coerceAtLeast(0.0)
+            restartVideoPipeAt(sec)
+        }
         com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("vid", "no")
         /*
          * 起播后连查三次内核状态（2026-11-16）：这条路的"没声音"是内核压根没加载文件，
@@ -8305,11 +8340,19 @@ class MainActivity : ComponentActivity() {
         com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("audio-display", "no")
         selfPipeWaitingFirstFrame.set(true)
         m.play(url, startSec, startPaused = true)
+        /*
+         * 再显式暂停一次（2026-11-16 父亲实测「声音比画面先出来」）：
+         * start 选项只对"下一次加载"生效，加载一旦完成内核就自己开播了，
+         * 这里补一刀，保证画面首帧出来之前没有声音。
+         */
+        m.setPaused(true)
 
         val doviPath = java.io.File(
             getExternalFilesDir(null) ?: filesDir,
             "dovi_params.bin",
         ).absolutePath
+        selfPipeUrl = url
+        selfPipeSurface = surface
         val pipe = com.xxxx.emby_vr.player.VideoPipe()
         videoPipe = pipe
         // 时钟用内核报的播放位置：它正常加载后这个值是准的
@@ -8340,6 +8383,21 @@ class MainActivity : ComponentActivity() {
             onDoviParams = {
                 com.xxxx.emby_vr.vr.VrNative.setDoviStreamActive(true)
                 Log.i(TAG, "确认是杜比 P5：允许渲染层还原")
+            },
+            /*
+             * 画面放完了（2026-11-16 父亲要求：新路径要主动把"放完了"告诉内核）。
+             * 内核只出声，它自己不知道画面到哪了；这里让它停在结尾并把播完状态交回去，
+             * 界面才能正常收场，而不是控制条继续走、或者从头再来一遍。
+             */
+            onEos = {
+                /*
+                 * 画面放完了 → 让内核停在结尾（2026-11-16 父亲要求）。
+                 * 内核只出声、不知道画面到哪，这里主动收：关循环、暂停，播完状态由它自己的
+                 * 音频结尾触发，界面照旧收场 —— 不会出现"画面没了控制条还在走"。
+                 */
+                Log.i(TAG, "自管解码：画面已到结尾 → 内核暂停收场")
+                runCatching { m.setLoopFile(false) }
+                runCatching { m.setPaused(true) }
             },
         )
         if (!ok) {

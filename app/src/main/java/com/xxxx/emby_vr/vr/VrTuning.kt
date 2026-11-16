@@ -124,6 +124,14 @@ object VrTuning {
     var inferHdr10: Boolean = false
 
     /**
+     * 杜比参数是否冻结（2026-11-16 定，默认冻结）。
+     *
+     * 片源里每段场景都带一套新参数；我们做不到逐帧精确同步，就会「一会儿偏蓝马上又正常」。
+     * 稳定优先：一条片子只用解出来的第一套参数。调参文件写 `dovi_freeze=0` 恢复逐帧更新。
+     */
+    var doviFreeze: Boolean = true
+
+    /**
      * 「原画」档与网页流的宽度上限（0 = 按片源原分辨率，最高 3840）。
      *
      * 试宽度用：改完不用重装，动一下画质菜单就按新值重建。Emby 的杜比视界片另走
@@ -883,6 +891,10 @@ object VrTuning {
         flag("no_jitter", KEY_NO_JITTER, "抖动固定")
         flag("force_rgba8", KEY_FORCE_RGBA8, "视频层强制 GL_RGBA8")
         flag("no_postfx", KEY_NO_POSTFX, "画质增强全关")
+        raw["dovi_freeze"]?.toIntOrNull()?.let {
+            doviFreeze = it != 0
+            applied += "杜比参数冻结 $it"
+        }
         raw["infer_hdr10"]?.toIntOrNull()?.let {
             inferHdr10 = it != 0
             applied += "HDR10 推断 $it"

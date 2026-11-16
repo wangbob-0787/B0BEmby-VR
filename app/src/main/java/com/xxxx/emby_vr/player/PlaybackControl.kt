@@ -93,6 +93,9 @@ class PlaybackControl {
         return exoProvider()?.bufferedPosition ?: 0L
     }
 
+    /** 自管解码路的跳转钩子（由界面在起播时挂上）。 */
+    var pipeSeek: ((Long) -> Unit)? = null
+
     fun seekTo(ms: Long) {
         val target = ms.coerceAtLeast(0L)
         /*
@@ -100,6 +103,12 @@ class PlaybackControl {
          * 屏幕上会先闪回旧位置。两条内核都要通知，所以放在分发之前。
          */
         VrNative.notifySeek()
+        /*
+         * 自管解码那条路：画面由我们自己的解码器出，跳转必须同时告诉它（2026-11-16 父亲实测
+         * 「一快进就回到 0、画面还在原处」）。只发给内核的话，画面会留在原地，
+         * 声音却跳走 —— 表现就是音画彻底不同步。
+         */
+        pipeSeek?.invoke(target)
         mpvProvider()?.let {
             it.seekToSec(target / 1000.0)
             return

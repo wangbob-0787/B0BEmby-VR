@@ -78,6 +78,14 @@ class VideoPipe {
     /** 第一次解出杜比参数时回调一次（外面据此确认"本片确实是 P5"，才允许走还原） */
     @Volatile private var onDoviParams: (() -> Unit)? = null
 
+    /**
+     * 画面解到结尾时回调一次（2026-11-16 父亲定：新路径要主动告诉内核"放完了"）。
+     *
+     * 内核那边视频轨是关掉的，它自己只能等到音频播完；两边时间轴不一致时，
+     * 界面就要靠这个信号收场，否则会出现"画面早就没了、控制条还在走"。
+     */
+    @Volatile private var onEos: (() -> Unit)? = null
+
     /** 复用的取样缓冲：每帧临时 new 一个几 MB 的数组会把 GC 拖垮 */
     private val sampleBuf = ByteArray(8 * 1024 * 1024)
 
@@ -126,6 +134,7 @@ class VideoPipe {
         holdGate: (() -> Boolean)? = null,
         onFirstFrame: (() -> Unit)? = null,
         onDoviParams: (() -> Unit)? = null,
+        onEos: (() -> Unit)? = null,
     ): Boolean {
         stop()
         lastError = null
@@ -135,6 +144,7 @@ class VideoPipe {
         this.holdGate = holdGate
         this.onFirstFrame = onFirstFrame
         this.onDoviParams = onDoviParams
+        this.onEos = onEos
         firstFrameOut = false
         lastDovi = null
         doviWriteSkip = 0
@@ -272,28 +282,34 @@ class VideoPipe {
                      * 逐帧去读播放器的位置，而它缓冲时那个值本身在跳，画面就跟着跳。
                      * 这与弹幕时钟是同一条定式 —— 时钟自己走，播放器的值只做平滑纠偏。
                      */
+                    /*
+                     * 时钟跟着内核（2026-11-16 父亲定：用 mpv 的声音时钟控制我们的画面）。
+                     *
+                     * 画面这块原来按自己的墙钟走，只能在偏差过大时纠一下，结果就是
+                     * 「画面偏快、和控制条对不上」。现在改成逐帧对齐：
+                     *   · 画面比声音超前 → 等（每轮最多等 40ms，不拖死解码线程）
+                     *   · 画面比声音落后超过半秒 → 直接丢这一帧追上（丢帧比慢放看得舒服）
+                     */
                     val ptsSec = info.presentationTimeUs / 1_000_000.0
-                    val nowNs = System.nanoTime()
-                    if (basePtsSec < 0.0) {
-                        basePtsSec = ptsSec
-                        baseWallNs = nowNs
-                    }
-                    // 播放器给的秒数，每半秒拿来校一次基准
-                    if (nowNs - lastCorrectionNs > 500_000_000L) {
-                        lastCorrectionNs = nowNs
-                        val clk = clockProvider?.invoke() ?: -1.0
-                        if (clk > 0.0) {
-                            val localNow = basePtsSec + (nowNs - baseWallNs) / 1_000_000_000.0
-                            if (kotlin.math.abs(localNow - clk) > 0.8) {
-                                // 偏离太多：直接把基准挪到播放器位置
-                                basePtsSec = clk - (nowNs - baseWallNs) / 1_000_000_000.0
+                    val audioSec = if (clockValidProvider?.invoke() != false) {
+                        clockProvider?.invoke() ?: -1.0
+                    } else -1.0
+                    if (audioSec > 0.0) {
+                        val ahead = ptsSec - audioSec
+                        if (ahead > 0.040) {
+                            val waitMs = ((ahead - 0.040) * 1000.0).toLong().coerceIn(1L, 40L)
+                            try {
+                                Thread.sleep(waitMs)
+                            } catch (t: InterruptedException) {
+                                Thread.currentThread().interrupt()
                             }
+                        } else if (ahead < -0.500) {
+                            /* 落后太多：丢帧追上，不渲染这一张 */
+                            codec.releaseOutputBuffer(outIdx, false)
+                            continue
                         }
                     }
-                    val dueNs = baseWallNs + ((ptsSec - basePtsSec) * 1_000_000_000.0).toLong()
-                    // 最多等 80 毫秒：比一帧周期略长，够纠偏又不会拖住画面
-                    val delayNs = (dueNs - nowNs).coerceIn(-2_000_000_000L, 80_000_000L)
-                    codec.releaseOutputBuffer(outIdx, System.nanoTime() + delayNs)
+                    codec.releaseOutputBuffer(outIdx, true)
                     decodedFrames++
                     if (!firstFrameOut) {
                         firstFrameOut = true
@@ -312,6 +328,11 @@ class VideoPipe {
                 // INFO_TRY_AGAIN_LATER：这一轮没东西，继续
             }
         }
+        /*
+         * 画面放完了：告诉外面一次（父新 2026-11-16 要求）。
+         * 正常播完与被停止都会走到这里，外面按"是不是还在播"决定要不要当结束处理。
+         */
+        if (outputDone) runCatching { onEos?.invoke() }
         Log.i(TAG, "解码循环结束，共 $decodedFrames 帧")
     }
 
@@ -345,7 +366,13 @@ class VideoPipe {
                 onDoviParams?.invoke()
             }
             lastDovi = params
-            doviWriteSkip = 3
+            /*
+             * 参数冻结（2026-11-16 定，父亲实测「一会儿偏蓝马上又正常」）：
+             * 片源里每段场景都带一套新参数，我们按几帧一更新，画面用的参数和当前帧对不上，
+             * 颜色就会跳一下。稳定优先 —— 第一条参数定下来之后不再更新，
+             * 调参文件写 dovi_freeze=0 可恢复逐帧更新。
+             */
+            doviWriteSkip = if (com.xxxx.emby_vr.vr.VrTuning.doviFreeze) Int.MAX_VALUE else 3
             java.io.File(path).outputStream().use { out ->
                 val bb = java.nio.ByteBuffer.allocate(params.size * 4)
                     .order(java.nio.ByteOrder.LITTLE_ENDIAN)
