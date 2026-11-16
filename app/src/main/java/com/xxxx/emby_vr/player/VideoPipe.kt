@@ -247,9 +247,6 @@ class VideoPipe {
                     // 最多等 80 毫秒：比一帧周期略长，够纠偏又不会拖住画面
                     val delayNs = (dueNs - nowNs).coerceIn(-2_000_000_000L, 80_000_000L)
                     codec.releaseOutputBuffer(outIdx, System.nanoTime() + delayNs)
-                    } else {
-                        codec.releaseOutputBuffer(outIdx, true)
-                    }
                     decodedFrames++
                     if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
                         outputDone = true
