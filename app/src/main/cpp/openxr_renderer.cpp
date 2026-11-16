@@ -82,6 +82,14 @@ static volatile int   *g_doviSeq = nullptr;
 static int g_doviLastSeq = -1;
 /* 是否由渲染层做杜比还原（2026-11-13）。默认关：内核还原是已验证的路。 */
 static std::atomic<int> gDvRendererReshape{0};
+/*
+ * 本次播放是不是杜比 P5（2026-11-16 父亲定：非 P5 的片子一律不许走新路径）。
+ *
+ * 由应用在起播时置 0、在自管解码真的从码流里解出 RPU 之后置 1。
+ * 不能拿「参数文件在不在」当判据：换片时那份文件可能还留着，上一部 P5 的参数
+ * 就会被套到普通片子上，整幅画面变成色块。
+ */
+static std::atomic<int> gDvStreamActive{0};
 static bool g_doviLogged = false;
 
 /*
@@ -202,6 +210,18 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetDvRendererReshape(JNIEnv * /* env */
     gDvRendererReshape.store(on ? 1 : 0);
     setenv("B0B_DOVI_SKIP", on ? "1" : "0", 1);
     LOGI_RAW("渲染层杜比还原 → %d（内核跳过=%d）", on ? 1 : 0, on ? 1 : 0);
+}
+
+/*
+ * 本次播放是否是杜比 P5（2026-11-16）。
+ * 应用在起播时置 0；自管解码解出第一份 RPU 参数后置 1。
+ * 与上面的总开关是"与"关系：总开关关掉时，P5 也不会走新路径。
+ */
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetDoviStreamActive(JNIEnv * /* env */,
+                                                            jobject /* this */, jint on) {
+    gDvStreamActive.store(on ? 1 : 0);
+    LOGI_RAW("本次播放是杜比 P5 → %d", on ? 1 : 0);
 }
 
 /*
@@ -5420,7 +5440,7 @@ void updateScreenLightFromVideo(VrContext &c) {
      * 否则 uDvReshape 保持 0，着色器走原来的路，画面与现在完全一致。
      */
     if (c.dvReshapeLoc >= 0 && c.dvParamsLoc >= 0) {
-        const bool dvOn = gDvRendererReshape.load() != 0 && gDvFileValid && g_doviFlat &&
+        const bool dvOn = gDvRendererReshape.load() != 0 && gDvStreamActive.load() != 0 && gDvFileValid && g_doviFlat &&
                           g_doviReady && *g_doviReady;
         glUniform1i(c.dvReshapeLoc, dvOn ? 1 : 0);
         if (dvOn) glUniform1fv(c.dvParamsLoc, 128, (const GLfloat *) g_doviFlat);
@@ -7964,7 +7984,8 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
          * 参数一直在，却被这个条件挡在门外。
          */
         /* 版本 1 = 客户端自管解码写的（只有曲线）；版本 2 = 内核写的（曲线后面还带两份矩阵） */
-        const bool dvOn = videoLayerPass && gDvRendererReshape.load() != 0 && gDvFileValid &&
+        const bool dvOn = videoLayerPass && gDvRendererReshape.load() != 0 && gDvStreamActive.load() != 0 &&
+                          gDvFileValid &&
                           g_doviFlat && g_doviFlat[0] >= 0.5f && g_doviFlat[0] < 2.5f;
         glUniform1i(u.dvReshape, dvOn ? 1 : 0);
         if (dvOn) glUniform1fv(u.dvParams, 128, (const GLfloat *) g_doviFlat);

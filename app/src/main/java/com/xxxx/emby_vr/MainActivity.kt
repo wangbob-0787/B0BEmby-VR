@@ -4301,6 +4301,18 @@ class MainActivity : ComponentActivity() {
                                 ?.substringAfter("=")?.trim()?.toIntOrNull() == 1
                         }.getOrDefault(false) || com.xxxx.emby_vr.vr.VrTuning.videoPipeOn
                         Log.i(TAG, "起播分支判定：自管解码=$pipeOn")
+                        /*
+                         * 换片先把上一部片的杜比痕迹清干净（2026-11-16 父亲实测：
+                         * 非 P5 的片子被上一部 P5 的参数带偏，整幅变成色块）。
+                         * 两条分支都要清：新路径与内核路径都有可能起播。
+                         */
+                        runCatching {
+                            java.io.File(
+                                getExternalFilesDir(null) ?: filesDir,
+                                "dovi_params.bin",
+                            ).delete()
+                        }
+                        com.xxxx.emby_vr.vr.VrNative.setDoviStreamActive(false)
                         if (pipeOn) {
                             startSelfVideoPipe(directUrl, startMs / 1000.0, surface, m)
                         } else {
@@ -8258,6 +8270,14 @@ class MainActivity : ComponentActivity() {
                 selfPipeWaitingFirstFrame.set(false)
                 m.setPaused(false)
                 Log.i(TAG, "自管解码首帧已出，放开声音")
+            },
+            /*
+             * 只有真的从码流里解出 RPU 参数，才允许渲染层走杜比还原。
+             * 非 P5 片源解不出参数，这个回调就不会来 —— 它们永远不进新路径。
+             */
+            onDoviParams = {
+                com.xxxx.emby_vr.vr.VrNative.setDoviStreamActive(true)
+                Log.i(TAG, "确认是杜比 P5：允许渲染层还原")
             },
         )
         if (!ok) {

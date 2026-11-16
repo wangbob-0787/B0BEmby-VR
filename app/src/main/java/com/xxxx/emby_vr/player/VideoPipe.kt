@@ -75,6 +75,9 @@ class VideoPipe {
     /** 首帧出来时回调一次（外面在这里放开声音） */
     @Volatile private var onFirstFrame: (() -> Unit)? = null
 
+    /** 第一次解出杜比参数时回调一次（外面据此确认"本片确实是 P5"，才允许走还原） */
+    @Volatile private var onDoviParams: (() -> Unit)? = null
+
     /** 复用的取样缓冲：每帧临时 new 一个几 MB 的数组会把 GC 拖垮 */
     private val sampleBuf = ByteArray(8 * 1024 * 1024)
 
@@ -122,6 +125,7 @@ class VideoPipe {
         doviPath: String? = null,
         holdGate: (() -> Boolean)? = null,
         onFirstFrame: (() -> Unit)? = null,
+        onDoviParams: (() -> Unit)? = null,
     ): Boolean {
         stop()
         lastError = null
@@ -130,6 +134,7 @@ class VideoPipe {
         doviParamPath = doviPath
         this.holdGate = holdGate
         this.onFirstFrame = onFirstFrame
+        this.onDoviParams = onDoviParams
         firstFrameOut = false
         lastDovi = null
         doviWriteSkip = 0
@@ -336,6 +341,8 @@ class VideoPipe {
             if (prev != null && prev.contentEquals(params)) return
             if (lastDovi == null) {
                 Log.i(TAG, "杜比参数已解出：分段数=${params[2].toInt()} 通道=${params[1].toInt()}")
+                /* 解出参数就等于确认了"这是 P5 片源"，此时才允许渲染层走还原 */
+                onDoviParams?.invoke()
             }
             lastDovi = params
             doviWriteSkip = 3

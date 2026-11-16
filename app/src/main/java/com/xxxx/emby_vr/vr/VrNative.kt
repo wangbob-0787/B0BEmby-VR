@@ -50,6 +50,16 @@ object VrNative {
     /** 由渲染层做杜比还原（内核会同时跳过还原）。 */
     fun setDvRendererReshape(on: Boolean) = runCatching { nativeSetDvRendererReshape(if (on) 1 else 0) }
 
+    /**
+     * 本次播放是否是杜比 P5（2026-11-16 父亲定：非 P5 一律不许走新路径）。
+     *
+     * 起播时置 false，自管解码真的解出 RPU 之后再置 true —— 判据必须来自码流，
+     * 不能看参数文件在不在（换片时旧文件会残留，普通片就会被套上杜比参数）。
+     */
+    private external fun nativeSetDoviStreamActive(on: Int)
+
+    fun setDoviStreamActive(on: Boolean) = runCatching { nativeSetDoviStreamActive(if (on) 1 else 0) }
+
     fun setDoviParamPath(path: String) = runCatching { nativeSetDoviParamPath(path) }
 
     /** 运行时可调参数（key 见 VrTuning.KEY_*） */
