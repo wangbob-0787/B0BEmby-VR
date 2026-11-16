@@ -8212,7 +8212,7 @@ class MainActivity : ComponentActivity() {
             url, emptyMap(), surface, { m.positionSec() }, { true }, startSec, doviPath,
         )
         if (!ok) {
-            Log.e(TAG, "自管解码起播失败（${pipe.lastError}），银幕不会有内容")
+            Log.e(TAG, "自管解码起播失败（${com.xxxx.emby_vr.player.VideoPipe.lastError}），银幕不会有内容")
             com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("vid", "no")
             m.play(url, startSec)
             return
