@@ -50,6 +50,38 @@ class MpvBackend(private val context: Context) {
         }
 
         /**
+         * 按片源切换色彩目标（2026-11-16）。必须在每次 loadfile **之前**调用。
+         *
+         * @param doviRenderer true = 本次是杜比 P5、颜色由渲染层算：内核只当搬运工，
+         *                     不做杜比重塑、不做色调映射，输出标成 PQ/BT.2020；
+         *                     false = 其余所有片源：输出 SDR（bt.709 / gamma2.2），
+         *                     由内核自己完成任何 HDR→SDR 映射。
+         *
+         * 为什么必须每次切：这些是进程级选项，只设一次就会一直生效 —— 结果是
+         * 「播过 P5 之后，普通片和网页视频都被按 PQ 解释」，画面发灰、饱和度掉一大截。
+         */
+        fun applyDoviPipeline(doviRenderer: Boolean) {
+            if (doviRenderer) {
+                setOptionRuntime(
+                    "vf",
+                    "format=dolbyvision=no," +
+                        "setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc",
+                )
+                setOptionRuntime("target-prim", "bt.2020")
+                setOptionRuntime("target-trc", "pq")
+                setOptionRuntime("tone-mapping", "clip")
+                setOptionRuntime("target-peak", "10000")
+            } else {
+                /* 清掉滤镜链：留着它普通片会少一层正常处理 */
+                setOptionRuntime("vf", "")
+                setOptionRuntime("target-prim", "bt.709")
+                setOptionRuntime("target-trc", "gamma2.2")
+                setOptionRuntime("tone-mapping", "bt.2390")
+            }
+        }
+
+
+        /**
          * 执行一条内核命令（调参文件里写 `cmd=screenshot-to-file <路径> video`）。
          *
          * 用途：把内核渲染后的画面原样导出成文件。校色必须用内核渲染结果当标尺，
@@ -727,37 +759,6 @@ class MpvBackend(private val context: Context) {
         if (cVideoW > 0 && cVideoH > 0) (cVideoW to cVideoH) else null
 
     fun currentSubtitleText(): String = cSubText
-
-    /**
-     * 按片源切换色彩目标（2026-11-16）。必须在每次 loadfile **之前**调用。
-     *
-     * @param doviRenderer true = 本次是杜比 P5、颜色由渲染层算：内核只当搬运工，
-     *                     不做杜比重塑、不做色调映射，输出标成 PQ/BT.2020；
-     *                     false = 其余所有片源：输出 SDR（bt.709 / gamma2.2），
-     *                     由内核自己完成任何 HDR→SDR 映射。
-     *
-     * 为什么必须每次切：这些是进程级选项，只设一次就会一直生效 —— 结果是
-     * 「播过 P5 之后，普通片和网页视频都被按 PQ 解释」，画面发灰、饱和度掉一大截。
-     */
-    fun applyDoviPipeline(doviRenderer: Boolean) {
-        if (doviRenderer) {
-            setOptionRuntime(
-                "vf",
-                "format=dolbyvision=no," +
-                    "setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc",
-            )
-            setOptionRuntime("target-prim", "bt.2020")
-            setOptionRuntime("target-trc", "pq")
-            setOptionRuntime("tone-mapping", "clip")
-            setOptionRuntime("target-peak", "10000")
-        } else {
-            /* 清掉滤镜链：留着它普通片会少一层正常处理 */
-            setOptionRuntime("vf", "")
-            setOptionRuntime("target-prim", "bt.709")
-            setOptionRuntime("target-trc", "gamma2.2")
-            setOptionRuntime("tone-mapping", "bt.2390")
-        }
-    }
 
     /** 读任意内核属性（诊断用）。读不到返回 null，不抛。 */
     fun prop(name: String): String? = try { MPVLib.getPropertyString(name) } catch (_: Throwable) { null }
