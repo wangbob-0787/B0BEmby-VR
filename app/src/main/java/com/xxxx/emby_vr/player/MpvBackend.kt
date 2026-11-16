@@ -77,12 +77,13 @@ class MpvBackend(private val context: Context) {
                 setOptionRuntime("target-prim", "bt.709")
                 setOptionRuntime("target-trc", "gamma2.2")
                 /*
-                 * spline + 目标亮度 800（2026-11-16 父亲逐档实测的结果）。
+                 * spline + 目标亮度 1100（2026-11-16 父亲逐档实测：600/800/1000/1200 四档比过，
+                 * 1100 与 1200 都最接近浏览器，取中间值）。
                  * bt.2390 会把中间调压成一片、暗部被抬起来，观感比浏览器灰；
                  * spline 的跨度与浏览器一致（实测量得两者对比度 0.36 vs 0.35）。
                  */
                 setOptionRuntime("tone-mapping", "spline")
-                setOptionRuntime("target-peak", "800")
+                setOptionRuntime("target-peak", "1100")
             }
         }
 
@@ -431,7 +432,7 @@ class MpvBackend(private val context: Context) {
                      */
                     MPVLib.setOptionString("target-prim", "bt.709")
                     MPVLib.setOptionString("target-trc", "gamma2.2")
-                    MPVLib.setOptionString("tone-mapping", "bt.2390")
+                    MPVLib.setOptionString("tone-mapping", "spline")
                     /*
                      * 关键：关掉 HDR 逐帧峰值检测。
                      * 默认 auto 对 HDR 源会逐帧统计画面峰值，色调映射曲线跟着每帧变，
@@ -506,7 +507,7 @@ class MpvBackend(private val context: Context) {
                      * 目标峰值写死 100：peak 留 auto 会按每帧统计走，既贵又让整幅明暗
                      * 随内容呼吸（父亲 2026-11-13 报「亮的地方有点过曝」也与此有关）。
                      */
-                    MPVLib.setOptionString("target-peak", "150")
+                    MPVLib.setOptionString("target-peak", "1100")
                     MPVLib.setOptionString("vd-lavc-threads", "0")
                     /*
                      * 调参文件里的内核选项放最后应用 —— 覆盖上面的默认值
