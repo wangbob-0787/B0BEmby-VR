@@ -218,6 +218,13 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetDvRendererReshape(JNIEnv * /* env */
  * 与上面的总开关是"与"关系：总开关关掉时，P5 也不会走新路径。
  */
 extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetRawVideo(JNIEnv * /* env */,
+                                                     jobject /* this */, jint on) {
+    gRawVideo.store(on ? 1 : 0);
+    LOGI_RAW("原始画面直出 → %d", on ? 1 : 0);
+}
+
+extern "C" JNIEXPORT void JNICALL
 Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetDoviStreamActive(JNIEnv * /* env */,
                                                             jobject /* this */, jint on) {
     gDvStreamActive.store(on ? 1 : 0);
@@ -531,6 +538,7 @@ uniform vec2 uScreenStep;     // 银幕上一个屏幕像素对应的 UV 步长�
 uniform int uDownsample;      // 1 = 视频降采样（4×4 盒式平均）
 uniform float uJitter;        // 每帧变的抖动种子（打散 8 位量化的色带）
 uniform int uTestPattern;     // 1 = 用固定测试图替代视频纹理（黑纹诊断，2026-10-09）
+uniform int uRawVideo;        // 1 = 视频层直接吐原始取样值（定位画面变灰用，2026-11-16）
 /*
  * 杜比视界还原（2026-11-13）：内核把每帧参数拍平成 96 个 float，这里整段上传。
  * 布局：0=版本 1=通道数；之后每通道 26 个 —— 1 个分段数 + 8 个分段点 + 8×3 段系数。
@@ -964,6 +972,14 @@ void main() {
          *   6. BT.2020 → BT.709 色域转换
          *   7. 白点缩放 + gamma 2.2
          */
+        /*
+         * 定位开关（2026-11-16）：直接吐取样到的原始值，不做任何颜色处理，
+         * 也不走后面的输出转换。用来判断"画面变灰"是我们处理造成的，还是拿到的就已经是灰的。
+         */
+        if (uRawVideo == 1) {
+            outColor = vec4(c.rgb, 1.0);
+            return;
+        }
         if (uDvReshape == 1 && uDv[0] > 1.5) {
             float yv = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));
             float cbv = (c.rgb.b - yv) / 1.8556 + 0.5;
@@ -2430,7 +2446,7 @@ struct QuadLocs {
     GLint edgeColorThr = -1;
     GLint circle = -1, expand = -1, bright = -1, contrast = -1, sat = -1;
     GLint sharpen = -1, temp = -1, texel = -1, screenStep = -1, down = -1;
-    GLint jitter = -1, testPattern = -1;
+    GLint jitter = -1, testPattern = -1, rawVideo = -1;
     GLint dvReshape = -1, dvParams = -1;   // 杜比还原：开关 + 每帧参数（2026-11-13）
     GLint delayed = -1, useDelayed = -1;   // 只有 B0B_RING 版有
 };
@@ -2488,6 +2504,7 @@ void fillQuadLocs(GLuint prog, QuadLocs &u) {
     u.down = glGetUniformLocation(prog, "uDownsample");
     u.jitter = glGetUniformLocation(prog, "uJitter");
     u.testPattern = glGetUniformLocation(prog, "uTestPattern");
+    u.rawVideo = glGetUniformLocation(prog, "uRawVideo");
     u.dvReshape = glGetUniformLocation(prog, "uDvReshape");
     u.dvParams = glGetUniformLocation(prog, "uDv");
     u.delayed = glGetUniformLocation(prog, "uDelayedTex");   // 只有 B0B_RING 版有
@@ -2554,6 +2571,7 @@ struct VrContext {
     GLint downLoc = -1;            // uDownsample：是否对视频做盒式降采样
     GLint jitterLoc = -1;          // uJitter：抖动种子
     GLint testPatternLoc = -1;     // uTestPattern：固定测试图（黑纹诊断）
+    GLint rawVideoLoc = -1;        // uRawVideo：直接吐原始取样值（画面变灰定位）
     GLint dvReshapeLoc = -1;       // uDvReshape：1 = 由渲染层做杜比还原
     GLint dvParamsLoc = -1;        // uDv[96]：内核上传的还原参数
     GLuint vbo = 0;                // 单位方块（面板 / 光点）
@@ -3404,6 +3422,7 @@ std::atomic<int> gLastLayerCount{0};    // 上一帧实际提交给 xrEndFrame �
  */
 std::atomic<int> gHideProjection{0};    // 1 = 不提交投影层（只留 quad 层）—— ChatGPT 点名的判定实验
 std::atomic<int> gTestPattern{0};       // 1 = 用固定测试图替代视频纹理（切断解码输入链）
+std::atomic<int> gRawVideo{0};          // 1 = 视频层直接吐原始取样值（跳过全部处理与输出转换）
 /*
  * 视频层交换链宽度上限。0 = 按视频原分辨率（4K 片源就是 3840，很贵）。
  *
@@ -5435,6 +5454,7 @@ void updateScreenLightFromVideo(VrContext &c) {
     if (c.expandLoc >= 0) glUniform1i(c.expandLoc, 0);
     if (c.downLoc >= 0) glUniform1i(c.downLoc, 0);
     if (c.testPatternLoc >= 0) glUniform1i(c.testPatternLoc, 0);
+    if (c.rawVideoLoc >= 0) glUniform1i(c.rawVideoLoc, gRawVideo.load() != 0 ? 1 : 0);
     /*
      * 杜比还原参数（2026-11-13）：只在开关打开、且内核已经交出参数时才上传；
      * 否则 uDvReshape 保持 0，着色器走原来的路，画面与现在完全一致。
@@ -7958,6 +7978,7 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
     /* 固定测试图只在"视频层"这一路开（2026-10-09 诊断开关） */
     if (u.testPattern >= 0) {
         glUniform1i(u.testPattern, (videoLayerPass && gTestPattern.load() != 0) ? 1 : 0);
+        if (u.rawVideo >= 0) glUniform1i(u.rawVideo, (videoLayerPass && gRawVideo.load() != 0) ? 1 : 0);
     }
     /* 画面调整值与主画面保持一致；no_postfx 时全部回中性（排除画质分支） */
     const bool fxOff = gNoPostfx.load() != 0;
@@ -9539,6 +9560,7 @@ void renderThreadMain() {
         c.downLoc = c.quadU.down;
         c.jitterLoc = c.quadU.jitter;
         c.testPatternLoc = c.quadU.testPattern;
+        c.rawVideoLoc = c.quadU.rawVideo;
         c.dvReshapeLoc = c.quadU.dvReshape;
         c.dvParamsLoc = c.quadU.dvParams;
         /*

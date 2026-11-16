@@ -60,6 +60,11 @@ object VrNative {
 
     fun setDoviStreamActive(on: Boolean) = runCatching { nativeSetDoviStreamActive(if (on) 1 else 0) }
 
+    /** 画面直出（定位用）：跳过全部颜色处理与输出转换，直接吐取样值。 */
+    private external fun nativeSetRawVideo(on: Int)
+
+    fun setRawVideo(on: Boolean) = runCatching { nativeSetRawVideo(if (on) 1 else 0) }
+
     fun setDoviParamPath(path: String) = runCatching { nativeSetDoviParamPath(path) }
 
     /** 运行时可调参数（key 见 VrTuning.KEY_*） */

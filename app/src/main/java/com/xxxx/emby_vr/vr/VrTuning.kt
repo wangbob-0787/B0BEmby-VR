@@ -875,6 +875,10 @@ object VrTuning {
         flag("no_jitter", KEY_NO_JITTER, "抖动固定")
         flag("force_rgba8", KEY_FORCE_RGBA8, "视频层强制 GL_RGBA8")
         flag("no_postfx", KEY_NO_POSTFX, "画质增强全关")
+        raw["raw_video"]?.toIntOrNull()?.let {
+            VrNative.setRawVideo(it != 0)
+            applied += "画面直出 $it"
+        }
         raw["dovi_renderer_reshape"]?.toIntOrNull()?.let {
             doviRendererReshape = it != 0
             VrNative.setDvRendererReshape(it != 0)
