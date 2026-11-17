@@ -7900,6 +7900,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        runCatching { com.xxxx.emby_vr.player.SharedReadCache.start(applicationContext) }
         super.onCreate(savedInstanceState)
         Log.i(TAG, "onCreate: B0BEmby VR 启动")
         startFdCensus()
@@ -8650,7 +8651,7 @@ class MainActivity : ComponentActivity() {
      * MpvBackend 的单线程队列，所以顺序上 loadfile 一定在它前面。
      */
     private fun startSelfVideoPipe(
-        url: String,
+        rawUrl: String,
         startSec: Double,
         surface: android.view.Surface,
         m: com.xxxx.emby_vr.player.MpvBackend,
@@ -8661,6 +8662,12 @@ class MainActivity : ComponentActivity() {
          * 防重入：同进程里两套起播同时跑过一次（健康行每拍打两遍、两套互相把声音暂停着）。
          * 已在起播流程中就拒绝第二次，并把来源打出来 —— 下次再出现，一行日志就能看出谁第二次进来的。
          */
+        /*
+         * 起播地址先过一次共享读缓存：内核与自管解码都读本机同一份缓存，不再各拉一份。
+         * 关掉开关（vr-tuning.txt 里 relay=0）时原样返回，行为与之前完全一致。
+         */
+        val url = com.xxxx.emby_vr.player.SharedReadCache.rewrite(rawUrl)
+        if (url != rawUrl) Log.i(TAG, "起播地址已指向共享读缓存（本机 127.0.0.1:8898）")
         if (!pipeBootInFlight.compareAndSet(false, true)) {
             Log.w(TAG, "起播入口被拒：已有起播在飞|source=$source|url=${url.take(60)}")
             return

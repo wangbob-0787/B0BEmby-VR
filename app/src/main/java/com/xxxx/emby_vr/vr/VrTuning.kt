@@ -270,6 +270,12 @@ object VrTuning {
     @Volatile var pipeNoSync: Int = 0
 
     /**
+     * 共享读缓存（应用内本机中转）：1=开（默认），0=退回直连。
+     * 存在理由：内核与自管解码各读一份同一文件会互相争抢，实测导致起播十几秒、播放中读出停顿。
+     */
+    @Volatile var relay: Int = 1
+
+    /**
      * 弹幕画布宽度（2026-10-14 父亲定）：默认 **1920**，与银幕本身的 1920 宽对齐。
      *
      * 原来写死 2560 —— 比银幕还大三分之一，多出来的像素在 VR 里根本看不见，
@@ -704,6 +710,13 @@ object VrTuning {
             if (it != dvOff) {
                 dvOff = it
                 applied += "杜比还原=" + if (it != 0) "关（仅测量用）" else "开"
+            }
+        }
+        raw["relay"]?.toIntOrNull()?.let {
+            val v = if (it == 1) 1 else 0
+            if (v != relay) {
+                relay = v
+                applied += "共享读缓存=" + (if (v == 1) "开" else "关")
             }
         }
         raw["pipe_nosync"]?.toIntOrNull()?.let {
