@@ -117,6 +117,10 @@ class VideoPipe {
 
     /** 首帧上屏只回调一次 */
     private var showLogged = false
+    /** 最近一次入队样本的 pts（秒）：RPU 参数到达日志用 */
+    @Volatile private var lastSeenInputPts = -1.0
+    /** 本轮起解（含重建）的时刻：给"RPU 参数到达|距重建="算差值 */
+    @Volatile private var startedAtMs = 0L
 
     /** 首帧已送进画面。用来通知外面放开声音。 */
 
@@ -248,6 +252,7 @@ class VideoPipe {
         this.onPreheatReady = onPreheatReady
         tryAgainStreak = 0L
         showLogged = false
+        startedAtMs = android.os.SystemClock.elapsedRealtime()
         lastDovi = null
         doviWriteSkip = 0
         /*
@@ -378,6 +383,7 @@ class VideoPipe {
                          * 内容随时可能被改写。**参数来自输入端**，所以"预热三帧全部归还、
                          * 不上屏"不影响颜色 —— 这是不留首帧的依据。
                          */
+                        lastSeenInputPts = pts / 1_000_000.0
                         harvestDovi(buf, size)
                         codec.queueInputBuffer(inIdx, 0, size, pts, 0)
                         ex.advance()
@@ -616,7 +622,16 @@ class VideoPipe {
             val prev = lastDovi
             if (prev != null && prev.contentEquals(params)) return
             if (lastDovi == null) {
-                Log.i(TAG, "杜比参数已解出：分段数=${params[2].toInt()} 通道=${params[1].toInt()}")
+                /*
+                 * 与"跳转重启完成：位置=…"同屏对账：重建后头几帧渲染层还没拿到参数，
+                 * 会先按非杜比画一小下（父亲看到的"快进瞬间偏紫"）。这条日志能证实差多少毫秒。
+                 */
+                val sinceMs = if (startedAtMs == 0L) -1L else android.os.SystemClock.elapsedRealtime() - startedAtMs
+                Log.i(
+                    TAG,
+                    "RPU 参数到达|pts=${"%.3f".format(lastSeenInputPts)}|距重建=${sinceMs}ms" +
+                        "（分段数=${params[2].toInt()} 通道=${params[1].toInt()}）",
+                )
                 /* 解出参数就等于确认了"这是 P5 片源"，此时才允许渲染层走还原 */
                 onDoviParams?.invoke()
             }
