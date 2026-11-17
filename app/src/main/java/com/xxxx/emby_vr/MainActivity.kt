@@ -7210,6 +7210,8 @@ class MainActivity : ComponentActivity() {
          * 换片清场（施工图 §4.2.3.1）：A 类开关在这里全量恢复，起播口不再清。
          * 位置是硬约束 —— 必须排在停内核之前，且是"任何可能销毁内核的调用"之前。
          */
+        stopPipeHealth()
+        selfPipePhase = "已收场"
         clearDoviState()
         /*
          * 静音必须在停内核**之前**还回去（施工图 §4.2.1 与 §4.4 ⑨）。
@@ -8399,6 +8401,54 @@ class MainActivity : ComponentActivity() {
      */
     private val selfPipeWaitingFirstFrame = java.util.concurrent.atomic.AtomicBoolean(false)
 
+    /*
+     * 起播可观测性（父亲 2026-11-17 终版口径：**不设超时判死**，替代机制是健康行从起播第一秒就开打）。
+     * 这些只是"看得见"，任何一条都不触发自动处置。
+     */
+    @Volatile private var selfPipeCanOpen = false
+    @Volatile private var selfPipeReady = false
+    @Volatile private var selfPipeReleased = false
+    @Volatile private var selfPipePhase = "未起播"
+    private var pipeHealthTick: Runnable? = null
+
+    /** 起播健康行：每 2s 一行，覆盖 STARTING / 等信号 / 预热 / 等放行 / PLAYING / 卡住 全过程 */
+    private fun startPipeHealth() {
+        stopPipeHealth()
+        selfPipeCanOpen = false
+        selfPipeReady = false
+        selfPipeReleased = false
+        selfPipePhase = "等 CAN_OPEN"
+        val ui = android.os.Handler(android.os.Looper.getMainLooper())
+        val tick = object : Runnable {
+            override fun run() {
+                val p = videoPipe
+                val pos = runCatching { mpvBackend?.positionSec() }.getOrNull()
+                val shown = p?.lastShownPts ?: -1.0
+                val nexus = if (pos != null && shown > 0 && selfPipeReleased) {
+                    "%.0fms".format((pos - shown) * 1000.0)
+                } else "-"
+                Log.i(
+                    TAG,
+                    "PIPEHEALTH|state=$selfPipePhase|CAN_OPEN=${if (selfPipeCanOpen) "到" else "-"}" +
+                        "|READY=${if (selfPipeReady) "到" else "-"}" +
+                        "|decoded=${p?.decodedFrames ?: 0}|held=${p?.heldSlot() ?: -1}" +
+                        "|dequeued=${p?.dequeuedFrames ?: 0}|tryAgainStreak=${p?.tryAgainStreak ?: 0}" +
+                        "|nexus=$nexus|rpu=${if (p?.rpuReadyNow() == true) "有" else "-"}" +
+                        "|mute=${if (runCatching { mpvBackend?.isMuted() }.getOrNull() == true) "yes" else "no"}" +
+                        "|paused=${if (runCatching { mpvBackend?.isPaused() }.getOrNull() == true) "yes" else "no"}",
+                )
+                ui.postDelayed(this, 2000)
+            }
+        }
+        pipeHealthTick = tick
+        ui.postDelayed(tick, 1000)
+    }
+
+    private fun stopPipeHealth() {
+        pipeHealthTick?.let { android.os.Handler(android.os.Looper.getMainLooper()).removeCallbacks(it) }
+        pipeHealthTick = null
+    }
+
     /** 自管解码当前的地址与目标表面：跳转时要按新位置重建解码器。 */
     private var selfPipeUrl: String? = null
     private var selfPipeSurface: android.view.Surface? = null
@@ -8433,7 +8483,8 @@ class MainActivity : ComponentActivity() {
         if (ok) {
             Log.i(TAG, "失步重启完成：位置=$sec（未重新静音）")
         } else {
-            Log.e(TAG, "失步重启失败：${com.xxxx.emby_vr.player.VideoPipe.lastError}（银幕会黑）")
+            /* 图 §4.4：重建解码器的每条路径都必须判返回值，失败打 ERROR 带 host + 异常类名 */
+            Log.e(TAG, "失步重启失败：host=${hostOf(url)} 原因=${com.xxxx.emby_vr.player.VideoPipe.lastError}（银幕会黑）")
         }
     }
 
@@ -8448,7 +8499,11 @@ class MainActivity : ComponentActivity() {
         val surface = selfPipeSurface ?: return
         val pipe = videoPipe ?: return
         val m = mpvBackend ?: return
-        pipe.start(
+        /*
+         * 图 §4.4：跳转重建必须判返回值。原来这里静默丢弃 false ——
+         * `setDataSource`/`seekTo` 抛异常时一声不响，用户观感就是"快进无效"。
+         */
+        val ok = pipe.start(
             url, emptyMap(), surface,
             { m.positionSec() },
             { m.clockAdvancing() },
@@ -8465,7 +8520,17 @@ class MainActivity : ComponentActivity() {
                 )
             },
         )
+        if (ok) {
+            Log.i(TAG, "跳转重启完成：位置=$sec")
+        } else {
+            Log.e(TAG, "跳转重启失败：host=${hostOf(url)} 原因=${com.xxxx.emby_vr.player.VideoPipe.lastError}")
+            hud("快进后画面起不来")
+        }
     }
+
+    /** 日志里只留主机名，不落完整地址（图 §12 L2 口径：url 只留 host + 末 12 位） */
+    private fun hostOf(url: String): String =
+        runCatching { java.net.URI(url).host ?: url.take(32) }.getOrDefault(url.take(32))
 
 
     /**
@@ -8554,6 +8619,8 @@ class MainActivity : ComponentActivity() {
         m.play(url, startSec, startPaused = true)
         m.setPaused(true)
         m.setMute(true)
+        /* 健康行从起播第一秒就开打（图 §12 L23）：不判死，只让卡在哪一眼看得见 */
+        startPipeHealth()
 
         val doviPath = java.io.File(
             getExternalFilesDir(null) ?: filesDir,
@@ -8570,78 +8637,44 @@ class MainActivity : ComponentActivity() {
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
             { runCatching { syncSelectedSubtitleFromPlayer() } }, 6000,
         )
-        /*
-         * 首帧门（2026-11-17 按图 §4.2.1 五步重写）。
-         *
-         * 原来两处都不对：
-         *   ① 时钟有效性传的是常量 `{ true }` —— 唯一的校验等于关掉；
-         *   ② 门条件挂在"首帧已出"上，而首帧回调正是在门放开之后才触发的，门永远看到已放开。
-         * 现在：门 = 主时钟还没开始走（clockStarted 之前压住画面），首帧一到只"报告"，由这里
-         * 按顺序开声音，最后才让画面出第一帧。
-         */
-        /*
-         * 等内核把文件打开（拿到时长/音轨）再取 audioStart ——
-         * 它是标定基准，取的是**内核实际报的位置**，不是我们请求的 startSec：
-         * 网络片源常跳到最近关键帧，两个值能差出一大截，用错整体偏。
-         */
-        /*
-         * 等内核就绪再起画面解码。**不能在这里 sleep** —— 这是主线程，
-         * 4K 冷启动等 3~8 秒会把整个界面冻住。改成轮询，就绪后再起 PIPE。
-         */
         val ui = android.os.Handler(android.os.Looper.getMainLooper())
-        var audioWaitMs = 0L
+        /*
+         * 起播 = 双信号（施工图 §4.2.1 ②③④⑤）。
+         *
+         * 声音侧就绪 → CAN_OPEN（带基准位置）；画面侧预热三帧 → READY；
+         * 两个都到，在**同一拍**做三件事：解除暂停、放行首帧、取消静音。
+         * 不再等 `clockStarted` 才放画面（那条路保证画面晚于声音，是黑屏成因之一）。
+         */
+        var pipeReady = false
+        var released = false
+        var releaseAtMs = 0L
+
+        fun doRelease() {
+            if (released) return
+            released = true
+            releaseAtMs = android.os.SystemClock.elapsedRealtime()
+            /* 门放开 → 解码线程继续出帧 */
+            selfPipeWaitingFirstFrame.set(false)
+            selfPipeReleased = true
+            selfPipePhase = "PLAYING"
+            /* 同一拍：解除暂停 + 取消静音（中间不插别的活） */
+            runCatching { m.setPaused(false) }
+            runCatching { m.setMute(false) }
+            Log.i(TAG, "放行：解除暂停 + 放行首帧 + mute=no（同一拍，等 READY=${if (pipeReady) "齐" else "未齐"}）")
+        }
+
         fun launchPipeline(audioStart: Double) {
             val ok = pipe.start(
                 url, emptyMap(), surface,
                 { m.positionSec() },
                 { m.clockAdvancing() },
                 audioStart, doviPath,
+                /* 门 = 还没放行：关着时解码线程整轮跳过，不取不喂 */
                 holdGate = { selfPipeWaitingFirstFrame.get() },
                 onFirstFrame = {
-                    /*
-                     * 第④步：首帧就绪（还没上屏）→ 让内核开始走。
-                     * 触发条件是"首帧就绪"，不是"时钟在走" —— 等时钟走才 unpause 会死锁。
-                     */
-                    Log.i(TAG, "自管解码首帧就绪 → unpause（时钟开始走，仍然静音）")
-                    runCatching { m.setPaused(false) }
-                    /*
-                     * 第⑤步：等时钟真的开始走（clockStarted：unpause 后有新采样、位置到基准），
-                     * 再放行画面并取消静音。顺序不能反：先放画面会在时钟未走时全速出帧。
-                     */
-                    var waited = 0L
-                    val h = android.os.Handler(android.os.Looper.getMainLooper())
-                    fun poll() {
-                        if (m.clockStarted(audioStart)) {
-                            /*
-                             * 图 §4.2.1 ④ 后半句：unpause 之后**只验证、不再重算**。
-                             * 拿此刻的实际位置对照 unpause 前那组基准，偏出一帧就记 ERROR ——
-                             * 这里如果"顺手重算 offset"，已经算好的帧会与新基准错开，表现是画面忽快忽慢。
-                             */
-                            val now = m.positionSec()
-                            val drift = kotlin.math.abs(now - audioStart)
-                            if (drift > 0.040) {
-                                Log.e(TAG, "ASSERT 基准漂移：起播基准=$audioStart 时钟起步=$now 差=${"%.3f".format(drift)}s（超一帧）")
-                            } else {
-                                Log.i(TAG, "基准校验通过：基准=$audioStart 起步=$now 差=${"%.3f".format(drift)}s")
-                            }
-                            Log.i(TAG, "时钟已开始走（等了 ${waited}ms）→ 放行首帧 + mute=no")
-                            selfPipeWaitingFirstFrame.set(false)
-                            runCatching { m.setMute(false) }
-                        } else if (waited < 2000L) {
-                            waited += 20L
-                            h.postDelayed({ poll() }, 20L)
-                        } else {
-                            /*
-                             * 图 §4.2.1 第二条看门狗：等到 clockStarted 超时 → 进 FAILING，
-                             * **不是"仍放行画面"**。放行会把"画面有、永远没声音"变成可接受状态，
-                             * 而这正是父亲报过的症状，验收还会通过。
-                             * 回滚里 §4.4 ⑨ 会负责把静音还回去。
-                             */
-                            Log.e(TAG, "FAIL：等 clockStarted 超 2s（clockStarted=false）→ 停播并回滚")
-                            stopPlaybackInternal(keepUi = false)
-                        }
-                    }
-                    poll()
+                    val now = android.os.SystemClock.elapsedRealtime()
+                    val d = if (releaseAtMs > 0) now - releaseAtMs else -1
+                    Log.i(TAG, "首帧上屏（放行→上屏 ${d}ms）")
                 },
                 /*
                  * 失步重启（图 §5）：**必须投主控线程**。这个回调来自解码线程，
@@ -8667,70 +8700,55 @@ class MainActivity : ComponentActivity() {
                 },
                 /*
                  * 画面放完了 → 让内核停在结尾。内核只出声、不知道画面到哪，
-                 * 播完状态由它自己的音频结尾触发，界面照旧收场。
+                 * 播完状态由它自己的音频触发，界面照旧收场。
                  */
                 onEos = {
                     Log.i(TAG, "自管解码：画面已到结尾 → 内核暂停收场")
                     runCatching { m.setLoopFile(false) }
                     runCatching { m.setPaused(true) }
                 },
+                /* ③④ 预热三帧全还掉，回 READY（带跨度与 RPU 状态） */
+                onPreheatReady = { spanMs, rpuReady ->
+                    ui.post {
+                        Log.i(TAG, "READY 三帧跨度=${spanMs}ms RPU=${if (rpuReady) "就绪" else "未就绪"}")
+                        pipeReady = true
+                        selfPipeReady = true
+                        selfPipePhase = "等放行"
+                        /*
+                         * 放行时刻对齐"预热第三帧的呈现时刻"（图 §4.2.1 ③）：
+                         * 声音此刻暂停在基准位置，等一个跨度再放开，画面第一帧正好接上。
+                         */
+                        ui.postDelayed({ doRelease() }, spanMs.coerceAtLeast(0L))
+                    }
+                },
             )
             if (!ok) {
-                /* 画面这条路起不来就别把声音扣着，否则整部片没声 */
-                selfPipeWaitingFirstFrame.set(false)
-                m.setPaused(false)
-                m.setMute(false)
-                Log.e(TAG, "自管解码起播失败（${com.xxxx.emby_vr.player.VideoPipe.lastError}），银幕不会有内容")
-            } else {
                 /*
-                 * 图 §4.2.1 第一条看门狗：**PIPE 起来之后** 3s 内一帧都解不出
-                 * （或所有帧都早于基准确认点、基准永远取不到）→ 停 PIPE 并回落内核全包。
-                 *
-                 * 计时起点必须是"PIPE 起来之后"，不是函数入口：内核慢的片要等到 4~5s 才就绪，
-                 * 从入口算会让看门狗在 PIPE 还没起来时就过期 —— 恰好是它最该生效的场景失效。
-                 *
-                 * 回落前按 §0 铁律 5 的 **MPV 行**设色彩（false+false）并解除静音，
-                 * 否则回落过去同样黑屏 / 无声。
+                 * PIPE 起不来：停在 STARTING —— 不进 PLAYING、不解除暂停、不取消静音，
+                 * ERROR 带原文 + 屏上一行提示（否则现场是"转圈永远不结束"，那是另一种静默）。
                  */
-                ui.postDelayed({
-                    if (selfPipeWaitingFirstFrame.get() && videoPipe === pipe) {
-                        Log.e(TAG, "FAIL：自管解码 3s 内没有可用首帧 → 回落内核全包")
-                        runCatching { pipe.stop() }
-                        videoPipe = null
-                        selfPipeWaitingFirstFrame.set(false)
-                        setColorPair(false)
-                        com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("vid", "auto")
-                        runCatching { m.setMute(false) }
-                        /* 内核已加载同一文件：直接按基准位置起播，不重新取地址 */
-                        runCatching { m.play(url, audioStart, startPaused = false) }
-                        Log.i(TAG, "已回落内核全包（vid=auto, 色彩=MPV行, mute=no, 位置=$audioStart）")
-                    }
-                }, 3000L)
+                val why = com.xxxx.emby_vr.player.VideoPipe.lastError
+                Log.e(TAG, "PIPE 起不来：$why（停在 STARTING，不解除暂停、不取消静音）")
+                hud("画面解码起不来")
             }
         }
 
-        fun startPipeWhenReady() {
-            if (m.clockPresent()) {
-                val audioStart = m.positionSec()
-                Log.i(TAG, "起播基准：请求=$startSec 实际 audioStart=$audioStart（等了 ${audioWaitMs}ms）")
-                launchPipeline(audioStart)
-                return
+        /*
+         * ② 声音侧就绪 → CAN_OPEN：由属性观察者回调推送，**不是我们轮询去问**
+         * （这轮改的就是"不许靠等待和轮询"，就绪判定再靠轮询等于原地打转）。
+         */
+        m.awaitCanOpen { basePos ->
+            ui.post {
+                if (selfPipeUrl != url) {
+                    Log.w(TAG, "CAN_OPEN 到达时已换片，丢弃（旧 ${url.take(60)}）")
+                    return@post
+                }
+                selfPipeCanOpen = true
+                selfPipePhase = "预热"
+                Log.i(TAG, "起播基准：CAN_OPEN 基准=${"%.3f".format(basePos)}（请求=${"%.3f".format(startSec)}）")
+                launchPipeline(basePos)
             }
-            if (audioWaitMs >= 5000L) {
-                /*
-                 * 图 §4.2.1 第三条看门狗：5s 没等到内核就绪 → 用请求位置作基准，
-                 * 但必须打 ERROR 说明"基准可能差一个 GOP"。静默兜底会让后面所有偏差都查不出源头。
-                 */
-                Log.e(TAG, "ERROR：5s 未等到内核就绪（clockPresent=false），基准改用请求值 $startSec —— 可能差一个 GOP")
-                launchPipeline(startSec)
-                return
-            }
-            audioWaitMs += 50L
-            ui.postDelayed({ startPipeWhenReady() }, 50L)
         }
-
-        /* 开始等内核就绪，就绪后自动起画面 */
-        startPipeWhenReady()
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)

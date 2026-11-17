@@ -176,6 +176,8 @@ class MpvBackend(private val context: Context) {
         @Volatile private var cSubText = ""
         @Volatile private var cEof = false
         @Volatile private var cPaused = false
+        /** mute 当前值（健康行要看，不影响时钟） */
+        @Volatile private var cMuted = false
         @Volatile private var cTrackList = ""
         @Volatile private var cHasVideo = false
         /** 内核是否处于 idle（没加载文件）；clockAdvancing 的三个否据之一 */
@@ -286,6 +288,7 @@ class MpvBackend(private val context: Context) {
             }
             s("sub-text") { cSubText = it }
             b("pause") { cPaused = it }
+            b("mute") { cMuted = it }
             /* 音轨是否已解析（clockPresent 的一半）：内核报出 audio 属性即视为已选到音轨 */
             b("audio") { audioTrackResolved = it }
             /* 音频输出是否已建立：ao 报出设备名即视为已建（不含"真出声"——那只认录音验收） */
@@ -822,6 +825,8 @@ class MpvBackend(private val context: Context) {
 
     fun isPaused(): Boolean = cPaused
 
+    fun isMuted(): Boolean = cMuted
+
     /**
      * 静音开关（起播五步用）。
      *
@@ -865,6 +870,59 @@ class MpvBackend(private val context: Context) {
         if (cVideoW > 0 && cVideoH > 0) (cVideoW to cVideoH) else null
 
     fun currentSubtitleText(): String = cSubText
+
+    /*
+     * ── 声音侧就绪信号 CAN_OPEN（施工图 §4.2.1 ②）──
+     *
+     * 三条同时满足才算就绪：①已加载（非 idle、duration>0）②音轨已解析
+     * ③`pause=yes` 状态下有一份有效的 time-pos 采样（它就是基准位置）。
+     * 触发靠**属性观察者回调**，不是我们轮询去问 —— 起播改的就是"不许靠等待和轮询"，
+     * 就绪判定再靠轮询等于原地打转。判定用的值全取自轮询线程缓存，观察者线程不做同步属性读取。
+     */
+    private var canOpenObserver: MPVLib.EventObserver? = null
+    private var canOpenFired = false
+
+    fun awaitCanOpen(onReady: (Double) -> Unit) {
+        if (!MpvBackend.isReady()) {
+            Log.w(TAG, "SKIP|engineNotReady|prop=CAN_OPEN")
+            return
+        }
+        cancelAwaitCanOpen()
+        canOpenFired = false
+        val obs = object : MPVLib.EventObserver {
+            override fun eventProperty(property: String) = evaluate()
+            override fun eventProperty(property: String, value: Long) = evaluate()
+            override fun eventProperty(property: String, value: Double) = evaluate()
+            override fun eventProperty(property: String, value: Boolean) = evaluate()
+            override fun eventProperty(property: String, value: String) = evaluate()
+            override fun event(eventId: Int) = evaluate()
+
+            private fun evaluate() {
+                if (canOpenFired) return
+                if (!cPaused) return
+                if (cIdleActive) return
+                if (cDuration <= 0.0) return
+                if (!audioTrackResolved) return
+                if (cTimePosAtMs == 0L || cTimePos < 0.0) return
+                canOpenFired = true
+                cancelAwaitCanOpen()
+                Log.i(
+                    TAG,
+                    "CAN_OPEN 基准=${"%.3f".format(cTimePos)}（duration=${"%.1f".format(cDuration)} 音轨已解析 pause=yes）",
+                )
+                onReady(cTimePos)
+            }
+        }
+        canOpenObserver = obs
+        MPVLib.addObserver(obs)
+        MPVLib.observeProperty("time-pos", MPVLib.MPV_FORMAT_DOUBLE)
+        MPVLib.observeProperty("duration", MPVLib.MPV_FORMAT_DOUBLE)
+    }
+
+    fun cancelAwaitCanOpen() {
+        canOpenObserver?.let { o -> runCatching { MPVLib.removeObserver(o) } }
+        canOpenObserver = null
+    }
 
     /** 读任意内核属性（诊断用）。读不到返回 null，不抛。 */
     fun prop(name: String): String? {
@@ -1323,6 +1381,7 @@ class MpvBackend(private val context: Context) {
     fun hasVideo(): Boolean = cHasVideo
 
     fun stop() {
+        cancelAwaitCanOpen()
         endPolling()
         post { whenReady("stop") { MPVLib.command(arrayOf("stop")) } }
         if (!MpvBackend.isReady()) { Log.w(TAG, "SKIP|engineNotReady|detachSurface"); surfaceAttached = false; return }

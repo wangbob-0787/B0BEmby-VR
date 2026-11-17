@@ -75,6 +75,43 @@ class VideoPipe {
      */
     @Volatile private var holdGate: (() -> Boolean)? = null
 
+    /*
+     * 出帧资源账（施工图 §5 I1-I4）。
+     *
+     * `heldIdx` 是**唯一**的持有状态：-1 = 没持有。MediaCodec 只在 release 之后才把格子还回来，
+     * 所以"取到帧不归还又回头再取"会一帧一帧把池子占满（实测 880ms 占满 → 恒 TRY_AGAIN → 0 帧）。
+     * 禁止再出现"持有布尔 + 下标"两件套 —— 两个东西必然不同步。
+     */
+    private var heldIdx = -1
+
+    /** 预热帧数（图 §4.2.1 ③：三帧；首帧慢、RPU 常到第三帧才出） */
+    private var preheatFrames = 3
+    private var preheatCount = 0
+    private var preheatFirstPts = -1.0
+    private var preheatLastPts = -1.0
+    /** 预热是否已完成（完成之前不上屏、放行信号也还不该理） */
+    @Volatile private var preheated = false
+    /** 预热完成时回调：三帧跨度（ms）、RPU 是否已解出 */
+    @Volatile private var onPreheatReady: ((Long, Boolean) -> Unit)? = null
+    /** 连续取不到输出帧的次数（成功一次就清零）：只进健康行做可见性，不据此判死 */
+    @Volatile var tryAgainStreak = 0L
+        private set
+    /** 累计取帧成功次数（健康行用） */
+    @Volatile var dequeuedFrames = 0L
+        private set
+    /** 最近一次上屏帧的换算位置（秒；-1 = 还没上过屏），健康行算 nexus 用 */
+    @Volatile var lastShownPts = -1.0
+        private set
+
+    /** 当前持有的格子（-1 = 没持有）。健康行只做可见性，不作判据 */
+    fun heldSlot(): Int = heldIdx
+
+    /** 杜比参数解出来没有（颜色是否已具备还原条件） */
+    fun rpuReadyNow(): Boolean = lastDovi != null
+
+    /** 首帧上屏只回调一次 */
+    private var showLogged = false
+
     /** 首帧已送进画面。用来通知外面放开声音。 */
 
     /** 首帧出来时回调一次（外面在这里放开声音） */
@@ -123,8 +160,6 @@ class VideoPipe {
     private var desyncSinceMs = 0L
     /** 时钟无效时连续挂起的次数（只用于日志节流；何时收场由上层按"无进度"判） */
     private var droppedNoClock = 0
-    /** 首帧已解出（≠ 已上屏）：只回调一次 onFirstFrame 用 */
-    @Volatile private var firstFrameReady = false
     /** 首帧已真正上屏（≠ 已解出）：节拍判断只在它之后生效 */
     @Volatile private var firstFrameShown = false
 
@@ -164,6 +199,10 @@ class VideoPipe {
         onDoviParams: (() -> Unit)? = null,
         onEos: (() -> Unit)? = null,
         onNeedRestart: ((Double) -> Unit)? = null,
+        /** 预热帧数（图 §4.2.1 ③） */
+        preheatFrames: Int = 3,
+        /** 预热完成（三帧全部解出并归还）→ 报跨度与 RPU 状态，等外部放行 */
+        onPreheatReady: ((Long, Boolean) -> Unit)? = null,
     ): Boolean {
         stop()
         lastError = null
@@ -175,8 +214,16 @@ class VideoPipe {
         this.onDoviParams = onDoviParams
         this.onEos = onEos
         this.onNeedRestart = onNeedRestart
-        firstFrameReady = false
         firstFrameShown = false
+        heldIdx = -1
+        this.preheatFrames = preheatFrames.coerceAtLeast(1)
+        preheatCount = 0
+        preheatFirstPts = -1.0
+        preheatLastPts = -1.0
+        preheated = false
+        this.onPreheatReady = onPreheatReady
+        tryAgainStreak = 0L
+        showLogged = false
         lastDovi = null
         doviWriteSkip = 0
         /*
@@ -256,6 +303,17 @@ class VideoPipe {
     }
 
     /** 解码主循环：喂码流、取画面，按时间轴送出去，直到停止或码流结束。 */
+    /**
+     * 解码主循环：喂码流、取画面，按时间轴送出去，直到停止或码流结束。
+     *
+     * **出帧资源账（施工图 §5 的 I1-I4，2026-11-17 按图重写）**
+     *  · 输出缓冲是有限池，MediaCodec 只在 release 之后才还回来；
+     *  · I1 至多持有一帧：`heldIdx` 是**唯一**的持有状态（-1 = 没持有），归还后立刻置 -1；
+     *  · I2 取帧前置条件唯一：只有 `heldIdx < 0` 时才允许 `dequeueOutputBuffer`；
+     *  · I3 持有期间只允许 release 或**原地等待且不取帧**
+     *    （老实现是"睡 5ms 再回去取"，880ms 就占满池子 → 恒 TRY_AGAIN → 0 帧、有声无画）；
+     *  · 门卡在**取输出缓冲之前**：门关着整轮跳过 —— 不取、不喂、不动。
+     */
     private fun pump() {
         val ex = extractor ?: return
         val codec = decoder ?: return
@@ -264,15 +322,24 @@ class VideoPipe {
         var outputDone = false
 
         while (running.get() && !outputDone) {
+            /* 门关着（预热完、外部还没放行）：整轮跳过，一格不取、一口不喂（I2 / I3） */
+            if (preheated && holdGate?.invoke() == true) {
+                try {
+                    Thread.sleep(5)
+                } catch (t: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    break
+                }
+                continue
+            }
+
             if (!inputDone) {
                 val inIdx = codec.dequeueInputBuffer(DEQUEUE_TIMEOUT_US)
                 if (inIdx >= 0) {
                     val buf = codec.getInputBuffer(inIdx) ?: continue
                     val size = ex.readSampleData(buf, 0)
                     if (size < 0) {
-                        codec.queueInputBuffer(
-                            inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM
-                        )
+                        codec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                         inputDone = true
                     } else {
                         val pts = ex.sampleTime
@@ -280,7 +347,8 @@ class VideoPipe {
                          * 趁这帧还在手里，先解出杜比参数。
                          *
                          * 必须在 queueInputBuffer 之前读：入队之后缓冲归解码器所有，
-                         * 内容随时可能被改写。
+                         * 内容随时可能被改写。**参数来自输入端**，所以"预热三帧全部归还、
+                         * 不上屏"不影响颜色 —— 这是不留首帧的依据。
                          */
                         harvestDovi(buf, size)
                         codec.queueInputBuffer(inIdx, 0, size, pts, 0)
@@ -289,162 +357,23 @@ class VideoPipe {
                 }
             }
 
+            /* I2：持有帧时绝不取下一帧。走到这里说明上一轮没归还，按错误处理并强制归还 */
+            if (heldIdx >= 0) {
+                Log.e(TAG, "ASSERT 持有帧未归还又取帧（heldIdx=$heldIdx）→ 丢弃该帧后继续")
+                runCatching { codec.releaseOutputBuffer(heldIdx, false) }
+                heldIdx = -1
+            }
+
             val outIdx = codec.dequeueOutputBuffer(info, DEQUEUE_TIMEOUT_US)
             when {
                 outIdx >= 0 -> {
-                    /*
-                     * 定时输出：把「这一帧该在哪一刻显示」交给系统排，而不是自己 sleep 等。
-                     *
-                     * 时间基准用**自己的墙钟连续走**，播放器的位置只用来偶尔纠偏
-                     * （2026-11-16 父亲实测「速度一会快一会慢」）：
-                     * 逐帧去读播放器的位置，而它缓冲时那个值本身在跳，画面就跟着跳。
-                     * 这与弹幕时钟是同一条定式 —— 时钟自己走，播放器的值只做平滑纠偏。
-                     */
-                    /*
-                     * 出帧节拍（2026-11-17 按施工图 §5 重写）。
-                     *
-                     * 三条判据，缺一不出帧：
-                     *   ① 时钟"活着"（clockAdvancing：已加载 + 未暂停 + 位置最近 200ms 有推进）
-                     *      —— 原来这里写死 `{ true }` 且用 `audioSec > 0` 当门，起播位置正好是 0 时
-                     *      门恒不成立，画面全速出帧 = 父亲看到的"快速播放"
-                     *   ② 零点已标定（appliedOffset 冻结后才有换算关系）
-                     *   ③ 这一帧不早于音频起点（早于的是预卷帧，不许上屏）
-                     * 时钟无效时的动作是**挂起不出帧**（图 §0 铁律 6），不是跳过检查继续出帧。
-                     */
-                    val ptsRaw = info.presentationTimeUs / 1_000_000.0
-                    val audioSec = if (clockValidProvider?.invoke() == true) {
-                        clockProvider?.invoke() ?: -1.0
-                    } else -1.0
-
-                    /*
-                     * 零点标定**必须先于"通知外部"**（图 §4.2.1 ④：标定要在 unpause 之前做完）。
-                     * originPts 只能从解出来的第一帧取，所以标定落在解码线程这里；
-                     * 一旦先通知外部，外部立刻 unpause，时钟先走、基准后算，两边就错开一段。
-                     */
-                    if (originPts < 0.0 && ptsRaw >= audioStartSec) {
-                        originPts = ptsRaw
-                        appliedOffset = audioStartSec - originPts
-                        Log.i(TAG, "零点标定：audioStart=$audioStartSec origin=$originPts offset=$appliedOffset 预卷丢弃=$prerollDropped")
-                    }
-                    if (originPts < 0.0) {
-                        /* 还在预卷区：丢弃但计数，不上屏（图 §5：预卷帧必须显式丢弃并计数） */
-                        prerollDropped++
-                        codec.releaseOutputBuffer(outIdx, false)
-                        continue
-                    }
-
-                    /*
-                     * 首帧：标定完成后**只通知外部，不看时钟**。
-                     *
-                     * 起播阶段内核在等首帧、处于暂停，此时时钟必然不推进。若首帧也被时钟门挡住，
-                     * 就成了"解码等时钟 → 时钟等 unpause → unpause 等首帧 → 首帧等解码"的死锁，
-                     * 实测表现是一次都解不出来（解码循环 0 帧）、整块黑屏。
-                     */
-                    if (!firstFrameReady) {
-                        firstFrameReady = true
-                        Log.i(TAG, "首帧已解出（标定完成，等外部放行）pts=$ptsRaw 预卷丢弃=$prerollDropped")
-                        runCatching { onFirstFrame?.invoke() }
-                    }
-
-                    /*
-                     * 节拍只对"首帧已经上屏之后的帧"生效。
-                     * 首帧还没上屏时不判节拍 —— 那时内核在等首帧、时钟必然不推进，
-                     * 判了就会被当成"超前一大截"直接丢掉（这正是黑屏的成因之一）。
-                     */
-                    if (!firstFrameShown && audioSec < 0.0) {
-                        /* 首帧尚未上屏且时钟没走：跳过节拍，交给下面的门决定何时放行 */
-                    } else if (audioSec < 0.0) {
-                        /*
-                         * 图 §0 铁律 6：时钟无效时**不出帧并挂起**，不推进也不丢弃。
-                         * 挂起靠 sleep 让出 CPU（不是空转）。不在这里自判死：
-                         * 播放期时钟真停住由 §4.1 的"无进度 5s / 上限 15s → FAILING"收场，
-                         * 解码线程自杀会让人只看到黑屏、查不到原因。
-                         */
-                        droppedNoClock++
-                        if (droppedNoClock % 100 == 1) {
-                            Log.w(TAG, "时钟未走，画面挂起中（已等 $droppedNoClock 次）")
-                        }
-                        try {
-                            Thread.sleep(20)
-                        } catch (t: InterruptedException) {
-                            Thread.currentThread().interrupt()
-                            break
-                        }
-                        continue
-                    } else {
-                        droppedNoClock = 0
-                        val ptsRef = ptsRaw + appliedOffset   /* 换算到与主时钟同一时间轴 */
-                        val ahead = ptsRef - audioSec
-
-                        when {
-                            /* 超前 40ms~300ms：按差值等待（分段可中断，每段检查 running） */
-                            ahead > 0.040 && ahead < 0.300 -> {
-                                var remainMs = ((ahead - 0.040) * 1000.0).toLong()
-                                while (remainMs > 0 && running.get()) {
-                                    val step = remainMs.coerceAtMost(20L)
-                                    try {
-                                        Thread.sleep(step)
-                                    } catch (t: InterruptedException) {
-                                        Thread.currentThread().interrupt()
-                                        break
-                                    }
-                                    remainMs -= step
-                                }
-                                if (!running.get()) break
-                            }
-                            /* 超前 ≥300ms：不等待，直接丢帧跳（图 §5 第二档；等待会饿死解码器） */
-                            ahead >= 0.300 -> {
-                                codec.releaseOutputBuffer(outIdx, false)
-                                decodedFrames++
-                                /*
-                                 * 失步兜底（图 §5）：**偏差连续 3s >500ms** 才重启。
-                                 * 记"首次超阈时刻"，不是"丢帧累计到 500ms 就重启" ——
-                                 * 一次跳几秒的大跨度丢帧会立刻累计过阈，导致误重启。
-                                 */
-                                val nowMs = android.os.SystemClock.elapsedRealtime()
-                                if (ahead > 0.500) {
-                                    if (desyncSinceMs == 0L) desyncSinceMs = nowMs
-                                    if (nowMs - desyncSinceMs >= 3000L) {
-                                        Log.w(TAG, "失步持续 3s（偏差 ${"%.2f".format(ahead)}s）→ 请求从 ${audioSec}s 重启")
-                                        desyncSinceMs = 0L
-                                        runCatching { onNeedRestart?.invoke(audioSec) }
-                                        break
-                                    }
-                                } else {
-                                    desyncSinceMs = 0L
-                                }
-                                continue
-                            }
-                            /* 落后超过阈值：丢帧追上（阈值 = P95+20ms，初值 80ms） */
-                            ahead < -DROP_BEHIND_SEC -> {
-                                codec.releaseOutputBuffer(outIdx, false)
-                                decodedFrames++
-                                continue
-                            }
-                        }
-                    }
-
-                    /*
-                     * 门（图 §4.2.1 ③④⑤）：卡在"出帧动作"上，不是卡在取输出缓冲上。
-                     * 外部在"时钟真的走起来"之后才放行；压住期间这帧留在手里不上屏（形成背压）。
-                     */
-                    if (holdGate?.invoke() == true) {
-                        /* 门还压着：这帧留在手里不上屏（不推进、不丢弃），稍后重看 */
-                        try {
-                            Thread.sleep(5)
-                        } catch (t: InterruptedException) {
-                            Thread.currentThread().interrupt()
-                            break
-                        }
-                        continue
-                    }
-                    codec.releaseOutputBuffer(outIdx, true)
-                    firstFrameShown = true
-                    desyncSinceMs = 0L
-                    decodedFrames++
-                    if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+                    heldIdx = outIdx
+                    dequeuedFrames++
+                    if (outputFrame(codec, info, outIdx)) {
                         outputDone = true
                     }
+                    /* 归还后立刻清账：任何分支都必须恰好 release 一次（I1） */
+                    heldIdx = -1
                 }
                 outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                     val f = codec.outputFormat
@@ -452,16 +381,156 @@ class VideoPipe {
                     videoHeight = f.getInteger(MediaFormat.KEY_HEIGHT)
                     Log.i(TAG, "输出格式确定 ${videoWidth}x$videoHeight")
                 }
-                // INFO_TRY_AGAIN_LATER：这一轮没东西，继续
+                /* INFO_TRY_AGAIN_LATER：这一轮没东西，继续（次数进健康行，不据此判死） */
+                else -> tryAgainStreak++
             }
         }
         /*
-         * 画面放完了：告诉外面一次（父新 2026-11-16 要求）。
+         * 画面放完了：告诉外面一次（父亲 2026-11-16 要求）。
          * 正常播完与被停止都会走到这里，外面按"是不是还在播"决定要不要当结束处理。
          */
         if (outputDone) runCatching { onEos?.invoke() }
-        Log.i(TAG, "解码循环结束，共 $decodedFrames 帧")
+        Log.i(TAG, "解码循环结束，共 $decodedFrames 帧（预卷丢弃=$prerollDropped tryAgain=$tryAgainStreak）")
+        /*
+         * 图 §5 I4：**释放权归线程自己** —— 线程退出时释放自己持有的帧与解码器。
+         * 外部 `join` 超时不得代它 release（那等于拆一个正在用的实例）。
+         */
+        if (heldIdx >= 0) {
+            runCatching { decoder?.releaseOutputBuffer(heldIdx, false) }
+            heldIdx = -1
+        }
+        runCatching { decoder?.stop() }
+        runCatching { decoder?.release() }
+        runCatching { extractor?.release() }
+        decoder = null
+        extractor = null
     }
+
+    /**
+     * 处理一帧输出缓冲（调用方已把 outIdx 记进 `heldIdx`）。返回 true = 要求解码循环结束。
+     *
+     * 所有分支都**恰好 release 一次**：预热帧归还不上屏；时钟无效时**持有这一帧原地等**、
+     * 不再取下一帧；节拍到了才上屏。
+     */
+    private fun outputFrame(codec: MediaCodec, info: MediaCodec.BufferInfo, outIdx: Int): Boolean {
+        val ptsRaw = info.presentationTimeUs / 1_000_000.0
+        tryAgainRuns = 0
+
+        fun finish(render: Boolean): Boolean {
+            codec.releaseOutputBuffer(outIdx, render)
+            decodedFrames++
+            if (render) {
+                lastShownPts = ptsRaw + appliedOffset
+                firstFrameShown = true
+                desyncSinceMs = 0L
+                if (!showLogged) {
+                    showLogged = true
+                    runCatching { onFirstFrame?.invoke() }
+                }
+            }
+            return info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
+        }
+
+        /* 预卷：早于基准的帧一律丢，不上屏（§5 零点标定） */
+        if (originPts < 0.0 && ptsRaw < audioStartSec) {
+            prerollDropped++
+            return finish(false)
+        }
+        if (originPts < 0.0) {
+            originPts = ptsRaw
+            appliedOffset = audioStartSec - originPts
+            Log.i(TAG, "零点标定：audioStart=$audioStartSec origin=$originPts offset=$appliedOffset 预卷丢弃=$prerollDropped")
+        }
+
+        /*
+         * 预热三帧（§4.2.1 ③）：连解三帧，**每帧解出即归还、不上屏，一帧都不留**。
+         * 只记首帧 pts、三帧跨度、RPU 是否已解出 —— 颜色不依赖持有首帧（RPU 来自输入端）。
+         */
+        if (!preheated) {
+            if (preheatFirstPts < 0.0) preheatFirstPts = ptsRaw
+            preheatLastPts = ptsRaw
+            preheatCount++
+            val done = preheatCount >= preheatFrames
+            if (done) {
+                val spanMs = ((preheatLastPts - preheatFirstPts) * 1000.0).toLong()
+                val rpuReady = lastDovi != null
+                preheated = true
+                Log.i(TAG, "READY 三帧跨度=${spanMs}ms RPU=${if (rpuReady) "就绪" else "未就绪"}（预热 $preheatCount 帧已全部归还）")
+                runCatching { onPreheatReady?.invoke(spanMs, rpuReady) }
+            }
+            return finish(false)
+        }
+
+        /* 放行后：先看时钟。时钟无效时**持有这一帧原地等，不取下一帧**（I3） */
+        var audioSec = clockNow()
+        if (audioSec < 0.0) {
+            droppedNoClock++
+            if (droppedNoClock % 100 == 1) {
+                Log.w(TAG, "时钟未走，画面挂起中（持有 1 帧等待，已等 $droppedNoClock 次）")
+            }
+            while (running.get() && clockNow() < 0.0) {
+                try {
+                    Thread.sleep(20)
+                } catch (t: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    break
+                }
+            }
+            droppedNoClock = 0
+            if (!running.get()) return finish(false)
+            audioSec = clockNow()
+        }
+
+        val ptsRef = ptsRaw + appliedOffset
+        val ahead = ptsRef - audioSec
+        when {
+            /* 超前 40ms~300ms：按差值等待（分段可中断，每段检查 running）；期间持有 1 帧 */
+            ahead > 0.040 && ahead < 0.300 -> {
+                var remainMs = ((ahead - 0.040) * 1000.0).toLong()
+                while (remainMs > 0 && running.get()) {
+                    val step = remainMs.coerceAtMost(20L)
+                    try {
+                        Thread.sleep(step)
+                    } catch (t: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        break
+                    }
+                    remainMs -= step
+                }
+                if (!running.get()) return finish(false)
+            }
+            /* 超前 ≥300ms：不等待，直接丢帧跳（等待会饿死解码器） */
+            ahead >= 0.300 -> {
+                val nowMs = android.os.SystemClock.elapsedRealtime()
+                if (ahead > 0.500) {
+                    if (desyncSinceMs == 0L) desyncSinceMs = nowMs
+                    if (nowMs - desyncSinceMs >= 3000L) {
+                        Log.w(TAG, "失步持续 3s（偏差 ${"%.2f".format(ahead)}s）→ 请求从 ${audioSec}s 重启")
+                        desyncSinceMs = 0L
+                        codec.releaseOutputBuffer(outIdx, false)
+                        decodedFrames++
+                        runCatching { onNeedRestart?.invoke(audioSec) }
+                        return true
+                    }
+                } else {
+                    desyncSinceMs = 0L
+                }
+                return finish(false)
+            }
+            /* 落后超过阈值：丢帧追上（阈值 = P95+20ms，初值 80ms） */
+            ahead < -DROP_BEHIND_SEC -> return finish(false)
+        }
+
+        /* 区间内 → 上屏 */
+        return finish(true)
+    }
+
+    /** 预热三帧是否已完成（图 §4.2.1 ③）；看门狗观测用 */
+    fun isPreheated(): Boolean = preheated
+
+    /** 当前主时钟位置（秒）；时钟无效返回 -1 —— 只有它能当"要不要等"的依据 */
+    private fun clockNow(): Double =
+        if (clockValidProvider?.invoke() == true) (clockProvider?.invoke() ?: -1.0) else -1.0
 
     /**
      * 从这一帧的码流里解出杜比还原参数，变了就落盘给渲染层。
@@ -513,21 +582,30 @@ class VideoPipe {
 
     /** 停止并释放。可重复调用。 */
     fun stop() {
+        /* 释放权归线程自己：这里只置停止标志，不代解码线程 release（图 §5 I4） */
         running.set(false)
         holdGate = null
         onNeedRestart = null
-        firstFrameReady = false
         droppedNoClock = 0
         desyncSinceMs = 0L
         onFirstFrame = null
-        thread?.let {
+        val t0 = thread
+        t0?.let {
             try {
                 it.join(600)
-            } catch (t: InterruptedException) {
+            } catch (e: InterruptedException) {
                 Thread.currentThread().interrupt()
             }
         }
         thread = null
+        if (t0?.isAlive == true) {
+            /*
+             * 图 §5 I4：线程还没退出时**禁止外部代它 release**（那是拆正在用的实例）。
+             * 释放留给线程自己的退出路径；这里只留痕，下次 start 前会确认旧实例已死。
+             */
+            Log.e(TAG, "ASSERT joinTimeout thread=VideoPipe（600ms 未退出，不代它释放解码器）")
+            return
+        }
         try {
             decoder?.stop()
         } catch (t: Throwable) {
