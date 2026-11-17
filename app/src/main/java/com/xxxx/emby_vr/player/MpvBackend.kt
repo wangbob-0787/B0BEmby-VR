@@ -865,11 +865,24 @@ class MpvBackend(private val context: Context) {
      *                    不能先放声音，否则声音跑在画面前面就是音画不同步。
      *                    由调用方在首帧到位后 [setPaused] 放开。
      */
-    fun play(url: String, startSec: Double = 0.0, startPaused: Boolean = false) {
+    fun play(url: String, startSec: Double = 0.0, startPaused: Boolean = false, source: String = "-") {
         ensureCreated(context)
         beginPolling()
         loadGen += 1
         val gen = loadGen
+        /*
+         * `pause` 是**每个文件**的状态：loadfile 时不把"以暂停开始"带进去，它加载完就按默认**开播**，
+         * 时钟立刻走 —— 现场表现是"一快进时钟就走、但没有声音"（2026-11-17 父亲实测 r1420）。
+         * 所以 startPaused=true 时必须在 loadfile **之前**把 pause=yes 排进同一条命令队列。
+         */
+        if (startPaused) {
+            post { whenReady("pause") { MPVLib.setPropertyBoolean("pause", true) } }
+        }
+        Log.i(
+            TAG,
+            "loadfile|host=${runCatching { java.net.URI(url).host }.getOrNull() ?: url.take(32)}" +
+                "|startPaused=$startPaused|source=$source|startSec=${"%.1f".format(startSec)}",
+        )
         try {
             /*
              * 续播位置必须在**加载文件之前**交代下去（父亲 2026-10-09：

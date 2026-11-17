@@ -4452,7 +4452,7 @@ class MainActivity : ComponentActivity() {
                         if (useSelfPipe) {
                             startSelfVideoPipe(directUrl, startMs / 1000.0, surface, m)
                         } else {
-                            m.play(directUrl, startMs / 1000.0)
+                            m.play(directUrl, startMs / 1000.0, source = "内核起播")
                         }
                     }
                     /*
@@ -8698,7 +8698,7 @@ class MainActivity : ComponentActivity() {
          * 两次调用（play 的 startPaused + 再补一刀 setPaused）是为了压住"加载完成自己开播"那一瞬，
          * 只设一次挡不住（父亲 2026-11-16 实测"声音比画面先出来"）。
          */
-        m.play(url, startSec, startPaused = true)
+        m.play(url, startSec, startPaused = true, source = "P5自管解码起播")
         m.setPaused(true)
         m.setMute(true)
         /* 健康行从起播第一秒就开打（图 §12 L23）：不判死，只让卡在哪一眼看得见 */
