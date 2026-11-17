@@ -8755,6 +8755,8 @@ class MainActivity : ComponentActivity() {
                 /* 卡顿诊断：把推进窗口时长与窗口内累计增量交给解码线程打日志 */
                 clockProbe = { m.clockAdvanceProbe() },
                 clockAgeProvider = { m.clockSampleAgeMs() },
+                /* 重启目标只取真实读数（外推可以判帧，不许命令播放器跳） */
+                clockReal = { m.positionSec() },
                 onFirstFrame = {
                     val now = android.os.SystemClock.elapsedRealtime()
                     val d = if (releaseAtMs > 0) now - releaseAtMs else -1

@@ -62,6 +62,17 @@ class VideoPipe {
     /** 卡顿诊断：最新位置采样的年龄（ms）——直接看出是不是"新鲜度"判掉的 */
     @Volatile private var clockAgeProvider: (() -> Long)? = null
 
+    /*
+     * 重启目标只能取**真实读数**（外推可以判帧，不许命令播放器跳）。
+     * 用外推值当 seek 目标会跳到超前处 → 解出来全是超前帧 → 等待/丢 → 又落后 → 又重启，
+     * 现场就是"每几秒跳一次"。
+     */
+    @Volatile private var clockRealProvider: (() -> Double)? = null
+
+    /** 连续重启计数与上次重启时刻：≥3 次仍未收敛就停手，宁可停住也不无限跳 */
+    private var restartCount = 0
+    private var lastRestartMs = 0L
+
     /**
      * 杜比参数落盘路径（与内核那份同一个文件，渲染层读它做还原）。
      *
@@ -212,6 +223,8 @@ class VideoPipe {
         clockProbe: (() -> Pair<Long, Double>)? = null,
         /** 卡顿诊断用（可选）：返回最新位置采样年龄 ms */
         clockAgeProvider: (() -> Long)? = null,
+        /** 重启目标用的真实位置（不含外推）；缺省退回 clock */
+        clockReal: (() -> Double)? = null,
         onFirstFrame: (() -> Unit)? = null,
         onDoviParams: (() -> Unit)? = null,
         onEos: (() -> Unit)? = null,
@@ -238,6 +251,9 @@ class VideoPipe {
         this.holdGate = holdGate
         this.clockProbe = clockProbe
         this.clockAgeProvider = clockAgeProvider
+        this.clockRealProvider = clockReal
+        restartCount = 0
+        lastRestartMs = 0L
         this.onFirstFrame = onFirstFrame
         this.onDoviParams = onDoviParams
         this.onEos = onEos
@@ -457,6 +473,10 @@ class VideoPipe {
             /* decodedFrames 只统计真正上屏的帧：预热三帧、预卷丢弃、丢帧追赶都不算 */
             if (render) decodedFrames++
             if (render) {
+                /* 连续出帧满 10 秒没再重启 → 视为收敛，重启计数清零 */
+                if (restartCount > 0 && android.os.SystemClock.elapsedRealtime() - lastRestartMs > 10_000L) {
+                    restartCount = 0
+                }
                 lastShownPts = ptsRaw + appliedOffset
                 firstFrameShown = true
                 desyncSinceMs = 0L
@@ -570,11 +590,10 @@ class VideoPipe {
                 if (ahead > 0.500) {
                     if (desyncSinceMs == 0L) desyncSinceMs = nowMs
                     if (nowMs - desyncSinceMs >= 3000L) {
-                        Log.w(TAG, "失步持续 3s（偏差 ${"%.2f".format(ahead)}s）→ 请求从 ${audioSec}s 重启")
                         desyncSinceMs = 0L
                         codec.releaseOutputBuffer(outIdx, false)
                         releasedFrames++
-                        runCatching { onNeedRestart?.invoke(audioSec) }
+                        requestRestart(ahead, nowMs)
                         return true
                     }
                 } else {
@@ -595,11 +614,10 @@ class VideoPipe {
                 if (ahead < -0.500) {
                     if (desyncSinceMs == 0L) desyncSinceMs = nowMs
                     if (nowMs - desyncSinceMs >= 3000L) {
-                        Log.w(TAG, "落后持续 3s（偏差 ${"%.2f".format(ahead)}s）→ 请求从 ${audioSec}s 重启")
                         desyncSinceMs = 0L
                         codec.releaseOutputBuffer(outIdx, false)
                         releasedFrames++
-                        runCatching { onNeedRestart?.invoke(audioSec) }
+                        requestRestart(ahead, nowMs)
                         return true
                     }
                 } else {
@@ -615,6 +633,32 @@ class VideoPipe {
 
     /** 预热三帧是否已完成（图 §4.2.1 ③）；看门狗观测用 */
     fun isPreheated(): Boolean = preheated
+
+    /**
+     * 请求重启（失步兜底）。两条硬约束（2026-11-17 丫头定）：
+     * ① 目标用**真实读数**不用外推（外推可以判，不许跳）；
+     * ② 连续重启 ≥3 次仍未收敛 → 停手，偏差打 ERROR，画面停在原位
+     *    （宁可停住让人看出坏了，也不要每几秒跳一次让人以为在动）。
+     */
+    private fun requestRestart(ahead: Double, nowMs: Long) {
+        val target = clockRealProvider?.invoke()?.takeIf { it >= 0.0 }
+            ?: clockProvider?.invoke()?.takeIf { it >= 0.0 }
+        if (target == null) {
+            Log.e(TAG, "失步但拿不到真实位置，放弃重启（偏差 ${"%.2f".format(ahead)}s）")
+            return
+        }
+        if (restartCount >= 3) {
+            Log.e(
+                TAG,
+                "连续重启 ${restartCount} 次仍未收敛，停止重启（偏差 ${"%.2f".format(ahead)}s 目标 ${"%.2f".format(target)}s）",
+            )
+            return
+        }
+        restartCount++
+        lastRestartMs = nowMs
+        Log.w(TAG, "失步（偏差 ${"%.2f".format(ahead)}s，第 $restartCount 次）→ 从真实位置 ${"%.2f".format(target)}s 重启")
+        runCatching { onNeedRestart?.invoke(target) }
+    }
 
     /** 当前主时钟位置（秒）；时钟无效返回 -1 —— 只有它能当"要不要等"的依据 */
     private fun clockNow(): Double =
