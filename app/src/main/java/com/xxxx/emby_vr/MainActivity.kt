@@ -5511,7 +5511,15 @@ class MainActivity : ComponentActivity() {
          * 只设 player?.repeatMode 在内核下等于没设。
          * 播完停止（2）不循环，由下面轮询里的 eof-reached 收场。
          */
-        mpvBackend?.setLoopFile(playModeIndex != 2)
+        /*
+         * 自管解码在播时禁止给内核开循环（2026-11-17）：内核的视频轨是关的，它很快判定
+         * `video=eof`，一开循环就从头重放 —— 表现是控制条走到 50 秒左右跳回 0、声音重来。
+         */
+        if (videoPipe == null) {
+            mpvBackend?.setLoopFile(playModeIndex != 2)
+        } else {
+            mpvBackend?.setLoopFile(false)
+        }
         Log.i(TAG, "播放模式 → ${com.xxxx.emby_vr.panel.PLAY_MODE_STEPS.getOrNull(playModeIndex)}")
     }
 
