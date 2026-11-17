@@ -56,6 +56,9 @@ class VideoPipe {
      */
     @Volatile private var clockValidProvider: (() -> Boolean)? = null
 
+    /** 卡顿诊断：返回（推进窗口时长 ms，窗口内累计增量 s） */
+    @Volatile private var clockProbe: (() -> Pair<Long, Double>)? = null
+
     /**
      * 杜比参数落盘路径（与内核那份同一个文件，渲染层读它做还原）。
      *
@@ -195,6 +198,8 @@ class VideoPipe {
         startSec: Double = 0.0,
         doviPath: String? = null,
         holdGate: (() -> Boolean)? = null,
+        /** 卡顿诊断用（可选）：返回推进窗口时长与窗口内累计增量 */
+        clockProbe: (() -> Pair<Long, Double>)? = null,
         onFirstFrame: (() -> Unit)? = null,
         onDoviParams: (() -> Unit)? = null,
         onEos: (() -> Unit)? = null,
@@ -219,6 +224,7 @@ class VideoPipe {
         clockValidProvider = clockValid
         doviParamPath = doviPath
         this.holdGate = holdGate
+        this.clockProbe = clockProbe
         this.onFirstFrame = onFirstFrame
         this.onDoviParams = onDoviParams
         this.onEos = onEos
@@ -476,7 +482,17 @@ class VideoPipe {
         if (audioSec < 0.0) {
             droppedNoClock++
             if (droppedNoClock % 100 == 1) {
-                Log.w(TAG, "时钟未走，画面挂起中（持有 1 帧等待，已等 $droppedNoClock 次）")
+                /*
+                 * 卡顿真因要靠这三个量判（丫头 2026-11-17 要求）：窗口时长、窗口内累计增量、与主时钟的偏差。
+                 * 只打"挂起中"看不出是时钟判严了、还是画面真落后。
+                 */
+                val (winMs, winDelta) = clockProbe?.invoke() ?: (0L to 0.0)
+                Log.w(
+                    TAG,
+                    "时钟未走，画面挂起中（持有 1 帧等待，已等 $droppedNoClock 次）" +
+                        " 窗口=${winMs}ms 窗口增量=${"%.3f".format(winDelta)}s" +
+                        " 本帧偏差=${"%.3f".format((ptsRaw + appliedOffset) - clockProvider?.invoke()!!)}s",
+                )
             }
             while (running.get() && clockNow() < 0.0) {
                 try {

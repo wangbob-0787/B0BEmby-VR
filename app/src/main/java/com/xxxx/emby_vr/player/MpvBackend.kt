@@ -178,6 +178,15 @@ class MpvBackend(private val context: Context) {
          *
          * 只报不处置：起播路径没有任何超时判死（图 §4.1），卡住时靠这一行看原因。
          */
+        /**
+         * 声音侧是否就绪（图 §4.2.1 ② 的三样可观测事实）。
+         *
+         * 放行动作（`releasePlayback`）的唯一前置条件。布尔属性 `audio` 只作辅助证据 ——
+         * 它实测读不到，别再拿它当必要条件。
+         */
+        fun audioReady(): Boolean =
+            engReady && !cIdleActive && cDuration > 0.0 && cTimePos >= 0.0 && cTimePosAtMs != 0L
+
         fun canOpenBlocker(): String {
             if (!engReady) return "engineNotReady"
             if (!cPaused) return "notPaused(内核自己开跑了)"
@@ -255,6 +264,9 @@ class MpvBackend(private val context: Context) {
         @Volatile private var unpauseAtMs = 0L
         /** 上一次采样时的位置；clockAdvancing 用它与当前值比"增量是否 ≥1ms" */
         @Volatile private var lastPosSample = 0.0
+        /** clockAdvancing 的 1 秒窗口：起点时刻与起点位置 */
+        @Volatile private var posWinStartMs = 0L
+        @Volatile private var posWinStartPos = 0.0
         /** 音轨是否已解析出来（clockPresent 的一半判据） */
         @Volatile private var audioTrackResolved = false
         /**
@@ -385,6 +397,11 @@ class MpvBackend(private val context: Context) {
                 lastPosSample = cTimePos
                 cTimePos = it
                 cTimePosAtMs = android.os.SystemClock.elapsedRealtime()
+                /* 窗口滑动：满 1 秒才把起点挪到当前，窗口内累计增量才作判据 */
+                if (posWinStartMs == 0L || cTimePosAtMs - posWinStartMs >= 1000L) {
+                    posWinStartMs = cTimePosAtMs
+                    posWinStartPos = it
+                }
             }
             s("sub-text") { cSubText = it }
             b("pause") { cPaused = it }
@@ -1043,11 +1060,20 @@ class MpvBackend(private val context: Context) {
         if (at == 0L) return false
         if (android.os.SystemClock.elapsedRealtime() - at > 200L) return false
         /*
-         * 第三条是"位置真的在推进（增量 ≥1ms）"，不是"最近有采样"：
-         * 属性轮询 100ms 一拍，缓冲或卡顿时采样照样刷新、位置却不动；
-         * 只判"有采样"会让这种卡顿被当成正常，一路判超前 → 丢帧 → 3s 后误判失步重启。
+         * 判据 = **最近 1 秒内累计增量 ≥1ms**（图 §5，2026-11-17 实测放宽）。
+         *
+         * 原来用「上次采样到现在有增量」：内核报位置的节奏一抖（缓冲、网络片源常见），
+         * 一两拍没有增量就判成"时钟没走"，画面按 I3 持帧挂起 → 实测周期性卡住几秒。
+         * 窗口取 1 秒：真暂停由上面的 cPaused 直接判，不受这条影响。
+         * ⚠ 别把上面的「位置新鲜度 200ms」跟着改 —— 那判的是读数是否过期，与推进量无关。
          */
-        return cTimePos - lastPosSample >= 0.001
+        return cTimePos - posWinStartPos >= 0.001
+    }
+
+    /** 卡顿时诊断用：窗口时长（ms）与窗口内累计增量（秒） */
+    fun clockAdvanceProbe(): Pair<Long, Double> {
+        val ms = android.os.SystemClock.elapsedRealtime() - posWinStartMs
+        return ms to (cTimePos - posWinStartPos)
     }
 
     /** 内核是否已加载文件（不是 idle、有路径）；与"是否出过画面"无关 */

@@ -7213,6 +7213,7 @@ class MainActivity : ComponentActivity() {
          * 位置是硬约束 —— 必须排在停内核之前，且是"任何可能销毁内核的调用"之前。
          */
         stopPipeHealth()
+        pipeBootInFlight.set(false)
         selfPipePhase = "已收场"
         clearDoviState()
         /*
@@ -8412,6 +8413,46 @@ class MainActivity : ComponentActivity() {
     @Volatile private var selfPipeReady = false
     @Volatile private var selfPipeReleased = false
     @Volatile private var selfPipePhase = "未起播"
+
+    /*
+     * ── 单一闸门 I5（图 §5）──
+     *
+     * 放行动作**只有这一个入口**：前置条件唯一 = 声音侧就绪（三样可观测事实）；
+     * `setPaused(false)` 与 `setMute(false)` 全仓只允许出现在这里（验收 grep）。
+     * 起播与重建不许各写一套 —— 实测后果是起播黑屏、快进而重建路径绕过闸门直接出画，
+     * 但静音从未解除 → "有画无声"（2026-11-17）。
+     */
+    private val pipeReleasedOnce = java.util.concurrent.atomic.AtomicBoolean(false)
+    /** 起播防重入：同进程只允许一套起播在飞 */
+    private val pipeBootInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    private fun releasePlayback(kind: String, source: String): Boolean {
+        if (!com.xxxx.emby_vr.player.MpvBackend.isReady()) {
+            Log.w(TAG, "放行被拒：engineNotReady|kind=$kind|source=$source")
+            return false
+        }
+        if (!com.xxxx.emby_vr.player.MpvBackend.audioReady()) {
+            Log.w(
+                TAG,
+                "放行被拒：声音侧未就绪（${com.xxxx.emby_vr.player.MpvBackend.canOpenBlocker()}）" +
+                    "|kind=$kind|source=$source",
+            )
+            return false
+        }
+        selfPipeWaitingFirstFrame.set(false)
+        if (kind == "BOOT") {
+            /* 起播：解除暂停 + 放行首帧 + 取消静音，三件同一拍 */
+            runCatching { mpvBackend?.setPaused(false) }
+        }
+        /* 重建不动 pause：用户可能正暂停着快进，解除暂停是另一个 bug */
+        runCatching { mpvBackend?.setMute(false) }
+        pipeReleasedOnce.set(true)
+        selfPipeReleased = true
+        selfPipePhase = if (kind == "BOOT") "PLAYING" else "PLAYING(重建)"
+        Log.i(TAG, "放行完成|kind=$kind|source=$source|动过的开关=${if (kind == "BOOT") "pause+mute" else "mute(幂等)"}")
+        return true
+    }
+
     /* 等待时长只报数不判死（图 §4.1 / §12 L23）：起播、跳转、收场各记一个起点 */
     @Volatile private var pipeLoadT0 = 0L
     @Volatile private var pipeSeekT0 = 0L
@@ -8490,7 +8531,7 @@ class MainActivity : ComponentActivity() {
             { m.clockAdvancing() },
             sec,
             java.io.File(getExternalFilesDir(null) ?: filesDir, "dovi_params.bin").absolutePath,
-            holdGate = { false },
+            holdGate = { !com.xxxx.emby_vr.player.MpvBackend.audioReady() },
             onFirstFrame = { },
             onDoviParams = { com.xxxx.emby_vr.vr.VrNative.setDoviStreamActive(true) },
             onNeedRestart = { t ->
@@ -8501,6 +8542,7 @@ class MainActivity : ComponentActivity() {
         )
         if (ok) {
             Log.i(TAG, "失步重启完成：位置=$sec（未重新静音）")
+            releasePlayback("REBUILD", "失步重建")
         } else {
             /* 图 §4.4：重建解码器的每条路径都必须判返回值，失败打 ERROR 带 host + 异常类名 */
             Log.e(TAG, "失步重启失败：host=${hostOf(url)} 原因=${com.xxxx.emby_vr.player.VideoPipe.lastError}（银幕会黑）")
@@ -8528,7 +8570,8 @@ class MainActivity : ComponentActivity() {
             { m.clockAdvancing() },
             sec,
             java.io.File(getExternalFilesDir(null) ?: filesDir, "dovi_params.bin").absolutePath,
-            holdGate = { false },
+            /* 重建路径不放行整段：声音没就绪就压住（既不等预热，也不绕过闸门） */
+            holdGate = { !com.xxxx.emby_vr.player.MpvBackend.audioReady() },
             onFirstFrame = { },
             onDoviParams = { com.xxxx.emby_vr.vr.VrNative.setDoviStreamActive(true) },
             onNeedRestart = { target ->
@@ -8541,6 +8584,8 @@ class MainActivity : ComponentActivity() {
         )
         if (ok) {
             Log.i(TAG, "跳转重启完成：位置=$sec")
+            /* 重建场景：只确保不静音（幂等），绝不动 pause */
+            releasePlayback("REBUILD", "跳转重建")
         } else {
             Log.e(TAG, "跳转重启失败：host=${hostOf(url)} 原因=${com.xxxx.emby_vr.player.VideoPipe.lastError}")
             hud("快进后画面起不来")
@@ -8567,7 +8612,18 @@ class MainActivity : ComponentActivity() {
         startSec: Double,
         surface: android.view.Surface,
         m: com.xxxx.emby_vr.player.MpvBackend,
+        /** 调用来源（正常起播 / 跳转重建 / 失步重建），进日志便于对账 */
+        source: String = "正常起播",
     ) {
+        /*
+         * 防重入：同进程里两套起播同时跑过一次（健康行每拍打两遍、两套互相把声音暂停着）。
+         * 已在起播流程中就拒绝第二次，并把来源打出来 —— 下次再出现，一行日志就能看出谁第二次进来的。
+         */
+        if (!pipeBootInFlight.compareAndSet(false, true)) {
+            Log.w(TAG, "起播入口被拒：已有起播在飞|source=$source|url=${url.take(60)}")
+            return
+        }
+        Log.i(TAG, "起播入口|source=$source|startSec=${"%.1f".format(startSec)}")
         /* 非网页流：清掉网页标记（2026-11-16） */
         com.xxxx.emby_vr.player.PlaybackFlags.webSource = false
         /* 旧实例没退出就不许新建（图 §5 I4：两路解码抢同一张画面最难查） */
@@ -8678,16 +8734,12 @@ class MainActivity : ComponentActivity() {
 
         fun doRelease() {
             if (released) return
-            released = true
             releaseAtMs = android.os.SystemClock.elapsedRealtime()
-            /* 门放开 → 解码线程继续出帧 */
-            selfPipeWaitingFirstFrame.set(false)
-            selfPipeReleased = true
-            selfPipePhase = "PLAYING"
-            /* 同一拍：解除暂停 + 取消静音（中间不插别的活） */
-            runCatching { m.setPaused(false) }
-            runCatching { m.setMute(false) }
-            Log.i(TAG, "放行：解除暂停 + 放行首帧 + mute=no（同一拍，等 READY=${if (pipeReady) "齐" else "未齐"}）")
+            /* 唯一闸门（I5）：起播场景 */
+            released = releasePlayback("BOOT", "起播(CAN_OPEN+READY)")
+            if (released) {
+                Log.i(TAG, "放行：解除暂停 + 放行首帧 + mute=no（同一拍，READY=${if (pipeReady) "齐" else "已齐"}）")
+            }
         }
 
         fun launchPipeline(audioStart: Double) {
@@ -8698,6 +8750,8 @@ class MainActivity : ComponentActivity() {
                 audioStart, doviPath,
                 /* 门 = 还没放行：关着时解码线程整轮跳过，不取不喂 */
                 holdGate = { selfPipeWaitingFirstFrame.get() },
+                /* 卡顿诊断：把推进窗口时长与窗口内累计增量交给解码线程打日志 */
+                clockProbe = { m.clockAdvanceProbe() },
                 onFirstFrame = {
                     val now = android.os.SystemClock.elapsedRealtime()
                     val d = if (releaseAtMs > 0) now - releaseAtMs else -1
