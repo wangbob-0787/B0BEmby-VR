@@ -4577,6 +4577,20 @@ class MainActivity : ComponentActivity() {
                 com.xxxx.emby_vr.player.PlaybackFlags.webSource = false
                 clearDoviState()
                 /* 本次不走渲染层还原：色彩目标切回 SDR（2026-11-16） */
+                /*
+                 * 本次是 P5 且自管解码开着 → 内核这条路**只负责别的事**，不许改色彩目标、
+                 * 不许再 play 一次（2026-11-17 父亲实测「偏绿、没声音、进度不走」）：
+                 * 两条路同时跑，后跑的这条把色彩目标切回了 SDR，P5 的 IPT 数据被当普通视频
+                 * 解释 → 整幅偏绿；它又用 vid=no 重新加载一次，内核直接回 idle → 没声音。
+                 */
+                val selfPipeOwnsVideo = com.xxxx.emby_vr.vr.VrTuning.videoPipeOn &&
+                    com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource &&
+                    com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionProfile?.contains("50") == true
+                if (selfPipeOwnsVideo) {
+                    Log.i(TAG, "P5 + 自管解码：内核这条路跳过起播（画面与颜色归渲染层）")
+                    if (!isWeb) startPlaybackReporting()
+                    return
+                }
                 com.xxxx.emby_vr.player.MpvBackend.applyDoviPipeline(false)
                 Log.i(TAG, "开始播放（内核）: $title url=${url.take(160)}")
                 return
