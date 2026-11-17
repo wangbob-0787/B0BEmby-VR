@@ -3716,11 +3716,22 @@ class MainActivity : ComponentActivity() {
      * 三条起播路径（Emby 内核 / Emby 新路径 / 网页流）都要先过这一刀：
      * 不清的话，上一部 P5 的逐帧参数会被套到普通片子或网页流上，整幅偏色。
      */
+    /**
+     * 换片清场（三条起播路径都会调）。
+     *
+     * 除了杜比痕迹，还必须把**内核视频轨开回来**：P5 那条路为了让自管解码出画面，
+     * 会设 `vid=no` 把内核视频轨关掉；这个属性是进程级的，不恢复的话，
+     * 之后每一部走内核的片子都会"只有声音没有画面"
+     * （父亲 2026-11-17 实测：先播 P5，再播任何片都黑屏；先播普通片则正常）。
+     */
     private fun clearDoviState() {
         com.xxxx.emby_vr.vr.VrNative.setDoviStreamActive(false)
         runCatching {
             java.io.File(getExternalFilesDir(null) ?: filesDir, "dovi_params.bin").delete()
         }
+        runCatching { com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("vid", "auto") }
+        runCatching { com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("audio-display", "no") }
+        Log.i(TAG, "换片清场：杜比状态已清、内核视频轨已恢复（vid=auto）")
     }
 
     private fun playWebStream(obj: org.json.JSONObject) {
