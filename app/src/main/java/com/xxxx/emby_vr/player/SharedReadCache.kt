@@ -57,6 +57,7 @@ object SharedReadCache {
     @Volatile private var curUrl: String? = null
     @Volatile private var writeNext = 0L        // 下一个要拉取的段号
     @Volatile private var baseIdx = 0L          // 缓存里保留的第一段
+    @Volatile private var gen = 0L              // 换片/跳转代数：拉流线程据此重开连接
 
     /** 每个客户端（HTTP 连接）当前读到的段号，用于算"最慢那个" */
     private val connPos = ConcurrentHashMap<Int, Long>()
@@ -115,6 +116,7 @@ object SharedReadCache {
             avail.clear()
             used = 0
         }
+        gen++
         curUrl = null
         writeNext = 0
         baseIdx = 0
@@ -261,6 +263,13 @@ object SharedReadCache {
 
     // ---------------- 拉流（唯一的网盘读取者） ----------------
 
+    /**
+     * 拉流：一条连接**连续读**，跨段不断流。
+     *
+     * 之前是"一段开一次连接"，每次握手约 1.6 秒（服务器要重新打开网盘文件），
+     * 实测缓存只攒到十兆左右、只有四五秒余量。改成一条连接从当前段一直读到缓存满，
+     * 段只作为落盘的分界，不再触发重连。
+     */
     private fun pullLoop() {
         while (true) {
             try {
@@ -275,81 +284,83 @@ object SharedReadCache {
                     Thread.sleep(200)
                     continue
                 }
-                val totalSegs = (total + seg - 1) / seg
-
-                /* 缓存满了就停手，等 GC 腾出空间 */
-                val full = synchronized(lock) { used >= CAPACITY_BYTES * 95 / 100 }
-                if (full) {
-                    Thread.sleep(100)
-                    continue
+                /* 领一个起始段；连续读期间自己往后推进 writeNext */
+                val startIdx: Long = synchronized(this) {
+                    if (writeNext * seg >= total) -1L else writeNext
                 }
-
-                val idx: Long = synchronized(this) {
-                    if (writeNext >= totalSegs) -1L
-                    else {
-                        val i = writeNext
-                        writeNext = i + 1
-                        i
-                    }
-                }
-                if (idx < 0L) {
+                if (startIdx < 0L) {
                     Thread.sleep(200)
                     continue
                 }
-
-                val startByte = idx * seg
-                val wantLen = minOf(seg, total - startByte)
-                pullSegment(url, idx, startByte, wantLen)
+                val myGen = gen
+                var idx = startIdx
+                var conn: HttpURLConnection? = null
+                try {
+                    val c = (URL(url).openConnection() as HttpURLConnection).apply {
+                        setRequestProperty("Range", "bytes=${startIdx * seg}-")
+                        setRequestProperty("User-Agent", UA)
+                        connectTimeout = 20000
+                        readTimeout = 60000
+                    }
+                    if (c.responseCode !in 200..206) {
+                        c.disconnect()
+                        Thread.sleep(300)
+                        continue
+                    }
+                    conn = c
+                    misses.incrementAndGet()
+                    c.inputStream.use { ins ->
+                        var raf: RandomAccessFile? = null
+                        var writtenInSeg = 0L
+                        var curIdx = idx
+                        val buf = ByteArray(64 * 1024)
+                        while (true) {
+                            /* 换片/跳转：立刻重开 */
+                            if (gen != myGen) break
+                            /* 缓存满：停下等回收 */
+                            val full = synchronized(lock) { used >= CAPACITY_BYTES * 95 / 100 }
+                            if (full) {
+                                Thread.sleep(100)
+                                continue
+                            }
+                            val segLen = minOf(seg, total - curIdx * seg)
+                            if (segLen <= 0L) break
+                            if (raf == null || writtenInSeg >= segLen) {
+                                raf?.close()
+                                raf = null
+                                if (writtenInSeg >= segLen) {
+                                    curIdx += 1
+                                    idx = curIdx
+                                    synchronized(this) { if (writeNext < curIdx) writeNext = curIdx }
+                                    writtenInSeg = 0
+                                    continue
+                                }
+                                raf = RandomAccessFile(File(cacheDir, "$curIdx.seg"), "rw")
+                                raf.setLength(0)
+                            }
+                            val want = minOf(buf.size.toLong(), segLen - writtenInSeg)
+                            val n = ins.read(buf, 0, want.toInt())
+                            if (n <= 0) break
+                            raf?.seek(writtenInSeg)
+                            raf?.write(buf, 0, n)
+                            writtenInSeg += n
+                            synchronized(lock) {
+                                used += n
+                                avail[curIdx] = writtenInSeg
+                            }
+                            upstreamBytes.addAndGet(n.toLong())
+                        }
+                        raf?.close()
+                    }
+                } catch (t: Throwable) {
+                    Log.w(TAG, "拉流中断：${t.javaClass.simpleName}: ${t.message}")
+                } finally {
+                    runCatching { conn?.disconnect() }
+                }
+                Thread.sleep(50)
             } catch (t: Throwable) {
                 runCatching { Thread.sleep(200) }
             }
-        }
-    }
-
-    /** 流式写入一段：读到多少就落盘多少，读侧立刻可用 */
-    private fun pullSegment(url: String, idx: Long, startByte: Long, wantLen: Long) {
-        val dir = cacheDir ?: return
-        val f = File(dir, "$idx.seg")
-        if (f.exists() && f.length() >= wantLen) return
-        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
-            setRequestProperty("Range", "bytes=$startByte-${startByte + wantLen - 1}")
-            setRequestProperty("User-Agent", UA)
-            connectTimeout = 20000
-            readTimeout = 60000
-        }
-        if (conn.responseCode !in 200..206) {
-            conn.disconnect()
-            return
-        }
-        misses.incrementAndGet()
-        var written = 0L
-        try {
-            conn.inputStream.use { ins ->
-                RandomAccessFile(f, "rw").use { raf ->
-                    raf.setLength(0)
-                    val buf = ByteArray(64 * 1024)
-                    while (written < wantLen) {
-                        val n = ins.read(buf, 0, minOf(buf.size.toLong(), wantLen - written).toInt())
-                        if (n <= 0) break
-                        raf.seek(written)
-                        raf.write(buf, 0, n)
-                        written += n
-                        synchronized(lock) {
-                            used += n
-                            avail[idx] = written
-                        }
-                        upstreamBytes.addAndGet(n.toLong())
-                    }
-                }
-            }
-        } catch (t: Throwable) {
-            Log.w(TAG, "拉流中断 seg=$idx：${t.javaClass.simpleName}: ${t.message}")
-        } finally {
-            conn.disconnect()
-        }
-        if (written < wantLen) {
-            /* 没拉完：下次重拉这一段 */
-            synchronized(this) { if (writeNext > idx) writeNext = idx }
         }
     }
 
@@ -395,6 +406,7 @@ object SharedReadCache {
 
     /** 跳到某个段：往回退=全清；往前跳=丢掉前面的 */
     private fun seekTo(url: String, idx: Long, why: String) {
+        gen++
         val backward = idx < baseIdx
         if (backward) {
             clearAll("$why（往回退）")
