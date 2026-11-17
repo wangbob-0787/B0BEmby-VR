@@ -263,6 +263,67 @@ object SharedReadCache {
         }
     }
 
+    /**
+     * 与上游的长连接顺序读器（父亲 2026-11-18 定：「中转服务和网盘最好是长连接」）。
+     *
+     * 为什么：实测每块 4MB 独立请求要 1.6 秒，那 1.6 秒基本是"重新打开文件"的握手，不是传输。
+     * 用一条带开区间 Range 的连接连续读，顺序播放时握手只发生一次；只有跳转（读的位置与
+     * 连接当前位置不连续）才重开一条。
+     */
+    private inner class SeqReader(val url: String) {
+        private var conn: HttpURLConnection? = null
+        private var ins: InputStream? = null
+        private var pos: Long = -1L
+
+        @Synchronized
+        fun read(start: Long, len: Int): ByteArray? {
+            if (ins == null || pos != start) {
+                open(start)
+            }
+            val stream = ins ?: return null
+            val buf = ByteArray(len)
+            var off = 0
+            return try {
+                while (off < len) {
+                    val n = stream.read(buf, off, len - off)
+                    if (n < 0) break
+                    off += n
+                    pos += n
+                }
+                if (off == 0) { close(); null } else buf.copyOf(off)
+            } catch (t: Throwable) {
+                close()
+                null
+            }
+        }
+
+        fun open(start: Long) {
+            close()
+            val c = (URL(url).openConnection() as HttpURLConnection).apply {
+                setRequestProperty("Range", "bytes=$start-")
+                setRequestProperty("User-Agent", UA)
+                connectTimeout = 20000
+                readTimeout = 60000
+            }
+            if (c.responseCode !in 200..206) { c.disconnect(); return }
+            conn = c
+            ins = c.inputStream
+            pos = start
+        }
+
+        fun close() {
+            runCatching { ins?.close() }
+            runCatching { conn?.disconnect() }
+            ins = null
+            conn = null
+            pos = -1L
+        }
+    }
+
+    private val readers = ConcurrentHashMap<String, SeqReader>()
+
+    private fun readerFor(url: String): SeqReader = readers.getOrPut(url) { SeqReader(url) }
+
     private fun keyOf(upstream: String, idx: Long): String =
         Integer.toHexString(upstream.hashCode()) + "-" + idx
 
@@ -296,19 +357,24 @@ object SharedReadCache {
             misses.incrementAndGet()
             val start = idx * BLOCK
             val end = minOf(start + BLOCK - 1, total - 1)
-            val c = (URL(upstream).openConnection() as HttpURLConnection).apply {
-                setRequestProperty("Range", "bytes=$start-$end")
-                setRequestProperty("User-Agent", UA)
-                connectTimeout = 20000
-                readTimeout = 30000
-            }
-            if (c.responseCode !in 200..206) {
+            val want = (end - start + 1).toInt()
+            /* 先走长连接（顺序播放时零握手）；不行再退回单块请求一次 */
+            var data = readerFor(upstream).read(start, want)
+            if (data == null) {
+                val c = (URL(upstream).openConnection() as HttpURLConnection).apply {
+                    setRequestProperty("Range", "bytes=$start-$end")
+                    setRequestProperty("User-Agent", UA)
+                    connectTimeout = 20000
+                    readTimeout = 30000
+                }
+                if (c.responseCode !in 200..206) {
+                    c.disconnect()
+                    return null
+                }
+                data = runCatching { c.inputStream.use { it.readBytes() } }.getOrNull()
                 c.disconnect()
-                return null
             }
-            val data = c.inputStream.use { it.readBytes() }
-            c.disconnect()
-            if (data.isEmpty()) return null
+            if (data == null || data.isEmpty()) return null
             val dir = cacheDir ?: return null
             val f = File(dir, "$key.blk")
             f.writeBytes(data)
