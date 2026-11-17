@@ -184,10 +184,15 @@ class MpvBackend(private val context: Context) {
          * 放行动作（`releasePlayback`）的唯一前置条件。布尔属性 `audio` 只作辅助证据 ——
          * 它实测读不到，别再拿它当必要条件。
          */
+        /**
+         * 声音侧是否就绪（父亲 2026-11-17 定：**只看音轨名 + 时长**）。
+         *
+         * 两条的物理含义：时长拿到 = 容器已解析、文件真的读起来了；音轨名解析出来 = 解码器认下这条声轨。
+         * 不看暂停（暂停只是停在原地，内核仍装着文件，不算空闲），也不看"读到过位置"
+         * —— 那条曾把放行拖慢，还在暂停时误判。
+         */
         fun audioReady(): Boolean =
-            /* `cTimePos >= 0.0` 是恒真判据（time-pos 不会返回负数），已删；
-               有采样由 `cTimePosAtMs != 0L` 保证 */
-            engReady && !cIdleActive && cDuration > 0.0 && cTimePosAtMs != 0L
+            engReady && cDuration > 0.0 && (audioTrackResolved || cAudioCodec.isNotBlank())
 
         fun canOpenBlocker(): String {
             if (!engReady) return "engineNotReady"
