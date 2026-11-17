@@ -8761,6 +8761,14 @@ class MainActivity : ComponentActivity() {
                 clockAgeProvider = { m.clockSampleAgeMs() },
                 /* 重启目标只取真实读数（外推可以判帧，不许命令播放器跳） */
                 clockReal = { m.positionSec() },
+                /*
+                 * 起播基准对不齐：画面实际首帧比请求位置晚（seek 落在关键帧上），
+                 * 请内核把声音也跳到那个位置 —— 一次性的起播对齐，不是播放中乱跳。
+                 */
+                onAudioAlign = { target ->
+                    Log.i(TAG, "起播对齐：声音跳到画面实际首帧 ${"%.2f".format(target)}s")
+                    runCatching { m.seekToSec(target) }
+                },
                 onFirstFrame = {
                     val now = android.os.SystemClock.elapsedRealtime()
                     val d = if (releaseAtMs > 0) now - releaseAtMs else -1

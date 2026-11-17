@@ -233,6 +233,8 @@ class VideoPipe {
         clockAgeProvider: (() -> Long)? = null,
         /** 重启目标用的真实位置（不含外推）；缺省退回 clock */
         clockReal: (() -> Double)? = null,
+        /** 起播基准对不齐时回调：请上层把声音跳到这个位置 */
+        onAudioAlign: ((Double) -> Unit)? = null,
         onFirstFrame: (() -> Unit)? = null,
         onDoviParams: (() -> Unit)? = null,
         onEos: (() -> Unit)? = null,
@@ -260,6 +262,7 @@ class VideoPipe {
         this.clockProbe = clockProbe
         this.clockAgeProvider = clockAgeProvider
         this.clockRealProvider = clockReal
+        this.onAudioAlign = onAudioAlign
         stopping = false
         this.onFirstFrame = onFirstFrame
         this.onDoviParams = onDoviParams
@@ -530,7 +533,26 @@ class VideoPipe {
         }
         if (originPts < 0.0) {
             originPts = ptsRaw
-            appliedOffset = audioStartSec - originPts
+            /*
+             * 基准以**实际解出的第一帧位置**为准，不用"我们请求的位置"（2026-11-17 实测定案）：
+             * 请求 1503 秒，seek 只能落到不早于它的关键帧，实际首帧 1505.36 —— 差 2.36 秒。
+             * 原来把基准设成 1503，等于把真实偏差硬压成"对齐"，画面内容比声音超前两秒多。
+             * 现在：差值超过 0.3 秒就请上层把声音也跳到实际位置（一次性对齐，不是播放中乱跳）。
+             */
+            val gap = originPts - audioStartSec
+            if (kotlin.math.abs(gap) > 0.3) {
+                Log.w(
+                    TAG,
+                    "起播基准对不齐：请求=$audioStartSec 实际首帧=$originPts 差=${"%.2f".format(gap)}s" +
+                        " → 以实际位置为准，请上层把声音也跳过去",
+                )
+                audioStartSec = originPts
+                /* 映射改为 1:1；随后上层会把内核 seek 到同一位置 */
+                appliedOffset = 0.0
+                runCatching { onAudioAlign?.invoke(originPts) }
+            } else {
+                appliedOffset = audioStartSec - originPts
+            }
             /*
              * 基准对账（2026-11-17 父亲要的观测量）：跳转/重建之后到底落在哪一帧。
              * 推算只能保证"读数不抖"，基准若定错（seek 落到关键帧先后不同）会稳定差几秒，
@@ -654,6 +676,9 @@ class VideoPipe {
      */
     private val FRAME_BUFFER_SEC = 0.10
 
+    /** 起播基准对不齐时，请上层把声音跳到实际首帧位置（一次性） */
+    @Volatile private var onAudioAlign: ((Double) -> Unit)? = null
+
     /** 画面侧就绪信号是否已发（手上有第一帧时才发） */
     @Volatile private var readySignalled = false
 
@@ -751,6 +776,7 @@ class VideoPipe {
         running.set(false)
         holdGate = null
         onNeedRestart = null
+        onAudioAlign = null
         droppedNoClock = 0
         desyncSinceMs = 0L
         onFirstFrame = null
