@@ -432,11 +432,11 @@ object SharedReadCache {
             f.writeBytes(data)
             upstreamBytes.addAndGet(data.size.toLong())
             /*
-             * 前视预取：取到这一块，顺手把后面几块也拉进来。
-             * 父亲 2026-11-18 实测：跳得越远的区段，画面落后声音越多 —— 因为它是一块一块地
-             * 现场向网盘要；预取把"要一块等一块"改成了"一串一起要"。
+             * 这里**不再**"取到一块就顺带多取几块"。
+             * 父亲 2026-11-18 定案：预读会占掉网盘那两路并发额度，解码器来要数据时反而排队，
+             * 越读越卡。往前铺统一交给 relay-filler（每 1.2 秒一块），
+             * 这样解码器要数据时后台最多只有一条请求在跑。
              */
-            schedulePrefetch(upstream, idx, total)
             synchronized(lock) {
                 index[key] = data.size.toLong()
                 used += data.size
