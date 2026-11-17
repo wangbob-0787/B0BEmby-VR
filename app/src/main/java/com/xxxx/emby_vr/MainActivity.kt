@@ -8586,9 +8586,16 @@ class MainActivity : ComponentActivity() {
          * 重建要重新开流、重找关键帧，实测 6~21 秒，是"快进后半天没画面"的根源。
          */
         if (pipe.isRunning()) {
-            Log.i(TAG, "快进：热解码器内跳转 @ ${"%.1f".format(sec)}s（不重建）")
+            /*
+             * 快进：**两条链路用同一个目标一起跳**。
+             * 只跳画面不跳内核，会得到"画面到新位置、声音还在旧位置"——
+             * 听感就是声音丢了（2026-11-17 实测）。所以先把内核跳过去，再让画面跟过去。
+             */
+            Log.i(TAG, "快进：内核与画面同时跳到 ${"%.1f".format(sec)}s（热解码器，不重建）")
+            runCatching { m.seekToSec(sec) }
             pipe.requestSeek(sec)
             runCatching { m.setPaused(false) }
+            runCatching { m.setMute(false) }
             return
         }
         pipePausedForRebuild = true
