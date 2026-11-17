@@ -284,6 +284,10 @@ object VrTuning {
     @Volatile var relayPrefetch: Int = 2
     /** 中转分块大小（兆）。4MB 一块约 2 秒内容、取一块约 1.6 秒；块越大等待越久 */
     @Volatile var relayBlockMb: Int = 4
+    /** 自管解码器的内存缓冲（兆）。0=不用内存窗，退回直读中转；默认 64MB ≈ 36 秒内容 */
+    @Volatile var pipeMemMb: Int = 64
+    /** 中转回收余量：删到"最慢读位置"之前几段（默认 8 段 ≈ 32MB） */
+    @Volatile var relayMarginSegs: Int = 8
     /** 中转主动往前铺多少兆（0=不铺）。默认 400 = 一直铺到缓存上限 */
     @Volatile var relayAheadMb: Int = 400
 
@@ -739,6 +743,14 @@ object VrTuning {
         raw["relay_block_mb"]?.toIntOrNull()?.let {
             val v = it.coerceIn(1, 32)
             if (v != relayBlockMb) { relayBlockMb = v; applied += "中转块=${v}MB" }
+        }
+        raw["pipe_mem_mb"]?.toIntOrNull()?.let {
+            val v = it.coerceIn(0, 256)
+            if (v != pipeMemMb) { pipeMemMb = v; applied += "解码内存窗=${v}MB" }
+        }
+        raw["relay_margin_segs"]?.toIntOrNull()?.let {
+            val v = it.coerceIn(1, 64)
+            if (v != relayMarginSegs) { relayMarginSegs = v; applied += "回收余量=$v 段" }
         }
         raw["relay"]?.toIntOrNull()?.let {
             val v = if (it == 1) 1 else 0

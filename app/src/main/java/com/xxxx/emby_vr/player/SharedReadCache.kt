@@ -40,8 +40,8 @@ object SharedReadCache {
     private const val UA = "B0BEmbyRelay/1.0"
     /** 两条拉流长连接（父亲定：两路） */
     private const val PULLERS = 2
-    /** 删除时离最慢读位置再留一段余量（约 2 秒内容） */
-    private const val MARGIN_SEGS = 1L
+    /** 删除余量：留几段（可调 relay_margin_segs，默认 8 段 ≈ 32MB ≈ 18 秒内容） */
+    private val MARGIN_SEGS: Long get() = com.xxxx.emby_vr.vr.VrTuning.relayMarginSegs.toLong()
 
     private val SEG: Long get() = com.xxxx.emby_vr.vr.VrTuning.relayBlockMb.toLong() * 1024 * 1024
 
@@ -224,6 +224,7 @@ object SharedReadCache {
         var pos = start
         val buf = ByteArray(64 * 1024)
         var lastProgress = System.currentTimeMillis()
+        var lastLogAt = 0L
         while (pos <= end) {
             val idx = pos / SEG
             val off = pos % SEG
@@ -255,6 +256,10 @@ object SharedReadCache {
             } else {
                 /* 数据还没到：等拉流线程写进来（超时即断开，让客户端重试） */
                 if (System.currentTimeMillis() - lastProgress > 30000) break
+                if (System.currentTimeMillis() - lastLogAt > 2000) {
+                    lastLogAt = System.currentTimeMillis()
+                    Log.i(TAG, "等数据|段=$idx|该段已写=${have}B|拉流起点=${writeNext}|缓存=${used / 1048576}MB")
+                }
                 Thread.sleep(15)
             }
         }
@@ -413,7 +418,7 @@ object SharedReadCache {
             curUrl = url
             writeNext = idx
             baseIdx = idx
-            Log.i(TAG, "缓存重置：$why → 从第 $idx 段重新拉")
+            Log.i(TAG, "缓存重置：$why → 从第 $idx 段重新拉（起点核对：writeNext=$writeNext baseIdx=$baseIdx gen=$gen）")
         } else {
             val doomed = ArrayList<Long>()
             synchronized(lock) {

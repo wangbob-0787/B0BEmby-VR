@@ -310,7 +310,17 @@ class VideoPipe {
         desyncSinceMs = 0L
         return try {
             val ex = MediaExtractor()
-            if (headers.isEmpty()) {
+            /*
+             * 走中转时优先用**内存窗**：后台连续把数据读进固定内存，解码器只从内存取。
+             * 原来走 URL 直读，每 64KB 就让中转重新打开一次缓存文件（四兆要开六十多次），
+             * 播放因此发涩（父亲 2026-11-18 定：给自管解码器配内存缓冲）。
+             * 内存窗只对中转地址生效；其它地址（网页流等）仍按原样直读。
+             */
+            val memMb = com.xxxx.emby_vr.vr.VrTuning.pipeMemMb
+            if (memMb > 0 && headers.isEmpty() && url.startsWith("http://127.0.0.1:8898")) {
+                Log.i(TAG, "解码数据源：内存窗 ${memMb}MB（不再逐块打开缓存文件）")
+                ex.setDataSource(MemWindowSource(url, memMb * 1024 * 1024))
+            } else if (headers.isEmpty()) {
                 ex.setDataSource(url)
             } else {
                 ex.setDataSource(url, headers)
