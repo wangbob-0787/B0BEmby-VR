@@ -37,6 +37,8 @@ object SharedReadCache {
     private const val UA = "B0BEmbyRelay/1.0"
     /** 缓存半满时才开始回收旧块，避免刚读过的块立刻被删 */
     private const val KEEP_BEHIND_BLOCKS = 1L
+    /** 判定"大跨度跳转"的块数（16MB/块，8 块 = 128MB ≈ 80 秒内容） */
+    private const val BIG_JUMP_BLOCKS = 8L
 
     @Volatile private var started = false
     @Volatile private var server: ServerSocket? = null
@@ -206,9 +208,19 @@ object SharedReadCache {
 
         val firstIdx = start / BLOCK
         val prev = readIdx[upstream]
-        /* 位置不连续（跳转/回退）→ 清空缓存，从新位置重新铺 */
-        if (prev != null && (firstIdx < prev || firstIdx > prev + 4L)) {
-            restartAt(upstream, firstIdx, "读取位置不连续（$prev → $firstIdx）")
+        /*
+         * 只有**大跨度**跳转才清空重铺（父亲 2026-11-18：跳到远处就清空重来）。
+         * 小范围前后移动不清 —— 播放器读文件头/索引时位置会来回跳，
+         * 一读就清会把刚取回来的数据全删掉，实测表现为「上游拉了 43MB、缓存始终 0」。
+         */
+        if (prev != null) {
+            val delta = if (firstIdx > prev) firstIdx - prev else prev - firstIdx
+            if (delta > BIG_JUMP_BLOCKS) {
+                restartAt(upstream, firstIdx, "大跨度跳转（$prev → $firstIdx）")
+            } else if (firstIdx < prev) {
+                /* 小幅回退：把填充游标拉回来，不必清空 */
+                cursor[upstream] = firstIdx
+            }
         }
         readIdx[upstream] = maxOf(firstIdx, readIdx[upstream] ?: firstIdx)
         if (!cursor.containsKey(upstream)) cursor[upstream] = firstIdx
