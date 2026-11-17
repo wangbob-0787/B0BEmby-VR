@@ -275,7 +275,7 @@ class VideoPipe {
         this.onPreheatReady = onPreheatReady
         tryAgainStreak = 0L
         showLogged = false
-        alignCount = 0
+        droppedStale = 0
         startedAtMs = android.os.SystemClock.elapsedRealtime()
         lastDovi = null
         doviWriteSkip = 0
@@ -543,23 +543,38 @@ class VideoPipe {
         }
 
         /*
-         * 2026-11-17 父亲定：读到时钟就**立刻对齐**，不要累积到偏差变大再处理。
+         * 2026-11-17 父亲定：**时钟走到前面去了，刚解出来的是旧画面，就把它扔掉**。
          *
-         * 做法：每帧算出偏差，超过 300ms 就把"帧→时间"的映射一次性挪正（offset 修正），
-         * 既不丢帧、也不跳解码器、更不等；修改量写进日志，便于对账。
-         * 这样偏差永远停在毫秒级，不会积累成几秒。
+         * 不再"改映射把旧画面标成现在"（那只是骗判据，内容照样旧）：
+         *  · 落后超过 300ms → 扔掉这一帧（不上屏），继续解下一帧，直到追上；
+         *  · 超前超过 300ms → 等它到点再上屏（不提前放，免得看起来快进）；
+         *  · 其余照常上屏。
+         * 只丢旧帧、不改时间轴、不跳解码器、不重建。
          */
         val clock = clockNowOrWall()
         var ahead = (ptsRaw + appliedOffset) - clock
-        if (ahead > 0.30 || ahead < -0.30) {
-            appliedOffset -= ahead
-            val fixed = (ptsRaw + appliedOffset) - clock
-            Log.w(
-                TAG,
-                "立即对齐|原偏差=${(ahead * 1000).toInt()}ms|修正后=${(fixed * 1000).toInt()}ms" +
-                    "|不丢帧不跳解码器（第 ${++alignCount} 次）",
-            )
-            ahead = fixed
+        if (ahead < -0.30) {
+            droppedStale++
+            if (droppedStale % 25 == 1) {
+                Log.w(TAG, "丢掉旧帧|落后=${(-ahead * 1000).toInt()}ms（累计 $droppedStale 帧）")
+            }
+            return finish(false)
+        }
+        if (ahead > 0.30) {
+            /* 超前：等它到点（分段睡，随时可停） */
+            var remainMs = ((ahead - 0.30) * 1000).toLong()
+            while (remainMs > 0 && running.get()) {
+                val step = remainMs.coerceAtMost(20L)
+                try {
+                    Thread.sleep(step)
+                } catch (t: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    break
+                }
+                remainMs -= step
+            }
+            if (!running.get()) return finish(false)
+            ahead = (ptsRaw + appliedOffset) - clockNowOrWall()
         }
         return finish(true)
     }
@@ -588,8 +603,8 @@ class VideoPipe {
         }
     }
 
-    /** 立即对齐的累计次数（只作日志/观测量） */
-    private var alignCount = 0
+    /** 丢掉旧帧的累计数（观测量：它一直涨说明解码跟不上） */
+    private var droppedStale = 0
 
     /** 主时钟：读不到就用"最后位置 + 墙钟"自己走（不压画面） */
     private fun clockNowOrWall(): Double {
