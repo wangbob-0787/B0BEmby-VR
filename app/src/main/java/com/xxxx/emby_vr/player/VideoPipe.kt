@@ -635,14 +635,16 @@ class VideoPipe {
 
         val clock = clockNowOrWall()
         var ahead = (ptsRaw + appliedOffset) - (clock - FRAME_BUFFER_SEC)
-        if (ahead < -1.0) {
+        if (ahead < -0.5) {
             /*
              * 落后超过 1 秒：**直接跳到当前时钟那一帧**（父亲 2026-11-17 定）。
              * 靠丢帧追不上——解码≈实时速率，越丢越落后。跳转在同一个解码器里做，
              * 不重建（重建要 6~21 秒）。
              */
-            Log.w(TAG, "落后 ${"%.1f".format(-ahead)}s → 请求解码器内跳转到 ${"%.2f".format(clock)}s")
-            pendingSeekSec = clock
+            /* 跳到"时钟稍前"的位置：解码必须从关键帧起，落点略早一点正好接着解到当下 */
+            val target = (clock - 0.15).coerceAtLeast(0.0)
+            Log.w(TAG, "落后 ${"%.2f".format(-ahead)}s → 解码器内跳到 ${"%.2f".format(target)}s 再解到当下")
+            pendingSeekSec = target
             return finish(false)
         }
         if (ahead < -0.30) {
