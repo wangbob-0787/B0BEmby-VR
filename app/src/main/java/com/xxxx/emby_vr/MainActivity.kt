@@ -8694,7 +8694,18 @@ class MainActivity : ComponentActivity() {
          * 关掉开关（vr-tuning.txt 里 relay=0）时原样返回，行为与之前完全一致。
          */
         val url = com.xxxx.emby_vr.player.SharedReadCache.rewrite(rawUrl)
-        if (url != rawUrl) Log.i(TAG, "起播地址已指向共享读缓存（本机 127.0.0.1:8898）")
+        if (url != rawUrl) {
+            Log.i(TAG, "起播地址已指向共享读缓存（本机 127.0.0.1:8898）")
+            /*
+             * 起播也走多路：并发把起播位置附近几块取起来，
+             * 别让解码器一块一块地现场等（父亲 2026-11-18 定）。
+             * 时长此刻可能还没报出来，先按已知值估；拿不到就跳过，不影响起播。
+             */
+            runCatching {
+                val dur = m.durationSec()
+                if (dur > 0.0) com.xxxx.emby_vr.player.SharedReadCache.warmStart(url, startSec, dur)
+            }
+        }
         if (!pipeBootInFlight.compareAndSet(false, true)) {
             Log.w(TAG, "起播入口被拒：已有起播在飞|source=$source|url=${url.take(60)}")
             return

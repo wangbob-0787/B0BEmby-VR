@@ -126,6 +126,15 @@ object SharedReadCache {
         }
     }
 
+    /**
+     * 起播预热：起播就并发取目标位置附近若干块（父亲 2026-11-18 定：
+     * 「起播的时候、快进快退的时候，你就多路去取」）。
+     * 与 [warm] 的区别只是用途时刻不同，取法一样。
+     */
+    fun warmStart(url: String, startSec: Double, durationSec: Double) {
+        warm(url, startSec, durationSec)
+    }
+
     fun stats(): String = "命中=${hits.get()} 回源=${misses.get()} 缓存=${used / 1048576}MB 上游=${upstreamBytes.get() / 1048576}MB"
 
     // ---------------- 服务端 ----------------
