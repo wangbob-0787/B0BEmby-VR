@@ -136,6 +136,8 @@ class MpvBackend(private val context: Context) {
         @Volatile private var cPaused = false
         @Volatile private var cTrackList = ""
         @Volatile private var cHasVideo = false
+        /** 内核是否处于 idle（没加载文件）；clockAdvancing 的三个否据之一 */
+        @Volatile private var cIdleActive = true
 
         /** 有没有在播：没播时不轮询（属性读不到会刷错误日志） */
         @Volatile private var polling = false
@@ -245,6 +247,7 @@ class MpvBackend(private val context: Context) {
             s("current-ao") { audioOutputReady = it.isNotBlank() }
             b("eof-reached") { cEof = it }
             b("video") { cHasVideo = it }
+            b("idle-active") { cIdleActive = it }
             if (tick % 2L == 1L) {
                 /*
                  * 宽度：先 video-params/w，读不到退到 dwidth（2026-10-22 实测：
@@ -301,6 +304,7 @@ class MpvBackend(private val context: Context) {
             cEof = false
             cTrackList = ""
             cHasVideo = false
+            cIdleActive = true
             polling = true
         }
 
@@ -817,9 +821,11 @@ class MpvBackend(private val context: Context) {
      * 用它当门会让起播每次都白等 5 秒（2026-11-17 实测）。它只作诊断打日志。
      */
     fun clockPresent(): Boolean {
-        if (!videoReady()) return false
+        if (!loaded()) return false
         if (cTimePosAtMs == 0L) return false
-        return audioTrackResolved || audioOutputReady
+        if (!audioTrackResolved) return false
+        /* audioOutputReady 只作诊断：PIPE 路 vid=no 时 current-ao 常读不到，进条件会永远为假 */
+        return true
     }
 
     /**
@@ -836,14 +842,23 @@ class MpvBackend(private val context: Context) {
         return cTimePos + 0.001 >= audioStartSec
     }
 
-    /** 最近 200ms 内位置真的在推进（排帧依据）；暂停中一律为 false */
+    /**
+     * 排帧依据：最近 200ms 内位置真的在推进（图 §5 三条判据）。
+     *
+     * 不含"内核是否出过画面"：PIPE 路 vid=no，内核本来就不出画面，把那个当条件
+     * 会让本判据永远为假 —— 首帧之后每帧被丢，解码线程随后自行退出，
+     * 表现为画面永久黑、声音照走、不报错。
+     */
     fun clockAdvancing(): Boolean {
-        if (!videoReady()) return false
         if (cPaused) return false
+        if (cIdleActive) return false
         val at = cTimePosAtMs
         if (at == 0L) return false
         return android.os.SystemClock.elapsedRealtime() - at <= 200L
     }
+
+    /** 内核是否已加载文件（不是 idle、有路径）；与"是否出过画面"无关 */
+    private fun loaded(): Boolean = !cIdleActive && cDuration > 0.0
 
 
     /** 总时长（秒） */

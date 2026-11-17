@@ -119,8 +119,8 @@ class VideoPipe {
     private var appliedOffset = Double.NaN
     /** 预卷帧（pts < audioStart，不许上屏）丢弃计数，写日志用 */
     private var prerollDropped = 0
-    /** 连续丢帧累计毫秒（≥300ms 档用；累计 500ms 仍未追平 → 请求重启） */
-    private var skippedMs = 0.0
+    /** 偏差首次超过 500ms 的时刻（elapsedRealtime）；连续 3s 未追平才请求重启 */
+    private var desyncSinceMs = 0L
     /** 时钟无效时连续丢弃的帧数（超上限才判失败，正常几帧就恢复） */
     private var droppedNoClock = 0
     /** 上一张真正上屏的帧 PTS（丢帧累计用） */
@@ -193,7 +193,7 @@ class VideoPipe {
         originPts = -1.0
         appliedOffset = Double.NaN
         prerollDropped = 0
-        skippedMs = 0.0
+        desyncSinceMs = 0L
         return try {
             val ex = MediaExtractor()
             if (headers.isEmpty()) {
@@ -357,19 +357,21 @@ class VideoPipe {
                         /* 首帧尚未上屏且时钟没走：跳过节拍，交给下面的门决定何时放行 */
                     } else if (audioSec < 0.0) {
                         /*
-                         * 首帧已上屏、但时钟没在走：丢这一帧但**不阻塞解码**。
-                         * 阻塞会扣住输出缓冲、把整条链停死；丢几帧等时钟恢复即可。
+                         * 图 §0 铁律 6：时钟无效时**不出帧并挂起**，不推进也不丢弃。
+                         * 挂起靠 sleep 让出 CPU（不是空转）。不在这里自判死：
+                         * 播放期时钟真停住由 §4.1 的"无进度 5s / 上限 15s → FAILING"收场，
+                         * 解码线程自杀会让人只看到黑屏、查不到原因。
                          */
                         droppedNoClock++
-                        if (droppedNoClock % 60 == 1) {
-                            Log.w(TAG, "时钟未走，已丢弃 $droppedNoClock 帧")
+                        if (droppedNoClock % 100 == 1) {
+                            Log.w(TAG, "时钟未走，画面挂起中（已等 $droppedNoClock 次）")
                         }
-                        if (droppedNoClock > 900) {
-                            lastError = "丢弃 900 帧仍无可用时钟（clockAdvancing 长期 false）"
-                            Log.e(TAG, "出帧中止：$lastError")
+                        try {
+                            Thread.sleep(20)
+                        } catch (t: InterruptedException) {
+                            Thread.currentThread().interrupt()
                             break
                         }
-                        codec.releaseOutputBuffer(outIdx, false)
                         continue
                     } else {
                         droppedNoClock = 0
@@ -394,16 +396,24 @@ class VideoPipe {
                             }
                             /* 超前 ≥300ms：不等待，直接丢帧跳（图 §5 第二档；等待会饿死解码器） */
                             ahead >= 0.300 -> {
-                                skippedMs += ((ptsRaw - lastRenderedPts).coerceAtLeast(0.0)) * 1000.0
                                 codec.releaseOutputBuffer(outIdx, false)
                                 decodedFrames++
-                                /* 丢帧累计 500ms 仍未追平 → 请外面从主时钟位置重启（失步兜底） */
-                                if (skippedMs >= 500.0) {
-                                    val target = audioSec
-                                    Log.w(TAG, "失步：连续丢帧 ${skippedMs.toInt()}ms 未追平 → 请求从 ${target}s 重启")
-                                    skippedMs = 0.0
-                                    runCatching { onNeedRestart?.invoke(target) }
-                                    break
+                                /*
+                                 * 失步兜底（图 §5）：**偏差连续 3s >500ms** 才重启。
+                                 * 记"首次超阈时刻"，不是"丢帧累计到 500ms 就重启" ——
+                                 * 一次跳几秒的大跨度丢帧会立刻累计过阈，导致误重启。
+                                 */
+                                val nowMs = android.os.SystemClock.elapsedRealtime()
+                                if (ahead > 0.500) {
+                                    if (desyncSinceMs == 0L) desyncSinceMs = nowMs
+                                    if (nowMs - desyncSinceMs >= 3000L) {
+                                        Log.w(TAG, "失步持续 3s（偏差 ${"%.2f".format(ahead)}s）→ 请求从 ${audioSec}s 重启")
+                                        desyncSinceMs = 0L
+                                        runCatching { onNeedRestart?.invoke(audioSec) }
+                                        break
+                                    }
+                                } else {
+                                    desyncSinceMs = 0L
                                 }
                                 continue
                             }
@@ -433,7 +443,7 @@ class VideoPipe {
                     codec.releaseOutputBuffer(outIdx, true)
                     firstFrameShown = true
                     lastRenderedPts = ptsRaw
-                    skippedMs = 0.0
+                    desyncSinceMs = 0L
                     decodedFrames++
                     if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
                         outputDone = true

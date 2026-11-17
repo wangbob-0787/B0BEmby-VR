@@ -3726,11 +3726,11 @@ class MainActivity : ComponentActivity() {
      */
     private fun clearDoviState() {
         com.xxxx.emby_vr.vr.VrNative.setDoviStreamActive(false)
-        runCatching {
-            java.io.File(getExternalFilesDir(null) ?: filesDir, "dovi_params.bin").delete()
-        }
         /*
-         * 逐项恢复"为某类片源临时改过"的开关（施工图 §4.2.3 A 类，十二项）。
+         * 逐项恢复"为某类片源临时改过"的开关（施工图 §4.2.3 A 类）。
+         *
+         * 杜比参数文件**不在这里删**（图 §4.4 ⑧）：渲染层按 mtime 读它，删了会让正在显示的那帧跳色；
+         * 删文件的动作留在 VideoPipe.start 里做。
          *
          * 这些开关是**进程级**的，不恢复就会带着上一部片的状态跑下一部：
          *   vid               —— P5 关掉内核视频轨，不恢复则后续片全黑（已实测）
@@ -3747,7 +3747,12 @@ class MainActivity : ComponentActivity() {
          */
         runCatching { com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("vid", "auto") }
         runCatching { com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("audio-display", "no") }
-        runCatching { mpvBackend?.setLoopFile(playModeIndex != 2) }
+        /* loop-file 走静态属性接口：清场可能发生在 mpvBackend 还没赋值的时刻（见下） */
+        runCatching {
+            com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime(
+                "loop-file", if (playModeIndex != 2) "inf" else "no",
+            )
+        }.onFailure { Log.w(TAG, "清场：loop-file 恢复失败 ${it.message}") }
         runCatching { com.xxxx.emby_vr.player.MpvBackend.applyDoviPipeline(false) }
         /*
          * 画面尺寸不在这里恢复：每条起播路径都会按本部片的实测宽高重设一次
@@ -3761,7 +3766,9 @@ class MainActivity : ComponentActivity() {
         runCatching { com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("audio-file", "") }
         runCatching { com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("sub-file", "") }
         /* 静音与网页流请求头：这两个不恢复最容易变成"没声音"和"被服务端拒" */
-        runCatching { mpvBackend?.setMute(false) }
+        /* mute 同样走静态接口：清场可能发生在实例构造过程中（MpvBackend(this).also{} 内部） */
+        runCatching { com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("mute", "no") }
+            .onFailure { Log.w(TAG, "清场：mute 恢复失败 ${it.message}") }
         runCatching {
             com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("http-header-fields", "")
             com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("referrer", "")
@@ -8328,6 +8335,36 @@ class MainActivity : ComponentActivity() {
      * 声音却跳走了（父亲实测：「一快进就回到 0，音画不同步」）。
      * 重建解码器会短暂黑一下，但位置是准的。
      */
+    /**
+     * 失步重启：停掉旧实例、按目标位置重建。
+     *
+     * 与 [restartVideoPipeAt] 的区别：这条**不重新静音、不重走五步门**（门保持放行），
+     * 因为声音一直在正常播，重新静音会掐掉一段；重走门则会再等一次首帧、多黑几帧。
+     */
+    private fun restoreVideoPipeAt(sec: Double) {
+        val url = selfPipeUrl ?: return
+        val surface = selfPipeSurface ?: return
+        val m = mpvBackend ?: return
+        val pipe = com.xxxx.emby_vr.player.VideoPipe()
+        videoPipe = pipe
+        pipe.start(
+            url, emptyMap(), surface,
+            { m.positionSec() },
+            { m.clockAdvancing() },
+            sec,
+            java.io.File(getExternalFilesDir(null) ?: filesDir, "dovi_params.bin").absolutePath,
+            holdGate = { false },
+            onFirstFrame = { },
+            onDoviParams = { com.xxxx.emby_vr.vr.VrNative.setDoviStreamActive(true) },
+            onNeedRestart = { t ->
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
+                    { runCatching { restoreVideoPipeAt(t) } }, 1500,
+                )
+            },
+        )
+        Log.i(TAG, "失步重启完成：位置=$sec（未重新静音）")
+    }
+
     private fun restartVideoPipeAt(sec: Double) {
         val url = selfPipeUrl ?: return
         val surface = selfPipeSurface ?: return
@@ -8515,14 +8552,32 @@ class MainActivity : ComponentActivity() {
                             waited += 20L
                             h.postDelayed({ poll() }, 20L)
                         } else {
-                            /* 时钟 2 秒没走起来：放行画面并写清原因，不许无声死等 */
-                            Log.w(TAG, "时钟 2s 未开始走（clockStarted=false）→ 仍放行画面，声音保持静音")
-                            selfPipeWaitingFirstFrame.set(false)
+                            /*
+                             * 图 §4.2.1 第二条看门狗：等到 clockStarted 超时 → 进 FAILING，
+                             * **不是"仍放行画面"**。放行会把"画面有、永远没声音"变成可接受状态，
+                             * 而这正是父亲报过的症状，验收还会通过。
+                             * 回滚里 §4.4 ⑨ 会负责把静音还回去。
+                             */
+                            Log.e(TAG, "FAIL：等 clockStarted 超 2s（clockStarted=false）→ 停播并回滚")
+                            stopPlaybackInternal(keepUi = false)
                         }
                     }
                     poll()
                 },
-                onNeedRestart = { target -> restartVideoPipeAt(target) },
+                /*
+                 * 失步重启（图 §5）：**必须投主控线程**。这个回调来自解码线程，
+                 * 在解码线程上直接调 start() 会让它 join 自己（start 第一行就是 stop），
+                 * 而且旧解码器还没停就新建、surface 抢接会失败。
+                 */
+                onNeedRestart = { target ->
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        Log.w(TAG, "失步重启（主控线程）：先停旧实例再按 $target 重建")
+                        runCatching { videoPipe?.stop() }
+                        videoPipe = null
+                        /* 重启不重新静音：声音一直在走，重新静音会掐掉一段 */
+                        runCatching { restoreVideoPipeAt(target) }
+                    }
+                },
                 /*
                  * 只有真的从码流里解出 RPU 参数，才允许渲染层走杜比还原。
                  * 非 P5 片源解不出参数，这个回调就不会来 —— 它们永远不进新路径。
@@ -8558,8 +8613,11 @@ class MainActivity : ComponentActivity() {
                 return
             }
             if (audioWaitMs >= 5000L) {
-                /* 内核 5 秒没就绪：用请求位置兜底并写清楚，不许无限等 */
-                Log.w(TAG, "内核 5s 未就绪（clockPresent=false）→ 用请求位置 $startSec 兜底起画面")
+                /*
+                 * 图 §4.2.1 第三条看门狗：5s 没等到内核就绪 → 用请求位置作基准，
+                 * 但必须打 ERROR 说明"基准可能差一个 GOP"。静默兜底会让后面所有偏差都查不出源头。
+                 */
+                Log.e(TAG, "ERROR：5s 未等到内核就绪（clockPresent=false），基准改用请求值 $startSec —— 可能差一个 GOP")
                 launchPipeline(startSec)
                 return
             }
@@ -8569,6 +8627,27 @@ class MainActivity : ComponentActivity() {
 
         /* 开始等内核就绪，就绪后自动起画面 */
         startPipeWhenReady()
+
+        /*
+         * 图 §4.2.1 第一条看门狗：3s 内一帧都解不出（或所有帧都早于 audioStart、基准永远取不到）
+         * → 停 PIPE 并回落内核全包。没有这条，holdGate 会永久压着、静音永不解除 = 黑屏无声。
+         * 回落前必须按 §0 铁律 5 的 **MPV 行**设色彩（false+false），并解除静音。
+         */
+        ui.postDelayed({
+            if (selfPipeWaitingFirstFrame.get() && videoPipe != null) {
+                Log.e(TAG, "FAIL：自管解码 3s 内没有可用首帧 → 回落内核全包")
+                runCatching { videoPipe?.stop() }
+                videoPipe = null
+                selfPipeWaitingFirstFrame.set(false)
+                runCatching { com.xxxx.emby_vr.vr.VrNative.setDoviStreamActive(false) }
+                runCatching { com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("vid", "auto") }
+                runCatching { com.xxxx.emby_vr.player.MpvBackend.applyDoviPipeline(false) }
+                runCatching { m.setMute(false) }
+                /* 内核已加载同一文件：直接从当前基准位置起播，不重新取地址 */
+                runCatching { m.play(url, audioStart, startPaused = false) }
+                Log.i(TAG, "已回落内核全包（vid=auto, 色彩=MPV行, mute=no, 位置=$audioStart）")
+            }
+        }, 3000L)
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
