@@ -513,7 +513,18 @@ class VideoPipe {
         if (originPts < 0.0) {
             originPts = ptsRaw
             appliedOffset = audioStartSec - originPts
-            Log.i(TAG, "零点标定：audioStart=$audioStartSec origin=$originPts offset=$appliedOffset 预卷丢弃=$prerollDropped")
+            /*
+             * 基准对账（2026-11-17 父亲要的观测量）：跳转/重建之后到底落在哪一帧。
+             * 推算只能保证"读数不抖"，基准若定错（seek 落到关键帧先后不同）会稳定差几秒，
+             * 半秒阈值挡不住。这一行直接给出：首帧 pts、当时主时钟、两者差。
+             */
+            val clockAtFix = clockNow()
+            Log.i(
+                TAG,
+                "零点标定：audioStart=$audioStartSec origin=$originPts offset=$appliedOffset" +
+                    " 预卷丢弃=$prerollDropped 主时钟=${"%.2f".format(clockAtFix)}" +
+                    " 基准差=${"%.3f".format(clockAtFix - originPts)}s",
+            )
         }
 
         /* 起播放行闸门：门关着就持这一帧等（I1/I3），门一开立刻上屏 */
