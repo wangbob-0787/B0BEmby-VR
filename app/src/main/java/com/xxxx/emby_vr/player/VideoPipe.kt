@@ -121,10 +121,8 @@ class VideoPipe {
     private var prerollDropped = 0
     /** 偏差首次超过 500ms 的时刻（elapsedRealtime）；连续 3s 未追平才请求重启 */
     private var desyncSinceMs = 0L
-    /** 时钟无效时连续丢弃的帧数（超上限才判失败，正常几帧就恢复） */
+    /** 时钟无效时连续挂起的次数（只用于日志节流；何时收场由上层按"无进度"判） */
     private var droppedNoClock = 0
-    /** 上一张真正上屏的帧 PTS（丢帧累计用） */
-    private var lastRenderedPts = 0.0
     /** 首帧已解出（≠ 已上屏）：只回调一次 onFirstFrame 用 */
     @Volatile private var firstFrameReady = false
     /** 首帧已真正上屏（≠ 已解出）：节拍判断只在它之后生效 */
@@ -442,7 +440,6 @@ class VideoPipe {
                     }
                     codec.releaseOutputBuffer(outIdx, true)
                     firstFrameShown = true
-                    lastRenderedPts = ptsRaw
                     desyncSinceMs = 0L
                     decodedFrames++
                     if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {

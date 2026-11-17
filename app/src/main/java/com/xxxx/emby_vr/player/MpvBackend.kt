@@ -123,6 +123,8 @@ class MpvBackend(private val context: Context) {
         @Volatile private var cTimePosAtMs = 0L
         /** 最近一次取消暂停的时刻；clockStarted 用它卡"必须有新采样" */
         @Volatile private var unpauseAtMs = 0L
+        /** 上一次采样时的位置；clockAdvancing 用它与当前值比"增量是否 ≥1ms" */
+        @Volatile private var lastPosSample = 0.0
         /** 音轨是否已解析出来（clockPresent 的一半判据） */
         @Volatile private var audioTrackResolved = false
         /** 音频输出是否已建立（clockPresent 的另一半判据） */
@@ -235,8 +237,9 @@ class MpvBackend(private val context: Context) {
                 if (v == null) ok = false else apply(v)
             }
             d("time-pos") {
+                /* 增量判定要的是"这一拍位置有没有真的往前走"，所以先存旧值再更新 */
+                lastPosSample = cTimePos
                 cTimePos = it
-                /* 记下这次采样时刻：判断"位置新鲜"要用（2026-11-17，时钟四谓词的配套量） */
                 cTimePosAtMs = android.os.SystemClock.elapsedRealtime()
             }
             s("sub-text") { cSubText = it }
@@ -854,7 +857,13 @@ class MpvBackend(private val context: Context) {
         if (cIdleActive) return false
         val at = cTimePosAtMs
         if (at == 0L) return false
-        return android.os.SystemClock.elapsedRealtime() - at <= 200L
+        if (android.os.SystemClock.elapsedRealtime() - at > 200L) return false
+        /*
+         * 第三条是"位置真的在推进（增量 ≥1ms）"，不是"最近有采样"：
+         * 属性轮询 100ms 一拍，缓冲或卡顿时采样照样刷新、位置却不动；
+         * 只判"有采样"会让这种卡顿被当成正常，一路判超前 → 丢帧 → 3s 后误判失步重启。
+         */
+        return cTimePos - lastPosSample >= 0.001
     }
 
     /** 内核是否已加载文件（不是 idle、有路径）；与"是否出过画面"无关 */
