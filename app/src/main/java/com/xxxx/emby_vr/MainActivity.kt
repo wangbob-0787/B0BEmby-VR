@@ -8906,6 +8906,18 @@ class MainActivity : ComponentActivity() {
                 runCatching { mpvBackend?.setMute(true) }
                 runCatching { mpvBackend?.setPaused(true) }
                 Log.i(TAG, "声音侧就绪 → 保持暂停与静音，等画面三帧齐了同拍放开")
+                /*
+                 * 核对：内核加载完成后偶尔会自己脱离暂停（实测过 canOpenBlk=notPaused）。
+                 * 半秒后再看一次实际状态，没停住就重新压回去，并把真实值打进日志。
+                 */
+                ui.postDelayed({
+                    if (selfPipeReleased) return@postDelayed
+                    val p2 = runCatching { mpvBackend?.isPaused() }.getOrNull()
+                    val m2 = runCatching { mpvBackend?.isMuted() }.getOrNull()
+                    Log.i(TAG, "就绪核对：paused=$p2 muted=$m2（false 表示内核没听指令）")
+                    if (p2 == false) runCatching { mpvBackend?.setPaused(true) }
+                    if (m2 == false) runCatching { mpvBackend?.setMute(true) }
+                }, 500)
                 Log.i(TAG, "起播基准：CAN_OPEN 基准=${"%.3f".format(basePos)}（请求=${"%.3f".format(startSec)}）")
                 launchPipeline(basePos)
             }
