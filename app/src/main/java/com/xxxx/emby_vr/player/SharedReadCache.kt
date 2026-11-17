@@ -38,9 +38,13 @@ object SharedReadCache {
     private const val CAPACITY_BYTES = 400L * 1024 * 1024
     private const val UA = "B0BEmbyRelay/1.0"
     /** 预取块数（1 块 4MB ≈ 2 秒内容 @14Mbps） */
-    private const val PREFETCH_BLOCKS = 4
-    /** 跳转预热额外往后取的块数 */
-    private const val WARM_BLOCKS = 6
+    /** 顺序播放时的前视块数（同样压低并发，靠串行稳定推进） */
+    private const val PREFETCH_BLOCKS = 2
+    /**
+     * 跳转预热往后取的块数：**3 路**（父亲 2026-11-18 提醒：网盘常限同一文件并发连接，
+     * 7 路可能触发限流，表现是"缓存停止增长"）。宁可少而稳，不要多而被拒。
+     */
+    private const val WARM_BLOCKS = 3
 
     @Volatile private var started = false
     @Volatile private var server: ServerSocket? = null
