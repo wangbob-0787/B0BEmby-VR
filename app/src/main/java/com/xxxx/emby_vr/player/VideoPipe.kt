@@ -517,7 +517,8 @@ class VideoPipe {
         holdGate = null
         onNeedRestart = null
         firstFrameReady = false
-        gateWaitMs = 0L
+        droppedNoClock = 0
+        desyncSinceMs = 0L
         onFirstFrame = null
         thread?.let {
             try {
