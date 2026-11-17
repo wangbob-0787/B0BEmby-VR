@@ -8631,7 +8631,7 @@ class MainActivity : ComponentActivity() {
              * 跳转后的状态核对：界面显示"在播"但实际停着、需要手点一次才开始
              * （父亲 2026-11-18 实测）。先把真实值打出来，再决定补偿动作。
              */
-            ui.postDelayed({
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                 val p2 = runCatching { m.isPaused() }.getOrNull()
                 val m2 = runCatching { m.isMuted() }.getOrNull()
                 val pos = runCatching { m.positionExtrapolated() }.getOrNull()
