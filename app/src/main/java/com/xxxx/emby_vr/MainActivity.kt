@@ -8444,7 +8444,14 @@ class MainActivity : ComponentActivity() {
             /* 起播：解除暂停 + 放行首帧 + 取消静音，三件同一拍 */
             runCatching { mpvBackend?.setPaused(false) }
         }
-        /* 重建不动 pause：用户可能正暂停着快进，解除暂停是另一个 bug */
+        /*
+         * 重建只在"是我们为等画面而暂停"时才解除暂停；
+         * 用户自己暂停着快进的情况不动（那是另一个 bug）。
+         */
+        if (kind != "BOOT" && pipePausedForRebuild) {
+            runCatching { mpvBackend?.setPaused(false) }
+            pipePausedForRebuild = false
+        }
         runCatching { mpvBackend?.setMute(false) }
         pipeReleasedOnce.set(true)
         selfPipeReleased = true
@@ -8452,6 +8459,9 @@ class MainActivity : ComponentActivity() {
         Log.i(TAG, "放行完成|kind=$kind|source=$source|动过的开关=${if (kind == "BOOT") "pause+mute" else "mute(幂等)"}")
         return true
     }
+
+    /** 是否为"等画面就绪"而暂停过声音（重建路径用，放行时再解除） */
+    @Volatile private var pipePausedForRebuild = false
 
     /* 等待时长只报数不判死（图 §4.1 / §12 L23）：起播、跳转、收场各记一个起点 */
     @Volatile private var pipeLoadT0 = 0L
@@ -8563,6 +8573,16 @@ class MainActivity : ComponentActivity() {
         val surface = selfPipeSurface ?: return
         val pipe = videoPipe ?: return
         val m = mpvBackend ?: return
+        /*
+         * 快进重建期间让声音先停住（2026-11-17 实测定案）。
+         *
+         * 重建要重新开流、跳关键帧、解出首帧，实测 6~21 秒；这段时间声音若继续走，
+         * 画面首帧一出来就已经落后五到二十秒，只能被"丢旧帧"全部丢掉 —— 观感就是
+         * 快进后永远黑屏或一动就冻。按双信号原则：声音等画面，就绪后再一起放。
+         */
+        pipePausedForRebuild = true
+        runCatching { m.setPaused(true) }
+        Log.i(TAG, "跳转重建：先暂停声音，等画面就绪再一起放 @ ${"%.1f".format(sec)}s")
         /*
          * 图 §4.4：跳转重建必须判返回值。原来这里静默丢弃 false ——
          * `setDataSource`/`seekTo` 抛异常时一声不响，用户观感就是"快进无效"。
