@@ -3711,13 +3711,7 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * 起播前清掉上一部片留下的杜比状态（2026-11-16）。
-     *
-     * 三条起播路径（Emby 内核 / Emby 新路径 / 网页流）都要先过这一刀：
-     * 不清的话，上一部 P5 的逐帧参数会被套到普通片子或网页流上，整幅偏色。
-     */
-    /**
-     * 换片清场（三条起播路径都会调）。
+     * 换片清场 —— **只在收场口调**（施工图 §4.2.3.1）。
      *
      * 除了杜比痕迹，还必须把**内核视频轨开回来**：P5 那条路为了让自管解码出画面，
      * 会设 `vid=no` 把内核视频轨关掉；这个属性是进程级的，不恢复的话，
@@ -3726,6 +3720,14 @@ class MainActivity : ComponentActivity() {
      */
     private fun clearDoviState() {
         com.xxxx.emby_vr.vr.VrNative.setDoviStreamActive(false)
+        /*
+         * 内核还没建起来（本进程还没播过片）时没有残留可清，整段跳过：
+         * 否则会连打十几行 SKIP，把真正的故障淹掉。渲染层标志不属于内核，照常归零。
+         */
+        if (!com.xxxx.emby_vr.player.MpvBackend.isReady()) {
+            Log.w(TAG, "换片清场：内核未就绪，跳过属性恢复（本进程没有残留）")
+            return
+        }
         /*
          * 逐项恢复"为某类片源临时改过"的开关（施工图 §4.2.3 A 类）。
          *
@@ -3748,7 +3750,8 @@ class MainActivity : ComponentActivity() {
         restoreOption("vid", "auto")
         restoreOption("audio-display", "no")
         restoreOption("loop-file", if (playModeIndex != 2) "inf" else "no")
-        runCatching { com.xxxx.emby_vr.player.MpvBackend.applyDoviPipeline(false) }
+        /* 色彩是一对：内核管线 + 渲染层标志，必须同时归零，只归一半就偏色 */
+        setColorPair(false)
         /*
          * 画面尺寸不在这里恢复：每条起播路径都会按本部片的实测宽高重设一次
          * （网页流按目标宽度、Emby 片按 videoSize()），清场时还没拿到新尺寸，
@@ -3785,11 +3788,65 @@ class MainActivity : ComponentActivity() {
         com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime(name, value)
     }
 
+    /**
+     * 起播自愈校验（施工图 §4.2.3.1 硬前提 2）。
+     *
+     * 只查三个**致命残留**：`vid` / `loop-file` / `mute`。清场已经挪到收场口，
+     * 这里存在的理由只有一个 —— 进程被系统杀掉时收场口没走到，残留会被下一部片继承：
+     * `vid=no` 让之后每一部走内核的片子都**只有声音没有画面**（已实测）。
+     *
+     * 只读三项、错了才写，起播瞬间的原生写压到个位数。
+     */
+    private fun startupSelfHeal() {
+        val vid = com.xxxx.emby_vr.player.MpvBackend.getPropRuntime("vid")
+        val loop = com.xxxx.emby_vr.player.MpvBackend.getPropRuntime("loop-file")
+        val mute = com.xxxx.emby_vr.player.MpvBackend.getPropRuntime("mute")
+        if (vid == null && loop == null && mute == null) {
+            /* 新进程第一次起播时内核还没建：全新实例没有残留，不必校验 */
+            Log.i(TAG, "起播校验：内核尚未就绪，本次跳过（新进程无残留）")
+            return
+        }
+        val wantLoop = if (playModeIndex != 2) "inf" else "no"
+        val fixed = ArrayList<String>(3)
+        if (vid != null && vid != "auto") {
+            restoreOption("vid", "auto")
+            fixed.add("vid=$vid→auto")
+            Log.e(TAG, "起播自愈：内核视频轨被上一次播放关掉了（vid=$vid），已恢复 auto")
+        }
+        if (loop != null && loop != wantLoop) {
+            restoreOption("loop-file", wantLoop)
+            fixed.add("loop=$loop→$wantLoop")
+            Log.e(TAG, "起播自愈：循环开关有残留（loop-file=$loop），已按播放模式恢复 $wantLoop")
+        }
+        if (mute != null && mute != "no") {
+            restoreOption("mute", "no")
+            fixed.add("mute=$mute→no")
+            Log.e(TAG, "起播自愈：内核还停在静音（mute=$mute），已恢复 no")
+        }
+        Log.i(TAG, "起播校验：vid=$vid loop=$loop mute=$mute 修正=${if (fixed.isEmpty()) "无" else fixed.joinToString(",")}")
+    }
+
+    /**
+     * 本次片源的色彩二元组（施工图 §1.5）。
+     *
+     * 颜色由 $(applyDoviPipeline, setDoviStreamActive) 这一对共同决定，**必须成对设置**：
+     *  · true/true   —— 自管解码的杜比 P5，颜色由渲染层还原；
+     *  · false/false  —— 其余一切（MPV 内核、网页流、系统播放器）。
+     * 只改一半就是最典型的偏绿/发灰（P5 的 IPT 数据被当普通视频解释）。
+     */
+    private fun setColorPair(doviRenderer: Boolean) {
+        com.xxxx.emby_vr.vr.VrNative.setDoviStreamActive(doviRenderer)
+        runCatching { com.xxxx.emby_vr.player.MpvBackend.applyDoviPipeline(doviRenderer) }
+        Log.i(TAG, "色彩二元组 → 内核DOVI管线=$doviRenderer 渲染层DOVI标志=$doviRenderer")
+    }
+
     private fun playWebStream(obj: org.json.JSONObject) {
         /* 网页流标记（2026-11-16）：供内核判定"不要按 HDR10 推断" */
         com.xxxx.emby_vr.player.PlaybackFlags.webSource = true
-        /* 网页流也要清场（2026-11-16）：否则被上一部 P5 的参数连带偏色 */
-        clearDoviState()
+        /*
+         * 清场已挪到收场口（施工图 §4.2.3.1），起播口不再全量清：
+         * 这里只交代"本次不是杜比片源"，色彩二元组到 startPlayer 里按 plan 设。
+         */
         lastWebDeliverAt = System.currentTimeMillis()
         /*
          * 网页流起播也走同一套换片清场（父亲 2026-11-07）。
@@ -4137,6 +4194,8 @@ class MainActivity : ComponentActivity() {
         val useVrScreen = vrSurface != null
         try {
             stopPlaybackInternal(keepUi = replaying)
+            /* 起播自愈校验：必须排在本片任何 vid/loop/mute 设置之前（施工图 §4.2.3.1） */
+            startupSelfHeal()
             /*
              * 杜比视界片源：改走 mpv 解码内核（父亲 2026-10-08）。
              *
@@ -4390,8 +4449,6 @@ class MainActivity : ComponentActivity() {
                             com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionProfile?.contains("50") == true
                         val useSelfPipe = pipeOn && isP5Source
                         Log.i(TAG, "起播分支判定：开关=$pipeOn 本片P5=$isP5Source 自管解码=$useSelfPipe")
-                        /* 换片先清掉上一部片的杜比痕迹（2026-11-16） */
-                        clearDoviState()
                         if (useSelfPipe) {
                             startSelfVideoPipe(directUrl, startMs / 1000.0, surface, m)
                         } else {
@@ -4637,8 +4694,6 @@ class MainActivity : ComponentActivity() {
                 if (!isWeb) startPlaybackReporting()
                 /* Emby 片走内核：清掉网页标记与杜比状态（2026-11-16） */
                 com.xxxx.emby_vr.player.PlaybackFlags.webSource = false
-                clearDoviState()
-                /* 本次不走渲染层还原：色彩目标切回 SDR（2026-11-16） */
                 /*
                  * 本次是 P5 且自管解码开着 → 内核这条路**只负责别的事**，不许改色彩目标、
                  * 不许再 play 一次（2026-11-17 父亲实测「偏绿、没声音、进度不走」）：
@@ -4653,7 +4708,7 @@ class MainActivity : ComponentActivity() {
                     if (!isWeb) startPlaybackReporting()
                     return
                 }
-                com.xxxx.emby_vr.player.MpvBackend.applyDoviPipeline(false)
+                setColorPair(false)
                 Log.i(TAG, "开始播放（内核）: $title url=${url.take(160)}")
                 return
             }
@@ -4997,11 +5052,11 @@ class MainActivity : ComponentActivity() {
              * 报错提示（起播失败 / 播放出错 / 取不到播放地址）仍保留 —— 那是故障信息。
              */
             /*
-             * 系统播放器这条路也清场（2026-11-16 父亲实测：播过 P5 再播别的片，颜色被带偏）。
-             * 它不走内核，但渲染层仍在看「本次是不是 P5」这个标志，不清就会把杜比那套
-             * 颜色公式套到普通画面上。
+             * 系统播放器这条路也要把色彩二元组归零（2026-11-16 父亲实测：
+             * 播过 P5 再播别的片，颜色被带偏）。它不走内核，但渲染层仍在看
+             * 「本次是不是 P5」这个标志，不清就会把杜比那套颜色公式套到普通画面上。
              */
-            clearDoviState()
+            setColorPair(false)
             Log.i(TAG, "开始播放: $title url=${url.take(160)}")
         } catch (e: Exception) {
             Log.e(TAG, "起播失败", e)
@@ -7152,10 +7207,15 @@ class MainActivity : ComponentActivity() {
         player = null
         // mpv 内核同样要收干净（父亲 2026-10-08）：否则下一次起播会是两条内核抢同一块画面
         /*
+         * 换片清场（施工图 §4.2.3.1）：A 类开关在这里全量恢复，起播口不再清。
+         * 位置是硬约束 —— 必须排在停内核之前，且是"任何可能销毁内核的调用"之前。
+         */
+        clearDoviState()
+        /*
          * 静音必须在停内核**之前**还回去（施工图 §4.2.1 与 §4.4 ⑨）。
          * 起播借了 mute=yes，凡没走到「首帧上屏」的收场路径都得还：
-         * mpv 实例进程级只建一次（全仓无 destroy），留着会让下一部片一起静音；
-         * 靠"下次起播清场"兜是错的 —— 那条路自己也可能失败。
+         * mpv 实例进程级只建一次（全仓无 destroy），留着会让下一部片一起静音。
+         * 清场里已经恢复过一次，这里再显式还一次 —— 它是"没声音"的最后一道保险。
          */
         restoreOption("mute", "no")
         mpvBackend?.let {
@@ -8450,6 +8510,7 @@ class MainActivity : ComponentActivity() {
          * 先把视频轨关掉再加载，它就只走音频这一条路。
          */
         /* 本次是 P5、颜色由渲染层算：内核只当搬运工（2026-11-16 按片源切换） */
+        /* 内核管线按 plan 设 true；渲染层标志等真解出 RPU 参数再由 onDoviParams 打开 */
         com.xxxx.emby_vr.player.MpvBackend.applyDoviPipeline(true)
         /*
          * 内核只出声时**不能开循环**（2026-11-16 实测）：视频轨被关掉后内核很快判定
@@ -8637,9 +8698,8 @@ class MainActivity : ComponentActivity() {
                         runCatching { pipe.stop() }
                         videoPipe = null
                         selfPipeWaitingFirstFrame.set(false)
-                        com.xxxx.emby_vr.vr.VrNative.setDoviStreamActive(false)
+                        setColorPair(false)
                         com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("vid", "auto")
-                        com.xxxx.emby_vr.player.MpvBackend.applyDoviPipeline(false)
                         runCatching { m.setMute(false) }
                         /* 内核已加载同一文件：直接按基准位置起播，不重新取地址 */
                         runCatching { m.play(url, audioStart, startPaused = false) }

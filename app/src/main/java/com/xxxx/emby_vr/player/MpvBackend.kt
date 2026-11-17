@@ -33,14 +33,50 @@ class MpvBackend(private val context: Context) {
 
         /** 是否已初始化过（MPVLib 是静态的，重复 create 会重复建实例） */
         private val created = AtomicBoolean(false)
+        /**
+         * 引擎是否真的可用（`MPVLib.init()` 已成功）。
+         *
+         * **唯一就绪判据**。不能用 `created`：它是 `compareAndSet(false,true)` 之后才去
+         * `MPVLib.create()`，在 create 之前就已为真 —— 拿它当就绪会漏掉
+         * "create 跑一半 / init 还没跑"整个窗口，而那窗口里碰 native 是 `die()` → `exit(1)`。
+         */
+        @Volatile private var engReady = false
+
+        /**
+         * 内核是否已初始化完成。
+         *
+         * 必须在任何 `MPVLib.*` 调用前问一次：内核没起来时底层访问的是空上下文，
+         * 那会触发 native 的 SIGABRT（`pthread_mutex_lock called on a destroyed mutex`），
+         * **try/catch 抓不到**，进程直接被系统杀掉。
+         */
+        fun isReady(): Boolean = engReady
+
+        /**
+         * 读一个内核属性（静态版，不依赖实例）。
+         *
+         * 起播自愈校验发生在 `MpvBackend(this)` 构造之前，那时没有实例可问；
+         * 而未就绪时读属性同样是 native `die()`，所以这里必须过同一道门。
+         */
+        fun getPropRuntime(name: String): String? {
+            if (!engReady) {
+                Log.w(TAG, "SKIP|engineNotReady|prop=$name")
+                return null
+            }
+            return try { MPVLib.getPropertyString(name) } catch (_: Throwable) { null }
+        }
 
         /**
          * 运行时改内核属性（调参用，父亲 2026-10-08）。
          *
          * 参数名走 vr-tuning.txt 的 `mpv_<属性>` 行，例如 `mpv_tone-mapping=spline`。
-         * 内核没起来时设置会失败，只记日志不抛。
+         * 内核没起来时**一个属性也不写**，只留一行 SKIP —— 未就绪时碰 native 是 `die()`。
          */
         fun setOptionRuntime(name: String, value: String) {
+            if (!engReady) {
+                /* 留痕用 Log.w 不是 Log.d：默认级别看不到就等于静默漏项 */
+                Log.w(TAG, "SKIP|engineNotReady|prop=$name（值 $value 未写入）")
+                return
+            }
             try {
                 MPVLib.setPropertyString(name, value)
                 Log.i(TAG, "内核属性 → $name=$value")
@@ -95,6 +131,10 @@ class MpvBackend(private val context: Context) {
          * 头显整屏截图带双眼畸变、裁不出可用样本（父亲 2026-10-09 定）。
          */
         fun commandRuntime(args: List<String>) {
+            if (!engReady) {
+                Log.w(TAG, "SKIP|engineNotReady|cmd=${args.firstOrNull()}")
+                return
+            }
             try {
                 MPVLib.command(args.toTypedArray())
                 Log.i(TAG, "内核命令 → ${args.joinToString(" ")}")
@@ -223,6 +263,8 @@ class MpvBackend(private val context: Context) {
 
         /** 便宜且随时可读的那几项：位置、字幕文字、暂停、播完、出画尺寸 */
         private fun readFastProps(tick: Long): Boolean {
+            /* 轮询线程与初始化赛跑：引擎没起来时碰 native 是 die()，try/catch 接不住 */
+            if (!MpvBackend.isReady()) return false
             var ok = true
             fun d(name: String, apply: (Double) -> Unit) {
                 val v = try { MPVLib.getPropertyDouble(name) } catch (_: Throwable) { null }
@@ -282,6 +324,7 @@ class MpvBackend(private val context: Context) {
 
         /** 可能长时间阻塞的那几项：缓冲点、总时长、轨道清单 */
         private fun readSlowProps(tick: Long): Boolean {
+            if (!MpvBackend.isReady()) return false
             var ok = true
             val cached = try { MPVLib.getPropertyDouble("demuxer-cache-time") } catch (_: Throwable) { null }
             if (cached == null) ok = false else cCacheTime = cached
@@ -549,15 +592,31 @@ class MpvBackend(private val context: Context) {
                         Log.i(TAG, "mpv[$level] ${prefix ?: ""}$text")
                     }
                     MPVLib.init()
+                    engReady = true
                     // 属性轮询线程：所有属性读取都归它，界面线程只读缓存（见上方属性缓存注释）
                     startPropertyPoller()
                     Log.i(TAG, "mpv 内核已就绪（gpu-next + libplacebo，软解，杜比视界 Profile 5）")
                 } catch (t: Throwable) {
+                    engReady = false
                     created.set(false)
                     Log.e(TAG, "mpv 内核初始化失败: ${t.message}")
                 }
             }
         }
+    }
+
+    /**
+     * 实例侧 native 调用门（图 §4.1「引擎未就绪前不动 native」）。
+     *
+     * `engReady` 是唯一判据；未就绪一律跳过并留痕 —— 不做这一步就是 `die()` → `exit(1)`。
+     * 所有 `MPVLib.*` 调用都必须能找到一次 gate/whenReady 判定（图 §4.2.1 可执行验收）。
+     */
+    private fun whenReady(what: String, block: () -> Unit) {
+        if (!MpvBackend.isReady()) {
+            Log.w(TAG, "SKIP|engineNotReady|prop=$what")
+            return
+        }
+        block()
     }
 
     private var surfaceAttached = false
@@ -587,6 +646,7 @@ class MpvBackend(private val context: Context) {
      * 这两项只能在载入片源前设，播放中改无效。
      */
     fun setHwdecMode(zeroCopy: Boolean) {
+        if (!MpvBackend.isReady()) { Log.w(TAG, "SKIP|engineNotReady|prop=hwdec"); return }
         runCatching {
             MPVLib.setOptionString("hwdec", if (zeroCopy) "mediacodec" else "mediacodec-copy")
         }.onFailure { Log.w(TAG, "切换解码方式失败：" + it.message) }
@@ -594,6 +654,7 @@ class MpvBackend(private val context: Context) {
 
     fun attachSurface(surface: Surface?) {
         ensureCreated(context)
+        if (!MpvBackend.isReady()) { Log.w(TAG, "SKIP|engineNotReady|attachSurface"); return }
         currentSurface = surface
         try {
             if (surface == null) {
@@ -642,7 +703,7 @@ class MpvBackend(private val context: Context) {
      */
     fun appendFile(url: String) {
         if (url.isBlank()) return
-        post { MPVLib.command(arrayOf("loadfile", url, "append-play")) }
+        post { whenReady("loadfile") { MPVLib.command(arrayOf("loadfile", url, "append-play")) } }
     }
 
     /**
@@ -665,9 +726,9 @@ class MpvBackend(private val context: Context) {
              * 文件生效），另外再排一次延迟补跳兜底（万一 start 没被认）。
              */
             if (startSec > 0.5) {
-                post { MPVLib.setPropertyString("start", "+" + startSec.toInt()) }
+                post { whenReady("start") { MPVLib.setPropertyString("start", "+" + startSec.toInt()) } }
             }
-            post { MPVLib.command(arrayOf("loadfile", url, "replace")) }
+            post { whenReady("loadfile") { MPVLib.command(arrayOf("loadfile", url, "replace")) } }
             /*
              * 外挂音轨（网页流用）：2026-10-16 头显实测 —— 把 audio-file 当"下一个文件的
              * per-file 选项"设，属性确实设上了（内核日志有 `Set property: audio-file=…`），
@@ -686,6 +747,9 @@ class MpvBackend(private val context: Context) {
                             /* 挂音轨前把请求头再设一遍：这些是"对下一个文件生效"的选项，
                                不重设的话音频那条拿不到 Referer，B站 会拒（有画无声） */
                             applyStreamHeaders()
+                            if (!MpvBackend.isReady()) {
+                                Log.w(TAG, "SKIP|engineNotReady|cmd=audio-add"); return@post
+                            }
                             MPVLib.command(arrayOf("audio-add", au, "select"))
                             Log.i(TAG, "外挂音轨已交给内核（audio-add，请求头已重设）")
                         } catch (t: Throwable) {
@@ -702,7 +766,7 @@ class MpvBackend(private val context: Context) {
                     val pos = positionSec()
                     if (pos < want - 5.0) {
                         post {
-                            MPVLib.command(arrayOf("seek", want.toString(), "absolute+exact"))
+                            whenReady("seek") { MPVLib.command(arrayOf("seek", want.toString(), "absolute+exact")) }
                         }
                         Log.i(TAG, "内核起播位置补跳 → ${want.toInt()}s（当时 ${pos.toInt()}s）")
                     } else {
@@ -753,7 +817,7 @@ class MpvBackend(private val context: Context) {
         cPaused = paused
         /* 记下"从暂停变回播放"的时刻：clockStarted 要用它区分新采样与旧缓存 */
         if (!paused) unpauseAtMs = android.os.SystemClock.elapsedRealtime()
-        post { MPVLib.setPropertyBoolean("pause", paused) }
+        post { whenReady("pause") { MPVLib.setPropertyBoolean("pause", paused) } }
     }
 
     fun isPaused(): Boolean = cPaused
@@ -765,7 +829,7 @@ class MpvBackend(private val context: Context) {
      * 首帧就绪到画面上屏之间的那段必须靠它——用 pause 挡会死锁（不 unpause 时钟永远不走）。
      */
     fun setMute(muted: Boolean) {
-        post { MPVLib.setPropertyBoolean("mute", muted) }
+        post { whenReady("mute") { MPVLib.setPropertyBoolean("mute", muted) } }
     }
 
     /** 播放位置（秒） */
@@ -778,7 +842,7 @@ class MpvBackend(private val context: Context) {
      */
     /** 收 / 放内核自己那层字幕（文字字幕由我们自绘，图形字幕留给内核画）。 */
     fun setSubVisible(visible: Boolean) {
-        post { MPVLib.setPropertyString("sub-visibility", if (visible) "yes" else "no") }
+        post { whenReady("sub-visibility") { MPVLib.setPropertyString("sub-visibility", if (visible) "yes" else "no") } }
     }
 
     /**
@@ -803,7 +867,13 @@ class MpvBackend(private val context: Context) {
     fun currentSubtitleText(): String = cSubText
 
     /** 读任意内核属性（诊断用）。读不到返回 null，不抛。 */
-    fun prop(name: String): String? = try { MPVLib.getPropertyString(name) } catch (_: Throwable) { null }
+    fun prop(name: String): String? {
+        if (!MpvBackend.isReady()) {
+            Log.w(TAG, "SKIP|engineNotReady|prop=$name")
+            return null
+        }
+        return try { MPVLib.getPropertyString(name) } catch (_: Throwable) { null }
+    }
 
     fun positionSec(): Double = cTimePos
 
@@ -888,7 +958,7 @@ class MpvBackend(private val context: Context) {
     fun cachedTimeSec(): Double = cCacheTime
 
     fun seekToSec(sec: Double) {
-        post { MPVLib.command(arrayOf("seek", sec.toString(), "absolute")) }
+        post { whenReady("seek") { MPVLib.command(arrayOf("seek", sec.toString(), "absolute")) } }
     }
 
     /**
@@ -902,6 +972,7 @@ class MpvBackend(private val context: Context) {
      */
     fun applyBufferPreset(seconds: Int, maxBytesMb: Int) {
         post {
+            if (!MpvBackend.isReady()) { Log.w(TAG, "SKIP|engineNotReady|prop=cache-secs"); return@post }
             MPVLib.setPropertyInt("cache-secs", seconds.coerceIn(5, 600))
             MPVLib.setPropertyInt("demuxer-max-bytes", (maxBytesMb.coerceIn(16, 2048)) * 1024 * 1024)
             Log.i(TAG, "内核缓冲档位 → cache-secs=${seconds}s 上限=${maxBytesMb}MB")
@@ -917,6 +988,7 @@ class MpvBackend(private val context: Context) {
      */
     fun setLoopFile(loop: Boolean) {
         post {
+            if (!MpvBackend.isReady()) { Log.w(TAG, "SKIP|engineNotReady|prop=loop-file"); return@post }
             MPVLib.setPropertyString("loop-file", if (loop) "inf" else "no")
             Log.i(TAG, "内核循环 → ${if (loop) "开" else "关"}")
         }
@@ -926,7 +998,7 @@ class MpvBackend(private val context: Context) {
     fun endReached(): Boolean = cEof
 
     fun setSpeed(speed: Float) {
-        post { MPVLib.setPropertyDouble("speed", speed.toDouble()) }
+        post { whenReady("speed") { MPVLib.setPropertyDouble("speed", speed.toDouble()) } }
     }
 
     /**
@@ -939,6 +1011,7 @@ class MpvBackend(private val context: Context) {
     fun setSurfaceSize(w: Int, h: Int) {
         if (w < 64 || h < 64) return
         post {
+            if (!MpvBackend.isReady()) { Log.w(TAG, "SKIP|engineNotReady|prop=android-surface-size"); return@post }
             MPVLib.setPropertyString("android-surface-size", "${w}x$h")
             // vo 已激活时只设属性不会重建窗口，必须把 wid 摘掉再装回去，
             // vo 才会按新表面重建输出窗口。detach 顺带释放上一次 attach 拿的引用。
@@ -973,6 +1046,7 @@ class MpvBackend(private val context: Context) {
             return false
         }
         post {
+            if (!MpvBackend.isReady()) { Log.w(TAG, "SKIP|engineNotReady|prop=aid"); return@post }
             MPVLib.setPropertyInt("aid", id)
             Log.i(TAG, "内核切音轨：第 ${ordinal + 1} 条（aid=$id）")
         }
@@ -1103,6 +1177,9 @@ class MpvBackend(private val context: Context) {
         runCatching {
             subExec.execute {
                 runCatching {
+                    if (!MpvBackend.isReady()) {
+                        Log.w(TAG, "SKIP|engineNotReady|cmd=sub-add"); return@runCatching
+                    }
                     MPVLib.command(arrayOf("sub-add", url, "select"))
                     Log.i(TAG, "内核加载字幕地址：${url.take(140)}")
                 }
@@ -1120,6 +1197,7 @@ class MpvBackend(private val context: Context) {
     fun setSubtitleByOrdinal(ordinal: Int?): Boolean {
         if (ordinal == null) {
             post {
+                if (!MpvBackend.isReady()) { Log.w(TAG, "SKIP|engineNotReady|prop=sid"); return@post }
                 MPVLib.setPropertyString("sid", "no")
                 Log.i(TAG, "内核：字幕关闭（sid=no）")
             }
@@ -1136,6 +1214,7 @@ class MpvBackend(private val context: Context) {
             return false
         }
         post {
+            if (!MpvBackend.isReady()) { Log.w(TAG, "SKIP|engineNotReady|prop=sid"); return@post }
             MPVLib.setPropertyInt("sid", id)
             Log.i(TAG, "内核选字幕：第 ${ordinal + 1} 条（sid=$id，共 ${ids.size} 条）")
         }
@@ -1172,6 +1251,7 @@ class MpvBackend(private val context: Context) {
      * 用的是不是硬解。这些一行日志就能定性，省得靠猜。
      */
     fun dumpVideoParams() {
+        if (!MpvBackend.isReady()) { Log.w(TAG, "SKIP|engineNotReady|prop=dumpVideoParams"); return }
         fun p(k: String): String = try {
             MPVLib.getPropertyString(k) ?: "-"
         } catch (_: Throwable) {
@@ -1191,6 +1271,7 @@ class MpvBackend(private val context: Context) {
      * 带标记的片一律不动。
      */
     private fun inferHdrWhenUntagged() {
+        if (!MpvBackend.isReady()) { Log.w(TAG, "SKIP|engineNotReady|prop=inferHdrWhenUntagged"); return }
         fun p(k: String): String = try {
             MPVLib.getPropertyString(k) ?: ""
         } catch (_: Throwable) {
@@ -1228,6 +1309,7 @@ class MpvBackend(private val context: Context) {
         if (tagged || h < 1000 || !pixfmt.contains("10")) return
         Log.i(TAG, "片源无色彩标记（$pixfmt ${h}p，primaries=$primaries gamma=$gamma）→ 按 HDR10 推断")
         try {
+            if (!MpvBackend.isReady()) { Log.w(TAG, "SKIP|engineNotReady|prop=vf"); return }
             MPVLib.setPropertyString(
                 "vf",
                 "setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc"
@@ -1242,7 +1324,8 @@ class MpvBackend(private val context: Context) {
 
     fun stop() {
         endPolling()
-        post { MPVLib.command(arrayOf("stop")) }
+        post { whenReady("stop") { MPVLib.command(arrayOf("stop")) } }
+        if (!MpvBackend.isReady()) { Log.w(TAG, "SKIP|engineNotReady|detachSurface"); surfaceAttached = false; return }
         try {
             MPVLib.detachSurface()
             surfaceAttached = false
