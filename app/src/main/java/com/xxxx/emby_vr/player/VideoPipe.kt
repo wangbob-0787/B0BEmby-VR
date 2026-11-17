@@ -72,6 +72,17 @@ class VideoPipe {
     /** 连续重启计数与上次重启时刻：≥3 次仍未收敛就停手，宁可停住也不无限跳 */
     private var restartCount = 0
     private var lastRestartMs = 0L
+    /** "追锚"次数：首帧落后过多就按当前主时钟再解一次，最多 2 次 */
+    private var catchUpCount = 0
+
+    /**
+     * 是否正在被人为停止。
+     *
+     * 存在的理由（2026-11-17 实测）：`stop()` 掉的实例，解码器可能补一个 EOS 标志，
+     * 我们据此回调 onEos → 上层把 mpv 暂停 → 主时钟停走 → **新实例持帧等到死**（画面永久冻住）。
+     * 现场日志：`失步重启（先停旧实例）` 与 `画面已到结尾 → 内核暂停收场` 同一毫秒。
+     */
+    @Volatile private var stopping = false
 
     /**
      * 杜比参数落盘路径（与内核那份同一个文件，渲染层读它做还原）。
@@ -252,8 +263,10 @@ class VideoPipe {
         this.clockProbe = clockProbe
         this.clockAgeProvider = clockAgeProvider
         this.clockRealProvider = clockReal
+        stopping = false
         restartCount = 0
         lastRestartMs = 0L
+        catchUpCount = 0
         this.onFirstFrame = onFirstFrame
         this.onDoviParams = onDoviParams
         this.onEos = onEos
@@ -439,7 +452,8 @@ class VideoPipe {
          * 画面放完了：告诉外面一次（父亲 2026-11-16 要求）。
          * 正常播完与被停止都会走到这里，外面按"是不是还在播"决定要不要当结束处理。
          */
-        if (outputDone) runCatching { onEos?.invoke() }
+        /* 被人为停止的实例不许回调"播完了"——否则会把内核暂停，新实例直接等死 */
+        if (outputDone && !stopping) runCatching { onEos?.invoke() }
         Log.i(TAG, "解码循环结束，共 $decodedFrames 帧（预卷丢弃=$prerollDropped tryAgain=$tryAgainStreak）")
         /*
          * 图 §5 I4：**释放权归线程自己** —— 线程退出时释放自己持有的帧与解码器。
@@ -532,6 +546,27 @@ class VideoPipe {
                 }
             }
             if (!running.get()) return finish(false)
+            /*
+             * 首帧落后太多就**追过去**，不许把旧画面贴到"现在"（丫头 2026-11-17 定）：
+             * 重锚会把 6~10 秒前的内容打上当前时间戳 → 声音和口型差十秒，比冻住更难查。
+             * 规则：落后 ≤1s 照常上屏；>1s 立刻按当前主时钟位置再 seek 一次重解（第二次快得多），
+             * 最多迭代 2 次，仍追不上才落到失步兜底（3 秒那条）。
+             */
+            val realNow = clockRealProvider?.invoke() ?: -1.0
+            if (realNow >= 0.0) {
+                val lag = realNow - (ptsRaw + appliedOffset)
+                if (lag > 1.0 && catchUpCount < 2) {
+                    catchUpCount++
+                    Log.w(
+                        TAG,
+                        "追锚|落后=${(lag * 1000).toInt()}ms|第${catchUpCount}次 → 按当前主时钟 ${"%.2f".format(realNow)}s 重解",
+                    )
+                    finish(false)
+                    runCatching { onNeedRestart?.invoke(realNow) }
+                    return true
+                }
+                if (lag <= 1.0) catchUpCount = 0
+            }
             return finish(true)
         }
 
@@ -731,6 +766,7 @@ class VideoPipe {
      */
     fun stop(): Boolean {
         /* 释放权归线程自己：这里只置停止标志，不代解码线程 release（图 §5 I4） */
+        stopping = true
         running.set(false)
         holdGate = null
         onNeedRestart = null

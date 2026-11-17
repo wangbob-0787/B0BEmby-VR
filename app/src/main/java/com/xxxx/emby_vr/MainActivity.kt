@@ -8794,6 +8794,15 @@ class MainActivity : ComponentActivity() {
                  * 播完状态由它自己的音频触发，界面照旧收场。
                  */
                 onEos = {
+                    /*
+                     * 只有"当前这个实例"报的 EOS 才算播完。
+                     * 被重建/换片停掉的旧实例，解码器会补一个 EOS 标志，若照旧暂停内核，
+                     * 主时钟就停了 → 新实例持帧等到死（2026-11-17 实测画面永久冻住）。
+                     */
+                    if (videoPipe !== pipe) {
+                        Log.w(TAG, "旧实例的 EOS 被丢弃（当前已换新实例）")
+                        return@start
+                    }
                     Log.i(TAG, "自管解码：画面已到结尾 → 内核暂停收场")
                     runCatching { m.setLoopFile(false) }
                     runCatching { m.setPaused(true) }
