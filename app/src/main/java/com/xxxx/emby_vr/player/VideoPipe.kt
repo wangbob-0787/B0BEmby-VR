@@ -275,6 +275,7 @@ class VideoPipe {
         this.onPreheatReady = onPreheatReady
         tryAgainStreak = 0L
         showLogged = false
+        alignCount = 0
         startedAtMs = android.os.SystemClock.elapsedRealtime()
         lastDovi = null
         doviWriteSkip = 0
@@ -541,18 +542,24 @@ class VideoPipe {
             return finish(true)
         }
 
-        /* 两条规则：偏差 ≤0.5s 上屏；>0.5s 在同一解码器里跳过去 */
+        /*
+         * 2026-11-17 父亲定：读到时钟就**立刻对齐**，不要累积到偏差变大再处理。
+         *
+         * 做法：每帧算出偏差，超过 300ms 就把"帧→时间"的映射一次性挪正（offset 修正），
+         * 既不丢帧、也不跳解码器、更不等；修改量写进日志，便于对账。
+         * 这样偏差永远停在毫秒级，不会积累成几秒。
+         */
         val clock = clockNowOrWall()
-        val ahead = (ptsRaw + appliedOffset) - clock
-        if (ahead > 0.5 || ahead < -0.5) {
-            val target = clock
+        var ahead = (ptsRaw + appliedOffset) - clock
+        if (ahead > 0.30 || ahead < -0.30) {
+            appliedOffset -= ahead
+            val fixed = (ptsRaw + appliedOffset) - clock
             Log.w(
                 TAG,
-                "内部跳转|偏差=${(ahead * 1000).toInt()}ms|目标=${"%.2f".format(target)}s（不重建解码器）",
+                "立即对齐|原偏差=${(ahead * 1000).toInt()}ms|修正后=${(fixed * 1000).toInt()}ms" +
+                    "|不丢帧不跳解码器（第 ${++alignCount} 次）",
             )
-            val ok = seekInPlace(target)
-            finish(false)
-            return !ok     /* 同实例跳成功就继续循环；失败才结束 */
+            ahead = fixed
         }
         return finish(true)
     }
@@ -580,6 +587,9 @@ class VideoPipe {
             false
         }
     }
+
+    /** 立即对齐的累计次数（只作日志/观测量） */
+    private var alignCount = 0
 
     /** 主时钟：读不到就用"最后位置 + 墙钟"自己走（不压画面） */
     private fun clockNowOrWall(): Double {
