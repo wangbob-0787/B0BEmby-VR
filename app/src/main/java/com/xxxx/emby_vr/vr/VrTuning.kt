@@ -262,6 +262,14 @@ object VrTuning {
     @Volatile var pipePoolProbe: Int = 0
 
     /**
+     * 关掉画面与声音的同步（1 = 关）。
+     *
+     * 排查用：打开后画面解出一帧就直接上屏，不与主时钟比较、不丢帧、不等待，
+     * 声音由内核照常自己跑。用来区分"画面链路本身能不能流畅播"与"同步逻辑在添乱"。
+     */
+    @Volatile var pipeNoSync: Int = 0
+
+    /**
      * 弹幕画布宽度（2026-10-14 父亲定）：默认 **1920**，与银幕本身的 1920 宽对齐。
      *
      * 原来写死 2560 —— 比银幕还大三分之一，多出来的像素在 VR 里根本看不见，
@@ -696,6 +704,13 @@ object VrTuning {
             if (it != dvOff) {
                 dvOff = it
                 applied += "杜比还原=" + if (it != 0) "关（仅测量用）" else "开"
+            }
+        }
+        raw["pipe_nosync"]?.toIntOrNull()?.let {
+            val v = if (it == 1) 1 else 0
+            if (v != pipeNoSync) {
+                pipeNoSync = v
+                applied += "画面同步=" + (if (v == 1) "关（自己跑）" else "开")
             }
         }
         raw["pipe_pool_probe"]?.toIntOrNull()?.let {

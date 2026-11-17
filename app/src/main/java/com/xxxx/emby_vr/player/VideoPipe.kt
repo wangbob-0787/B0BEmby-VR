@@ -618,6 +618,14 @@ class VideoPipe {
          * 不真的占解码器格子，而是把"上屏时刻"整体延后 FRAME_BUFFER_SEC（约两帧），
          * 解码偶发慢一拍时由这段缓冲吸收，既不丢也不等；只有超出窗口才处理。
          */
+        /*
+         * 排查开关（vr-tuning.txt `pipe_nosync=1`）：画面不同步，解出一帧就上屏。
+         * 用来验证"画面链路自己能不能流畅播"，与同步逻辑分开看。
+         */
+        if (com.xxxx.emby_vr.vr.VrTuning.pipeNoSync == 1) {
+            return finish(true)
+        }
+
         val clock = clockNowOrWall()
         var ahead = (ptsRaw + appliedOffset) - (clock - FRAME_BUFFER_SEC)
         if (ahead < -0.30) {
