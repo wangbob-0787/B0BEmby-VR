@@ -8551,8 +8551,14 @@ class MainActivity : ComponentActivity() {
     ) {
         /* 非网页流：清掉网页标记（2026-11-16） */
         com.xxxx.emby_vr.player.PlaybackFlags.webSource = false
-        videoPipe?.stop()
+        /* 旧实例没退出就不许新建（图 §5 I4：两路解码抢同一张画面最难查） */
+        val oldDead = videoPipe?.stop() ?: true
         videoPipe = null
+        if (!oldDead) {
+            Log.e(TAG, "PIPE 起不来：zombie=true（旧解码线程未退出，拒绝新建，需重启应用）")
+            hud("画面解码起不来（需重启应用）")
+            return
+        }
 
         /*
          * 内核只出声，画面由我们画（2026-11-16 定）。
@@ -8684,8 +8690,13 @@ class MainActivity : ComponentActivity() {
                 onNeedRestart = { target ->
                     android.os.Handler(android.os.Looper.getMainLooper()).post {
                         Log.w(TAG, "失步重启（主控线程）：先停旧实例再按 $target 重建")
-                        runCatching { videoPipe?.stop() }
+                        val dead = runCatching { videoPipe?.stop() ?: true }.getOrDefault(false)
                         videoPipe = null
+                        if (!dead) {
+                            Log.e(TAG, "失步重启失败：zombie=true（旧解码线程未退出，放弃重启避免两路抢画面）")
+                            hud("画面卡住（需重启应用）")
+                            return@post
+                        }
                         /* 重启不重新静音：声音一直在走，重新静音会掐掉一段 */
                         runCatching { restoreVideoPipeAt(target) }
                     }
@@ -8737,7 +8748,7 @@ class MainActivity : ComponentActivity() {
          * ② 声音侧就绪 → CAN_OPEN：由属性观察者回调推送，**不是我们轮询去问**
          * （这轮改的就是"不许靠等待和轮询"，就绪判定再靠轮询等于原地打转）。
          */
-        m.awaitCanOpen { basePos ->
+        com.xxxx.emby_vr.player.MpvBackend.awaitCanOpen { basePos ->
             ui.post {
                 if (selfPipeUrl != url) {
                     Log.w(TAG, "CAN_OPEN 到达时已换片，丢弃（旧 ${url.take(60)}）")

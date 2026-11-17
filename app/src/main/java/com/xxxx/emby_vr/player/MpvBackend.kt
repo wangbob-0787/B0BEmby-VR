@@ -130,6 +130,73 @@ class MpvBackend(private val context: Context) {
          * 用途：把内核渲染后的画面原样导出成文件。校色必须用内核渲染结果当标尺，
          * 头显整屏截图带双眼畸变、裁不出可用样本（父亲 2026-10-09 定）。
          */
+        private var canOpenObserver: MPVLib.EventObserver? = null
+        private var canOpenPending: ((Double) -> Unit)? = null
+
+        /**
+         * 等"声音侧就绪"（图 §4.2.1 ② CAN_OPEN）。
+         *
+         * **触发源有两个，缺一个就会永久等待**：
+         *  · ①属性观察者 —— 属性一变就更早触发；
+         *  · ②属性轮询线程每次刷新缓存之后驱动一次（见 [evalCanOpen] 的调用点）。
+         *    暂停状态下 `time-pos` 根本不变，mpv 不会为"没变化的属性"再推事件，
+         *    只靠观察者就永远等不到（那正是"永久黑屏 + 永久静音"的写法）。
+         * 两条都不在主线程轮询：观察者是 mpv 线程回调，另一条本来就是我们自己的缓存线程。
+         */
+        fun awaitCanOpen(onReady: (Double) -> Unit) {
+            if (!MpvBackend.isReady()) {
+                Log.w(TAG, "SKIP|engineNotReady|prop=CAN_OPEN")
+                return
+            }
+            cancelAwaitCanOpen()
+            canOpenPending = onReady
+            val obs = object : MPVLib.EventObserver {
+                override fun eventProperty(property: String) = evalCanOpen()
+                override fun eventProperty(property: String, value: Long) = evalCanOpen()
+                override fun eventProperty(property: String, value: Double) = evalCanOpen()
+                override fun eventProperty(property: String, value: Boolean) = evalCanOpen()
+                override fun eventProperty(property: String, value: String) = evalCanOpen()
+                override fun event(eventId: Int) = evalCanOpen()
+            }
+            canOpenObserver = obs
+            MPVLib.addObserver(obs)
+            MPVLib.observeProperty("time-pos", MPVLib.MPV_FORMAT_DOUBLE)
+            MPVLib.observeProperty("duration", MPVLib.MPV_FORMAT_DOUBLE)
+            /* 注册后立刻评估一次：加载完成那一刻 duration 可能刚好在缓存刷新之前到达 */
+            evalCanOpen()
+        }
+
+        fun cancelAwaitCanOpen() {
+            canOpenPending = null
+            canOpenObserver?.let { o -> runCatching { MPVLib.removeObserver(o) } }
+            canOpenObserver = null
+        }
+
+        /**
+         * 评估"声音侧就绪"三条是否同时满足，满足就发一次 CAN_OPEN。
+         *
+         * 三条：①已加载（非 idle、`duration>0`）②音轨已解析 ③`pause=yes` 下有一份有效 time-pos
+         * 采样（它就是基准位置）。判定用的值全部来自本类缓存 —— 判定与缓存同源，
+         * 不会出现"缓存已经就绪、判定还看不到"。
+         */
+        private fun evalCanOpen() {
+            val cb = canOpenPending ?: return
+            if (!MpvBackend.isReady()) return
+            if (!cPaused) return
+            if (cIdleActive) return
+            if (cDuration <= 0.0) return
+            if (!audioTrackResolved) return
+            if (cTimePosAtMs == 0L || cTimePos < 0.0) return
+            canOpenPending = null
+            cancelAwaitCanOpen()
+            Log.i(
+                TAG,
+                "CAN_OPEN 基准=${"%.3f".format(cTimePos)}（duration=${"%.1f".format(cDuration)} 音轨已解析 pause=yes）",
+            )
+            cb(cTimePos)
+        }
+
+
         fun commandRuntime(args: List<String>) {
             if (!engReady) {
                 Log.w(TAG, "SKIP|engineNotReady|cmd=${args.firstOrNull()}")
@@ -247,6 +314,8 @@ class MpvBackend(private val context: Context) {
                     var ok = true
                     if (polling) {
                         ok = body(++tick)
+                        /* CAN_OPEN 的第二触发源：缓存刷新后驱动评估（暂停时观察者不会再来） */
+                        evalCanOpen()
                     } else {
                         tick = 0
                     }
@@ -879,51 +948,6 @@ class MpvBackend(private val context: Context) {
      * 触发靠**属性观察者回调**，不是我们轮询去问 —— 起播改的就是"不许靠等待和轮询"，
      * 就绪判定再靠轮询等于原地打转。判定用的值全取自轮询线程缓存，观察者线程不做同步属性读取。
      */
-    private var canOpenObserver: MPVLib.EventObserver? = null
-    private var canOpenFired = false
-
-    fun awaitCanOpen(onReady: (Double) -> Unit) {
-        if (!MpvBackend.isReady()) {
-            Log.w(TAG, "SKIP|engineNotReady|prop=CAN_OPEN")
-            return
-        }
-        cancelAwaitCanOpen()
-        canOpenFired = false
-        val obs = object : MPVLib.EventObserver {
-            override fun eventProperty(property: String) = evaluate()
-            override fun eventProperty(property: String, value: Long) = evaluate()
-            override fun eventProperty(property: String, value: Double) = evaluate()
-            override fun eventProperty(property: String, value: Boolean) = evaluate()
-            override fun eventProperty(property: String, value: String) = evaluate()
-            override fun event(eventId: Int) = evaluate()
-
-            private fun evaluate() {
-                if (canOpenFired) return
-                if (!cPaused) return
-                if (cIdleActive) return
-                if (cDuration <= 0.0) return
-                if (!audioTrackResolved) return
-                if (cTimePosAtMs == 0L || cTimePos < 0.0) return
-                canOpenFired = true
-                cancelAwaitCanOpen()
-                Log.i(
-                    TAG,
-                    "CAN_OPEN 基准=${"%.3f".format(cTimePos)}（duration=${"%.1f".format(cDuration)} 音轨已解析 pause=yes）",
-                )
-                onReady(cTimePos)
-            }
-        }
-        canOpenObserver = obs
-        MPVLib.addObserver(obs)
-        MPVLib.observeProperty("time-pos", MPVLib.MPV_FORMAT_DOUBLE)
-        MPVLib.observeProperty("duration", MPVLib.MPV_FORMAT_DOUBLE)
-    }
-
-    fun cancelAwaitCanOpen() {
-        canOpenObserver?.let { o -> runCatching { MPVLib.removeObserver(o) } }
-        canOpenObserver = null
-    }
-
     /** 读任意内核属性（诊断用）。读不到返回 null，不抛。 */
     fun prop(name: String): String? {
         if (!MpvBackend.isReady()) {

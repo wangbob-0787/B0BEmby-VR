@@ -204,7 +204,16 @@ class VideoPipe {
         /** 预热完成（三帧全部解出并归还）→ 报跨度与 RPU 状态，等外部放行 */
         onPreheatReady: ((Long, Boolean) -> Unit)? = null,
     ): Boolean {
-        stop()
+        /*
+         * 旧实例必须先确认退出。`stop()` 返回 false = 旧线程还活着、可能仍占着 MediaCodec
+         * 与 surface 连接；这时新建会让两路解码抢同一张画面（图 §5 I4）。
+         * 宁可不重启，也不进那个状态。
+         */
+        if (!stop()) {
+            lastError = "zombie=旧解码线程未退出，拒绝新建（需重启应用）"
+            Log.e(TAG, lastError!!)
+            return false
+        }
         lastError = null
         clockProvider = clock
         clockValidProvider = clockValid
@@ -581,7 +590,14 @@ class VideoPipe {
     }
 
     /** 停止并释放。可重复调用。 */
-    fun stop() {
+    /**
+     * 停止解码并释放解码器。
+     *
+     * @return true = 旧线程已确认退出、资源已释放，可以新建实例；
+     *         false = 旧线程 600ms 内没退出（僵尸）—— 此时**不许新建**，
+     *                 否则两路解码同时往同一张画面送帧，是最难查的状态（图 §5 I4）。
+     */
+    fun stop(): Boolean {
         /* 释放权归线程自己：这里只置停止标志，不代解码线程 release（图 §5 I4） */
         running.set(false)
         holdGate = null
@@ -603,8 +619,8 @@ class VideoPipe {
              * 图 §5 I4：线程还没退出时**禁止外部代它 release**（那是拆正在用的实例）。
              * 释放留给线程自己的退出路径；这里只留痕，下次 start 前会确认旧实例已死。
              */
-            Log.e(TAG, "ASSERT joinTimeout thread=VideoPipe（600ms 未退出，不代它释放解码器）")
-            return
+            Log.e(TAG, "ASSERT joinTimeout thread=VideoPipe（600ms 未退出，不代它释放解码器，禁止新建）")
+            return false
         }
         try {
             decoder?.stop()
@@ -622,6 +638,7 @@ class VideoPipe {
         } catch (t: Throwable) {
             Log.w(TAG, "解复用器释放异常：${t.message}")
         }
+        return true
         extractor = null
     }
 }
