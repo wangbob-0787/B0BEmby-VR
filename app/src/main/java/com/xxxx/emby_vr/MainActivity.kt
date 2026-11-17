@@ -7189,6 +7189,8 @@ class MainActivity : ComponentActivity() {
     private fun currentPositionMs(): Long = ctl.positionMs()
 
     private fun stopPlaybackInternal(keepUi: Boolean = false) {
+        /* 停播等多久只报数不判死（图 §4.1）：记起点，停完把耗时交给健康行 */
+        val stopT0 = android.os.SystemClock.elapsedRealtime()
         /*
          * 先上报「停止播放」，再释放播放器（父亲 2026-10-07：播放历史没上传到 Emby）。
          *
@@ -7224,6 +7226,7 @@ class MainActivity : ComponentActivity() {
             runCatching { it.stop() }
         }
         mpvBackend = null
+        lastStopWaitedMs = android.os.SystemClock.elapsedRealtime() - stopT0
         // 自管解码同样要收：它在往同一张画面纹理里送帧，留着会和下一次起播抢画面
         videoPipe?.let {
             runCatching { it.stop() }
@@ -8409,6 +8412,10 @@ class MainActivity : ComponentActivity() {
     @Volatile private var selfPipeReady = false
     @Volatile private var selfPipeReleased = false
     @Volatile private var selfPipePhase = "未起播"
+    /* 等待时长只报数不判死（图 §4.1 / §12 L23）：起播、跳转、收场各记一个起点 */
+    @Volatile private var pipeLoadT0 = 0L
+    @Volatile private var pipeSeekT0 = 0L
+    @Volatile private var lastStopWaitedMs = -1L
     private var pipeHealthTick: Runnable? = null
 
     /** 起播健康行：每 2s 一行，覆盖 STARTING / 等信号 / 预热 / 等放行 / PLAYING / 卡住 全过程 */
@@ -8434,6 +8441,12 @@ class MainActivity : ComponentActivity() {
                         "|decoded=${p?.decodedFrames ?: 0}|held=${p?.heldSlot() ?: -1}" +
                         "|dequeued=${p?.dequeuedFrames ?: 0}|tryAgainStreak=${p?.tryAgainStreak ?: 0}" +
                         "|nexus=$nexus|rpu=${if (p?.rpuReadyNow() == true) "有" else "-"}" +
+                        "|loadWaitedMs=${if (pipeLoadT0 > 0L) android.os.SystemClock.elapsedRealtime() - pipeLoadT0 else 0}" +
+                        "|seekWaitedMs=${if (pipeSeekT0 > 0L) android.os.SystemClock.elapsedRealtime() - pipeSeekT0 else 0}" +
+                        "|bufferWaitedMs=-|stopWaitedMs=$lastStopWaitedMs" +
+                        "|loadInputMs=-|loadDecoderMs=${if (selfPipeReady) "ok" else "-"}" +
+                        "|loadAudioOutMs=${if (selfPipeCanOpen) "ok" else "-"}" +
+                        "|audioStallMs=-(音频是否推进看 mpv time-pos)" +
                         "|mute=${if (runCatching { mpvBackend?.isMuted() }.getOrNull() == true) "yes" else "no"}" +
                         "|paused=${if (runCatching { mpvBackend?.isPaused() }.getOrNull() == true) "yes" else "no"}",
                 )
@@ -8591,6 +8604,7 @@ class MainActivity : ComponentActivity() {
         /* 跳转同时通知自管解码器，否则画面留在原地、声音跳走 */
         ctl.pipeSeek = { ms ->
             val sec = (ms / 1000.0).coerceAtLeast(0.0)
+            pipeSeekT0 = android.os.SystemClock.elapsedRealtime()
             restartVideoPipeAt(sec)
         }
         com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("vid", "no")
@@ -8626,6 +8640,7 @@ class MainActivity : ComponentActivity() {
         m.setPaused(true)
         m.setMute(true)
         /* 健康行从起播第一秒就开打（图 §12 L23）：不判死，只让卡在哪一眼看得见 */
+        pipeLoadT0 = android.os.SystemClock.elapsedRealtime()
         startPipeHealth()
 
         val doviPath = java.io.File(

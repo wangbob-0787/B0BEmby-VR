@@ -131,7 +131,14 @@ class MpvBackend(private val context: Context) {
          * 头显整屏截图带双眼畸变、裁不出可用样本（父亲 2026-10-09 定）。
          */
         private var canOpenObserver: MPVLib.EventObserver? = null
-        private var canOpenPending: ((Double) -> Unit)? = null
+        /*
+         * 用 AtomicReference 而不是普通 var：`evalCanOpen()` 会被**两个线程**调用
+         * （mpv 观察者线程 + 属性轮询线程）。普通 var 下两个线程可能同时读到非空、
+         * 都通过判定、都回调一次 → launchPipeline 起两次 → 两个解码器抢同一张 surface。
+         * `getAndSet(null)` 是"认领"动作，认领到的那一刻另一个线程必然拿到 null。
+         */
+        private val canOpenPending =
+            java.util.concurrent.atomic.AtomicReference<((Double) -> Unit)?>(null)
 
         /**
          * 等"声音侧就绪"（图 §4.2.1 ② CAN_OPEN）。
@@ -149,7 +156,7 @@ class MpvBackend(private val context: Context) {
                 return
             }
             cancelAwaitCanOpen()
-            canOpenPending = onReady
+            canOpenPending.set(onReady)
             val obs = object : MPVLib.EventObserver {
                 override fun eventProperty(property: String) = evalCanOpen()
                 override fun eventProperty(property: String, value: Long) = evalCanOpen()
@@ -167,7 +174,7 @@ class MpvBackend(private val context: Context) {
         }
 
         fun cancelAwaitCanOpen() {
-            canOpenPending = null
+            canOpenPending.set(null)
             canOpenObserver?.let { o -> runCatching { MPVLib.removeObserver(o) } }
             canOpenObserver = null
         }
@@ -180,20 +187,21 @@ class MpvBackend(private val context: Context) {
          * 不会出现"缓存已经就绪、判定还看不到"。
          */
         private fun evalCanOpen() {
-            val cb = canOpenPending ?: return
+            /* 先看有没有人在等，再走判定；判定通过后用 getAndSet(null) 认领 */
+            if (canOpenPending.get() == null) return
             if (!MpvBackend.isReady()) return
             if (!cPaused) return
             if (cIdleActive) return
             if (cDuration <= 0.0) return
             if (!audioTrackResolved) return
             if (cTimePosAtMs == 0L || cTimePos < 0.0) return
-            canOpenPending = null
+            val claimed = canOpenPending.getAndSet(null) ?: return   /* 被另一个线程抢先认领 */
             cancelAwaitCanOpen()
             Log.i(
                 TAG,
                 "CAN_OPEN 基准=${"%.3f".format(cTimePos)}（duration=${"%.1f".format(cDuration)} 音轨已解析 pause=yes）",
             )
-            cb(cTimePos)
+            claimed(cTimePos)
         }
 
 
