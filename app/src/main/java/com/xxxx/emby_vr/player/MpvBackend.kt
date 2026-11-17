@@ -326,6 +326,13 @@ class MpvBackend(private val context: Context) {
         @Volatile private var cMuted = false
         /** 当前播放速率（内核 `speed` 属性，轮询刷新）：外推位置时必须乘它，否则倍速下系统性偏 */
         @Volatile private var cSpeed = 1.0
+        /**
+         * 声音实际播到的位置（内核 `audio-pts`，秒；0 = 内核没给）。
+         *
+         * 为什么用它：`time-pos` 是播放进度，`audio-pts` 才是"已经送进声卡、马上听到"的位置，
+         * 两者差一个音频缓冲（几十到几百毫秒）。画面要和"听到的那一刻"对齐，就该拿它当主时钟。
+         */
+        @Volatile private var cAudioPts = 0.0
         @Volatile private var cTrackList = ""
         @Volatile private var cHasVideo = false
         /** 内核是否处于 idle（没加载文件）；clockAdvancing 的三个否据之一 */
@@ -442,6 +449,7 @@ class MpvBackend(private val context: Context) {
             b("pause") { cPaused = it }
             b("mute") { cMuted = it }
             d("speed") { cSpeed = if (it > 0.0) it else 1.0 }
+            d("audio-pts") { cAudioPts = it }
             /* 音轨是否已解析（clockPresent 的一半）：内核报出 audio 属性即视为已选到音轨 */
             b("audio") { audioTrackResolved = it }
             /* 音频输出是否已建立：ao 报出设备名即视为已建（不含"真出声"——那只认录音验收） */
@@ -1139,7 +1147,12 @@ class MpvBackend(private val context: Context) {
         if (at == 0L) return -1.0
         if (cPaused || cIdleActive) return cTimePos
         val ageMs = android.os.SystemClock.elapsedRealtime() - at
-        return cTimePos + ageMs / 1000.0 * cSpeed
+        /*
+         * 优先用"声音实际播到的位置"（内核 audio-pts）：它已经扣掉了音频输出缓冲，
+         * 就是画面该对齐的那一刻。读不到才退回"播放进度 + 墙钟推算"。
+         */
+        val base = if (cAudioPts > 0.0 && kotlin.math.abs(cAudioPts - cTimePos) < 2.0) cAudioPts else cTimePos
+        return base + ageMs / 1000.0 * cSpeed
     }
 
     /** 读数是否新鲜（UI 用：判要不要标 UNKNOWN；不参与出不出帧） */
