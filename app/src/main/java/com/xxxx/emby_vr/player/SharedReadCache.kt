@@ -37,6 +37,8 @@ object SharedReadCache {
     private const val BLOCK = 4 * 1024 * 1024L
     private const val CAPACITY_BYTES = 400L * 1024 * 1024
     private const val UA = "B0BEmbyRelay/1.0"
+    /** 预取块数（1 块 4MB ≈ 2 秒内容 @14Mbps） */
+    private const val PREFETCH_BLOCKS = 4
 
     @Volatile private var started = false
     @Volatile private var server: ServerSocket? = null
@@ -247,6 +249,12 @@ object SharedReadCache {
             val f = File(dir, "$key.blk")
             f.writeBytes(data)
             upstreamBytes.addAndGet(data.size.toLong())
+            /*
+             * 前视预取：取到这一块，顺手把后面几块也拉进来。
+             * 父亲 2026-11-18 实测：跳得越远的区段，画面落后声音越多 —— 因为它是一块一块地
+             * 现场向网盘要；预取把"要一块等一块"改成了"一串一起要"。
+             */
+            schedulePrefetch(upstream, idx, total)
             synchronized(lock) {
                 index[key] = data.size.toLong()
                 used += data.size
@@ -263,6 +271,25 @@ object SharedReadCache {
             return null
         } finally {
             synchronized(inflight) { inflight.remove(key) }
+        }
+    }
+
+    /** 后台预取接下来的几块（已缓存或正在取的跳过） */
+    private fun schedulePrefetch(upstream: String, idx: Long, total: Long) {
+        thread(isDaemon = true) {
+            for (k in 1..PREFETCH_BLOCKS) {
+                val next = idx + k
+                if (next * BLOCK >= total) break
+                val key = keyOf(upstream, next)
+                if (fileFor(key) != null) continue
+                val mine = synchronized(inflight) { inflight.putIfAbsent(key, Object()) == null }
+                if (!mine) continue
+                try {
+                    fetchBlock(upstream, next, total)
+                } finally {
+                    synchronized(inflight) { inflight.remove(key) }
+                }
+            }
         }
     }
 
