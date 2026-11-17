@@ -69,9 +69,14 @@ class VideoPipe {
      */
     @Volatile private var clockRealProvider: (() -> Double)? = null
 
-    /** 连续重启计数与上次重启时刻：≥3 次仍未收敛就停手，宁可停住也不无限跳 */
+    /** 连续重启计数：≥3 次仍未收敛就停手（结束解码循环），宁可停住也不无限跳 */
     private var restartCount = 0
-    private var lastRestartMs = 0L
+    /**
+     * 自上次重启以来连续上屏的帧数。收敛判据用**帧数**不用时间（丫头 2026-11-17 定）：
+     * 实测重建要 6~9 秒才出第一帧，用"10 秒没重启就清零"会在重启后永远清不掉，
+     * 三次网络抖动就能把这部片永久锁死。
+     */
+    private var shownSinceRestart = 0
     /** "追锚"次数：首帧落后过多就按当前主时钟再解一次，最多 2 次 */
     private var catchUpCount = 0
 
@@ -265,7 +270,7 @@ class VideoPipe {
         this.clockRealProvider = clockReal
         stopping = false
         restartCount = 0
-        lastRestartMs = 0L
+        shownSinceRestart = 0
         catchUpCount = 0
         this.onFirstFrame = onFirstFrame
         this.onDoviParams = onDoviParams
@@ -487,10 +492,9 @@ class VideoPipe {
             /* decodedFrames 只统计真正上屏的帧：预热三帧、预卷丢弃、丢帧追赶都不算 */
             if (render) decodedFrames++
             if (render) {
-                /* 连续出帧满 10 秒没再重启 → 视为收敛，重启计数清零 */
-                if (restartCount > 0 && android.os.SystemClock.elapsedRealtime() - lastRestartMs > 10_000L) {
-                    restartCount = 0
-                }
+                /* 连续出帧 ≥60 帧（约 2.5 秒画面）→ 视为收敛，重启计数清零 */
+                shownSinceRestart++
+                if (restartCount > 0 && shownSinceRestart >= 60) restartCount = 0
                 lastShownPts = ptsRaw + appliedOffset
                 firstFrameShown = true
                 desyncSinceMs = 0L
@@ -628,7 +632,7 @@ class VideoPipe {
                         desyncSinceMs = 0L
                         codec.releaseOutputBuffer(outIdx, false)
                         releasedFrames++
-                        requestRestart(ahead, nowMs)
+                        if (!requestRestart(ahead, nowMs)) return true   /* 停手：结束循环，不空转 */
                         return true
                     }
                 } else {
@@ -652,7 +656,7 @@ class VideoPipe {
                         desyncSinceMs = 0L
                         codec.releaseOutputBuffer(outIdx, false)
                         releasedFrames++
-                        requestRestart(ahead, nowMs)
+                        if (!requestRestart(ahead, nowMs)) return true   /* 停手：结束循环，不空转 */
                         return true
                     }
                 } else {
@@ -675,24 +679,30 @@ class VideoPipe {
      * ② 连续重启 ≥3 次仍未收敛 → 停手，偏差打 ERROR，画面停在原位
      *    （宁可停住让人看出坏了，也不要每几秒跳一次让人以为在动）。
      */
-    private fun requestRestart(ahead: Double, nowMs: Long) {
+    private fun requestRestart(ahead: Double, nowMs: Long): Boolean {
         val target = clockRealProvider?.invoke()?.takeIf { it >= 0.0 }
             ?: clockProvider?.invoke()?.takeIf { it >= 0.0 }
         if (target == null) {
-            Log.e(TAG, "失步但拿不到真实位置，放弃重启（偏差 ${"%.2f".format(ahead)}s）")
-            return
+            /*
+             * 拿不到真实位置 = 没有可用的时钟参考。**结束解码循环**，不空转丢帧：
+             * 空转会让 CPU 满载、日志刷屏，还掩盖真实状态（宁可停住让人一眼看出坏了）。
+             * 不调 stop()，下次 seek/换片自然重建。
+             */
+            Log.e(TAG, "无时钟参考（拿不到真实位置），结束解码循环（偏差 ${"%.2f".format(ahead)}s）")
+            return false
         }
         if (restartCount >= 3) {
             Log.e(
                 TAG,
-                "连续重启 ${restartCount} 次仍未收敛，停止重启（偏差 ${"%.2f".format(ahead)}s 目标 ${"%.2f".format(target)}s）",
+                "连续重启 ${restartCount} 次仍未收敛，结束解码循环（偏差 ${"%.2f".format(ahead)}s 目标 ${"%.2f".format(target)}s）",
             )
-            return
+            return false
         }
         restartCount++
-        lastRestartMs = nowMs
+        shownSinceRestart = 0
         Log.w(TAG, "失步（偏差 ${"%.2f".format(ahead)}s，第 $restartCount 次）→ 从真实位置 ${"%.2f".format(target)}s 重启")
         runCatching { onNeedRestart?.invoke(target) }
+        return true
     }
 
     /** 当前主时钟位置（秒）；时钟无效返回 -1 —— 只有它能当"要不要等"的依据 */
