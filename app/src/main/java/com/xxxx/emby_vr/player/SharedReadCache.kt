@@ -58,6 +58,14 @@ object SharedReadCache {
         synchronized(this) {
             if (started) return
             cacheDir = File(ctx.cacheDir, "relay").apply { mkdirs() }
+            /*
+             * 启动先清空：分块大小/编号规则变过一次（4MB → 16MB），旧块会被当成新位置的数据，
+             * 表现为"回源为零、播出来的内容不对或卡住"。缓存本来就是可丢弃的，直接清干净。
+             */
+            runCatching {
+                cacheDir?.listFiles()?.forEach { it.delete() }
+                Log.i(TAG, "启动清空旧缓存块")
+            }
             try {
                 server = ServerSocket(PORT, 16, java.net.InetAddress.getByName("127.0.0.1"))
                 started = true
@@ -424,7 +432,8 @@ object SharedReadCache {
         synchronized(lock) {
             val dir = cacheDir ?: return null
             val f = File(dir, "$key.blk")
-            if (!f.exists()) return null
+            /* 只认本进程登记过的块：目录里可能残留旧版本的块，宁可重取也不用错数据 */
+            if (!f.exists() || !index.containsKey(key)) return null
             index.remove(key)
             index[key] = f.length()
             hits.incrementAndGet()
