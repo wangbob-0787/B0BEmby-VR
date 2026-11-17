@@ -509,6 +509,9 @@ class MainActivity : ComponentActivity() {
      */
     private var forceH264 = false
     private var selectedSubtitleIndex: Int? = null
+
+    /** 上一次起播用的原始地址（判断是否换了内容，决定要不要清空中转缓存） */
+    private var lastPipeUrlForCache: String = ""
     private var qualityIndex = 0
     private var bufferPresetIndex = 0
     private var playModeIndex = 0
@@ -8693,8 +8696,19 @@ class MainActivity : ComponentActivity() {
          * 起播地址先过一次共享读缓存：内核与自管解码都读本机同一份缓存，不再各拉一份。
          * 关掉开关（vr-tuning.txt 里 relay=0）时原样返回，行为与之前完全一致。
          */
-        /* 换片/换集/切片起播：先把上一段内容的缓存清掉，长连接从新位置重新铺 */
-        runCatching { com.xxxx.emby_vr.player.SharedReadCache.clearAll("起播：$source") }
+        /*
+         * 换片/换集/切片起播：清掉上一段内容的缓存。
+         * 注意两点（2026-11-18 父亲实测黑屏 + 界面卡死）：
+         *  ① 只在**换了内容**时清（同一个地址的重建不清），否则重建一次就把刚铺好的清光；
+         *  ② 清空放后台执行——删文件是磁盘操作，放界面线程上会把控制条和海报墙一起卡住。
+         */
+        if (rawUrl != lastPipeUrlForCache) {
+            lastPipeUrlForCache = rawUrl
+            val why = "起播：$source"
+            runCatching {
+                Thread { runCatching { com.xxxx.emby_vr.player.SharedReadCache.clearAll(why) } }.start()
+            }
+        }
         val url = com.xxxx.emby_vr.player.SharedReadCache.rewrite(rawUrl)
         if (url != rawUrl) {
             Log.i(TAG, "起播地址已指向共享读缓存（本机 127.0.0.1:8898）")
