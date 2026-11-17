@@ -378,6 +378,25 @@ class VideoPipe {
         var inputDone = false
         var outputDone = false
 
+        /*
+         * 可选探测（调参 `pipe_pool_probe=1`）：量这台机器这部片到底给了几个输出格。
+         * 连续取帧不归还 → 取不到为止 → 数目就是池子大小；探完全部按"不上屏"归还，不影响播放。
+         */
+        if (com.xxxx.emby_vr.vr.VrTuning.pipePoolProbe == 1) {
+            val held = ArrayList<Int>()
+            var guard = 0
+            while (guard++ < 64) {
+                val idx = try {
+                    codec.dequeueOutputBuffer(info, 5_000L)
+                } catch (t: Throwable) {
+                    -1
+                }
+                if (idx >= 0) held.add(idx) else break
+            }
+            for (i in held) runCatching { codec.releaseOutputBuffer(i, false) }
+            Log.i(TAG, "解码器输出缓冲池=${held.size} 格（探测完成，已全部归还；pipe_pool_probe=1 才会探）")
+        }
+
         while (running.get() && !outputDone) {
             /*
              * 门关着时：**手里没帧**才整轮跳过（不取不喂）；手里有一帧就交给 outputFrame 去原地等。

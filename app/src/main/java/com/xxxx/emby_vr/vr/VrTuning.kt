@@ -254,6 +254,14 @@ object VrTuning {
     var dvOff: Int = 0
 
     /**
+     * 解码器输出缓冲池探测（1 = 起播时探一次，探完照常播）。
+     *
+     * 做法：连续取帧不归还，数到取不到为止，那个数就是硬件解码器给的池子大小；
+     * 探完把帧全部按"不上屏"归还。只在排查时开，平时 0。
+     */
+    @Volatile var pipePoolProbe: Int = 0
+
+    /**
      * 弹幕画布宽度（2026-10-14 父亲定）：默认 **1920**，与银幕本身的 1920 宽对齐。
      *
      * 原来写死 2560 —— 比银幕还大三分之一，多出来的像素在 VR 里根本看不见，
@@ -688,6 +696,13 @@ object VrTuning {
             if (it != dvOff) {
                 dvOff = it
                 applied += "杜比还原=" + if (it != 0) "关（仅测量用）" else "开"
+            }
+        }
+        raw["pipe_pool_probe"]?.toIntOrNull()?.let {
+            val v = if (it == 1) 1 else 0
+            if (v != pipePoolProbe) {
+                pipePoolProbe = v
+                applied += "缓冲池探测=" + (if (v == 1) "开（下次起播探一次）" else "关")
             }
         }
         raw["dv_zerocopy"]?.toIntOrNull()?.let {
