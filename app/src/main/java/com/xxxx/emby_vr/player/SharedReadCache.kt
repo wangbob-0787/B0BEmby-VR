@@ -108,7 +108,6 @@ object SharedReadCache {
         if (!enabled() || !started) return
         if (durationSec <= 0.0 || targetSec < 0.0) return
         val inner = if (url.startsWith("http://127.0.0.1:")) {
-            // 已是中转地址：把里面包着的上游地址解出来，按上游去缓存
             val q = url.substringAfter("url=", "")
             if (q.isEmpty()) return else URLDecoder.decode(q, "UTF-8")
         } else url
@@ -117,35 +116,12 @@ object SharedReadCache {
             if (total <= 0L) return@thread
             val blocks = (total + BLOCK - 1) / BLOCK
             val frac = (targetSec / durationSec).coerceIn(0.0, 1.0)
-            val center = (frac * blocks).toLong().coerceIn(0L, blocks - 1)
-            var launched = 0
-            for (k in -1L..warmBlocks().toLong()) {
-                val idx = center + k
-                if (idx < 0 || idx >= blocks) continue
-                val key = keyOf(inner, idx)
-                if (fileFor(key) != null) continue
-                val mine = synchronized(inflight) { inflight.putIfAbsent(key, Object()) == null }
-                if (!mine) continue
-                launched++
-                thread(isDaemon = true) {
-                    try {
-                        fetchBlock(inner, idx, total)
-                    } finally {
-                        synchronized(inflight) { inflight.remove(key) }
-                    }
-                }
-            }
-            if (launched > 0) Log.i(TAG, "跳转预热：目标 ${"%.0f".format(targetSec)}s → 块 $center，并发取 $launched 块")
+            val idx = (frac * blocks).toLong().coerceIn(0L, blocks - 1)
+            /* 只是把落点登记为"急需"，由唯一那条读取连接去取，不额外开并发 */
+            urgent[inner] = idx
+            fillCursor[inner] = idx.toInt()
+            Log.i(TAG, "跳转预热：目标 ${"%.0f".format(targetSec)}s → 登记块 $idx（由中转单条连接优先取）")
         }
-    }
-
-    /**
-     * 起播预热：起播就并发取目标位置附近若干块（父亲 2026-11-18 定：
-     * 「起播的时候、快进快退的时候，你就多路去取」）。
-     * 与 [warm] 的区别只是用途时刻不同，取法一样。
-     */
-    fun warmStart(url: String, startSec: Double, durationSec: Double) {
-        warm(url, startSec, durationSec)
     }
 
     fun stats(): String = "命中=${hits.get()} 回源=${misses.get()} 缓存=${used / 1048576}MB 上游=${upstreamBytes.get() / 1048576}MB"
@@ -230,7 +206,22 @@ object SharedReadCache {
             val idx = pos / BLOCK
             val off = pos % BLOCK
             val key = keyOf(upstream, idx)
-            val f = fileFor(key) ?: fetchBlock(upstream, idx, total) ?: break
+            var blk = fileFor(key)
+            if (blk == null) {
+                /*
+                 * 解码器要的这块还没在缓存里：**不自己去网盘**，交给中转那条唯一的连接，
+                 * 自己在这里等它落地（父亲 2026-11-18：取不到就不许它直接去网盘取）。
+                 * 这样网盘侧永远只有一条读取，不存在抢连接。
+                 */
+                urgent[upstream] = idx
+                val deadline = System.currentTimeMillis() + 25000
+                while (System.currentTimeMillis() < deadline) {
+                    Thread.sleep(30)
+                    blk = fileFor(key)
+                    if (blk != null) break
+                }
+            }
+            val f = blk ?: break
             f.inputStream().use { ins ->
                 ins.skip(off)
                 var remain = minOf(BLOCK - off, end - pos + 1)
@@ -329,6 +320,9 @@ object SharedReadCache {
     /** 每个上游地址当前被读到的字节位置（用于"往前铺"） */
     private val lastReadByte = ConcurrentHashMap<String, Long>()
 
+    /** 解码器等着的块（url → 块号），填充线程优先取它 */
+    private val urgent = ConcurrentHashMap<String, Long>()
+
     /** 每个上游地址的"填充游标"：已经铺到第几块 */
     private val fillCursor = ConcurrentHashMap<String, Int>()
 
@@ -346,6 +340,24 @@ object SharedReadCache {
                     Thread.sleep(1200)
                 } catch (t: InterruptedException) {
                     break
+                }
+                /* 先处理解码器等着的块，再谈往前铺 */
+                for ((url, needIdx) in urgent) {
+                    val total = runCatching { totalSize(url) }.getOrDefault(0L)
+                    if (total <= 0L) continue
+                    val key = keyOf(url, needIdx)
+                    if (fileFor(key) == null) {
+                        val mine = synchronized(inflight) { inflight.putIfAbsent(key, Object()) == null }
+                        if (mine) {
+                            try {
+                                fetchBlock(url, needIdx, total)
+                            } finally {
+                                synchronized(inflight) { inflight.remove(key) }
+                            }
+                        }
+                    }
+                    urgent.remove(url, needIdx)
+                    fillCursor[url] = (needIdx + 1).toInt()
                 }
                 if (com.xxxx.emby_vr.vr.VrTuning.relayAheadMb <= 0) continue
                 for ((url, pos) in lastReadByte) {
