@@ -3729,9 +3729,45 @@ class MainActivity : ComponentActivity() {
         runCatching {
             java.io.File(getExternalFilesDir(null) ?: filesDir, "dovi_params.bin").delete()
         }
+        /*
+         * 逐项恢复"为某类片源临时改过"的开关（施工图 §4.2.3 A 类，十二项）。
+         *
+         * 这些开关是**进程级**的，不恢复就会带着上一部片的状态跑下一部：
+         *   vid               —— P5 关掉内核视频轨，不恢复则后续片全黑（已实测）
+         *   loop-file         —— P5 期间强制关，不恢复则普通片播完不循环
+         *   色彩五件套         —— 不按本片重设则沿用上一部的（发灰/偏绿）
+         *   android-surface-size —— 不按本片重设则画面压扁/拉伸
+         *   aid / sid         —— 不恢复则音轨、字幕串到上一部
+         *   sub-auto / sub-visibility —— 字幕串台（历史问题）
+         *   外挂字幕 / 外部音轨 —— 不摘则下一部挂着上一部的轨
+         *   mute              —— 起播静音后中途失败会一直没声音
+         *   网页流请求头        —— 带到后续 Emby 片请求上（可能被拒）
+         *
+         * 用户设置（缓冲档 / 倍速）不在这里清，按用户当前选择重设。
+         */
         runCatching { com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("vid", "auto") }
         runCatching { com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("audio-display", "no") }
-        Log.i(TAG, "换片清场：杜比状态已清、内核视频轨已恢复（vid=auto）")
+        runCatching { mpvBackend?.setLoopFile(playModeIndex != 2) }
+        runCatching { com.xxxx.emby_vr.player.MpvBackend.applyDoviPipeline(false) }
+        /*
+         * 画面尺寸不在这里恢复：每条起播路径都会按本部片的实测宽高重设一次
+         * （网页流按目标宽度、Emby 片按 videoSize()），清场时还没拿到新尺寸，
+         * 在这里设一个猜测值反而会被起播时覆盖、白改一次。它属于"起播必设"，不是残留。
+         */
+        /* 音轨/字幕回到自动，并摘掉上一部挂上去的轨 */
+        runCatching { com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("aid", "auto") }
+        runCatching { com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("sid", "auto") }
+        runCatching { com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("sub-auto", "no") }
+        runCatching { com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("audio-file", "") }
+        runCatching { com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("sub-file", "") }
+        /* 静音与网页流请求头：这两个不恢复最容易变成"没声音"和"被服务端拒" */
+        runCatching { mpvBackend?.setMute(false) }
+        runCatching {
+            com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("http-header-fields", "")
+            com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("referrer", "")
+            com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("user-agent", "")
+        }
+        Log.i(TAG, "换片清场：已恢复 [vid,loop,色彩,aid,sid,sub-auto,外挂轨,mute,请求头] 并清杜比状态")
     }
 
     private fun playWebStream(obj: org.json.JSONObject) {

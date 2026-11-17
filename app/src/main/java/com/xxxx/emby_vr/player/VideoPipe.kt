@@ -319,20 +319,10 @@ class VideoPipe {
                     } else -1.0
 
                     /*
-                     * 首帧：**只通知外部，不看时钟**。
-                     *
-                     * 起播阶段内核在等首帧、处于暂停，此时时钟必然不推进。若首帧也被时钟门挡住，
-                     * 就成了"解码等时钟 → 时钟等 unpause → unpause 等首帧 → 首帧等解码"的死锁，
-                     * 实测表现是一次都解不出来（解码循环 0 帧）、整块黑屏。
-                     * 通知之后落到下面的门：外部收到就 unpause，等时钟真走起来再放行这一帧。
+                     * 零点标定**必须先于"通知外部"**（图 §4.2.1 ④：标定要在 unpause 之前做完）。
+                     * originPts 只能从解出来的第一帧取，所以标定落在解码线程这里；
+                     * 一旦先通知外部，外部立刻 unpause，时钟先走、基准后算，两边就错开一段。
                      */
-                    if (!firstFrameReady) {
-                        firstFrameReady = true
-                        Log.i(TAG, "首帧已解出（等外部放行）pts=$ptsRaw 预卷丢弃=$prerollDropped")
-                        runCatching { onFirstFrame?.invoke() }
-                    }
-
-                    /* 零点：audioStart 是 mpv 加载后的实际位置（外面按图 §4.2.1 第②步传进来） */
                     if (originPts < 0.0 && ptsRaw >= audioStartSec) {
                         originPts = ptsRaw
                         appliedOffset = audioStartSec - originPts
@@ -343,6 +333,19 @@ class VideoPipe {
                         prerollDropped++
                         codec.releaseOutputBuffer(outIdx, false)
                         continue
+                    }
+
+                    /*
+                     * 首帧：标定完成后**只通知外部，不看时钟**。
+                     *
+                     * 起播阶段内核在等首帧、处于暂停，此时时钟必然不推进。若首帧也被时钟门挡住，
+                     * 就成了"解码等时钟 → 时钟等 unpause → unpause 等首帧 → 首帧等解码"的死锁，
+                     * 实测表现是一次都解不出来（解码循环 0 帧）、整块黑屏。
+                     */
+                    if (!firstFrameReady) {
+                        firstFrameReady = true
+                        Log.i(TAG, "首帧已解出（标定完成，等外部放行）pts=$ptsRaw 预卷丢弃=$prerollDropped")
+                        runCatching { onFirstFrame?.invoke() }
                     }
 
                     /*
