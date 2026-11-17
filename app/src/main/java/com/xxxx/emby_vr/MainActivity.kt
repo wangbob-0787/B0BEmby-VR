@@ -8451,6 +8451,7 @@ class MainActivity : ComponentActivity() {
                         "|bufferWaitedMs=-|stopWaitedMs=${if (lastStopWaitedMs >= 0L) lastStopWaitedMs else "-"}" +
                         "|loadInput=-|loadDecoder=${if (selfPipeReady) "ok" else "-"}" +
                         "|loadAudioOut=${if (selfPipeCanOpen) "ok" else "-"}" +
+                        "|canOpenBlk=${com.xxxx.emby_vr.player.MpvBackend.canOpenBlocker()}" +
                         "|audioStallMs=-(音频是否推进看 mpv time-pos)" +
                         "|mute=${if (runCatching { mpvBackend?.isMuted() }.getOrNull() == true) "yes" else "no"}" +
                         "|paused=${if (runCatching { mpvBackend?.isPaused() }.getOrNull() == true) "yes" else "no"}",

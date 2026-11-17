@@ -173,6 +173,21 @@ class MpvBackend(private val context: Context) {
             evalCanOpen()
         }
 
+        /**
+         * CAN_OPEN 现在卡在哪一条（诊断用，进健康行）。
+         *
+         * 只报不处置：起播路径没有任何超时判死（图 §4.1），卡住时靠这一行看原因。
+         */
+        fun canOpenBlocker(): String {
+            if (!engReady) return "engineNotReady"
+            if (!cPaused) return "notPaused(内核自己开跑了)"
+            if (cIdleActive) return "idle"
+            if (cDuration <= 0.0) return "noDuration"
+            if (!audioTrackResolved && cAudioCodec.isBlank()) return "noAudioTrack"
+            if (cTimePosAtMs == 0L || cTimePos < 0.0) return "noPosition"
+            return "ready"
+        }
+
         fun cancelAwaitCanOpen() {
             canOpenPending.set(null)
             canOpenObserver?.let { o -> runCatching { MPVLib.removeObserver(o) } }
@@ -193,7 +208,7 @@ class MpvBackend(private val context: Context) {
             if (!cPaused) return
             if (cIdleActive) return
             if (cDuration <= 0.0) return
-            if (!audioTrackResolved) return
+            if (!audioTrackResolved && cAudioCodec.isBlank()) return
             if (cTimePosAtMs == 0L || cTimePos < 0.0) return
             val claimed = canOpenPending.getAndSet(null) ?: return   /* 被另一个线程抢先认领 */
             cancelAwaitCanOpen()
@@ -242,6 +257,14 @@ class MpvBackend(private val context: Context) {
         @Volatile private var lastPosSample = 0.0
         /** 音轨是否已解析出来（clockPresent 的一半判据） */
         @Volatile private var audioTrackResolved = false
+        /**
+         * 音频编码名（`audio-codec-name`，实测能读到，例如 eac3）。
+         *
+         * 为什么拿它当"音轨已解析"的判据：布尔属性 `audio` 在本机一直读不到
+         * （2026-11-17 实测：同一时刻 duration/time-pos/audio-codec-name 都有值，只有它没有），
+         * 于是 CAN_OPEN 三条永远差一条 → 信号永不发出 → 黑屏且无声。
+         */
+        @Volatile private var cAudioCodec = ""
         /** 音频输出是否已建立（clockPresent 的另一半判据） */
         @Volatile private var audioOutputReady = false
         @Volatile private var cDuration = 0.0
@@ -370,6 +393,7 @@ class MpvBackend(private val context: Context) {
             b("audio") { audioTrackResolved = it }
             /* 音频输出是否已建立：ao 报出设备名即视为已建（不含"真出声"——那只认录音验收） */
             s("current-ao") { audioOutputReady = it.isNotBlank() }
+            s("audio-codec-name") { cAudioCodec = it }
             b("eof-reached") { cEof = it }
             b("video") { cHasVideo = it }
             b("idle-active") { cIdleActive = it }
