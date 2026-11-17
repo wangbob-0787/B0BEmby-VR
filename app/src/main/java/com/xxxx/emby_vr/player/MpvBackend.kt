@@ -324,6 +324,8 @@ class MpvBackend(private val context: Context) {
         @Volatile private var cPaused = false
         /** mute 当前值（健康行要看，不影响时钟） */
         @Volatile private var cMuted = false
+        /** 当前播放速率（内核 `speed` 属性，轮询刷新）：外推位置时必须乘它，否则倍速下系统性偏 */
+        @Volatile private var cSpeed = 1.0
         @Volatile private var cTrackList = ""
         @Volatile private var cHasVideo = false
         /** 内核是否处于 idle（没加载文件）；clockAdvancing 的三个否据之一 */
@@ -439,6 +441,7 @@ class MpvBackend(private val context: Context) {
             s("sub-text") { cSubText = it }
             b("pause") { cPaused = it }
             b("mute") { cMuted = it }
+            d("speed") { cSpeed = if (it > 0.0) it else 1.0 }
             /* 音轨是否已解析（clockPresent 的一半）：内核报出 audio 属性即视为已选到音轨 */
             b("audio") { audioTrackResolved = it }
             /* 音频输出是否已建立：ao 报出设备名即视为已建（不含"真出声"——那只认录音验收） */
@@ -1139,7 +1142,11 @@ class MpvBackend(private val context: Context) {
         val ageMs = android.os.SystemClock.elapsedRealtime() - at
         if (ageMs <= 200L) return cTimePos
         if (cPaused || cIdleActive) return cTimePos
-        return cTimePos + ageMs / 1000.0
+        /*
+         * 外推必须乘当前速率：2 倍速下位置推进是 age×2，按 1.0 算会系统性偏少
+         * （外推 500ms 差 500ms、4 倍速差 1.5s），画面会判成"落后"然后乱丢帧。
+         */
+        return cTimePos + ageMs / 1000.0 * cSpeed
     }
 
     /** 最新位置采样的年龄（ms）；0 表示从未采到 */
