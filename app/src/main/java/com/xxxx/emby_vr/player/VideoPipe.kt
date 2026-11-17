@@ -275,6 +275,7 @@ class VideoPipe {
         this.onPreheatReady = onPreheatReady
         tryAgainStreak = 0L
         showLogged = false
+        readySignalled = false
         droppedStale = 0
         startedAtMs = android.os.SystemClock.elapsedRealtime()
         lastDovi = null
@@ -346,12 +347,6 @@ class VideoPipe {
                 priority = Thread.NORM_PRIORITY + 2
                 start()
             }
-            /*
-             * 不再"预热三帧"（2026-11-17 父亲定：约束一条条加，先把花活删干净）。
-             * 线程起来即可宣告就绪，第一帧解出就上屏；颜色由渲染层等 RPU 参数到达后自己切。
-             */
-            preheated = true
-            runCatching { onPreheatReady?.invoke(0L, lastDovi != null) }
             true
         } catch (t: Throwable) {
             lastError = "${t.javaClass.simpleName}: ${t.message}"
@@ -528,6 +523,19 @@ class VideoPipe {
             )
         }
 
+        /*
+         * 画面侧就绪信号：**手上有第一帧**才发（不是线程起来就发）。
+         *
+         * 2026-11-17 实测：起播时声音先响、画面晚 6~9 秒，就是因为早先"线程一起来就宣告就绪"，
+         * 上层立刻解除暂停，而这时画面连第一帧都还没解出来。双信号的本意是"两边都准备好了"，
+         * 所以画面这侧的"准备好了"必须等于"已经解出一帧在手"。
+         */
+        if (!readySignalled) {
+            readySignalled = true
+            Log.i(TAG, "画面侧就绪：第一帧已在手（pts=$ptsRaw），发信号给上层")
+            runCatching { onPreheatReady?.invoke(0L, lastDovi != null) }
+        }
+
         /* 起播放行闸门：门关着就持这一帧等（I1/I3），门一开立刻上屏 */
         if (!firstFrameShown && holdGate?.invoke() == true) {
             while (running.get() && holdGate?.invoke() == true) {
@@ -602,6 +610,9 @@ class VideoPipe {
             false
         }
     }
+
+    /** 画面侧就绪信号是否已发（手上有第一帧时才发） */
+    @Volatile private var readySignalled = false
 
     /** 丢掉旧帧的累计数（观测量：它一直涨说明解码跟不上） */
     private var droppedStale = 0
