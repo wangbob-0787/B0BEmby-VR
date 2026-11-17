@@ -372,16 +372,19 @@ object SharedReadCache {
                 }
                 if (safe > base) {
                     var freed = 0L
+                    val doomed = ArrayList<Long>()
+                    /* 锁内只改记账（微秒级），删文件放到锁外做，避免挡住读与拉 */
                     synchronized(lock) {
-                        val dir = cacheDir
                         val keys = avail.keys.filter { it < safe }.sorted()
                         for (k in keys) {
                             val size = avail.remove(k) ?: continue
                             used -= size
                             freed += size
-                            if (dir != null) File(dir, "$k.seg").delete()
+                            doomed.add(k)
                         }
                     }
+                    val dir = cacheDir
+                    if (dir != null) for (k in doomed) runCatching { File(dir, "$k.seg").delete() }
                     baseIdx = safe
                     if (freed > 0) Log.i(TAG, "回收：删到第 $safe 段之前（最慢读位置=$slow），释放 ${freed / 1048576}MB")
                 }
@@ -400,15 +403,17 @@ object SharedReadCache {
             baseIdx = idx
             Log.i(TAG, "缓存重置：$why → 从第 $idx 段重新拉")
         } else {
+            val doomed = ArrayList<Long>()
             synchronized(lock) {
-                val dir = cacheDir
                 val keys = avail.keys.filter { it < idx }.sorted()
                 for (k in keys) {
                     val size = avail.remove(k) ?: continue
                     used -= size
-                    if (dir != null) File(dir, "$k.seg").delete()
+                    doomed.add(k)
                 }
             }
+            val dir = cacheDir
+            if (dir != null) for (k in doomed) runCatching { File(dir, "$k.seg").delete() }
             baseIdx = idx
             writeNext = idx
             Log.i(TAG, "快进：丢掉第 $idx 段之前的数据（$why）")
