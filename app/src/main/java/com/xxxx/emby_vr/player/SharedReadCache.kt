@@ -338,22 +338,15 @@ object SharedReadCache {
         }
     }
 
-    /** 缓存回收：读过的块（落在播放位置后面的）立即删掉，把空间让给新数据 */
+    /**
+     * 缓存回收：只按容量淘汰（最久未用先删），不做"读过就删"。
+     *
+     * 实测（2026-11-18 02:30）：按播放位置删块会把刚取回来的数据也删掉，
+     * 上游累计拉了 19MB、缓存里却一块没留。ExoPlayer 的 SimpleCache 就是纯容量淘汰，
+     * 简单且不会误删；空间不够时淘汰最旧的即可。
+     */
     private fun trimLocked() {
         val dir = cacheDir ?: return
-        val url = readIdx.keys.firstOrNull()
-        if (url != null) {
-            val prefix = Integer.toHexString(url.hashCode()) + "-"
-            val guard = (readIdx[url] ?: 0L) - KEEP_BEHIND_BLOCKS
-            val stale = index.keys.filter { k ->
-                k.startsWith(prefix) && (k.removePrefix(prefix).toLongOrNull() ?: 0L) < guard
-            }
-            for (k in stale) {
-                val size = index.remove(k) ?: continue
-                used -= size
-                File(dir, "$k.blk").delete()
-            }
-        }
         while (used > CAPACITY_BYTES && index.size > 1) {
             val eldest = index.keys.first()
             val size = index.remove(eldest) ?: 0L
