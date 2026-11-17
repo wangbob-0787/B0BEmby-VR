@@ -280,7 +280,7 @@ object VrTuning {
      * 网盘对同一文件的并发连接常有限制，撞上了就会"缓存停止增长"——所以做成可调，
      * 现场试 2/3/4 哪个最稳，不用重装。
      */
-    @Volatile var relayParallel: Int = 3
+    @Volatile var relayParallel: Int = 2
     @Volatile var relayPrefetch: Int = 2
 
     /**
