@@ -375,6 +375,7 @@ class VideoPipe {
                     )
                 }
             }, "PipeWatch").apply { isDaemon = true; start() }
+            Log.i(TAG, "PipeWatch 已启动（每 2s 报读流计数）")
             true
         } catch (t: Throwable) {
             lastError = "${t.javaClass.simpleName}: ${t.message}"
@@ -397,8 +398,9 @@ class VideoPipe {
      *  · 门卡在**取输出缓冲之前**：门关着整轮跳过 —— 不取、不喂、不动。
      */
     private fun pump() {
-        val ex = extractor ?: return
-        val codec = decoder ?: return
+        Log.i(TAG, "pump 开始 running=${running.get()} gate=${holdGate?.invoke()}")
+        val ex = extractor ?: run { Log.e(TAG, "pump 退出：extractor 为空"); return }
+        val codec = decoder ?: run { Log.e(TAG, "pump 退出：decoder 为空"); return }
         val info = MediaCodec.BufferInfo()
         var inputDone = false
         var outputDone = false
@@ -820,6 +822,7 @@ class VideoPipe {
      *                 否则两路解码同时往同一张画面送帧，是最难查的状态（图 §5 I4）。
      */
     fun stop(): Boolean {
+        Log.i(TAG, "stop() 被调用（running→false，等待解码线程退出）")
         /* 释放权归线程自己：这里只置停止标志，不代解码线程 release（图 §5 I4） */
         stopping = true
         running.set(false)
