@@ -8287,11 +8287,21 @@ class MainActivity : ComponentActivity() {
         val pipe = videoPipe ?: return
         val m = mpvBackend ?: return
         pipe.start(
-            url, emptyMap(), surface, { m.positionSec() }, { true }, sec,
+            url, emptyMap(), surface,
+            { m.positionSec() },
+            { m.clockAdvancing() },
+            sec,
             java.io.File(getExternalFilesDir(null) ?: filesDir, "dovi_params.bin").absolutePath,
             holdGate = { false },
             onFirstFrame = { },
             onDoviParams = { com.xxxx.emby_vr.vr.VrNative.setDoviStreamActive(true) },
+            onNeedRestart = { target ->
+                /* 已是重启路径，防递归：只在偏差仍然很大时再排一次 */
+                Log.w(TAG, "seek 后仍失步，排一次延迟重启 @ $target")
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
+                    { runCatching { restartVideoPipeAt(target) } }, 800,
+                )
+            },
         )
     }
 
@@ -8369,13 +8379,18 @@ class MainActivity : ComponentActivity() {
         }
         com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("audio-display", "no")
         selfPipeWaitingFirstFrame.set(true)
-        m.play(url, startSec, startPaused = true)
         /*
-         * 再显式暂停一次（2026-11-16 父亲实测「声音比画面先出来」）：
-         * start 选项只对"下一次加载"生效，加载一旦完成内核就自己开播了，
-         * 这里补一刀，保证画面首帧出来之前没有声音。
+         * 起播五步（施工图 §4.2.1）。
+         *
+         * 第①②步：加载后**暂停 + 静音**，再读实际起点。
+         * 为什么必须"暂停"而不是只静音：首帧就绪前不能让时钟先跑，否则画面永远落后一段
+         * 启动耗时；为什么必须"静音"而不是只暂停：等一下 unpause 之后要有声音。
+         * 两次调用（play 的 startPaused + 再补一刀 setPaused）是为了压住"加载完成自己开播"那一瞬，
+         * 只设一次挡不住（父亲 2026-11-16 实测"声音比画面先出来"）。
          */
+        m.play(url, startSec, startPaused = true)
         m.setPaused(true)
+        m.setMute(true)
 
         val doviPath = java.io.File(
             getExternalFilesDir(null) ?: filesDir,
@@ -8392,15 +8407,71 @@ class MainActivity : ComponentActivity() {
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
             { runCatching { syncSelectedSubtitleFromPlayer() } }, 6000,
         )
+        /*
+         * 首帧门（2026-11-17 按图 §4.2.1 五步重写）。
+         *
+         * 原来两处都不对：
+         *   ① 时钟有效性传的是常量 `{ true }` —— 唯一的校验等于关掉；
+         *   ② 门条件挂在"首帧已出"上，而首帧回调正是在门放开之后才触发的，门永远看到已放开。
+         * 现在：门 = 主时钟还没开始走（clockStarted 之前压住画面），首帧一到只"报告"，由这里
+         * 按顺序开声音，最后才让画面出第一帧。
+         */
+        /*
+         * 等内核把文件打开（拿到时长/音轨）再取 audioStart ——
+         * 它是标定基准，取的是**内核实际报的位置**，不是我们请求的 startSec：
+         * 网络片源常跳到最近关键帧，两个值能差出一大截，用错整体偏。
+         */
+        var audioStart = startSec
+        run {
+            var waited = 0L
+            while (waited < 5000L && !m.clockPresent()) {
+                try {
+                    Thread.sleep(50)
+                } catch (t: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    break
+                }
+                waited += 50L
+            }
+            if (m.clockPresent()) audioStart = m.positionSec()
+            Log.i(TAG, "起播基准：请求=$startSec 实际 audioStart=$audioStart（等了 ${waited}ms）")
+        }
         val ok = pipe.start(
-            url, emptyMap(), surface, { m.positionSec() }, { true }, startSec, doviPath,
+            url, emptyMap(), surface,
+            { m.positionSec() },
+            { m.clockAdvancing() },
+            audioStart, doviPath,
             holdGate = { selfPipeWaitingFirstFrame.get() },
             onFirstFrame = {
-                /* 画面第一帧已经送到银幕，现在放开声音，两路从同一时刻走 */
-                selfPipeWaitingFirstFrame.set(false)
-                m.setPaused(false)
-                Log.i(TAG, "自管解码首帧已出，放开声音")
+                /*
+                 * 第④步：首帧就绪（还没上屏）→ 让内核开始走。
+                 * 触发条件是"首帧就绪"，不是"时钟在走"——等时钟走才 unpause 会死锁。
+                 */
+                Log.i(TAG, "自管解码首帧就绪 → unpause（时钟开始走，仍然静音）")
+                runCatching { m.setPaused(false) }
+                /*
+                 * 第⑤步：等时钟真的开始走（clockStarted：unpause 后有新采样、位置到基准），
+                 * 再放行画面并取消静音。顺序不能反：先放画面会在时钟未走时全速出帧。
+                 */
+                var waited = 0L
+                val h = android.os.Handler(android.os.Looper.getMainLooper())
+                fun poll() {
+                    if (m.clockStarted(audioStart)) {
+                        Log.i(TAG, "时钟已开始走（等了 ${waited}ms）→ 放行首帧 + mute=no")
+                        selfPipeWaitingFirstFrame.set(false)
+                        runCatching { m.setMute(false) }
+                    } else if (waited < 2000L) {
+                        waited += 20L
+                        h.postDelayed({ poll() }, 20L)
+                    } else {
+                        /* 时钟 2 秒没走起来：放行画面并把原因写日志（不许无声死等） */
+                        Log.w(TAG, "时钟 2s 未开始走（clockStarted=false）→ 仍放行画面，声音保持静音")
+                        selfPipeWaitingFirstFrame.set(false)
+                    }
+                }
+                poll()
             },
+            onNeedRestart = { target -> restartVideoPipeAt(target) },
             /*
              * 只有真的从码流里解出 RPU 参数，才允许渲染层走杜比还原。
              * 非 P5 片源解不出参数，这个回调就不会来 —— 它们永远不进新路径。

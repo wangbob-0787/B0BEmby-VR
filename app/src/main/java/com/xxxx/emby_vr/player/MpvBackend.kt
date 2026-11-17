@@ -119,6 +119,14 @@ class MpvBackend(private val context: Context) {
          * 现在所有读取都在这条后台线程上做，界面侧只读下面的缓存变量，永不阻塞。
          */
         @Volatile private var cTimePos = 0.0
+        /** 上次 time-pos 属性回调的时刻（elapsedRealtime）；0=从未收到过 */
+        @Volatile private var cTimePosAtMs = 0L
+        /** 最近一次取消暂停的时刻；clockStarted 用它卡"必须有新采样" */
+        @Volatile private var unpauseAtMs = 0L
+        /** 音轨是否已解析出来（clockPresent 的一半判据） */
+        @Volatile private var audioTrackResolved = false
+        /** 音频输出是否已建立（clockPresent 的另一半判据） */
+        @Volatile private var audioOutputReady = false
         @Volatile private var cDuration = 0.0
         @Volatile private var cCacheTime = 0.0
         @Volatile private var cVideoW = 0
@@ -224,9 +232,17 @@ class MpvBackend(private val context: Context) {
                 val v = try { MPVLib.getPropertyString(name) } catch (_: Throwable) { null }
                 if (v == null) ok = false else apply(v)
             }
-            d("time-pos") { cTimePos = it }
+            d("time-pos") {
+                cTimePos = it
+                /* 记下这次采样时刻：判断"位置新鲜"要用（2026-11-17，时钟四谓词的配套量） */
+                cTimePosAtMs = android.os.SystemClock.elapsedRealtime()
+            }
             s("sub-text") { cSubText = it }
             b("pause") { cPaused = it }
+            /* 音轨是否已解析（clockPresent 的一半）：内核报出 audio 属性即视为已选到音轨 */
+            b("audio") { audioTrackResolved = it }
+            /* 音频输出是否已建立：ao 报出设备名即视为已建（不含"真出声"——那只认录音验收） */
+            s("current-ao") { audioOutputReady = it.isNotBlank() }
             b("eof-reached") { cEof = it }
             b("video") { cHasVideo = it }
             if (tick % 2L == 1L) {
@@ -728,10 +744,22 @@ class MpvBackend(private val context: Context) {
     fun setPaused(paused: Boolean) {
         // 顺手更新缓存：界面按了暂停键立刻读 isPaused() 也要拿到新值，别等下一轮轮询
         cPaused = paused
+        /* 记下"从暂停变回播放"的时刻：clockStarted 要用它区分新采样与旧缓存 */
+        if (!paused) unpauseAtMs = android.os.SystemClock.elapsedRealtime()
         post { MPVLib.setPropertyBoolean("pause", paused) }
     }
 
     fun isPaused(): Boolean = cPaused
+
+    /**
+     * 静音开关（起播五步用）。
+     *
+     * 与 setPaused 的区别是**静音不影响时钟**：mpv 照常推进时间轴，只是不出声。
+     * 首帧就绪到画面上屏之间的那段必须靠它——用 pause 挡会死锁（不 unpause 时钟永远不走）。
+     */
+    fun setMute(muted: Boolean) {
+        post { MPVLib.setPropertyBoolean("mute", muted) }
+    }
 
     /** 播放位置（秒） */
     /**
@@ -771,6 +799,47 @@ class MpvBackend(private val context: Context) {
     fun prop(name: String): String? = try { MPVLib.getPropertyString(name) } catch (_: Throwable) { null }
 
     fun positionSec(): Double = cTimePos
+
+    /*
+     * 时钟三谓词（施工图 §5）。
+     *
+     * 三者分开是因为它们回答三个不同问题，混用就会出"快速播放"：
+     *   clockPresent   —— 引擎加载好了、能报位置了吗？值可以为 0（0 是合法起播位置）。
+     *   clockStarted   —— 首帧可以上屏了吗？要求 unpause 之后**有新采样**且位置已到 audioStart 上游。
+     *   clockAdvancing —— 现在能按它排帧吗？要求最近 200ms 内位置真的在推进。
+     * 调用点原来写死 `{ true }` 当"时钟有效"，等于把唯一的校验关掉了。
+     */
+
+    /** 引擎已加载、能报位置（不是 idle），且音轨与音频输出都就绪；值可为 0 */
+    fun clockPresent(): Boolean {
+        if (!videoReady()) return false
+        if (cTimePosAtMs == 0L) return false
+        return audioTrackResolved && audioOutputReady
+    }
+
+    /**
+     * unpause 之后时钟是否真的开始走（首帧放行用）。
+     *
+     * 三个条件缺一不可：已 unpause、**有一份晚于 unpause 时刻的新采样**（不是 unpause 前的缓存值）、
+     * 位置不小于音频起点。只查一次缓存值会在位置恰好相等时误判通过。
+     */
+    fun clockStarted(audioStartSec: Double): Boolean {
+        if (cPaused) return false
+        val unpauseAt = unpauseAtMs
+        if (unpauseAt == 0L) return false
+        if (cTimePosAtMs <= unpauseAt) return false
+        return cTimePos + 0.001 >= audioStartSec
+    }
+
+    /** 最近 200ms 内位置真的在推进（排帧依据）；暂停中一律为 false */
+    fun clockAdvancing(): Boolean {
+        if (!videoReady()) return false
+        if (cPaused) return false
+        val at = cTimePosAtMs
+        if (at == 0L) return false
+        return android.os.SystemClock.elapsedRealtime() - at <= 200L
+    }
+
 
     /** 总时长（秒） */
     fun durationSec(): Double = cDuration
