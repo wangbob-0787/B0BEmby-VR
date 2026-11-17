@@ -432,8 +432,16 @@ object SharedReadCache {
         synchronized(lock) {
             val dir = cacheDir ?: return null
             val f = File(dir, "$key.blk")
-            /* 只认本进程登记过的块：目录里可能残留旧版本的块，宁可重取也不用错数据 */
-            if (!f.exists() || !index.containsKey(key)) return null
+            if (!f.exists()) return null
+            /*
+             * 只认本进程登记过的块。目录里可能残留旧版本（4MB 分块时代）的块，
+             * 遇到就地删除——既不用错数据，也立刻把空间还给后面的新数据
+             * （父亲 2026-11-18：「读到旧文件也应该把旧文件删了」）。
+             */
+            if (!index.containsKey(key)) {
+                f.delete()
+                return null
+            }
             index.remove(key)
             index[key] = f.length()
             hits.incrementAndGet()
