@@ -908,9 +908,15 @@ class MpvBackend(private val context: Context) {
              * 于是内核永远从片头起播。正确做法是用 mpv 的 start 选项（对下一个加载的
              * 文件生效），另外再排一次延迟补跳兜底（万一 start 没被认）。
              */
-            if (startSec > 0.5) {
-                post { whenReady("start") { MPVLib.setPropertyString("start", "+" + startSec.toInt()) } }
-            }
+            /*
+             * `start` 是**粘性选项**：设过一次就对该内核之后加载的每个文件生效。
+             * 之前只在有续播点时才设、从不清零，结果播完一部 40 分钟的片子再点别的片
+             * （甚至网页视频）都从 40 分钟开始 —— 2026-11-17 父亲实测。
+             * 所以每次起播都显式设：有续播点设位置，没有就设 0，绝不沿用上一部。
+             */
+            val startArg = if (startSec > 0.5) "+" + startSec.toInt() else "0"
+            post { whenReady("start") { MPVLib.setPropertyString("start", startArg) } }
+            Log.i(TAG, "起播位置：start=$startArg（每次都显式设置，不沿用上一部）")
             post { whenReady("loadfile") { MPVLib.command(arrayOf("loadfile", url, "replace")) } }
             /*
              * 外挂音轨（网页流用）：2026-10-16 头显实测 —— 把 audio-file 当"下一个文件的
