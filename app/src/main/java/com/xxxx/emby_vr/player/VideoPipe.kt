@@ -355,6 +355,26 @@ class VideoPipe {
                 priority = Thread.NORM_PRIORITY + 2
                 start()
             }
+            /*
+             * 监视线程：主循环卡在某个调用上时，解码线程本身打不出日志，
+             * 由它每 2 秒报一次读流计数，能分清是"读数据卡住"还是"要不到输入缓冲"。
+             */
+            Thread({
+                while (running.get()) {
+                    try {
+                        Thread.sleep(2000)
+                    } catch (t: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        break
+                    }
+                    if (!running.get()) break
+                    Log.i(
+                        TAG,
+                        "PIPEREAD|样本=$statSamples|字节=$statBytes|读返回=$statLastReadRet" +
+                            "|要不到输入格=$statInMiss|取不到输出帧=$statOutMiss|held=$heldIdx",
+                    )
+                }
+            }, "PipeWatch").apply { isDaemon = true; start() }
             true
         } catch (t: Throwable) {
             lastError = "${t.javaClass.simpleName}: ${t.message}"
@@ -426,9 +446,16 @@ class VideoPipe {
 
             if (!inputDone) {
                 val inIdx = codec.dequeueInputBuffer(DEQUEUE_TIMEOUT_US)
-                if (inIdx >= 0) {
+                if (inIdx < 0) {
+                    statInMiss++
+                } else {
                     val buf = codec.getInputBuffer(inIdx) ?: continue
                     val size = ex.readSampleData(buf, 0)
+                    statLastReadRet = size.toLong()
+                    if (size >= 0) {
+                        statSamples++
+                        statBytes += size
+                    }
                     if (size < 0) {
                         codec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                         inputDone = true
@@ -457,6 +484,7 @@ class VideoPipe {
             }
 
             val outIdx = codec.dequeueOutputBuffer(info, DEQUEUE_TIMEOUT_US)
+            if (outIdx < 0 && outIdx != MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) statOutMiss++
             when {
                 outIdx >= 0 -> {
                     heldIdx = outIdx
@@ -690,6 +718,13 @@ class VideoPipe {
 
     /** 画面侧就绪信号是否已发（手上有第一帧时才发） */
     @Volatile private var readySignalled = false
+
+    /* 读流计数（给独立监视线程用：主循环卡住时它照常报数） */
+    @Volatile private var statSamples = 0L
+    @Volatile private var statBytes = 0L
+    @Volatile private var statInMiss = 0L
+    @Volatile private var statLastReadRet = 0L
+    @Volatile private var statOutMiss = 0L
 
     /** 需要"解码器内跳转"到的位置（秒，<0 表示没有待办）。由解码线程自己执行 */
     @Volatile private var pendingSeekSec = -1.0
