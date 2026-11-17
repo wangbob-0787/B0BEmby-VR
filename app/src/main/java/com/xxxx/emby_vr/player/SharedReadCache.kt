@@ -270,7 +270,7 @@ object SharedReadCache {
      * 用一条带开区间 Range 的连接连续读，顺序播放时握手只发生一次；只有跳转（读的位置与
      * 连接当前位置不连续）才重开一条。
      */
-    private inner class SeqReader(val url: String) {
+    private class SeqReader(val url: String) {
         private var conn: HttpURLConnection? = null
         private var ins: InputStream? = null
         private var pos: Long = -1L
