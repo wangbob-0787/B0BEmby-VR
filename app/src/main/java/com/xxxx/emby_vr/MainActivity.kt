@@ -7098,6 +7098,14 @@ class MainActivity : ComponentActivity() {
             runCatching { it.stop() }
         }
         videoPipe = null
+        /*
+         * 画图时发现的问题（2026-11-17）：控制层的跳转钩子和这部的地址/表面在停播时没清。
+         * 停掉 P5 再播别的片，一按快进仍会走到"重启自管解码"那一支，用旧地址把已经停掉的
+         * 解码器重新拉起来 —— 表现是画面无故闪一下、或者跳转把新片打断。
+         */
+        ctl.pipeSeek = null
+        selfPipeUrl = null
+        selfPipeSurface = null
         mpvSubtitleJob?.cancel()
         mpvSubtitleJob = null
         seekTargetMs = null
