@@ -557,23 +557,29 @@ class VideoPipe {
         if (originPts < 0.0) {
             originPts = ptsRaw
             /*
-             * 基准以**实际解出的第一帧位置**为准，不用"我们请求的位置"：
-             * 请求 1503 秒时 seek 只能落到不早于它的关键帧，实际首帧可能 1505.36（差 2.36 秒）。
-             * 差值超过 0.3 秒就请上层把声音也跳到实际位置（一次性对齐，不是播放中乱跳）。
+             * 起播只要"两边从同一个位置开始"，原则是**声音只能往前，不能往回**。
+             * 用当前真实主时钟（不是请求位置）跟首帧比：
+             *  · 画面落在声音后面超过 0.3 秒 → 声音往前跳到画面位置（跳过一小段，听不出问题）；
+             *  · 画面落在声音前面/持平 → 不动声音，让画面自己跳到时钟处追上来。
+             * 实测教训：拿"我们请求的位置"当基准，会出现"声音被拉回 5 秒、同一句话反复重播"。
              */
-            val gap = originPts - audioStartSec
-            if (kotlin.math.abs(gap) > 0.3) {
+            val clockAtFix = clockNow()
+            val gap = originPts - clockAtFix
+            if (clockAtFix > 0.0 && gap > 0.3) {
                 Log.w(
                     TAG,
-                    "起播基准对不齐：请求=$audioStartSec 实际首帧=$originPts 差=${"%.2f".format(gap)}s → 以实际位置为准",
+                    "起播对齐：画面比声音晚 ${"%.2f".format(gap)}s → 声音往前跳到 ${"%.2f".format(originPts)}s",
                 )
                 audioStartSec = originPts
                 appliedOffset = 0.0
                 runCatching { onAudioAlign?.invoke(originPts) }
             } else {
                 appliedOffset = audioStartSec - originPts
+                if (clockAtFix > 0.0 && -gap > 0.5) {
+                    Log.w(TAG, "起播对齐：画面落后声音 ${"%.2f".format(-gap)}s → 画面跳到时钟处追")
+                    pendingSeekSec = (clockAtFix - 0.15).coerceAtLeast(0.0)
+                }
             }
-            val clockAtFix = clockNow()
             Log.i(
                 TAG,
                 "零点标定：audioStart=$audioStartSec origin=$originPts offset=$appliedOffset" +
