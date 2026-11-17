@@ -1112,7 +1112,6 @@ class MpvBackend(private val context: Context) {
          * 采样年龄一过阈值就判"时钟停了"→ 持帧挂起 → 画面冻住，而同一刻窗口增量是 0.39~0.52s。
          * 读数过期怎么处理见 [positionForSync]（外推），UI 的 200ms 新鲜度见 [posFresh]，两者都不参与出不出帧。
          */
-        val _ = at
         /*
          * 判据 = **最近 1 秒内累计增量 ≥1ms**（图 §5，2026-11-17 实测放宽）。
          *

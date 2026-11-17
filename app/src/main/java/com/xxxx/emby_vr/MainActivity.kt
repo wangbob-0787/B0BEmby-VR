@@ -8493,8 +8493,8 @@ class MainActivity : ComponentActivity() {
                         "|loadInput=-|loadDecoder=${if (selfPipeReady) "ok" else "-"}" +
                         "|loadAudioOut=${if (selfPipeCanOpen) "ok" else "-"}" +
                         "|canOpenBlk=${com.xxxx.emby_vr.player.MpvBackend.canOpenBlocker()}" +
-                        "|ageMs=${com.xxxx.emby_vr.player.MpvBackend.clockSampleAgeMs()}" +
-                        "|posFresh=${com.xxxx.emby_vr.player.MpvBackend.posFresh()}" +
+                        "|ageMs=${mpvBackend?.clockSampleAgeMs() ?: -1L}" +
+                        "|posFresh=${mpvBackend?.posFresh() == true}" +
                         "|audioStallMs=-(音频是否推进看 mpv time-pos)" +
                         "|mute=${if (runCatching { mpvBackend?.isMuted() }.getOrNull() == true) "yes" else "no"}" +
                         "|paused=${if (runCatching { mpvBackend?.isPaused() }.getOrNull() == true) "yes" else "no"}",
