@@ -276,6 +276,14 @@ object VrTuning {
     @Volatile var relay: Int = 1
 
     /**
+     * 共享读缓存的并发路数（跳转预热）与顺序前视块数。
+     * 网盘对同一文件的并发连接常有限制，撞上了就会"缓存停止增长"——所以做成可调，
+     * 现场试 2/3/4 哪个最稳，不用重装。
+     */
+    @Volatile var relayParallel: Int = 3
+    @Volatile var relayPrefetch: Int = 2
+
+    /**
      * 弹幕画布宽度（2026-10-14 父亲定）：默认 **1920**，与银幕本身的 1920 宽对齐。
      *
      * 原来写死 2560 —— 比银幕还大三分之一，多出来的像素在 VR 里根本看不见，
@@ -711,6 +719,14 @@ object VrTuning {
                 dvOff = it
                 applied += "杜比还原=" + if (it != 0) "关（仅测量用）" else "开"
             }
+        }
+        raw["relay_parallel"]?.toIntOrNull()?.let {
+            val v = it.coerceIn(1, 8)
+            if (v != relayParallel) { relayParallel = v; applied += "中转并发=$v 路" }
+        }
+        raw["relay_prefetch"]?.toIntOrNull()?.let {
+            val v = it.coerceIn(0, 8)
+            if (v != relayPrefetch) { relayPrefetch = v; applied += "中转前视=$v 块" }
         }
         raw["relay"]?.toIntOrNull()?.let {
             val v = if (it == 1) 1 else 0

@@ -38,13 +38,14 @@ object SharedReadCache {
     private const val CAPACITY_BYTES = 400L * 1024 * 1024
     private const val UA = "B0BEmbyRelay/1.0"
     /** 预取块数（1 块 4MB ≈ 2 秒内容 @14Mbps） */
-    /** 顺序播放时的前视块数（同样压低并发，靠串行稳定推进） */
-    private const val PREFETCH_BLOCKS = 2
+    /** 顺序播放时的前视块数：可调（vr-tuning.txt 里 relay_prefetch） */
+    private fun prefetchBlocks(): Int = com.xxxx.emby_vr.vr.VrTuning.relayPrefetch.coerceIn(0, 8)
     /**
      * 跳转预热往后取的块数：**3 路**（父亲 2026-11-18 提醒：网盘常限同一文件并发连接，
      * 7 路可能触发限流，表现是"缓存停止增长"）。宁可少而稳，不要多而被拒。
      */
-    private const val WARM_BLOCKS = 3
+    /** 跳转预热的并发路数：可调（vr-tuning.txt 里 relay_parallel） */
+    private fun warmBlocks(): Int = com.xxxx.emby_vr.vr.VrTuning.relayParallel.coerceIn(1, 8)
 
     @Volatile private var started = false
     @Volatile private var server: ServerSocket? = null
@@ -110,7 +111,7 @@ object SharedReadCache {
             val frac = (targetSec / durationSec).coerceIn(0.0, 1.0)
             val center = (frac * blocks).toLong().coerceIn(0L, blocks - 1)
             var launched = 0
-            for (k in -1L..WARM_BLOCKS.toLong()) {
+            for (k in -1L..warmBlocks().toLong()) {
                 val idx = center + k
                 if (idx < 0 || idx >= blocks) continue
                 val key = keyOf(inner, idx)
@@ -333,7 +334,7 @@ object SharedReadCache {
     /** 后台预取接下来的几块（已缓存或正在取的跳过） */
     private fun schedulePrefetch(upstream: String, idx: Long, total: Long) {
         thread(isDaemon = true) {
-            for (k in 1..PREFETCH_BLOCKS) {
+            for (k in 1..prefetchBlocks()) {
                 val next = idx + k
                 if (next * BLOCK >= total) break
                 val key = keyOf(upstream, next)
