@@ -423,7 +423,8 @@ class VideoPipe {
      */
     private fun outputFrame(codec: MediaCodec, info: MediaCodec.BufferInfo, outIdx: Int): Boolean {
         val ptsRaw = info.presentationTimeUs / 1_000_000.0
-        tryAgainRuns = 0
+        /* 取到帧就清零"连续取不到"的计数（健康行的 tryAgainStreak 只作可见性） */
+        tryAgainStreak = 0L
 
         fun finish(render: Boolean): Boolean {
             codec.releaseOutputBuffer(outIdx, render)
