@@ -282,6 +282,8 @@ object VrTuning {
      */
     @Volatile var relayParallel: Int = 2
     @Volatile var relayPrefetch: Int = 2
+    /** 中转分块大小（兆）。4MB 一块约 2 秒内容、取一块约 1.6 秒；块越大等待越久 */
+    @Volatile var relayBlockMb: Int = 4
     /** 中转主动往前铺多少兆（0=不铺）。默认 400 = 一直铺到缓存上限 */
     @Volatile var relayAheadMb: Int = 400
 
@@ -733,6 +735,10 @@ object VrTuning {
         raw["relay_ahead_mb"]?.toIntOrNull()?.let {
             val v = it.coerceIn(0, 400)
             if (v != relayAheadMb) { relayAheadMb = v; applied += "中转前铺=${v}MB" }
+        }
+        raw["relay_block_mb"]?.toIntOrNull()?.let {
+            val v = it.coerceIn(1, 32)
+            if (v != relayBlockMb) { relayBlockMb = v; applied += "中转块=${v}MB" }
         }
         raw["relay"]?.toIntOrNull()?.let {
             val v = if (it == 1) 1 else 0
