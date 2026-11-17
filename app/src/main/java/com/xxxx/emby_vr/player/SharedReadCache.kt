@@ -5,6 +5,7 @@ import android.util.Log
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
+import java.io.RandomAccessFile
 import java.net.HttpURLConnection
 import java.net.ServerSocket
 import java.net.Socket
@@ -12,46 +13,59 @@ import java.net.URL
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 
 /**
- * 应用内共享读缓存（本机小服务）。
+ * 应用内共享读缓存（本机中转，127.0.0.1:8898）。
  *
- * 为什么需要（2026-11-17 实测定案）：
- *   杜比 P5 这条链路上有两个读取端 —— 内核 mpv 负责出声、自管解码 VideoPipe 负责出画，
- *   两边各自去 Emby/网盘取同一个大文件。结果是：
- *   ① 起播时要各自打开流、各自读索引（实测画面侧这一段花了 10.7 秒）；
- *   ② 播放中互相争抢，一方读出停顿（实测读到 72.6MB 后不再增长，画面随之冻住）。
- *   父亲一句话点破：「声音没了，画面反而不卡」。
+ * 规则（父亲 2026-11-18 逐条定稿）：
+ *  1. 去网盘取数据**只有中转**，两端解码器（内核 mpv 出声、自管解码出画）都只读本机缓存。
+ *  2. 拉数据是**流式**的：一条长连接连续读，读到多少就落盘多少；缓存区满了就停下等空间。
+ *  3. 解码器读缓存也是**流式**的：要多少给多少，没到的部分等数据到达后接着给，
+ *     不等"凑满一块"（这是之前快进后要等好几秒的原因）。
+ *  4. 两个解码器各记各的读位置；删除只删**两方都读过、且再留一段余量**之后的数据，
+ *     慢的一方（mpv 常常是慢的）不会被删掉还没读完的内容。
+ *  5. 快进停在后面：它之前的数据全部删掉；后退到更早位置、切片、切集、换片：清空重来。
  *
- * 做法：应用内起一个只监听 127.0.0.1 的 HTTP 服务，两条链路都指向它；
- *   它去上游取一次、按 4MB 分块缓存到应用私有目录，多端共享；同一块的并发请求只回源一次。
- *
- * 开关：vr-tuning.txt 里 `relay=1` 开（默认开），`relay=0` 退回直连（不用重装）。
+ * 结构：按 [SEG] 大小切段，每段一个文件，写入是追加式；[avail] 记每段已写到多少字节，
+ *   读侧只按 avail 给数据，因此不需要等整段写完。
  */
 object SharedReadCache {
 
     private const val TAG = "B0BEmbyVR-Relay"
     private const val PORT = 8898
-    private val BLOCK: Long get() = com.xxxx.emby_vr.vr.VrTuning.relayBlockMb.toLong() * 1024 * 1024
     private const val CAPACITY_BYTES = 400L * 1024 * 1024
     private const val UA = "B0BEmbyRelay/1.0"
+    /** 两条拉流长连接（父亲定：两路） */
+    private const val PULLERS = 2
+    /** 删除时离最慢读位置再留一段余量（约 2 秒内容） */
+    private const val MARGIN_SEGS = 1L
+
+    private val SEG: Long get() = com.xxxx.emby_vr.vr.VrTuning.relayBlockMb.toLong() * 1024 * 1024
 
     @Volatile private var started = false
     @Volatile private var server: ServerSocket? = null
     private var cacheDir: File? = null
 
-    private val index = LinkedHashMap<String, Long>()   // key -> 块大小
+    /** 段号 → 已写入字节数（只增） */
+    private val avail = LinkedHashMap<Long, Long>()
     private val lock = Any()
     private var used = 0L
-    private val inflight = ConcurrentHashMap<String, Object>()
+
+    @Volatile private var curUrl: String? = null
+    @Volatile private var writeNext = 0L        // 下一个要拉取的段号
+    @Volatile private var baseIdx = 0L          // 缓存里保留的第一段
+
+    /** 每个客户端（HTTP 连接）当前读到的段号，用于算"最慢那个" */
+    private val connPos = ConcurrentHashMap<Int, Long>()
+    private val connSeq = AtomicInteger(0)
 
     private val hits = AtomicLong()
     private val misses = AtomicLong()
     private val upstreamBytes = AtomicLong()
 
-    /** 开/关（VrTuning.relay）；关闭时 [rewrite] 原样返回，不改变任何行为 */
     fun enabled(): Boolean = com.xxxx.emby_vr.vr.VrTuning.relay == 1
 
     fun start(ctx: Context) {
@@ -59,42 +73,59 @@ object SharedReadCache {
         synchronized(this) {
             if (started) return
             cacheDir = File(ctx.cacheDir, "relay").apply { mkdirs() }
+            /* 启动清空：旧版本的段与当前规则不兼容，宁可全丢 */
+            runCatching { cacheDir?.listFiles()?.forEach { it.delete() } }
             try {
-                server = ServerSocket(PORT, 8, java.net.InetAddress.getByName("127.0.0.1"))
+                server = ServerSocket(PORT, 16, java.net.InetAddress.getByName("127.0.0.1"))
                 started = true
                 thread(name = "relay-accept", isDaemon = true) { acceptLoop() }
-                Log.i(TAG, "共享读缓存已启动 127.0.0.1:$PORT 上限 ${CAPACITY_BYTES / 1048576}MB 目录 ${cacheDir?.absolutePath}")
+                for (i in 0 until PULLERS) thread(name = "relay-pull-$i", isDaemon = true) { pullLoop() }
+                thread(name = "relay-gc", isDaemon = true) { gcLoop() }
+                Log.i(TAG, "共享读缓存已启动 127.0.0.1:$PORT 上限 ${CAPACITY_BYTES / 1048576}MB 拉流 ${PULLERS} 路")
             } catch (t: Throwable) {
                 Log.e(TAG, "共享读缓存启动失败：${t.javaClass.simpleName}: ${t.message}")
             }
         }
     }
 
-    /**
-     * 把上游地址改写为本机中转地址；未开启或启动失败时原样返回。
-     * 只改 http(s) 直链，其它（content://、本地文件）不碰。
-     */
     fun rewrite(url: String): String {
         if (!enabled() || !started) return url
         if (!url.startsWith("http://") && !url.startsWith("https://")) return url
-        val enc = URLEncoder.encode(url, "UTF-8")
-        return "http://127.0.0.1:$PORT/stream?url=$enc"
+        return "http://127.0.0.1:$PORT/stream?url=" + URLEncoder.encode(url, "UTF-8")
     }
 
-    /**
-     * 跳转预热 / 换片清空：这一版**刻意保持空实现**。
-     *
-     * 父亲 2026-11-18 实测结论：刚加中转的这一版最好用（r1445）。
-     * 后来加的前视预取、跳转并发预热、按位置清空，都把播放改坏过，
-     * 所以对外接口留着（调用点不用改），行为回到"读到多少存多少、缺块现取"。
-     */
-    fun warm(url: String, targetSec: Double, durationSec: Double) = Unit
+    /** 跳转提示：把这个目标当成新起点（往前跳=丢前面的，往回=全清） */
+    fun warm(url: String, targetSec: Double, durationSec: Double) {
+        if (!enabled() || !started) return
+        if (durationSec <= 0.0 || targetSec < 0.0) return
+        val inner = unwrap(url) ?: return
+        thread(isDaemon = true) {
+            val total = totalSize(inner)
+            if (total <= 0L) return@thread
+            val idx = ((targetSec / durationSec).coerceIn(0.0, 1.0) * total / SEG).toLong()
+            seekTo(inner, idx, "跳转到 ${"%.0f".format(targetSec)}s")
+        }
+    }
 
-    fun clearAll(why: String) = Unit
+    /** 换片/换集/切片：整块清空 */
+    fun clearAll(why: String) {
+        synchronized(lock) {
+            val dir = cacheDir
+            if (dir != null) for (k in avail.keys.toList()) File(dir, "$k.seg").delete()
+            avail.clear()
+            used = 0
+        }
+        curUrl = null
+        writeNext = 0
+        baseIdx = 0
+        connPos.clear()
+        Log.i(TAG, "缓存已清空：$why")
+    }
 
-    fun stats(): String = "命中=${hits.get()} 回源=${misses.get()} 缓存=${used / 1048576}MB 上游=${upstreamBytes.get() / 1048576}MB"
+    fun stats(): String =
+        "命中=${hits.get()} 回源=${misses.get()} 缓存=${used / 1048576}MB 上游=${upstreamBytes.get() / 1048576}MB"
 
-    // ---------------- 服务端 ----------------
+    // ---------------- HTTP 服务 ----------------
 
     private fun acceptLoop() {
         while (true) {
@@ -108,6 +139,7 @@ object SharedReadCache {
     }
 
     private fun handle(socket: Socket) {
+        val connId = connSeq.incrementAndGet()
         try {
             socket.use { sk ->
                 val input = sk.getInputStream().bufferedReader()
@@ -142,13 +174,15 @@ object SharedReadCache {
                     writeHeaders(out, 400, "Bad Request", "text/plain", 0, null)
                     return
                 }
-                serveStream(upstream, rangeHeader, out)
+                serveStream(upstream, rangeHeader, connId, out)
             }
         } catch (_: Throwable) {
+        } finally {
+            connPos.remove(connId)
         }
     }
 
-    private fun serveStream(upstream: String, rangeHeader: String?, out: OutputStream) {
+    private fun serveStream(upstream: String, rangeHeader: String?, connId: Int, out: OutputStream) {
         val total = totalSize(upstream)
         if (total <= 0L) {
             writeHeaders(out, 502, "Bad Gateway", "text/plain", 0, null)
@@ -165,33 +199,228 @@ object SharedReadCache {
             writeHeaders(out, 416, "Range Not Satisfiable", "text/plain", 0, null)
             return
         }
+
+        val wantIdx = start / SEG
+        if (curUrl != upstream) {
+            /* 换了内容：清空重来 */
+            clearAll("换内容")
+            curUrl = upstream
+            writeNext = wantIdx
+            baseIdx = wantIdx
+        } else {
+            val lastKeep = baseIdx + maxOf(0L, avail.size.toLong()) - 1
+            when {
+                wantIdx < baseIdx -> seekTo(upstream, wantIdx, "后退到更早位置")
+                wantIdx > lastKeep + 8 -> seekTo(upstream, wantIdx, "快进到后面")
+            }
+        }
+        connPos[connId] = wantIdx
+
         writeHeaders(out, 206, "Partial Content", "application/octet-stream", end - start + 1,
             "bytes $start-$end/$total")
 
         var pos = start
+        val buf = ByteArray(64 * 1024)
+        var lastProgress = System.currentTimeMillis()
         while (pos <= end) {
-            val idx = pos / BLOCK
-            val off = pos % BLOCK
-            val key = keyOf(upstream, idx)
-            val f = fileFor(key) ?: fetchBlock(upstream, idx, total) ?: break
-            f.inputStream().use { ins ->
-                ins.skip(off)
-                var remain = minOf(BLOCK - off, end - pos + 1)
-                val buf = ByteArray(64 * 1024)
-                while (remain > 0) {
-                    val n = ins.read(buf, 0, minOf(buf.size.toLong(), remain).toInt())
-                    if (n <= 0) break
-                    out.write(buf, 0, n)
-                    pos += n
-                    remain -= n
+            val idx = pos / SEG
+            val off = pos % SEG
+            val have = synchronized(lock) { avail[idx] ?: 0L }
+            if (have > off) {
+                val dir = cacheDir ?: break
+                val f = File(dir, "$idx.seg")
+                if (!f.exists()) {
+                    /* 被回收了：等它重拉 */
+                    Thread.sleep(20)
+                    continue
                 }
+                val n = minOf(have - off, end - pos + 1, buf.size.toLong()).toInt()
+                val raf = RandomAccessFile(f, "r")
+                try {
+                    raf.seek(off)
+                    val got = raf.read(buf, 0, n)
+                    if (got <= 0) {
+                        Thread.sleep(20)
+                        continue
+                    }
+                    out.write(buf, 0, got)
+                    pos += got
+                    lastProgress = System.currentTimeMillis()
+                    connPos[connId] = pos / SEG
+                } finally {
+                    raf.close()
+                }
+            } else {
+                /* 数据还没到：等拉流线程写进来（超时即断开，让客户端重试） */
+                if (System.currentTimeMillis() - lastProgress > 30000) break
+                Thread.sleep(15)
             }
         }
         out.flush()
     }
 
-    /** 探总长度：Range: bytes=0-0 + 读 Content-Range */
+    // ---------------- 拉流（唯一的网盘读取者） ----------------
+
+    private fun pullLoop() {
+        while (true) {
+            try {
+                val url = curUrl
+                if (url == null) {
+                    Thread.sleep(50)
+                    continue
+                }
+                val seg = SEG
+                val total = totalSize(url)
+                if (total <= 0L) {
+                    Thread.sleep(200)
+                    continue
+                }
+                val totalSegs = (total + seg - 1) / seg
+
+                /* 缓存满了就停手，等 GC 腾出空间 */
+                val full = synchronized(lock) { used >= CAPACITY_BYTES * 95 / 100 }
+                if (full) {
+                    Thread.sleep(100)
+                    continue
+                }
+
+                val idx: Long = synchronized(this) {
+                    if (writeNext >= totalSegs) -1L
+                    else {
+                        val i = writeNext
+                        writeNext = i + 1
+                        i
+                    }
+                }
+                if (idx < 0L) {
+                    Thread.sleep(200)
+                    continue
+                }
+
+                val startByte = idx * seg
+                val wantLen = minOf(seg, total - startByte)
+                pullSegment(url, idx, startByte, wantLen)
+            } catch (t: Throwable) {
+                runCatching { Thread.sleep(200) }
+            }
+        }
+    }
+
+    /** 流式写入一段：读到多少就落盘多少，读侧立刻可用 */
+    private fun pullSegment(url: String, idx: Long, startByte: Long, wantLen: Long) {
+        val dir = cacheDir ?: return
+        val f = File(dir, "$idx.seg")
+        if (f.exists() && f.length() >= wantLen) return
+        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            setRequestProperty("Range", "bytes=$startByte-${startByte + wantLen - 1}")
+            setRequestProperty("User-Agent", UA)
+            connectTimeout = 20000
+            readTimeout = 60000
+        }
+        if (conn.responseCode !in 200..206) {
+            conn.disconnect()
+            return
+        }
+        misses.incrementAndGet()
+        var written = 0L
+        try {
+            conn.inputStream.use { ins ->
+                RandomAccessFile(f, "rw").use { raf ->
+                    raf.setLength(0)
+                    val buf = ByteArray(64 * 1024)
+                    while (written < wantLen) {
+                        val n = ins.read(buf, 0, minOf(buf.size.toLong(), wantLen - written).toInt())
+                        if (n <= 0) break
+                        raf.seek(written)
+                        raf.write(buf, 0, n)
+                        written += n
+                        synchronized(lock) {
+                            used += n
+                            avail[idx] = written
+                        }
+                        upstreamBytes.addAndGet(n.toLong())
+                    }
+                }
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "拉流中断 seg=$idx：${t.javaClass.simpleName}: ${t.message}")
+        } finally {
+            conn.disconnect()
+        }
+        if (written < wantLen) {
+            /* 没拉完：下次重拉这一段 */
+            synchronized(this) { if (writeNext > idx) writeNext = idx }
+        }
+    }
+
+    // ---------------- 回收 ----------------
+
+    /**
+     * 回收：只删"两个解码器都读过、并留一段余量"之前的段。
+     * mpv 与自管解码各占一个连接，取它们读位置里**较小**的那个当安全线。
+     */
+    private fun gcLoop() {
+        while (true) {
+            try {
+                Thread.sleep(1000)
+                val slow = connPos.values.minOrNull()
+                val base = baseIdx
+                val safe = when {
+                    slow == null -> -1L
+                    slow - MARGIN_SEGS > base -> slow - MARGIN_SEGS
+                    else -> -1L
+                }
+                if (safe > base) {
+                    var freed = 0L
+                    synchronized(lock) {
+                        val dir = cacheDir
+                        val keys = avail.keys.filter { it < safe }.sorted()
+                        for (k in keys) {
+                            val size = avail.remove(k) ?: continue
+                            used -= size
+                            freed += size
+                            if (dir != null) File(dir, "$k.seg").delete()
+                        }
+                    }
+                    baseIdx = safe
+                    if (freed > 0) Log.i(TAG, "回收：删到第 $safe 段之前（最慢读位置=$slow），释放 ${freed / 1048576}MB")
+                }
+            } catch (t: Throwable) {
+            }
+        }
+    }
+
+    /** 跳到某个段：往回退=全清；往前跳=丢掉前面的 */
+    private fun seekTo(url: String, idx: Long, why: String) {
+        val backward = idx < baseIdx
+        if (backward) {
+            clearAll("$why（往回退）")
+            curUrl = url
+            writeNext = idx
+            baseIdx = idx
+            Log.i(TAG, "缓存重置：$why → 从第 $idx 段重新拉")
+        } else {
+            synchronized(lock) {
+                val dir = cacheDir
+                val keys = avail.keys.filter { it < idx }.sorted()
+                for (k in keys) {
+                    val size = avail.remove(k) ?: continue
+                    used -= size
+                    if (dir != null) File(dir, "$k.seg").delete()
+                }
+            }
+            baseIdx = idx
+            writeNext = idx
+            Log.i(TAG, "快进：丢掉第 $idx 段之前的数据（$why）")
+        }
+    }
+
+    // ---------------- 上游工具 ----------------
+
+    private val totalCache = ConcurrentHashMap<String, Long>()
+
     private fun totalSize(upstream: String): Long {
+        totalCache[upstream]?.let { return it }
         return try {
             val c = (URL(upstream).openConnection() as HttpURLConnection).apply {
                 setRequestProperty("Range", "bytes=0-0")
@@ -202,79 +431,18 @@ object SharedReadCache {
             c.responseCode
             val cr = c.getHeaderField("Content-Range") ?: ""
             c.disconnect()
-            Regex("/(\\d+)").find(cr)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+            val v = Regex("/(\\d+)").find(cr)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+            if (v > 0L) totalCache[upstream] = v
+            v
         } catch (t: Throwable) {
             0L
         }
     }
 
-    private fun keyOf(upstream: String, idx: Long): String =
-        Integer.toHexString(upstream.hashCode()) + "-" + idx
-
-    private fun fileFor(key: String): File? {
-        synchronized(lock) {
-            val dir = cacheDir ?: return null
-            val f = File(dir, "$key.blk")
-            if (!f.exists()) return null
-            // LRU：移到末尾
-            index.remove(key)
-            index[key] = f.length()
-            hits.incrementAndGet()
-            return f
-        }
-    }
-
-    /** 取一块并入库；同一块并发只回源一次 */
-    private fun fetchBlock(upstream: String, idx: Long, total: Long): File? {
-        val key = keyOf(upstream, idx)
-        val mine = synchronized(inflight) { inflight.putIfAbsent(key, Object()) == null }
-        if (!mine) {
-            // 别人在拉：等它落地
-            val deadline = System.currentTimeMillis() + 30000
-            while (System.currentTimeMillis() < deadline) {
-                fileFor(key)?.let { return it }
-                Thread.sleep(50)
-            }
-            return null
-        }
-        try {
-            misses.incrementAndGet()
-            val start = idx * BLOCK
-            val end = minOf(start + BLOCK - 1, total - 1)
-            val c = (URL(upstream).openConnection() as HttpURLConnection).apply {
-                setRequestProperty("Range", "bytes=$start-$end")
-                setRequestProperty("User-Agent", UA)
-                connectTimeout = 20000
-                readTimeout = 30000
-            }
-            if (c.responseCode !in 200..206) {
-                c.disconnect()
-                return null
-            }
-            val data = c.inputStream.use { it.readBytes() }
-            c.disconnect()
-            if (data.isEmpty()) return null
-            val dir = cacheDir ?: return null
-            val f = File(dir, "$key.blk")
-            f.writeBytes(data)
-            upstreamBytes.addAndGet(data.size.toLong())
-            synchronized(lock) {
-                index[key] = data.size.toLong()
-                used += data.size
-                while (used > CAPACITY_BYTES && index.size > 1) {
-                    val eldest = index.keys.first()
-                    val size = index.remove(eldest) ?: 0L
-                    used -= size
-                    File(dir, "$eldest.blk").delete()
-                }
-            }
-            return f
-        } catch (t: Throwable) {
-            Log.w(TAG, "回源失败 idx=$idx：${t.javaClass.simpleName}: ${t.message}")
-            return null
-        } finally {
-            synchronized(inflight) { inflight.remove(key) }
-        }
+    private fun unwrap(url: String): String? {
+        if (!url.startsWith("http://127.0.0.1:")) return url
+        val q = url.substringAfter("url=", "")
+        return if (q.isEmpty()) null else URLDecoder.decode(q, "UTF-8")
     }
 
     private fun writeHeaders(out: OutputStream, code: Int, msg: String, type: String, len: Long, contentRange: String?) {
