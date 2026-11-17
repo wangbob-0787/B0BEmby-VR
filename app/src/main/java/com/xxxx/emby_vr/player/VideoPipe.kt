@@ -685,7 +685,13 @@ class VideoPipe {
         return try {
             ex.seekTo((targetSec * 1_000_000.0).toLong(), MediaExtractor.SEEK_TO_CLOSEST_SYNC)
             c.flush()
-            /* 重定基准：跳到新处后第一帧重新定 offset，预卷丢弃重新计 */
+            /*
+             * 重定基准：跳到新处后第一帧重新定 offset，预卷丢弃重新计。
+             * **必须同时把 audioStartSec 换成新目标**：否则预卷判断仍拿老起点比，
+             * 新位置解出来的每一帧都被当成"早于起点的预滚帧"丢掉 —— 现场表现是
+             * 后退到片头后声音回来了、画面永远不来（2026-11-17 实测）。
+             */
+            audioStartSec = targetSec
             originPts = -1.0
             appliedOffset = Double.NaN
             firstFrameShown = false
