@@ -1061,6 +1061,14 @@ class MainActivity : ComponentActivity() {
 
     /** 打开某个菜单（对齐到触发它的那颗按钮正上方） */
     private fun openMenu(kind: com.xxxx.emby_vr.panel.MenuKind, anchor: com.xxxx.emby_vr.panel.OsdButton) {
+        /*
+         * 打开字幕菜单前，先按"播放器实际在用的那条轨"回填勾选。
+         * 父亲 2026-11-18：起播时内嵌字幕已经上屏，但菜单里一项都没勾 ——
+         * 菜单显示的是我们记的选择，不是实际在用的轨，两边必须对齐。
+         */
+        if (kind == com.xxxx.emby_vr.panel.MenuKind.SUBTITLE) {
+            runCatching { syncSelectedSubtitleFromPlayer() }
+        }
         fillMenuData(kind)
         menuState.anchor = anchor
         menuState.kind = kind
@@ -5295,6 +5303,20 @@ class MainActivity : ComponentActivity() {
                 selectedSubtitleIndex =
                     if (picked != null && picked == selectedSubtitleIndex) null else picked
                 Log.i(TAG, "字幕 → ${selectedSubtitleIndex ?: "关闭"}（菜单保持打开）")
+                /*
+                 * 取消勾选必须**立刻**把屏幕上的字幕清掉（父亲 2026-11-18：
+                 * 取消后字幕停在画面上不消失）。
+                 * 两条渲染路都要处理：内核自己渲染的（sid=no）与我们自绘的那层（清 cue）。
+                 * 只在某一条分支里清，另一条就会留下残影。
+                 */
+                if (selectedSubtitleIndex == null) {
+                    runCatching { applyKernelSubtitle(null) }
+                    subtitleCues = emptyList()
+                    subtitleCueStream = null
+                    subtitleNow = ""
+                    runCatching { danmakuView?.setSubtitle("") }
+                    Log.i(TAG, "字幕关闭：已清屏上文本并让内核 sid=no")
+                }
                 /*
                  * 记住这次选择（父亲 2026-10-10 定）：下次从海报墙起播这部片/这一集，
                  * 直接按它来决定"要不要走内核"，不用再点一次字幕菜单。
