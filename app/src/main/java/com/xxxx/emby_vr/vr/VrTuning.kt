@@ -282,8 +282,8 @@ object VrTuning {
      */
     @Volatile var relayParallel: Int = 2
     @Volatile var relayPrefetch: Int = 2
-    /** 中转主动往前铺多少兆（0=不铺）。默认 64MB ≈ 40 秒 @14Mbps */
-    @Volatile var relayAheadMb: Int = 64
+    /** 中转主动往前铺多少兆（0=不铺）。默认 400 = 一直铺到缓存上限 */
+    @Volatile var relayAheadMb: Int = 400
 
     /**
      * 弹幕画布宽度（2026-10-14 父亲定）：默认 **1920**，与银幕本身的 1920 宽对齐。
