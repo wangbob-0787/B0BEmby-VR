@@ -329,11 +329,15 @@ object SharedReadCache {
     /** 每个上游地址当前被读到的字节位置（用于"往前铺"） */
     private val lastReadByte = ConcurrentHashMap<String, Long>()
 
+    /** 每个上游地址的"填充游标"：已经铺到第几块 */
+    private val fillCursor = ConcurrentHashMap<String, Int>()
+
     /**
-     * 前方填充线程：按"当前读到哪"持续往前取，默认铺 64MB（约 40 秒 @14Mbps）。
+     * 前方填充线程：一直往前铺，直到缓存用满（上限 400MB），每拍只取一块。
      *
-     * 父亲 2026-11-18 指出：缓存要缓存**还没读的数据**，只缓存读过的等于没有缓冲。
-     * 这条线程就是让读取变成"总有现成数据在本地"，网络抖动被这一窗口吸收。
+     * 父亲 2026-11-18：「它应该一直往前铺，直到把 400 兆占满」——
+     * 只缓存读过的等于没有缓冲；铺满之后解码器读到的数据永远在本地，网盘抖动被这层吃掉。
+     * 每拍一块（16MB/1.2s ≈ 13MB/s），不跟解码器抢带宽；缓存到 95% 就停手，等读走再补。
      */
     private fun startFiller() {
         thread(name = "relay-filler", isDaemon = true) {
@@ -343,27 +347,30 @@ object SharedReadCache {
                 } catch (t: InterruptedException) {
                     break
                 }
-                val aheadBytes = com.xxxx.emby_vr.vr.VrTuning.relayAheadMb.toLong() * 1024 * 1024
-                if (aheadBytes <= 0) continue
+                if (com.xxxx.emby_vr.vr.VrTuning.relayAheadMb <= 0) continue
                 for ((url, pos) in lastReadByte) {
                     if (pos < 0) continue
                     val total = runCatching { totalSize(url) }.getOrDefault(0L)
                     if (total <= 0L) continue
-                    val from = pos / BLOCK
-                    val span = ((aheadBytes + BLOCK - 1) / BLOCK).toInt().coerceIn(1, 16)
-                    for (k in 0 until span) {
-                        val idx = from + k
-                        if (idx * BLOCK >= total) break
-                        val key = keyOf(url, idx)
-                        if (fileFor(key) != null) continue
+                    val totalBlocks = ((total + BLOCK - 1) / BLOCK).toInt()
+                    val readBlock = (pos / BLOCK).toInt()
+                    val full = synchronized(lock) { used >= CAPACITY_BYTES * 95 / 100 }
+                    if (full) continue
+                    var cur = fillCursor.getOrPut(url) { readBlock }
+                    if (cur < readBlock) cur = readBlock
+                    if (cur >= totalBlocks) continue
+                    val key = keyOf(url, cur.toLong())
+                    if (fileFor(key) == null) {
                         val mine = synchronized(inflight) { inflight.putIfAbsent(key, Object()) == null }
-                        if (!mine) continue
-                        try {
-                            fetchBlock(url, idx, total)
-                        } finally {
-                            synchronized(inflight) { inflight.remove(key) }
+                        if (mine) {
+                            try {
+                                fetchBlock(url, cur.toLong(), total)
+                            } finally {
+                                synchronized(inflight) { inflight.remove(key) }
+                            }
                         }
                     }
+                    fillCursor[url] = (cur + 1).coerceAtMost(totalBlocks)
                 }
             }
         }
