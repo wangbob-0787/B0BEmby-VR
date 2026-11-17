@@ -582,8 +582,31 @@ class VideoPipe {
                 }
                 return finish(false)
             }
-            /* 落后超过阈值：丢帧追上（阈值 = P95+20ms，初值 80ms） */
-            ahead < -DROP_BEHIND_SEC -> return finish(false)
+            /*
+             * 落后超过阈值：丢帧追上（阈值 = P95+20ms，初值 80ms）。
+             *
+             * ★ 落后方向也必须做失步兜底（2026-11-17 实测漏了）：
+             * 4K P5 解码≈实时速率，一旦落后几秒，靠丢帧永远追不回来 ——
+             * 实测 decoded 卡在 89 不动、released 一路涨（每帧都丢）、nexus 涨到 17 秒，
+             * 画面冻在旧帧。原来只有"超前"方向记失步，"落后"方向一路丢到死也不重启。
+             */
+            ahead < -DROP_BEHIND_SEC -> {
+                val nowMs = android.os.SystemClock.elapsedRealtime()
+                if (ahead < -0.500) {
+                    if (desyncSinceMs == 0L) desyncSinceMs = nowMs
+                    if (nowMs - desyncSinceMs >= 3000L) {
+                        Log.w(TAG, "落后持续 3s（偏差 ${"%.2f".format(ahead)}s）→ 请求从 ${audioSec}s 重启")
+                        desyncSinceMs = 0L
+                        codec.releaseOutputBuffer(outIdx, false)
+                        releasedFrames++
+                        runCatching { onNeedRestart?.invoke(audioSec) }
+                        return true
+                    }
+                } else {
+                    desyncSinceMs = 0L
+                }
+                return finish(false)
+            }
         }
 
         /* 区间内 → 上屏 */
