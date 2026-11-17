@@ -8627,6 +8627,21 @@ class MainActivity : ComponentActivity() {
             pipe.requestSeek(sec)
             runCatching { m.setPaused(false) }
             runCatching { m.setMute(false) }
+            /*
+             * 跳转后的状态核对：界面显示"在播"但实际停着、需要手点一次才开始
+             * （父亲 2026-11-18 实测）。先把真实值打出来，再决定补偿动作。
+             */
+            ui.postDelayed({
+                val p2 = runCatching { m.isPaused() }.getOrNull()
+                val m2 = runCatching { m.isMuted() }.getOrNull()
+                val pos = runCatching { m.positionExtrapolated() }.getOrNull()
+                Log.i(TAG, "跳转核对|paused=$p2 muted=$m2 位置=${pos?.let { "%.1f".format(it) }} 目标=${"%.1f".format(sec)}")
+                if (p2 == true) {
+                    runCatching { m.setPaused(false) }
+                    runCatching { m.setMute(false) }
+                    Log.i(TAG, "跳转核对：内核仍在暂停 → 已自动续播")
+                }
+            }, 400)
             return
         }
         pipePausedForRebuild = true
