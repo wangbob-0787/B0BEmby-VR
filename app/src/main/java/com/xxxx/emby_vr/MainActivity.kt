@@ -3773,12 +3773,16 @@ class MainActivity : ComponentActivity() {
      *
      * ① 走**静态**属性接口：清场可能发生在 `MpvBackend(this).also{...}` 内部，
      *    那时实例还是 null，用 `mpvBackend?.` 会静默跳过。
-     * ② 失败必须留痕：无日志的 try 会让"少恢复一项"完全看不出来，
-     *    而少一项的后果是下一部片黑屏 / 无声 / 偏色。
+     * ② 留痕由 setOptionRuntime 内层负责；少恢复一项的后果是下一部片黑屏 / 无声 / 偏色，
+     *    所以这里宁可多写一行显式调用，也不用 `?.` 让它可能被静默跳过。
      */
     private fun restoreOption(name: String, value: String) {
-        runCatching { com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime(name, value) }
-            .onFailure { Log.w(TAG, "清场：恢复 $name=$value 失败 ${it.message}") }
+        /*
+         * 不在这里 catch：setOptionRuntime 内部对每个属性自己 try+catch 并 Log.w
+         * （"内核属性设置失败 …"），异常不会抛到这里，写 onFailure 是永不执行的死分支。
+         * 封装的价值是"改一处、12 处生效"，以及让读者一眼看出这些值是清场恢复、不是起播设置。
+         */
+        com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime(name, value)
     }
 
     private fun playWebStream(obj: org.json.JSONObject) {
@@ -7147,6 +7151,13 @@ class MainActivity : ComponentActivity() {
         }
         player = null
         // mpv 内核同样要收干净（父亲 2026-10-08）：否则下一次起播会是两条内核抢同一块画面
+        /*
+         * 静音必须在停内核**之前**还回去（施工图 §4.2.1 与 §4.4 ⑨）。
+         * 起播借了 mute=yes，凡没走到「首帧上屏」的收场路径都得还：
+         * mpv 实例进程级只建一次（全仓无 destroy），留着会让下一部片一起静音；
+         * 靠"下次起播清场"兜是错的 —— 那条路自己也可能失败。
+         */
+        restoreOption("mute", "no")
         mpvBackend?.let {
             runCatching { it.stop() }
         }
