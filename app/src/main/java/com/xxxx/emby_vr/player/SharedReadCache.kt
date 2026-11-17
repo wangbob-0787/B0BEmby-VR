@@ -79,6 +79,7 @@ object SharedReadCache {
                 server = ServerSocket(PORT, 8, java.net.InetAddress.getByName("127.0.0.1"))
                 started = true
                 thread(name = "relay-accept", isDaemon = true) { acceptLoop() }
+                startFiller()
                 Log.i(TAG, "共享读缓存已启动 127.0.0.1:$PORT 上限 ${CAPACITY_BYTES / 1048576}MB 目录 ${cacheDir?.absolutePath}")
             } catch (t: Throwable) {
                 Log.e(TAG, "共享读缓存启动失败：${t.javaClass.simpleName}: ${t.message}")
@@ -224,6 +225,7 @@ object SharedReadCache {
             "bytes $start-$end/$total")
 
         var pos = start
+        lastReadByte[upstream] = start
         while (pos <= end) {
             val idx = pos / BLOCK
             val off = pos % BLOCK
@@ -323,6 +325,49 @@ object SharedReadCache {
     private val readers = ConcurrentHashMap<String, SeqReader>()
 
     private fun readerFor(url: String): SeqReader = readers.getOrPut(url) { SeqReader(url) }
+
+    /** 每个上游地址当前被读到的字节位置（用于"往前铺"） */
+    private val lastReadByte = ConcurrentHashMap<String, Long>()
+
+    /**
+     * 前方填充线程：按"当前读到哪"持续往前取，默认铺 64MB（约 40 秒 @14Mbps）。
+     *
+     * 父亲 2026-11-18 指出：缓存要缓存**还没读的数据**，只缓存读过的等于没有缓冲。
+     * 这条线程就是让读取变成"总有现成数据在本地"，网络抖动被这一窗口吸收。
+     */
+    private fun startFiller() {
+        thread(name = "relay-filler", isDaemon = true) {
+            while (true) {
+                try {
+                    Thread.sleep(1200)
+                } catch (t: InterruptedException) {
+                    break
+                }
+                val aheadBytes = com.xxxx.emby_vr.vr.VrTuning.relayAheadMb.toLong() * 1024 * 1024
+                if (aheadBytes <= 0) continue
+                for ((url, pos) in lastReadByte) {
+                    if (pos < 0) continue
+                    val total = runCatching { totalSize(url) }.getOrDefault(0L)
+                    if (total <= 0L) continue
+                    val from = pos / BLOCK
+                    val span = ((aheadBytes + BLOCK - 1) / BLOCK).toInt().coerceIn(1, 16)
+                    for (k in 0 until span) {
+                        val idx = from + k
+                        if (idx * BLOCK >= total) break
+                        val key = keyOf(url, idx)
+                        if (fileFor(key) != null) continue
+                        val mine = synchronized(inflight) { inflight.putIfAbsent(key, Object()) == null }
+                        if (!mine) continue
+                        try {
+                            fetchBlock(url, idx, total)
+                        } finally {
+                            synchronized(inflight) { inflight.remove(key) }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     private fun keyOf(upstream: String, idx: Long): String =
         Integer.toHexString(upstream.hashCode()) + "-" + idx

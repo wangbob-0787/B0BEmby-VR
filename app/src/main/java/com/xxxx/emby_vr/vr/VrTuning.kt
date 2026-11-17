@@ -282,6 +282,8 @@ object VrTuning {
      */
     @Volatile var relayParallel: Int = 2
     @Volatile var relayPrefetch: Int = 2
+    /** 中转主动往前铺多少兆（0=不铺）。默认 64MB ≈ 40 秒 @14Mbps */
+    @Volatile var relayAheadMb: Int = 64
 
     /**
      * 弹幕画布宽度（2026-10-14 父亲定）：默认 **1920**，与银幕本身的 1920 宽对齐。
@@ -727,6 +729,10 @@ object VrTuning {
         raw["relay_prefetch"]?.toIntOrNull()?.let {
             val v = it.coerceIn(0, 8)
             if (v != relayPrefetch) { relayPrefetch = v; applied += "中转前视=$v 块" }
+        }
+        raw["relay_ahead_mb"]?.toIntOrNull()?.let {
+            val v = it.coerceIn(0, 400)
+            if (v != relayAheadMb) { relayAheadMb = v; applied += "中转前铺=${v}MB" }
         }
         raw["relay"]?.toIntOrNull()?.let {
             val v = if (it == 1) 1 else 0
