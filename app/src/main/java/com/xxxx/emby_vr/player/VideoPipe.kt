@@ -69,16 +69,6 @@ class VideoPipe {
      */
     @Volatile private var clockRealProvider: (() -> Double)? = null
 
-    /** 连续重启计数：≥3 次仍未收敛就停手（结束解码循环），宁可停住也不无限跳 */
-    private var restartCount = 0
-    /**
-     * 自上次重启以来连续上屏的帧数。收敛判据用**帧数**不用时间（丫头 2026-11-17 定）：
-     * 实测重建要 6~9 秒才出第一帧，用"10 秒没重启就清零"会在重启后永远清不掉，
-     * 三次网络抖动就能把这部片永久锁死。
-     */
-    private var shownSinceRestart = 0
-    /** "追锚"次数：首帧落后过多就按当前主时钟再解一次，最多 2 次 */
-    private var catchUpCount = 0
 
     /**
      * 是否正在被人为停止。
@@ -132,6 +122,8 @@ class VideoPipe {
     /** 累计取帧成功次数（健康行用） */
     @Volatile var dequeuedFrames = 0L
         private set
+    /** 最近一次上屏的时刻（elapsedRealtime）——没有主时钟时按墙钟自走用 */
+    @Volatile private var lastShownAtMs = 0L
     /** 最近一次上屏帧的换算位置（秒；-1 = 还没上过屏），健康行算 nexus 用 */
     @Volatile var lastShownPts = -1.0
         private set
@@ -269,9 +261,6 @@ class VideoPipe {
         this.clockAgeProvider = clockAgeProvider
         this.clockRealProvider = clockReal
         stopping = false
-        restartCount = 0
-        shownSinceRestart = 0
-        catchUpCount = 0
         this.onFirstFrame = onFirstFrame
         this.onDoviParams = onDoviParams
         this.onEos = onEos
@@ -356,6 +345,12 @@ class VideoPipe {
                 priority = Thread.NORM_PRIORITY + 2
                 start()
             }
+            /*
+             * 不再"预热三帧"（2026-11-17 父亲定：约束一条条加，先把花活删干净）。
+             * 线程起来即可宣告就绪，第一帧解出就上屏；颜色由渲染层等 RPU 参数到达后自己切。
+             */
+            preheated = true
+            runCatching { onPreheatReady?.invoke(0L, lastDovi != null) }
             true
         } catch (t: Throwable) {
             lastError = "${t.javaClass.simpleName}: ${t.message}"
@@ -390,7 +385,7 @@ class VideoPipe {
              * 这样预热完可以"先取一帧拿着"，放行那一刻直接上屏 —— 不再付出"现解一帧 4K"的 500ms
              * （2026-11-17 实测：放行→上屏 505ms，声音会先出来半秒）。
              */
-            if (preheated && heldIdx < 0 && holdGate?.invoke() == true) {
+            if (heldIdx < 0 && holdGate?.invoke() == true) {
                 try {
                     Thread.sleep(5)
                 } catch (t: InterruptedException) {
@@ -481,23 +476,27 @@ class VideoPipe {
      * 所有分支都**恰好 release 一次**：预热帧归还不上屏；时钟无效时**持有这一帧原地等**、
      * 不再取下一帧；节拍到了才上屏。
      */
+    /**
+     * 处理一帧输出缓冲（调用方已把 outIdx 记进 `heldIdx`）。返回 true = 要求解码循环结束。
+     *
+     * **2026-11-17 父亲定：约束一条条加，先把花活删干净。** 现在只有两条规则：
+     *  ① 主时钟可用时，偏差在 ±0.5 秒内 → 照常上屏（不做"超前等/落后丢"的分档）；
+     *  ② 偏差超过 0.5 秒 → **在同一个解码器里跳过去**（extractor.seekTo + codec.flush），
+     *     不重建解码器、不空转丢帧。
+     * 时钟不可用（没有读数）时**不压画面**：按最后位置 + 墙钟自己走，照常出帧。
+     */
     private fun outputFrame(codec: MediaCodec, info: MediaCodec.BufferInfo, outIdx: Int): Boolean {
         val ptsRaw = info.presentationTimeUs / 1_000_000.0
-        /* 取到帧就清零"连续取不到"的计数（健康行的 tryAgainStreak 只作可见性） */
         tryAgainStreak = 0L
 
         fun finish(render: Boolean): Boolean {
             codec.releaseOutputBuffer(outIdx, render)
             releasedFrames++
-            /* decodedFrames 只统计真正上屏的帧：预热三帧、预卷丢弃、丢帧追赶都不算 */
-            if (render) decodedFrames++
             if (render) {
-                /* 连续出帧 ≥60 帧（约 2.5 秒画面）→ 视为收敛，重启计数清零 */
-                shownSinceRestart++
-                if (restartCount > 0 && shownSinceRestart >= 60) restartCount = 0
+                decodedFrames++
                 lastShownPts = ptsRaw + appliedOffset
+                lastShownAtMs = android.os.SystemClock.elapsedRealtime()
                 firstFrameShown = true
-                desyncSinceMs = 0L
                 if (!showLogged) {
                     showLogged = true
                     runCatching { onFirstFrame?.invoke() }
@@ -506,7 +505,7 @@ class VideoPipe {
             return info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
         }
 
-        /* 预卷：早于基准的帧一律丢，不上屏（§5 零点标定） */
+        /* 首个可用帧定基准（预卷：早于起点的帧丢弃，不上屏） */
         if (originPts < 0.0 && ptsRaw < audioStartSec) {
             prerollDropped++
             return finish(false)
@@ -517,29 +516,7 @@ class VideoPipe {
             Log.i(TAG, "零点标定：audioStart=$audioStartSec origin=$originPts offset=$appliedOffset 预卷丢弃=$prerollDropped")
         }
 
-        /*
-         * 预热三帧（§4.2.1 ③）：连解三帧，**每帧解出即归还、不上屏，一帧都不留**。
-         * 只记首帧 pts、三帧跨度、RPU 是否已解出 —— 颜色不依赖持有首帧（RPU 来自输入端）。
-         */
-        if (!preheated) {
-            if (preheatFirstPts < 0.0) preheatFirstPts = ptsRaw
-            preheatLastPts = ptsRaw
-            preheatCount++
-            val done = preheatCount >= preheatFrames
-            if (done) {
-                val spanMs = ((preheatLastPts - preheatFirstPts) * 1000.0).toLong()
-                val rpuReady = lastDovi != null
-                preheated = true
-                Log.i(TAG, "READY 三帧跨度=${spanMs}ms RPU=${if (rpuReady) "就绪" else "未就绪"}（预热 $preheatCount 帧已全部归还）")
-                runCatching { onPreheatReady?.invoke(spanMs, rpuReady) }
-            }
-            return finish(false)
-        }
-
-        /*
-         * 预热已完成但还没放行：**持有这一帧原地等**（I3 允许：持有期间不取帧），
-         * 门一开就上屏。这样"放行→上屏"压到一帧内。
-         */
+        /* 起播放行闸门：门关着就持这一帧等（I1/I3），门一开立刻上屏 */
         if (!firstFrameShown && holdGate?.invoke() == true) {
             while (running.get() && holdGate?.invoke() == true) {
                 try {
@@ -550,162 +527,61 @@ class VideoPipe {
                 }
             }
             if (!running.get()) return finish(false)
-            /*
-             * 首帧落后太多就**追过去**，不许把旧画面贴到"现在"（丫头 2026-11-17 定）：
-             * 重锚会把 6~10 秒前的内容打上当前时间戳 → 声音和口型差十秒，比冻住更难查。
-             * 规则：落后 ≤1s 照常上屏；>1s 立刻按当前主时钟位置再 seek 一次重解（第二次快得多），
-             * 最多迭代 2 次，仍追不上才落到失步兜底（3 秒那条）。
-             */
-            val realNow = clockRealProvider?.invoke() ?: -1.0
-            if (realNow >= 0.0) {
-                val lag = realNow - (ptsRaw + appliedOffset)
-                if (lag > 1.0 && catchUpCount < 2) {
-                    catchUpCount++
-                    Log.w(
-                        TAG,
-                        "追锚|落后=${(lag * 1000).toInt()}ms|第${catchUpCount}次 → 按当前主时钟 ${"%.2f".format(realNow)}s 重解",
-                    )
-                    finish(false)
-                    runCatching { onNeedRestart?.invoke(realNow) }
-                    return true
-                }
-                if (lag <= 1.0) catchUpCount = 0
-            }
             return finish(true)
         }
 
-        /* 放行后：先看时钟。时钟无效时**持有这一帧原地等，不取下一帧**（I3） */
-        var audioSec = clockNow()
-        if (audioSec < 0.0) {
-            droppedNoClock++
-            if (droppedNoClock % 100 == 1) {
-                /*
-                 * 卡顿真因要靠这三个量判（丫头 2026-11-17 要求）：窗口时长、窗口内累计增量、与主时钟的偏差。
-                 * 只打"挂起中"看不出是时钟判严了、还是画面真落后。
-                 */
-                val (winMs, winDelta) = clockProbe?.invoke() ?: (0L to 0.0)
-                Log.w(
-                    TAG,
-                    "时钟未走，画面挂起中（持有 1 帧等待，已等 $droppedNoClock 次）" +
-                        " 窗口=${winMs}ms 窗口增量=${"%.3f".format(winDelta)}s" +
-                        " 本帧偏差=${"%.3f".format((ptsRaw + appliedOffset) - clockProvider?.invoke()!!)}s" +
-                        " 采样年龄=${clockAgeProvider?.invoke() ?: -1L}ms",
-                )
-            }
-            while (running.get() && clockNow() < 0.0) {
-                try {
-                    Thread.sleep(20)
-                } catch (t: InterruptedException) {
-                    Thread.currentThread().interrupt()
-                    break
-                }
-            }
-            droppedNoClock = 0
-            if (!running.get()) return finish(false)
-            audioSec = clockNow()
+        /* 两条规则：偏差 ≤0.5s 上屏；>0.5s 在同一解码器里跳过去 */
+        val clock = clockNowOrWall()
+        val ahead = (ptsRaw + appliedOffset) - clock
+        if (ahead > 0.5 || ahead < -0.5) {
+            val target = clock
+            Log.w(
+                TAG,
+                "内部跳转|偏差=${(ahead * 1000).toInt()}ms|目标=${"%.2f".format(target)}s（不重建解码器）",
+            )
+            val ok = seekInPlace(target)
+            finish(false)
+            return !ok     /* 同实例跳成功就继续循环；失败才结束 */
         }
-
-        val ptsRef = ptsRaw + appliedOffset
-        val ahead = ptsRef - audioSec
-        when {
-            /* 超前 40ms~300ms：按差值等待（分段可中断，每段检查 running）；期间持有 1 帧 */
-            ahead > 0.040 && ahead < 0.300 -> {
-                var remainMs = ((ahead - 0.040) * 1000.0).toLong()
-                while (remainMs > 0 && running.get()) {
-                    val step = remainMs.coerceAtMost(20L)
-                    try {
-                        Thread.sleep(step)
-                    } catch (t: InterruptedException) {
-                        Thread.currentThread().interrupt()
-                        break
-                    }
-                    remainMs -= step
-                }
-                if (!running.get()) return finish(false)
-            }
-            /* 超前 ≥300ms：不等待，直接丢帧跳（等待会饿死解码器） */
-            ahead >= 0.300 -> {
-                val nowMs = android.os.SystemClock.elapsedRealtime()
-                if (ahead > 0.500) {
-                    if (desyncSinceMs == 0L) desyncSinceMs = nowMs
-                    if (nowMs - desyncSinceMs >= 3000L) {
-                        desyncSinceMs = 0L
-                        codec.releaseOutputBuffer(outIdx, false)
-                        releasedFrames++
-                        if (!requestRestart(ahead, nowMs)) return true   /* 停手：结束循环，不空转 */
-                        return true
-                    }
-                } else {
-                    desyncSinceMs = 0L
-                }
-                return finish(false)
-            }
-            /*
-             * 落后超过阈值：丢帧追上（阈值 = P95+20ms，初值 80ms）。
-             *
-             * ★ 落后方向也必须做失步兜底（2026-11-17 实测漏了）：
-             * 4K P5 解码≈实时速率，一旦落后几秒，靠丢帧永远追不回来 ——
-             * 实测 decoded 卡在 89 不动、released 一路涨（每帧都丢）、nexus 涨到 17 秒，
-             * 画面冻在旧帧。原来只有"超前"方向记失步，"落后"方向一路丢到死也不重启。
-             */
-            ahead < -DROP_BEHIND_SEC -> {
-                val nowMs = android.os.SystemClock.elapsedRealtime()
-                if (ahead < -0.500) {
-                    if (desyncSinceMs == 0L) desyncSinceMs = nowMs
-                    if (nowMs - desyncSinceMs >= 3000L) {
-                        desyncSinceMs = 0L
-                        codec.releaseOutputBuffer(outIdx, false)
-                        releasedFrames++
-                        if (!requestRestart(ahead, nowMs)) return true   /* 停手：结束循环，不空转 */
-                        return true
-                    }
-                } else {
-                    desyncSinceMs = 0L
-                }
-                return finish(false)
-            }
-        }
-
-        /* 区间内 → 上屏 */
         return finish(true)
     }
 
-    /** 预热三帧是否已完成（图 §4.2.1 ③）；看门狗观测用 */
-    fun isPreheated(): Boolean = preheated
-
     /**
-     * 请求重启（失步兜底）。两条硬约束（2026-11-17 丫头定）：
-     * ① 目标用**真实读数**不用外推（外推可以判，不许跳）；
-     * ② 连续重启 ≥3 次仍未收敛 → 停手，偏差打 ERROR，画面停在原位
-     *    （宁可停住让人看出坏了，也不要每几秒跳一次让人以为在动）。
+     * 在**同一个解码器**里跳到目标位置。
+     *
+     * 为什么不再重建解码器（2026-11-17 父亲定）：重建要重新打开流、重建 MediaCodec 并跳到关键帧，
+     * 实测 6~9 秒；而 flush + seek 是同一个解码器内的动作，几百毫秒级。
      */
-    private fun requestRestart(ahead: Double, nowMs: Long): Boolean {
-        val target = clockRealProvider?.invoke()?.takeIf { it >= 0.0 }
-            ?: clockProvider?.invoke()?.takeIf { it >= 0.0 }
-        if (target == null) {
-            /*
-             * 拿不到真实位置 = 没有可用的时钟参考。**结束解码循环**，不空转丢帧：
-             * 空转会让 CPU 满载、日志刷屏，还掩盖真实状态（宁可停住让人一眼看出坏了）。
-             * 不调 stop()，下次 seek/换片自然重建。
-             */
-            Log.e(TAG, "无时钟参考（拿不到真实位置），结束解码循环（偏差 ${"%.2f".format(ahead)}s）")
-            return false
+    private fun seekInPlace(targetSec: Double): Boolean {
+        val ex = extractor ?: return false
+        val c = decoder ?: return false
+        return try {
+            ex.seekTo((targetSec * 1_000_000.0).toLong(), MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+            c.flush()
+            /* 重定基准：跳到新处后第一帧重新定 offset，预卷丢弃重新计 */
+            originPts = -1.0
+            appliedOffset = Double.NaN
+            firstFrameShown = false
+            Log.i(TAG, "解码器内跳转完成 → ${"%.2f".format(targetSec)}s（未重建）")
+            true
+        } catch (t: Throwable) {
+            Log.e(TAG, "解码器内跳转失败：${t.javaClass.simpleName}: ${t.message}")
+            false
         }
-        if (restartCount >= 3) {
-            Log.e(
-                TAG,
-                "连续重启 ${restartCount} 次仍未收敛，结束解码循环（偏差 ${"%.2f".format(ahead)}s 目标 ${"%.2f".format(target)}s）",
-            )
-            return false
-        }
-        restartCount++
-        shownSinceRestart = 0
-        Log.w(TAG, "失步（偏差 ${"%.2f".format(ahead)}s，第 $restartCount 次）→ 从真实位置 ${"%.2f".format(target)}s 重启")
-        runCatching { onNeedRestart?.invoke(target) }
-        return true
     }
 
-    /** 当前主时钟位置（秒）；时钟无效返回 -1 —— 只有它能当"要不要等"的依据 */
+    /** 主时钟：读不到就用"最后位置 + 墙钟"自己走（不压画面） */
+    private fun clockNowOrWall(): Double {
+        val v = clockNow()
+        if (v >= 0.0) return v
+        val base = lastShownPts
+        if (base <= 0.0) return if (audioStartSec >= 0.0) audioStartSec else 0.0
+        val last = lastShownAtMs
+        if (last == 0L) return base
+        return base + (android.os.SystemClock.elapsedRealtime() - last) / 1000.0
+    }
+
+
     private fun clockNow(): Double =
         if (clockValidProvider?.invoke() == true) (clockProvider?.invoke() ?: -1.0) else -1.0
 
