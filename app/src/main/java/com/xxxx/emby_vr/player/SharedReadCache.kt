@@ -39,6 +39,8 @@ object SharedReadCache {
     private const val UA = "B0BEmbyRelay/1.0"
     /** 预取块数（1 块 4MB ≈ 2 秒内容 @14Mbps） */
     private const val PREFETCH_BLOCKS = 4
+    /** 跳转预热额外往后取的块数 */
+    private const val WARM_BLOCKS = 6
 
     @Volatile private var started = false
     @Volatile private var server: ServerSocket? = null
@@ -81,6 +83,47 @@ object SharedReadCache {
         if (!url.startsWith("http://") && !url.startsWith("https://")) return url
         val enc = URLEncoder.encode(url, "UTF-8")
         return "http://127.0.0.1:$PORT/stream?url=$enc"
+    }
+
+    /**
+     * 跳转预热：按下快进/后退时**立刻**去取落点附近的块，与内核跳转并行。
+     *
+     * 前视预取只帮顺序播放，对跳转没用（落点那块仍然是冷的）——这一条才是给跳转用的。
+     * 用"目标秒数 ÷ 总时长"估出字节位置（码率近似恒定），并发抓若干块。
+     */
+    fun warm(url: String, targetSec: Double, durationSec: Double) {
+        if (!enabled() || !started) return
+        if (durationSec <= 0.0 || targetSec < 0.0) return
+        val inner = if (url.startsWith("http://127.0.0.1:")) {
+            // 已是中转地址：把里面包着的上游地址解出来，按上游去缓存
+            val q = url.substringAfter("url=", "")
+            if (q.isEmpty()) return else URLDecoder.decode(q, "UTF-8")
+        } else url
+        thread(isDaemon = true) {
+            val total = totalSize(inner)
+            if (total <= 0L) return@thread
+            val blocks = (total + BLOCK - 1) / BLOCK
+            val frac = (targetSec / durationSec).coerceIn(0.0, 1.0)
+            val center = (frac * blocks).toLong().coerceIn(0L, blocks - 1)
+            var launched = 0
+            for (k in -1L..WARM_BLOCKS.toLong()) {
+                val idx = center + k
+                if (idx < 0 || idx >= blocks) continue
+                val key = keyOf(inner, idx)
+                if (fileFor(key) != null) continue
+                val mine = synchronized(inflight) { inflight.putIfAbsent(key, Object()) == null }
+                if (!mine) continue
+                launched++
+                thread(isDaemon = true) {
+                    try {
+                        fetchBlock(inner, idx, total)
+                    } finally {
+                        synchronized(inflight) { inflight.remove(key) }
+                    }
+                }
+            }
+            if (launched > 0) Log.i(TAG, "跳转预热：目标 ${"%.0f".format(targetSec)}s → 块 $center，并发取 $launched 块")
+        }
     }
 
     fun stats(): String = "命中=${hits.get()} 回源=${misses.get()} 缓存=${used / 1048576}MB 上游=${upstreamBytes.get() / 1048576}MB"

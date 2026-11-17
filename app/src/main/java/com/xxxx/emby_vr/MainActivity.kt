@@ -8615,6 +8615,11 @@ class MainActivity : ComponentActivity() {
              * 听感就是声音丢了（2026-11-17 实测）。所以先把内核跳过去，再让画面跟过去。
              */
             Log.i(TAG, "快进：内核与画面同时跳到 ${"%.1f".format(sec)}s（热解码器，不重建）")
+            /* 跳转预热：先把落点附近的数据取起来，和解码器去读并行（不是等它来要） */
+            runCatching {
+                val dur = m.durationSec()
+                if (dur > 0.0) com.xxxx.emby_vr.player.SharedReadCache.warm(selfPipeUrl ?: "", sec, dur)
+            }
             runCatching { m.seekToSec(sec) }
             pipe.requestSeek(sec)
             runCatching { m.setPaused(false) }
