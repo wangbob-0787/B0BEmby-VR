@@ -431,21 +431,6 @@ class VideoPipe {
                 pendingSeekSec = -1.0
                 seekInPlace(wantSeek)
             }
-            /*
-             * 门关着时：**手里没帧**才整轮跳过（不取不喂）；手里有一帧就交给 outputFrame 去原地等。
-             * 这样预热完可以"先取一帧拿着"，放行那一刻直接上屏 —— 不再付出"现解一帧 4K"的 500ms
-             * （2026-11-17 实测：放行→上屏 505ms，声音会先出来半秒）。
-             */
-            if (heldIdx < 0 && holdGate?.invoke() == true) {
-                try {
-                    Thread.sleep(5)
-                } catch (t: InterruptedException) {
-                    Thread.currentThread().interrupt()
-                    break
-                }
-                continue
-            }
-
             if (!inputDone) {
                 val inIdx = codec.dequeueInputBuffer(DEQUEUE_TIMEOUT_US)
                 if (inIdx < 0) {
