@@ -8697,13 +8697,12 @@ class MainActivity : ComponentActivity() {
         if (url != rawUrl) {
             Log.i(TAG, "起播地址已指向共享读缓存（本机 127.0.0.1:8898）")
             /*
-             * 起播也走多路：并发把起播位置附近几块取起来，
-             * 别让解码器一块一块地现场等（父亲 2026-11-18 定）。
-             * 时长此刻可能还没报出来，先按已知值估；拿不到就跳过，不影响起播。
+             * 起播预热：把起播位置登记成"急需块"，由中转那条唯一连接优先去取。
+             * 不额外开并发（父亲 2026-11-18：网盘只给两路，谁多开谁被拒）。
              */
             runCatching {
                 val dur = m.durationSec()
-                if (dur > 0.0) com.xxxx.emby_vr.player.SharedReadCache.warmStart(url, startSec, dur)
+                if (dur > 0.0) com.xxxx.emby_vr.player.SharedReadCache.warm(url, startSec, dur)
             }
         }
         if (!pipeBootInFlight.compareAndSet(false, true)) {
