@@ -8848,6 +8848,14 @@ class MainActivity : ComponentActivity() {
                  * 起播基准对不齐：画面实际首帧比请求位置晚（seek 落在关键帧上），
                  * 请内核把声音也跳到那个位置 —— 一次性的起播对齐，不是播放中乱跳。
                  */
+                /*
+                 * 断流联动：画面读不到数据时把声音也停住，恢复后继续 —— 宁可短暂停顿，
+                 * 也不要声音独自跑掉（父亲 2026-11-18 定）。
+                 */
+                onStall = { stalled ->
+                    runCatching { mpvBackend?.setPaused(stalled) }
+                    if (stalled) hud("缓冲中…")
+                },
                 /* 内核暂停时画面也要停（暂停只作用于声音曾是 bug） */
                 pausedNow = { runCatching { mpvBackend?.isPaused() == true }.getOrDefault(false) },
                 onAudioAlign = { target ->

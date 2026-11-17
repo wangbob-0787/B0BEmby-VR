@@ -237,6 +237,8 @@ class VideoPipe {
         onAudioAlign: ((Double) -> Unit)? = null,
         /** 内核是否处于暂停；暂停时画面原地握住当前帧、不上屏 */
         pausedNow: (() -> Boolean)? = null,
+        /** 断流通知：true=读不到数据（请把声音也停住），false=恢复 */
+        onStall: ((Boolean) -> Unit)? = null,
         onFirstFrame: (() -> Unit)? = null,
         onDoviParams: (() -> Unit)? = null,
         onEos: (() -> Unit)? = null,
@@ -266,6 +268,7 @@ class VideoPipe {
         this.clockRealProvider = clockReal
         this.onAudioAlign = onAudioAlign
         this.pausedNow = pausedNow
+        this.onStall = onStall
         stopping = false
         this.onFirstFrame = onFirstFrame
         this.onDoviParams = onDoviParams
@@ -372,6 +375,18 @@ class VideoPipe {
                         break
                     }
                     if (!running.get()) break
+                    /*
+                     * 断流判定：两拍之间样本数没涨，说明读不到数据了。
+                     * 超过 1 拍（约 2 秒）就通知上层把声音一起停住；恢复了再通知放开。
+                     */
+                    val grew = statSamples != lastWatchSamples
+                    val nowStalled = !grew && statSamples > 0
+                    if (nowStalled != stalled) {
+                        stalled = nowStalled
+                        Log.w(TAG, if (nowStalled) "断流：读不到数据 → 请上层暂停声音" else "断流恢复：数据来了 → 请上层继续")
+                        runCatching { onStall?.invoke(nowStalled) }
+                    }
+                    lastWatchSamples = statSamples
                     Log.i(
                         TAG,
                         "PIPEREAD|样本=$statSamples|字节=$statBytes|读返回=$statLastReadRet" +
@@ -753,12 +768,23 @@ class VideoPipe {
     @Volatile private var statInMiss = 0L
     @Volatile private var statLastReadRet = 0L
     @Volatile private var statOutMiss = 0L
+    /** 监视线程上一拍的样本数（判断流用） */
+    @Volatile private var lastWatchSamples = 0L
 
     /** 需要"解码器内跳转"到的位置（秒，<0 表示没有待办）。由解码线程自己执行 */
     @Volatile private var pendingSeekSec = -1.0
 
     /** 丢掉迟到帧的累计数（观测量：它一直涨说明解码跟不上） */
     private var droppedStale = 0
+    /**
+     * 断流回调：画面这条链读不到数据时通知上层把声音也停住，数据恢复后再一起走。
+     *
+     * 父亲 2026-11-18 定：「如果画面卡住，声音也跟着暂停是最好的」——
+     * 宁可短暂停顿，也不要声音独自跑掉、音画分家。
+     */
+    @Volatile private var onStall: ((Boolean) -> Unit)? = null
+    @Volatile private var stalled = false
+
     /** 因暂停而原地握帧的次数（观测量） */
     private var pausedHoldCount = 0
 
@@ -859,6 +885,7 @@ class VideoPipe {
         onNeedRestart = null
         onAudioAlign = null
         pausedNow = null
+        onStall = null
         droppedNoClock = 0
         desyncSinceMs = 0L
         onFirstFrame = null
