@@ -591,8 +591,13 @@ class VideoPipe {
          *  · 其余照常上屏。
          * 只丢旧帧、不改时间轴、不跳解码器、不重建。
          */
+        /*
+         * 抖动缓冲（2026-11-17 父亲定的"手里留两三帧再挑"的等效做法）：
+         * 不真的占解码器格子，而是把"上屏时刻"整体延后 FRAME_BUFFER_SEC（约两帧），
+         * 解码偶发慢一拍时由这段缓冲吸收，既不丢也不等；只有超出窗口才处理。
+         */
         val clock = clockNowOrWall()
-        var ahead = (ptsRaw + appliedOffset) - clock
+        var ahead = (ptsRaw + appliedOffset) - (clock - FRAME_BUFFER_SEC)
         if (ahead < -0.30) {
             droppedStale++
             if (droppedStale % 25 == 1) {
@@ -642,6 +647,12 @@ class VideoPipe {
             false
         }
     }
+
+    /**
+     * 抖动缓冲：画面比声音整体晚这么多秒上屏（约两帧 @24fps）。
+     * 有了它，解码慢一拍不会立刻变成"丢帧/等待"的来回切换。
+     */
+    private val FRAME_BUFFER_SEC = 0.10
 
     /** 画面侧就绪信号是否已发（手上有第一帧时才发） */
     @Volatile private var readySignalled = false
