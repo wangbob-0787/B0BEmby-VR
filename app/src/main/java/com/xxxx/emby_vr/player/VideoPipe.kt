@@ -278,6 +278,7 @@ class VideoPipe {
         this.onPreheatReady = onPreheatReady
         tryAgainStreak = 0L
         showLogged = false
+        pendingSeekSec = -1.0
         readySignalled = false
         preheatCount = 0
         preheatFirstPts = -1.0
@@ -401,6 +402,12 @@ class VideoPipe {
         }
 
         while (running.get() && !outputDone) {
+            /* 待办：解码器内跳转（在两次 buffer 操作之间做，flush 时手里不能攥着 buffer） */
+            val wantSeek = pendingSeekSec
+            if (wantSeek >= 0.0) {
+                pendingSeekSec = -1.0
+                seekInPlace(wantSeek)
+            }
             /*
              * 门关着时：**手里没帧**才整轮跳过（不取不喂）；手里有一帧就交给 outputFrame 去原地等。
              * 这样预热完可以"先取一帧拿着"，放行那一刻直接上屏 —— 不再付出"现解一帧 4K"的 500ms
@@ -628,6 +635,16 @@ class VideoPipe {
 
         val clock = clockNowOrWall()
         var ahead = (ptsRaw + appliedOffset) - (clock - FRAME_BUFFER_SEC)
+        if (ahead < -1.0) {
+            /*
+             * 落后超过 1 秒：**直接跳到当前时钟那一帧**（父亲 2026-11-17 定）。
+             * 靠丢帧追不上——解码≈实时速率，越丢越落后。跳转在同一个解码器里做，
+             * 不重建（重建要 6~21 秒）。
+             */
+            Log.w(TAG, "落后 ${"%.1f".format(-ahead)}s → 请求解码器内跳转到 ${"%.2f".format(clock)}s")
+            pendingSeekSec = clock
+            return finish(false)
+        }
         if (ahead < -0.30) {
             droppedStale++
             if (droppedStale % 25 == 1) {
@@ -653,6 +670,17 @@ class VideoPipe {
         }
         return finish(true)
     }
+
+    /**
+     * 请解码线程在同一个解码器里跳到目标位置（快进/落后过大时用）。
+     * 不重建解码器：实测重建 6~21 秒，热解码器内跳是几百毫秒。
+     */
+    fun requestSeek(targetSec: Double) {
+        pendingSeekSec = targetSec
+    }
+
+    /** 是否在跑（供上层判断能不能走"热解码器跳转"而不是重建） */
+    fun isRunning(): Boolean = running.get()
 
     /**
      * 在**同一个解码器**里跳到目标位置。
@@ -689,6 +717,9 @@ class VideoPipe {
 
     /** 画面侧就绪信号是否已发（手上有第一帧时才发） */
     @Volatile private var readySignalled = false
+
+    /** 需要"解码器内跳转"到的位置（秒，<0 表示没有待办）。由解码线程自己执行 */
+    @Volatile private var pendingSeekSec = -1.0
 
     /** 丢掉旧帧的累计数（观测量：它一直涨说明解码跟不上） */
     private var droppedStale = 0

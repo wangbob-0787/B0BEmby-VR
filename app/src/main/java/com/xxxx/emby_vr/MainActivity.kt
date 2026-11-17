@@ -8580,6 +8580,17 @@ class MainActivity : ComponentActivity() {
          * 画面首帧一出来就已经落后五到二十秒，只能被"丢旧帧"全部丢掉 —— 观感就是
          * 快进后永远黑屏或一动就冻。按双信号原则：声音等画面，就绪后再一起放。
          */
+        /*
+         * 优先走**热解码器内跳转**（父亲 2026-11-17 定）：解码器一直在跑，跳位置只需
+         * extractor.seekTo + codec.flush，几百毫秒；只有解码器不在跑或跳转失败才重建。
+         * 重建要重新开流、重找关键帧，实测 6~21 秒，是"快进后半天没画面"的根源。
+         */
+        if (pipe.isRunning()) {
+            Log.i(TAG, "快进：热解码器内跳转 @ ${"%.1f".format(sec)}s（不重建）")
+            pipe.requestSeek(sec)
+            runCatching { m.setPaused(false) }
+            return
+        }
         pipePausedForRebuild = true
         runCatching { m.setPaused(true) }
         Log.i(TAG, "跳转重建：先暂停声音，等画面就绪再一起放 @ ${"%.1f".format(sec)}s")
