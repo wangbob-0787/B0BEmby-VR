@@ -276,6 +276,9 @@ class VideoPipe {
         tryAgainStreak = 0L
         showLogged = false
         readySignalled = false
+        preheatCount = 0
+        preheatFirstPts = -1.0
+        preheatLastPts = -1.0
         droppedStale = 0
         startedAtMs = android.os.SystemClock.elapsedRealtime()
         lastDovi = null
@@ -524,16 +527,26 @@ class VideoPipe {
         }
 
         /*
-         * 画面侧就绪信号：**手上有第一帧**才发（不是线程起来就发）。
+         * 预热三帧（父亲 2026-11-17 重申：原定就是"画面解出 3 帧 + 声音就绪"才一起放）。
          *
-         * 2026-11-17 实测：起播时声音先响、画面晚 6~9 秒，就是因为早先"线程一起来就宣告就绪"，
-         * 上层立刻解除暂停，而这时画面连第一帧都还没解出来。双信号的本意是"两边都准备好了"，
-         * 所以画面这侧的"准备好了"必须等于"已经解出一帧在手"。
+         * 三帧不是随手取的：① 给渲染层留出拿到杜比参数的时间；② 第一帧往往最慢，
+         * 三帧之后节奏才稳。这三帧只解不显示（release(render=false)），解满才发画面侧就绪信号。
          */
         if (!readySignalled) {
+            preheatCount++
+            preheatFirstPts = if (preheatFirstPts < 0.0) ptsRaw else preheatFirstPts
+            preheatLastPts = ptsRaw
+            if (preheatCount < preheatFrames) {
+                return finish(false)
+            }
             readySignalled = true
-            Log.i(TAG, "画面侧就绪：第一帧已在手（pts=$ptsRaw），发信号给上层")
-            runCatching { onPreheatReady?.invoke(0L, lastDovi != null) }
+            val spanMs = ((preheatLastPts - preheatFirstPts) * 1000.0).toLong()
+            Log.i(
+                TAG,
+                "画面侧就绪：预热 $preheatCount 帧（跨度 ${spanMs}ms，pts=$ptsRaw），发信号给上层",
+            )
+            runCatching { onPreheatReady?.invoke(spanMs, lastDovi != null) }
+            return finish(false)
         }
 
         /* 起播放行闸门：门关着就持这一帧等（I1/I3），门一开立刻上屏 */
