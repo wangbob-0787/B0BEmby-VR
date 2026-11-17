@@ -34,7 +34,14 @@ object SharedReadCache {
 
     private const val TAG = "B0BEmbyVR-Relay"
     private const val PORT = 8898
-    private const val BLOCK = 4 * 1024 * 1024L
+    /**
+     * 块大小 16MB。
+     *
+     * 实测（2026-11-18，经 .15 中转量 Emby 侧）：**每块都是一次新的上游请求，单块约 1.6 秒**
+     * （服务器每次都要重新打开网盘文件）。块越小请求越多，起播就越慢 —— 4MB 块起播要
+     * 连取好几块，光握手就五六秒。放大到 16MB 后同样取 16MB 只要一次请求。
+     */
+    private const val BLOCK = 16 * 1024 * 1024L
     private const val CAPACITY_BYTES = 400L * 1024 * 1024
     private const val UA = "B0BEmbyRelay/1.0"
     /** 预取块数（1 块 4MB ≈ 2 秒内容 @14Mbps） */
