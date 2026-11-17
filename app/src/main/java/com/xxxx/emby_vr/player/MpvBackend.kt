@@ -1104,7 +1104,15 @@ class MpvBackend(private val context: Context) {
         if (cIdleActive) return false
         val at = cTimePosAtMs
         if (at == 0L) return false
-        if (android.os.SystemClock.elapsedRealtime() - at > 200L) return false
+        /*
+         * **不含新鲜度**（2026-11-17 实测修正）。
+         *
+         * "时钟在不在走"与"我的读数新不新"是两件事：采样年龄变大只说明我们不知道现在几点，
+         * 不等于时钟停了。r1422 实测：4K 解码抢线程时轮询被挤到 700ms 一拍，
+         * 采样年龄一过阈值就判"时钟停了"→ 持帧挂起 → 画面冻住，而同一刻窗口增量是 0.39~0.52s。
+         * 读数过期怎么处理见 [positionForSync]（外推），UI 的 200ms 新鲜度见 [posFresh]，两者都不参与出不出帧。
+         */
+        val _ = at
         /*
          * 判据 = **最近 1 秒内累计增量 ≥1ms**（图 §5，2026-11-17 实测放宽）。
          *
@@ -1116,6 +1124,28 @@ class MpvBackend(private val context: Context) {
         val base = posWindowBase() ?: return false
         return cTimePos - base.first >= 0.001
     }
+
+    /** 读数是否新鲜（UI 用：判要不要标 UNKNOWN；不参与出不出帧） */
+    fun posFresh(): Boolean =
+        cTimePosAtMs != 0L && android.os.SystemClock.elapsedRealtime() - cTimePosAtMs <= 200L
+
+    /**
+     * 给画面同步用的位置：新鲜就取采样值，过期就**按 1.0× 外推**。
+     *
+     * 外推一两秒误差只有几毫秒，比"把画面冻住"准得多（播放速率就是 1.0×）。
+     */
+    fun positionForSync(): Double {
+        val at = cTimePosAtMs
+        if (at == 0L) return cTimePos
+        val ageMs = android.os.SystemClock.elapsedRealtime() - at
+        if (ageMs <= 200L) return cTimePos
+        if (cPaused || cIdleActive) return cTimePos
+        return cTimePos + ageMs / 1000.0
+    }
+
+    /** 最新位置采样的年龄（ms）；0 表示从未采到 */
+    fun clockSampleAgeMs(): Long =
+        if (cTimePosAtMs == 0L) -1L else android.os.SystemClock.elapsedRealtime() - cTimePosAtMs
 
     /** 卡顿时诊断用：窗口时长（ms）与窗口内累计增量（秒） */
     fun clockAdvanceProbe(): Pair<Long, Double> {

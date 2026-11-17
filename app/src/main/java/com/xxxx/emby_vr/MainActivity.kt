@@ -8493,6 +8493,8 @@ class MainActivity : ComponentActivity() {
                         "|loadInput=-|loadDecoder=${if (selfPipeReady) "ok" else "-"}" +
                         "|loadAudioOut=${if (selfPipeCanOpen) "ok" else "-"}" +
                         "|canOpenBlk=${com.xxxx.emby_vr.player.MpvBackend.canOpenBlocker()}" +
+                        "|ageMs=${com.xxxx.emby_vr.player.MpvBackend.clockSampleAgeMs()}" +
+                        "|posFresh=${com.xxxx.emby_vr.player.MpvBackend.posFresh()}" +
                         "|audioStallMs=-(音频是否推进看 mpv time-pos)" +
                         "|mute=${if (runCatching { mpvBackend?.isMuted() }.getOrNull() == true) "yes" else "no"}" +
                         "|paused=${if (runCatching { mpvBackend?.isPaused() }.getOrNull() == true) "yes" else "no"}",
@@ -8745,13 +8747,14 @@ class MainActivity : ComponentActivity() {
         fun launchPipeline(audioStart: Double) {
             val ok = pipe.start(
                 url, emptyMap(), surface,
-                { m.positionSec() },
+                { m.positionForSync() },
                 { m.clockAdvancing() },
                 audioStart, doviPath,
                 /* 门 = 还没放行：关着时解码线程整轮跳过，不取不喂 */
                 holdGate = { selfPipeWaitingFirstFrame.get() },
                 /* 卡顿诊断：把推进窗口时长与窗口内累计增量交给解码线程打日志 */
                 clockProbe = { m.clockAdvanceProbe() },
+                clockAgeProvider = { m.clockSampleAgeMs() },
                 onFirstFrame = {
                     val now = android.os.SystemClock.elapsedRealtime()
                     val d = if (releaseAtMs > 0) now - releaseAtMs else -1

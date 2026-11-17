@@ -59,6 +59,9 @@ class VideoPipe {
     /** 卡顿诊断：返回（推进窗口时长 ms，窗口内累计增量 s） */
     @Volatile private var clockProbe: (() -> Pair<Long, Double>)? = null
 
+    /** 卡顿诊断：最新位置采样的年龄（ms）——直接看出是不是"新鲜度"判掉的 */
+    @Volatile private var clockAgeProvider: (() -> Long)? = null
+
     /**
      * 杜比参数落盘路径（与内核那份同一个文件，渲染层读它做还原）。
      *
@@ -200,6 +203,8 @@ class VideoPipe {
         holdGate: (() -> Boolean)? = null,
         /** 卡顿诊断用（可选）：返回推进窗口时长与窗口内累计增量 */
         clockProbe: (() -> Pair<Long, Double>)? = null,
+        /** 卡顿诊断用（可选）：返回最新位置采样年龄 ms */
+        clockAgeProvider: (() -> Long)? = null,
         onFirstFrame: (() -> Unit)? = null,
         onDoviParams: (() -> Unit)? = null,
         onEos: (() -> Unit)? = null,
@@ -225,6 +230,7 @@ class VideoPipe {
         doviParamPath = doviPath
         this.holdGate = holdGate
         this.clockProbe = clockProbe
+        this.clockAgeProvider = clockAgeProvider
         this.onFirstFrame = onFirstFrame
         this.onDoviParams = onDoviParams
         this.onEos = onEos
@@ -337,8 +343,12 @@ class VideoPipe {
         var outputDone = false
 
         while (running.get() && !outputDone) {
-            /* 门关着（预热完、外部还没放行）：整轮跳过，一格不取、一口不喂（I2 / I3） */
-            if (preheated && holdGate?.invoke() == true) {
+            /*
+             * 门关着时：**手里没帧**才整轮跳过（不取不喂）；手里有一帧就交给 outputFrame 去原地等。
+             * 这样预热完可以"先取一帧拿着"，放行那一刻直接上屏 —— 不再付出"现解一帧 4K"的 500ms
+             * （2026-11-17 实测：放行→上屏 505ms，声音会先出来半秒）。
+             */
+            if (preheated && heldIdx < 0 && holdGate?.invoke() == true) {
                 try {
                     Thread.sleep(5)
                 } catch (t: InterruptedException) {
@@ -477,6 +487,23 @@ class VideoPipe {
             return finish(false)
         }
 
+        /*
+         * 预热已完成但还没放行：**持有这一帧原地等**（I3 允许：持有期间不取帧），
+         * 门一开就上屏。这样"放行→上屏"压到一帧内。
+         */
+        if (!firstFrameShown && holdGate?.invoke() == true) {
+            while (running.get() && holdGate?.invoke() == true) {
+                try {
+                    Thread.sleep(5)
+                } catch (t: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    break
+                }
+            }
+            if (!running.get()) return finish(false)
+            return finish(true)
+        }
+
         /* 放行后：先看时钟。时钟无效时**持有这一帧原地等，不取下一帧**（I3） */
         var audioSec = clockNow()
         if (audioSec < 0.0) {
@@ -491,7 +518,8 @@ class VideoPipe {
                     TAG,
                     "时钟未走，画面挂起中（持有 1 帧等待，已等 $droppedNoClock 次）" +
                         " 窗口=${winMs}ms 窗口增量=${"%.3f".format(winDelta)}s" +
-                        " 本帧偏差=${"%.3f".format((ptsRaw + appliedOffset) - clockProvider?.invoke()!!)}s",
+                        " 本帧偏差=${"%.3f".format((ptsRaw + appliedOffset) - clockProvider?.invoke()!!)}s" +
+                        " 采样年龄=${clockAgeProvider?.invoke() ?: -1L}ms",
                 )
             }
             while (running.get() && clockNow() < 0.0) {
