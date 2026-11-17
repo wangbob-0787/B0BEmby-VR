@@ -35,8 +35,6 @@ object SharedReadCache {
     private const val BLOCK = 16 * 1024 * 1024L
     private const val CAPACITY_BYTES = 400L * 1024 * 1024
     private const val UA = "B0BEmbyRelay/1.0"
-    /** 缓存半满时才开始回收旧块，避免刚读过的块立刻被删 */
-    private const val KEEP_BEHIND_BLOCKS = 1L
 
     @Volatile private var started = false
     @Volatile private var server: ServerSocket? = null
