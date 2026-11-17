@@ -37,8 +37,6 @@ object SharedReadCache {
     private const val UA = "B0BEmbyRelay/1.0"
     /** 缓存半满时才开始回收旧块，避免刚读过的块立刻被删 */
     private const val KEEP_BEHIND_BLOCKS = 1L
-    /** 判定"大跨度跳转"的块数（16MB/块，8 块 = 128MB ≈ 80 秒内容） */
-    private const val BIG_JUMP_BLOCKS = 8L
 
     @Volatile private var started = false
     @Volatile private var server: ServerSocket? = null
@@ -213,15 +211,13 @@ object SharedReadCache {
          * 小范围前后移动不清 —— 播放器读文件头/索引时位置会来回跳，
          * 一读就清会把刚取回来的数据全删掉，实测表现为「上游拉了 43MB、缓存始终 0」。
          */
-        if (prev != null) {
-            val delta = if (firstIdx > prev) firstIdx - prev else prev - firstIdx
-            if (delta > BIG_JUMP_BLOCKS) {
-                restartAt(upstream, firstIdx, "大跨度跳转（$prev → $firstIdx）")
-            } else if (firstIdx < prev) {
-                /* 小幅回退：把填充游标拉回来，不必清空 */
-                cursor[upstream] = firstIdx
-            }
-        }
+        /*
+         * 读位置变化**一律不清空**：播放器打开文件时会先读头、再跳到尾部读索引
+         * （实测 1 → 243 块），那是正常动作，不是用户拖进度。
+         * 真正的清空只发生在两处：起播/换集（clearAll）与用户跳转（warm）。
+         * 回退时只把填充游标拉回来，让后面的填充从更早的位置接着走。
+         */
+        if (prev != null && firstIdx < prev) cursor[upstream] = firstIdx
         readIdx[upstream] = maxOf(firstIdx, readIdx[upstream] ?: firstIdx)
         if (!cursor.containsKey(upstream)) cursor[upstream] = firstIdx
 
