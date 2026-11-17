@@ -8441,11 +8441,16 @@ class MainActivity : ComponentActivity() {
                         "|decoded=${p?.decodedFrames ?: 0}|held=${p?.heldSlot() ?: -1}" +
                         "|dequeued=${p?.dequeuedFrames ?: 0}|tryAgainStreak=${p?.tryAgainStreak ?: 0}" +
                         "|nexus=$nexus|rpu=${if (p?.rpuReadyNow() == true) "有" else "-"}" +
-                        "|loadWaitedMs=${if (pipeLoadT0 > 0L) android.os.SystemClock.elapsedRealtime() - pipeLoadT0 else 0}" +
-                        "|seekWaitedMs=${if (pipeSeekT0 > 0L) android.os.SystemClock.elapsedRealtime() - pipeSeekT0 else 0}" +
-                        "|bufferWaitedMs=-|stopWaitedMs=$lastStopWaitedMs" +
-                        "|loadInputMs=-|loadDecoderMs=${if (selfPipeReady) "ok" else "-"}" +
-                        "|loadAudioOutMs=${if (selfPipeCanOpen) "ok" else "-"}" +
+                        /*
+                         * 等待时长只报数不判死。单位是毫秒，没开始计就打 `-`（不打 0，
+                         * 免得读日志的人以为"已经等了 0 毫秒"）。三维里 input/buffer/stall
+                         * 目前拿不到真值，同样打 `-`，不编数。
+                         */
+                        "|loadWaitedMs=${if (pipeLoadT0 > 0L) android.os.SystemClock.elapsedRealtime() - pipeLoadT0 else "-"}" +
+                        "|seekWaitedMs=${if (pipeSeekT0 > 0L) android.os.SystemClock.elapsedRealtime() - pipeSeekT0 else "-"}" +
+                        "|bufferWaitedMs=-|stopWaitedMs=${if (lastStopWaitedMs >= 0L) lastStopWaitedMs else "-"}" +
+                        "|loadInput=-|loadDecoder=${if (selfPipeReady) "ok" else "-"}" +
+                        "|loadAudioOut=${if (selfPipeCanOpen) "ok" else "-"}" +
                         "|audioStallMs=-(音频是否推进看 mpv time-pos)" +
                         "|mute=${if (runCatching { mpvBackend?.isMuted() }.getOrNull() == true) "yes" else "no"}" +
                         "|paused=${if (runCatching { mpvBackend?.isPaused() }.getOrNull() == true) "yes" else "no"}",
