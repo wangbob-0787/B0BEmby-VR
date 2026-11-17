@@ -8693,6 +8693,8 @@ class MainActivity : ComponentActivity() {
          * 起播地址先过一次共享读缓存：内核与自管解码都读本机同一份缓存，不再各拉一份。
          * 关掉开关（vr-tuning.txt 里 relay=0）时原样返回，行为与之前完全一致。
          */
+        /* 换片/换集/切片起播：先把上一段内容的缓存清掉，长连接从新位置重新铺 */
+        runCatching { com.xxxx.emby_vr.player.SharedReadCache.clearAll("起播：$source") }
         val url = com.xxxx.emby_vr.player.SharedReadCache.rewrite(rawUrl)
         if (url != rawUrl) {
             Log.i(TAG, "起播地址已指向共享读缓存（本机 127.0.0.1:8898）")

@@ -105,6 +105,30 @@ object SharedReadCache {
         }
     }
 
+    /**
+     * 换片/换集/切片前清空缓存（父亲 2026-11-18：「切片切集的时候，首先得先清空缓存」）。
+     *
+     * 理由：上一部/上一集的块对新内容毫无用处，留着既占空间又可能被当成新数据；
+     * 清空后长连接从新位置重新往前铺。
+     */
+    fun clearAll(why: String) {
+        val url = readIdx.keys.firstOrNull()
+        if (url != null) {
+            restartAt(url, 0L, why)
+        } else {
+            synchronized(lock) {
+                val dir = cacheDir
+                if (dir != null) for (k in index.keys.toList()) File(dir, "$k.blk").delete()
+                index.clear()
+                used = 0
+            }
+        }
+        readIdx.clear()
+        cursor.clear()
+        urgent.clear()
+        Log.i(TAG, "缓存已清空：$why")
+    }
+
     fun stats(): String =
         "命中=${hits.get()} 回源=${misses.get()} 缓存=${used / 1048576}MB 上游=${upstreamBytes.get() / 1048576}MB"
 
