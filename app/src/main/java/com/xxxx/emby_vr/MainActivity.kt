@@ -8421,92 +8421,95 @@ class MainActivity : ComponentActivity() {
          * 它是标定基准，取的是**内核实际报的位置**，不是我们请求的 startSec：
          * 网络片源常跳到最近关键帧，两个值能差出一大截，用错整体偏。
          */
-        var audioStart = startSec
-        run {
-            var waited = 0L
-            while (waited < 5000L && !m.clockPresent()) {
-                try {
-                    Thread.sleep(50)
-                } catch (t: InterruptedException) {
-                    Thread.currentThread().interrupt()
-                    break
-                }
-                waited += 50L
-            }
-            if (m.clockPresent()) audioStart = m.positionSec()
-            Log.i(TAG, "起播基准：请求=$startSec 实际 audioStart=$audioStart（等了 ${waited}ms）")
-        }
-        val ok = pipe.start(
-            url, emptyMap(), surface,
-            { m.positionSec() },
-            { m.clockAdvancing() },
-            audioStart, doviPath,
-            holdGate = { selfPipeWaitingFirstFrame.get() },
-            onFirstFrame = {
-                /*
-                 * 第④步：首帧就绪（还没上屏）→ 让内核开始走。
-                 * 触发条件是"首帧就绪"，不是"时钟在走"——等时钟走才 unpause 会死锁。
-                 */
-                Log.i(TAG, "自管解码首帧就绪 → unpause（时钟开始走，仍然静音）")
-                runCatching { m.setPaused(false) }
-                /*
-                 * 第⑤步：等时钟真的开始走（clockStarted：unpause 后有新采样、位置到基准），
-                 * 再放行画面并取消静音。顺序不能反：先放画面会在时钟未走时全速出帧。
-                 */
-                var waited = 0L
-                val h = android.os.Handler(android.os.Looper.getMainLooper())
-                fun poll() {
-                    if (m.clockStarted(audioStart)) {
-                        Log.i(TAG, "时钟已开始走（等了 ${waited}ms）→ 放行首帧 + mute=no")
-                        selfPipeWaitingFirstFrame.set(false)
-                        runCatching { m.setMute(false) }
-                    } else if (waited < 2000L) {
-                        waited += 20L
-                        h.postDelayed({ poll() }, 20L)
-                    } else {
-                        /* 时钟 2 秒没走起来：放行画面并把原因写日志（不许无声死等） */
-                        Log.w(TAG, "时钟 2s 未开始走（clockStarted=false）→ 仍放行画面，声音保持静音")
-                        selfPipeWaitingFirstFrame.set(false)
+        /*
+         * 等内核就绪再起画面解码。**不能在这里 sleep** —— 这是主线程，
+         * 4K 冷启动等 3~8 秒会把整个界面冻住。改成轮询，就绪后再起 PIPE。
+         */
+        val ui = android.os.Handler(android.os.Looper.getMainLooper())
+        var audioWaitMs = 0L
+        fun launchPipeline(audioStart: Double) {
+            val ok = pipe.start(
+                url, emptyMap(), surface,
+                { m.positionSec() },
+                { m.clockAdvancing() },
+                audioStart, doviPath,
+                holdGate = { selfPipeWaitingFirstFrame.get() },
+                onFirstFrame = {
+                    /*
+                     * 第④步：首帧就绪（还没上屏）→ 让内核开始走。
+                     * 触发条件是"首帧就绪"，不是"时钟在走" —— 等时钟走才 unpause 会死锁。
+                     */
+                    Log.i(TAG, "自管解码首帧就绪 → unpause（时钟开始走，仍然静音）")
+                    runCatching { m.setPaused(false) }
+                    /*
+                     * 第⑤步：等时钟真的开始走（clockStarted：unpause 后有新采样、位置到基准），
+                     * 再放行画面并取消静音。顺序不能反：先放画面会在时钟未走时全速出帧。
+                     */
+                    var waited = 0L
+                    val h = android.os.Handler(android.os.Looper.getMainLooper())
+                    fun poll() {
+                        if (m.clockStarted(audioStart)) {
+                            Log.i(TAG, "时钟已开始走（等了 ${waited}ms）→ 放行首帧 + mute=no")
+                            selfPipeWaitingFirstFrame.set(false)
+                            runCatching { m.setMute(false) }
+                        } else if (waited < 2000L) {
+                            waited += 20L
+                            h.postDelayed({ poll() }, 20L)
+                        } else {
+                            /* 时钟 2 秒没走起来：放行画面并写清原因，不许无声死等 */
+                            Log.w(TAG, "时钟 2s 未开始走（clockStarted=false）→ 仍放行画面，声音保持静音")
+                            selfPipeWaitingFirstFrame.set(false)
+                        }
                     }
-                }
-                poll()
-            },
-            onNeedRestart = { target -> restartVideoPipeAt(target) },
-            /*
-             * 只有真的从码流里解出 RPU 参数，才允许渲染层走杜比还原。
-             * 非 P5 片源解不出参数，这个回调就不会来 —— 它们永远不进新路径。
-             */
-            /*
-             * 自管解码这条路没有 ExoPlayer 的轨道回调，字幕是播放器按语言自动挑的，
-             * 菜单勾选得自己补一刀（父亲 2026-11-16：字幕显示着、菜单没勾）。
-             * 挑轨发生在加载之后一两秒，两次尝试足够。
-             */
-            onDoviParams = {
-                com.xxxx.emby_vr.vr.VrNative.setDoviStreamActive(true)
-                Log.i(TAG, "确认是杜比 P5：允许渲染层还原")
-            },
-            /*
-             * 画面放完了（2026-11-16 父亲要求：新路径要主动把"放完了"告诉内核）。
-             * 内核只出声，它自己不知道画面到哪了；这里让它停在结尾并把播完状态交回去，
-             * 界面才能正常收场，而不是控制条继续走、或者从头再来一遍。
-             */
-            onEos = {
+                    poll()
+                },
+                onNeedRestart = { target -> restartVideoPipeAt(target) },
                 /*
-                 * 画面放完了 → 让内核停在结尾（2026-11-16 父亲要求）。
-                 * 内核只出声、不知道画面到哪，这里主动收：关循环、暂停，播完状态由它自己的
-                 * 音频结尾触发，界面照旧收场 —— 不会出现"画面没了控制条还在走"。
+                 * 只有真的从码流里解出 RPU 参数，才允许渲染层走杜比还原。
+                 * 非 P5 片源解不出参数，这个回调就不会来 —— 它们永远不进新路径。
                  */
-                Log.i(TAG, "自管解码：画面已到结尾 → 内核暂停收场")
-                runCatching { m.setLoopFile(false) }
-                runCatching { m.setPaused(true) }
-            },
-        )
-        if (!ok) {
-            /* 画面这条路起不来就别把声音扣着，否则整部片没声 */
-            selfPipeWaitingFirstFrame.set(false)
-            m.setPaused(false)
-            Log.e(TAG, "自管解码起播失败（${com.xxxx.emby_vr.player.VideoPipe.lastError}），银幕不会有内容")
+                onDoviParams = {
+                    com.xxxx.emby_vr.vr.VrNative.setDoviStreamActive(true)
+                    Log.i(TAG, "确认是杜比 P5：允许渲染层还原")
+                },
+                /*
+                 * 画面放完了 → 让内核停在结尾。内核只出声、不知道画面到哪，
+                 * 播完状态由它自己的音频结尾触发，界面照旧收场。
+                 */
+                onEos = {
+                    Log.i(TAG, "自管解码：画面已到结尾 → 内核暂停收场")
+                    runCatching { m.setLoopFile(false) }
+                    runCatching { m.setPaused(true) }
+                },
+            )
+            if (!ok) {
+                /* 画面这条路起不来就别把声音扣着，否则整部片没声 */
+                selfPipeWaitingFirstFrame.set(false)
+                m.setPaused(false)
+                m.setMute(false)
+                Log.e(TAG, "自管解码起播失败（${com.xxxx.emby_vr.player.VideoPipe.lastError}），银幕不会有内容")
+            }
         }
+
+        fun startPipeWhenReady() {
+            if (m.clockPresent()) {
+                val audioStart = m.positionSec()
+                Log.i(TAG, "起播基准：请求=$startSec 实际 audioStart=$audioStart（等了 ${audioWaitMs}ms）")
+                launchPipeline(audioStart)
+                return
+            }
+            if (audioWaitMs >= 5000L) {
+                /* 内核 5 秒没就绪：用请求位置兜底并写清楚，不许无限等 */
+                Log.w(TAG, "内核 5s 未就绪（clockPresent=false）→ 用请求位置 $startSec 兜底起画面")
+                launchPipeline(startSec)
+                return
+            }
+            audioWaitMs += 50L
+            ui.postDelayed({ startPipeWhenReady() }, 50L)
+        }
+
+        /* 开始等内核就绪，就绪后自动起画面 */
+        startPipeWhenReady()
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)

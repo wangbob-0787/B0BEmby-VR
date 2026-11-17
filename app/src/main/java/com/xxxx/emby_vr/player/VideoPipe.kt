@@ -29,6 +29,12 @@ class VideoPipe {
         /** 解码器输出缓冲等不到时最多睡这么久，避免空转吃满一个核 */
         private const val DEQUEUE_TIMEOUT_US = 10_000L
 
+        /**
+         * 落后多少就丢帧：施工图定的是 P95+20ms（P95 = 4K 解码延迟基线）。
+         * 初值 80ms，实测后按 P95 替换 —— 这不是可调参数，是同步上限。
+         */
+        private const val DROP_BEHIND_SEC = 0.080
+
         @Volatile
         var lastError: String? = null
             private set
@@ -107,6 +113,8 @@ class VideoPipe {
      * 标定一次后**冻结**，后续所有帧都用它换算，不再重算 ——
      * 重算会让已经上屏的帧与新基准不一致，表现是每部片偏差都不同、画面忽快忽慢。
      */
+    /** 本次起播的锚点位置（秒）：标定与预卷判定都对着它，pump 里要用所以存成字段 */
+    @Volatile private var audioStartSec = 0.0
     private var originPts = -1.0
     private var appliedOffset = Double.NaN
     /** 预卷帧（pts < audioStart，不许上屏）丢弃计数，写日志用 */
@@ -143,14 +151,6 @@ class VideoPipe {
      *                内容快速冲过去才追上声音。
      * @return 起播是否成功（失败原因写 [lastError]）
      */
-    companion object {
-        /**
-         * 落后多少就丢帧：图上定的是 P95+20ms（P95 = 4K 解码延迟基线）。
-         * 初值 80ms，实测后按 P95 替换——**这不是可调参数，是同步上限**。
-         */
-        private const val DROP_BEHIND_SEC = 0.080
-    }
-
     fun start(
         url: String,
         headers: Map<String, String>,
@@ -186,6 +186,7 @@ class VideoPipe {
          * 而「版本>0.5」这种宽松判断拦不住（内核写 2 也过），画面就偏紫。
          */
         runCatching { doviPath?.let { java.io.File(it).delete() } }
+        audioStartSec = startSec
         originPts = -1.0
         appliedOffset = Double.NaN
         prerollDropped = 0
@@ -334,10 +335,10 @@ class VideoPipe {
                     gateWaitMs = 0
 
                     /* 零点：audioStart 是 mpv 加载后的实际位置（外面按图 §4.2.1 第②步传进来） */
-                    if (originPts < 0.0 && ptsRaw >= startSec) {
+                    if (originPts < 0.0 && ptsRaw >= audioStartSec) {
                         originPts = ptsRaw
-                        appliedOffset = startSec - originPts
-                        Log.i(TAG, "零点标定：start=$startSec origin=$originPts offset=$appliedOffset 预卷丢弃=$prerollDropped")
+                        appliedOffset = audioStartSec - originPts
+                        Log.i(TAG, "零点标定：audioStart=$audioStartSec origin=$originPts offset=$appliedOffset 预卷丢弃=$prerollDropped")
                     }
                     if (originPts < 0.0) {
                         /* 还在预卷区：丢弃但计数，不上屏（图 §5：预卷帧必须显式丢弃并计数） */
