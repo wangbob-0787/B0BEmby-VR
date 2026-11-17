@@ -185,7 +185,9 @@ class MpvBackend(private val context: Context) {
          * 它实测读不到，别再拿它当必要条件。
          */
         fun audioReady(): Boolean =
-            engReady && !cIdleActive && cDuration > 0.0 && cTimePos >= 0.0 && cTimePosAtMs != 0L
+            /* `cTimePos >= 0.0` 是恒真判据（time-pos 不会返回负数），已删；
+               有采样由 `cTimePosAtMs != 0L` 保证 */
+            engReady && !cIdleActive && cDuration > 0.0 && cTimePosAtMs != 0L
 
         fun canOpenBlocker(): String {
             if (!engReady) return "engineNotReady"
@@ -264,9 +266,43 @@ class MpvBackend(private val context: Context) {
         @Volatile private var unpauseAtMs = 0L
         /** 上一次采样时的位置；clockAdvancing 用它与当前值比"增量是否 ≥1ms" */
         @Volatile private var lastPosSample = 0.0
-        /** clockAdvancing 的 1 秒窗口：起点时刻与起点位置 */
-        @Volatile private var posWinStartMs = 0L
-        @Volatile private var posWinStartPos = 0.0
+        /*
+         * clockAdvancing 的真滑窗：环形缓冲存最近 16 次采样（10Hz 下覆盖 1.6 秒）。
+         *
+         * 为什么不用"分段滑窗"（满 1 秒把起点挪到当前）：复位那一拍起点位置就是当前位置，
+         * 增量恒为 0 → 每秒必然假挂起一拍画面、每秒一条"挂起中"日志（丫头 2026-11-17 指出）。
+         * 环形缓冲下任意时刻窗口都是真实的一秒。
+         */
+        private val posRingPos = DoubleArray(16)
+        private val posRingAtMs = LongArray(16)
+        private var posRingIdx = 0
+        private var posRingCount = 0
+
+        private fun pushPosSample(pos: Double, atMs: Long) {
+            synchronized(posRingPos) {
+                posRingPos[posRingIdx] = pos
+                posRingAtMs[posRingIdx] = atMs
+                posRingIdx = (posRingIdx + 1) % posRingPos.size
+                if (posRingCount < posRingPos.size) posRingCount++
+            }
+        }
+
+        /** 最近 1 秒窗口的基准采样：取"不早于 1 秒前"的那次；返回 (基准位置, 窗口时长 ms) */
+        private fun posWindowBase(): Pair<Double, Long>? {
+            synchronized(posRingPos) {
+                if (posRingCount == 0) return null
+                val now = android.os.SystemClock.elapsedRealtime()
+                var bestIdx = -1
+                for (k in 0 until posRingCount) {
+                    val i = ((posRingIdx - 1 - k) % posRingPos.size + posRingPos.size) % posRingPos.size
+                    if (now - posRingAtMs[i] <= 1000L) bestIdx = i else break
+                }
+                if (bestIdx >= 0) return posRingPos[bestIdx] to (now - posRingAtMs[bestIdx])
+                /* 样本全部早于 1 秒（轮询停了）：用最新样本，增量按 0 判 */
+                val i = ((posRingIdx - 1) % posRingPos.size + posRingPos.size) % posRingPos.size
+                return posRingPos[i] to 0L
+            }
+        }
         /** 音轨是否已解析出来（clockPresent 的一半判据） */
         @Volatile private var audioTrackResolved = false
         /**
@@ -397,11 +433,8 @@ class MpvBackend(private val context: Context) {
                 lastPosSample = cTimePos
                 cTimePos = it
                 cTimePosAtMs = android.os.SystemClock.elapsedRealtime()
-                /* 窗口滑动：满 1 秒才把起点挪到当前，窗口内累计增量才作判据 */
-                if (posWinStartMs == 0L || cTimePosAtMs - posWinStartMs >= 1000L) {
-                    posWinStartMs = cTimePosAtMs
-                    posWinStartPos = it
-                }
+                /* 入环（真滑窗，见 posRingPos 注释） */
+                pushPosSample(it, cTimePosAtMs)
             }
             s("sub-text") { cSubText = it }
             b("pause") { cPaused = it }
@@ -1067,13 +1100,14 @@ class MpvBackend(private val context: Context) {
          * 窗口取 1 秒：真暂停由上面的 cPaused 直接判，不受这条影响。
          * ⚠ 别把上面的「位置新鲜度 200ms」跟着改 —— 那判的是读数是否过期，与推进量无关。
          */
-        return cTimePos - posWinStartPos >= 0.001
+        val base = posWindowBase() ?: return false
+        return cTimePos - base.first >= 0.001
     }
 
     /** 卡顿时诊断用：窗口时长（ms）与窗口内累计增量（秒） */
     fun clockAdvanceProbe(): Pair<Long, Double> {
-        val ms = android.os.SystemClock.elapsedRealtime() - posWinStartMs
-        return ms to (cTimePos - posWinStartPos)
+        val base = posWindowBase() ?: return 0L to 0.0
+        return base.second to (cTimePos - base.first)
     }
 
     /** 内核是否已加载文件（不是 idle、有路径）；与"是否出过画面"无关 */
