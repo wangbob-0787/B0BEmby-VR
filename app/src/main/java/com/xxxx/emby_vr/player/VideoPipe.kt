@@ -284,6 +284,7 @@ class VideoPipe {
         preheatFirstPts = -1.0
         preheatLastPts = -1.0
         droppedStale = 0
+        forcedRender = 0
         startedAtMs = android.os.SystemClock.elapsedRealtime()
         lastDovi = null
         doviWriteSkip = 0
@@ -533,7 +534,7 @@ class VideoPipe {
             return info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
         }
 
-        /* 首个可用帧定基准（预卷：早于起点的帧丢弃，不上屏） */
+        /* 预卷：早于起点的帧丢弃、不上屏；第一帧到齐时定基准 */
         if (originPts < 0.0 && ptsRaw < audioStartSec) {
             prerollDropped++
             return finish(false)
@@ -541,30 +542,22 @@ class VideoPipe {
         if (originPts < 0.0) {
             originPts = ptsRaw
             /*
-             * 基准以**实际解出的第一帧位置**为准，不用"我们请求的位置"（2026-11-17 实测定案）：
-             * 请求 1503 秒，seek 只能落到不早于它的关键帧，实际首帧 1505.36 —— 差 2.36 秒。
-             * 原来把基准设成 1503，等于把真实偏差硬压成"对齐"，画面内容比声音超前两秒多。
-             * 现在：差值超过 0.3 秒就请上层把声音也跳到实际位置（一次性对齐，不是播放中乱跳）。
+             * 基准以**实际解出的第一帧位置**为准，不用"我们请求的位置"：
+             * 请求 1503 秒时 seek 只能落到不早于它的关键帧，实际首帧可能 1505.36（差 2.36 秒）。
+             * 差值超过 0.3 秒就请上层把声音也跳到实际位置（一次性对齐，不是播放中乱跳）。
              */
             val gap = originPts - audioStartSec
             if (kotlin.math.abs(gap) > 0.3) {
                 Log.w(
                     TAG,
-                    "起播基准对不齐：请求=$audioStartSec 实际首帧=$originPts 差=${"%.2f".format(gap)}s" +
-                        " → 以实际位置为准，请上层把声音也跳过去",
+                    "起播基准对不齐：请求=$audioStartSec 实际首帧=$originPts 差=${"%.2f".format(gap)}s → 以实际位置为准",
                 )
                 audioStartSec = originPts
-                /* 映射改为 1:1；随后上层会把内核 seek 到同一位置 */
                 appliedOffset = 0.0
                 runCatching { onAudioAlign?.invoke(originPts) }
             } else {
                 appliedOffset = audioStartSec - originPts
             }
-            /*
-             * 基准对账（2026-11-17 父亲要的观测量）：跳转/重建之后到底落在哪一帧。
-             * 推算只能保证"读数不抖"，基准若定错（seek 落到关键帧先后不同）会稳定差几秒，
-             * 半秒阈值挡不住。这一行直接给出：首帧 pts、当时主时钟、两者差。
-             */
             val clockAtFix = clockNow()
             Log.i(
                 TAG,
@@ -574,30 +567,20 @@ class VideoPipe {
             )
         }
 
-        /*
-         * 预热三帧（父亲 2026-11-17 重申：原定就是"画面解出 3 帧 + 声音就绪"才一起放）。
-         *
-         * 三帧不是随手取的：① 给渲染层留出拿到杜比参数的时间；② 第一帧往往最慢，
-         * 三帧之后节奏才稳。这三帧只解不显示（release(render=false)），解满才发画面侧就绪信号。
-         */
+        /* 画面侧就绪信号：预热满三帧才发（父规：三帧 + 声音就绪才一起放） */
         if (!readySignalled) {
             preheatCount++
             preheatFirstPts = if (preheatFirstPts < 0.0) ptsRaw else preheatFirstPts
             preheatLastPts = ptsRaw
-            if (preheatCount < preheatFrames) {
-                return finish(false)
-            }
+            if (preheatCount < preheatFrames) return finish(false)
             readySignalled = true
             val spanMs = ((preheatLastPts - preheatFirstPts) * 1000.0).toLong()
-            Log.i(
-                TAG,
-                "画面侧就绪：预热 $preheatCount 帧（跨度 ${spanMs}ms，pts=$ptsRaw），发信号给上层",
-            )
+            Log.i(TAG, "画面侧就绪：预热 $preheatCount 帧（跨度 ${spanMs}ms，pts=$ptsRaw），发信号给上层")
             runCatching { onPreheatReady?.invoke(spanMs, lastDovi != null) }
             return finish(false)
         }
 
-        /* 起播放行闸门：门关着就持这一帧等（I1/I3），门一开立刻上屏 */
+        /* 起播放行闸门：门关着就持这一帧等，门一开立刻上屏 */
         if (!firstFrameShown && holdGate?.invoke() == true) {
             while (running.get() && holdGate?.invoke() == true) {
                 try {
@@ -612,63 +595,48 @@ class VideoPipe {
         }
 
         /*
-         * 2026-11-17 父亲定：**时钟走到前面去了，刚解出来的是旧画面，就把它扔掉**。
-         *
-         * 不再"改映射把旧画面标成现在"（那只是骗判据，内容照样旧）：
-         *  · 落后超过 300ms → 扔掉这一帧（不上屏），继续解下一帧，直到追上；
-         *  · 超前超过 300ms → 等它到点再上屏（不提前放，免得看起来快进）；
-         *  · 其余照常上屏。
-         * 只丢旧帧、不改时间轴、不跳解码器、不重建。
+         * 对齐判决照抄 ExoPlayer（androidx/media3）MediaCodecVideoRenderer，数值不改：
+         *   MIN_EARLY_US_LATE_THRESHOLD      = -30_000  → 迟到的帧丢掉
+         *   MIN_EARLY_US_VERY_LATE_THRESHOLD = -500_000 → 严重迟到：丢到关键帧重新解
+         *   shouldForceRenderOutputBuffer    = 迟到但 100ms 没出过画面 → 先出一帧
+         * earlyUs = 这帧该显示的时刻 − 现在（µs）；负数=迟到。
          */
-        /*
-         * 抖动缓冲（2026-11-17 父亲定的"手里留两三帧再挑"的等效做法）：
-         * 不真的占解码器格子，而是把"上屏时刻"整体延后 FRAME_BUFFER_SEC（约两帧），
-         * 解码偶发慢一拍时由这段缓冲吸收，既不丢也不等；只有超出窗口才处理。
-         */
-        /*
-         * 排查开关（vr-tuning.txt `pipe_nosync=1`）：画面不同步，解出一帧就上屏。
-         * 用来验证"画面链路自己能不能流畅播"，与同步逻辑分开看。
-         */
-        if (com.xxxx.emby_vr.vr.VrTuning.pipeNoSync == 1) {
-            return finish(true)
-        }
+        val clockUs = (clockNowOrWall() * 1_000_000.0).toLong()
+        val earlyUs = ((ptsRaw + appliedOffset - FRAME_DELAY_SEC) * 1_000_000.0).toLong() - clockUs
+        val nowUs = android.os.SystemClock.elapsedRealtime() * 1000L
+        val sinceLastRenderUs = if (lastShownAtMs > 0L) nowUs - lastShownAtMs * 1000L else Long.MAX_VALUE
 
-        val clock = clockNowOrWall()
-        var ahead = (ptsRaw + appliedOffset) - (clock - FRAME_BUFFER_SEC)
-        if (ahead < -0.5) {
-            /*
-             * 落后超过 1 秒：**直接跳到当前时钟那一帧**（父亲 2026-11-17 定）。
-             * 靠丢帧追不上——解码≈实时速率，越丢越落后。跳转在同一个解码器里做，
-             * 不重建（重建要 6~21 秒）。
-             */
-            /* 跳到"时钟稍前"的位置：解码必须从关键帧起，落点略早一点正好接着解到当下 */
-            val target = (clock - 0.15).coerceAtLeast(0.0)
-            Log.w(TAG, "落后 ${"%.2f".format(-ahead)}s → 解码器内跳到 ${"%.2f".format(target)}s 再解到当下")
+        if (earlyUs < MIN_EARLY_US_VERY_LATE_THRESHOLD) {
+            val target = (clockNowOrWall() - 0.15).coerceAtLeast(0.0)
+            Log.w(TAG, "严重迟到 ${"%.2f".format(-earlyUs / 1e6)}s → 丢掉这一段，跳到 ${"%.2f".format(target)}s")
             pendingSeekSec = target
             return finish(false)
         }
-        if (ahead < -0.30) {
+        if (earlyUs < MIN_EARLY_US_LATE_THRESHOLD && sinceLastRenderUs > 100_000L) {
+            forcedRender++
+            return finish(true)
+        }
+        if (earlyUs < MIN_EARLY_US_LATE_THRESHOLD) {
             droppedStale++
             if (droppedStale % 25 == 1) {
-                Log.w(TAG, "丢掉旧帧|落后=${(-ahead * 1000).toInt()}ms（累计 $droppedStale 帧）")
+                Log.w(TAG, "丢掉迟到帧|晚 ${"%.0f".format(-earlyUs / 1000.0)}ms（累计 $droppedStale 帧）")
             }
             return finish(false)
         }
-        if (ahead > 0.30) {
-            /* 超前：等它到点（分段睡，随时可停） */
-            var remainMs = ((ahead - 0.30) * 1000).toLong()
-            while (remainMs > 0 && running.get()) {
-                val step = remainMs.coerceAtMost(20L)
+        if (earlyUs > 0L) {
+            /* 来早了：等到该显示的时刻，最多等一帧 */
+            var leftMs = (earlyUs / 1000L).coerceAtMost((FRAME_DELAY_SEC * 1000).toLong())
+            while (leftMs > 0 && running.get()) {
+                val step = leftMs.coerceAtMost(10L)
                 try {
                     Thread.sleep(step)
                 } catch (t: InterruptedException) {
                     Thread.currentThread().interrupt()
                     break
                 }
-                remainMs -= step
+                leftMs -= step
             }
             if (!running.get()) return finish(false)
-            ahead = (ptsRaw + appliedOffset) - clockNowOrWall()
         }
         return finish(true)
     }
@@ -712,7 +680,10 @@ class VideoPipe {
      * 抖动缓冲：画面比声音整体晚这么多秒上屏（约两帧 @24fps）。
      * 有了它，解码慢一拍不会立刻变成"丢帧/等待"的来回切换。
      */
-    private val FRAME_BUFFER_SEC = 0.10
+    /* 以下三个数值取自 ExoPlayer MediaCodecVideoRenderer，不改 */
+    private val FRAME_DELAY_SEC = 0.05          /* 目标延迟 ≈ 两帧 @24fps */
+    private val MIN_EARLY_US_LATE_THRESHOLD = -30_000L
+    private val MIN_EARLY_US_VERY_LATE_THRESHOLD = -500_000L
 
     /** 起播基准对不齐时，请上层把声音跳到实际首帧位置（一次性） */
     @Volatile private var onAudioAlign: ((Double) -> Unit)? = null
@@ -723,8 +694,10 @@ class VideoPipe {
     /** 需要"解码器内跳转"到的位置（秒，<0 表示没有待办）。由解码线程自己执行 */
     @Volatile private var pendingSeekSec = -1.0
 
-    /** 丢掉旧帧的累计数（观测量：它一直涨说明解码跟不上） */
+    /** 丢掉迟到帧的累计数（观测量：它一直涨说明解码跟不上） */
     private var droppedStale = 0
+    /** 迟到但被强制上屏的次数（ExoPlayer 的 shouldForceRenderOutputBuffer） */
+    private var forcedRender = 0
 
     /** 主时钟：读不到就用"最后位置 + 墙钟"自己走（不压画面） */
     private fun clockNowOrWall(): Double {
