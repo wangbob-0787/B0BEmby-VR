@@ -175,8 +175,11 @@ class VideoPipe {
     @Volatile var videoHeight = 0
         private set
 
-    /** 已解出的帧数，给日志与首帧判定用 */
+    /** **已上屏**帧数（render=true 才算）；健康行 `decoded=` 用它，判"有没有出画"不能再被丢弃污染 */
     @Volatile var decodedFrames = 0L
+        private set
+    /** 所有归还的帧（上屏 + 丢弃 + 预热）——诊断用，健康行 `released=` */
+    @Volatile var releasedFrames = 0L
         private set
 
     /**
@@ -444,7 +447,9 @@ class VideoPipe {
 
         fun finish(render: Boolean): Boolean {
             codec.releaseOutputBuffer(outIdx, render)
-            decodedFrames++
+            releasedFrames++
+            /* decodedFrames 只统计真正上屏的帧：预热三帧、预卷丢弃、丢帧追赶都不算 */
+            if (render) decodedFrames++
             if (render) {
                 lastShownPts = ptsRaw + appliedOffset
                 firstFrameShown = true
@@ -562,7 +567,7 @@ class VideoPipe {
                         Log.w(TAG, "失步持续 3s（偏差 ${"%.2f".format(ahead)}s）→ 请求从 ${audioSec}s 重启")
                         desyncSinceMs = 0L
                         codec.releaseOutputBuffer(outIdx, false)
-                        decodedFrames++
+                        releasedFrames++
                         runCatching { onNeedRestart?.invoke(audioSec) }
                         return true
                     }

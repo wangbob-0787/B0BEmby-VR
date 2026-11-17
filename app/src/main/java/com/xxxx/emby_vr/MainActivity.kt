@@ -8479,7 +8479,7 @@ class MainActivity : ComponentActivity() {
                     TAG,
                     "PIPEHEALTH|state=$selfPipePhase|CAN_OPEN=${if (selfPipeCanOpen) "到" else "-"}" +
                         "|READY=${if (selfPipeReady) "到" else "-"}" +
-                        "|decoded=${p?.decodedFrames ?: 0}|held=${p?.heldSlot() ?: -1}" +
+                        "|decoded=${p?.decodedFrames ?: 0}|released=${p?.releasedFrames ?: 0}|held=${p?.heldSlot() ?: -1}" +
                         "|dequeued=${p?.dequeuedFrames ?: 0}|tryAgainStreak=${p?.tryAgainStreak ?: 0}" +
                         "|nexus=$nexus|rpu=${if (p?.rpuReadyNow() == true) "有" else "-"}" +
                         /*
