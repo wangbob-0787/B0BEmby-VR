@@ -235,6 +235,8 @@ class VideoPipe {
         clockReal: (() -> Double)? = null,
         /** 起播基准对不齐时回调：请上层把声音跳到这个位置 */
         onAudioAlign: ((Double) -> Unit)? = null,
+        /** 内核是否处于暂停；暂停时画面原地握住当前帧、不上屏 */
+        pausedNow: (() -> Boolean)? = null,
         onFirstFrame: (() -> Unit)? = null,
         onDoviParams: (() -> Unit)? = null,
         onEos: (() -> Unit)? = null,
@@ -263,6 +265,7 @@ class VideoPipe {
         this.clockAgeProvider = clockAgeProvider
         this.clockRealProvider = clockReal
         this.onAudioAlign = onAudioAlign
+        this.pausedNow = pausedNow
         stopping = false
         this.onFirstFrame = onFirstFrame
         this.onDoviParams = onDoviParams
@@ -285,6 +288,7 @@ class VideoPipe {
         preheatLastPts = -1.0
         droppedStale = 0
         forcedRender = 0
+        pausedHoldCount = 0
         startedAtMs = android.os.SystemClock.elapsedRealtime()
         lastDovi = null
         doviWriteSkip = 0
@@ -601,6 +605,23 @@ class VideoPipe {
             return finish(false)
         }
 
+        /*
+         * 暂停时：握住这一帧原地等，**不上屏**。恢复后立刻接着放，
+         * 画面不会趁机往前跑，恢复后也不需要再追同步。
+         */
+        if (pausedNow?.invoke() == true) {
+            pausedHoldCount++
+            while (running.get() && pausedNow?.invoke() == true) {
+                try {
+                    Thread.sleep(10)
+                } catch (t: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    break
+                }
+            }
+            if (!running.get()) return finish(false)
+        }
+
         /* 起播放行闸门：门关着就持这一帧等，门一开立刻上屏 */
         if (!firstFrameShown && holdGate?.invoke() == true) {
             while (running.get() && holdGate?.invoke() == true) {
@@ -712,6 +733,14 @@ class VideoPipe {
     private val MIN_EARLY_US_LATE_THRESHOLD = -30_000L
     private val MIN_EARLY_US_VERY_LATE_THRESHOLD = -500_000L
 
+    /**
+     * 暂停状态提供者：内核暂停时画面也要停。
+     *
+     * 2026-11-18 父亲实测：按暂停后声音停了、画面还在走，恢复后音画不同步一段时间。
+     * 原因：暂停只作用于内核，画面这条链照常解码上屏（时钟被冻住，它只是每帧多等一会儿就照放）。
+     */
+    @Volatile private var pausedNow: (() -> Boolean)? = null
+
     /** 起播基准对不齐时，请上层把声音跳到实际首帧位置（一次性） */
     @Volatile private var onAudioAlign: ((Double) -> Unit)? = null
 
@@ -730,6 +759,9 @@ class VideoPipe {
 
     /** 丢掉迟到帧的累计数（观测量：它一直涨说明解码跟不上） */
     private var droppedStale = 0
+    /** 因暂停而原地握帧的次数（观测量） */
+    private var pausedHoldCount = 0
+
     /** 迟到但被强制上屏的次数（ExoPlayer 的 shouldForceRenderOutputBuffer） */
     private var forcedRender = 0
 
@@ -826,6 +858,7 @@ class VideoPipe {
         holdGate = null
         onNeedRestart = null
         onAudioAlign = null
+        pausedNow = null
         droppedNoClock = 0
         desyncSinceMs = 0L
         onFirstFrame = null

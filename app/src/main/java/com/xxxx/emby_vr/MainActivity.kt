@@ -8810,6 +8810,8 @@ class MainActivity : ComponentActivity() {
                  * 起播基准对不齐：画面实际首帧比请求位置晚（seek 落在关键帧上），
                  * 请内核把声音也跳到那个位置 —— 一次性的起播对齐，不是播放中乱跳。
                  */
+                /* 内核暂停时画面也要停（暂停只作用于声音曾是 bug） */
+                pausedNow = { runCatching { mpvBackend?.isPaused() == true }.getOrDefault(false) },
                 onAudioAlign = { target ->
                     Log.i(TAG, "起播对齐：声音跳到画面实际首帧 ${"%.2f".format(target)}s")
                     runCatching { m.seekToSec(target) }
