@@ -1127,6 +1127,21 @@ class MpvBackend(private val context: Context) {
         return cTimePos - base.first >= 0.001
     }
 
+    /**
+     * 给画面用的"现在到第几秒"：**不判断可用性**，直接用最后读数 + 墙钟推算。
+     *
+     * 父亲 2026-11-17 定：后台 100ms 写一次，画面那边两次之间按正常播放速度推算，
+     * 不要每帧拿同一个旧数去比（比了也没用，只会抖动）。
+     * 暂停时不推算（位置本来就该停）；速率按内核 speed。
+     */
+    fun positionExtrapolated(): Double {
+        val at = cTimePosAtMs
+        if (at == 0L) return -1.0
+        if (cPaused || cIdleActive) return cTimePos
+        val ageMs = android.os.SystemClock.elapsedRealtime() - at
+        return cTimePos + ageMs / 1000.0 * cSpeed
+    }
+
     /** 读数是否新鲜（UI 用：判要不要标 UNKNOWN；不参与出不出帧） */
     fun posFresh(): Boolean =
         cTimePosAtMs != 0L && android.os.SystemClock.elapsedRealtime() - cTimePosAtMs <= 200L

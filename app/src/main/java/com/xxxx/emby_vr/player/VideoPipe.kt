@@ -582,8 +582,13 @@ class VideoPipe {
     }
 
 
-    private fun clockNow(): Double =
-        if (clockValidProvider?.invoke() == true) (clockProvider?.invoke() ?: -1.0) else -1.0
+    /**
+     * 主时钟"现在到第几秒"。
+     *
+     * **不判断可用性**（父亲 2026-11-17）：注入的提供者本身就是"最后读数 + 墙钟推算"，
+     * 它永远给得出一个当下的时间；读不到数返回 -1 才走墙钟兜底。
+     */
+    private fun clockNow(): Double = clockProvider?.invoke() ?: -1.0
 
     /**
      * 从这一帧的码流里解出杜比还原参数，变了就落盘给渲染层。

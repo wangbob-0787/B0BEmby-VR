@@ -8529,8 +8529,9 @@ class MainActivity : ComponentActivity() {
         videoPipe = pipe
         val ok = pipe.start(
             url, emptyMap(), surface,
-            { m.positionSec() },
-            { m.clockAdvancing() },
+            /* 重建路径也用推算时钟（同一条口径，不再分可用/不可用） */
+            { m.positionExtrapolated() },
+            { true },
             sec,
             java.io.File(getExternalFilesDir(null) ?: filesDir, "dovi_params.bin").absolutePath,
             holdGate = { !com.xxxx.emby_vr.player.MpvBackend.audioReady() },
@@ -8568,8 +8569,9 @@ class MainActivity : ComponentActivity() {
          */
         val ok = pipe.start(
             url, emptyMap(), surface,
-            { m.positionSec() },
-            { m.clockAdvancing() },
+            /* 重建路径也用推算时钟（同一条口径，不再分可用/不可用） */
+            { m.positionExtrapolated() },
+            { true },
             sec,
             java.io.File(getExternalFilesDir(null) ?: filesDir, "dovi_params.bin").absolutePath,
             /* 重建路径不放行整段：声音没就绪就压住（既不等预热，也不绕过闸门） */
@@ -8747,8 +8749,10 @@ class MainActivity : ComponentActivity() {
         fun launchPipeline(audioStart: Double) {
             val ok = pipe.start(
                 url, emptyMap(), surface,
-                { m.positionForSync() },
-                { m.clockAdvancing() },
+                /* 画面用的时钟：最后读数 + 墙钟推算（不判断"可用不可用"） */
+                { m.positionExtrapolated() },
+                /* 这个参数已不再参与判断，保留形参避免大改；恒为 true */
+                { true },
                 audioStart, doviPath,
                 /* 门 = 还没放行：关着时解码线程整轮跳过，不取不喂 */
                 holdGate = { selfPipeWaitingFirstFrame.get() },
