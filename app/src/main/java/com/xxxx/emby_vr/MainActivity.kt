@@ -8889,13 +8889,16 @@ class MainActivity : ComponentActivity() {
                 selfPipeCanOpen = true
                 selfPipePhase = "预热"
                 /*
-                 * 声音就绪就把静音解除，**不要等画面**。
-                 * 起播时我们静音是为了不让声音先跑；但静音一旦挂在"画面就绪"上，
-                 * 画面那边一卡住就永远没声音（2026-11-17 实测：控制条弹幕都在走、就是没声）。
-                 * 静音只该管"声音自己准备好没有"，画面的问题由画面那条链自己解决。
+                 * 声音侧就绪时**既不解除静音，还要把暂停重新压回去**。
+                 *
+                 * 2026-11-17 实测：起播后声音先响、画面晚好几秒，原因是内核加载完成后
+                 * 自己会脱离暂停（日志里 `canOpenBlk=notPaused(内核自己开跑了)`），
+                 * 而声音一响，画面还在解前几帧。
+                 * 现在把暂停钉住，等画面侧三帧就绪（放行那一刻）再同拍解除暂停 + 静音。
                  */
-                runCatching { mpvBackend?.setMute(false) }
-                Log.i(TAG, "声音侧就绪 → 解除静音（不再等画面）")
+                runCatching { mpvBackend?.setMute(true) }
+                runCatching { mpvBackend?.setPaused(true) }
+                Log.i(TAG, "声音侧就绪 → 保持暂停与静音，等画面三帧齐了同拍放开")
                 Log.i(TAG, "起播基准：CAN_OPEN 基准=${"%.3f".format(basePos)}（请求=${"%.3f".format(startSec)}）")
                 launchPipeline(basePos)
             }
