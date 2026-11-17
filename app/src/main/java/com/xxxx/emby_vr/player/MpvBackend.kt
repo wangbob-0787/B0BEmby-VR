@@ -810,11 +810,16 @@ class MpvBackend(private val context: Context) {
      * 调用点原来写死 `{ true }` 当"时钟有效"，等于把唯一的校验关掉了。
      */
 
-    /** 引擎已加载、能报位置（不是 idle），且音轨与音频输出都就绪；值可为 0 */
+    /**
+     * 引擎已加载、能报位置（不是 idle），且音轨已解析；值可为 0。
+     *
+     * 不把"音频输出设备"当必要条件：`current-ao` 在关掉视频轨时常常读不到，
+     * 用它当门会让起播每次都白等 5 秒（2026-11-17 实测）。它只作诊断打日志。
+     */
     fun clockPresent(): Boolean {
         if (!videoReady()) return false
         if (cTimePosAtMs == 0L) return false
-        return audioTrackResolved && audioOutputReady
+        return audioTrackResolved || audioOutputReady
     }
 
     /**

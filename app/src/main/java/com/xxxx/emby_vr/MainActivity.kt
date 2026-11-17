@@ -8449,6 +8449,18 @@ class MainActivity : ComponentActivity() {
                     val h = android.os.Handler(android.os.Looper.getMainLooper())
                     fun poll() {
                         if (m.clockStarted(audioStart)) {
+                            /*
+                             * 图 §4.2.1 ④ 后半句：unpause 之后**只验证、不再重算**。
+                             * 拿此刻的实际位置对照 unpause 前那组基准，偏出一帧就记 ERROR ——
+                             * 这里如果"顺手重算 offset"，已经算好的帧会与新基准错开，表现是画面忽快忽慢。
+                             */
+                            val now = m.positionSec()
+                            val drift = kotlin.math.abs(now - audioStart)
+                            if (drift > 0.040) {
+                                Log.e(TAG, "ASSERT 基准漂移：起播基准=$audioStart 时钟起步=$now 差=${"%.3f".format(drift)}s（超一帧）")
+                            } else {
+                                Log.i(TAG, "基准校验通过：基准=$audioStart 起步=$now 差=${"%.3f".format(drift)}s")
+                            }
                             Log.i(TAG, "时钟已开始走（等了 ${waited}ms）→ 放行首帧 + mute=no")
                             selfPipeWaitingFirstFrame.set(false)
                             runCatching { m.setMute(false) }
