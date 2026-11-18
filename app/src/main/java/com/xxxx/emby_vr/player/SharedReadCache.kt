@@ -529,6 +529,10 @@ object SharedReadCache {
                         /* 超时短一点：卡住就重连续传，而不是让播放器等一分钟 */
                         readTimeout = 15000
                     }
+                    Log.i(
+                        TAG,
+                        "拉流请求：主机=${hostOfUrl(target)} 起点=${fromByte}B 直连=$viaDirect 码=${c.responseCode}",
+                    )
                     if (c.responseCode !in 200..206) {
                         c.disconnect()
                         /* 直连被拒（签名过期/额度用尽）：丢掉签名重签，连续失败就本次退回 Emby */
@@ -566,7 +570,10 @@ object SharedReadCache {
                             val want = minOf(buf.size.toLong(), segLen - off)
                             if (want <= 0L) break
                             val n = ins.read(buf, 0, want.toInt())
-                            if (n <= 0) break
+                            if (n <= 0) {
+                                Log.w(TAG, "拉流结束：读返回 $n（写位 ${writePos}B）")
+                                break
+                            }
                             if (raf == null || rafIdx != idx) {
                                 raf?.close()
                                 raf = RandomAccessFile(File(cacheDir, "$idx.seg"), "rw")
@@ -587,7 +594,10 @@ object SharedReadCache {
                         raf?.close()
                     }
                 } catch (t: Throwable) {
-                    Log.w(TAG, "拉流中断，从写位 ${writePos}B 处续传：${t.javaClass.simpleName}")
+                    Log.w(
+                        TAG,
+                        "拉流中断，从写位 ${writePos}B 处续传：${t.javaClass.simpleName}: ${t.message}",
+                    )
                 } finally {
                     runCatching { conn?.disconnect() }
                 }
