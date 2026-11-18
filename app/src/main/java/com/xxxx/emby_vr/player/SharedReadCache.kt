@@ -278,13 +278,22 @@ object SharedReadCache {
             for (k in missing) avail.remove(k)
         }
         var orphans = 0
+        val now = System.currentTimeMillis()
         runCatching {
             for (f in dir.listFiles().orEmpty()) {
                 val name = f.name
                 if (!name.endsWith(".seg")) continue
                 val k = name.dropLast(4).toLongOrNull() ?: continue
                 val known = synchronized(lock) { avail.containsKey(k) }
-                if (!known && f.delete()) orphans++
+                if (known) continue
+                /*
+                 * 只清"放了一会儿还没登记"的段。
+                 * 拉流线程是**先建文件、后登记 avail**，中间那一瞬间文件存在但账上没有；
+                 * 这里若无条件删，就会把刚开始写的段删掉 —— 写入落到已删除的句柄上，
+                 * 读者永远读不到数据（现场表现：转圈后黑屏、进度停在 0）。
+                 */
+                if (now - f.lastModified() < 60_000L) continue
+                if (f.delete()) orphans++
             }
         }
         val drift = real - used

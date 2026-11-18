@@ -8512,6 +8512,8 @@ class MainActivity : ComponentActivity() {
 
     /** 是否为"数据不够"而把播放停住（运行水位；用户自己按的暂停不在此列） */
     @Volatile private var pipePausedByWater = false
+    /** 是否见过"位置之后有余量"：起播头几拍不算，避免一上来就被水位判停 */
+    @Volatile private var waterSeen = false
     private var waterTick: Runnable? = null
     /** 本次播放的时长（秒），水位换算用 */
     @Volatile private var pipeDurationSec = 0.0
@@ -8535,7 +8537,13 @@ class MainActivity : ComponentActivity() {
             override fun run() {
                 val (_, low, high) = bufferWatermarks()
                 val water = com.xxxx.emby_vr.player.SharedReadCache.waterAheadSecs(pipeDurationSec)
-                if (water >= 0.0 && videoPipe != null) {
+                /*
+                 * 只在"确实有过余量"之后才允许按水位停。
+                 * 起播那一刻水位天然是 0（数据还没落盘），若照判就会一上来就停住，
+                 * 而恢复要等水位涨到高水位 —— 拉流稍有闪失就变成永久黑屏、进度停在 0。
+                 */
+                if (water > 0.0) waterSeen = true
+                if (water >= 0.0 && waterSeen && videoPipe != null) {
                     if (!pipePausedByWater && water < low) {
                         pipePausedByWater = true
                         runCatching { mpvBackend?.setPaused(true) }
@@ -8559,6 +8567,7 @@ class MainActivity : ComponentActivity() {
         waterTick?.let { android.os.Handler(android.os.Looper.getMainLooper()).removeCallbacks(it) }
         waterTick = null
         pipePausedByWater = false
+        waterSeen = false
     }
 
     /** 跳转代数：每跳一次 +1，上一跳的回调一律作废（连跳时只认最后一次） */
