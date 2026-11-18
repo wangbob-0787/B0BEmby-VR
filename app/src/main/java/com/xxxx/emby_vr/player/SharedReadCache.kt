@@ -98,6 +98,12 @@ object SharedReadCache {
      */
     @Volatile private var playPosSec = 0.0
 
+    /**
+     * 待清段号：清空缓存只把它们记在这里，真正删文件由后台回收线程做。
+     * 删之前必须确认该段当前不在账本里（可能已经被新内容覆盖使用）。
+     */
+    private val orphanSegs = java.util.concurrent.ConcurrentLinkedQueue<Long>()
+
     /** 已设过的起播锚点（"地址@秒"），同一片同一个位置不重复清空 */
     @Volatile private var anchorKey: String? = null
 
@@ -176,26 +182,27 @@ object SharedReadCache {
     }
 
     /** 换片/换集/切片：整块清空 */
+    /**
+     * 清空缓存（父亲 2026-11-18 23:39 定）：**只改账本，不删文件**。
+     *
+     * 段文件留着给后续写入直接覆盖（写某段时本来就 setLength(0) 重写），
+     * 旧段号进待清队列，由后台回收线程慢慢删 —— 起播路径上一个磁盘操作都不做。
+     */
     fun clearAll(why: String) {
         /* 先换代：读侧按代数判定新旧，旧段立刻作废 */
         gen++
-        val doomed = ArrayList<File>()
+        var n = 0
         synchronized(lock) {
-            val dir = cacheDir
-            if (dir != null) for (k in avail.keys.toList()) doomed.add(File(dir, "$k.seg"))
+            n = avail.size
+            orphanSegs.addAll(avail.keys)
             avail.clear()
             used = 0
         }
-        /*
-         * 删文件放锁外（2026-11-18 23:30 实测：锁内删几百个段文件时，
-         * 主线程的水位 tick 卡在同一把锁上 → 控制条与海报墙一起卡住）。
-         */
-        for (f in doomed) runCatching { f.delete() }
         curUrl = null
         writePos = 0
         baseIdx = 0
         connPos.clear()
-        Log.i(TAG, "缓存已清空：$why（删 ${doomed.size} 个段文件）")
+        Log.i(TAG, "缓存已清空：$why（标记 ${n} 段待清理，文件不删、留给覆盖写）")
     }
 
     fun stats(): String =
@@ -852,6 +859,18 @@ object SharedReadCache {
                 Thread.sleep(1000)
                 /* 每 5 秒校准一次记账与孤儿段（水位判据完全依赖这个数，漂了就不可信） */
                 if (++ticks % 5 == 0) reconcileUsed()
+                /* 待清段：确认它已经不在账本里（没被新内容复用）才删，锁外删 */
+                run {
+                    val dir = cacheDir
+                    if (dir != null && orphanSegs.isNotEmpty()) {
+                        val batch = ArrayList<Long>()
+                        while (!orphanSegs.isEmpty() && batch.size < 32) orphanSegs.poll()?.let { batch.add(it) }
+                        for (k in batch) {
+                            val inUse = synchronized(lock) { avail.containsKey(k) }
+                            if (!inUse) runCatching { File(dir, "$k.seg").delete() }
+                        }
+                    }
+                }
                 val slow = connPos.values.minOrNull()
                 val base = baseIdx
                 val safe = when {
