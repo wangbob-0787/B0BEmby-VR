@@ -440,8 +440,9 @@ object SharedReadCache {
              * 占住路 2 不让位，尾部索引永远排不上（2026-11-18 现场：整文件被当急件，
              * 59729B 的尾部索引死等，内核拿不到索引 → 黑屏）。
              */
-            val urgent =
-                (start < EDGE_BYTES && end < EDGE_BYTES) || start >= total - EDGE_BYTES
+            /* 父亲 2026-11-18 23:01 定：整文件那条（0 到文件尾）固定算常件；其余落在头尾 8MB 内算急件 */
+            val wholeFile = start == 0L && end >= total - 1
+            val urgent = !wholeFile && (start < EDGE_BYTES || start >= total - EDGE_BYTES)
             Log.i(
                 TAG,
                 "路2 取数：${if (urgent) "急件" else "常件"} 起点=${start}B 长度=${end - start + 1}B" +
