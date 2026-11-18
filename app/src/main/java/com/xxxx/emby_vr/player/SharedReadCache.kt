@@ -586,6 +586,8 @@ object SharedReadCache {
         val want = end - start + 1
         val t0 = System.currentTimeMillis()
         var got = false
+        /* 缓冲大小：常件按参数（默认 1MB），急件给 256KB 够用 */
+        val bufBytes = (if (urgent) 256 else com.xxxx.emby_vr.vr.VrTuning.relayBufKb) * 1024
         if (urgent) urgentWaiting.incrementAndGet()
         try {
             road2.acquire()
@@ -601,22 +603,9 @@ object SharedReadCache {
             val genAt = gen
             var pos = start
             var conn: HttpURLConnection? = null
-            val buf = ByteArray(com.xxxx.emby_vr.vr.VrTuning.relayChunkKb * 1024)
+            val buf = ByteArray(bufBytes)
             try {
                 while (pos <= end) {
-                    /*
-                     * 常件让位：有急件在等就把上游连接关掉、让出闸门，
-                     * 急件取完再从断点重开 —— 本地响应一直没断，字节仍然连续。
-                     */
-                    if (!urgent && urgentWaiting.get() > 0) {
-                        runCatching { conn?.disconnect() }
-                        conn = null
-                        road2.release()
-                        got = false
-                        Log.i(TAG, "路2 让位：已给 ${pos - start}B（有急件在等，起点=${pos}B）")
-                        road2.acquire()
-                        got = true
-                    }
                     if (conn == null) {
                         conn = openRange(upstream, pos, end)
                         val code = conn.responseCode
@@ -632,17 +621,46 @@ object SharedReadCache {
                             )
                         }
                     }
-                    val ins = conn.inputStream
-                    val n = ins.read(buf, 0, minOf(buf.size.toLong(), end - pos + 1).toInt())
+                    val n = conn.inputStream.read(buf, 0, minOf(buf.size.toLong(), end - pos + 1).toInt())
                     if (n <= 0) break
-                    /* 换内容 / 用户跳转：这条作废，别把上一部的字节写给新的一部 */
                     if (gen != genAt) {
                         Log.w(TAG, "路2 中止：代数变了（起点=$pos B）")
                         return
                     }
-                    out.write(buf, 0, n)
-                    out.flush()
-                    pos += n
+                    var off = 0
+                    while (off < n) {
+                        /*
+                         * 常件让位：有急件在等就关掉上游连接、交还路 2，
+                         * 先把手上这团缓冲按"吊着速率"喂给播放器（它感觉只是网速抖了一下），
+                         * 急件取完再重新拿闸门、从断点重开上游继续。
+                         */
+                        if (!urgent && urgentWaiting.get() > 0) {
+                            runCatching { conn?.disconnect() }
+                            conn = null
+                            road2.release()
+                            got = false
+                            val kp = com.xxxx.emby_vr.vr.VrTuning.relayHoldKbps
+                            Log.i(TAG, "路2 让位：手上还有 ${n - off}B，按 ${kp}KB/s 吊着")
+                            while (off < n) {
+                                val w = if (kp <= 0) n - off else minOf(kp * 1024 / 10, n - off).coerceAtLeast(1)
+                                out.write(buf, off, w)
+                                out.flush()
+                                off += w
+                                pos += w
+                                if (urgentWaiting.get() == 0) break
+                                if (kp > 0) Thread.sleep(100)
+                            }
+                            road2.acquire()
+                            got = true
+                            Log.i(TAG, "路2 恢复：从 ${pos}B 重开上游")
+                            continue
+                        }
+                        val w = minOf(com.xxxx.emby_vr.vr.VrTuning.relayChunkKb * 1024, n - off)
+                        out.write(buf, off, w)
+                        out.flush()
+                        off += w
+                        pos += w
+                    }
                 }
                 Log.i(TAG, "路2 完成：起点=$start 已给=${pos - start}B 用时=${System.currentTimeMillis() - t0}ms")
             } finally {

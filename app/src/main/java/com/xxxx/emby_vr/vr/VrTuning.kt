@@ -286,6 +286,12 @@ object VrTuning {
     @Volatile var relayBlockMb: Int = 4
     /** 中转单次搬运量（KB）。默认 256；调小=系统调用多，调大=瞬时内存占用高 */
     @Volatile var relayChunkKb: Int = 256
+
+    /** 路 2 常件的一次读取缓冲（KB）：让位时手上剩下的这些数据用来吊住播放器 */
+    @Volatile var relayBufKb: Int = 1024
+
+    /** 让位吊着时，每秒从这里喂给播放器多少 KB（0 = 立刻喂完不等） */
+    @Volatile var relayHoldKbps: Int = 2048
     /** 自管解码器的内存缓冲（兆）。0=不用内存窗，退回直读中转；默认 64MB ≈ 36 秒内容 */
     @Volatile var pipeMemMb: Int = 64
     /** 中转回收余量：删到"最慢读位置"之前几段（默认 8 段 ≈ 32MB） */
@@ -797,6 +803,14 @@ object VrTuning {
             /* 不设硬上限：段大小可改到 8MB 甚至更大，搬运量跟着改就行；只挡掉明显无效的值 */
             val v = it.coerceIn(16, 8192)
             if (v != relayChunkKb) { relayChunkKb = v; applied += "单次搬运=${v}KB" }
+            raw["relay_buf_kb"]?.toIntOrNull()?.let {
+                val v = it.coerceIn(64, 16384)
+                if (v != relayBufKb) { relayBufKb = v; applied += "路2缓冲=${v}KB" }
+            }
+            raw["relay_hold_kbps"]?.toIntOrNull()?.let {
+                val v = it.coerceIn(0, 65536)
+                if (v != relayHoldKbps) { relayHoldKbps = v; applied += "吊着速率=${v}KB/s" }
+            }
         }
         raw["relay"]?.toIntOrNull()?.let {
             val v = if (it == 1) 1 else 0
