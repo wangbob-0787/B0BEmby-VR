@@ -98,6 +98,9 @@ object SharedReadCache {
      */
     @Volatile private var playPosSec = 0.0
 
+    /** 已设过的起播锚点（"地址@秒"），同一片同一个位置不重复清空 */
+    @Volatile private var anchorKey: String? = null
+
     /** 拉流线程空闲日志的节流时间戳（每 3 秒最多一条） */
     @Volatile private var lastIdleLogAt = 0L
     @Volatile private var baseIdx = 0L          // 缓存里保留的第一段
@@ -147,8 +150,14 @@ object SharedReadCache {
      */
     fun beginBoot(url: String, startSec: Double, durationSec: Double) {
         if (!enabled() || !started) return
-        if (durationSec <= 0.0 || startSec < 0.0) return
+        if (durationSec <= 0.0 || startSec < 0.0) {
+            Log.i(TAG, "起播锚点：时长还没到手（${"%.1f".format(durationSec)}s），等拿到再设")
+            return
+        }
         val inner = unwrap(url) ?: return
+        /* 同片同位置只设一次：起播入口一次、拿到时长后再补一次，第二次不许把缓存再清一遍 */
+        val key = "$inner@${startSec.toLong()}"
+        if (key == anchorKey) return
         thread(isDaemon = true) {
             val total = totalSize(inner)
             if (total <= 0L) {
@@ -161,6 +170,7 @@ object SharedReadCache {
             writePos = idx * SEG
             baseIdx = idx
             playPosSec = startSec
+            anchorKey = key
             Log.i(TAG, "起播锚点：位置=${"%.1f".format(startSec)}s → 第 $idx 段（写位=${writePos}B，往后铺）")
         }
     }
@@ -423,6 +433,7 @@ object SharedReadCache {
         if (curUrl != upstream) {
             /* 换了内容：清空重来，写位落到这次请求的位置（起播锚点随后会覆盖成续播位置） */
             clearAll("换内容")
+            anchorKey = null
             curUrl = upstream
             writePos = wantIdx * SEG
             baseIdx = wantIdx

@@ -9217,6 +9217,14 @@ class MainActivity : ComponentActivity() {
                 )
                 com.xxxx.emby_vr.player.SharedReadCache.setPlayPosSec(basePos)
                 Log.i(TAG, "水位起点：播放进度=${"%.1f".format(basePos)}s（交给中转）")
+                /*
+                 * 起播锚点补设：起播入口那一刻内核还没报时长，锚点会被跳过，
+                 * 缓存就从 0 铺，续播片要等它铺到播放点（实测 104 秒的续播点等了很久）。
+                 * 这里时长已到手，补设一次；中转侧幂等，同位置不会重复清空。
+                 */
+                if (pipeDurationSec > 0.0 && lastPipeUrlForCache.isNotEmpty()) {
+                    com.xxxx.emby_vr.player.SharedReadCache.beginBoot(lastPipeUrlForCache, basePos, pipeDurationSec)
+                }
                 startWaterMonitor()
                 launchPipeline(basePos)
             }
