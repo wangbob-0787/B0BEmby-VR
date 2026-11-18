@@ -9106,6 +9106,17 @@ class MainActivity : ComponentActivity() {
                 onAudioAlign = { target ->
                     Log.i(TAG, "起播对齐：声音跳到画面实际首帧 ${"%.2f".format(target)}s")
                     runCatching { m.seekToSec(target) }
+                    /*
+                     * 缓存起点对齐到解码器真正起解的那一帧（父 2026-11-19 00:33 定）。
+                     * 播放点 995 秒、实际关键帧 954 秒时，若缓存从 995 铺，
+                     * 解码器要的 954 秒那段永远不在缓存里，只能回源排长队（现场就这样卡住）。
+                     */
+                    val dur = pipeDurationSec
+                    if (dur > 0.0 && lastPipeUrlForCache.isNotEmpty()) {
+                        com.xxxx.emby_vr.player.SharedReadCache.beginBoot(
+                            lastPipeUrlForCache, target, dur,
+                        )
+                    }
                 },
                 onFirstFrame = {
                     val now = android.os.SystemClock.elapsedRealtime()
