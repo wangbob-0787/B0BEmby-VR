@@ -87,6 +87,9 @@ object SharedReadCache {
     private const val EDGE_BYTES = 2L * 1024 * 1024
     /** 起播阶段：续播区还没写出第一段之前，不做前进/后退判定 */
     @Volatile private var bootPhase = false
+
+    /** 拉流线程空闲日志的节流时间戳（每 3 秒最多一条） */
+    @Volatile private var lastIdleLogAt = 0L
     @Volatile private var baseIdx = 0L          // 缓存里保留的第一段
     @Volatile private var gen = 0L              // 换片/跳转代数：拉流线程据此重开连接
 
@@ -500,6 +503,10 @@ object SharedReadCache {
             try {
                 val url = curUrl
                 if (url == null) {
+                    if (System.currentTimeMillis() - lastIdleLogAt > 3000) {
+                        lastIdleLogAt = System.currentTimeMillis()
+                        Log.i(TAG, "拉流线程空闲：还没有起播地址（curUrl=null）")
+                    }
                     Thread.sleep(50)
                     continue
                 }
@@ -507,6 +514,14 @@ object SharedReadCache {
                 val total = totalSize(url)
                 if (total > 0L) curTotal = total
                 if (total <= 0L) {
+                    if (System.currentTimeMillis() - lastIdleLogAt > 3000) {
+                        lastIdleLogAt = System.currentTimeMillis()
+                        Log.w(
+                            TAG,
+                            "拉流线程空转：拿不到文件总长（主机=${hostOfUrl(url)} 直连开关=" +
+                                "${com.xxxx.emby_vr.vr.VrTuning.relayDirect}）",
+                        )
+                    }
                     Thread.sleep(200)
                     continue
                 }
