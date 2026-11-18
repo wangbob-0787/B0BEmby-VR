@@ -39,13 +39,19 @@ object SharedReadCache {
     private const val CAPACITY_BYTES = 400L * 1024 * 1024
     private const val UA = "B0BEmbyRelay/1.0"
     /**
-     * 拉流连接数（父亲 2026-11-18 定：先按"单路读到尾"试）。
+     * 拉流连接数。
+     *
+     * 2026-11-18 中午试过单路读到尾，实测一字节都不进来（游标一次跳到文件尾、
+     * 之后无人补前段，缓存恒 0、黑屏），已回退到两路各领一段的老行为。
+     *
+     * 老行为的代价：每段一条连接，每段多约 1.6 秒握手，吞吐约 2.5MB/s。
+     * 若将来要再提速，先单独验证"一条连接跨段读"在崩溃/换片时的补段逻辑。
      *
      * 单路的理由：两条连接共用一个"下一条拉哪段"的游标，谁到段边界都得抢下一段，
      * 抢不到就得断开重连 —— 那正是把吞吐锁在 2.5MB/s 的原因。单路一条连接读到文件尾，
      * 只有出错才重连。代价是没有并行度，实测不够 5.5MB/s 时再改回两路各领一串。
      */
-    private const val PULLERS = 1
+    private const val PULLERS = 2
     /** 删除余量：留几段（可调 relay_margin_segs，默认 8 段 ≈ 32MB ≈ 18 秒内容） */
     private val MARGIN_SEGS: Long get() = com.xxxx.emby_vr.vr.VrTuning.relayMarginSegs.toLong()
 
@@ -463,13 +469,7 @@ object SharedReadCache {
                     continue
                 }
                 val seg = SEG
-                /*
-                 * 本次连接连读几段：`relay_run_segs=0`（默认）= 一直读到文件尾，
-                 * 只有出错或换片才重连；设成正数则每读这么多段换一次连接（双路并行时用）。
-                 */
-                val runRaw = com.xxxx.emby_vr.vr.VrTuning.relayRunSegs.toLong()
-                val toEof = runRaw <= 0L
-                val runSegs = if (toEof) 0L else runRaw
+                val runSegs = com.xxxx.emby_vr.vr.VrTuning.relayRunSegs.toLong().coerceAtLeast(1L)
                 val total = totalSize(url)
                 if (total > 0L) curTotal = total
                 if (total <= 0L) {
@@ -493,7 +493,7 @@ object SharedReadCache {
                          * 原来一次只领一段、读满就断线，每段都要重新握手（约 1.6 秒），
                          * 实测吞吐被锁死在 4MB/1.6s ≈ 2.5MB/s。段从此只当落盘分界。
                          */
-                        writeNext = if (toEof) total / seg + 1 else i + runSegs
+                        writeNext = i + runSegs
                         i
                     }
                 }
@@ -501,7 +501,7 @@ object SharedReadCache {
                     Thread.sleep(200)
                     continue
                 }
-                val runEnd = if (toEof) total / seg else startIdx + runSegs - 1
+                val runEnd = startIdx + runSegs - 1
                 val myGen = gen
                 var curIdx = startIdx
                 /* 从该段已写入的位置续传（断点续传） */
