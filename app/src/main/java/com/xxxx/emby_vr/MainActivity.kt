@@ -8579,25 +8579,54 @@ class MainActivity : ComponentActivity() {
     @Volatile private var seekReleaseGen = 0
 
     /**
-     * 跳转后双信号放行的判定。
+     * 跳转放行的判定。
      *
-     * 画面已经出了新帧（`VideoPipe.onSeekRendered` 把它送上来），这里再问内核报出的位置
-     * 是否和这一帧对得上（3 秒内算对上），对上就同拍放开。对不上也放 —— 画面已经动了，
-     * 再扣着声音只会变成"没声音"；偏差写进日志供复核。
+     * 唯一判据（父亲 2026-11-18 定）：**画面帧落在目标点附近，且水位够**。
+     * 不满足就继续等，最多等 12 秒再兜底放行并打日志。
+     * 之前拿"跳转前的旧帧"跟目标比也能放过去，于是出现"先放行、再停等"。
      */
     private fun releaseAfterSeek(gen: Int, targetSec: Double, shownSec: Double) {
         if (gen != seekReleaseGen) return
-        val pos = runCatching { mpvBackend?.positionExtrapolated() }.getOrNull()
-        val gap = if (pos != null) kotlin.math.abs(pos - shownSec) else -1.0
-        Log.i(
-            TAG,
-            "跳转放行：画面帧=${"%.2f".format(shownSec)}s" +
-                " 内核位置=${pos?.let { "%.2f".format(it) } ?: "-"}s" +
-                " 目标=${"%.2f".format(targetSec)}s" +
-                " 差=${if (gap >= 0.0) "%.2f".format(gap) + "s" else "-"}" +
-                " 同拍=${gap >= 0.0 && gap <= 3.0}",
-        )
-        releasePlayback("REBUILD", "跳转双信号")
+        val (_, _, high) = bufferWatermarks()
+        var tries = 0
+        val ui = android.os.Handler(android.os.Looper.getMainLooper())
+        val tick = object : Runnable {
+            override fun run() {
+                if (gen != seekReleaseGen) return
+                val frame = videoPipe?.lastShownPts ?: -1.0
+                val water = com.xxxx.emby_vr.player.SharedReadCache.waterAheadSecs(pipeDurationSec)
+                val nearTarget = frame >= 0.0 && kotlin.math.abs(frame - targetSec) <= 3.0
+                val waterOk = water < 0.0 || water >= high
+                if (nearTarget && waterOk) {
+                    Log.i(
+                        TAG,
+                        "跳转放行：画面帧=${"%.2f".format(frame)}s 目标=${"%.2f".format(targetSec)}s" +
+                            " 水位=${"%.1f".format(water)}s（第 ${tries + 1} 拍）",
+                    )
+                    releasePlayback("REBUILD", "跳转放行")
+                    return
+                }
+                tries++
+                if (tries >= 40) {
+                    Log.w(
+                        TAG,
+                        "跳转等待超时：画面帧=${"%.2f".format(frame)}s 目标=${"%.2f".format(targetSec)}s" +
+                            " 水位=${"%.1f".format(water)}s → 兜底放行",
+                    )
+                    releasePlayback("REBUILD", "跳转放行(超时)")
+                    return
+                }
+                if (tries % 5 == 1) {
+                    Log.i(
+                        TAG,
+                        "跳转等待：画面帧=${"%.2f".format(frame)}s 目标=${"%.2f".format(targetSec)}s" +
+                            " 水位=${"%.1f".format(water)}s/${high}s（第 $tries 拍）",
+                    )
+                }
+                ui.postDelayed(this, 300)
+            }
+        }
+        ui.postDelayed(tick, 300)
     }
 
     /* 等待时长只报数不判死（图 §4.1 / §12 L23）：起播、跳转、收场各记一个起点 */
