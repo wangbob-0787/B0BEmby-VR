@@ -8579,49 +8579,46 @@ class MainActivity : ComponentActivity() {
     @Volatile private var seekReleaseGen = 0
 
     /**
-     * 跳转放行的判定。
+     * 跳转放行的判定（父亲 2026-11-18 定）。
      *
-     * 唯一判据（父亲 2026-11-18 定）：**画面帧落在目标点附近，且水位够**。
-     * 不满足就继续等，最多等 12 秒再兜底放行并打日志。
-     * 之前拿"跳转前的旧帧"跟目标比也能放过去，于是出现"先放行、再停等"。
+     * 顺序：画面跳到目标之后的第一帧 → 声音跳到这一帧（只往前，不回退）→ 水位够 → 放行。
+     * 判据里不要求"帧等于目标"：画面只能落在关键帧上，要求相等等于靠运气。
      */
     private fun releaseAfterSeek(gen: Int, targetSec: Double, shownSec: Double) {
         if (gen != seekReleaseGen) return
+        val m = mpvBackend ?: return
+        /* 第一步：声音对齐到画面这一帧（只允许往前跳） */
+        val pos = runCatching { m.positionExtrapolated() }.getOrNull()
+        if (pos != null && shownSec - pos > 0.3) {
+            Log.i(
+                TAG,
+                "跳转对齐：声音 ${"%.2f".format(pos)}s → 画面帧 ${"%.2f".format(shownSec)}s" +
+                    "（目标 ${"%.2f".format(targetSec)}s）",
+            )
+            runCatching { m.seekToSec(shownSec) }
+        }
+        /* 第二步：等水位够再放行 */
         val (_, _, high) = bufferWatermarks()
         var tries = 0
         val ui = android.os.Handler(android.os.Looper.getMainLooper())
         val tick = object : Runnable {
             override fun run() {
                 if (gen != seekReleaseGen) return
-                val frame = videoPipe?.lastShownPts ?: -1.0
                 val water = com.xxxx.emby_vr.player.SharedReadCache.waterAheadSecs(pipeDurationSec)
-                val nearTarget = frame >= 0.0 && kotlin.math.abs(frame - targetSec) <= 3.0
-                val waterOk = water < 0.0 || water >= high
-                if (nearTarget && waterOk) {
+                if (water < 0.0 || water >= high) {
                     Log.i(
                         TAG,
-                        "跳转放行：画面帧=${"%.2f".format(frame)}s 目标=${"%.2f".format(targetSec)}s" +
-                            " 水位=${"%.1f".format(water)}s（第 ${tries + 1} 拍）",
+                        "跳转放行：画面帧=${"%.2f".format(shownSec)}s 水位=${"%.1f".format(water)}s" +
+                            "（第 ${tries + 1} 拍）",
                     )
                     releasePlayback("REBUILD", "跳转放行")
                     return
                 }
                 tries++
                 if (tries >= 40) {
-                    Log.w(
-                        TAG,
-                        "跳转等待超时：画面帧=${"%.2f".format(frame)}s 目标=${"%.2f".format(targetSec)}s" +
-                            " 水位=${"%.1f".format(water)}s → 兜底放行",
-                    )
+                    Log.w(TAG, "跳转等水位超时：${"%.1f".format(water)}s/${high}s → 兜底放行")
                     releasePlayback("REBUILD", "跳转放行(超时)")
                     return
-                }
-                if (tries % 5 == 1) {
-                    Log.i(
-                        TAG,
-                        "跳转等待：画面帧=${"%.2f".format(frame)}s 目标=${"%.2f".format(targetSec)}s" +
-                            " 水位=${"%.1f".format(water)}s/${high}s（第 $tries 拍）",
-                    )
                 }
                 ui.postDelayed(this, 300)
             }
