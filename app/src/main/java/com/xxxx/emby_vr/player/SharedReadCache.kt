@@ -177,20 +177,25 @@ object SharedReadCache {
 
     /** 换片/换集/切片：整块清空 */
     fun clearAll(why: String) {
+        /* 先换代：读侧按代数判定新旧，旧段立刻作废 */
+        gen++
+        val doomed = ArrayList<File>()
         synchronized(lock) {
             val dir = cacheDir
-            if (dir != null) {
-                for (k in avail.keys.toList()) File(dir, "$k.seg").delete()
-            }
+            if (dir != null) for (k in avail.keys.toList()) doomed.add(File(dir, "$k.seg"))
             avail.clear()
             used = 0
         }
-        gen++
+        /*
+         * 删文件放锁外（2026-11-18 23:30 实测：锁内删几百个段文件时，
+         * 主线程的水位 tick 卡在同一把锁上 → 控制条与海报墙一起卡住）。
+         */
+        for (f in doomed) runCatching { f.delete() }
         curUrl = null
         writePos = 0
         baseIdx = 0
         connPos.clear()
-        Log.i(TAG, "缓存已清空：$why")
+        Log.i(TAG, "缓存已清空：$why（删 ${doomed.size} 个段文件）")
     }
 
     fun stats(): String =
