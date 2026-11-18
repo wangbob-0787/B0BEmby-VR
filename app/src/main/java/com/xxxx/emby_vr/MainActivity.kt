@@ -8546,7 +8546,7 @@ class MainActivity : ComponentActivity() {
             override fun run() {
                 val (_, low, high) = bufferWatermarks()
                 /* 水位只认播放进度（mpv 的读位置含它自己的预读，会假性偏低） */
-                runCatching { mpvBackend?.positionExtrapolated() }?.let {
+                runCatching { mpvBackend?.positionExtrapolated() }.getOrNull()?.let {
                     com.xxxx.emby_vr.player.SharedReadCache.setPlayPosSec(it)
                 }
                 val water = com.xxxx.emby_vr.player.SharedReadCache.waterAheadSecs(pipeDurationSec)
