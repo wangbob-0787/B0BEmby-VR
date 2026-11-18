@@ -301,7 +301,7 @@ object SharedReadCache {
                     Thread.sleep(200)
                     continue
                 }
-                /* 领一个起始段；连续读期间自己往后推进 writeNext */
+                /* 领一个起始段 */
                 val startIdx: Long = synchronized(this) {
                     if (writeNext * seg >= total) -1L else writeNext
                 }
@@ -310,14 +310,18 @@ object SharedReadCache {
                     continue
                 }
                 val myGen = gen
-                var idx = startIdx
+                var curIdx = startIdx
+                /* 从该段已写入的位置续传（断点续传） */
+                var writtenInSeg = synchronized(lock) { avail[curIdx] ?: 0L }
                 var conn: HttpURLConnection? = null
                 try {
+                    val fromByte = curIdx * seg + writtenInSeg
                     val c = (URL(url).openConnection() as HttpURLConnection).apply {
-                        setRequestProperty("Range", "bytes=${startIdx * seg}-")
+                        setRequestProperty("Range", "bytes=$fromByte-")
                         setRequestProperty("User-Agent", UA)
-                        connectTimeout = 20000
-                        readTimeout = 60000
+                        connectTimeout = 15000
+                        /* 超时短一点：卡住就重连续传，而不是让播放器等一分钟 */
+                        readTimeout = 15000
                     }
                     if (c.responseCode !in 200..206) {
                         c.disconnect()
@@ -328,13 +332,9 @@ object SharedReadCache {
                     misses.incrementAndGet()
                     c.inputStream.use { ins ->
                         var raf: RandomAccessFile? = null
-                        var writtenInSeg = 0L
-                        var curIdx = idx
                         val buf = ByteArray(64 * 1024)
                         while (true) {
-                            /* 换片/跳转：立刻重开 */
                             if (gen != myGen) break
-                            /* 缓存满：停下等回收 */
                             val full = synchronized(lock) { used >= CAPACITY_BYTES * 95 / 100 }
                             if (full) {
                                 Thread.sleep(100)
@@ -342,18 +342,20 @@ object SharedReadCache {
                             }
                             val segLen = minOf(seg, total - curIdx * seg)
                             if (segLen <= 0L) break
-                            if (raf == null || writtenInSeg >= segLen) {
+                            if (writtenInSeg >= segLen) {
+                                /* 这一段写满：交给下一段 */
                                 raf?.close()
                                 raf = null
-                                if (writtenInSeg >= segLen) {
-                                    curIdx += 1
-                                    idx = curIdx
-                                    synchronized(this) { if (writeNext < curIdx) writeNext = curIdx }
-                                    writtenInSeg = 0
-                                    continue
-                                }
-                                raf = RandomAccessFile(File(cacheDir, "$curIdx.seg"), "rw")
-                                raf.setLength(0)
+                                curIdx += 1
+                                writtenInSeg = 0
+                                synchronized(this) { if (writeNext < curIdx) writeNext = curIdx }
+                                break
+                            }
+                            if (raf == null) {
+                                val f = File(cacheDir, "$curIdx.seg")
+                                raf = RandomAccessFile(f, "rw")
+                                /* 只有从头写才截断；续传保留已有内容 */
+                                if (writtenInSeg == 0L) raf.setLength(0)
                             }
                             val want = minOf(buf.size.toLong(), segLen - writtenInSeg)
                             val n = ins.read(buf, 0, want.toInt())
@@ -370,11 +372,15 @@ object SharedReadCache {
                         raf?.close()
                     }
                 } catch (t: Throwable) {
-                    Log.w(TAG, "拉流中断：${t.javaClass.simpleName}: ${t.message}")
+                    Log.w(TAG, "拉流中断，从第 $curIdx 段 ${writtenInSeg}B 处续传：${t.javaClass.simpleName}")
                 } finally {
                     runCatching { conn?.disconnect() }
                 }
-                Thread.sleep(50)
+                /* 收尾：把这个段的写入进度登记为"下次从这里继续" */
+                synchronized(this) {
+                    if (gen == myGen && writeNext > curIdx) writeNext = curIdx
+                }
+                Thread.sleep(20)
             } catch (t: Throwable) {
                 runCatching { Thread.sleep(200) }
             }
