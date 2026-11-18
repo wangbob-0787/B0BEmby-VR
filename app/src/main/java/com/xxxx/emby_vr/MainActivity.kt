@@ -9043,13 +9043,11 @@ class MainActivity : ComponentActivity() {
                  * 请内核把声音也跳到那个位置 —— 一次性的起播对齐，不是播放中乱跳。
                  */
                 /*
-                 * 断流联动：画面读不到数据时把声音也停住，恢复后继续 —— 宁可短暂停顿，
-                 * 也不要声音独自跑掉（父亲 2026-11-18 定）。
+                 * 断流不再参与"停不停"（父亲 2026-11-18 定）：断流是因、水位是果，
+                 * 拿因去停会造成频繁误停，扰动本来就该由水位缓冲掉。
+                 * 停不停只看水位这一个判据。
                  */
-                onStall = { stalled ->
-                    runCatching { mpvBackend?.setPaused(stalled) }
-                    if (stalled) hud("缓冲中…")
-                },
+                onStall = null,
                 /* 内核暂停时画面也要停（暂停只作用于声音曾是 bug） */
                 pausedNow = { runCatching { mpvBackend?.isPaused() == true }.getOrDefault(false) },
                 onAudioAlign = { target ->
