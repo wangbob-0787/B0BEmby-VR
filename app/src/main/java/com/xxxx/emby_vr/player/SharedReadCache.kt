@@ -434,8 +434,14 @@ object SharedReadCache {
          */
         val haveNow = synchronized(lock) { avail[wantIdx] ?: 0L }
         if (wantIdx < baseIdx || haveNow <= start - wantIdx * SEG) {
-            /* 文件头 8MB / 文件尾 8MB 之内算急件；其余是常件（从播放位置往后连续读） */
-            val urgent = start < EDGE_BYTES || start >= total - EDGE_BYTES
+            /*
+             * 急件判定看**整段区间**，不能只看起点：播放器起播第一个请求是"从 0 到文件尾"，
+             * 起点在头部但长度是整个文件，若按起点判就会把这条最长的请求当成急件，
+             * 占住路 2 不让位，尾部索引永远排不上（2026-11-18 现场：整文件被当急件，
+             * 59729B 的尾部索引死等，内核拿不到索引 → 黑屏）。
+             */
+            val urgent =
+                (start < EDGE_BYTES && end < EDGE_BYTES) || start >= total - EDGE_BYTES
             Log.i(
                 TAG,
                 "路2 取数：${if (urgent) "急件" else "常件"} 起点=${start}B 长度=${end - start + 1}B" +
