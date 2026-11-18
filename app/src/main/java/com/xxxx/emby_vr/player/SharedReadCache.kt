@@ -562,10 +562,7 @@ object SharedReadCache {
         val target = (targetSec / durationSec * total).toLong().coerceIn(0L, total - 1)
         val targetIdx = target / SEG
         if (targetSec < fromSec) {
-            clearAll("用户后退（${"%.0f".format(fromSec)}s → ${"%.0f".format(targetSec)}s）")
-            curUrl = url
-            writePos = targetIdx * SEG
-            baseIdx = targetIdx
+            resetAnchor("用户后退（${"%.0f".format(fromSec)}s → ${"%.0f".format(targetSec)}s）", url, targetIdx)
             Log.i(TAG, "按用户操作跳转：目标=${"%.1f".format(targetSec)}s（往回，清空重铺，写位=${writePos}B）")
             return
         }
@@ -596,11 +593,32 @@ object SharedReadCache {
             )
             return
         }
-        clearAll("用户快进（${"%.0f".format(fromSec)}s → ${"%.0f".format(targetSec)}s）")
+        resetAnchor("用户快进（${"%.0f".format(fromSec)}s → ${"%.0f".format(targetSec)}s）", url, targetIdx)
+        Log.i(TAG, "按用户操作跳转：目标=${"%.1f".format(targetSec)}s（往前，目标处无缓存，清空重铺，写位=${writePos}B）")
+    }
+
+    /**
+     * 用户跳转时的"清空重铺"（父亲 2026-11-18 23:49 定）：**只挪起点，不作废在途请求**。
+     *
+     * 之前这里调 clearAll：换代 + 清账本，把播放器正在进行的读全部作废，
+     * 它的 seek 请求正好撞上被断开 → seek 没落地，画面解码器还在旧段等一个永远不会来的数据，
+     * 现场就是"跳到 11 分钟但一直停着"（r1505 实测）。
+     * 现在：旧段标记待回收（文件留着被覆盖）、账本清空、写位直接落到目标位置；
+     * 连接代数不变，在途读继续（读旧段时走回源，读新段命中缓存）。
+     */
+    private fun resetAnchor(why: String, url: String, targetIdx: Long) {
+        var n = 0
+        synchronized(lock) {
+            n = avail.size
+            orphanSegs.addAll(avail.keys)
+            avail.clear()
+            used = 0
+        }
         curUrl = url
         writePos = targetIdx * SEG
         baseIdx = targetIdx
-        Log.i(TAG, "按用户操作跳转：目标=${"%.1f".format(targetSec)}s（往前，目标处无缓存，清空重铺，写位=${writePos}B）")
+        connPos.clear()
+        Log.i(TAG, "跳转重铺：$why（标记 ${n} 段待清理，写位=${writePos}B baseIdx=$targetIdx，连接不作废）")
     }
 
     /**
