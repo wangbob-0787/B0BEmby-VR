@@ -8896,6 +8896,13 @@ class MainActivity : ComponentActivity() {
             }
         }
         val url = com.xxxx.emby_vr.player.SharedReadCache.rewrite(rawUrl)
+        /* 探针（只报数）：原始地址是否 http、重写是否生效、中转是否在跑 —— 起播黑屏时靠这三项定性 */
+        Log.i(
+            TAG,
+            "起播地址探针：原始=${if (rawUrl.startsWith("http")) "http(" + hostOf(rawUrl) + ")" else rawUrl.take(20)}" +
+                " 重写=${if (url != rawUrl) "已指向本机中转" else "未重写"}" +
+                " 中转=${if (com.xxxx.emby_vr.player.SharedReadCache.enabled()) "开" else "关"}",
+        )
         if (url != rawUrl) {
             Log.i(TAG, "起播地址已指向共享读缓存（本机 127.0.0.1:8898）")
             /*
@@ -9050,6 +9057,7 @@ class MainActivity : ComponentActivity() {
         }
 
         fun launchPipeline(audioStart: Double) {
+            Log.i(TAG, "画面管道启动：地址=${if (url.startsWith("http://127.0.0.1")) "本机中转" else hostOf(url)} 起点=${"%.1f".format(audioStart)}s")
             val ok = pipe.start(
                 url, emptyMap(), surface,
                 /* 画面用的时钟：最后读数 + 墙钟推算（不判断"可用不可用"） */
