@@ -261,6 +261,12 @@ object SharedReadCache {
      * 水位判据完全靠这个数，所以差超过 8MB 就当场纠正并打日志；
      * 顺带清掉"盘上有、账上没有"的孤儿段文件，否则它们白占空间还看不出来是谁占的。
      */
+    /**
+     * 只核对数字，**不动任何文件**。
+     *
+     * 删除的判据永远只有一个：播放进度（见 gcLoop）。账本只回答"账上记了多少"，
+     * 用它决定删什么就会删到正在写的段（2026-11-18 黑屏的成因）。
+     */
     private fun reconcileUsed() {
         val dir = cacheDir ?: return
         var real = 0L
@@ -277,33 +283,13 @@ object SharedReadCache {
             }
             for (k in missing) avail.remove(k)
         }
-        var orphans = 0
-        val now = System.currentTimeMillis()
-        runCatching {
-            for (f in dir.listFiles().orEmpty()) {
-                val name = f.name
-                if (!name.endsWith(".seg")) continue
-                val k = name.dropLast(4).toLongOrNull() ?: continue
-                val known = synchronized(lock) { avail.containsKey(k) }
-                if (known) continue
-                /*
-                 * 只清"放了一会儿还没登记"的段。
-                 * 拉流线程是**先建文件、后登记 avail**，中间那一瞬间文件存在但账上没有；
-                 * 这里若无条件删，就会把刚开始写的段删掉 —— 写入落到已删除的句柄上，
-                 * 读者永远读不到数据（现场表现：转圈后黑屏、进度停在 0）。
-                 */
-                if (now - f.lastModified() < 60_000L) continue
-                if (f.delete()) orphans++
-            }
-        }
         val drift = real - used
         if (drift > 8L * 1048576 || drift < -8L * 1048576) {
             val book = used
             synchronized(lock) { used = real }
             Log.w(
                 TAG,
-                "缓存记账校正：账面=${book / 1048576}MB → 实际=${real / 1048576}MB" +
-                    "（$segCount 段，孤儿文件=$orphans）",
+                "缓存记账校正：账面=${book / 1048576}MB → 实际=${real / 1048576}MB（$segCount 段）",
             )
         }
     }
@@ -660,7 +646,22 @@ object SharedReadCache {
                         }
                     }
                     val dir = cacheDir
-                    if (dir != null) for (k in doomed) runCatching { File(dir, "$k.seg").delete() }
+                    if (dir != null) {
+                        for (k in doomed) runCatching { File(dir, "$k.seg").delete() }
+                        /*
+                         * 唯一的删除依据是**播放进度**：段号在安全线之前的文件一律删，
+                         * 不查账本。账本只用来核数，不能拿来当删除判据 ——
+                         * 之前按"盘上有、账上没有"删，把刚建好还没登记的段删掉，
+                         * 写入落到已删除的文件上，读取侧永远等不到数据（2026-11-18 黑屏）。
+                         */
+                        runCatching {
+                            for (f in dir.listFiles().orEmpty()) {
+                                if (!f.name.endsWith(".seg")) continue
+                                val k = f.name.dropLast(4).toLongOrNull() ?: continue
+                                if (k < safe) f.delete()
+                            }
+                        }
+                    }
                     baseIdx = safe
                     if (freed > 0) Log.i(TAG, "回收：删到第 $safe 段之前（最慢读位置=$slow），释放 ${freed / 1048576}MB")
                 }
