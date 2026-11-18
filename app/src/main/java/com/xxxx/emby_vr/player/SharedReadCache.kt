@@ -222,27 +222,38 @@ object SharedReadCache {
             "bytes $start-$end/$total")
 
         var pos = start
-        val buf = ByteArray(64 * 1024)
+        val buf = ByteArray(256 * 1024)
         var lastProgress = System.currentTimeMillis()
         var lastLogAt = 0L
-        while (pos <= end) {
-            val idx = pos / SEG
-            val off = pos % SEG
-            val have = synchronized(lock) { avail[idx] ?: 0L }
-            if (have > off) {
-                val dir = cacheDir ?: break
-                val f = File(dir, "$idx.seg")
-                if (!f.exists()) {
-                    /* 被回收了：等它重拉 */
-                    Thread.sleep(20)
-                    continue
-                }
-                val n = minOf(have - off, end - pos + 1, buf.size.toLong()).toInt()
-                val raf = RandomAccessFile(f, "r")
-                try {
-                    raf.seek(off)
-                    val got = raf.read(buf, 0, n)
+        /* 一段只打开一次文件：原来每 64K 都重开一次（和"64K 败笔"同一个毛病，只是发生在服务端） */
+        var openIdx = -1L
+        var raf: RandomAccessFile? = null
+        try {
+            while (pos <= end) {
+                val idx = pos / SEG
+                val off = pos % SEG
+                val have = synchronized(lock) { avail[idx] ?: 0L }
+                if (have > off) {
+                    val dir = cacheDir ?: break
+                    if (raf == null || openIdx != idx) {
+                        raf?.close()
+                        raf = null
+                        val f = File(dir, "$idx.seg")
+                        if (!f.exists()) {
+                            /* 被回收了：等它重拉 */
+                            Thread.sleep(20)
+                            continue
+                        }
+                        raf = runCatching { RandomAccessFile(f, "r") }.getOrNull() ?: continue
+                        openIdx = idx
+                    }
+                    val n = minOf(have - off, end - pos + 1, buf.size.toLong()).toInt()
+                    raf?.seek(off)
+                    val got = raf?.read(buf, 0, n) ?: -1
                     if (got <= 0) {
+                        raf?.close()
+                        raf = null
+                        openIdx = -1L
                         Thread.sleep(20)
                         continue
                     }
@@ -250,10 +261,7 @@ object SharedReadCache {
                     pos += got
                     lastProgress = System.currentTimeMillis()
                     connPos[connId] = pos / SEG
-                } finally {
-                    raf.close()
-                }
-            } else {
+                } else {
                 /* 数据还没到：等拉流线程写进来（超时即断开，让客户端重试） */
                 if (System.currentTimeMillis() - lastProgress > 30000) break
                 if (System.currentTimeMillis() - lastLogAt > 2000) {
@@ -261,7 +269,10 @@ object SharedReadCache {
                     Log.i(TAG, "等数据|段=$idx|该段已写=${have}B|拉流起点=${writeNext}|缓存=${used / 1048576}MB")
                 }
                 Thread.sleep(15)
+                }
             }
+        } finally {
+            runCatching { raf?.close() }
         }
         out.flush()
     }
