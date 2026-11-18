@@ -222,7 +222,8 @@ object SharedReadCache {
             "bytes $start-$end/$total")
 
         var pos = start
-        val buf = ByteArray(256 * 1024)
+        /* 单次搬运量可调（relay_chunk_kb，默认 256KB）：太小则系统调用多，太大占用瞬时内存 */
+        val buf = ByteArray(com.xxxx.emby_vr.vr.VrTuning.relayChunkKb * 1024)
         var lastProgress = System.currentTimeMillis()
         var lastLogAt = 0L
         /* 一段只打开一次文件：原来每 64K 都重开一次（和"64K 败笔"同一个毛病，只是发生在服务端） */
