@@ -8505,10 +8505,6 @@ class MainActivity : ComponentActivity() {
             pipePausedForRebuild = false
         }
         runCatching { mpvBackend?.setMute(false) }
-        /* 起播阶段到此结束：之后读缓存、水位按档位主动停（父亲 2026-11-18：起播阶段不判前后） */
-        if (kind == "BOOT" || kind == "REBUILD") {
-            com.xxxx.emby_vr.player.SharedReadCache.endBoot("放行|$kind|$source")
-        }
         pipeReleasedOnce.set(true)
         selfPipeReleased = true
         selfPipePhase = if (kind == "BOOT") "PLAYING" else "PLAYING(重建)"
