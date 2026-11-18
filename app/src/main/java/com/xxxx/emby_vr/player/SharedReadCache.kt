@@ -301,9 +301,17 @@ object SharedReadCache {
                     Thread.sleep(200)
                     continue
                 }
-                /* 领一个起始段 */
+                /*
+                 * 领一个起始段：**必须原子领取并立刻占位**。
+                 * 原来只读 writeNext 不占位，两条拉流线程会领到同一段、读同一份数据，
+                 * 实际吞吐只有一路（实测约 2MB/s，播放刚好追平 → 一会儿就停住）。
+                 */
                 val startIdx: Long = synchronized(this) {
-                    if (writeNext * seg >= total) -1L else writeNext
+                    if (writeNext * seg >= total) -1L else {
+                        val i = writeNext
+                        writeNext = i + 1     /* 立刻占位，另一条线程领下一段 */
+                        i
+                    }
                 }
                 if (startIdx < 0L) {
                     Thread.sleep(200)
