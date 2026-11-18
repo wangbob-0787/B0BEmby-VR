@@ -554,24 +554,15 @@ object SharedReadCache {
                                 raf?.close()
                                 raf = null
                                 /*
-                                 * 段边界：游标**只按真正写完的段往前挪一格**，绝不在没拿到数据时跳动。
-                                 * 单路（PULLERS=1）时下一段恒等于 curIdx+1，于是这条连接可以一直读下去；
-                                 * 若被别人抢先领走（多路时会发生），这条连接的字节位置就对不上了，必须换连接。
+                                 * 这一段写满：把游标交还给下一段，然后**换一条连接**重领。
+                                 * 2026-11-18 两次实测证明"同一条连接跨段续读"在这个结构里不稳：
+                                 * 清空/后退时旧连接还在写已删除的文件，游标继续往前跑，
+                                 * 读取侧就被永远甩在后面（等数据|该段已写=0B|拉流起点 已跳到很前面）。
+                                 * 宁可多一次握手，也不许游标越过没有写过的段。
                                  */
-                                val next = synchronized(this) {
-                                    when {
-                                        (curIdx + 1) * seg >= total -> -2L
-                                        writeNext == curIdx + 1 -> {
-                                            writeNext = curIdx + 2
-                                            curIdx + 1
-                                        }
-                                        else -> -1L
-                                    }
-                                }
-                                if (next < 0L) break
-                                curIdx = next
-                                writtenInSeg = synchronized(lock) { avail[curIdx] ?: 0L }
-                                continue
+                                curIdx += 1
+                                synchronized(this) { if (writeNext < curIdx) writeNext = curIdx }
+                                break
                             }
                             if (raf == null) {
                                 val f = File(cacheDir, "$curIdx.seg")

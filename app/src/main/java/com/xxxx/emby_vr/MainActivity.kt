@@ -8478,7 +8478,12 @@ class MainActivity : ComponentActivity() {
             Log.w(TAG, "放行被拒：engineNotReady|kind=$kind|source=$source")
             return false
         }
-        if (!com.xxxx.emby_vr.player.MpvBackend.audioReady()) {
+        /*
+         * 水位恢复（WATER）不看"声音侧是否就绪"：那个前提是给"起播/重建等首帧"用的，
+         * 水位停等发生时内核早就在播了；若照旧卡这道门，恢复请求会被一律拒掉，
+         * 现场就是"灰色缓冲已经回来了，但画面声音一直停着"（2026-11-18 后退实测）。
+         */
+        if (kind != "WATER" && !com.xxxx.emby_vr.player.MpvBackend.audioReady()) {
             Log.w(
                 TAG,
                 "放行被拒：声音侧未就绪（${com.xxxx.emby_vr.player.MpvBackend.canOpenBlocker()}）" +
