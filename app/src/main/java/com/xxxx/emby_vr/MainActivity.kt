@@ -8492,6 +8492,17 @@ class MainActivity : ComponentActivity() {
             return false
         }
         selfPipeWaitingFirstFrame.set(false)
+        /*
+         * 跳转等待期间，水位恢复不许解除暂停（父 2026-11-19 02:10 定）。
+         *
+         * 跳转后的放行条件是"画面出新帧 + 水位够"，只有 releaseAfterSeek 那条能放。
+         * 水位恢复只看缓存余量、不看画面有没有出新帧，之前它会把跳转扣住的声音直接放开，
+         * 现场就成了"声音出来了、画面一直不出来"。
+         */
+        if (kind == "WATER" && pipePausedForRebuild) {
+            Log.w(TAG, "放行被拒：跳转等待中，等画面出新帧（水位恢复不解除跳转暂停）")
+            return false
+        }
         if (kind == "BOOT" || kind == "WATER") {
             /* 起播 / 水位恢复：解除暂停（水位恢复时是"我们为等数据停的"，用户没按暂停） */
             runCatching { mpvBackend?.setPaused(false) }
