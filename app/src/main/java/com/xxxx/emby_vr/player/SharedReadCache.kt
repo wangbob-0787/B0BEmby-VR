@@ -38,8 +38,14 @@ object SharedReadCache {
     private const val PORT = 8898
     private const val CAPACITY_BYTES = 400L * 1024 * 1024
     private const val UA = "B0BEmbyRelay/1.0"
-    /** 两条拉流长连接（父亲定：两路） */
-    private const val PULLERS = 2
+    /**
+     * 拉流连接数（父亲 2026-11-18 定：先按"单路读到尾"试）。
+     *
+     * 单路的理由：两条连接共用一个"下一条拉哪段"的游标，谁到段边界都得抢下一段，
+     * 抢不到就得断开重连 —— 那正是把吞吐锁在 2.5MB/s 的原因。单路一条连接读到文件尾，
+     * 只有出错才重连。代价是没有并行度，实测不够 5.5MB/s 时再改回两路各领一串。
+     */
+    private const val PULLERS = 1
     /** 删除余量：留几段（可调 relay_margin_segs，默认 8 段 ≈ 32MB ≈ 18 秒内容） */
     private val MARGIN_SEGS: Long get() = com.xxxx.emby_vr.vr.VrTuning.relayMarginSegs.toLong()
 
@@ -55,6 +61,8 @@ object SharedReadCache {
     private var used = 0L
 
     @Volatile private var curUrl: String? = null
+    /** 当前这一部片的总字节数（水位换算要用），由拉流线程探到后登记 */
+    @Volatile private var curTotal = 0L
     @Volatile private var writeNext = 0L        // 下一个要拉取的段号
     @Volatile private var baseIdx = 0L          // 缓存里保留的第一段
     @Volatile private var gen = 0L              // 换片/跳转代数：拉流线程据此重开连接
@@ -127,7 +135,169 @@ object SharedReadCache {
     }
 
     fun stats(): String =
-        "命中=${hits.get()} 回源=${misses.get()} 缓存=${used / 1048576}MB 上游=${upstreamBytes.get() / 1048576}MB"
+        "命中=${hits.get()} 回源=${misses.get()} 缓存=${used / 1048576}MB 上游=${upstreamBytes.get() / 1048576}MB" +
+            " 上游源=${if (com.xxxx.emby_vr.vr.VrTuning.relayDirect == 1) "直连(" + hostOfUrl(cdnUrl ?: alistUrl) + ")" else "Emby"}" +
+            " 签名=${directResolves.get()} 直连失败=$directFails"
+
+    // ---------------- 直连网盘（relay_direct=1） ----------------
+
+    /** 播放器给的那条地址（Emby），用来认"这次直连的是哪一个文件" */
+    @Volatile private var originKey: String? = null
+    /** 小雅 alist 的 /d/ 地址：对它发一次 Range 请求只会拿到 302，不搬数据 */
+    @Volatile private var alistUrl: String? = null
+    /** 302 之后的 CDN 地址（带签名，有效期约两小时） */
+    @Volatile private var cdnUrl: String? = null
+    @Volatile private var cdnAt = 0L
+    /** 直连连续被拒次数；超过上限本次播放退回 Emby，绝不让画面停在这种事上 */
+    @Volatile private var directFails = 0
+    private val directResolves = AtomicLong()
+
+    /** 签名地址复用时长：网盘给的有效期约两小时，留一半余量提前重签 */
+    private const val CDN_TTL_MS = 90L * 60 * 1000
+    private const val DIRECT_MAX_FAILS = 3
+
+    /**
+     * 登记这一部片的两个地址。
+     *
+     * [embyUrl] 播放器实际用的地址；[alistUrl] 小雅 /d/ 地址（取不到就给 null，等于这一部片不直连）。
+     * 换片/换集必须重新登记，否则会拿上一部的签名去取这一部的内容。
+     */
+    fun setPlaybackUrls(embyUrl: String, alistUrl: String?) {
+        originKey = embyUrl
+        this.alistUrl = alistUrl
+        cdnUrl = null
+        cdnAt = 0L
+        directFails = 0
+        Log.i(
+            TAG,
+            "中转上游登记：直连开关=${com.xxxx.emby_vr.vr.VrTuning.relayDirect}" +
+                " 小雅侧=${if (alistUrl == null) "无（走 Emby）" else hostOfUrl(alistUrl)}",
+        )
+    }
+
+    /**
+     * 拉流真正要连的地址。
+     *
+     * 直连开着且这一部片有小雅地址时，返回 CDN 签名地址；任何一步不成立都原样返回 Emby 地址——
+     * 直连是加速手段，**不允许它成为新的失败点**。
+     */
+    private fun fetchUrl(url: String): String {
+        if (com.xxxx.emby_vr.vr.VrTuning.relayDirect != 1) return url
+        if (url != originKey) return url
+        if (directFails >= DIRECT_MAX_FAILS) return url
+        val fresh = cdnUrl
+        if (fresh != null && System.currentTimeMillis() - cdnAt < CDN_TTL_MS) return fresh
+        return resolveCdn() ?: url
+    }
+
+    /** 向小雅要一次 302，拿到 CDN 签名地址（只取响应头，不下载内容） */
+    private fun resolveCdn(): String? {
+        val alist = alistUrl ?: return null
+        return try {
+            val c = (URL(alist).openConnection() as HttpURLConnection).apply {
+                instanceFollowRedirects = false
+                setRequestProperty("Range", "bytes=0-0")
+                setRequestProperty("User-Agent", UA)
+                connectTimeout = 10000
+                readTimeout = 10000
+            }
+            val code = c.responseCode
+            val loc = c.getHeaderField("Location")
+            c.disconnect()
+            val out = when {
+                code in 300..399 && !loc.isNullOrBlank() -> loc
+                /* 小雅自己就地代理：这条地址本身就是数据源，不必再找 CDN */
+                code == 200 || code == 206 -> alist
+                else -> null
+            }
+            if (out != null) {
+                cdnUrl = out
+                cdnAt = System.currentTimeMillis()
+                directResolves.incrementAndGet()
+                Log.i(TAG, "直连网盘：取到地址 主机=${hostOfUrl(out)}（码=$code，${CDN_TTL_MS / 60000} 分钟内复用）")
+            } else {
+                Log.w(TAG, "直连网盘：签名失败（码=$code）→ 这一轮走 Emby")
+            }
+            out
+        } catch (t: Throwable) {
+            Log.w(TAG, "直连网盘：签名异常 ${t.javaClass.simpleName}: ${t.message} → 这一轮走 Emby")
+            null
+        }
+    }
+
+    private fun hostOfUrl(u: String?): String =
+        if (u.isNullOrBlank()) "-" else runCatching { URL(u).host ?: "-" }.getOrDefault("-")
+
+    /**
+     * 播放位置之后还有多少秒数据（水位：判据的唯一来源）。
+     *
+     * 位置取所有客户端连接里**最慢**的那个（慢的那条才是会不会断的瓶颈）；
+     * 从它所在的段开始连续累加，一遇到没写满的段就停 —— 缺口之后的数据对播放没意义。
+     * 返回负数 = 现在还判断不了（没有连接或文件长度未知）。
+     */
+    fun waterAheadSecs(durationSec: Double): Double {
+        val totalBytes = curTotal
+        if (totalBytes <= 0L || durationSec <= 0.0) return -1.0
+        val slow = connPos.values.minOrNull() ?: return -1.0
+        val seg = SEG
+        var idx = slow
+        var bytes = 0L
+        while (true) {
+            val have = synchronized(lock) { avail[idx] ?: -1L }
+            if (have < 0L) break
+            val segLen = minOf(seg, totalBytes - idx * seg)
+            if (segLen <= 0L) break
+            bytes += have
+            if (have < segLen) break
+            idx++
+        }
+        return bytes.toDouble() / totalBytes * durationSec
+    }
+
+    /**
+     * 记账校准：以段文件真实字节为准。
+     *
+     * 现场见过账面 261MB、按段算只有约 48MB 的情况（跳转后旧段既没进回收也没从账上扣）。
+     * 水位判据完全靠这个数，所以差超过 8MB 就当场纠正并打日志；
+     * 顺带清掉"盘上有、账上没有"的孤儿段文件，否则它们白占空间还看不出来是谁占的。
+     */
+    private fun reconcileUsed() {
+        val dir = cacheDir ?: return
+        var real = 0L
+        var segCount = 0
+        val missing = ArrayList<Long>()
+        synchronized(lock) {
+            for ((k, v) in avail) {
+                if (!File(dir, "$k.seg").exists()) {
+                    missing.add(k)
+                    continue
+                }
+                real += v
+                segCount++
+            }
+            for (k in missing) avail.remove(k)
+        }
+        var orphans = 0
+        runCatching {
+            for (f in dir.listFiles().orEmpty()) {
+                val name = f.name
+                if (!name.endsWith(".seg")) continue
+                val k = name.dropLast(4).toLongOrNull() ?: continue
+                val known = synchronized(lock) { avail.containsKey(k) }
+                if (!known && f.delete()) orphans++
+            }
+        }
+        val drift = real - used
+        if (drift > 8L * 1048576 || drift < -8L * 1048576) {
+            val book = used
+            synchronized(lock) { used = real }
+            Log.w(
+                TAG,
+                "缓存记账校正：账面=${book / 1048576}MB → 实际=${real / 1048576}MB" +
+                    "（$segCount 段，孤儿文件=$orphans）",
+            )
+        }
+    }
 
     // ---------------- HTTP 服务 ----------------
 
@@ -298,7 +468,15 @@ object SharedReadCache {
                     continue
                 }
                 val seg = SEG
+                /*
+                 * 本次连接连读几段：`relay_run_segs=0`（默认）= 一直读到文件尾，
+                 * 只有出错或换片才重连；设成正数则每读这么多段换一次连接（双路并行时用）。
+                 */
+                val runRaw = com.xxxx.emby_vr.vr.VrTuning.relayRunSegs.toLong()
+                val toEof = runRaw <= 0L
+                val runSegs = if (toEof) 0L else runRaw
                 val total = totalSize(url)
+                if (total > 0L) curTotal = total
                 if (total <= 0L) {
                     Thread.sleep(200)
                     continue
@@ -315,7 +493,12 @@ object SharedReadCache {
                         pend
                     } else if (writeNext * seg >= total) -1L else {
                         val i = writeNext
-                        writeNext = i + 1     /* 立刻占位，另一条线程领下一段 */
+                        /*
+                         * 一次领**一串**段：这条连接把这一串连续读完才换连接。
+                         * 原来一次只领一段、读满就断线，每段都要重新握手（约 1.6 秒），
+                         * 实测吞吐被锁死在 4MB/1.6s ≈ 2.5MB/s。段从此只当落盘分界。
+                         */
+                        writeNext = if (toEof) total / seg + 1 else i + runSegs
                         i
                     }
                 }
@@ -323,14 +506,18 @@ object SharedReadCache {
                     Thread.sleep(200)
                     continue
                 }
+                val runEnd = if (toEof) total / seg else startIdx + runSegs - 1
                 val myGen = gen
                 var curIdx = startIdx
                 /* 从该段已写入的位置续传（断点续传） */
                 var writtenInSeg = synchronized(lock) { avail[curIdx] ?: 0L }
+                /* 上游地址：直连开着就走 CDN，否则走 Emby —— 两条路都只有中转一个消费者 */
+                val target = fetchUrl(url)
+                val viaDirect = target != url
                 var conn: HttpURLConnection? = null
                 try {
                     val fromByte = curIdx * seg + writtenInSeg
-                    val c = (URL(url).openConnection() as HttpURLConnection).apply {
+                    val c = (URL(target).openConnection() as HttpURLConnection).apply {
                         setRequestProperty("Range", "bytes=$fromByte-")
                         setRequestProperty("User-Agent", UA)
                         connectTimeout = 15000
@@ -339,6 +526,17 @@ object SharedReadCache {
                     }
                     if (c.responseCode !in 200..206) {
                         c.disconnect()
+                        /* 直连被拒（签名过期/额度用尽）：丢掉签名重签，连续失败就本次退回 Emby */
+                        if (viaDirect) {
+                            directFails++
+                            cdnUrl = null
+                            cdnAt = 0L
+                            Log.w(
+                                TAG,
+                                "直连网盘：拉流被拒（码=${c.responseCode}）→ 重签" +
+                                    (if (directFails >= DIRECT_MAX_FAILS) "已到上限，本次播放退回 Emby" else ""),
+                            )
+                        }
                         Thread.sleep(300)
                         continue
                     }
@@ -357,13 +555,16 @@ object SharedReadCache {
                             val segLen = minOf(seg, total - curIdx * seg)
                             if (segLen <= 0L) break
                             if (writtenInSeg >= segLen) {
-                                /* 这一段写满：交给下一段 */
                                 raf?.close()
                                 raf = null
+                                /*
+                                 * 这一段写满了：**不换连接**，接着写下一段。
+                                 * 一串读完（或读到文件尾）才退出循环，由外层重新领一串、换一条连接。
+                                 */
+                                if (curIdx >= runEnd || (curIdx + 1) * seg >= total) break
                                 curIdx += 1
-                                writtenInSeg = 0
-                                synchronized(this) { if (writeNext < curIdx) writeNext = curIdx }
-                                break
+                                writtenInSeg = synchronized(lock) { avail[curIdx] ?: 0L }
+                                continue
                             }
                             if (raf == null) {
                                 val f = File(cacheDir, "$curIdx.seg")
@@ -399,6 +600,15 @@ object SharedReadCache {
                     val done = synchronized(lock) { avail[curIdx] ?: 0L }
                     val segLen = minOf(seg, total - curIdx * seg)
                     if (done < segLen) pendingSegs.add(curIdx)
+                    /*
+                     * 本串里**还没开始**的段也要交回队列：领取时已经把它们从游标里划走了，
+                     * 不还回去就永远没人写，播放器读到那一段会一直等。
+                     */
+                    var k = curIdx + 1
+                    while (k <= runEnd && k * seg < total) {
+                        pendingSegs.add(k)
+                        k++
+                    }
                 }
                 Thread.sleep(20)
             } catch (t: Throwable) {
@@ -414,9 +624,12 @@ object SharedReadCache {
      * mpv 与自管解码各占一个连接，取它们读位置里**较小**的那个当安全线。
      */
     private fun gcLoop() {
+        var ticks = 0
         while (true) {
             try {
                 Thread.sleep(1000)
+                /* 每 5 秒校准一次记账与孤儿段（水位判据完全依赖这个数，漂了就不可信） */
+                if (++ticks % 5 == 0) reconcileUsed()
                 val slow = connPos.values.minOrNull()
                 val base = baseIdx
                 val safe = when {

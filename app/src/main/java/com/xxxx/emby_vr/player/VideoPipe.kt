@@ -146,6 +146,17 @@ class VideoPipe {
     /** 首帧出来时回调一次（外面在这里放开声音） */
     @Volatile private var onFirstFrame: (() -> Unit)? = null
 
+    /**
+     * 跳转后**第一个真正上屏的帧**回调（参数 = 该帧的播放位置，秒）。
+     *
+     * 跳转放行靠它当"画面侧信号"（父亲 2026-11-18：跳转后等画面出新帧、内核报出位置，
+     * 同一拍再放开声音）。原来跳转后立刻 setPaused(false)，声音先跑、画面还在跳，
+     * 现场就是"跳完要手点一次播放键"。
+     */
+    @Volatile var onSeekRendered: ((Double) -> Unit)? = null
+    /** 已在等跳转后的新帧（下一次上屏就回调一次） */
+    @Volatile private var seekAwaitFrame = false
+
     /** 第一次解出杜比参数时回调一次（外面据此确认"本片确实是 P5"，才允许走还原） */
     @Volatile private var onDoviParams: (() -> Unit)? = null
 
@@ -570,6 +581,12 @@ class VideoPipe {
                 lastShownPts = ptsRaw + appliedOffset
                 lastShownAtMs = android.os.SystemClock.elapsedRealtime()
                 firstFrameShown = true
+                /* 跳转后的第一个上屏帧：外面的"画面侧信号"（见 onSeekRendered） */
+                if (seekAwaitFrame) {
+                    seekAwaitFrame = false
+                    val shown = lastShownPts
+                    runCatching { onSeekRendered?.invoke(shown) }
+                }
                 if (!showLogged) {
                     showLogged = true
                     runCatching { onFirstFrame?.invoke() }
@@ -714,6 +731,7 @@ class VideoPipe {
      */
     fun requestSeek(targetSec: Double) {
         pendingSeekSec = targetSec
+        seekAwaitFrame = true
     }
 
     /** 是否在跑（供上层判断能不能走"热解码器跳转"而不是重建） */

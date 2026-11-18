@@ -294,6 +294,30 @@ object VrTuning {
     @Volatile var relayAheadMb: Int = 400
 
     /**
+     * 中转的**上游**走哪条路：0=走 Emby 转发（默认），1=直连网盘 CDN。
+     *
+     * 起因（2026-11-18 实测）：Emby 对 strm 片源是逐字节转发，每块多出约 1 秒的
+     * "打开网盘文件"开销；而小雅 /d/ 地址自己会 302 到 CDN，客户端直接取 CDN 就省掉这一跳。
+     * 家里上行 40M 时这一跳是净损失；头显在外部网段且 WireGuard 只走内网时，
+     * 直连还能用上头显本地带宽（实测同一台机器 45MB/s vs 经家庭上行 5.5MB/s）。
+     *
+     * 关掉（0）立刻回到旧行为：仍然只用一条路，只是上游换成 Emby。
+     */
+    @Volatile var relayDirect: Int = 0
+
+    /** 取签名用小雅 alist 的端口（默认 5678，与 .15 上 xiaoya 的映射一致） */
+    @Volatile var relayAlistPort: Int = 5678
+
+    /**
+     * 一条拉流连接连续读几段再换连接：**0（默认）= 一直读到文件尾**，只有出错才重连。
+     *
+     * 原因是实测：每段都断线重连的话，每段要多花约 1.6 秒的"重新打开网盘文件"，
+     * 吞吐被锁死在 4MB/1.6s ≈ 2.5MB/s。设成正数（如 8）则每读这么多段换一次，
+     * 那是"两路各领一串"用的模式，单路读到尾时不需要。
+     */
+    @Volatile var relayRunSegs: Int = 0
+
+    /**
      * 弹幕画布宽度（2026-10-14 父亲定）：默认 **1920**，与银幕本身的 1920 宽对齐。
      *
      * 原来写死 2560 —— 比银幕还大三分之一，多出来的像素在 VR 里根本看不见，
@@ -729,6 +753,21 @@ object VrTuning {
                 dvOff = it
                 applied += "杜比还原=" + if (it != 0) "关（仅测量用）" else "开"
             }
+        }
+        raw["relay_direct"]?.toIntOrNull()?.let {
+            val v = if (it == 1) 1 else 0
+            if (v != relayDirect) {
+                relayDirect = v
+                applied += "中转上游=" + (if (v == 1) "直连网盘" else "走 Emby")
+            }
+        }
+        raw["relay_alist_port"]?.toIntOrNull()?.let {
+            val v = it.coerceIn(1, 65535)
+            if (v != relayAlistPort) { relayAlistPort = v; applied += "小雅端口=$v" }
+        }
+        raw["relay_run_segs"]?.toIntOrNull()?.let {
+            val v = it.coerceIn(0, 64)
+            if (v != relayRunSegs) { relayRunSegs = v; applied += "连读段数=$v" }
         }
         raw["relay_parallel"]?.toIntOrNull()?.let {
             val v = it.coerceIn(1, 8)

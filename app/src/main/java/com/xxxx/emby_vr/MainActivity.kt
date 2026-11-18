@@ -3216,6 +3216,7 @@ class MainActivity : ComponentActivity() {
                 pendingItemId = mediaId
                 pendingPlaySessionId = media.playSessionId
                 pendingMediaSourceId = source?.id
+                pendingSourcePath = source?.path
                 pendingRunTimeTicks = source?.runTimeTicks ?: 0L
                 /*
                  * 片头范围（父亲 2026-10-12）：从章节标记里认 IntroStart / IntroEnd。
@@ -4302,6 +4303,19 @@ class MainActivity : ComponentActivity() {
                     append(userToken())
                 }
                 Log.i(TAG, "mpv 直连原文件：…/videos/${pendingItemId}/stream?Static=true")
+                /*
+                 * 中转上游登记（2026-11-18 父亲定：直连网盘做成开关）。
+                 *
+                 * 开关打开时，中转拿这条小雅 /d/ 地址去要一次签名，之后直接向 CDN 取数据，
+                 * 不再经 Emby 逐字节转发（每一块省掉约 1 秒的转发开销；头显不在家庭网段时
+                 * 还能用上头显当地带宽）。取不到小雅地址就登记 null，这一部片照旧走 Emby。
+                 */
+                if (com.xxxx.emby_vr.player.SharedReadCache.enabled()) {
+                    com.xxxx.emby_vr.player.SharedReadCache.setPlaybackUrls(
+                        directUrl,
+                        if (webFirst == null) alistUrlOf(pendingSourcePath) else null,
+                    )
+                }
                 /*
                  * 画布尺寸（父亲 2026-10-08）。
                  *
@@ -7040,6 +7054,11 @@ class MainActivity : ComponentActivity() {
     private var pendingItemId: String? = null
     private var pendingPlaySessionId: String? = null
     private var pendingMediaSourceId: String? = null
+    /**
+     * PlaybackInfo 里那条片源的**真实地址**（走网盘挂载的条目是 strm 里的网络地址）。
+     * 中转直连网盘要靠它拼小雅 /d/ 地址，见 [alistUrlOf]。
+     */
+    private var pendingSourcePath: String? = null
     private var pendingRunTimeTicks: Long = 0L
 
     private var reportedItemId: String? = null
@@ -7238,6 +7257,8 @@ class MainActivity : ComponentActivity() {
          * 位置是硬约束 —— 必须排在停内核之前，且是"任何可能销毁内核的调用"之前。
          */
         stopPipeHealth()
+        /* 收场：水位监视一起停（否则下一部片还在按旧时长算水位） */
+        stopWaterMonitor()
         pipeBootInFlight.set(false)
         selfPipePhase = "已收场"
         clearDoviState()
@@ -8466,8 +8487,8 @@ class MainActivity : ComponentActivity() {
             return false
         }
         selfPipeWaitingFirstFrame.set(false)
-        if (kind == "BOOT") {
-            /* 起播：解除暂停 + 放行首帧 + 取消静音，三件同一拍 */
+        if (kind == "BOOT" || kind == "WATER") {
+            /* 起播 / 水位恢复：解除暂停（水位恢复时是"我们为等数据停的"，用户没按暂停） */
             runCatching { mpvBackend?.setPaused(false) }
         }
         /*
@@ -8488,6 +8509,82 @@ class MainActivity : ComponentActivity() {
 
     /** 是否为"等画面就绪"而暂停过声音（重建路径用，放行时再解除） */
     @Volatile private var pipePausedForRebuild = false
+
+    /** 是否为"数据不够"而把播放停住（运行水位；用户自己按的暂停不在此列） */
+    @Volatile private var pipePausedByWater = false
+    private var waterTick: Runnable? = null
+    /** 本次播放的时长（秒），水位换算用 */
+    @Volatile private var pipeDurationSec = 0.0
+
+    /** 当前缓冲档位对应的三档水位：起播攒多少 / 低了停 / 攒回多少（秒） */
+    private fun bufferWatermarks(): Triple<Double, Double, Double> =
+        com.xxxx.emby_vr.panel.BUFFER_WATERMARKS[
+            bufferPresetIndex.coerceIn(0, com.xxxx.emby_vr.panel.BUFFER_WATERMARKS.size - 1),
+        ]
+
+    /**
+     * 运行水位：位置之后剩不到"低了停"就停住等，回到"攒回多少"再继续（父亲 2026-11-18 定）。
+     *
+     * 判据只有一条 —— 播放位置之后还有多少秒本地数据；不再用"这一拍有没有读到"，
+     * 那种判法一抖就停、数据一来就走，现场表现是一路抖。
+     */
+    private fun startWaterMonitor() {
+        stopWaterMonitor()
+        val ui = android.os.Handler(android.os.Looper.getMainLooper())
+        val tick = object : Runnable {
+            override fun run() {
+                val (_, low, high) = bufferWatermarks()
+                val water = com.xxxx.emby_vr.player.SharedReadCache.waterAheadSecs(pipeDurationSec)
+                if (water >= 0.0 && videoPipe != null) {
+                    if (!pipePausedByWater && water < low) {
+                        pipePausedByWater = true
+                        runCatching { mpvBackend?.setPaused(true) }
+                        Log.i(TAG, "停等|水位=${"%.1f".format(water)}s < ${low}s（先停住，别让它抖）")
+                        hud("缓冲中…")
+                    } else if (pipePausedByWater && water >= high) {
+                        pipePausedByWater = false
+                        /* 走唯一闸门（I5）：水位恢复只是解除暂停，不动静音 */
+                        releasePlayback("WATER", "水位恢复")
+                        Log.i(TAG, "恢复|水位=${"%.1f".format(water)}s ≥ ${high}s")
+                    }
+                }
+                ui.postDelayed(this, 500)
+            }
+        }
+        waterTick = tick
+        ui.postDelayed(tick, 1000)
+    }
+
+    private fun stopWaterMonitor() {
+        waterTick?.let { android.os.Handler(android.os.Looper.getMainLooper()).removeCallbacks(it) }
+        waterTick = null
+        pipePausedByWater = false
+    }
+
+    /** 跳转代数：每跳一次 +1，上一跳的回调一律作废（连跳时只认最后一次） */
+    @Volatile private var seekReleaseGen = 0
+
+    /**
+     * 跳转后双信号放行的判定。
+     *
+     * 画面已经出了新帧（`VideoPipe.onSeekRendered` 把它送上来），这里再问内核报出的位置
+     * 是否和这一帧对得上（3 秒内算对上），对上就同拍放开。对不上也放 —— 画面已经动了，
+     * 再扣着声音只会变成"没声音"；偏差写进日志供复核。
+     */
+    private fun releaseAfterSeek(gen: Int, targetSec: Double, shownSec: Double) {
+        if (gen != seekReleaseGen) return
+        val pos = runCatching { mpvBackend?.positionExtrapolated() }.getOrNull()
+        val gap = if (pos != null) kotlin.math.abs(pos - shownSec) else -1.0
+        Log.i(
+            TAG,
+            "跳转放行：画面帧=${"%.2f".format(shownSec)}s" +
+                " 内核位置=${pos?.let { "%.2f".format(it) } ?: "-"}s" +
+                " 目标=${"%.2f".format(targetSec)}s" +
+                " 差=${if (gap >= 0.0) "%.2f".format(gap) + "s" else "-"}" +
+                " 同拍=${gap >= 0.0 && gap <= 3.0}",
+        )
+        releasePlayback("REBUILD", "跳转双信号")
+    }
 
     /* 等待时长只报数不判死（图 §4.1 / §12 L23）：起播、跳转、收场各记一个起点 */
     @Volatile private var pipeLoadT0 = 0L
@@ -8625,23 +8722,38 @@ class MainActivity : ComponentActivity() {
             }
             runCatching { m.seekToSec(sec) }
             pipe.requestSeek(sec)
-            runCatching { m.setPaused(false) }
-            runCatching { m.setMute(false) }
             /*
-             * 跳转后的状态核对：界面显示"在播"但实际停着、需要手点一次才开始
-             * （父亲 2026-11-18 实测）。先把真实值打出来，再决定补偿动作。
+             * 跳转后**不立刻放开**（父亲 2026-11-18 双信号口径）：先把声音压住，
+             * 等画面出新帧（`pipe.onSeekRendered`）+ 内核报出的位置和这一帧对得上，
+             * 再同一拍解除暂停与静音。
+             * 原来这里立刻 setPaused(false)：声音先跑、画面还在跳，现场表现是
+             * "跳转后要手点一次播放键"。
+             */
+            pipePausedForRebuild = true
+            runCatching { m.setPaused(true) }
+            seekReleaseGen++
+            val mySeekGen = seekReleaseGen
+            pipe.onSeekRendered = { shown ->
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    releaseAfterSeek(mySeekGen, sec, shown)
+                }
+            }
+            /*
+             * 兜底：2 秒没等到画面新帧（解码器卡住 / 那一段没数据）也必须放一次，
+             * 否则声音被一直扣着，现场是"跳完没声音，得手点一下"。
              */
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                val p2 = runCatching { m.isPaused() }.getOrNull()
-                val m2 = runCatching { m.isMuted() }.getOrNull()
-                val pos = runCatching { m.positionExtrapolated() }.getOrNull()
-                Log.i(TAG, "跳转核对|paused=$p2 muted=$m2 位置=${pos?.let { "%.1f".format(it) }} 目标=${"%.1f".format(sec)}")
-                if (p2 == true) {
-                    runCatching { m.setPaused(false) }
-                    runCatching { m.setMute(false) }
-                    Log.i(TAG, "跳转核对：内核仍在暂停 → 已自动续播")
+                if (mySeekGen == seekReleaseGen && pipePausedForRebuild) {
+                    val p2 = runCatching { m.isPaused() }.getOrNull()
+                    val pos = runCatching { m.positionExtrapolated() }.getOrNull()
+                    Log.w(
+                        TAG,
+                        "跳转放行兜底：2 秒内没等到画面新帧|paused=$p2" +
+                            " 位置=${pos?.let { "%.1f".format(it) }} 目标=${"%.1f".format(sec)}",
+                    )
+                    releasePlayback("REBUILD", "跳转兜底")
                 }
-            }, 400)
+            }, 2000)
             return
         }
         pipePausedForRebuild = true
@@ -8683,6 +8795,26 @@ class MainActivity : ComponentActivity() {
     /** 日志里只留主机名，不落完整地址（图 §12 L2 口径：url 只留 host + 末 12 位） */
     private fun hostOf(url: String): String =
         runCatching { java.net.URI(url).host ?: url.take(32) }.getOrDefault(url.take(32))
+
+    /**
+     * 把片源的真实地址拼成小雅 `/d/` 地址，供中转直连网盘用（2026-11-18）。
+     *
+     * 片源形如 `http://xiaoya.host:5678/d/每日更新/…/x.mkv`。`xiaoya.host` 是 .15 容器内部的名字，
+     * 头显上解析不了，所以主机一律换成本机 Emby 服务那台机器的地址，端口取调参值（默认 5678）。
+     * 拼不出来就返回 null —— 这一部片照旧走 Emby，直连只做加速，不许成为新的失败点。
+     */
+    private fun alistUrlOf(rawPath: String?): String? {
+        if (rawPath.isNullOrBlank()) return null
+        val idx = rawPath.indexOf("/d/")
+        if (idx < 0) return null
+        val host = runCatching { java.net.URI(userServer()).host }.getOrNull() ?: return null
+        val port = com.xxxx.emby_vr.vr.VrTuning.relayAlistPort
+        /* 中文与全角括号必须编码；按 '/' 分段编码，避免把分隔符本身编掉 */
+        val enc = rawPath.substring(idx).split("/").joinToString("/") {
+            java.net.URLEncoder.encode(it, "UTF-8").replace("+", "%20")
+        }
+        return "http://$host:$port$enc"
+    }
 
 
     /**
@@ -8848,11 +8980,30 @@ class MainActivity : ComponentActivity() {
         var released = false
         var releaseAtMs = 0L
 
-        fun doRelease() {
+        /*
+         * 起播水位（父亲 2026-11-18 定）：先攒够"起播攒多少"秒本地数据再出声，
+         * 不再边播边填 —— 边播边填的结果是播放位置永远卡在数据末尾，一抖就停。
+         * 但也不无限等：最多等 8 秒（16 拍），到点照放并打日志，不把起播卡死。
+         */
+        fun releaseWhenWaterReady(tries: Int) {
             if (released) return
+            val (bootTarget, _, _) = bufferWatermarks()
+            val water = com.xxxx.emby_vr.player.SharedReadCache.waterAheadSecs(pipeDurationSec)
+            if (water >= 0.0 && water < bootTarget && tries < 16) {
+                if (tries % 4 == 0) {
+                    Log.i(TAG, "起播等水位：${"%.1f".format(water)}s / 目标 ${bootTarget}s（第 ${tries + 1} 拍）")
+                }
+                ui.postDelayed({ releaseWhenWaterReady(tries + 1) }, 500)
+                return
+            }
+            if (water >= 0.0 && water < bootTarget) {
+                Log.w(TAG, "起播水位未达标就放行：${"%.1f".format(water)}s / 目标 ${bootTarget}s（等满 8 秒）")
+            } else {
+                Log.i(TAG, "起播水位达标：${"%.1f".format(water)}s / 目标 ${bootTarget}s")
+            }
             releaseAtMs = android.os.SystemClock.elapsedRealtime()
             /* 唯一闸门（I5）：起播场景 */
-            released = releasePlayback("BOOT", "起播(CAN_OPEN+READY)")
+            released = releasePlayback("BOOT", "起播(CAN_OPEN+READY+水位)")
             if (released) {
                 Log.i(TAG, "放行：解除暂停 + 放行首帧 + mute=no（同一拍，READY=${if (pipeReady) "齐" else "已齐"}）")
             }
@@ -8952,7 +9103,7 @@ class MainActivity : ComponentActivity() {
                          * 放行时刻对齐"预热第三帧的呈现时刻"（图 §4.2.1 ③）：
                          * 声音此刻暂停在基准位置，等一个跨度再放开，画面第一帧正好接上。
                          */
-                        ui.postDelayed({ doRelease() }, spanMs.coerceAtLeast(0L))
+                        ui.postDelayed({ releaseWhenWaterReady(0) }, spanMs.coerceAtLeast(0L))
                     }
                 },
             )
@@ -9003,6 +9154,15 @@ class MainActivity : ComponentActivity() {
                     if (m2 == false) runCatching { mpvBackend?.setMute(true) }
                 }, 500)
                 Log.i(TAG, "起播基准：CAN_OPEN 基准=${"%.3f".format(basePos)}（请求=${"%.3f".format(startSec)}）")
+                /* 时长到手才谈得上水位：从这里开始才算"位置之后还剩几秒" */
+                pipeDurationSec = runCatching { m.durationSec() }.getOrDefault(0.0)
+                Log.i(
+                    TAG,
+                    "水位监视启动：时长=${"%.1f".format(pipeDurationSec)}s" +
+                        " 档位=${com.xxxx.emby_vr.panel.BUFFER_PRESETS[bufferPresetIndex].first}" +
+                        " 起播=${bufferWatermarks().first}s 停=${bufferWatermarks().second}s 走=${bufferWatermarks().third}s",
+                )
+                startWaterMonitor()
                 launchPipeline(basePos)
             }
         }
