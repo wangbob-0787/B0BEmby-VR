@@ -33,6 +33,8 @@ class MemWindowSource(
     private var filled = 0
     /** 后台读线程要读的媒体偏移（与 baseOffset 不同=被要求跳转） */
     @Volatile private var readFrom = -1L
+    /** 窗代数：每次重建窗都 +1；旧连接发现代数变了必须退出，否则会把数据写到错位置 */
+    @Volatile private var winGen = 0L
     @Volatile private var closed = false
     @Volatile private var totalSize = -1L
 
@@ -46,6 +48,7 @@ class MemWindowSource(
                 continue
             }
             readFrom = -1L
+            val myGen = winGen
             var conn: HttpURLConnection? = null
             try {
                 val c = (URL(url).openConnection() as HttpURLConnection).apply {
@@ -63,8 +66,7 @@ class MemWindowSource(
                 c.inputStream.use { ins: InputStream ->
                     var pos = 0
                     while (!closed) {
-                        val wantJump = readFrom >= 0L
-                        if (wantJump) break
+                        if (readFrom >= 0L || winGen != myGen) break
                         val room = synchronized(lock) { windowBytes - pos }
                         if (room <= 0) {
                             Thread.sleep(10)
@@ -72,7 +74,9 @@ class MemWindowSource(
                         }
                         val n = ins.read(buf, pos, room)
                         if (n <= 0) break
+                        if (winGen != myGen) break
                         synchronized(lock) {
+                            if (winGen != myGen) return@use
                             pos += n
                             filled = pos
                         }
@@ -89,11 +93,18 @@ class MemWindowSource(
 
     /** 把窗挪到 position 并开始从那里读；直到窗内有数据才返回 */
     private fun reposition(position: Long) {
+        /* 对齐到 1MB 边界：同一段内的多次小偏移不会各建一次窗 */
+        val aligned = position / (1024 * 1024L) * (1024 * 1024L)
         synchronized(lock) {
-            baseOffset = position
+            if (aligned == baseOffset && filled > 0) {
+                /* 已经在同一窗内，只是数据还没到：等它自己长出来 */
+                return
+            }
+            baseOffset = aligned
             filled = 0
+            winGen++
         }
-        readFrom = position
+        readFrom = aligned
         val deadline = System.currentTimeMillis() + 30000
         while (System.currentTimeMillis() < deadline && !closed) {
             val have = synchronized(lock) { filled }
