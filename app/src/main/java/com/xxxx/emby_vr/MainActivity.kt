@@ -9122,6 +9122,17 @@ class MainActivity : ComponentActivity() {
                     val now = android.os.SystemClock.elapsedRealtime()
                     val d = if (releaseAtMs > 0) now - releaseAtMs else -1
                     Log.i(TAG, "首帧上屏（放行→上屏 ${d}ms）")
+                    /*
+                     * 自管解码这条路的首帧就是"播放器首帧"（父 2026-11-19 01:31 定）。
+                     *
+                     * 收黑幕原本只认内核 mpv 的 videoReady()，而 P5 这条路 mpv 的视频轨是关的
+                     * （vid=no），它永远不报就绪 → 黑幕永远收不掉，只能等 20 秒兜底；
+                     * 现场就是"画面其实一直在解码上屏，屏幕上却盖着黑幕十几秒"。
+                     */
+                    if (waitingFirstFrame) {
+                        playerFrameSeen = true
+                        tryRevealWaitingFrame()
+                    }
                 },
                 /*
                  * 失步重启（图 §5）：**必须投主控线程**。这个回调来自解码线程，
