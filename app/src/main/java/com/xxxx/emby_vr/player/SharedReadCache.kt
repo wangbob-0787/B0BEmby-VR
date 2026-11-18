@@ -104,6 +104,9 @@ object SharedReadCache {
      */
     private val orphanSegs = java.util.concurrent.ConcurrentLinkedQueue<Long>()
 
+    /** 当前这一部的时长（秒），播放进度换算字节要用 */
+    @Volatile private var curDurationSec = 0.0
+
     /** 已设过的起播锚点（"地址@秒"），同一片同一个位置不重复清空 */
     @Volatile private var anchorKey: String? = null
 
@@ -170,6 +173,7 @@ object SharedReadCache {
                 Log.w(TAG, "起播锚点：拿不到文件总长，暂不设起点")
                 return@thread
             }
+            curDurationSec = durationSec
             val idx = ((startSec / durationSec).coerceIn(0.0, 1.0) * total / SEG).toLong()
             clearAll("起播：从 ${"%.0f".format(startSec)}s 开始铺")
             curUrl = inner
@@ -821,11 +825,22 @@ object SharedReadCache {
                              */
                             val full = synchronized(lock) { used >= CAPACITY_BYTES * 95 / 100 }
                             if (full) {
-                                val curIdx = writePos / seg
+                                /*
+                                 * 到 400MB 上限（父 2026-11-19 00:04 定）：淘汰**播放进度左侧**
+                                 * 编号最小的段。判据用播放进度、不用写位 —— 写位在播放进度右侧，
+                                 * 按写位判会淘汰到还没播的数据。
+                                 * 淘汰 = 移出账本 + 进待清队列（拉流只往前走，不会回头重写小号段，
+                                 * 只删记账磁盘不会回收，必须交给后台真删）。
+                                 */
+                                val posIdx = if (curTotal > 0L && curDurationSec > 0.0) {
+                                    (playPosSec / curDurationSec * curTotal / seg).toLong()
+                                } else {
+                                    baseIdx
+                                }
                                 val victim = synchronized(lock) {
                                     var v: Long? = null
                                     for (k in avail.keys) {
-                                        if (k < curIdx && k >= baseIdx) {
+                                        if (k >= baseIdx && k < posIdx) {
                                             if (v == null || k < v) v = k
                                         }
                                     }
@@ -835,7 +850,8 @@ object SharedReadCache {
                                     v
                                 }
                                 if (victim != null) {
-                                    Log.i(TAG, "缓存到顶：覆盖最旧第 $victim 段（写位段=$curIdx）")
+                                    orphanSegs.add(victim)
+                                    Log.i(TAG, "缓存到顶：淘汰播放进度左侧第 $victim 段（播放进度段=$posIdx 写位段=${writePos / seg}）")
                                     continue
                                 }
                                 Thread.sleep(100)
