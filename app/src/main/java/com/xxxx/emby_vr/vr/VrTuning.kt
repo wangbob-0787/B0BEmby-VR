@@ -755,7 +755,8 @@ object VrTuning {
             if (v != relayMarginSegs) { relayMarginSegs = v; applied += "回收余量=$v 段" }
         }
         raw["relay_chunk_kb"]?.toIntOrNull()?.let {
-            val v = it.coerceIn(16, 1024)
+            /* 不设硬上限：段大小可改到 8MB 甚至更大，搬运量跟着改就行；只挡掉明显无效的值 */
+            val v = it.coerceIn(16, 8192)
             if (v != relayChunkKb) { relayChunkKb = v; applied += "单次搬运=${v}KB" }
         }
         raw["relay"]?.toIntOrNull()?.let {
