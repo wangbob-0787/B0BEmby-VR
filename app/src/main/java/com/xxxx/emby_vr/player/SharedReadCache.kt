@@ -61,6 +61,8 @@ object SharedReadCache {
 
     /** 每个客户端（HTTP 连接）当前读到的段号，用于算"最慢那个" */
     private val connPos = ConcurrentHashMap<Int, Long>()
+    /** 拉到一半断掉的段：优先续传，不能丢（否则播放器永远等这一段） */
+    private val pendingSegs = java.util.concurrent.ConcurrentHashMap.newKeySet<Long>()
     private val connSeq = AtomicInteger(0)
 
     private val hits = AtomicLong()
@@ -307,7 +309,11 @@ object SharedReadCache {
                  * 实际吞吐只有一路（实测约 2MB/s，播放刚好追平 → 一会儿就停住）。
                  */
                 val startIdx: Long = synchronized(this) {
-                    if (writeNext * seg >= total) -1L else {
+                    val pend = pendingSegs.firstOrNull()
+                    if (pend != null) {
+                        pendingSegs.remove(pend)
+                        pend
+                    } else if (writeNext * seg >= total) -1L else {
                         val i = writeNext
                         writeNext = i + 1     /* 立刻占位，另一条线程领下一段 */
                         i
@@ -384,9 +390,15 @@ object SharedReadCache {
                 } finally {
                     runCatching { conn?.disconnect() }
                 }
-                /* 收尾：把这个段的写入进度登记为"下次从这里继续" */
-                synchronized(this) {
-                    if (gen == myGen && writeNext > curIdx) writeNext = curIdx
+                /*
+                 * 收尾：只登记"这一段还没写完"，交给待续传队列；
+                 * **绝不把共享游标往回拨** —— 那会把另一条线程已推进的进度一起拖回去，
+                 * 两条连接于是反复重读同一段，实测吞吐只有单条（约 2.5MB/s）。
+                 */
+                if (gen == myGen) {
+                    val done = synchronized(lock) { avail[curIdx] ?: 0L }
+                    val segLen = minOf(seg, total - curIdx * seg)
+                    if (done < segLen) pendingSegs.add(curIdx)
                 }
                 Thread.sleep(20)
             } catch (t: Throwable) {
