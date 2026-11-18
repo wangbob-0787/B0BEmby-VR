@@ -8615,11 +8615,6 @@ class MainActivity : ComponentActivity() {
                     return
                 }
                 tries++
-                if (tries >= 40) {
-                    Log.w(TAG, "跳转等水位超时：${"%.1f".format(water)}s/${high}s → 兜底放行")
-                    releasePlayback("REBUILD", "跳转放行(超时)")
-                    return
-                }
                 ui.postDelayed(this, 300)
             }
         }
