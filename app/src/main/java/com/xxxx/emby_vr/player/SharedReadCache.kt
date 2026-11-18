@@ -814,8 +814,30 @@ object SharedReadCache {
                         val buf = ByteArray(64 * 1024)
                         while (true) {
                             if (gen != myGen) break
+                            /*
+                             * 到 400MB 上限（父 2026-11-19 00:04 定）：覆盖播放进度左边编号最小的段，
+                             * 直接重写它，不等后台回收。覆盖写时 setLength(0) 会截断旧内容。
+                             * 只动"编号小于当前写位段号"的段，正在铺的那段和它后面的不碰。
+                             */
                             val full = synchronized(lock) { used >= CAPACITY_BYTES * 95 / 100 }
                             if (full) {
+                                val curIdx = writePos / seg
+                                val victim = synchronized(lock) {
+                                    var v: Long? = null
+                                    for (k in avail.keys) {
+                                        if (k < curIdx && k >= baseIdx) {
+                                            if (v == null || k < v) v = k
+                                        }
+                                    }
+                                    if (v != null) {
+                                        used -= (avail.remove(v) ?: 0L)
+                                    }
+                                    v
+                                }
+                                if (victim != null) {
+                                    Log.i(TAG, "缓存到顶：覆盖最旧第 $victim 段（写位段=$curIdx）")
+                                    continue
+                                }
                                 Thread.sleep(100)
                                 continue
                             }

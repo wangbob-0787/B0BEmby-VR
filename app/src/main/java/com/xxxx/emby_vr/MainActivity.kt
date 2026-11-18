@@ -8579,6 +8579,11 @@ class MainActivity : ComponentActivity() {
         waterSeen = false
     }
 
+    /** 摇杆连跳合并：待执行的目标与定时器（300ms 内再来新事件就重置） */
+    @Volatile private var pendingSeekSec: Double = 0.0
+    private var seekDebounce: Runnable? = null
+    private val seekUiHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
     /** 跳转代数：每跳一次 +1，上一跳的回调一律作废（连跳时只认最后一次） */
     @Volatile private var seekReleaseGen = 0
 
@@ -8789,18 +8794,11 @@ class MainActivity : ComponentActivity() {
              * 兜底：2 秒没等到画面新帧（解码器卡住 / 那一段没数据）也必须放一次，
              * 否则声音被一直扣着，现场是"跳完没声音，得手点一下"。
              */
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                if (mySeekGen == seekReleaseGen && pipePausedForRebuild) {
-                    val p2 = runCatching { m.isPaused() }.getOrNull()
-                    val pos = runCatching { m.positionExtrapolated() }.getOrNull()
-                    Log.w(
-                        TAG,
-                        "跳转放行兜底：2 秒内没等到画面新帧|paused=$p2" +
-                            " 位置=${pos?.let { "%.1f".format(it) }} 目标=${"%.1f".format(sec)}",
-                    )
-                    releasePlayback("REBUILD", "跳转兜底")
-                }
-            }, 2000)
+            /*
+             * 这里原来有个"2 秒没等到新帧也放行"的兜底 —— 父亲 2026-11-19 00:04 定：删掉。
+             * 跳转必须真的出新帧才放行，没出帧就一直等；兜底会让失败也当成成功，
+             * 跟着去清缓存，旧数据没了、画面还停在旧位置。
+             */
             return
         }
         pipePausedForRebuild = true
@@ -8966,10 +8964,24 @@ class MainActivity : ComponentActivity() {
          */
         m.setLoopFile(false)
         /* 跳转同时通知自管解码器，否则画面留在原地、声音跳走 */
+        /*
+         * 摇杆连跳合并（父 2026-11-19 00:04 定）：按住摇杆一路扳时不做跳转，
+         * 松开后 300 毫秒没有新事件才提交最后一次目标。
+         * 原来每扳一下都跳一次，解码器被连续 seek 打断，实测跳完就卡在旧位置。
+         */
         ctl.pipeSeek = { ms ->
             val sec = (ms / 1000.0).coerceAtLeast(0.0)
-            pipeSeekT0 = android.os.SystemClock.elapsedRealtime()
-            restartVideoPipeAt(sec)
+            pendingSeekSec = sec
+            seekDebounce?.let { seekUiHandler.removeCallbacks(it) }
+            val run = Runnable {
+                seekDebounce = null
+                val target = pendingSeekSec
+                pipeSeekT0 = android.os.SystemClock.elapsedRealtime()
+                Log.i(TAG, "摇杆跳转提交：目标=${"%.1f".format(target)}s（合并窗口 300ms）")
+                restartVideoPipeAt(target)
+            }
+            seekDebounce = run
+            seekUiHandler.postDelayed(run, 300)
         }
         com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("vid", "no")
         /*
