@@ -51,7 +51,7 @@ object SharedReadCache {
      * 抢不到就得断开重连 —— 那正是把吞吐锁在 2.5MB/s 的原因。单路一条连接读到文件尾，
      * 只有出错才重连。代价是没有并行度，实测不够 5.5MB/s 时再改回两路各领一串。
      */
-    private const val PULLERS = 2
+    private const val PULLERS = 1
     /** 删除余量：留几段（可调 relay_margin_segs，默认 8 段 ≈ 32MB ≈ 18 秒内容） */
     private val MARGIN_SEGS: Long get() = com.xxxx.emby_vr.vr.VrTuning.relayMarginSegs.toLong()
 
@@ -493,7 +493,8 @@ object SharedReadCache {
                          * 原来一次只领一段、读满就断线，每段都要重新握手（约 1.6 秒），
                          * 实测吞吐被锁死在 4MB/1.6s ≈ 2.5MB/s。段从此只当落盘分界。
                          */
-                        writeNext = i + runSegs
+                        /* 只领当前这一段；游标按"真正写完的段"一格一格往前挪 */
+                        writeNext = i + 1
                         i
                     }
                 }
@@ -553,11 +554,22 @@ object SharedReadCache {
                                 raf?.close()
                                 raf = null
                                 /*
-                                 * 这一段写满了：**不换连接**，接着写下一段。
-                                 * 一串读完（或读到文件尾）才退出循环，由外层重新领一串、换一条连接。
+                                 * 段边界：游标**只按真正写完的段往前挪一格**，绝不在没拿到数据时跳动。
+                                 * 单路（PULLERS=1）时下一段恒等于 curIdx+1，于是这条连接可以一直读下去；
+                                 * 若被别人抢先领走（多路时会发生），这条连接的字节位置就对不上了，必须换连接。
                                  */
-                                if (curIdx >= runEnd || (curIdx + 1) * seg >= total) break
-                                curIdx += 1
+                                val next = synchronized(this) {
+                                    when {
+                                        (curIdx + 1) * seg >= total -> -2L
+                                        writeNext == curIdx + 1 -> {
+                                            writeNext = curIdx + 2
+                                            curIdx + 1
+                                        }
+                                        else -> -1L
+                                    }
+                                }
+                                if (next < 0L) break
+                                curIdx = next
                                 writtenInSeg = synchronized(lock) { avail[curIdx] ?: 0L }
                                 continue
                             }
