@@ -8505,6 +8505,10 @@ class MainActivity : ComponentActivity() {
             pipePausedForRebuild = false
         }
         runCatching { mpvBackend?.setMute(false) }
+        /* 起播阶段到此结束：之后读缓存、水位按档位主动停（父亲 2026-11-18：起播阶段不判前后） */
+        if (kind == "BOOT" || kind == "REBUILD") {
+            com.xxxx.emby_vr.player.SharedReadCache.endBoot("放行|$kind|$source")
+        }
         pipeReleasedOnce.set(true)
         selfPipeReleased = true
         selfPipePhase = if (kind == "BOOT") "PLAYING" else "PLAYING(重建)"
@@ -8541,6 +8545,10 @@ class MainActivity : ComponentActivity() {
         val tick = object : Runnable {
             override fun run() {
                 val (_, low, high) = bufferWatermarks()
+                /* 水位只认播放进度（mpv 的读位置含它自己的预读，会假性偏低） */
+                runCatching { mpvBackend?.positionExtrapolated() }?.let {
+                    com.xxxx.emby_vr.player.SharedReadCache.setPlayPosSec(it)
+                }
                 val water = com.xxxx.emby_vr.player.SharedReadCache.waterAheadSecs(pipeDurationSec)
                 /*
                  * 只在"确实有过余量"之后才允许按水位停。
@@ -8750,10 +8758,18 @@ class MainActivity : ComponentActivity() {
              * 听感就是声音丢了（2026-11-17 实测）。所以先把内核跳过去，再让画面跟过去。
              */
             Log.i(TAG, "快进：内核与画面同时跳到 ${"%.1f".format(sec)}s（热解码器，不重建）")
-            /* 跳转预热：先把落点附近的数据取起来，和解码器去读并行（不是等它来要） */
+            /*
+             * 用户跳转（三个入口都汇到这里）：通知中转改写入位置。
+             * 往回跳清空重铺；往前跳落在缓存里只删左边；目标处没缓存就清空重铺。
+             * 中转自己不再从读位置猜快进快退（父亲 2026-11-18 定）。
+             */
             runCatching {
                 val dur = m.durationSec()
-                if (dur > 0.0) com.xxxx.emby_vr.player.SharedReadCache.warm(selfPipeUrl ?: "", sec, dur)
+                val from = m.positionExtrapolated()
+                if (dur > 0.0) {
+                    Log.i(TAG, "用户跳转：${"%.1f".format(from)}s → ${"%.1f".format(sec)}s（通知中转）")
+                    com.xxxx.emby_vr.player.SharedReadCache.jumpTo(from, sec, dur)
+                }
             }
             runCatching { m.seekToSec(sec) }
             pipe.requestSeek(sec)
@@ -8901,12 +8917,12 @@ class MainActivity : ComponentActivity() {
         if (url != rawUrl) {
             Log.i(TAG, "起播地址已指向共享读缓存（本机 127.0.0.1:8898）")
             /*
-             * 起播预热：把起播位置登记成"急需块"，由中转那条唯一连接优先去取。
-             * 不额外开并发（父亲 2026-11-18：网盘只给两路，谁多开谁被拒）。
+             * 起播锚点：告诉中转"从哪个位置开始往后铺缓存"（续播片不是从 0 铺）。
+             * 起播阶段的读一律直接回源，所以这里只定铺的起点，不判前后。
              */
             runCatching {
                 val dur = m.durationSec()
-                if (dur > 0.0) com.xxxx.emby_vr.player.SharedReadCache.warm(url, startSec, dur)
+                if (dur > 0.0) com.xxxx.emby_vr.player.SharedReadCache.beginBoot(url, startSec, dur)
             }
         }
         if (!pipeBootInFlight.compareAndSet(false, true)) {
@@ -9203,6 +9219,8 @@ class MainActivity : ComponentActivity() {
                         " 档位=${com.xxxx.emby_vr.panel.BUFFER_PRESETS[bufferPresetIndex].first}" +
                         " 起播=${bufferWatermarks().first}s 停=${bufferWatermarks().second}s 走=${bufferWatermarks().third}s",
                 )
+                com.xxxx.emby_vr.player.SharedReadCache.setPlayPosSec(basePos)
+                Log.i(TAG, "水位起点：播放进度=${"%.1f".format(basePos)}s（交给中转）")
                 startWaterMonitor()
                 launchPipeline(basePos)
             }
