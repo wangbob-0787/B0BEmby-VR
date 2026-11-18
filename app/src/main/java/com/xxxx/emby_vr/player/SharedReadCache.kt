@@ -115,6 +115,13 @@ object SharedReadCache {
     @Volatile private var baseIdx = 0L          // 缓存里保留的第一段
     @Volatile private var gen = 0L              // 换片/跳转代数：拉流线程据此重开连接
 
+    /**
+     * 跳转时要掐断的连接（父亲 2026-11-19 00:57 定）：跳转命令发出后，
+     * 不管解码线程在干什么，读旧位置的连接一律无条件停掉，让它立刻回去执行跳转。
+     * 不掐断的话，解码线程会一直堵在"等一个已经挪走的段"里，跳转指令永远排不上。
+     */
+    private val cancelledConns = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
+
     /** 每个客户端（HTTP 连接）当前读到的段号，用于算"最慢那个" */
     private val connPos = ConcurrentHashMap<Int, Long>()
     private val connSeq = AtomicInteger(0)
@@ -423,6 +430,7 @@ object SharedReadCache {
             }
         } catch (_: Throwable) {
         } finally {
+            cancelledConns.remove(connId)
             connPos.remove(connId)
         }
     }
@@ -520,11 +528,20 @@ object SharedReadCache {
                         Thread.sleep(20)
                         continue
                     }
+                    if (cancelledConns.contains(connId)) {
+                        Log.i(TAG, "发数据中止：连接被跳转作废（位置=${pos}B）")
+                        return
+                    }
                     out.write(buf, 0, got)
                     pos += got
                     lastProgress = System.currentTimeMillis()
                     connPos[connId] = pos / SEG
                 } else {
+                /* 跳转已把这个连接作废：立刻断，别再等一个已经挪走的段 */
+                if (cancelledConns.contains(connId)) {
+                    Log.i(TAG, "等数据中止：连接被跳转作废（段=$idx）")
+                    return
+                }
                 /* 数据还没到：等拉流线程写进来（超时即断开，让客户端重试） */
                 if (System.currentTimeMillis() - lastProgress > 30000) break
                 if (System.currentTimeMillis() - lastLogAt > 2000) {
@@ -621,6 +638,9 @@ object SharedReadCache {
         curUrl = url
         writePos = targetIdx * SEG
         baseIdx = targetIdx
+        /* 读旧位置（目标段之前）的连接全部掐断：解码线程立刻从阻塞读里出来，回去执行跳转 */
+        for ((id, seg) in connPos) if (seg < targetIdx) cancelledConns.add(id)
+        Log.i(TAG, "跳转掐断旧读连接 ${cancelledConns.size} 条（目标段=$targetIdx）")
         connPos.clear()
         Log.i(TAG, "跳转重铺：$why（标记 ${n} 段待清理，写位=${writePos}B baseIdx=$targetIdx，连接不作废）")
     }
