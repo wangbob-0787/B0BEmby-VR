@@ -76,6 +76,17 @@ object SharedReadCache {
      * 只有一个变量，就不会出现"一个游标动了、另一个没动"（父亲 2026-11-18 定）。
      */
     @Volatile private var writePos = 0L
+
+    /**
+     * 文件头 / 文件尾两份固定窗口（父亲 2026-11-18 定）。
+     *
+     * 播放器起播必读文件头，MKV 还要去尾部读索引；这两处位置与"续播位置"相距很远，
+     * 若让它们走段缓存就会被判成"后退"而整块清空（实测换集时连清四次）。
+     * 所以各取一份单独存，播放期间永不删除，只有切集/切片（换内容）时才重取。
+     */
+    private const val EDGE_BYTES = 2L * 1024 * 1024
+    /** 起播阶段：续播区还没写出第一段之前，不做前进/后退判定 */
+    @Volatile private var bootPhase = false
     @Volatile private var baseIdx = 0L          // 缓存里保留的第一段
     @Volatile private var gen = 0L              // 换片/跳转代数：拉流线程据此重开连接
 
@@ -132,7 +143,11 @@ object SharedReadCache {
     fun clearAll(why: String) {
         synchronized(lock) {
             val dir = cacheDir
-            if (dir != null) for (k in avail.keys.toList()) File(dir, "$k.seg").delete()
+            if (dir != null) {
+                for (k in avail.keys.toList()) File(dir, "$k.seg").delete()
+                File(dir, "head.bin").delete()
+                File(dir, "tail.bin").delete()
+            }
             avail.clear()
             used = 0
         }
@@ -379,6 +394,14 @@ object SharedReadCache {
             return
         }
 
+        /* 文件头 / 文件尾：走独立窗口，不参与任何前进后退判定，也不会触发清空 */
+        val edge = minOf(EDGE_BYTES, total)
+        if (start < edge || start >= total - edge) {
+            connPos[connId] = start / SEG
+            serveEdge(total, start, end, out, head = start < edge)
+            return
+        }
+
         val wantIdx = start / SEG
         if (curUrl != upstream) {
             /* 换了内容：清空重来 */
@@ -386,9 +409,13 @@ object SharedReadCache {
             curUrl = upstream
             writePos = wantIdx * SEG
             baseIdx = wantIdx
+            bootPhase = true
+            fetchEdges(upstream, total)
         } else {
             val lastKeep = baseIdx + maxOf(0L, avail.size.toLong()) - 1
             when {
+                /* 起播阶段一律不判前后：这时"读得比起点早"只是读文件头，不是后退 */
+                bootPhase -> Unit
                 wantIdx < baseIdx -> seekTo(upstream, wantIdx, "后退到更早位置")
                 wantIdx > lastKeep + 8 -> seekTo(upstream, wantIdx, "快进到后面")
             }
@@ -550,6 +577,7 @@ object SharedReadCache {
                             raf?.seek(off)
                             raf?.write(buf, 0, n)
                             writePos += n
+                            if (bootPhase) bootPhase = false
                             synchronized(lock) {
                                 used += n
                                 avail[idx] = off + n
@@ -567,6 +595,81 @@ object SharedReadCache {
             } catch (t: Throwable) {
                 runCatching { Thread.sleep(200) }
             }
+        }
+    }
+
+    // ---------------- 文件头 / 文件尾窗口 ----------------
+
+    /**
+     * 起播时把文件头、文件尾各取一份下来（各 [EDGE_BYTES]，按片取，切集切片时重取）。
+     *
+     * 这份数据播放期间**永不删除**：播放器每次打开文件都会读头（MKV 还要读尾索引），
+     * 它们是"每次起播都需要、位置又不在续播区"的固定数据，只有换内容才作废。
+     */
+    private fun fetchEdges(url: String, total: Long) {
+        val dir = cacheDir ?: return
+        val edge = minOf(EDGE_BYTES, total)
+        if (edge <= 0L) return
+        thread(isDaemon = true, name = "relay-edge") {
+            fun grab(from: Long, to: Long, name: String) {
+                runCatching {
+                    val c = (URL(fetchUrl(url)).openConnection() as HttpURLConnection).apply {
+                        setRequestProperty("Range", "bytes=$from-$to")
+                        setRequestProperty("User-Agent", UA)
+                        connectTimeout = 15000
+                        readTimeout = 30000
+                    }
+                    if (c.responseCode !in 200..206) {
+                        c.disconnect()
+                        Log.w(TAG, "文件头尾：$name 取失败（码=${c.responseCode}）")
+                        return@runCatching
+                    }
+                    val tmp = File(dir, "$name.tmp")
+                    c.inputStream.use { ins -> tmp.outputStream().use { o -> ins.copyTo(o) } }
+                    c.disconnect()
+                    if (!tmp.renameTo(File(dir, name))) Log.w(TAG, "文件头尾：$name 落盘失败")
+                }
+            }
+            grab(0L, edge - 1, "head.bin")
+            grab(total - edge, total - 1, "tail.bin")
+            Log.i(TAG, "文件头尾就绪：各 ${edge / 1024}KB（播放期间不删）")
+        }
+    }
+
+    /** 服务文件头/尾窗口里的字节；窗口还没取回来就等，等到上限再报错。 */
+    private fun serveEdge(total: Long, start: Long, end: Long, out: OutputStream, head: Boolean) {
+        val dir = cacheDir ?: run {
+            writeHeaders(out, 500, "Internal Error", "text/plain", 0, null)
+            return
+        }
+        val edge = minOf(EDGE_BYTES, total)
+        val name = if (head) "head.bin" else "tail.bin"
+        val f = File(dir, name)
+        val deadline = System.currentTimeMillis() + 60_000
+        while (System.currentTimeMillis() < deadline && (!f.exists() || f.length() < edge)) Thread.sleep(20)
+        if (!f.exists() || f.length() < edge) {
+            writeHeaders(out, 504, "Gateway Timeout", "text/plain", 0, null)
+            return
+        }
+        writeHeaders(out, 206, "Partial Content", "application/octet-stream", end - start + 1, "bytes $start-$end/$total")
+        val base = if (head) 0L else total - edge
+        runCatching {
+            RandomAccessFile(f, "r").use { raf ->
+                val buf = ByteArray(com.xxxx.emby_vr.vr.VrTuning.relayChunkKb * 1024)
+                var pos = start
+                while (pos <= end) {
+                    val off = pos - base
+                    if (off < 0L || off >= edge) break
+                    val n = minOf(buf.size.toLong(), end - pos + 1, edge - off).toInt()
+                    if (n <= 0) break
+                    raf.seek(off)
+                    val got = raf.read(buf, 0, n)
+                    if (got <= 0) break
+                    out.write(buf, 0, got)
+                    pos += got
+                }
+            }
+            out.flush()
         }
     }
 
