@@ -114,6 +114,34 @@ object SharedReadCache {
     @Volatile private var headReady = false
     @Volatile private var tailReady = false
 
+    /**
+     * 头 / 尾各一块内存（各 8MB）：路二把原数据与索引取回后放这里，
+     * 两个解码器谁来要都从内存给，不够再临时回源（父 2026-11-19 定）。
+     */
+    private val headBlock = java.util.concurrent.atomic.AtomicReference<ByteArray?>(null)
+    private val tailBlock = java.util.concurrent.atomic.AtomicReference<ByteArray?>(null)
+    private val BLOCK_BYTES = 8L * 1024 * 1024
+
+    /** 命中头/尾块就直接写出去；返回 true 表示已服务 */
+    private fun serveFromBlock(start: Long, end: Long, total: Long, out: OutputStream): Boolean {
+        val head = headBlock.get()
+        if (head != null && start >= 0 && end < head.size) {
+            out.write(head, start.toInt(), (end - start + 1).toInt())
+            out.flush()
+            Log.i(TAG, "路2 命中头块：起点=$start 长=${end - start + 1}B")
+            return true
+        }
+        val tail = tailBlock.get()
+        if (tail != null && total > 0 && start >= total - tail.size && end < total) {
+            val off = (start - (total - tail.size)).toInt()
+            out.write(tail, off, (end - start + 1).toInt())
+            out.flush()
+            Log.i(TAG, "路2 命中尾块：起点=$start 长=${end - start + 1}B")
+            return true
+        }
+        return false
+    }
+
     /** 等容器头尾就绪；超时返回 false（调用方决定照常启动还是报错） */
     fun awaitHeadTail(timeoutMs: Long): Boolean {
         val t0 = System.currentTimeMillis()
@@ -239,6 +267,8 @@ object SharedReadCache {
         baseIdx = 0
         headReady = false
         tailReady = false
+        headBlock.set(null)
+        tailBlock.set(null)
         Log.i(TAG, "缓存已清空：$why（标记 ${n} 段待清理，文件不删、留给覆盖写）")
     }
 
@@ -500,9 +530,14 @@ object SharedReadCache {
          * ② 落在文件头/尾 8MB 内（元数据与索引）= 紧急任务，可插队。
          * 其他位置是音视频数据：必须命中缓存，没命中就等缓存写入起点铺过来，不回源。
          */
+        /*
+         * 父亲 2026-11-19 14:36：mpv 与自管解码要原始数据和索引时都可以回源，
+         * 按常规/紧急任务调度（整文件=常规，头尾 8MB=紧急可插队）。
+         * 缓存里没命中就走这条，不再限制位置。
+         */
         val wholeFile = start == 0L && end >= total - 1
         val edge = start < EDGE_BYTES || start >= total - EDGE_BYTES
-        if ((wholeFile || edge) && (wantIdx < baseIdx || haveNow <= start - wantIdx * SEG)) {
+        if (wantIdx < baseIdx || haveNow <= start - wantIdx * SEG) {
             val urgent = !wholeFile && edge
             Log.i(
                 TAG,
@@ -612,6 +647,19 @@ object SharedReadCache {
      */
     private fun serveDirect(upstream: String, start: Long, end: Long, out: OutputStream, urgent: Boolean) {
         val want = end - start + 1
+        val totalNow = curTotal
+        if (serveFromBlock(start, end, totalNow, out)) return
+        /*
+         * 这次取回的数据是否要留一份到块里：头区（起点 0、长度不超 8MB）或尾区
+         * （落进最后 8MB）。块只填一次，填满后两路都命中，不再回源。
+         */
+        val saveTo: java.util.concurrent.atomic.AtomicReference<ByteArray?>? = when {
+            start == 0L && want <= BLOCK_BYTES && headBlock.get() == null -> headBlock
+            totalNow > 0L && start >= totalNow - BLOCK_BYTES && want <= BLOCK_BYTES &&
+                tailBlock.get() == null -> tailBlock
+            else -> null
+        }
+        val blockBuf = saveTo?.let { ByteArray(want.toInt()) }
         val t0 = System.currentTimeMillis()
         var got = false
         /* 缓冲大小：常件按参数（默认 1MB），急件给 256KB 够用 */
@@ -689,6 +737,12 @@ object SharedReadCache {
                         val w = minOf(com.xxxx.emby_vr.vr.VrTuning.relayChunkKb * 1024, n - off)
                         out.write(buf, off, w)
                         out.flush()
+                        if (blockBuf != null) {
+                            val at = (pos - start).toInt()
+                            if (at >= 0 && at + w <= blockBuf.size) {
+                                System.arraycopy(buf, off, blockBuf, at, w)
+                            }
+                        }
                         off += w
                         pos += w
                     }
@@ -697,6 +751,10 @@ object SharedReadCache {
                 if (pos - start > 0) {
                     if (start < EDGE_BYTES) headReady = true
                     else if (total > 0L && start >= total - EDGE_BYTES) tailReady = true
+                }
+                if (blockBuf != null && blockBuf.isNotEmpty() && pos - start == blockBuf.size.toLong()) {
+                    saveTo?.set(blockBuf)
+                    Log.i(TAG, "路2 块已缓存：起点=$start 长=${blockBuf.size}B（以后两路都从内存给）")
                 }
                 Log.i(
                     TAG,
