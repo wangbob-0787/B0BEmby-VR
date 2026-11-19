@@ -510,6 +510,14 @@ class VideoPipe {
                         statSamples++
                         statBytes += size
                     }
+                    if (statSamples % 10L == 1L) {
+                        Log.i(
+                            TAG,
+                            "读样本：第 $statSamples 个 大小=${if (size > 0) size else size}B " +
+                                "pts=${runCatching { ex.sampleTime / 1_000_000.0 }.getOrNull()} " +
+                                "读位置=${runCatching { ex.sampleTime }.getOrNull()}",
+                        )
+                    }
                     if (size < 0) {
                         /*
                          * 读失败 != 文件结束（父 2026-11-19 02:11 定）。

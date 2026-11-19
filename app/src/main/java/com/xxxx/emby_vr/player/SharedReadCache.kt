@@ -768,7 +768,10 @@ object SharedReadCache {
                 runCatching { conn?.disconnect() }
             }
         } catch (t: Throwable) {
-            Log.w(TAG, "路2 中断：起点=$start ${t.javaClass.simpleName}: ${t.message}")
+            Log.w(
+                TAG,
+                "路2 中断：起点=$start 请求长=$want 已给=${pos - start}B ${t.javaClass.simpleName}: ${t.message}",
+            )
         } finally {
             if (got) road2.release()
             if (urgent) urgentWaiting.decrementAndGet()
