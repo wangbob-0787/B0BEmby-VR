@@ -674,6 +674,7 @@ object SharedReadCache {
         val blockBuf: ByteArray? = null
         val t0 = System.currentTimeMillis()
         var got = false
+        var pos = start
         val isMain = want > MAIN_BYTES
         val slot = if (isMain) slotMain else slotRand
         /* 缓冲大小：常件按参数（默认 1MB），急件给 256KB 够用 */
@@ -690,7 +691,6 @@ object SharedReadCache {
                 out, 206, "Partial Content", "application/octet-stream", want,
                 "bytes $start-$end/${if (curTotal > 0L) curTotal else end + 1}",
             )
-            var pos = start
             val genAt = gen
             var conn: HttpURLConnection? = null
             val buf = ByteArray(bufBytes)
