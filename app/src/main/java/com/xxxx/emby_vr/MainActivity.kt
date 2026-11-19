@@ -7234,6 +7234,11 @@ class MainActivity : ComponentActivity() {
     private fun currentPositionMs(): Long = ctl.positionMs()
 
     private fun stopPlaybackInternal(keepUi: Boolean = false) {
+        /*
+         * 退出播放就清掉段缓存（父 2026-11-19 18:51）：一部片子在播期间不删，
+         * 退出后整份清空，别把上一部的数据留在头显里占空间。
+         */
+        runCatching { com.xxxx.emby_vr.player.SharedReadCache.clearAll("退出播放") }
         /* 停播等多久只报数不判死（图 §4.1）：记起点，停完把耗时交给健康行 */
         val stopT0 = android.os.SystemClock.elapsedRealtime()
         /*
