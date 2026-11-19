@@ -731,7 +731,13 @@ object SharedReadCache {
                          * 主数据流不再让位（父 2026-11-19 18:27）：急件有自己的槽，
                          * 两边互不打断，谁先拿到槽谁连续传完。
                          */
-                        val w = minOf(com.xxxx.emby_vr.vr.VrTuning.relayChunkKb * 1024, n - off)
+                        /*
+                         * 单块固定 64KB（父 2026-11-19 19:09 实测定）：原来按 256KB 搬，
+                         * 网速 1~2.5MB/s 时一块就要 0.1~0.25 秒、卡顿时超过 1 秒，
+                         * 会被下面的写超时误判成"客户端不读"而中途切断，
+                         * 结果解码器拿到的数据半截或为空（实测 128KB 那次直接返回空）。
+                         */
+                        val w = minOf(64 * 1024, n - off)
                         val wT0 = System.currentTimeMillis()
                         out.write(buf, off, w)
                         out.flush()
