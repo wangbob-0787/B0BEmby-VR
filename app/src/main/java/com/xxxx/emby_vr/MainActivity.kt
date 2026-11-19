@@ -6969,6 +6969,7 @@ class MainActivity : ComponentActivity() {
             Log.w(TAG, "暂停/继续：当前没有可操作的播放引擎")
             return
         }
+        Log.i(TAG, "用户${if (ctl.isPlaying()) "继续" else "暂停"}")
         /*
          * 弹幕跟着暂停/继续。
          *
@@ -8473,6 +8474,27 @@ class MainActivity : ComponentActivity() {
     /** 起播防重入：同进程只允许一套起播在飞 */
     private val pipeBootInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
 
+    /** 水位够：只解除暂停，让解码循环开始读、出帧（父 2026-11-19 定，不动静音） */
+    private fun releasePause(source: String) {
+        waitingForWater = false
+        selfPipeWaitingFirstFrame.set(false)
+        runCatching { mpvBackend?.setPaused(false) }
+        Log.i(TAG, "解除暂停（开始读、出帧）：$source")
+    }
+
+    /** 出帧 + 声音就绪：才解除静音（父 2026-11-19 定） */
+    private fun unmuteIfReady(source: String) {
+        if (selfPipeReleased) return
+        if (!com.xxxx.emby_vr.player.MpvBackend.audioReady()) {
+            Log.i(TAG, "出帧了但声音侧还没就绪，暂不解除静音：$source")
+            return
+        }
+        selfPipeReleased = true
+        runCatching { mpvBackend?.setMute(false) }
+        runCatching { mpvBackend?.setPaused(false) }
+        Log.i(TAG, "出帧 + 声音就绪 → 解除静音（放行）：$source")
+    }
+
     private fun releasePlayback(kind: String, source: String): Boolean {
         if (!com.xxxx.emby_vr.player.MpvBackend.isReady()) {
             Log.w(TAG, "放行被拒：engineNotReady|kind=$kind|source=$source")
@@ -8520,6 +8542,9 @@ class MainActivity : ComponentActivity() {
     /** 是否为"等画面就绪"而暂停过声音（重建路径用，放行时再解除） */
     @Volatile private var pipePausedForRebuild = false
 
+    /** 正在等水位：起播与跳转共用；水量够就解除暂停（父 2026-11-19 定） */
+    @Volatile private var waitingForWater = false
+
     /** 跳转发起时用户是否自己按着暂停：是的话，跳完保持暂停，等用户按播放（父 2026-11-19 定） */
     @Volatile private var seekWasUserPaused = false
 
@@ -8566,9 +8591,12 @@ class MainActivity : ComponentActivity() {
                         runCatching { mpvBackend?.setPaused(true) }
                         Log.i(TAG, "停等|水位=${"%.1f".format(water)}s < ${low}s（先停住，别让它抖）")
                         hud("缓冲中…")
-                    } else if (pipePausedForRebuild && !seekWasUserPaused && water >= high) {
-                        Log.i(TAG, "跳转放行：水位=${"%.1f".format(water)}s ≥ ${high}s（用户未暂停）")
-                        releasePlayback("REBUILD", "跳转水位够")
+                    } else if (waitingForWater && !seekWasUserPaused && water >= high) {
+                        /*
+                         * 水位够 → 只解除暂停，不动静音（父 2026-11-19 定）。
+                         * 解除后解码循环开始读、出帧；出帧且声音就绪才解除静音。
+                         */
+                        releasePause("跳转水位够=${"%.1f".format(water)}s ≥ ${high}s")
                     } else if (pipePausedByWater && water >= high) {
                         pipePausedByWater = false
                         /* 走唯一闸门（I5）：水位恢复只是解除暂停，不动静音 */
@@ -8773,6 +8801,9 @@ class MainActivity : ComponentActivity() {
              * 落点回报（关键帧算出来那一刻，不是等首帧上屏）：
              * ① 挪缓存写入起点；② 声音跳到同一个落点；③ 开始等水位放行。
              */
+            runCatching { m.seekToSec(sec) }
+            waitingForWater = true
+            pipe.onSeekRendered = { shown -> unmuteIfReady("跳转首帧 ${"%.2f".format(shown)}s") }
             pipe.onSeekLanded = { landed ->
                 android.os.Handler(android.os.Looper.getMainLooper()).post {
                     com.xxxx.emby_vr.player.SharedReadCache.moveWriteToKeyframe(landed)
@@ -9044,11 +9075,12 @@ class MainActivity : ComponentActivity() {
                 Log.i(TAG, "起播水位达标：${"%.1f".format(water)}s / 目标 ${bootTarget}s")
             }
             releaseAtMs = android.os.SystemClock.elapsedRealtime()
-            /* 唯一闸门（I5）：起播场景 */
-            released = releasePlayback("BOOT", "起播(CAN_OPEN+READY+水位)")
-            if (released) {
-                Log.i(TAG, "放行：解除暂停 + 放行首帧 + mute=no（同一拍，READY=${if (pipeReady) "齐" else "已齐"}）")
-            }
+            /*
+             * 只解除暂停（父 2026-11-19 定）：循环开始读、出帧；
+             * 解除静音要等"出帧 + 声音就绪"，在首帧回调里做。
+             */
+            released = true
+            releasePause("起播(CAN_OPEN+READY+水位够)")
         }
 
         fun launchPipeline(audioStart: Double) {
@@ -9109,6 +9141,7 @@ class MainActivity : ComponentActivity() {
                         playerFrameSeen = true
                         tryRevealWaitingFrame()
                     }
+                    unmuteIfReady("起播首帧")
                 },
                 /*
                  * 失步重启（图 §5）：**必须投主控线程**。这个回调来自解码线程，
@@ -9203,19 +9236,14 @@ class MainActivity : ComponentActivity() {
                  */
                 runCatching { mpvBackend?.setMute(true) }
                 runCatching { mpvBackend?.setPaused(true) }
-                Log.i(TAG, "声音侧就绪 → 保持暂停与静音，等画面三帧齐了同拍放开")
                 /*
-                 * 核对：内核加载完成后偶尔会自己脱离暂停（实测过 canOpenBlk=notPaused）。
-                 * 半秒后再看一次实际状态，没停住就重新压回去，并把真实值打进日志。
+                 * 起播也走"等水位"（父 2026-11-19 定）：先暂停 + 静音，
+                 * 水位涨到该档上限就解除暂停，循环开始读、出帧，出帧且声音就绪再解除静音。
+                 * 不再用"反复把暂停压回去"的写法 —— 那会和解锁互相打架。
                  */
-                ui.postDelayed({
-                    if (selfPipeReleased) return@postDelayed
-                    val p2 = runCatching { mpvBackend?.isPaused() }.getOrNull()
-                    val m2 = runCatching { mpvBackend?.isMuted() }.getOrNull()
-                    Log.i(TAG, "就绪核对：paused=$p2 muted=$m2（false 表示内核没听指令）")
-                    if (p2 == false) runCatching { mpvBackend?.setPaused(true) }
-                    if (m2 == false) runCatching { mpvBackend?.setMute(true) }
-                }, 500)
+                waitingForWater = true
+                seekWasUserPaused = false
+                Log.i(TAG, "声音侧就绪 → 暂停并置等水位（水量够后由水位监视解除）")
                 Log.i(TAG, "起播基准：CAN_OPEN 基准=${"%.3f".format(basePos)}（请求=${"%.3f".format(startSec)}）")
                 /* 时长到手才谈得上水位：从这里开始才算"位置之后还剩几秒" */
                 pipeDurationSec = runCatching { m.durationSec() }.getOrDefault(0.0)

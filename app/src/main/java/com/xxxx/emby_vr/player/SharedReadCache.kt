@@ -569,7 +569,10 @@ object SharedReadCache {
      */
     fun moveWriteToKeyframe(keySec: Double) {
         val total = curTotal
-        if (!enabled() || total <= 0L || curDurationSec <= 0.0) return
+        if (!enabled() || total <= 0L || curDurationSec <= 0.0) {
+            Log.w(TAG, "跳转落点没法换算：total=$total 时长=$curDurationSec（写入起点未移动）")
+            return
+        }
         val idx = ((keySec / curDurationSec).coerceIn(0.0, 1.0) * total / SEG).toLong()
         writePos = idx * SEG
         Log.i(TAG, "跳转落点：缓存写入起点 → 第 $idx 段（${writePos}B），缓存起点=${baseIdx}（不动）")
