@@ -660,18 +660,9 @@ object SharedReadCache {
     private fun serveDirect(upstream: String, start: Long, end: Long, out: OutputStream, urgent: Boolean) {
         val want = end - start + 1
         val totalNow = curTotal
-        if (serveFromBlock(start, end, totalNow, out)) return
-        /*
-         * 这次取回的数据是否要留一份到块里：头区（起点 0、长度不超 8MB）或尾区
-         * （落进最后 8MB）。块只填一次，填满后两路都命中，不再回源。
-         */
-        val saveTo: java.util.concurrent.atomic.AtomicReference<ByteArray?>? = when {
-            start == 0L && want <= BLOCK_BYTES && headBlock.get() == null -> headBlock
-            totalNow > 0L && start >= totalNow - BLOCK_BYTES && want <= BLOCK_BYTES &&
-                tailBlock.get() == null -> tailBlock
-            else -> null
-        }
-        val blockBuf = saveTo?.let { ByteArray(want.toInt()) }
+        /* 块缓存暂停使用（父 2026-11-19 15:56）：每次回源直接取，见下方说明 */
+        val saveTo: java.util.concurrent.atomic.AtomicReference<ByteArray?>? = null
+        val blockBuf: ByteArray? = null
         val t0 = System.currentTimeMillis()
         var got = false
         /* 缓冲大小：常件按参数（默认 1MB），急件给 256KB 够用 */
