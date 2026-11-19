@@ -596,8 +596,9 @@ object SharedReadCache {
         var conn: HttpURLConnection? = null
         var raf: java.io.RandomAccessFile? = null
         try {
-            conn = openRange(upstream, pos, to)
-            val code = conn.responseCode
+            val c = openRange(upstream, pos, to)
+            conn = c
+            val code = c.responseCode
             if (code !in 200..206) {
                 Log.w(TAG, "回源失败：码=$code 起点=${pos}B")
                 return -1L
@@ -605,7 +606,7 @@ object SharedReadCache {
             raf = runCatching {
                 java.io.RandomAccessFile(segFile(idx), "rw").also { it.seek(pos - segStart) }
             }.getOrNull()
-            conn.inputStream.use { ins ->
+            c.inputStream.use { ins ->
                 val buf = ByteArray(64 * 1024)
                 while (pos <= to) {
                     val n = ins.read(buf, 0, minOf(buf.size.toLong(), to - pos + 1).toInt())
