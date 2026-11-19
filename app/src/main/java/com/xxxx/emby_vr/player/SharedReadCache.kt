@@ -690,8 +690,8 @@ object SharedReadCache {
                 out, 206, "Partial Content", "application/octet-stream", want,
                 "bytes $start-$end/${if (curTotal > 0L) curTotal else end + 1}",
             )
-            val genAt = gen
             var pos = start
+            val genAt = gen
             var conn: HttpURLConnection? = null
             val buf = ByteArray(bufBytes)
             try {
