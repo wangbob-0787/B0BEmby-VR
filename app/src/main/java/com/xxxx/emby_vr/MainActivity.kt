@@ -9215,10 +9215,9 @@ class MainActivity : ComponentActivity() {
                  * ERROR 带原文 + 屏上一行提示（否则现场是"转圈永远不结束"，那是另一种静默）。
                  */
                 val why = com.xxxx.emby_vr.player.VideoPipe.lastError
+                /* 只置标记：解除暂停的条件里已经包含"视频侧没故障"，不需要在这里动暂停 */
                 videoPipeFault = true
-                waitingForWater = false
-                runCatching { mpvBackend?.setPaused(true) }
-                Log.e(TAG, "PIPE 起不来：$why → 立即暂停声音（没有画面就不许走）")
+                Log.e(TAG, "PIPE 起不来：$why（记下故障，声音不会被放行）")
                 hud("画面解码起不来")
             }
         }
