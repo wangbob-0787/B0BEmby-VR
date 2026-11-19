@@ -381,6 +381,16 @@ object SharedReadCache {
      * 从它所在的段开始连续累加，一遇到没写满的段就停 —— 缺口之后的数据对播放没意义。
      * 返回负数 = 现在还判断不了（没有连接或文件长度未知）。
      */
+    /** 记当前播放位置（水位与回收都按它算） */
+    fun setPlayPosSec(sec: Double) {
+        if (sec >= 0.0) playPosSec = sec
+    }
+
+    /** 已无"缓存写入起点"（父 2026-11-19 19:34）：缓存由读被动形成，跳转不用挪它 */
+    fun moveWriteToKeyframe(keySec: Double) {
+        Log.i(TAG, "跳转：缓存起点不用挪（缓存由读被动形成），目标=${"%.1f".format(keySec)}s")
+    }
+
     fun waterAheadSecs(durationSec: Double): Double {
         val totalBytes = curTotal
         if (totalBytes <= 0L || durationSec <= 0.0) return -1.0
