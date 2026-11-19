@@ -127,6 +127,14 @@ class MpvBackend(private val context: Context) {
                  * （父 2026-11-19 20:20 实测：这里写死会把调参值覆盖掉，用户在文件里改的 800 看不到效果）。
                  */
                 setOptionRuntime("target-peak", com.xxxx.emby_vr.vr.VrTuning.peakOverride ?: "1100")
+                /*
+                 * 输出完整范围 + 对比度 100（父 2026-11-19 20:13 定，写死进代码）。
+                 *
+                 * 原来这两项只写在设备的调参文件里；文件一旦被覆盖，画面立刻发灰发暗
+                 * （窄范围把黑抬起来、白压下去）。写进代码默认值，重装或换机都不会丢。
+                 */
+                setOptionRuntime("video-output-levels", "full")
+                setOptionRuntime("contrast", "100")
             }
         }
 
