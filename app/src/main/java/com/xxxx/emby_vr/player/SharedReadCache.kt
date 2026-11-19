@@ -122,6 +122,9 @@ object SharedReadCache {
     @Volatile private var gen = 0L              // 换片/跳转代数：拉流线程据此重开连接
 
 
+    /** 每个客户端当前读到第几段：只用于删除保护，不参与水位（水位按播放进度算） */
+    private val connPos = java.util.concurrent.ConcurrentHashMap<Int, Long>()
+
     private val hits = AtomicLong()
     private val misses = AtomicLong()
     private val upstreamBytes = AtomicLong()
@@ -431,7 +434,7 @@ object SharedReadCache {
             }
         } catch (_: Throwable) {
         } finally {
-            /* 连接结束：无需再登记（跳转不再掐连接，靠拉流断连改向） */
+            connPos.remove(connId)
         }
     }
 
@@ -467,6 +470,7 @@ object SharedReadCache {
          * 缓存里没有这段数据（文件头、尾部索引、已删区间）→ 交给路 2 单条串行去上游取。
          * 不写缓存、不动写位、不占缓存空间（父亲 2026-11-18 定）。
          */
+        connPos[connId] = wantIdx
         val haveNow = synchronized(lock) { avail[wantIdx] ?: 0L }
         /*
          * 路 2 只服务两类请求（父 2026-11-19 定）：
@@ -528,6 +532,7 @@ object SharedReadCache {
                     }
                     out.write(buf, 0, got)
                     pos += got
+                    connPos[connId] = pos / SEG
                     lastProgress = System.currentTimeMillis()
                 } else {
                 /* 数据还没到：等拉流线程写进来（超时即断开，让客户端重试） */
@@ -779,11 +784,13 @@ object SharedReadCache {
                                  * 淘汰 = 移出账本 + 进待清队列（拉流只往前走，不会回头重写小号段，
                                  * 只删记账磁盘不会回收，必须交给后台真删）。
                                  */
-                                val posIdx = if (curTotal > 0L && curDurationSec > 0.0) {
+                                val playIdx = if (curTotal > 0L && curDurationSec > 0.0) {
                                     (playPosSec / curDurationSec * curTotal / seg).toLong()
                                 } else {
                                     baseIdx
                                 }
+                                val readIdx = connPos.values.minOrNull() ?: playIdx
+                                val posIdx = minOf(playIdx, readIdx)
                                 val victim = synchronized(lock) {
                                     var v: Long? = null
                                     for (k in avail.keys) {
@@ -875,11 +882,21 @@ object SharedReadCache {
                         }
                     }
                 }
-                /* 安全线按播放进度算（父 2026-11-19 定）：读位置在 mpv 那侧会超前，不能拿来当删除依据 */
-                val slow = if (curTotal > 0L && curDurationSec > 0.0) {
+                /*
+                 * 安全线取"播放进度"与"最慢读位置"里更靠左的那个（父 2026-11-19 定）：
+                 * mpv 的读位置在播放点右边，自管解码卡顿时可能落到播放点左边，
+                 * 只按其中一个算都会删掉另一个正在用的段。
+                 */
+                val playIdx = if (curTotal > 0L && curDurationSec > 0.0) {
                     (playPosSec / curDurationSec * curTotal / SEG).toLong()
                 } else {
                     -1L
+                }
+                val readIdx = connPos.values.minOrNull() ?: -1L
+                val slow = when {
+                    playIdx < 0L -> readIdx
+                    readIdx < 0L -> playIdx
+                    else -> minOf(playIdx, readIdx)
                 }
                 val base = baseIdx
                 val safe = when {
