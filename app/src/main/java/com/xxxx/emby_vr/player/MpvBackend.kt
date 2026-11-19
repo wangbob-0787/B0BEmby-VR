@@ -119,7 +119,11 @@ class MpvBackend(private val context: Context) {
                  * spline 的跨度与浏览器一致（实测量得两者对比度 0.36 vs 0.35）。
                  */
                 setOptionRuntime("tone-mapping", "spline")
-                setOptionRuntime("target-peak", "1100")
+                /*
+                 * 目标亮度默认 1100，但调参文件里的 mpv_target-peak 优先
+                 * （父 2026-11-19 20:20 实测：这里写死会把调参值覆盖掉，用户在文件里改的 800 看不到效果）。
+                 */
+                setOptionRuntime("target-peak", com.xxxx.emby_vr.vr.VrTuning.peakOverride ?: "1100")
             }
         }
 
