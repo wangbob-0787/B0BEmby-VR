@@ -83,7 +83,16 @@ object SharedReadCache {
      *
      * 取多少给多少，不写缓存、不动写位；取完立刻让给下一个排队的人。
      */
-    private val road2 = java.util.concurrent.Semaphore(1, true)
+    /*
+     * 通道2 的两个槽（父 2026-11-19 18:27 定，本地实测通过）：
+     * - slotMain 主数据流：只接长请求（声明长度 > 8MB，通常是"到文件尾"那条）。
+     *   它不被任何短请求打断，否则播放器要重新连接、重新定位。
+     * - slotRand 随机读：索引、短请求、另一个解码器打开容器时的那几块。
+     * 两个槽互相独立，谁忙谁等，互不抢占。
+     */
+    private val slotMain = java.util.concurrent.Semaphore(1, true)
+    private val slotRand = java.util.concurrent.Semaphore(1, true)
+    private val MAIN_BYTES = 8L * 1024 * 1024
     /** 正在等路 2 的急件数（常件看到 >0 就让位） */
     private val urgentWaiting = AtomicInteger(0)
 
@@ -665,11 +674,13 @@ object SharedReadCache {
         val blockBuf: ByteArray? = null
         val t0 = System.currentTimeMillis()
         var got = false
+        val isMain = want > MAIN_BYTES
+        val slot = if (isMain) slotMain else slotRand
         /* 缓冲大小：常件按参数（默认 1MB），急件给 256KB 够用 */
         val bufBytes = (if (urgent) 256 else com.xxxx.emby_vr.vr.VrTuning.relayBufKb) * 1024
         if (urgent) urgentWaiting.incrementAndGet()
         try {
-            road2.acquire()
+            slot.acquire()
             got = true
             if (urgent) {
                 val waited = System.currentTimeMillis() - t0
@@ -712,34 +723,22 @@ object SharedReadCache {
                     var off = 0
                     while (off < n) {
                         /*
-                         * 常件让位：有急件在等就关掉上游连接、交还路 2，
-                         * 先把手上这团缓冲按"吊着速率"喂给播放器（它感觉只是网速抖了一下），
-                         * 急件取完再重新拿闸门、从断点重开上游继续。
+                         * 主数据流不再让位（父 2026-11-19 18:27）：急件有自己的槽，
+                         * 两边互不打断，谁先拿到槽谁连续传完。
                          */
-                        if (!urgent && urgentWaiting.get() > 0) {
-                            runCatching { conn?.disconnect() }
-                            conn = null
-                            road2.release()
-                            got = false
-                            val kp = com.xxxx.emby_vr.vr.VrTuning.relayHoldKbps
-                            Log.i(TAG, "路2 让位：手上还有 ${n - off}B，按 ${kp}KB/s 吊着")
-                            while (off < n) {
-                                val w = if (kp <= 0) n - off else minOf(kp * 1024 / 10, n - off).coerceAtLeast(1)
-                                out.write(buf, off, w)
-                                out.flush()
-                                off += w
-                                pos += w
-                                if (urgentWaiting.get() == 0) break
-                                if (kp > 0) Thread.sleep(100)
-                            }
-                            road2.acquire()
-                            got = true
-                            Log.i(TAG, "路2 恢复：从 ${pos}B 重开上游")
-                            continue
-                        }
                         val w = minOf(com.xxxx.emby_vr.vr.VrTuning.relayChunkKb * 1024, n - off)
+                        val wT0 = System.currentTimeMillis()
                         out.write(buf, off, w)
                         out.flush()
+                        /*
+                         * 客户端不读时写会一直阻塞；单块超过 3 秒就认为它已经放弃，
+                         * 立刻退出并释放槽位，别让死连接占着（父 2026-11-19 18:23 实测：
+                         * 旧连接占槽 20 秒，导致重发的请求排队、黑屏）。
+                         */
+                        if (System.currentTimeMillis() - wT0 > 3000) {
+                            Log.w(TAG, "路2 放弃：单块写入超时（起点=${pos}B，客户端不再读）")
+                            return
+                        }
                         if (blockBuf != null) {
                             val at = (pos - start).toInt()
                             if (at >= 0 && at + w <= blockBuf.size) {
@@ -773,7 +772,7 @@ object SharedReadCache {
                 "路2 中断：起点=$start 请求长=$want 已给=${pos - start}B ${t.javaClass.simpleName}: ${t.message}",
             )
         } finally {
-            if (got) road2.release()
+            if (got) slot.release()
             if (urgent) urgentWaiting.decrementAndGet()
         }
     }
