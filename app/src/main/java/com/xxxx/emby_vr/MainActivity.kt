@@ -8579,11 +8579,6 @@ class MainActivity : ComponentActivity() {
         waterSeen = false
     }
 
-    /** 摇杆连跳合并：待执行的目标与定时器（300ms 内再来新事件就重置） */
-    @Volatile private var pendingSeekSec: Double = 0.0
-    private var seekDebounce: Runnable? = null
-    private val seekUiHandler = android.os.Handler(android.os.Looper.getMainLooper())
-
     /** 跳转代数：每跳一次 +1，上一跳的回调一律作废（连跳时只认最后一次） */
     @Volatile private var seekReleaseGen = 0
 
@@ -8794,11 +8789,18 @@ class MainActivity : ComponentActivity() {
              * 兜底：2 秒没等到画面新帧（解码器卡住 / 那一段没数据）也必须放一次，
              * 否则声音被一直扣着，现场是"跳完没声音，得手点一下"。
              */
-            /*
-             * 这里原来有个"2 秒没等到新帧也放行"的兜底 —— 父亲 2026-11-19 00:04 定：删掉。
-             * 跳转必须真的出新帧才放行，没出帧就一直等；兜底会让失败也当成成功，
-             * 跟着去清缓存，旧数据没了、画面还停在旧位置。
-             */
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                if (mySeekGen == seekReleaseGen && pipePausedForRebuild) {
+                    val p2 = runCatching { m.isPaused() }.getOrNull()
+                    val pos = runCatching { m.positionExtrapolated() }.getOrNull()
+                    Log.w(
+                        TAG,
+                        "跳转放行兜底：2 秒内没等到画面新帧|paused=$p2" +
+                            " 位置=${pos?.let { "%.1f".format(it) }} 目标=${"%.1f".format(sec)}",
+                    )
+                    releasePlayback("REBUILD", "跳转兜底")
+                }
+            }, 2000)
             return
         }
         pipePausedForRebuild = true
@@ -8964,24 +8966,10 @@ class MainActivity : ComponentActivity() {
          */
         m.setLoopFile(false)
         /* 跳转同时通知自管解码器，否则画面留在原地、声音跳走 */
-        /*
-         * 摇杆连跳合并（父 2026-11-19 00:04 定）：按住摇杆一路扳时不做跳转，
-         * 松开后 300 毫秒没有新事件才提交最后一次目标。
-         * 原来每扳一下都跳一次，解码器被连续 seek 打断，实测跳完就卡在旧位置。
-         */
         ctl.pipeSeek = { ms ->
             val sec = (ms / 1000.0).coerceAtLeast(0.0)
-            pendingSeekSec = sec
-            seekDebounce?.let { seekUiHandler.removeCallbacks(it) }
-            val run = Runnable {
-                seekDebounce = null
-                val target = pendingSeekSec
-                pipeSeekT0 = android.os.SystemClock.elapsedRealtime()
-                Log.i(TAG, "摇杆跳转提交：目标=${"%.1f".format(target)}s（合并窗口 300ms）")
-                restartVideoPipeAt(target)
-            }
-            seekDebounce = run
-            seekUiHandler.postDelayed(run, 300)
+            pipeSeekT0 = android.os.SystemClock.elapsedRealtime()
+            restartVideoPipeAt(sec)
         }
         com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("vid", "no")
         /*
@@ -9106,33 +9094,11 @@ class MainActivity : ComponentActivity() {
                 onAudioAlign = { target ->
                     Log.i(TAG, "起播对齐：声音跳到画面实际首帧 ${"%.2f".format(target)}s")
                     runCatching { m.seekToSec(target) }
-                    /*
-                     * 缓存起点对齐到解码器真正起解的那一帧（父 2026-11-19 00:33 定）。
-                     * 播放点 995 秒、实际关键帧 954 秒时，若缓存从 995 铺，
-                     * 解码器要的 954 秒那段永远不在缓存里，只能回源排长队（现场就这样卡住）。
-                     */
-                    val dur = pipeDurationSec
-                    if (dur > 0.0 && lastPipeUrlForCache.isNotEmpty()) {
-                        com.xxxx.emby_vr.player.SharedReadCache.beginBoot(
-                            lastPipeUrlForCache, target, dur,
-                        )
-                    }
                 },
                 onFirstFrame = {
                     val now = android.os.SystemClock.elapsedRealtime()
                     val d = if (releaseAtMs > 0) now - releaseAtMs else -1
                     Log.i(TAG, "首帧上屏（放行→上屏 ${d}ms）")
-                    /*
-                     * 自管解码这条路的首帧就是"播放器首帧"（父 2026-11-19 01:31 定）。
-                     *
-                     * 收黑幕原本只认内核 mpv 的 videoReady()，而 P5 这条路 mpv 的视频轨是关的
-                     * （vid=no），它永远不报就绪 → 黑幕永远收不掉，只能等 20 秒兜底；
-                     * 现场就是"画面其实一直在解码上屏，屏幕上却盖着黑幕十几秒"。
-                     */
-                    if (waitingFirstFrame) {
-                        playerFrameSeen = true
-                        tryRevealWaitingFrame()
-                    }
                 },
                 /*
                  * 失步重启（图 §5）：**必须投主控线程**。这个回调来自解码线程，

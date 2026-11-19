@@ -104,9 +104,6 @@ object SharedReadCache {
      */
     private val orphanSegs = java.util.concurrent.ConcurrentLinkedQueue<Long>()
 
-    /** 当前这一部的时长（秒），播放进度换算字节要用 */
-    @Volatile private var curDurationSec = 0.0
-
     /** 已设过的起播锚点（"地址@秒"），同一片同一个位置不重复清空 */
     @Volatile private var anchorKey: String? = null
 
@@ -114,13 +111,6 @@ object SharedReadCache {
     @Volatile private var lastIdleLogAt = 0L
     @Volatile private var baseIdx = 0L          // 缓存里保留的第一段
     @Volatile private var gen = 0L              // 换片/跳转代数：拉流线程据此重开连接
-
-    /**
-     * 跳转时要掐断的连接（父亲 2026-11-19 00:57 定）：跳转命令发出后，
-     * 不管解码线程在干什么，读旧位置的连接一律无条件停掉，让它立刻回去执行跳转。
-     * 不掐断的话，解码线程会一直堵在"等一个已经挪走的段"里，跳转指令永远排不上。
-     */
-    private val cancelledConns = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
 
     /** 每个客户端（HTTP 连接）当前读到的段号，用于算"最慢那个" */
     private val connPos = ConcurrentHashMap<Int, Long>()
@@ -180,7 +170,6 @@ object SharedReadCache {
                 Log.w(TAG, "起播锚点：拿不到文件总长，暂不设起点")
                 return@thread
             }
-            curDurationSec = durationSec
             val idx = ((startSec / durationSec).coerceIn(0.0, 1.0) * total / SEG).toLong()
             clearAll("起播：从 ${"%.0f".format(startSec)}s 开始铺")
             curUrl = inner
@@ -430,7 +419,6 @@ object SharedReadCache {
             }
         } catch (_: Throwable) {
         } finally {
-            cancelledConns.remove(connId)
             connPos.remove(connId)
         }
     }
@@ -528,20 +516,11 @@ object SharedReadCache {
                         Thread.sleep(20)
                         continue
                     }
-                    if (cancelledConns.contains(connId)) {
-                        Log.i(TAG, "发数据中止：连接被跳转作废（位置=${pos}B）")
-                        return
-                    }
                     out.write(buf, 0, got)
                     pos += got
                     lastProgress = System.currentTimeMillis()
                     connPos[connId] = pos / SEG
                 } else {
-                /* 跳转已把这个连接作废：立刻断，别再等一个已经挪走的段 */
-                if (cancelledConns.contains(connId)) {
-                    Log.i(TAG, "等数据中止：连接被跳转作废（段=$idx）")
-                    return
-                }
                 /* 数据还没到：等拉流线程写进来（超时即断开，让客户端重试） */
                 if (System.currentTimeMillis() - lastProgress > 30000) break
                 if (System.currentTimeMillis() - lastLogAt > 2000) {
@@ -638,9 +617,6 @@ object SharedReadCache {
         curUrl = url
         writePos = targetIdx * SEG
         baseIdx = targetIdx
-        /* 读旧位置（目标段之前）的连接全部掐断：解码线程立刻从阻塞读里出来，回去执行跳转 */
-        for ((id, seg) in connPos) if (seg < targetIdx) cancelledConns.add(id)
-        Log.i(TAG, "跳转掐断旧读连接 ${cancelledConns.size} 条（目标段=$targetIdx）")
         connPos.clear()
         Log.i(TAG, "跳转重铺：$why（标记 ${n} 段待清理，写位=${writePos}B baseIdx=$targetIdx，连接不作废）")
     }
@@ -838,42 +814,8 @@ object SharedReadCache {
                         val buf = ByteArray(64 * 1024)
                         while (true) {
                             if (gen != myGen) break
-                            /*
-                             * 到 400MB 上限（父 2026-11-19 00:04 定）：覆盖播放进度左边编号最小的段，
-                             * 直接重写它，不等后台回收。覆盖写时 setLength(0) 会截断旧内容。
-                             * 只动"编号小于当前写位段号"的段，正在铺的那段和它后面的不碰。
-                             */
                             val full = synchronized(lock) { used >= CAPACITY_BYTES * 95 / 100 }
                             if (full) {
-                                /*
-                                 * 到 400MB 上限（父 2026-11-19 00:04 定）：淘汰**播放进度左侧**
-                                 * 编号最小的段。判据用播放进度、不用写位 —— 写位在播放进度右侧，
-                                 * 按写位判会淘汰到还没播的数据。
-                                 * 淘汰 = 移出账本 + 进待清队列（拉流只往前走，不会回头重写小号段，
-                                 * 只删记账磁盘不会回收，必须交给后台真删）。
-                                 */
-                                val posIdx = if (curTotal > 0L && curDurationSec > 0.0) {
-                                    (playPosSec / curDurationSec * curTotal / seg).toLong()
-                                } else {
-                                    baseIdx
-                                }
-                                val victim = synchronized(lock) {
-                                    var v: Long? = null
-                                    for (k in avail.keys) {
-                                        if (k >= baseIdx && k < posIdx) {
-                                            if (v == null || k < v) v = k
-                                        }
-                                    }
-                                    if (v != null) {
-                                        used -= (avail.remove(v) ?: 0L)
-                                    }
-                                    v
-                                }
-                                if (victim != null) {
-                                    orphanSegs.add(victim)
-                                    Log.i(TAG, "缓存到顶：淘汰播放进度左侧第 $victim 段（播放进度段=$posIdx 写位段=${writePos / seg}）")
-                                    continue
-                                }
                                 Thread.sleep(100)
                                 continue
                             }
