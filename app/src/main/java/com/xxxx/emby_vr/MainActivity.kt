@@ -8514,6 +8514,11 @@ class MainActivity : ComponentActivity() {
             return false
         }
         selfPipeWaitingFirstFrame.set(false)
+        /* 视频侧有故障（如容器里没有视频轨）：任何放行都不许解除暂停，否则声音空走 */
+        if (videoPipeFault) {
+            Log.w(TAG, "放行被拒：视频侧故障未清（kind=$kind）")
+            return false
+        }
         /* 跳转等待中：水位够了就该放行；只有用户自己按着暂停才不恢复（父 2026-11-19 定） */
         if (kind == "WATER" && pipePausedForRebuild && seekWasUserPaused) {
             Log.w(TAG, "放行被拒：用户自己按着暂停，水位恢复也不解除")
@@ -8603,7 +8608,7 @@ class MainActivity : ComponentActivity() {
                          * 解除后解码循环开始读、出帧；出帧且声音就绪才解除静音。
                          */
                         releasePause("跳转水位够=${"%.1f".format(water)}s ≥ ${high}s")
-                    } else if (pipePausedByWater && water >= high) {
+                    } else if (pipePausedByWater && water >= high && !videoPipeFault) {
                         pipePausedByWater = false
                         /* 走唯一闸门（I5）：水位恢复只是解除暂停，不动静音 */
                         releasePlayback("WATER", "水位恢复")

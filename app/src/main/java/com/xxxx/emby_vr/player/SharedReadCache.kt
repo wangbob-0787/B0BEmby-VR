@@ -198,6 +198,9 @@ object SharedReadCache {
                 return@thread
             }
             curDurationSec = durationSec
+            /* 每次起播都重新等头尾：不清零的话，上一部留下的"已就绪"会让等待立即通过 */
+            headReady = false
+            tailReady = false
             val idx = ((startSec / durationSec).coerceIn(0.0, 1.0) * total / SEG).toLong()
             /*
              * 两件事分开做，但必须在同一个线程里按顺序执行：
