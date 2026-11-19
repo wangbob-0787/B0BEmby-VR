@@ -9166,7 +9166,7 @@ class MainActivity : ComponentActivity() {
                         videoPipe = null
                         if (!dead) {
                             Log.e(TAG, "失步重启失败：zombie=true（旧解码线程未退出，放弃重启避免两路抢画面）")
-                            hud("画面卡住（需重启应用）")
+                            ui.post { hud("画面卡住（需重启应用）") }
                             return@post
                         }
                         /* 重启不重新静音：声音一直在走，重新静音会掐掉一段 */
@@ -9223,7 +9223,7 @@ class MainActivity : ComponentActivity() {
                 /* 只置标记：解除暂停的条件里已经包含"视频侧没故障"，不需要在这里动暂停 */
                 videoPipeFault = true
                 Log.e(TAG, "PIPE 起不来：$why（记下故障，声音不会被放行）")
-                hud("画面解码起不来")
+                ui.post { hud("画面解码起不来") }
             }
         }
 
@@ -9285,7 +9285,8 @@ class MainActivity : ComponentActivity() {
                 Thread {
                     val ok = com.xxxx.emby_vr.player.SharedReadCache.awaitHeadTail(8000)
                     Log.i(TAG, "起播：等容器头尾索引 ${if (ok) "已就绪" else "超时 8s（照常启动，后面靠重试）"}")
-                    ui.post { launchPipeline(basePos) }
+                    /* 打开容器、读索引都是同步网络操作，放在后台线程做，界面不会被它拖住 */
+                    launchPipeline(basePos)
                 }.start()
             }
         }
