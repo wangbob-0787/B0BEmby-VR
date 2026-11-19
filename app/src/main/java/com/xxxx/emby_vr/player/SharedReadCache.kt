@@ -544,10 +544,11 @@ object SharedReadCache {
         val wholeFile = start == 0L && end >= total - 1
         val edge = start < EDGE_BYTES || start >= total - EDGE_BYTES
         /*
-         * 父 2026-11-19 15:29：只有落在文件头/尾 8MB 的请求（元数据、索引、整文件那条）
-         * 走通道2；其他位置都是音视频数据，读缓存，没命中就等路1 铺过来。
+         * 父 2026-11-19 15:33：恢复上午删掉的那条 —— 缓存没命中就走通道2 回源。
+         * 原因：分不清中间位置要的是元数据还是音视频；若是元数据而缓存里又没有，
+         * 不给回源它就永远拿不到、也就没法定位。
          */
-        if (edge && (wantIdx < baseIdx || haveNow <= start - wantIdx * SEG)) {
+        if (wantIdx < baseIdx || haveNow <= start - wantIdx * SEG) {
             /* 整文件那条是常规任务，其余急件可插队 */
             val urgent = !wholeFile
             Log.i(
