@@ -120,10 +120,7 @@ class MpvBackend(private val context: Context) {
                  */
                 setOptionRuntime("tone-mapping", "spline")
                 setOptionRuntime("target-peak", "1100")
-                /*
-                 * 输出完整范围 + 对比度 100（父 2026-11-19 20:13 定，写死进代码）。
-                 * 这两项原来只写在设备调参文件里，文件一被覆盖画面立刻发灰发暗。
-                 */
+                /* 输出完整范围 + 对比度 100（父 2026-11-19 20:13 定，写死进代码） */
                 setOptionRuntime("video-output-levels", "full")
                 setOptionRuntime("contrast", "100")
             }

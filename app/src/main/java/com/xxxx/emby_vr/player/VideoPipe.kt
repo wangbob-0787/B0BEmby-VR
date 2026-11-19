@@ -484,18 +484,6 @@ class VideoPipe {
                         statBytes += size
                     }
                     if (size < 0) {
-                        /*
-                         * 读失败 != 文件结束（父 2026-11-19 02:11 定）。
-                         *
-                         * 用户跳转时中转会掐断旧读连接，解码器这一下必然读失败；
-                         * 原来直接当 EOF 处理（发结束标记、之后不再读），解码器就此打死,
-                         * 现场是"跳转后样本数停住、画面永远不出来"。
-                         * 有待执行的跳转就先归还输入缓冲、回循环顶部去执行跳转。
-                         */
-                        if (pendingSeekSec >= 0.0) {
-                            runCatching { codec.queueInputBuffer(inIdx, 0, 0, 0, 0) }
-                            continue
-                        }
                         codec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                         inputDone = true
                     } else {
