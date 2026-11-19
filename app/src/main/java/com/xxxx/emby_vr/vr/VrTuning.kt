@@ -285,16 +285,6 @@ object VrTuning {
     /** 中转分块大小（兆）。4MB 一块约 2 秒内容、取一块约 1.6 秒；块越大等待越久 */
     @Volatile var relayBlockMb: Int = 4
     /** 中转单次搬运量（KB）。默认 256；调小=系统调用多，调大=瞬时内存占用高 */
-    /**
-     * 调参文件里写的内核色彩项（起播设色彩目标时优先用它们）。
-     *
-     * 父 2026-11-19 20:20：起播时这几项原来写死，会把调参文件里的值覆盖掉，改了对画面没影响。
-     */
-    @Volatile var peakOverride: String? = null
-    @Volatile var toneMappingOverride: String? = null
-    @Volatile var targetTrcOverride: String? = null
-    @Volatile var targetPrimOverride: String? = null
-
     @Volatile var relayChunkKb: Int = 256
 
     /** 路 2 常件的一次读取缓冲（KB）：让位时手上剩下的这些数据用来吊住播放器 */
@@ -922,18 +912,8 @@ object VrTuning {
         applied += applyNative(raw, prev)
 
         raw.filterKeys { it.startsWith("mpv_") }.forEach { (k, v) ->
-            val prop = k.removePrefix("mpv_")
-            /*
-             * 记下当前生效的调参值：起播设色彩目标时要优先用它，
-             * 否则代码里写死的默认值会把文件里的调参覆盖掉（父 2026-11-19 20:20 实测）。
-             */
-            when (prop) {
-                "target-peak" -> peakOverride = v
-                "tone-mapping" -> toneMappingOverride = v
-                "target-trc" -> targetTrcOverride = v
-                "target-prim" -> targetPrimOverride = v
-            }
             if (prev[k] == v) return@forEach          // 值没变 → 不重发（重设内核属性会崩）
+            val prop = k.removePrefix("mpv_")
             onMpvOption(prop, v)
             applied += "内核 $prop=$v"
         }

@@ -36,12 +36,7 @@ object SharedReadCache {
 
     private const val TAG = "B0BEmbyVR-Relay"
     private const val PORT = 8898
-    /*
-     * 段缓存上限（父 2026-11-19 18:51 定）：头显剩余 58G，给 20G。
-     * 一部片子在播期间不主动删，换片或退出播放时才清；只有超过这 20G 才按
-     * 「离播放位置最远的先删」回收。
-     */
-    private const val CAPACITY_BYTES = 20L * 1024 * 1024 * 1024
+    private const val CAPACITY_BYTES = 400L * 1024 * 1024
     private const val UA = "B0BEmbyRelay/1.0"
     /**
      * 拉流连接数。
@@ -88,21 +83,9 @@ object SharedReadCache {
      *
      * 取多少给多少，不写缓存、不动写位；取完立刻让给下一个排队的人。
      */
-    /*
-     * 通道2 的两个槽（父 2026-11-19 18:27 定，本地实测通过）：
-     * - slotMain 主数据流：只接长请求（声明长度 > 8MB，通常是"到文件尾"那条）。
-     *   它不被任何短请求打断，否则播放器要重新连接、重新定位。
-     * - slotRand 随机读：索引、短请求、另一个解码器打开容器时的那几块。
-     * 两个槽互相独立，谁忙谁等，互不抢占。
-     */
-    private val slotMain = java.util.concurrent.Semaphore(1, true)
-    private val slotRand = java.util.concurrent.Semaphore(1, true)
-    private val MAIN_BYTES = 8L * 1024 * 1024
+    private val road2 = java.util.concurrent.Semaphore(1, true)
     /** 正在等路 2 的急件数（常件看到 >0 就让位） */
-    /* 已删除：急件计数（父 2026-11-19 19:34 —— 两槽独立后不再需要让位判断） */
-
-    /** 连接编号（只用于日志与标识，不再登记读位置） */
-    private val connSeq = AtomicInteger(0)
+    private val urgentWaiting = AtomicInteger(0)
     /** 头数据 / 尾数据各算多少为急件区间（父亲 2026-11-18 定：头 8MB，尾同） */
     private const val EDGE_BYTES = 8L * 1024 * 1024
 
@@ -121,59 +104,6 @@ object SharedReadCache {
      */
     private val orphanSegs = java.util.concurrent.ConcurrentLinkedQueue<Long>()
 
-    /**
-     * 容器头与尾部索引是否已由通道2 取回（父 2026-11-19 定）。
-     * 起播时等这两个都就绪再启动自管解码器，否则解封装器读不到轨道表就判"没有视频轨"。
-     */
-    @Volatile private var headReady = false
-    @Volatile private var tailReady = false
-
-    /**
-     * 头 / 尾各一块内存（各 8MB）：路二把原数据与索引取回后放这里，
-     * 两个解码器谁来要都从内存给，不够再临时回源（父 2026-11-19 定）。
-     */
-    private val headBlock = java.util.concurrent.atomic.AtomicReference<ByteArray?>(null)
-    private val tailBlock = java.util.concurrent.atomic.AtomicReference<ByteArray?>(null)
-    private val BLOCK_BYTES = 8L * 1024 * 1024
-
-    /** 命中头/尾块就直接写出去；返回 true 表示已服务 */
-    private fun serveFromBlock(start: Long, end: Long, total: Long, out: OutputStream): Boolean {
-        val head = headBlock.get()
-        if (head != null && start >= 0 && end < head.size) {
-            out.write(head, start.toInt(), (end - start + 1).toInt())
-            out.flush()
-            Log.i(TAG, "路2 命中头块：起点=$start 长=${end - start + 1}B")
-            return true
-        }
-        val tail = tailBlock.get()
-        if (tail != null && total > 0 && start >= total - tail.size && end < total) {
-            val off = (start - (total - tail.size)).toInt()
-            out.write(tail, off, (end - start + 1).toInt())
-            out.flush()
-            Log.i(TAG, "路2 命中尾块：起点=$start 长=${end - start + 1}B")
-            return true
-        }
-        return false
-    }
-
-    /**
-     * 等容器头就绪；超时返回 false（调用方照常启动）。
-     *
-     * 只等文件头：尾部索引不是每部片都会被要（2026-11-19 15:06 实测：第 3 集尾部
-     * 一次请求都没有，白等满 8 秒才启动）。真要尾部，解码器会自己来要，走通道2。
-     */
-    fun awaitHeadTail(timeoutMs: Long): Boolean {
-        val t0 = System.currentTimeMillis()
-        while (System.currentTimeMillis() - t0 < timeoutMs) {
-            if (headReady) return true
-            Thread.sleep(50)
-        }
-        return false
-    }
-
-    /** 当前这条拉流连接：跳转时直接断开，让它立刻从新写位重连（父 2026-11-19 定） */
-    @Volatile private var activePull: java.net.HttpURLConnection? = null
-
     /** 当前这一部的时长（秒），播放进度换算字节要用 */
     @Volatile private var curDurationSec = 0.0
 
@@ -185,9 +115,16 @@ object SharedReadCache {
     @Volatile private var baseIdx = 0L          // 缓存里保留的第一段
     @Volatile private var gen = 0L              // 换片/跳转代数：拉流线程据此重开连接
 
+    /**
+     * 跳转时要掐断的连接（父亲 2026-11-19 00:57 定）：跳转命令发出后，
+     * 不管解码线程在干什么，读旧位置的连接一律无条件停掉，让它立刻回去执行跳转。
+     * 不掐断的话，解码线程会一直堵在"等一个已经挪走的段"里，跳转指令永远排不上。
+     */
+    private val cancelledConns = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
 
-    /** 每个客户端当前读到第几段：只用于删除保护，不参与水位（水位按播放进度算） */
-    private val connPos = java.util.concurrent.ConcurrentHashMap<Int, Long>()
+    /** 每个客户端（HTTP 连接）当前读到的段号，用于算"最慢那个" */
+    private val connPos = ConcurrentHashMap<Int, Long>()
+    private val connSeq = AtomicInteger(0)
 
     private val hits = AtomicLong()
     private val misses = AtomicLong()
@@ -206,7 +143,7 @@ object SharedReadCache {
                 server = ServerSocket(PORT, 16, java.net.InetAddress.getByName("127.0.0.1"))
                 started = true
                 thread(name = "relay-accept", isDaemon = true) { acceptLoop() }
-                /* 不再有铺流线程（父 2026-11-19 19:34）：缓存只顺手存，不主动往前铺 */
+                for (i in 0 until PULLERS) thread(name = "relay-pull-$i", isDaemon = true) { pullLoop() }
                 thread(name = "relay-gc", isDaemon = true) { gcLoop() }
                 Log.i(TAG, "共享读缓存已启动 127.0.0.1:$PORT 上限 ${CAPACITY_BYTES / 1048576}MB 拉流 ${PULLERS} 路")
             } catch (t: Throwable) {
@@ -225,31 +162,33 @@ object SharedReadCache {
      * 起播锚点（父亲 2026-11-18 定）：清空缓存，把写位放到**起播位置**，从这里往后顺序铺。
      *
      * 起播位置来自续播进度（上次看到哪里），从没看过的就是 0。
-     * 起播要的文件头、尾部索引与正文一样：命中缓存就给，没命中就回源那一段。
-     */
-    /** 起播位置：只设读位置起点与缓存写入起点，不碰已有缓存（清空由切集路径负责） */
-    /**
-     * 起播只记三件事（父 2026-11-19 19:34）：内容是哪个、总长、时长与位置。
-     *
-     * 不设写位、不设缓存起点、不算锚点、不清缓存 —— 缓存完全由"谁读了哪段"被动形成。
+     * 不判前后：起播阶段播放器要的文件头、尾部索引一律走 [serveDirect]。
      */
     fun beginBoot(url: String, startSec: Double, durationSec: Double) {
         if (!enabled() || !started) return
+        if (durationSec <= 0.0 || startSec < 0.0) {
+            Log.i(TAG, "起播锚点：时长还没到手（${"%.1f".format(durationSec)}s），等拿到再设")
+            return
+        }
         val inner = unwrap(url) ?: return
+        /* 同片同位置只设一次：起播入口一次、拿到时长后再补一次，第二次不许把缓存再清一遍 */
+        val key = "$inner@${startSec.toLong()}"
+        if (key == anchorKey) return
         thread(isDaemon = true) {
             val total = totalSize(inner)
             if (total <= 0L) {
-                Log.w(TAG, "起播：拿不到文件总长")
+                Log.w(TAG, "起播锚点：拿不到文件总长，暂不设起点")
                 return@thread
             }
-            if (inner != curUrl) {
-                clearAll("起播：换内容")
-                curUrl = inner
-            }
-            curTotal = total
-            if (durationSec > 0.0) curDurationSec = durationSec
-            if (startSec >= 0.0) playPosSec = startSec
-            Log.i(TAG, "起播：总长=${total}B 时长=${"%.1f".format(curDurationSec)}s 位置=${"%.1f".format(playPosSec)}s")
+            curDurationSec = durationSec
+            val idx = ((startSec / durationSec).coerceIn(0.0, 1.0) * total / SEG).toLong()
+            clearAll("起播：从 ${"%.0f".format(startSec)}s 开始铺")
+            curUrl = inner
+            writePos = idx * SEG
+            baseIdx = idx
+            playPosSec = startSec
+            anchorKey = key
+            Log.i(TAG, "起播锚点：位置=${"%.1f".format(startSec)}s → 第 $idx 段（写位=${writePos}B，往后铺）")
         }
     }
 
@@ -273,10 +212,7 @@ object SharedReadCache {
         curUrl = null
         writePos = 0
         baseIdx = 0
-        headReady = false
-        tailReady = false
-        headBlock.set(null)
-        tailBlock.set(null)
+        connPos.clear()
         Log.i(TAG, "缓存已清空：$why（标记 ${n} 段待清理，文件不删、留给覆盖写）")
     }
 
@@ -381,16 +317,6 @@ object SharedReadCache {
      * 从它所在的段开始连续累加，一遇到没写满的段就停 —— 缺口之后的数据对播放没意义。
      * 返回负数 = 现在还判断不了（没有连接或文件长度未知）。
      */
-    /** 记当前播放位置（水位与回收都按它算） */
-    fun setPlayPosSec(sec: Double) {
-        if (sec >= 0.0) playPosSec = sec
-    }
-
-    /** 已无"缓存写入起点"（父 2026-11-19 19:34）：缓存由读被动形成，跳转不用挪它 */
-    fun moveWriteToKeyframe(keySec: Double) {
-        Log.i(TAG, "跳转：缓存起点不用挪（缓存由读被动形成），目标=${"%.1f".format(keySec)}s")
-    }
-
     fun waterAheadSecs(durationSec: Double): Double {
         val totalBytes = curTotal
         if (totalBytes <= 0L || durationSec <= 0.0) return -1.0
@@ -504,17 +430,11 @@ object SharedReadCache {
             }
         } catch (_: Throwable) {
         } finally {
+            cancelledConns.remove(connId)
             connPos.remove(connId)
         }
     }
 
-    /**
-     * 中转的唯一职责（父 2026-11-19 19:34 定）：按客户端要的区间把数据给出去。
-     *
-     * 命中缓存段 → 从段文件读出来给；没命中 → 去上游取这一段，边给下游边存段。
-     * 不再有写位、缓存起点、水位、让位、内存窗 —— 那些机制今天实测会互相覆盖、
-     * 把简单的事搞乱，客户端反而拿不到正确数据。
-     */
     private fun serveStream(upstream: String, rangeHeader: String?, connId: Int, out: OutputStream) {
         val total = totalSize(upstream)
         if (total <= 0L) {
@@ -532,118 +452,299 @@ object SharedReadCache {
             writeHeaders(out, 416, "Range Not Satisfiable", "text/plain", 0, null)
             return
         }
+
+        val wantIdx = start / SEG
         if (curUrl != upstream) {
+            /* 换了内容：清空重来，写位落到这次请求的位置（起播锚点随后会覆盖成续播位置） */
             clearAll("换内容")
+            anchorKey = null
             curUrl = upstream
+            writePos = wantIdx * SEG
+            baseIdx = wantIdx
+            Log.i(TAG, "换内容：写位=${writePos}B baseIdx=$baseIdx")
         }
-        val want = end - start + 1
-        writeHeaders(
-            out, 206, "Partial Content", "application/octet-stream", want,
-            "bytes $start-$end/$total",
-        )
-        val isMain = want > MAIN_BYTES
-        val slot = if (isMain) slotMain else slotRand
+        /*
+         * 缓存里没有这段数据（文件头、尾部索引、已删区间）→ 交给路 2 单条串行去上游取。
+         * 不写缓存、不动写位、不占缓存空间（父亲 2026-11-18 定）。
+         */
+        val haveNow = synchronized(lock) { avail[wantIdx] ?: 0L }
+        if (wantIdx < baseIdx || haveNow <= start - wantIdx * SEG) {
+            /*
+             * 急件判定看**整段区间**，不能只看起点：播放器起播第一个请求是"从 0 到文件尾"，
+             * 起点在头部但长度是整个文件，若按起点判就会把这条最长的请求当成急件，
+             * 占住路 2 不让位，尾部索引永远排不上（2026-11-18 现场：整文件被当急件，
+             * 59729B 的尾部索引死等，内核拿不到索引 → 黑屏）。
+             */
+            /* 父亲 2026-11-18 23:01 定：整文件那条（0 到文件尾）固定算常件；其余落在头尾 8MB 内算急件 */
+            val wholeFile = start == 0L && end >= total - 1
+            val urgent = !wholeFile && (start < EDGE_BYTES || start >= total - EDGE_BYTES)
+            Log.i(
+                TAG,
+                "路2 取数：${if (urgent) "急件" else "常件"} 起点=${start}B 长度=${end - start + 1}B" +
+                    "（写位=${writePos}B baseIdx=$baseIdx）",
+            )
+            serveDirect(upstream, start, end, out, urgent)
+            return
+        }
+        connPos[connId] = wantIdx
+
+        writeHeaders(out, 206, "Partial Content", "application/octet-stream", end - start + 1,
+            "bytes $start-$end/$total")
+
         var pos = start
-        var got = false
+        /* 单次搬运量可调（relay_chunk_kb，默认 256KB）：太小则系统调用多，太大占用瞬时内存 */
+        val buf = ByteArray(com.xxxx.emby_vr.vr.VrTuning.relayChunkKb * 1024)
+        var lastProgress = System.currentTimeMillis()
+        var lastLogAt = 0L
+        /* 一段只打开一次文件：原来每 64K 都重开一次（和"64K 败笔"同一个毛病，只是发生在服务端） */
+        var openIdx = -1L
+        var raf: RandomAccessFile? = null
         try {
-            slot.acquire()
-            got = true
             while (pos <= end) {
                 val idx = pos / SEG
-                val segStart = idx * SEG
-                val segEnd = minOf(segStart + SEG - 1, total - 1)
-                val segLen = segEnd - segStart + 1
+                val off = pos % SEG
                 val have = synchronized(lock) { avail[idx] ?: 0L }
-                pos = if (have >= segLen) {
-                    sendFromSeg(idx, segStart, segEnd, pos, end, out)
+                if (have > off) {
+                    val dir = cacheDir ?: break
+                    if (raf == null || openIdx != idx) {
+                        raf?.close()
+                        raf = null
+                        val f = File(dir, "$idx.seg")
+                        if (!f.exists()) {
+                            /* 被回收了：等它重拉 */
+                            Thread.sleep(20)
+                            continue
+                        }
+                        raf = runCatching { RandomAccessFile(f, "r") }.getOrNull() ?: continue
+                        openIdx = idx
+                    }
+                    val n = minOf(have - off, end - pos + 1, buf.size.toLong()).toInt()
+                    raf?.seek(off)
+                    val got = raf?.read(buf, 0, n) ?: -1
+                    if (got <= 0) {
+                        raf?.close()
+                        raf = null
+                        openIdx = -1L
+                        Thread.sleep(20)
+                        continue
+                    }
+                    if (cancelledConns.contains(connId)) {
+                        Log.i(TAG, "发数据中止：连接被跳转作废（位置=${pos}B）")
+                        return
+                    }
+                    out.write(buf, 0, got)
+                    pos += got
+                    lastProgress = System.currentTimeMillis()
+                    connPos[connId] = pos / SEG
                 } else {
-                    fetchInto(upstream, idx, segStart, segEnd, segLen, pos, end, out)
+                /* 跳转已把这个连接作废：立刻断，别再等一个已经挪走的段 */
+                if (cancelledConns.contains(connId)) {
+                    Log.i(TAG, "等数据中止：连接被跳转作废（段=$idx）")
+                    return
                 }
-                if (pos < 0) return
+                /* 数据还没到：等拉流线程写进来（超时即断开，让客户端重试） */
+                if (System.currentTimeMillis() - lastProgress > 30000) break
+                if (System.currentTimeMillis() - lastLogAt > 2000) {
+                    lastLogAt = System.currentTimeMillis()
+                    Log.i(
+                TAG,
+                "等数据|段=$idx|该段已写=${have}B|已写游标段=${writePos / SEG}（写位 ${writePos}B）" +
+                    "|缓存=${used / 1048576}MB",
+            )
+                }
+                Thread.sleep(15)
+                }
             }
-        } catch (t: Throwable) {
-            Log.w(TAG, "给数据中断：起点=$start 已给=${pos - start}B ${t.javaClass.simpleName}")
         } finally {
-            if (got) slot.release()
-            runCatching { out.flush() }
+            runCatching { raf?.close() }
         }
+        out.flush()
     }
 
-    /** 从已完整的段文件读给下游；返回新的位置 */
-    private fun sendFromSeg(idx: Long, segStart: Long, segEnd: Long, from: Long, end: Long, out: OutputStream): Long {
-        val f = segFile(idx)
-        if (!f.exists()) return -1L
-        var pos = from
-        try {
-            java.io.RandomAccessFile(f, "r").use { raf ->
-                raf.seek(pos - segStart)
-                val buf = ByteArray(64 * 1024)
-                while (pos <= minOf(segEnd, end)) {
-                    val n = raf.read(buf, 0, minOf(buf.size.toLong(), minOf(segEnd, end) - pos + 1).toInt())
-                    if (n <= 0) break
-                    out.write(buf, 0, n)
-                    out.flush()
-                    pos += n
-                }
-            }
-        } catch (t: Throwable) {
-            Log.w(TAG, "段读取中断：段=$idx ${t.javaClass.simpleName}")
-            return -1L
-        }
-        return pos
+    // ---------------- 起播阶段 / 用户跳转 ----------------
+
+    /** 播放进度上报（秒）。水位只认这个数（父亲 2026-11-18 定：进度条的位置最准） */
+    fun setPlayPosSec(sec: Double) {
+        if (sec >= 0.0) playPosSec = sec
     }
 
     /**
-     * 未命中：去上游取 [from, segEnd]，边给下游边写这一段文件。
-     * 段写满（segLen）才标记为完整，没写满就丢掉重取（父 2026-11-19 19:34：缓存只顺手存，不参与判断）。
+     * 用户主动跳转 —— 只有三个入口：光点指银幕扳摇杆、拖进度条、快进 10S / 快退 10S。
+     *
+     * 父亲 2026-11-18 定：
+     *  - 往回跳 → 先清空，再从目标位置重铺；
+     *  - 往前跳且落在已铺缓存里 → 只删左边，删除上限取"两个解码器较慢读位置 − 安全距离"；
+     *  - 往前跳且目标处没有缓存 → 清空重铺。
      */
-    private fun fetchInto(
-        upstream: String, idx: Long, segStart: Long, segEnd: Long, segLen: Long,
-        from: Long, end: Long, out: OutputStream,
-    ): Long {
-        val to = minOf(segEnd, end)
-        var pos = from
-        var conn: HttpURLConnection? = null
-        var raf: java.io.RandomAccessFile? = null
-        try {
-            val c = openRange(upstream, pos, to)
-            conn = c
-            val code = c.responseCode
-            if (code !in 200..206) {
-                Log.w(TAG, "回源失败：码=$code 起点=${pos}B")
-                return -1L
-            }
-            raf = runCatching {
-                java.io.RandomAccessFile(segFile(idx), "rw").also { it.seek(pos - segStart) }
-            }.getOrNull()
-            c.inputStream.use { ins ->
-                val buf = ByteArray(64 * 1024)
-                while (pos <= to) {
-                    val n = ins.read(buf, 0, minOf(buf.size.toLong(), to - pos + 1).toInt())
-                    if (n <= 0) break
-                    out.write(buf, 0, n)
-                    out.flush()
-                    runCatching { raf?.write(buf, 0, n) }
-                    pos += n
-                }
-            }
-            /* 这一段的起点到请求结束都写到了，才算这段完整 */
-            if (pos > to && from == segStart && to == segEnd) {
-                synchronized(lock) { avail[idx] = segLen; used += segLen }
-            }
-        } catch (t: Throwable) {
-            Log.w(TAG, "回源中断：段=$idx ${t.javaClass.simpleName}")
-            return -1L
-        } finally {
-            runCatching { raf?.close() }
-            runCatching { conn?.disconnect() }
+    fun jumpTo(fromSec: Double, targetSec: Double, durationSec: Double) {
+        val url = curUrl ?: return
+        val total = curTotal
+        if (!enabled() || total <= 0L || durationSec <= 0.0) return
+        val target = (targetSec / durationSec * total).toLong().coerceIn(0L, total - 1)
+        val targetIdx = target / SEG
+        if (targetSec < fromSec) {
+            resetAnchor("用户后退（${"%.0f".format(fromSec)}s → ${"%.0f".format(targetSec)}s）", url, targetIdx)
+            Log.i(TAG, "按用户操作跳转：目标=${"%.1f".format(targetSec)}s（往回，清空重铺，写位=${writePos}B）")
+            return
         }
-        return pos
+        val right = synchronized(lock) { avail.keys.maxOrNull() ?: -1L }
+        if (targetIdx in baseIdx..right) {
+            val slow = connPos.values.minOrNull() ?: targetIdx
+            val safe = maxOf(baseIdx, minOf(targetIdx, slow - MARGIN_SEGS))
+            var freed = 0L
+            if (safe > baseIdx) {
+                val doomed = ArrayList<Long>()
+                synchronized(lock) {
+                    val keys = avail.keys.filter { it < safe }.sorted()
+                    for (k in keys) {
+                        val size = avail.remove(k) ?: continue
+                        used -= size
+                        freed += size
+                        doomed.add(k)
+                    }
+                }
+                val dir = cacheDir
+                if (dir != null) for (k in doomed) runCatching { File(dir, "$k.seg").delete() }
+                baseIdx = safe
+            }
+            Log.i(
+                TAG,
+                "按用户操作跳转：目标=${"%.1f".format(targetSec)}s（往前，落在缓存内，" +
+                    "删到第 $safe 段，释放 ${freed / 1048576}MB，最慢读位置=$slow）",
+            )
+            return
+        }
+        resetAnchor("用户快进（${"%.0f".format(fromSec)}s → ${"%.0f".format(targetSec)}s）", url, targetIdx)
+        Log.i(TAG, "按用户操作跳转：目标=${"%.1f".format(targetSec)}s（往前，目标处无缓存，清空重铺，写位=${writePos}B）")
     }
 
-    /** 段文件名沿用 <段号>.seg（回收与对账按这个名字扫盘，不能改） */
-    private fun segFile(idx: Long): File = File(cacheDir, "$idx.seg")
+    /**
+     * 用户跳转时的"清空重铺"（父亲 2026-11-18 23:49 定）：**只挪起点，不作废在途请求**。
+     *
+     * 之前这里调 clearAll：换代 + 清账本，把播放器正在进行的读全部作废，
+     * 它的 seek 请求正好撞上被断开 → seek 没落地，画面解码器还在旧段等一个永远不会来的数据，
+     * 现场就是"跳到 11 分钟但一直停着"（r1505 实测）。
+     * 现在：旧段标记待回收（文件留着被覆盖）、账本清空、写位直接落到目标位置；
+     * 连接代数不变，在途读继续（读旧段时走回源，读新段命中缓存）。
+     */
+    private fun resetAnchor(why: String, url: String, targetIdx: Long) {
+        var n = 0
+        synchronized(lock) {
+            n = avail.size
+            orphanSegs.addAll(avail.keys)
+            avail.clear()
+            used = 0
+        }
+        curUrl = url
+        writePos = targetIdx * SEG
+        baseIdx = targetIdx
+        /* 读旧位置（目标段之前）的连接全部掐断：解码线程立刻从阻塞读里出来，回去执行跳转 */
+        for ((id, seg) in connPos) if (seg < targetIdx) cancelledConns.add(id)
+        Log.i(TAG, "跳转掐断旧读连接 ${cancelledConns.size} 条（目标段=$targetIdx）")
+        connPos.clear()
+        Log.i(TAG, "跳转重铺：$why（标记 ${n} 段待清理，写位=${writePos}B baseIdx=$targetIdx，连接不作废）")
+    }
 
+    /**
+     * 路 2：把播放器要的那一段从上游取回来交给它。
+     *
+     * 只有缓存里没有、也铺不到的区间才走这里（文件头、尾部索引、已删区间）。
+     * 不写缓存、不动写位、不占缓存空间（父亲 2026-11-18 定）。
+     *
+     * 急件（头/尾 8MB 内）优先：常件每传一小块看一眼急件队列，有就让位——
+     * 关掉上游连接、从断点重开，本地这条响应不断，播放器只觉得网速抖了一下。
+     */
+    private fun serveDirect(upstream: String, start: Long, end: Long, out: OutputStream, urgent: Boolean) {
+        val want = end - start + 1
+        val t0 = System.currentTimeMillis()
+        var got = false
+        /* 缓冲大小：常件按参数（默认 1MB），急件给 256KB 够用 */
+        val bufBytes = (if (urgent) 256 else com.xxxx.emby_vr.vr.VrTuning.relayBufKb) * 1024
+        if (urgent) urgentWaiting.incrementAndGet()
+        try {
+            road2.acquire()
+            got = true
+            if (urgent) {
+                val waited = System.currentTimeMillis() - t0
+                if (waited > 100) Log.i(TAG, "路2 急件排队：等了 ${waited}ms（起点=${start}B）")
+            }
+            writeHeaders(
+                out, 206, "Partial Content", "application/octet-stream", want,
+                "bytes $start-$end/${if (curTotal > 0L) curTotal else end + 1}",
+            )
+            val genAt = gen
+            var pos = start
+            var conn: HttpURLConnection? = null
+            val buf = ByteArray(bufBytes)
+            try {
+                while (pos <= end) {
+                    if (conn == null) {
+                        conn = openRange(upstream, pos, end)
+                        val code = conn.responseCode
+                        if (code !in 200..206) {
+                            Log.w(TAG, "路2 回源失败：码=$code 起点=${pos}B")
+                            return
+                        }
+                        if (pos == start) {
+                            Log.i(
+                                TAG,
+                                "路2 首包：码=$code 起点=$start 长度=$want 等=${System.currentTimeMillis() - t0}ms" +
+                                    "（${if (urgent) "急件" else "常件"}）",
+                            )
+                        }
+                    }
+                    val n = conn.inputStream.read(buf, 0, minOf(buf.size.toLong(), end - pos + 1).toInt())
+                    if (n <= 0) break
+                    if (gen != genAt) {
+                        Log.w(TAG, "路2 中止：代数变了（起点=$pos B）")
+                        return
+                    }
+                    var off = 0
+                    while (off < n) {
+                        /*
+                         * 常件让位：有急件在等就关掉上游连接、交还路 2，
+                         * 先把手上这团缓冲按"吊着速率"喂给播放器（它感觉只是网速抖了一下），
+                         * 急件取完再重新拿闸门、从断点重开上游继续。
+                         */
+                        if (!urgent && urgentWaiting.get() > 0) {
+                            runCatching { conn?.disconnect() }
+                            conn = null
+                            road2.release()
+                            got = false
+                            val kp = com.xxxx.emby_vr.vr.VrTuning.relayHoldKbps
+                            Log.i(TAG, "路2 让位：手上还有 ${n - off}B，按 ${kp}KB/s 吊着")
+                            while (off < n) {
+                                val w = if (kp <= 0) n - off else minOf(kp * 1024 / 10, n - off).coerceAtLeast(1)
+                                out.write(buf, off, w)
+                                out.flush()
+                                off += w
+                                pos += w
+                                if (urgentWaiting.get() == 0) break
+                                if (kp > 0) Thread.sleep(100)
+                            }
+                            road2.acquire()
+                            got = true
+                            Log.i(TAG, "路2 恢复：从 ${pos}B 重开上游")
+                            continue
+                        }
+                        val w = minOf(com.xxxx.emby_vr.vr.VrTuning.relayChunkKb * 1024, n - off)
+                        out.write(buf, off, w)
+                        out.flush()
+                        off += w
+                        pos += w
+                    }
+                }
+                Log.i(TAG, "路2 完成：起点=$start 已给=${pos - start}B 用时=${System.currentTimeMillis() - t0}ms")
+            } finally {
+                runCatching { conn?.disconnect() }
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "路2 中断：起点=$start ${t.javaClass.simpleName}: ${t.message}")
+        } finally {
+            if (got) road2.release()
+            if (urgent) urgentWaiting.decrementAndGet()
+        }
+    }
 
     /** 开一条带 Range 的上游连接（路 2 专用） */
     private fun openRange(upstream: String, from: Long, to: Long): HttpURLConnection =
@@ -663,7 +764,170 @@ object SharedReadCache {
      * 实测缓存只攒到十兆左右、只有四五秒余量。改成一条连接从当前段一直读到缓存满，
      * 段只作为落盘的分界，不再触发重连。
      */
+    private fun pullLoop() {
+        while (true) {
+            try {
+                val url = curUrl
+                if (url == null) {
+                    if (System.currentTimeMillis() - lastIdleLogAt > 3000) {
+                        lastIdleLogAt = System.currentTimeMillis()
+                        Log.i(TAG, "拉流线程空闲：还没有起播地址（curUrl=null）")
+                    }
+                    Thread.sleep(50)
+                    continue
+                }
+                val seg = SEG
+                val total = totalSize(url)
+                if (total > 0L) curTotal = total
+                if (total <= 0L) {
+                    if (System.currentTimeMillis() - lastIdleLogAt > 3000) {
+                        lastIdleLogAt = System.currentTimeMillis()
+                        Log.w(
+                            TAG,
+                            "拉流线程空转：拿不到文件总长（主机=${hostOfUrl(url)} 直连开关=" +
+                                "${com.xxxx.emby_vr.vr.VrTuning.relayDirect}）",
+                        )
+                    }
+                    Thread.sleep(200)
+                    continue
+                }
+                val myGen = gen
+                /* 起点就是唯一状态本身：读到哪就写到哪，不存在第二个游标 */
+                val fromByte = writePos
+                if (fromByte >= total) {
+                    Thread.sleep(200)
+                    continue
+                }
+                /* 上游地址：直连开着就走 CDN，否则走 Emby —— 只有中转这一个消费者 */
+                val target = fetchUrl(url)
+                val viaDirect = target != url
+                var conn: HttpURLConnection? = null
+                try {
+                    val c = (URL(target).openConnection() as HttpURLConnection).apply {
+                        setRequestProperty("Range", "bytes=$fromByte-")
+                        setRequestProperty("User-Agent", UA)
+                        connectTimeout = 15000
+                        /* 超时短一点：卡住就重连续传，而不是让播放器等一分钟 */
+                        readTimeout = 15000
+                    }
+                    Log.i(
+                        TAG,
+                        "拉流请求：主机=${hostOfUrl(target)} 起点=${fromByte}B 直连=$viaDirect 码=${c.responseCode}",
+                    )
+                    if (c.responseCode !in 200..206) {
+                        c.disconnect()
+                        /* 直连被拒（签名过期/额度用尽）：丢掉签名重签，连续失败就本次退回 Emby */
+                        if (viaDirect) {
+                            directFails++
+                            cdnUrl = null
+                            cdnAt = 0L
+                            Log.w(
+                                TAG,
+                                "直连网盘：拉流被拒（码=${c.responseCode}）→ 重签" +
+                                    (if (directFails >= DIRECT_MAX_FAILS) "已到上限，本次播放退回 Emby" else ""),
+                            )
+                        }
+                        Thread.sleep(300)
+                        continue
+                    }
+                    conn = c
+                    misses.incrementAndGet()
+                    c.inputStream.use { ins ->
+                        var raf: RandomAccessFile? = null
+                        var rafIdx = -1L
+                        val buf = ByteArray(64 * 1024)
+                        while (true) {
+                            if (gen != myGen) break
+                            /*
+                             * 到 400MB 上限（父 2026-11-19 00:04 定）：覆盖播放进度左边编号最小的段，
+                             * 直接重写它，不等后台回收。覆盖写时 setLength(0) 会截断旧内容。
+                             * 只动"编号小于当前写位段号"的段，正在铺的那段和它后面的不碰。
+                             */
+                            val full = synchronized(lock) { used >= CAPACITY_BYTES * 95 / 100 }
+                            if (full) {
+                                /*
+                                 * 到 400MB 上限（父 2026-11-19 00:04 定）：淘汰**播放进度左侧**
+                                 * 编号最小的段。判据用播放进度、不用写位 —— 写位在播放进度右侧，
+                                 * 按写位判会淘汰到还没播的数据。
+                                 * 淘汰 = 移出账本 + 进待清队列（拉流只往前走，不会回头重写小号段，
+                                 * 只删记账磁盘不会回收，必须交给后台真删）。
+                                 */
+                                val posIdx = if (curTotal > 0L && curDurationSec > 0.0) {
+                                    (playPosSec / curDurationSec * curTotal / seg).toLong()
+                                } else {
+                                    baseIdx
+                                }
+                                val victim = synchronized(lock) {
+                                    var v: Long? = null
+                                    for (k in avail.keys) {
+                                        if (k >= baseIdx && k < posIdx) {
+                                            if (v == null || k < v) v = k
+                                        }
+                                    }
+                                    if (v != null) {
+                                        used -= (avail.remove(v) ?: 0L)
+                                    }
+                                    v
+                                }
+                                if (victim != null) {
+                                    orphanSegs.add(victim)
+                                    Log.i(TAG, "缓存到顶：淘汰播放进度左侧第 $victim 段（播放进度段=$posIdx 写位段=${writePos / seg}）")
+                                    continue
+                                }
+                                Thread.sleep(100)
+                                continue
+                            }
+                            /* 段号与段内偏移由"已写字节"算出来，不另存 */
+                            val idx = writePos / seg
+                            val off = writePos % seg
+                            val segLen = minOf(seg, total - idx * seg)
+                            if (segLen <= 0L) break
+                            val want = minOf(buf.size.toLong(), segLen - off)
+                            if (want <= 0L) break
+                            val n = ins.read(buf, 0, want.toInt())
+                            if (n <= 0) {
+                                Log.w(TAG, "拉流结束：读返回 $n（写位 ${writePos}B）")
+                                break
+                            }
+                            if (raf == null || rafIdx != idx) {
+                                raf?.close()
+                                raf = RandomAccessFile(File(cacheDir, "$idx.seg"), "rw")
+                                /* 只有从段头写才截断；续传保留已有内容 */
+                                if (off == 0L) raf.setLength(0)
+                                rafIdx = idx
+                            }
+                            raf?.seek(off)
+                            raf?.write(buf, 0, n)
+                            writePos += n
+                            synchronized(lock) {
+                                used += n
+                                avail[idx] = off + n
+                            }
+                            upstreamBytes.addAndGet(n.toLong())
+                        }
+                        raf?.close()
+                    }
+                } catch (t: Throwable) {
+                    Log.w(
+                        TAG,
+                        "拉流中断，从写位 ${writePos}B 处续传：${t.javaClass.simpleName}: ${t.message}",
+                    )
+                } finally {
+                    runCatching { conn?.disconnect() }
+                }
+                Thread.sleep(20)
+            } catch (t: Throwable) {
+                runCatching { Thread.sleep(200) }
+            }
+        }
+    }
 
+    // ---------------- 回收 ----------------
+
+    /**
+     * 回收：只删"两个解码器都读过、并留一段余量"之前的段。
+     * mpv 与自管解码各占一个连接，取它们读位置里**较小**的那个当安全线。
+     */
     private fun gcLoop() {
         var ticks = 0
         while (true) {
@@ -683,25 +947,10 @@ object SharedReadCache {
                         }
                     }
                 }
-                /*
-                 * 安全线取"播放进度"与"最慢读位置"里更靠左的那个（父 2026-11-19 定）：
-                 * mpv 的读位置在播放点右边，自管解码卡顿时可能落到播放点左边，
-                 * 只按其中一个算都会删掉另一个正在用的段。
-                 */
-                val playIdx = if (curTotal > 0L && curDurationSec > 0.0) {
-                    (playPosSec / curDurationSec * curTotal / SEG).toLong()
-                } else {
-                    -1L
-                }
-                val readIdx = connPos.values.minOrNull() ?: -1L
-                val slow = when {
-                    playIdx < 0L -> readIdx
-                    readIdx < 0L -> playIdx
-                    else -> minOf(playIdx, readIdx)
-                }
+                val slow = connPos.values.minOrNull()
                 val base = baseIdx
                 val safe = when {
-                    slow < 0L -> -1L
+                    slow == null -> -1L
                     slow - MARGIN_SEGS > base -> slow - MARGIN_SEGS
                     else -> -1L
                 }
