@@ -110,15 +110,18 @@ class MpvBackend(private val context: Context) {
             } else {
                 /* 清掉滤镜链：留着它普通片会少一层正常处理 */
                 setOptionRuntime("vf", "")
-                setOptionRuntime("target-prim", "bt.709")
-                setOptionRuntime("target-trc", "gamma2.2")
+                setOptionRuntime("target-prim", com.xxxx.emby_vr.vr.VrTuning.targetPrimOverride ?: "bt.709")
+                setOptionRuntime("target-trc", com.xxxx.emby_vr.vr.VrTuning.targetTrcOverride ?: "gamma2.2")
                 /*
                  * spline + 目标亮度 1100（2026-11-16 父亲逐档实测：600/800/1000/1200 四档比过，
                  * 1100 与 1200 都最接近浏览器，取中间值）。
                  * bt.2390 会把中间调压成一片、暗部被抬起来，观感比浏览器灰；
                  * spline 的跨度与浏览器一致（实测量得两者对比度 0.36 vs 0.35）。
                  */
-                setOptionRuntime("tone-mapping", "spline")
+                setOptionRuntime(
+                    "tone-mapping",
+                    com.xxxx.emby_vr.vr.VrTuning.toneMappingOverride ?: "spline",
+                )
                 /*
                  * 目标亮度默认 1100，但调参文件里的 mpv_target-peak 优先
                  * （父 2026-11-19 20:20 实测：这里写死会把调参值覆盖掉，用户在文件里改的 800 看不到效果）。
