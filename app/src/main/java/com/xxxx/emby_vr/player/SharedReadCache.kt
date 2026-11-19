@@ -142,11 +142,16 @@ object SharedReadCache {
         return false
     }
 
-    /** 等容器头尾就绪；超时返回 false（调用方决定照常启动还是报错） */
+    /**
+     * 等容器头就绪；超时返回 false（调用方照常启动）。
+     *
+     * 只等文件头：尾部索引不是每部片都会被要（2026-11-19 15:06 实测：第 3 集尾部
+     * 一次请求都没有，白等满 8 秒才启动）。真要尾部，解码器会自己来要，走通道2。
+     */
     fun awaitHeadTail(timeoutMs: Long): Boolean {
         val t0 = System.currentTimeMillis()
         while (System.currentTimeMillis() - t0 < timeoutMs) {
-            if (headReady && tailReady) return true
+            if (headReady) return true
             Thread.sleep(50)
         }
         return false
