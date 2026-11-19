@@ -543,7 +543,8 @@ object SharedReadCache {
         val wholeFile = start == 0L && end >= total - 1
         val edge = start < EDGE_BYTES || start >= total - EDGE_BYTES
         if (wantIdx < baseIdx || haveNow <= start - wantIdx * SEG) {
-            val urgent = !wholeFile && edge
+            /* 父 2026-11-19 15:09：整文件那条是常规任务，其余一律急件、可插队 */
+        val urgent = !wholeFile
             Log.i(
                 TAG,
                 "路2 取数：${if (urgent) "急件" else "常件"} 起点=${start}B 长度=${end - start + 1}B" +
