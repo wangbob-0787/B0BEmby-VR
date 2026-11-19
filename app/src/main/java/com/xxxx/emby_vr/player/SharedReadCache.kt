@@ -231,16 +231,17 @@ object SharedReadCache {
                 return@thread
             }
             curDurationSec = durationSec
-            /* 每次起播都重新等头尾：不清零的话，上一部留下的"已就绪"会让等待立即通过 */
-            headReady = false
-            tailReady = false
             val idx = ((startSec / durationSec).coerceIn(0.0, 1.0) * total / SEG).toLong()
             /*
              * 两件事分开做，但必须在同一个线程里按顺序执行：
              * ① 换了内容 → 全部清空；② 设位置。清空若放到别的线程异步跑，
              * 可能晚于这里设 curUrl，把地址又清掉，拉流线程就空闲了。
              */
-            if (inner != curUrl) clearAll("起播：换内容，清空上一部")
+            if (inner != curUrl) {
+                clearAll("起播：换内容，清空上一部")
+                headReady = false
+                tailReady = false
+            }
             curUrl = inner
             writePos = idx * SEG
             baseIdx = idx
@@ -542,9 +543,13 @@ object SharedReadCache {
          */
         val wholeFile = start == 0L && end >= total - 1
         val edge = start < EDGE_BYTES || start >= total - EDGE_BYTES
-        if (wantIdx < baseIdx || haveNow <= start - wantIdx * SEG) {
-            /* 父 2026-11-19 15:09：整文件那条是常规任务，其余一律急件、可插队 */
-        val urgent = !wholeFile
+        /*
+         * 父 2026-11-19 15:29：只有落在文件头/尾 8MB 的请求（元数据、索引、整文件那条）
+         * 走通道2；其他位置都是音视频数据，读缓存，没命中就等路1 铺过来。
+         */
+        if (edge && (wantIdx < baseIdx || haveNow <= start - wantIdx * SEG)) {
+            /* 整文件那条是常规任务，其余急件可插队 */
+            val urgent = !wholeFile
             Log.i(
                 TAG,
                 "路2 取数：${if (urgent) "急件" else "常件"} 起点=${start}B 长度=${end - start + 1}B" +
