@@ -157,6 +157,14 @@ class VideoPipe {
     /** 已在等跳转后的新帧（下一次上屏就回调一次） */
     @Volatile private var seekAwaitFrame = false
 
+    /**
+     * 跳转落点回调（参数 = extractor 落到的那一帧的播放位置，秒）。
+     *
+     * 父亲 2026-11-19 定：关键帧位置算出来之后，才能把缓存写入位置挪过去；
+     * 所以这个回调必须早于"出新帧"，在 seek 做完那一刻就发出。
+     */
+    @Volatile var onSeekLanded: ((Double) -> Unit)? = null
+
     /** 第一次解出杜比参数时回调一次（外面据此确认"本片确实是 P5"，才允许走还原） */
     @Volatile private var onDoviParams: (() -> Unit)? = null
 
@@ -465,11 +473,30 @@ class VideoPipe {
         }
 
         while (running.get() && !outputDone) {
-            /* 待办：解码器内跳转（在两次 buffer 操作之间做，flush 时手里不能攥着 buffer） */
+            /* 顶部第一条：待办跳转（在两次 buffer 操作之间做，flush 时手里不能攥着 buffer） */
             val wantSeek = pendingSeekSec
             if (wantSeek >= 0.0) {
                 pendingSeekSec = -1.0
                 seekInPlace(wantSeek)
+            }
+            /*
+             * 顶部第二条：暂停就停住，不读也不解（父亲 2026-11-19 定）。
+             * 原来这条判断放在上屏之前（outputFrame 里握帧原地等），那样循环回不到顶部，
+             * 待执行跳转永远排不上；现在放到顶部，暂停期间每 10ms 回来看一眼跳转。
+             */
+            if (pausedNow?.invoke() == true) {
+                if (pausedHoldCount == 0) Log.i(TAG, "循环顶部：暂停中，停止读与解")
+                pausedHoldCount++
+                try {
+                    Thread.sleep(10)
+                } catch (t: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                }
+                continue
+            }
+            if (pausedHoldCount > 0) {
+                Log.i(TAG, "循环顶部：暂停解除，继续读与解（停了 ${pausedHoldCount} 拍）")
+                pausedHoldCount = 0
             }
             if (!inputDone) {
                 val inIdx = codec.dequeueInputBuffer(DEQUEUE_TIMEOUT_US)
@@ -660,21 +687,9 @@ class VideoPipe {
         }
 
         /*
-         * 暂停时：握住这一帧原地等，**不上屏**。恢复后立刻接着放，
-         * 画面不会趁机往前跑，恢复后也不需要再追同步。
+         * 暂停的处理已移到解码循环顶部（父亲 2026-11-19 定）：这里再握帧等待会让循环
+         * 回不到顶部，跳转指令永远排不上。暂停期间循环本来就不会读到新帧。
          */
-        if (pausedNow?.invoke() == true) {
-            pausedHoldCount++
-            while (running.get() && pausedNow?.invoke() == true) {
-                try {
-                    Thread.sleep(10)
-                } catch (t: InterruptedException) {
-                    Thread.currentThread().interrupt()
-                    break
-                }
-            }
-            if (!running.get()) return finish(false)
-        }
 
         /* 起播放行闸门：门关着就持这一帧等，门一开立刻上屏 */
         if (!firstFrameShown && holdGate?.invoke() == true) {
@@ -767,11 +782,20 @@ class VideoPipe {
              * 新位置解出来的每一帧都被当成"早于起点的预滚帧"丢掉 —— 现场表现是
              * 后退到片头后声音回来了、画面永远不来（2026-11-17 实测）。
              */
-            audioStartSec = targetSec
+            /*
+             * 落点就是关键帧：sampleTime 是 seekTo 之后 extractor 停住的那一帧，
+             * CLOSEST_SYNC 保证它对齐到关键帧。缓存写入位置只认这个值（父亲 2026-11-19 定）。
+             */
+            val landed = (ex.sampleTime / 1_000_000.0).takeIf { it >= 0.0 } ?: targetSec
+            audioStartSec = landed
             originPts = -1.0
             appliedOffset = Double.NaN
             firstFrameShown = false
-            Log.i(TAG, "解码器内跳转完成 → ${"%.2f".format(targetSec)}s（未重建）")
+            Log.i(
+                TAG,
+                "解码器内跳转完成 → 目标 ${"%.2f".format(targetSec)}s，落点关键帧 ${"%.2f".format(landed)}s（未重建）",
+            )
+            runCatching { onSeekLanded?.invoke(landed) }
             true
         } catch (t: Throwable) {
             Log.e(TAG, "解码器内跳转失败：${t.javaClass.simpleName}: ${t.message}")

@@ -86,6 +86,9 @@ object SharedReadCache {
     private val road2 = java.util.concurrent.Semaphore(1, true)
     /** 正在等路 2 的急件数（常件看到 >0 就让位） */
     private val urgentWaiting = AtomicInteger(0)
+
+    /** 连接编号（只用于日志与标识，不再登记读位置） */
+    private val connSeq = AtomicInteger(0)
     /** 头数据 / 尾数据各算多少为急件区间（父亲 2026-11-18 定：头 8MB，尾同） */
     private const val EDGE_BYTES = 8L * 1024 * 1024
 
@@ -104,6 +107,9 @@ object SharedReadCache {
      */
     private val orphanSegs = java.util.concurrent.ConcurrentLinkedQueue<Long>()
 
+    /** 当前这条拉流连接：跳转时直接断开，让它立刻从新写位重连（父 2026-11-19 定） */
+    @Volatile private var activePull: java.net.HttpURLConnection? = null
+
     /** 当前这一部的时长（秒），播放进度换算字节要用 */
     @Volatile private var curDurationSec = 0.0
 
@@ -115,16 +121,6 @@ object SharedReadCache {
     @Volatile private var baseIdx = 0L          // 缓存里保留的第一段
     @Volatile private var gen = 0L              // 换片/跳转代数：拉流线程据此重开连接
 
-    /**
-     * 跳转时要掐断的连接（父亲 2026-11-19 00:57 定）：跳转命令发出后，
-     * 不管解码线程在干什么，读旧位置的连接一律无条件停掉，让它立刻回去执行跳转。
-     * 不掐断的话，解码线程会一直堵在"等一个已经挪走的段"里，跳转指令永远排不上。
-     */
-    private val cancelledConns = java.util.concurrent.ConcurrentHashMap.newKeySet<Int>()
-
-    /** 每个客户端（HTTP 连接）当前读到的段号，用于算"最慢那个" */
-    private val connPos = ConcurrentHashMap<Int, Long>()
-    private val connSeq = AtomicInteger(0)
 
     private val hits = AtomicLong()
     private val misses = AtomicLong()
@@ -164,6 +160,7 @@ object SharedReadCache {
      * 起播位置来自续播进度（上次看到哪里），从没看过的就是 0。
      * 不判前后：起播阶段播放器要的文件头、尾部索引一律走 [serveDirect]。
      */
+    /** 起播位置：只设读位置起点与缓存写入起点，不碰已有缓存（清空由切集路径负责） */
     fun beginBoot(url: String, startSec: Double, durationSec: Double) {
         if (!enabled() || !started) return
         if (durationSec <= 0.0 || startSec < 0.0) {
@@ -182,7 +179,12 @@ object SharedReadCache {
             }
             curDurationSec = durationSec
             val idx = ((startSec / durationSec).coerceIn(0.0, 1.0) * total / SEG).toLong()
-            clearAll("起播：从 ${"%.0f".format(startSec)}s 开始铺")
+            /*
+             * 两件事分开做，但必须在同一个线程里按顺序执行：
+             * ① 换了内容 → 全部清空；② 设位置。清空若放到别的线程异步跑，
+             * 可能晚于这里设 curUrl，把地址又清掉，拉流线程就空闲了。
+             */
+            if (inner != curUrl) clearAll("起播：换内容，清空上一部")
             curUrl = inner
             writePos = idx * SEG
             baseIdx = idx
@@ -212,7 +214,6 @@ object SharedReadCache {
         curUrl = null
         writePos = 0
         baseIdx = 0
-        connPos.clear()
         Log.i(TAG, "缓存已清空：$why（标记 ${n} 段待清理，文件不删、留给覆盖写）")
     }
 
@@ -430,8 +431,7 @@ object SharedReadCache {
             }
         } catch (_: Throwable) {
         } finally {
-            cancelledConns.remove(connId)
-            connPos.remove(connId)
+            /* 连接结束：无需再登记（跳转不再掐连接，靠拉流断连改向） */
         }
     }
 
@@ -468,16 +468,16 @@ object SharedReadCache {
          * 不写缓存、不动写位、不占缓存空间（父亲 2026-11-18 定）。
          */
         val haveNow = synchronized(lock) { avail[wantIdx] ?: 0L }
-        if (wantIdx < baseIdx || haveNow <= start - wantIdx * SEG) {
-            /*
-             * 急件判定看**整段区间**，不能只看起点：播放器起播第一个请求是"从 0 到文件尾"，
-             * 起点在头部但长度是整个文件，若按起点判就会把这条最长的请求当成急件，
-             * 占住路 2 不让位，尾部索引永远排不上（2026-11-18 现场：整文件被当急件，
-             * 59729B 的尾部索引死等，内核拿不到索引 → 黑屏）。
-             */
-            /* 父亲 2026-11-18 23:01 定：整文件那条（0 到文件尾）固定算常件；其余落在头尾 8MB 内算急件 */
-            val wholeFile = start == 0L && end >= total - 1
-            val urgent = !wholeFile && (start < EDGE_BYTES || start >= total - EDGE_BYTES)
+        /*
+         * 路 2 只服务两类请求（父 2026-11-19 定）：
+         * ① 整文件那条（起点 0、到文件尾）= 常规任务；
+         * ② 落在文件头/尾 8MB 内（元数据与索引）= 紧急任务，可插队。
+         * 其他位置是音视频数据：必须命中缓存，没命中就等缓存写入起点铺过来，不回源。
+         */
+        val wholeFile = start == 0L && end >= total - 1
+        val edge = start < EDGE_BYTES || start >= total - EDGE_BYTES
+        if ((wholeFile || edge) && (wantIdx < baseIdx || haveNow <= start - wantIdx * SEG)) {
+            val urgent = !wholeFile && edge
             Log.i(
                 TAG,
                 "路2 取数：${if (urgent) "急件" else "常件"} 起点=${start}B 长度=${end - start + 1}B" +
@@ -486,8 +486,6 @@ object SharedReadCache {
             serveDirect(upstream, start, end, out, urgent)
             return
         }
-        connPos[connId] = wantIdx
-
         writeHeaders(out, 206, "Partial Content", "application/octet-stream", end - start + 1,
             "bytes $start-$end/$total")
 
@@ -528,20 +526,10 @@ object SharedReadCache {
                         Thread.sleep(20)
                         continue
                     }
-                    if (cancelledConns.contains(connId)) {
-                        Log.i(TAG, "发数据中止：连接被跳转作废（位置=${pos}B）")
-                        return
-                    }
                     out.write(buf, 0, got)
                     pos += got
                     lastProgress = System.currentTimeMillis()
-                    connPos[connId] = pos / SEG
                 } else {
-                /* 跳转已把这个连接作废：立刻断，别再等一个已经挪走的段 */
-                if (cancelledConns.contains(connId)) {
-                    Log.i(TAG, "等数据中止：连接被跳转作废（段=$idx）")
-                    return
-                }
                 /* 数据还没到：等拉流线程写进来（超时即断开，让客户端重试） */
                 if (System.currentTimeMillis() - lastProgress > 30000) break
                 if (System.currentTimeMillis() - lastLogAt > 2000) {
@@ -566,83 +554,6 @@ object SharedReadCache {
     /** 播放进度上报（秒）。水位只认这个数（父亲 2026-11-18 定：进度条的位置最准） */
     fun setPlayPosSec(sec: Double) {
         if (sec >= 0.0) playPosSec = sec
-    }
-
-    /**
-     * 用户主动跳转 —— 只有三个入口：光点指银幕扳摇杆、拖进度条、快进 10S / 快退 10S。
-     *
-     * 父亲 2026-11-18 定：
-     *  - 往回跳 → 先清空，再从目标位置重铺；
-     *  - 往前跳且落在已铺缓存里 → 只删左边，删除上限取"两个解码器较慢读位置 − 安全距离"；
-     *  - 往前跳且目标处没有缓存 → 清空重铺。
-     */
-    fun jumpTo(fromSec: Double, targetSec: Double, durationSec: Double) {
-        val url = curUrl ?: return
-        val total = curTotal
-        if (!enabled() || total <= 0L || durationSec <= 0.0) return
-        val target = (targetSec / durationSec * total).toLong().coerceIn(0L, total - 1)
-        val targetIdx = target / SEG
-        if (targetSec < fromSec) {
-            resetAnchor("用户后退（${"%.0f".format(fromSec)}s → ${"%.0f".format(targetSec)}s）", url, targetIdx)
-            Log.i(TAG, "按用户操作跳转：目标=${"%.1f".format(targetSec)}s（往回，清空重铺，写位=${writePos}B）")
-            return
-        }
-        val right = synchronized(lock) { avail.keys.maxOrNull() ?: -1L }
-        if (targetIdx in baseIdx..right) {
-            val slow = connPos.values.minOrNull() ?: targetIdx
-            val safe = maxOf(baseIdx, minOf(targetIdx, slow - MARGIN_SEGS))
-            var freed = 0L
-            if (safe > baseIdx) {
-                val doomed = ArrayList<Long>()
-                synchronized(lock) {
-                    val keys = avail.keys.filter { it < safe }.sorted()
-                    for (k in keys) {
-                        val size = avail.remove(k) ?: continue
-                        used -= size
-                        freed += size
-                        doomed.add(k)
-                    }
-                }
-                val dir = cacheDir
-                if (dir != null) for (k in doomed) runCatching { File(dir, "$k.seg").delete() }
-                baseIdx = safe
-            }
-            Log.i(
-                TAG,
-                "按用户操作跳转：目标=${"%.1f".format(targetSec)}s（往前，落在缓存内，" +
-                    "删到第 $safe 段，释放 ${freed / 1048576}MB，最慢读位置=$slow）",
-            )
-            return
-        }
-        resetAnchor("用户快进（${"%.0f".format(fromSec)}s → ${"%.0f".format(targetSec)}s）", url, targetIdx)
-        Log.i(TAG, "按用户操作跳转：目标=${"%.1f".format(targetSec)}s（往前，目标处无缓存，清空重铺，写位=${writePos}B）")
-    }
-
-    /**
-     * 用户跳转时的"清空重铺"（父亲 2026-11-18 23:49 定）：**只挪起点，不作废在途请求**。
-     *
-     * 之前这里调 clearAll：换代 + 清账本，把播放器正在进行的读全部作废，
-     * 它的 seek 请求正好撞上被断开 → seek 没落地，画面解码器还在旧段等一个永远不会来的数据，
-     * 现场就是"跳到 11 分钟但一直停着"（r1505 实测）。
-     * 现在：旧段标记待回收（文件留着被覆盖）、账本清空、写位直接落到目标位置；
-     * 连接代数不变，在途读继续（读旧段时走回源，读新段命中缓存）。
-     */
-    private fun resetAnchor(why: String, url: String, targetIdx: Long) {
-        var n = 0
-        synchronized(lock) {
-            n = avail.size
-            orphanSegs.addAll(avail.keys)
-            avail.clear()
-            used = 0
-        }
-        curUrl = url
-        writePos = targetIdx * SEG
-        baseIdx = targetIdx
-        /* 读旧位置（目标段之前）的连接全部掐断：解码线程立刻从阻塞读里出来，回去执行跳转 */
-        for ((id, seg) in connPos) if (seg < targetIdx) cancelledConns.add(id)
-        Log.i(TAG, "跳转掐断旧读连接 ${cancelledConns.size} 条（目标段=$targetIdx）")
-        connPos.clear()
-        Log.i(TAG, "跳转重铺：$why（标记 ${n} 段待清理，写位=${writePos}B baseIdx=$targetIdx，连接不作废）")
     }
 
     /**
@@ -831,6 +742,7 @@ object SharedReadCache {
                         continue
                     }
                     conn = c
+                    activePull = c
                     misses.incrementAndGet()
                     c.inputStream.use { ins ->
                         var raf: RandomAccessFile? = null
@@ -914,6 +826,7 @@ object SharedReadCache {
                     )
                 } finally {
                     runCatching { conn?.disconnect() }
+                    if (activePull === conn) activePull = null
                 }
                 Thread.sleep(20)
             } catch (t: Throwable) {
@@ -947,10 +860,15 @@ object SharedReadCache {
                         }
                     }
                 }
-                val slow = connPos.values.minOrNull()
+                /* 安全线按播放进度算（父 2026-11-19 定）：读位置在 mpv 那侧会超前，不能拿来当删除依据 */
+                val slow = if (curTotal > 0L && curDurationSec > 0.0) {
+                    (playPosSec / curDurationSec * curTotal / SEG).toLong()
+                } else {
+                    -1L
+                }
                 val base = baseIdx
                 val safe = when {
-                    slow == null -> -1L
+                    slow < 0L -> -1L
                     slow - MARGIN_SEGS > base -> slow - MARGIN_SEGS
                     else -> -1L
                 }

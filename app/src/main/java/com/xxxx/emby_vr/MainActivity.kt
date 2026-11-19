@@ -8499,8 +8499,9 @@ class MainActivity : ComponentActivity() {
          * 水位恢复只看缓存余量、不看画面有没有出新帧，之前它会把跳转扣住的声音直接放开，
          * 现场就成了"声音出来了、画面一直不出来"。
          */
-        if (kind == "WATER" && pipePausedForRebuild) {
-            Log.w(TAG, "放行被拒：跳转等待中，等画面出新帧（水位恢复不解除跳转暂停）")
+        /* 跳转等待中：水位够了就该放行；只有用户自己按着暂停才不恢复（父 2026-11-19 定） */
+        if (kind == "WATER" && pipePausedForRebuild && seekWasUserPaused) {
+            Log.w(TAG, "放行被拒：用户自己按着暂停，水位恢复也不解除")
             return false
         }
         if (kind == "BOOT" || kind == "WATER") {
@@ -8525,6 +8526,9 @@ class MainActivity : ComponentActivity() {
 
     /** 是否为"等画面就绪"而暂停过声音（重建路径用，放行时再解除） */
     @Volatile private var pipePausedForRebuild = false
+
+    /** 跳转发起时用户是否自己按着暂停：是的话，跳完保持暂停，等用户按播放（父 2026-11-19 定） */
+    @Volatile private var seekWasUserPaused = false
 
     /** 是否为"数据不够"而把播放停住（运行水位；用户自己按的暂停不在此列） */
     @Volatile private var pipePausedByWater = false
@@ -8569,6 +8573,9 @@ class MainActivity : ComponentActivity() {
                         runCatching { mpvBackend?.setPaused(true) }
                         Log.i(TAG, "停等|水位=${"%.1f".format(water)}s < ${low}s（先停住，别让它抖）")
                         hud("缓冲中…")
+                    } else if (pipePausedForRebuild && !seekWasUserPaused && water >= high) {
+                        Log.i(TAG, "跳转放行：水位=${"%.1f".format(water)}s ≥ ${high}s（用户未暂停）")
+                        releasePlayback("REBUILD", "跳转水位够")
                     } else if (pipePausedByWater && water >= high) {
                         pipePausedByWater = false
                         /* 走唯一闸门（I5）：水位恢复只是解除暂停，不动静音 */
@@ -8607,6 +8614,11 @@ class MainActivity : ComponentActivity() {
     private fun releaseAfterSeek(gen: Int, targetSec: Double, shownSec: Double) {
         if (gen != seekReleaseGen) return
         val m = mpvBackend ?: return
+        if (seekWasUserPaused) {
+            Log.i(TAG, "跳转落点=${"%.2f".format(shownSec)}s，用户自己按着暂停 → 保持暂停，等用户按播放")
+            com.xxxx.emby_vr.player.SharedReadCache.moveWriteToKeyframe(shownSec)
+            return
+        }
         /* 第一步：声音对齐到画面这一帧（只允许往前跳） */
         val pos = runCatching { m.positionExtrapolated() }.getOrNull()
         if (pos != null && shownSec - pos > 0.3) {
@@ -8617,37 +8629,13 @@ class MainActivity : ComponentActivity() {
             )
             runCatching { m.seekToSec(shownSec) }
         }
-        /* 第二步：等水位够再放行 */
-        val (_, _, high) = bufferWatermarks()
-        var tries = 0
-        val ui = android.os.Handler(android.os.Looper.getMainLooper())
-        val tick = object : Runnable {
-            override fun run() {
-                if (gen != seekReleaseGen) return
-                val water = com.xxxx.emby_vr.player.SharedReadCache.waterAheadSecs(pipeDurationSec)
-                if (water < 0.0 || water >= high) {
-                    Log.i(
-                        TAG,
-                        "跳转放行：画面帧=${"%.2f".format(shownSec)}s 水位=${"%.1f".format(water)}s" +
-                            "（第 ${tries + 1} 拍）",
-                    )
-                    releasePlayback("REBUILD", "跳转放行")
-                    return
-                }
-                tries++
-                ui.postDelayed(this, 300)
-            }
-        }
-        ui.postDelayed(tick, 300)
+        /*
+         * 放行交给水位监视器（父 2026-11-19 定）：跳转后只等水位涨够，
+         * 不再要求"画面出新帧"——暂停期间解码循环不读，新帧要等解除暂停后才出。
+         */
+        Log.i(TAG, "跳转落点=${"%.2f".format(shownSec)}s 已对齐声音，等水位涨够放行")
     }
 
-    /* 等待时长只报数不判死（图 §4.1 / §12 L23）：起播、跳转、收场各记一个起点 */
-    @Volatile private var pipeLoadT0 = 0L
-    @Volatile private var pipeSeekT0 = 0L
-    @Volatile private var lastStopWaitedMs = -1L
-    private var pipeHealthTick: Runnable? = null
-
-    /** 起播健康行：每 2s 一行，覆盖 STARTING / 等信号 / 预热 / 等放行 / PLAYING / 卡住 全过程 */
     private fun startPipeHealth() {
         stopPipeHealth()
         selfPipeCanOpen = false
@@ -8725,11 +8713,8 @@ class MainActivity : ComponentActivity() {
             holdGate = { !com.xxxx.emby_vr.player.MpvBackend.audioReady() },
             onFirstFrame = { },
             onDoviParams = { com.xxxx.emby_vr.vr.VrNative.setDoviStreamActive(true) },
-            onNeedRestart = { t ->
-                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
-                    { runCatching { restoreVideoPipeAt(t) } }, 1500,
-                )
-            },
+            /* 跳转后不再靠延迟重启纠偏：新流程用落点+水位放行，重复触发会打断（父 2026-11-19 定） */
+            onNeedRestart = { t -> Log.w(TAG, "解码器报失步 @ ${"%.2f".format(t)}s，按新流程不再延迟重启") },
         )
         if (ok) {
             Log.i(TAG, "失步重启完成：位置=$sec（未重新静音）")
@@ -8769,47 +8754,33 @@ class MainActivity : ComponentActivity() {
              * 只跳画面不跳内核，会得到"画面到新位置、声音还在旧位置"——
              * 听感就是声音丢了（2026-11-17 实测）。所以先把内核跳过去，再让画面跟过去。
              */
-            Log.i(TAG, "快进：内核与画面同时跳到 ${"%.1f".format(sec)}s（热解码器，不重建）")
+            Log.i(TAG, "跳转：先暂停，再由解码循环算关键帧并挪位置 @ ${"%.1f".format(sec)}s（热解码器，不重建）")
             /*
-             * 用户跳转（三个入口都汇到这里）：通知中转改写入位置。
-             * 往回跳清空重铺；往前跳落在缓存里只删左边；目标处没缓存就清空重铺。
-             * 中转自己不再从读位置猜快进快退（父亲 2026-11-18 定）。
+             * 父 2026-11-19 定：入口只做两件事 —— 置暂停、记下跳转请求。
+             * 算关键帧、挪缓存写入起点与两个读位置，全部在解码循环顶部做。
+             * 不先暂停的话，读位置一挪过去解码器就开始读，那时缓存里还没有数据。
              */
-            runCatching {
-                val dur = m.durationSec()
-                val from = m.positionExtrapolated()
-                if (dur > 0.0) {
-                    Log.i(TAG, "用户跳转：${"%.1f".format(from)}s → ${"%.1f".format(sec)}s（通知中转）")
-                    com.xxxx.emby_vr.player.SharedReadCache.jumpTo(from, sec, dur)
-                }
-            }
-            runCatching { m.seekToSec(sec) }
-            pipe.requestSeek(sec)
+            seekWasUserPaused = runCatching { m.isPaused() }.getOrDefault(false)
             /*
-             * 跳转后**不立刻放开**（父亲 2026-11-18 双信号口径）：先把声音压住，
-             * 等画面出新帧（`pipe.onSeekRendered`）+ 内核报出的位置和这一帧对得上，
-             * 再同一拍解除暂停与静音。
-             * 原来这里立刻 setPaused(false)：声音先跑、画面还在跳，现场表现是
-             * "跳转后要手点一次播放键"。
+             * 跳转后先压住声音（父 2026-11-19 定）：等落点算出来、缓存写入起点挪过去、
+             * 水位涨够，才解除。放行判据只看水位，不再要求"画面出新帧"。
              */
             pipePausedForRebuild = true
             runCatching { m.setPaused(true) }
             seekReleaseGen++
             val mySeekGen = seekReleaseGen
-            pipe.onSeekRendered = { shown ->
+            /*
+             * 落点回报（关键帧算出来那一刻，不是等首帧上屏）：
+             * ① 挪缓存写入起点；② 声音跳到同一个落点；③ 开始等水位放行。
+             */
+            pipe.onSeekLanded = { landed ->
                 android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    releaseAfterSeek(mySeekGen, sec, shown)
+                    com.xxxx.emby_vr.player.SharedReadCache.moveWriteToKeyframe(landed)
+                    releaseAfterSeek(mySeekGen, sec, landed)
                 }
             }
-            /*
-             * 兜底：2 秒没等到画面新帧（解码器卡住 / 那一段没数据）也必须放一次，
-             * 否则声音被一直扣着，现场是"跳完没声音，得手点一下"。
-             */
-            /*
-             * 这里原来有个"2 秒没等到新帧也放行"的兜底 —— 父亲 2026-11-19 00:04 定：删掉。
-             * 跳转必须真的出新帧才放行，没出帧就一直等；兜底会让失败也当成成功，
-             * 跟着去清缓存，旧数据没了、画面还停在旧位置。
-             */
+            pipe.requestSeek(sec)
+            /* 不放兜底：水位不够就一直等着，失败不许当成功放行（父 2026-11-19 00:04） */
             return
         }
         pipePausedForRebuild = true
@@ -8831,11 +8802,7 @@ class MainActivity : ComponentActivity() {
             onFirstFrame = { },
             onDoviParams = { com.xxxx.emby_vr.vr.VrNative.setDoviStreamActive(true) },
             onNeedRestart = { target ->
-                /* 已是重启路径，防递归：只在偏差仍然很大时再排一次 */
-                Log.w(TAG, "seek 后仍失步，排一次延迟重启 @ $target")
-                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
-                    { runCatching { restartVideoPipeAt(target) } }, 800,
-                )
+                Log.w(TAG, "重建/起播路径报失步 @ ${"%.2f".format(target)}s，不再延迟重启")
             },
         )
         if (ok) {
@@ -8904,13 +8871,11 @@ class MainActivity : ComponentActivity() {
          * 只在**换了内容**时清（同一地址的重建不清），并且放后台执行——
          * 删文件是磁盘操作，放界面线程上会把控制条和海报墙一起卡住（2026-11-18 实测）。
          */
-        if (rawUrl != lastPipeUrlForCache) {
-            lastPipeUrlForCache = rawUrl
-            val why = "起播：$source"
-            runCatching {
-                Thread { runCatching { com.xxxx.emby_vr.player.SharedReadCache.clearAll(why) } }.start()
-            }
-        }
+        /*
+         * 换内容的清空已并入起播设位置那一次调用（同一线程按顺序做），
+         * 原因：这里再异步清一次，可能晚于设地址，把地址清掉、拉流线程空闲。
+         */
+        if (rawUrl != lastPipeUrlForCache) lastPipeUrlForCache = rawUrl
         val url = com.xxxx.emby_vr.player.SharedReadCache.rewrite(rawUrl)
         /* 探针（只报数）：原始地址是否 http、重写是否生效、中转是否在跑 —— 起播黑屏时靠这三项定性 */
         Log.i(
