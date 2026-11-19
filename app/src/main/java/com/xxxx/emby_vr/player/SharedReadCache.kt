@@ -234,6 +234,18 @@ object SharedReadCache {
             Log.i(TAG, "起播锚点：时长还没到手（${"%.1f".format(durationSec)}s），等拿到再设")
             return
         }
+        /*
+         * 时长不合理就不设（父 2026-11-19 19:35 实测）：起播第一次拿到的时长偶尔是个很小的错值，
+         * 用错值换算会算出"文件末尾"（实测起点跳到 1172 段、写位跳到 1.8G），
+         * 之后真时长到手再设就成了两个互相覆盖的位置，中转自己都说不清数据在哪。
+         */
+        if (durationSec < 60.0 || startSec > durationSec + 5.0) {
+            Log.w(
+                TAG,
+                "起播锚点：跳过（时长=${"%.1f".format(durationSec)}s 位置=${"%.1f".format(startSec)}s 不合理）",
+            )
+            return
+        }
         val inner = unwrap(url) ?: return
         /* 同片同位置只设一次：起播入口一次、拿到时长后再补一次，第二次不许把缓存再清一遍 */
         val key = "$inner@${startSec.toLong()}"
