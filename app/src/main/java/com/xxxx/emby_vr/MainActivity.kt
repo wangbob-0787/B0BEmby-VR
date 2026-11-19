@@ -8492,13 +8492,6 @@ class MainActivity : ComponentActivity() {
             return false
         }
         selfPipeWaitingFirstFrame.set(false)
-        /*
-         * 跳转等待期间，水位恢复不许解除暂停（父 2026-11-19 02:10 定）。
-         *
-         * 跳转后的放行条件是"画面出新帧 + 水位够"，只有 releaseAfterSeek 那条能放。
-         * 水位恢复只看缓存余量、不看画面有没有出新帧，之前它会把跳转扣住的声音直接放开，
-         * 现场就成了"声音出来了、画面一直不出来"。
-         */
         /* 跳转等待中：水位够了就该放行；只有用户自己按着暂停才不恢复（父 2026-11-19 定） */
         if (kind == "WATER" && pipePausedForRebuild && seekWasUserPaused) {
             Log.w(TAG, "放行被拒：用户自己按着暂停，水位恢复也不解除")
@@ -8636,6 +8629,13 @@ class MainActivity : ComponentActivity() {
         Log.i(TAG, "跳转落点=${"%.2f".format(shownSec)}s 已对齐声音，等水位涨够放行")
     }
 
+    /* 等待时长只报数不判死（图 §4.1 / §12 L23）：起播、跳转、收场各记一个起点 */
+    @Volatile private var pipeLoadT0 = 0L
+    @Volatile private var pipeSeekT0 = 0L
+    @Volatile private var lastStopWaitedMs = -1L
+    private var pipeHealthTick: Runnable? = null
+
+    /** 起播健康行：每 2s 一行，覆盖 STARTING / 等信号 / 预热 / 等放行 / PLAYING / 卡住 全过程 */
     private fun startPipeHealth() {
         stopPipeHealth()
         selfPipeCanOpen = false

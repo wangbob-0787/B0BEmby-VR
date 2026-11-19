@@ -557,6 +557,21 @@ object SharedReadCache {
     }
 
     /**
+     * 跳转落点：把**缓存写入起点**挪到关键帧（父 2026-11-19 定）。
+     *
+     * 只挪写入起点：缓存起点是事实，不动；旧段留在缓存里还能读。
+     * 同时断开正在传的那一包，让拉流线程立刻从新位置重连，不用等旧位置传完。
+     */
+    fun moveWriteToKeyframe(keySec: Double) {
+        val total = curTotal
+        if (!enabled() || total <= 0L || curDurationSec <= 0.0) return
+        val idx = ((keySec / curDurationSec).coerceIn(0.0, 1.0) * total / SEG).toLong()
+        writePos = idx * SEG
+        Log.i(TAG, "跳转落点：缓存写入起点 → 第 $idx 段（${writePos}B），缓存起点=${baseIdx}（不动）")
+        runCatching { activePull?.disconnect() }
+    }
+
+    /**
      * 路 2：把播放器要的那一段从上游取回来交给它。
      *
      * 只有缓存里没有、也铺不到的区间才走这里（文件头、尾部索引、已删区间）。
