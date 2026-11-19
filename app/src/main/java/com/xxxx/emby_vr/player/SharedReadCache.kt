@@ -36,7 +36,12 @@ object SharedReadCache {
 
     private const val TAG = "B0BEmbyVR-Relay"
     private const val PORT = 8898
-    private const val CAPACITY_BYTES = 400L * 1024 * 1024
+    /*
+     * 段缓存上限（父 2026-11-19 18:51 定）：头显剩余 58G，给 20G。
+     * 一部片子在播期间不主动删，换片或退出播放时才清；只有超过这 20G 才按
+     * 「离播放位置最远的先删」回收。
+     */
+    private const val CAPACITY_BYTES = 20L * 1024 * 1024 * 1024
     private const val UA = "B0BEmbyRelay/1.0"
     /**
      * 拉流连接数。
