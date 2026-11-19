@@ -731,11 +731,11 @@ object SharedReadCache {
                         out.write(buf, off, w)
                         out.flush()
                         /*
-                         * 客户端不读时写会一直阻塞；单块超过 3 秒就认为它已经放弃，
+                         * 客户端不读时写会一直阻塞；单块超过 1 秒就认为它已经放弃，
                          * 立刻退出并释放槽位，别让死连接占着（父 2026-11-19 18:23 实测：
                          * 旧连接占槽 20 秒，导致重发的请求排队、黑屏）。
                          */
-                        if (System.currentTimeMillis() - wT0 > 3000) {
+                        if (System.currentTimeMillis() - wT0 > 1000) {
                             Log.w(TAG, "路2 放弃：单块写入超时（起点=${pos}B，客户端不再读）")
                             return
                         }
