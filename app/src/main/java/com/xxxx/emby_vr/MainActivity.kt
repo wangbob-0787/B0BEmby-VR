@@ -8553,6 +8553,9 @@ class MainActivity : ComponentActivity() {
      */
     @Volatile private var videoPipeFault = false
 
+    /** 视频解码器已成功启动（PIPE.start 返回 true）。解除暂停要求它成立，避免"声音先走、画面没开始" */
+    @Volatile private var videoPipeReady = false
+
     /** 正在等水位：起播与跳转共用；水量够就解除暂停（父 2026-11-19 定） */
     @Volatile private var waitingForWater = false
 
@@ -8602,7 +8605,8 @@ class MainActivity : ComponentActivity() {
                         runCatching { mpvBackend?.setPaused(true) }
                         Log.i(TAG, "停等|水位=${"%.1f".format(water)}s < ${low}s（先停住，别让它抖）")
                         hud("缓冲中…")
-                    } else if (waitingForWater && !seekWasUserPaused && water >= high && !videoPipeFault) {
+                    } else if (waitingForWater && !seekWasUserPaused && water >= high &&
+                        !videoPipeFault && videoPipeReady) {
                         /*
                          * 水位够 → 只解除暂停，不动静音（父 2026-11-19 定）。
                          * 解除后解码循环开始读、出帧；出帧且声音就绪才解除静音。
@@ -9214,6 +9218,7 @@ class MainActivity : ComponentActivity() {
                     }
                 },
             )
+            videoPipeReady = ok
             if (!ok) {
                 /*
                  * PIPE 起不来：停在 STARTING —— 不进 PLAYING、不解除暂停、不取消静音，
@@ -9257,6 +9262,7 @@ class MainActivity : ComponentActivity() {
                 waitingForWater = true
                 seekWasUserPaused = false
                 videoPipeFault = false
+                videoPipeReady = false
                 Log.i(TAG, "声音侧就绪 → 暂停并置等水位（水量够后由水位监视解除）")
                 Log.i(TAG, "起播基准：CAN_OPEN 基准=${"%.3f".format(basePos)}（请求=${"%.3f".format(startSec)}）")
                 /* 时长到手才谈得上水位：从这里开始才算"位置之后还剩几秒" */

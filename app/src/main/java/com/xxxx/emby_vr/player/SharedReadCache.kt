@@ -642,10 +642,13 @@ object SharedReadCache {
                             return
                         }
                         if (pos == start) {
+                            val t = curTotal
+                            if (start < EDGE_BYTES) headReady = true
+                            else if (t > 0L && start >= t - EDGE_BYTES) tailReady = true
                             Log.i(
                                 TAG,
                                 "路2 首包：码=$code 起点=$start 长度=$want 等=${System.currentTimeMillis() - t0}ms" +
-                                    "（${if (urgent) "急件" else "常件"}）",
+                                    "（${if (urgent) "急件" else "常件"}；头就绪=$headReady 尾就绪=$tailReady）",
                             )
                         }
                     }
