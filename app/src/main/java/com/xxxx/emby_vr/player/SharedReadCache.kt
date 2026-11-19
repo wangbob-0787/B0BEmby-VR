@@ -99,7 +99,7 @@ object SharedReadCache {
     private val slotRand = java.util.concurrent.Semaphore(1, true)
     private val MAIN_BYTES = 8L * 1024 * 1024
     /** 正在等路 2 的急件数（常件看到 >0 就让位） */
-    private val urgentWaiting = AtomicInteger(0)
+    /* 已删除：急件计数（父 2026-11-19 19:34 —— 两槽独立后不再需要让位判断） */
 
     /** 连接编号（只用于日志与标识，不再登记读位置） */
     private val connSeq = AtomicInteger(0)
@@ -225,7 +225,7 @@ object SharedReadCache {
      * 起播锚点（父亲 2026-11-18 定）：清空缓存，把写位放到**起播位置**，从这里往后顺序铺。
      *
      * 起播位置来自续播进度（上次看到哪里），从没看过的就是 0。
-     * 不判前后：起播阶段播放器要的文件头、尾部索引一律走 [serveDirect]。
+     * 起播要的文件头、尾部索引与正文一样：命中缓存就给，没命中就回源那一段。
      */
     /** 起播位置：只设读位置起点与缓存写入起点，不碰已有缓存（清空由切集路径负责） */
     /**
@@ -634,112 +634,6 @@ object SharedReadCache {
     /** 段文件名沿用 <段号>.seg（回收与对账按这个名字扫盘，不能改） */
     private fun segFile(idx: Long): File = File(cacheDir, "$idx.seg")
 
-    private fun serveDirect(upstream: String, start: Long, end: Long, out: OutputStream, urgent: Boolean) {
-        val want = end - start + 1
-        val totalNow = curTotal
-        /* 块缓存暂停使用（父 2026-11-19 15:56）：每次回源直接取，见下方说明 */
-        val saveTo: java.util.concurrent.atomic.AtomicReference<ByteArray?>? = null
-        val blockBuf: ByteArray? = null
-        val t0 = System.currentTimeMillis()
-        var got = false
-        var pos = start
-        val isMain = want > MAIN_BYTES
-        val slot = if (isMain) slotMain else slotRand
-        /* 缓冲大小：常件按参数（默认 1MB），急件给 256KB 够用 */
-        val bufBytes = (if (urgent) 256 else com.xxxx.emby_vr.vr.VrTuning.relayBufKb) * 1024
-        if (urgent) urgentWaiting.incrementAndGet()
-        try {
-            slot.acquire()
-            got = true
-            if (urgent) {
-                val waited = System.currentTimeMillis() - t0
-                if (waited > 100) Log.i(TAG, "路2 急件排队：等了 ${waited}ms（起点=${start}B）")
-            }
-            writeHeaders(
-                out, 206, "Partial Content", "application/octet-stream", want,
-                "bytes $start-$end/${if (curTotal > 0L) curTotal else end + 1}",
-            )
-            val genAt = gen
-            var conn: HttpURLConnection? = null
-            val buf = ByteArray(bufBytes)
-            try {
-                while (pos <= end) {
-                    if (conn == null) {
-                        conn = openRange(upstream, pos, end)
-                        val code = conn.responseCode
-                        if (code !in 200..206) {
-                            Log.w(TAG, "路2 回源失败：码=$code 起点=${pos}B")
-                            return
-                        }
-                        if (pos == start) {
-                            val t = curTotal
-                            if (start < EDGE_BYTES) headReady = true
-                            else if (t > 0L && start >= t - EDGE_BYTES) tailReady = true
-                            Log.i(
-                                TAG,
-                                "路2 首包：码=$code 起点=$start 长度=$want 等=${System.currentTimeMillis() - t0}ms" +
-                                    "（${if (urgent) "急件" else "常件"}；头就绪=$headReady 尾就绪=$tailReady）",
-                            )
-                        }
-                    }
-                    val n = conn.inputStream.read(buf, 0, minOf(buf.size.toLong(), end - pos + 1).toInt())
-                    if (n <= 0) break
-                    if (gen != genAt) {
-                        Log.w(TAG, "路2 中止：代数变了（起点=$pos B）")
-                        return
-                    }
-                    var off = 0
-                    while (off < n) {
-                        /*
-                         * 主数据流不再让位（父 2026-11-19 18:27）：急件有自己的槽，
-                         * 两边互不打断，谁先拿到槽谁连续传完。
-                         */
-                        /*
-                         * 单块 64KB，不限时间：与本地测试服务保持一致（父 2026-11-19 19:02）。
-                         * 客户端真的断开时 write 会抛异常，靠那个释放槽位；
-                         * 不再用"写多久算超时"这种判据 —— 实测它会把正常传输误切断，
-                         * 客户端拿到的数据半截或为空。
-                         */
-                        val w = minOf(64 * 1024, n - off)
-                        out.write(buf, off, w)
-                        out.flush()
-                        if (blockBuf != null) {
-                            val at = (pos - start).toInt()
-                            if (at >= 0 && at + w <= blockBuf.size) {
-                                System.arraycopy(buf, off, blockBuf, at, w)
-                            }
-                        }
-                        off += w
-                        pos += w
-                    }
-                }
-                val total = curTotal
-                if (pos - start > 0) {
-                    if (start < EDGE_BYTES) headReady = true
-                    else if (total > 0L && start >= total - EDGE_BYTES) tailReady = true
-                }
-                if (blockBuf != null && blockBuf.isNotEmpty() && pos - start == blockBuf.size.toLong()) {
-                    saveTo?.set(blockBuf)
-                    Log.i(TAG, "路2 块已缓存：起点=$start 长=${blockBuf.size}B（以后两路都从内存给）")
-                }
-                Log.i(
-                    TAG,
-                    "路2 完成：起点=$start 已给=${pos - start}B 用时=${System.currentTimeMillis() - t0}ms" +
-                        "（头就绪=$headReady 尾就绪=$tailReady）",
-                )
-            } finally {
-                runCatching { conn?.disconnect() }
-            }
-        } catch (t: Throwable) {
-            Log.w(
-                TAG,
-                "路2 中断：起点=$start 请求长=$want 已给=${pos - start}B ${t.javaClass.simpleName}: ${t.message}",
-            )
-        } finally {
-            if (got) slot.release()
-            if (urgent) urgentWaiting.decrementAndGet()
-        }
-    }
 
     /** 开一条带 Range 的上游连接（路 2 专用） */
     private fun openRange(upstream: String, from: Long, to: Long): HttpURLConnection =
