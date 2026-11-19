@@ -107,6 +107,23 @@ object SharedReadCache {
      */
     private val orphanSegs = java.util.concurrent.ConcurrentLinkedQueue<Long>()
 
+    /**
+     * 容器头与尾部索引是否已由通道2 取回（父 2026-11-19 定）。
+     * 起播时等这两个都就绪再启动自管解码器，否则解封装器读不到轨道表就判"没有视频轨"。
+     */
+    @Volatile private var headReady = false
+    @Volatile private var tailReady = false
+
+    /** 等容器头尾就绪；超时返回 false（调用方决定照常启动还是报错） */
+    fun awaitHeadTail(timeoutMs: Long): Boolean {
+        val t0 = System.currentTimeMillis()
+        while (System.currentTimeMillis() - t0 < timeoutMs) {
+            if (headReady && tailReady) return true
+            Thread.sleep(50)
+        }
+        return false
+    }
+
     /** 当前这条拉流连接：跳转时直接断开，让它立刻从新写位重连（父 2026-11-19 定） */
     @Volatile private var activePull: java.net.HttpURLConnection? = null
 
@@ -217,6 +234,8 @@ object SharedReadCache {
         curUrl = null
         writePos = 0
         baseIdx = 0
+        headReady = false
+        tailReady = false
         Log.i(TAG, "缓存已清空：$why（标记 ${n} 段待清理，文件不删、留给覆盖写）")
     }
 
@@ -668,7 +687,16 @@ object SharedReadCache {
                         pos += w
                     }
                 }
-                Log.i(TAG, "路2 完成：起点=$start 已给=${pos - start}B 用时=${System.currentTimeMillis() - t0}ms")
+                val total = curTotal
+                if (pos - start > 0) {
+                    if (start < EDGE_BYTES) headReady = true
+                    else if (total > 0L && start >= total - EDGE_BYTES) tailReady = true
+                }
+                Log.i(
+                    TAG,
+                    "路2 完成：起点=$start 已给=${pos - start}B 用时=${System.currentTimeMillis() - t0}ms" +
+                        "（头就绪=$headReady 尾就绪=$tailReady）",
+                )
             } finally {
                 runCatching { conn?.disconnect() }
             }

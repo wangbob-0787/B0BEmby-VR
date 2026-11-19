@@ -8542,6 +8542,12 @@ class MainActivity : ComponentActivity() {
     /** 是否为"等画面就绪"而暂停过声音（重建路径用，放行时再解除） */
     @Volatile private var pipePausedForRebuild = false
 
+    /**
+     * 视频侧故障（如"容器里没有视频轨"）：父 2026-11-19 定 —— 报错立刻暂停声音，
+     * 并且解除暂停要同时满足"水位够"和"视频侧没故障"。
+     */
+    @Volatile private var videoPipeFault = false
+
     /** 正在等水位：起播与跳转共用；水量够就解除暂停（父 2026-11-19 定） */
     @Volatile private var waitingForWater = false
 
@@ -8591,7 +8597,7 @@ class MainActivity : ComponentActivity() {
                         runCatching { mpvBackend?.setPaused(true) }
                         Log.i(TAG, "停等|水位=${"%.1f".format(water)}s < ${low}s（先停住，别让它抖）")
                         hud("缓冲中…")
-                    } else if (waitingForWater && !seekWasUserPaused && water >= high) {
+                    } else if (waitingForWater && !seekWasUserPaused && water >= high && !videoPipeFault) {
                         /*
                          * 水位够 → 只解除暂停，不动静音（父 2026-11-19 定）。
                          * 解除后解码循环开始读、出帧；出帧且声音就绪才解除静音。
@@ -9209,7 +9215,10 @@ class MainActivity : ComponentActivity() {
                  * ERROR 带原文 + 屏上一行提示（否则现场是"转圈永远不结束"，那是另一种静默）。
                  */
                 val why = com.xxxx.emby_vr.player.VideoPipe.lastError
-                Log.e(TAG, "PIPE 起不来：$why（停在 STARTING，不解除暂停、不取消静音）")
+                videoPipeFault = true
+                waitingForWater = false
+                runCatching { mpvBackend?.setPaused(true) }
+                Log.e(TAG, "PIPE 起不来：$why → 立即暂停声音（没有画面就不许走）")
                 hud("画面解码起不来")
             }
         }
@@ -9243,6 +9252,7 @@ class MainActivity : ComponentActivity() {
                  */
                 waitingForWater = true
                 seekWasUserPaused = false
+                videoPipeFault = false
                 Log.i(TAG, "声音侧就绪 → 暂停并置等水位（水量够后由水位监视解除）")
                 Log.i(TAG, "起播基准：CAN_OPEN 基准=${"%.3f".format(basePos)}（请求=${"%.3f".format(startSec)}）")
                 /* 时长到手才谈得上水位：从这里开始才算"位置之后还剩几秒" */
@@ -9264,7 +9274,15 @@ class MainActivity : ComponentActivity() {
                     com.xxxx.emby_vr.player.SharedReadCache.beginBoot(lastPipeUrlForCache, basePos, pipeDurationSec)
                 }
                 startWaterMonitor()
-                launchPipeline(basePos)
+                /*
+                 * 先等中转把容器头与尾部索引取回，再启动自管解码器（父 2026-11-19 选方案 A）。
+                 * 不等的话解封装器读不到轨道表，会直接判"容器里没有视频轨"。
+                 */
+                Thread {
+                    val ok = com.xxxx.emby_vr.player.SharedReadCache.awaitHeadTail(8000)
+                    Log.i(TAG, "起播：等容器头尾索引 ${if (ok) "已就绪" else "超时 8s（照常启动，后面靠重试）"}")
+                    ui.post { launchPipeline(basePos) }
+                }.start()
             }
         }
     }
