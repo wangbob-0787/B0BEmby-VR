@@ -111,6 +111,16 @@ class AudioPipe {
 
     /** 位置日志节流 */
     private var lastPosLogMs = 0L
+
+    /**
+     * 放行时刻（设备真正开始出声的那一刻）。
+     *
+     * 位置用它推算，而不是用「已播帧数 ÷ 标称采样率」：
+     * 实测这台设备每秒只放 43640 个样本（标称 44100，差 1%），
+     * 按标称值算位置会每分钟慢半秒多，播四分钟就差 2.5 秒（2026-11-21 实测）。
+     */
+    @Volatile
+    private var startedAtMs = 0L
     private var frameBase = 0L
     private var latencyUs = 0L
 
@@ -262,6 +272,7 @@ class AudioPipe {
     fun startNow() {
         if (started.get()) return
         started.set(true)
+        startedAtMs = SystemClock.elapsedRealtime()
         paused.set(false)
         runCatching { track?.play() }
         Log.i(TAG, "音频放行：设备起动 + 开始写数据（位置中枢=${clock?.positionUs()?.div(1000L) ?: 0L}ms）")
@@ -553,7 +564,18 @@ class AudioPipe {
                     "|源=${clk.lastSource}",
             )
         }
-        val posUs = if (at.getTimestamp(ts)) {
+        val nowMs2 = SystemClock.elapsedRealtime()
+        val posUs = if (startedAtMs > 0L) {
+            /*
+             * 真实时间推算：设备一旦起动就按实时速率出声，
+             * 所以"放出来多少"= 现在离放行多久 − 还堆在设备缓冲里没放的那一段。
+             * 在途量用"已写 − 已播"直接量，不依赖标称采样率。
+             */
+            val played = (at.playbackHeadPosition - frameBase).coerceAtLeast(0)
+            val inFlightFrames = (writtenFrames - played).coerceAtLeast(0)
+            val inFlightUs = inFlightFrames * 1_000_000L / sampleRate
+            originUs + (nowMs2 - startedAtMs) * 1000L - inFlightUs
+        } else if (at.getTimestamp(ts)) {
             /*
              * 硬件时间戳直接给的是"这一帧什么时候真正被放出来"，加上到现在的流逝就是当前播放位置。
              * 这里**不能再减输出延迟**：减了等于把位置整体往前挪，画面就永远比声音早，
