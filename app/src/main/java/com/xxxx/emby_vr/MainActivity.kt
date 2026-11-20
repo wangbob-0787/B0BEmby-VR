@@ -9073,6 +9073,14 @@ class MainActivity : ComponentActivity() {
                 Log.w(TAG, "跳转被忽略：当前没有在播的自管内容")
             } else {
                 Log.i(TAG, "跳转：按 ${"%.2f".format(sec)}s 重建整条自管路（画面+声音+时钟）")
+                /*
+                 * 重建一开始就把时钟设到目标（父亲 2026-11-21 实测「进度条先退回老位置」）。
+                 *
+                 * 时钟原来要等画面首帧到位、白画面放行那一刻才重设（tryRelease 里 start），
+                 * 而重建要三四秒 —— 这几秒进度条读到的还是旧时钟，看起来就是"跳回老位置"。
+                 */
+                selfOriginSec = sec
+                playClock?.resetTo((sec * 1_000_000.0).toLong())
                 pipeBootInFlight.set(false)
                 startSelfVideoPipe(jumpUrl, sec, jumpSurface, m, "跳转重建")
             }
