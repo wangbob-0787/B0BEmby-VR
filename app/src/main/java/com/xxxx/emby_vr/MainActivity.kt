@@ -5724,17 +5724,9 @@ class MainActivity : ComponentActivity() {
      * 标准 50s / 较大 90s / 最大 180s；实际字节数由解码器按片源码率折算并封顶 256MB。
      */
     private fun pipeMemWindowSec(): Int {
-        /*
-         * 暂时关闭（2026-11-21 00:40 实测）。
-         *
-         * 内存窗走的是系统的 MediaDataSource 接口，它要求能任意位置随机读
-         * （MKV/MP4 的索引常在文件尾）；滑动窗读不到尾部，解封装就判定「容器里没有视频轨」，
-         * 起播直接停住 —— 日志原文：`容器里没有视频轨` / `PIPE 起不来`。
-         *
-         * 缓冲改到下一层做：解出来的数据包先排队（mpv/ffplay 的做法），
-         * 那一层不依赖随机访问。这里先返回 0，等于直读。
-         */
-        return 0
+        /* 缓冲秒数取档位；字节数由解码器按片源码率折算 */
+        val preset = com.xxxx.emby_vr.panel.BUFFER_PRESETS[bufferPresetIndex]
+        return (preset.second / 1000).coerceIn(5, 180)
     }
 
     private fun bufferMaxMs(): Int = com.xxxx.emby_vr.panel.BUFFER_PRESETS[bufferPresetIndex].third
