@@ -746,12 +746,21 @@ class VideoPipe {
             forcedRender++
             return finish(true)
         }
+        /*
+         * 迟到但不严重：**不丢，直接上屏**。
+         *
+         * 这是 `.15` 原型验过的做法（`sim/p5decode_player.py`：382 帧、丢 0 帧）：
+         * 落后就靠"这一帧立刻显示、下一帧马上接着来"把差距压回去，画面内容一帧不少。
+         * 原来的判据是迟到 30 毫秒就丢 —— 解码抖动两三帧就把画面跳过一小段，
+         * 观众看到的是"突然丢帧"，之后声音听起来就一直滞后（实测 2026-11-20）。
+         * 只有迟到超过 0.5 秒（真追不回来，见上面的分支）才值得丢。
+         */
         if (earlyUs < MIN_EARLY_US_LATE_THRESHOLD) {
             droppedStale++
-            if (droppedStale % 25 == 1) {
-                Log.w(TAG, "丢掉迟到帧|晚 ${"%.0f".format(-earlyUs / 1000.0)}ms（累计 $droppedStale 帧）")
+            if (droppedStale % 50 == 1) {
+                Log.i(TAG, "迟到 ${"%.0f".format(-earlyUs / 1000.0)}ms → 直接上屏追上（不丢帧，累计 $droppedStale 次）")
             }
-            return finish(false)
+            return finish(true)
         }
         if (earlyUs > 0L) {
             /* 来早了：等到该显示的时刻，最多等一帧 */
