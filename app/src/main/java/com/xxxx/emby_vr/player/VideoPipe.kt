@@ -536,9 +536,9 @@ class VideoPipe {
                 }
                 if (size >= 0) break
                 /* 装不下就按帧大小扩缓冲，重读一次 */
-                val need = ex.sampleSize
-                if (need > bb.capacity()) {
-                    arr = ByteArray(need + 1024 * 1024)
+                val need = ex.sampleSize          /* 长整型：接口给的是 Long */
+                if (need > bb.capacity().toLong()) {
+                    arr = ByteArray((need + 1024L * 1024L).toInt())
                     bb = java.nio.ByteBuffer.wrap(arr)
                     bb.clear()
                     Log.i(TAG, "读缓冲扩到 ${arr.size / 1048576}MB（这一帧需要 $need 字节）")
