@@ -1039,6 +1039,8 @@ class VideoPipe {
              */
             audioStartSec = targetSec
             originPts = -1.0
+            /* 让新位置的首帧重新上报一次，声音才能跟着换起点（否则热跳后声音不跟） */
+            originReported = false
             appliedOffset = Double.NaN
             firstFrameShown = false
             Log.i(TAG, "解码器内跳转完成 → ${"%.2f".format(targetSec)}s（未重建）")
