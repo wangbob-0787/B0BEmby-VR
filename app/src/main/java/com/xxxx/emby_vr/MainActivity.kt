@@ -9119,6 +9119,13 @@ class MainActivity : ComponentActivity() {
                 onFirstFrame = {
                     selfFirstShown = true
                     /*
+                     * 自管路的首帧上屏 = 收黑幕 / 转圈 / 片名的时机（父亲 2026-11-21 提的"黑屏没收掉"）。
+                     *
+                     * 收幕那条通道原来只认播放器首帧（ExoPlayer / mpv 的回调），自管路没有那个回调，
+                     * 于是画面其实早就上屏了，黑幕却一直挂着，靠 20 秒兜底才收 —— 看起来就是"十几秒后才出画"。
+                     */
+                    ui.post { runCatching { tryRevealWaitingFrame() } }
+                    /*
                      * 首帧**真正上屏**这一刻才允许放声音（父亲 2026-11-21 追问"为什么一直声音先出"）。
                      *
                      * 之前放行挂在"画面首帧解出来"上：解出来到显示还要一两帧渲染延迟，
