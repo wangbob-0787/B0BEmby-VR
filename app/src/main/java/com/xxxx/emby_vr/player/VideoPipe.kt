@@ -401,7 +401,7 @@ class VideoPipe {
             ex.selectTrack(trackIndex)
             /* 拿到码率后把窗扩到"秒 × 码率"（读不到码率就按 64MB 兜底） */
             memSrc?.let { src ->
-                val bitrate = runCatching { format?.getInt(MediaFormat.KEY_BIT_RATE) ?: 0 }.getOrDefault(0)
+                val bitrate = runCatching { format?.getInteger(MediaFormat.KEY_BIT_RATE) ?: 0 }.getOrDefault(0)
                 val bytes = budgetBytes(memWindowSec, bitrate)
                 Log.i(TAG, "内存预算：${memWindowSec}s × ${bitrate / 1000}kbps → ${bytes / 1048576}MB")
                 src.configureBudget(bytes)

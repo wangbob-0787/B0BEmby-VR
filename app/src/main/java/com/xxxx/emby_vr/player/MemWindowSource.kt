@@ -25,6 +25,10 @@ class MemWindowSource(
     private val windowBytes: Int,
 ) : MediaDataSource() {
 
+    companion object {
+        private const val TAG = "MemWindowSource"
+    }
+
     private val lock = Any()
     private var buf = ByteArray(windowBytes)
     /** 窗内起始的媒体偏移 */
