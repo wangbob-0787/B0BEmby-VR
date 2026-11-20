@@ -4474,7 +4474,23 @@ class MainActivity : ComponentActivity() {
                             com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionProfile?.contains("50") == true
                         val useSelfPipe = pipeOn && isP5Source
                         Log.i(TAG, "起播分支判定：开关=$pipeOn 本片P5=$isP5Source 自管解码=$useSelfPipe")
-                        if (useSelfPipe) {
+                        /*
+                         * 服务端转码（父 2026-11-20 定）：P5 片子的原始地址交给 .15 的转码服务，
+                         * 由它做解码 + 杜比还原 + 编码，客户端只当普通 HLS 播。
+                         * 好处是客户端不碰 P5 的还原，颜色与音画同步都由服务端保证。
+                         */
+                        val tcOn = com.xxxx.emby_vr.vr.VrTuning.serverTc == 1
+                        if (tcOn && isP5Source) {
+                            val startWholeSec = (startMs / 1000).toInt().coerceAtLeast(0)
+                            val tcUrl = com.xxxx.emby_vr.vr.VrTuning.serverTcUrl +
+                                "/play.m3u8?src=" + java.net.URLEncoder.encode(directUrl, "UTF-8") +
+                                "&start=" + startWholeSec
+                            Log.i(
+                                TAG,
+                                "服务端转码起播：起点=${startWholeSec}s 客户端走普通 HLS（不启用 P5 自管解码）",
+                            )
+                            m.play(tcUrl, 0.0, source = "服务端转码")
+                        } else if (useSelfPipe) {
                             startSelfVideoPipe(directUrl, startMs / 1000.0, surface, m)
                         } else {
                             m.play(directUrl, startMs / 1000.0, source = "内核起播")
