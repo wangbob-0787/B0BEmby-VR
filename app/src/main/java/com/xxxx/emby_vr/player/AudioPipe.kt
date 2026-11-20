@@ -117,6 +117,14 @@ class AudioPipe {
     /** 首块数据是否已经处理过（补静音 / 裁头只做一次） */
     private var firstBlockHandled = false
 
+    /**
+     * 首块裁剪要跨块累计。
+     *
+     * 续播/跳转时，音频首帧可能比画面起点早几秒到十几秒，折成字节远大于一次解码输出的一块；
+     * 只在第一块上裁，剩下的会原样播出来，听感就是"声音早十几秒"（2026-11-21 实测）。
+     */
+    private var pendingSkipBytes = 0L
+
     /** 跳转后重新对齐首块 */
     private var seekFlushCount = 0
 
@@ -263,7 +271,11 @@ class AudioPipe {
              * "起动"和"开始写"发生在同一刻 —— 那一该由上层的放行来触发（见 resume）。
              */
             started.set(autoPlay)
-            if (autoPlay) at.play()
+            if (autoPlay) {
+                /* 位置推算要用它：不设的话位置会整体偏大（2026-11-21） */
+                startedAtMs = SystemClock.elapsedRealtime()
+                at.play()
+            }
             frameBase = runCatching { at.playbackHeadPosition.toLong() }.getOrDefault(0L)
 
             running.set(true)
@@ -538,13 +550,18 @@ class AudioPipe {
                     originUs = (seekTarget * US).toLong()
                     writtenFrames = 0L
                     firstBlockHandled = false
+                    pendingSkipBytes = 0L
                     seekFlushCount++
                     /* flush 之后设备帧计数不一定归零（各机型行为不同），基准取当下值 */
                     frameBase = runCatching { at.playbackHeadPosition.toLong() }.getOrDefault(0L)
                     inputDone = false
                     eos = false
                     clock?.resetTo(originUs)
-                    if (!paused.get()) at.play()
+                    pendingSkipBytes = 0L
+                    if (!paused.get()) {
+                        startedAtMs = SystemClock.elapsedRealtime()
+                        at.play()
+                    }
                     Log.i(TAG, "音频跳转：目标=${"%.2f".format(seekTarget)}s 首帧=${"%.3f".format(audioOriginUs / US)}s")
                 }
 
@@ -634,14 +651,22 @@ class AudioPipe {
                 Log.i(TAG, "音频首帧比画面晚 ${"%.0f".format(deltaUs / 1000.0)}ms → 前补 $frames 帧静音")
             } else if (deltaUs < -20_000L) {
                 val skipFrames = (-deltaUs * sampleRate / 1_000_000L).toInt()
-                val skipBytes = (skipFrames * bytesPerFrame).coerceAtMost(bytes)
-                offsetBytes = skipBytes
-                bytes -= skipBytes
-                Log.i(TAG, "音频首帧比画面早 ${"%.0f".format(-deltaUs / 1000.0)}ms → 裁掉开头 $skipFrames 帧")
+                pendingSkipBytes = skipFrames.toLong() * bytesPerFrame
+                Log.i(TAG, "音频首帧比画面早 ${"%.0f".format(-deltaUs / 1000.0)}ms → 往后累计裁掉 $skipFrames 帧")
             }
         }
 
+        val epochAtWrite = seekFlushCount
         while (bytes > 0 && running.get()) {
+            /* 写到一半遇到新的跳转：这块是旧位置的数据，整块丢掉 */
+            if (seekFlushCount != epochAtWrite) return
+            if (pendingSkipBytes > 0) {
+                val drop = minOf(pendingSkipBytes, bytes.toLong()).toInt()
+                offsetBytes += drop
+                bytes -= drop
+                pendingSkipBytes -= drop
+                if (bytes <= 0) return
+            }
             buf.position(info.offset + offsetBytes)
             buf.limit(info.offset + offsetBytes + bytes)
             val n = at.write(buf, bytes, AudioTrack.WRITE_BLOCKING)
