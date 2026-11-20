@@ -146,6 +146,11 @@ class VideoPipe {
     /** 首帧出来时回调一次（外面在这里放开声音） */
     @Volatile private var onFirstFrame: (() -> Unit)? = null
 
+    private var onOriginSec: ((Double) -> Unit)? = null
+
+    /** 起点是否由画面首帧决定（P5 全自管路为 true） */
+    private var originFromPicture = false
+
     /**
      * 跳转后**第一个真正上屏的帧**回调（参数 = 该帧的播放位置，秒）。
      *
@@ -192,6 +197,9 @@ class VideoPipe {
      */
     /** 本次起播的锚点位置（秒）：标定与预卷判定都对着它，pump 里要用所以存成字段 */
     @Volatile private var audioStartSec = 0.0
+
+    /** 首个真实帧的起点只报一次（跳转会重新标定，但报给音频只在起播时有意义） */
+    private var originReported = false
     private var originPts = -1.0
     private var appliedOffset = Double.NaN
     /** 预卷帧（pts < audioStart，不许上屏）丢弃计数，写日志用 */
@@ -251,6 +259,21 @@ class VideoPipe {
         /** 断流通知：true=读不到数据（请把声音也停住），false=恢复 */
         onStall: ((Boolean) -> Unit)? = null,
         onFirstFrame: (() -> Unit)? = null,
+        /**
+         * 首个真实视频帧的内容时间（秒）。
+         *
+         * 音频要按它对齐：音频首帧晚于这个时刻就补等长静音，早才裁 —— 时间轴只有这一个起点，
+         * 所以必须先由画面探测出来再起音频（原型 `sim/p5render.c` 的「预探测首个视频帧」）。
+         */
+        onOriginSec: ((Double) -> Unit)? = null,
+        /**
+         * 时间轴起点由画面首帧决定（P5 全自管路）。
+         *
+         * 内核在场时起点取"内核报的起播位置"，画面靠 offset 去追它；声音也归我们自己之后，
+         * 起点只能有一个来源 —— 画面首个真实帧。传 true 时 offset 恒为 0，帧 pts 直接与
+         * 音频时钟比较，不再有两套基准（两套基准就是忽快忽慢的来源）。
+         */
+        originFromPicture: Boolean = false,
         onDoviParams: (() -> Unit)? = null,
         onEos: (() -> Unit)? = null,
         onNeedRestart: ((Double) -> Unit)? = null,
@@ -282,6 +305,8 @@ class VideoPipe {
         this.onStall = onStall
         stopping = false
         this.onFirstFrame = onFirstFrame
+        this.onOriginSec = onOriginSec
+        this.originFromPicture = originFromPicture
         this.onDoviParams = onDoviParams
         this.onEos = onEos
         this.onNeedRestart = onNeedRestart
@@ -316,6 +341,7 @@ class VideoPipe {
         runCatching { doviPath?.let { java.io.File(it).delete() } }
         audioStartSec = startSec
         originPts = -1.0
+        originReported = false
         appliedOffset = Double.NaN
         prerollDropped = 0
         desyncSinceMs = 0L
@@ -602,6 +628,12 @@ class VideoPipe {
         }
         if (originPts < 0.0) {
             originPts = ptsRaw
+            /* 起点由画面定：声音侧本来就要按这个时刻对齐，offset 因此恒为 0 */
+            if (originFromPicture) audioStartSec = ptsRaw
+            if (!originReported) {
+                originReported = true
+                runCatching { onOriginSec?.invoke(ptsRaw) }
+            }
             /*
              * 起播只要"两边从同一个位置开始"，原则是**声音只能往前，不能往回**。
              * 用当前真实主时钟（不是请求位置）跟首帧比：

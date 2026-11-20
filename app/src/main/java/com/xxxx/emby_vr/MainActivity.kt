@@ -4475,22 +4475,11 @@ class MainActivity : ComponentActivity() {
                         val useSelfPipe = pipeOn && isP5Source
                         Log.i(TAG, "起播分支判定：开关=$pipeOn 本片P5=$isP5Source 自管解码=$useSelfPipe")
                         /*
-                         * 服务端转码（父 2026-11-20 定）：P5 片子的原始地址交给 .15 的转码服务，
-                         * 由它做解码 + 杜比还原 + 编码，客户端只当普通 HLS 播。
-                         * 好处是客户端不碰 P5 的还原，颜色与音画同步都由服务端保证。
+                         * 只有一条路（父亲 2026-11-20 定）：音视频全部客户端自管。
+                         * 服务端转码那条路不再保留 —— 两套解码器同时活着会互相抢资源，
+                         * 而且它把音画同步交给外部服务，客户端这边就再也量不准。
                          */
-                        val tcOn = com.xxxx.emby_vr.vr.VrTuning.serverTc == 1
-                        if (tcOn && isP5Source) {
-                            val startWholeSec = (startMs / 1000).toInt().coerceAtLeast(0)
-                            val tcUrl = com.xxxx.emby_vr.vr.VrTuning.serverTcUrl +
-                                "/play.m3u8?src=" + java.net.URLEncoder.encode(directUrl, "UTF-8") +
-                                "&start=" + startWholeSec
-                            Log.i(
-                                TAG,
-                                "服务端转码起播：起点=${startWholeSec}s 客户端走普通 HLS（不启用 P5 自管解码）",
-                            )
-                            m.play(tcUrl, 0.0, source = "服务端转码")
-                        } else if (useSelfPipe) {
+                        if (useSelfPipe) {
                             startSelfVideoPipe(directUrl, startMs / 1000.0, surface, m)
                         } else {
                             m.play(directUrl, startMs / 1000.0, source = "内核起播")
@@ -6985,6 +6974,12 @@ class MainActivity : ComponentActivity() {
             Log.w(TAG, "暂停/继续：当前没有可操作的播放引擎")
             return
         }
+        /* 自管音频跟着同一拍停/走：只停画面不停声音，等于没暂停 */
+        val playingNow = ctl.isPlaying()
+        if (selfAudioOn) {
+            if (playingNow) audioPipe?.resume() else audioPipe?.pause()
+            Log.i(TAG, "自管音频跟着" + (if (playingNow) "继续" else "暂停"))
+        }
         /*
          * 弹幕跟着暂停/继续。
          *
@@ -7290,6 +7285,11 @@ class MainActivity : ComponentActivity() {
         }
         mpvBackend = null
         lastStopWaitedMs = android.os.SystemClock.elapsedRealtime() - stopT0
+        /* 自管音频先收：它占着音频设备，留着会让下一部片一开播就有人声 */
+        audioPipe?.let { runCatching { it.stop() } }
+        audioPipe = null
+        playClock = null
+        selfAudioOn = false
         // 自管解码同样要收：它在往同一张画面纹理里送帧，留着会和下一次起播抢画面
         videoPipe?.let {
             runCatching { it.stop() }
@@ -8460,6 +8460,18 @@ class MainActivity : ComponentActivity() {
      */
     private var videoPipe: com.xxxx.emby_vr.player.VideoPipe? = null
 
+    /** P5 自管音频：声音由我们自己解、自己送设备，内核只当控制载体（且静音） */
+    @Volatile private var selfAudioOn = false
+    private var audioPipe: com.xxxx.emby_vr.player.AudioPipe? = null
+
+    /**
+     * 播放时钟（P5 自管路的位置来源）。
+     *
+     * 每部片一个，跳转/失步引起的重建沿用同一个实例 —— 重建若另起一个，位置从零开始，
+     * 画面会立刻跳回片头。
+     */
+    private var playClock: com.xxxx.emby_vr.player.PlaybackClock? = null
+
     /**
      * 自管解码起播时，声音要等画面首帧。
      *
@@ -8499,7 +8511,17 @@ class MainActivity : ComponentActivity() {
          * 水位停等发生时内核早就在播了；若照旧卡这道门，恢复请求会被一律拒掉，
          * 现场就是"灰色缓冲已经回来了，但画面声音一直停着"（2026-11-18 后退实测）。
          */
-        if (kind != "WATER" && !com.xxxx.emby_vr.player.MpvBackend.audioReady()) {
+        /*
+         * 自管音频模式下，"声音侧就绪"= 第一块 PCM 已经写进设备。
+         * 这时内核只是控制载体、静音跑着，它的就绪状态不再代表能不能放行。
+         */
+        if (kind != "WATER" && selfAudioOn) {
+            val ap = audioPipe
+            if (ap == null || ap.firstPcmAtMs == 0L) {
+                Log.w(TAG, "放行被拒：自管音频未出声|kind=$kind|source=$source|轨=${ap?.trackDesc}")
+                return false
+            }
+        } else if (kind != "WATER" && !com.xxxx.emby_vr.player.MpvBackend.audioReady()) {
             Log.w(
                 TAG,
                 "放行被拒：声音侧未就绪（${com.xxxx.emby_vr.player.MpvBackend.canOpenBlocker()}）" +
@@ -8520,7 +8542,8 @@ class MainActivity : ComponentActivity() {
             runCatching { mpvBackend?.setPaused(false) }
             pipePausedForRebuild = false
         }
-        runCatching { mpvBackend?.setMute(false) }
+        /* 自管音频时内核必须一直静音：解除静音就是双声 */
+        if (!selfAudioOn) runCatching { mpvBackend?.setMute(false) }
         pipeReleasedOnce.set(true)
         selfPipeReleased = true
         selfPipePhase = if (kind == "BOOT") "PLAYING" else "PLAYING(重建)"
@@ -8911,6 +8934,8 @@ class MainActivity : ComponentActivity() {
          * 只在**换了内容**时清（同一地址的重建不清），并且放后台执行——
          * 删文件是磁盘操作，放界面线程上会把控制条和海报墙一起卡住（2026-11-18 实测）。
          */
+        selfAudioOn = true
+        if (playClock == null) playClock = com.xxxx.emby_vr.player.PlaybackClock()
         if (rawUrl != lastPipeUrlForCache) {
             lastPipeUrlForCache = rawUrl
             val why = "起播：$source"
@@ -8985,6 +9010,13 @@ class MainActivity : ComponentActivity() {
         ctl.pipeSeek = { ms ->
             val sec = (ms / 1000.0).coerceAtLeast(0.0)
             pipeSeekT0 = android.os.SystemClock.elapsedRealtime()
+            /*
+             * 跳转三样一起动，顺序固定：时钟 → 音频 → 画面。
+             * 时钟先落到目标，画面才不会按旧位置判自己迟到、连丢一串帧；
+             * 音频随后换起点；画面最后重建，它起播时按新时钟对齐。
+             */
+            playClock?.resetTo((sec * 1_000_000.0).toLong())
+            audioPipe?.seekTo(sec)
             restartVideoPipeAt(sec)
         }
         com.xxxx.emby_vr.player.MpvBackend.setOptionRuntime("vid", "no")
@@ -9075,7 +9107,14 @@ class MainActivity : ComponentActivity() {
             /* 唯一闸门（I5）：起播场景 */
             released = releasePlayback("BOOT", "起播(CAN_OPEN+READY+水位)")
             if (released) {
-                Log.i(TAG, "放行：解除暂停 + 放行首帧 + mute=no（同一拍，READY=${if (pipeReady) "齐" else "已齐"}）")
+                Log.i(TAG, "放行：解除暂停 + 放行首帧（同一拍，READY=${if (pipeReady) "齐" else "已齐"}）")
+            } else if (tries < 16) {
+                /*
+                 * 被拒的唯一原因：自管音频还没写出第一块（它要等画面首帧之后才起）。
+                 * 这里必须重试 —— 不重试就永远停在"画面握着、声音没来"，现场是黑屏。
+                 */
+                ui.postDelayed({ releaseWhenWaterReady(tries + 1) }, 250)
+                return
             }
         }
 
@@ -9083,10 +9122,9 @@ class MainActivity : ComponentActivity() {
             Log.i(TAG, "画面管道启动：地址=${if (url.startsWith("http://127.0.0.1")) "本机中转" else hostOf(url)} 起点=${"%.1f".format(audioStart)}s")
             val ok = pipe.start(
                 url, emptyMap(), surface,
-                /* 画面用的时钟：最后读数 + 墙钟推算（不判断"可用不可用"） */
-                { m.positionExtrapolated() },
-                /* 这个参数已不再参与判断，保留形参避免大改；恒为 true */
-                { true },
+                /* 画面用的时钟：自管音频报上来的位置（音频停走时它内部退回墙钟） */
+                { playClock?.positionSec() ?: 0.0 },
+                { playClock?.isRunning() == true },
                 audioStart, doviPath,
                 /* 门 = 还没放行：关着时解码线程整轮跳过，不取不喂 */
                 holdGate = { selfPipeWaitingFirstFrame.get() },
@@ -9094,7 +9132,7 @@ class MainActivity : ComponentActivity() {
                 clockProbe = { m.clockAdvanceProbe() },
                 clockAgeProvider = { m.clockSampleAgeMs() },
                 /* 重启目标只取真实读数（外推可以判帧，不许命令播放器跳） */
-                clockReal = { m.positionSec() },
+                clockReal = { playClock?.positionSec() ?: 0.0 },
                 /*
                  * 起播基准对不齐：画面实际首帧比请求位置晚（seek 落在关键帧上），
                  * 请内核把声音也跳到那个位置 —— 一次性的起播对齐，不是播放中乱跳。
@@ -9116,6 +9154,54 @@ class MainActivity : ComponentActivity() {
                     val d = if (releaseAtMs > 0) now - releaseAtMs else -1
                     Log.i(TAG, "首帧上屏（放行→上屏 ${d}ms）")
                 },
+                /*
+                 * 画面首帧的真实时间到手 → 起音频（原型第 1 条）。
+                 *
+                 * 顺序不能反：先探测画面首帧再开音频，首帧出现之前的音频包才有地方放；
+                 * 反过来做会把那半秒当成"早于起点"裁掉，声音开头少一截且补不回来。
+                 */
+                onOriginSec = { originSec ->
+                    /*
+                     * 起音频要开一条网盘连接（几百毫秒到几秒），既不能占主线程也不能占
+                     * 解码线程：占主线程卡界面，占解码线程卡画面。所以放独立线程，结果回主线程。
+                     */
+                    Thread {
+                        if (selfPipeUrl != url) {
+                            Log.w(TAG, "画面起点到达时已换片，丢弃这次音频起播")
+                            return@Thread
+                        }
+                        val clk = playClock
+                        if (clk == null) return@Thread
+                        val ap = com.xxxx.emby_vr.player.AudioPipe()
+                        val started = ap.start(
+                            url, emptyMap(), startSec = audioStart, originSec = originSec, clock = clk,
+                        )
+                        Log.i(
+                            TAG,
+                            "音频自管起播：画面首帧=${"%.3f".format(originSec)}s 结果=$started 轨=${ap.trackDesc}" +
+                                (ap.lastError?.let { " 错误=$it" } ?: ""),
+                        )
+                        ui.post {
+                            if (started) {
+                                audioPipe = ap
+                                /* 时钟等音频真的出声才开始：先走时钟会让画面以为自己迟到 */
+                                clk.start((originSec * 1_000_000.0).toLong())
+                            } else {
+                                /*
+                                 * 解不了（DTS/TrueHD 这类）：本片退回内核出声，不能没声音。
+                                 * 时钟仍要起来（按墙钟走）：画面靠它判断该显示哪一帧，
+                                 * 停在 0 会让每一帧都被判成"来早了"，画面以龟速往前挪。
+                                 */
+                                clk.start((originSec * 1_000_000.0).toLong())
+                                selfAudioOn = false
+                                Log.w(TAG, "音频自管起不来 → 本片退回内核出声")
+                                runCatching { m.setMute(false) }
+                            }
+                        }
+                    }.start()
+                },
+                /* 起点由画面首帧定：offset 恒为 0，帧 pts 直接与音频时钟比 */
+                originFromPicture = true,
                 /*
                  * 失步重启（图 §5）：**必须投主控线程**。这个回调来自解码线程，
                  * 在解码线程上直接调 start() 会让它 join 自己（start 第一行就是 stop），

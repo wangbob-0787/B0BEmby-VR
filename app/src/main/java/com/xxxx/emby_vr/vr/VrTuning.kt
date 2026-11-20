@@ -273,12 +273,6 @@ object VrTuning {
      * 共享读缓存（应用内本机中转）：1=开（默认），0=退回直连。
      * 存在理由：内核与自管解码各读一份同一文件会互相争抢，实测导致起播十几秒、播放中读出停顿。
      */
-    /** 服务端转码开关（父 2026-11-20 定）：P5 片子把原始地址交给 .15，客户端只播 HLS。 */
-    @Volatile var serverTc: Int = 0
-
-    /** 服务端转码服务地址 */
-    @Volatile var serverTcUrl: String = "http://192.168.150.15:8901"
-
     @Volatile var relay: Int = 1
 
     /**
@@ -818,20 +812,6 @@ object VrTuning {
                 if (v != relayHoldKbps) { relayHoldKbps = v; applied += "吊着速率=${v}KB/s" }
             }
         }
-        raw["server_tc"]?.toIntOrNull()?.let {
-            if (it != serverTc) {
-                serverTc = it
-                applied += "服务端转码=$it"
-            }
-        }
-
-        raw["server_tc_url"]?.takeIf { it.isNotBlank() }?.let {
-            if (it != serverTcUrl) {
-                serverTcUrl = it
-                applied += "服务端转码地址=$it"
-            }
-        }
-
         raw["relay"]?.toIntOrNull()?.let {
             val v = if (it == 1) 1 else 0
             if (v != relay) {
