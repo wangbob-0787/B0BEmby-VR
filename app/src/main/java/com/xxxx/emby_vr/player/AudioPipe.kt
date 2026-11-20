@@ -152,8 +152,13 @@ class AudioPipe {
          * 放行之前必须为 false：声音先响、画面还握着三帧预热，就是"先说话后出人"。
          */
         autoPlay: Boolean = true,
-        /** 内存窗口大小（MB，0 = 直读）。与画面用同一档位，两路各一个窗。 */
-        memWindowMb: Int = 0,
+        /**
+         * 内存缓冲要攒多少秒（0 = 直读）。
+         *
+         * 音频码率只有一百多 kbps，按秒折算出来的预算远小于画面，所以这里固定给 32MB ——
+         * 足够几分钟音频，再大只是白占内存。档位只影响画面那一路的预算。
+         */
+        memWindowSec: Int = 0,
     ): Boolean {
         stop()
         lastError = null
@@ -165,9 +170,10 @@ class AudioPipe {
 
         val ex = MediaExtractor()
         return try {
-            if (memWindowMb > 0 && headers.isEmpty()) {
-                Log.i(TAG, "音频数据源：内存窗 ${memWindowMb}MB")
-                ex.setDataSource(MemWindowSource(url, memWindowMb * 1024 * 1024))
+            if (memWindowSec > 0 && headers.isEmpty()) {
+                val bytes = 32 * 1024 * 1024
+                Log.i(TAG, "音频数据源：内存窗 ${bytes / 1048576}MB（${memWindowSec}s 档）")
+                ex.setDataSource(MemWindowSource(url, bytes))
             } else if (headers.isEmpty()) {
                 ex.setDataSource(url)
             } else {

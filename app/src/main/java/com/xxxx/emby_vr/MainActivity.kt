@@ -5719,15 +5719,13 @@ class MainActivity : ComponentActivity() {
     private fun bufferMinMs(): Int = com.xxxx.emby_vr.panel.BUFFER_PRESETS[bufferPresetIndex].second
 
     /**
-     * 内存缓冲大小（MB），跟控制条的缓冲档位一一对应。
+     * 内存缓冲要攒多少秒，直接取控制条缓冲档位的"最多攒多久"。
      *
-     * 档位是给用户"网速差就选大档多等等"用的；解码器这边就按档位给它一条连续的内存窗，
-     * 网络抖动落在窗里就不会传到画面与声音上。
+     * 标准 50s / 较大 90s / 最大 180s；实际字节数由解码器按片源码率折算并封顶 256MB。
      */
-    private fun pipeMemWindowMb(): Int = when (bufferPresetIndex) {
-        0 -> 64
-        1 -> 128
-        else -> 256
+    private fun pipeMemWindowSec(): Int {
+        val preset = com.xxxx.emby_vr.panel.BUFFER_PRESETS[bufferPresetIndex]
+        return (preset.second / 1000).coerceIn(5, 180)
     }
 
     private fun bufferMaxMs(): Int = com.xxxx.emby_vr.panel.BUFFER_PRESETS[bufferPresetIndex].third
@@ -9142,7 +9140,7 @@ class MainActivity : ComponentActivity() {
                         val started = ap.start(
                             url, emptyMap(), startSec = audioStart, originSec = originSec,
                             clock = clk, autoPlay = false,
-                            memWindowMb = pipeMemWindowMb(),
+                            memWindowSec = pipeMemWindowSec(),
                         )
                         Log.i(
                             TAG,
@@ -9170,7 +9168,7 @@ class MainActivity : ComponentActivity() {
                 },
                 /* 起点由画面首帧定：offset 恒为 0，帧 pts 直接与音频时钟比 */
                 originFromPicture = true,
-                memWindowMb = pipeMemWindowMb(),
+                memWindowSec = pipeMemWindowSec(),
                 onNeedRestart = { target ->
                     /* 回调来自解码线程：重建必须投主控线程，否则 start() 第一行会 join 自己 */
                     ui.post {

@@ -284,12 +284,12 @@ class VideoPipe {
          */
         originFromPicture: Boolean = false,
         /**
-         * 内存窗口大小（MB，0 = 不用）。
+         * 内存缓冲要攒多少秒（0 = 不用）。
          *
-         * 为什么要它：没有缓冲时网盘抖一下就直接打到解码器上，画面卡住、声音还在走。
-         * 缓冲档位由控制条的"标准/较大/最大"决定，这里只接收算好的兆数。
+         * 预算按"秒 × 片子自己的码率"折算成字节，所以 4K 与 1080p 自动适配；
+         * 秒数取控制条的缓冲档位。做法照 mpv/ffplay：读线程只关心"播放点之后还剩几秒"。
          */
-        memWindowMb: Int = 0,
+        memWindowSec: Int = 0,
         onDoviParams: (() -> Unit)? = null,
         onEos: (() -> Unit)? = null,
         onNeedRestart: ((Double) -> Unit)? = null,
@@ -369,9 +369,12 @@ class VideoPipe {
              * 播放因此发涩（父亲 2026-11-18 定：给自管解码器配内存缓冲）。
              * 内存窗只对中转地址生效；其它地址（网页流等）仍按原样直读。
              */
-            if (memWindowMb > 0 && headers.isEmpty()) {
-                Log.i(TAG, "解码数据源：内存窗 ${memWindowMb}MB（后台连续读，解码器只从内存取）")
-                ex.setDataSource(MemWindowSource(url, memWindowMb * 1024 * 1024))
+            var memSrc: MemWindowSource? = null
+            if (memWindowSec > 0 && headers.isEmpty()) {
+                /* 先给 8MB 把头读出来，拿到码率之后再按预算扩容 */
+                memSrc = MemWindowSource(url, 8 * 1024 * 1024)
+                Log.i(TAG, "解码数据源：内存窗（先 8MB，按码率扩到 ${memWindowSec}s 的预算）")
+                ex.setDataSource(memSrc)
             } else if (headers.isEmpty()) {
                 ex.setDataSource(url)
             } else {
@@ -396,6 +399,13 @@ class VideoPipe {
                 return false
             }
             ex.selectTrack(trackIndex)
+            /* 拿到码率后把窗扩到"秒 × 码率"（读不到码率就按 64MB 兜底） */
+            memSrc?.let { src ->
+                val bitrate = runCatching { format?.getInt(MediaFormat.KEY_BIT_RATE) ?: 0 }.getOrDefault(0)
+                val bytes = budgetBytes(memWindowSec, bitrate)
+                Log.i(TAG, "内存预算：${memWindowSec}s × ${bitrate / 1000}kbps → ${bytes / 1048576}MB")
+                src.configureBudget(bytes)
+            }
             durationSec = runCatching {
                 val us = format?.getLong(MediaFormat.KEY_DURATION) ?: 0L
                 if (us > 0L) us / 1_000_000.0 else 0.0
@@ -840,6 +850,18 @@ class VideoPipe {
      * 2026-11-21 实测这个偏移写成了负数（`pts - 0.05` 等于提前 50ms 上屏），叠加解码缓冲后
      * 画面净超前约 80ms，主观就是"声音一直滞后"。
      */
+    /**
+     * 内存预算（字节）= 秒数 × 码率 / 8，夹在 32MB ~ 256MB 之间。
+     *
+     * 上限 256MB 是给 PICO 8G 内存留的余量：长秒数档位配高码率片子算出来可能超过 1GB，
+     * 照抄 mpv 的默认值不现实，必须给设备兜一个顶。
+     */
+    private fun budgetBytes(sec: Int, bitrate: Int): Int {
+        val bps = if (bitrate > 0) bitrate.toLong() else 64L * 1024 * 1024 / 8 * 8 / 8
+        val raw = sec.toLong() * bps / 8L
+        return raw.coerceIn(32L * 1024 * 1024, 256L * 1024 * 1024).toInt()
+    }
+
     private val FRAME_DELAY_SEC = 0.05
     private val MIN_EARLY_US_LATE_THRESHOLD = -30_000L
     private val MIN_EARLY_US_VERY_LATE_THRESHOLD = -500_000L

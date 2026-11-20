@@ -113,6 +113,23 @@ class MemWindowSource(
         }
     }
 
+    /**
+     * 按预算扩容（字节）。
+     *
+     * 打开文件时还不知道码率，只能给小窗先把头读出来；拿到码率之后按"秒数 × 码率"算出预算，
+     * 在这里把窗扩到预算大小 —— 已读的数据原地保留，读线程接着往前填。
+     * 只扩不缩：缩窗要丢数据，而预算只会在开播时算一次。
+     */
+    fun configureBudget(bytes: Int) {
+        synchronized(lock) {
+            if (closed || bytes <= buf.size) return
+            val nb = ByteArray(bytes)
+            System.arraycopy(buf, 0, nb, 0, filled)
+            buf = nb
+            Log.i(TAG, "内存窗扩到 ${bytes / 1048576}MB（已存 ${filled / 1048576}MB）")
+        }
+    }
+
     override fun readAt(position: Long, out: ByteArray, offset: Int, size: Int): Int {
         if (closed) return -1
         var inWindow: Int
