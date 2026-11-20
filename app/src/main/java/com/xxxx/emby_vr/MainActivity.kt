@@ -9235,8 +9235,14 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                         }
+                        /*
+                         * 音频的起点必须用**画面第一帧的真实时间**，不能用用户拖到的目标位置。
+                         *
+                         * 实测（2026-11-21 05:05）：左跳到 333.39 秒，画面落到关键帧后的第一帧是 336.40，
+                         * 而音频仍从 333.39 起——声音比画面早 3 秒，且此后一直早着。
+                         */
                         val started = ap.start(
-                            url, emptyMap(), startSec = audioStart, originSec = originSec,
+                            url, emptyMap(), startSec = originSec, originSec = originSec,
                             clock = clk, autoPlay = false,
                             memWindowSec = pipeMemWindowSec(),
                         )
