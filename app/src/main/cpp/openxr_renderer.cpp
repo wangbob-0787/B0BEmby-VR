@@ -5463,8 +5463,15 @@ void updateScreenLightFromVideo(VrContext &c) {
      * 否则 uDvReshape 保持 0，着色器走原来的路，画面与现在完全一致。
      */
     if (c.dvReshapeLoc >= 0 && c.dvParamsLoc >= 0) {
-        const bool dvOn = gDvRendererReshape.load() != 0 && gDvStreamActive.load() != 0 && gDvFileValid && g_doviFlat &&
-                          g_doviReady && *g_doviReady;
+        /*
+         * 判据与真正上色的那处（videoLayerPass）一致。
+         *
+         * 这里原本还要求内核导出的 g_doviReady —— 那是内核解析完参数的信号；
+         * 自管解码不走内核，这个信号永远不置位，于是日志一直显示"生效=0"，
+         * 与实际画面不符（2026-11-21 查）。
+         */
+        const bool dvOn = gDvRendererReshape.load() != 0 && gDvStreamActive.load() != 0 && gDvFileValid &&
+                          g_doviFlat && g_doviFlat[0] >= 0.5f && g_doviFlat[0] < 2.5f;
         /*
          * 只在状态变化时打一行，报告五项条件各自的值。
          * 画面偏紫但看不出为什么时，这一行直接说明是哪一项没满足（每帧打印会影响帧率）。
