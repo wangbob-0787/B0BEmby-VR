@@ -8801,12 +8801,23 @@ class MainActivity : ComponentActivity() {
         val ok = pipe.start(
             url, emptyMap(), surface,
             /* 时钟只有自管这一个来源：不再问内核 */
-            { playClock?.positionSec() ?: sec },
+            {
+                val now = playClock?.positionSec() ?: sec
+                if (Math.abs(now - sec) > 5.0) sec else now
+            },
             { playClock?.isRunning() == true },
             sec,
             java.io.File(getExternalFilesDir(null) ?: filesDir, "dovi_params.bin").absolutePath,
             holdGate = { false },
-            clockReal = { playClock?.positionSec() ?: sec },
+            /*
+             * 跳转重建期间，时钟可能还停在旧位置（实测：左跳到 156 秒时时钟仍是 1177 秒，
+             * 于是被判"画面落后一千秒"、画面被拽回十九分钟）。
+             * 规则：时钟与目标差超过 5 秒，一律以目标为准。
+             */
+            clockReal = {
+                val now = playClock?.positionSec() ?: sec
+                if (Math.abs(now - sec) > 5.0) sec else now
+            },
             pausedNow = { selfPaused },
             onFirstFrame = { },
             onOriginSec = { selfOriginSec = it },
