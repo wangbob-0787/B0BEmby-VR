@@ -57,6 +57,15 @@ class VideoPipe {
     /** 待执行的跳转（extractor 由读线程独占，跳转也交给它做） */
     @Volatile private var feedSeekSec = -1.0
 
+    /**
+     * 刚跳转过：接下来读不到数据不算结尾，等一会儿再读。
+     *
+     * 实测（2026-11-21）：`seekTo` 之后立刻 `readSampleData` 会返回 -1，
+     * 读线程把它当 EOS 直接退出，于是画面 0 帧、黑屏。
+     * `.15` 的原型没有这个问题，因为 ffmpeg 的 `av_read_frame` 内部自己会重试。
+     */
+    @Volatile private var feedJustSought = false
+
     /** 读线程要用的起播参数（start() 的局部变量它看不到，必须落到字段） */
     @Volatile private var feedUrl: String = ""
     @Volatile private var feedHeaders: Map<String, String> = emptyMap()
@@ -500,19 +509,29 @@ class VideoPipe {
             if (target >= 0.0) {
                 feedSeekSec = -1.0
                 runCatching { ex.seekTo((target * 1_000_000.0).toLong(), MediaExtractor.SEEK_TO_CLOSEST_SYNC) }
+                feedJustSought = true
                 feedQueue.flush()
                 Log.i(TAG, "读线程跳转到 ${"%.2f".format(target)}s（队列已清空）")
             }
             bb.clear()
-            val size = try {
-                ex.readSampleData(bb, 0)
-            } catch (t: Throwable) {
-                Log.w(TAG, "读样本异常：${t.javaClass.simpleName}: ${t.message}")
-                -1
+            var size = -1
+            var retries = 0
+            while (running.get()) {
+                size = try {
+                    ex.readSampleData(bb, 0)
+                } catch (t: Throwable) {
+                    Log.w(TAG, "读样本异常：${t.javaClass.simpleName}: ${t.message}")
+                    -1
+                }
+                if (size >= 0 || !feedJustSought) break
+                /* 刚跳过：给解封装一点时间把定位做完，最多等两秒 */
+                if (retries++ >= 100) break
+                Thread.sleep(20)
             }
+            if (size >= 0) feedJustSought = false
             if (size < 0) {
                 feedQueue.putEos()
-                Log.i(TAG, "读线程到达结尾（已塞 ${statSamples} 帧）")
+                Log.i(TAG, "读线程到达结尾（已塞 ${statSamples} 帧，跳转后重试 $retries 次）")
                 break
             }
             val pts = ex.sampleTime
@@ -572,6 +591,7 @@ class VideoPipe {
             Log.i(TAG, "片长：${"%.1f".format(durationSec)}s（来自容器头）")
             if (feedStartSec > 0.5) {
                 ex.seekTo((feedStartSec * 1_000_000.0).toLong(), MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+                feedJustSought = true
                 Log.i(TAG, "跳到 ${"%.1f".format(feedStartSec)} 秒起播")
             }
             extractor = ex
