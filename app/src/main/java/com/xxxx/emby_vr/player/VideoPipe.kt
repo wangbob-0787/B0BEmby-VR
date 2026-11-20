@@ -860,7 +860,7 @@ class VideoPipe {
              */
             if (originFromPicture) {
                 audioStartSec = ptsRaw
-                runCatching { onOriginSec?.invoke(ptsRaw) }
+                /* 上报交给下面 originReported 那一处，这里不许再报一次（重复上报会起两个音频实例） */
             }
             if (!originReported) {
                 originReported = true
