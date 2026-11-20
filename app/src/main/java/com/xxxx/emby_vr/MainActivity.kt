@@ -7763,14 +7763,13 @@ class MainActivity : ComponentActivity() {
     private fun tryRevealWaitingFrame() {
         if (!waitingFirstFrame) return
         /*
-         * 出画判据有两条，任一条成立即可收幕：
-         *   ① 播放器（ExoPlayer / mpv 内核）报告已渲染第一帧 —— playerFrameSeen；
-         *   ② 自管解码这条路上，我们自己报"首帧真正上屏" —— selfFirstShown。
+         * 这里不再判断"首帧到没到"。
          *
-         * 自管解码不走内核，永远不会置 ①，所以只认 ① 时黑幕会一直挂着、直到 20 秒兜底
-         * （2026-11-21 父亲实测：声音先出、画面一直转圈）。
+         * 两个调用点本身就已经是"首帧到了"：普通片是播放器/内核的首帧回调，
+         * 自管解码是画面首帧真正上屏的那一刻（onFirstFrame）。
+         * 原先这里有一道 playerFrameSeen 判断，自管解码永远满足不了它，
+         * 黑幕于是只能等 20 秒兜底（2026-11-21 实测）。删掉，避免以后再看错。
          */
-        if (!playerFrameSeen && !selfFirstShown) return
         /*
          * 【2026-10-20 18:47 父亲实测：第一次接管时画面是拉扁的，第二次才对】
          *
@@ -9144,16 +9143,7 @@ class MainActivity : ComponentActivity() {
                      * 自管路没有播放器首帧回调，那组闸门会把它挡回去（实测：一行"收黑幕"日志都没有）。
                      * 最短停留（父亲要的两秒）在这里单独保留。
                      */
-                    ui.post {
-                        runCatching {
-                            val since = android.os.SystemClock.uptimeMillis() - waitingStartedAtMs
-                            if (since < kMinWaitingMs) {
-                                handler.postDelayed({ runCatching { revealDanmakuSubtitleLogo() } }, kMinWaitingMs - since)
-                            } else {
-                                revealDanmakuSubtitleLogo()
-                            }
-                        }
-                    }
+                    ui.post { runCatching { tryRevealWaitingFrame() } }
                     /*
                      * 首帧**真正上屏**这一刻才允许放声音（父亲 2026-11-21 追问"为什么一直声音先出"）。
                      *
