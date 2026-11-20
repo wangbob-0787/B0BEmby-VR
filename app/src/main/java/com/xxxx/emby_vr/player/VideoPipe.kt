@@ -402,6 +402,8 @@ class VideoPipe {
              * 解封装的打开、选轨、跳转、读，全部交给读线程（系统 MediaExtractor 要求同一线程）。
              * 主线程在这里只等它准备完，拿到轨道格式之后才能配解码器。
              */
+            /* stop() 会把队列置成中止；复用一个实例起播前必须解开，否则第一帧就入队失败 */
+            feedQueue.reset()
             feedUrl = url
             feedHeaders = headers
             feedStartSec = startSec
@@ -684,7 +686,7 @@ class VideoPipe {
      */
     private fun pump() {
         Log.i(TAG, "pump 开始 running=${running.get()} gate=${holdGate?.invoke()}")
-        val ex = extractor ?: run { Log.e(TAG, "pump 退出：extractor 为空"); return }
+        /* 解码线程只从队列取数据，不再直接碰解封装（它归读线程） */
         val codec = decoder ?: run { Log.e(TAG, "pump 退出：decoder 为空"); return }
         val info = MediaCodec.BufferInfo()
         var inputDone = false

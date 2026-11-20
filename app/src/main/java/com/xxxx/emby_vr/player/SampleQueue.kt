@@ -93,6 +93,17 @@ class SampleQueue(private val maxBytes: Int) {
         }
     }
 
+    /** 重新启用（同一实例复用时调用：stop() 会把队列置成中止，起播前必须解开） */
+    fun reset() {
+        synchronized(lock) {
+            deque.clear()
+            bytes = 0
+            eos = false
+            aborted = false
+            lock.notifyAll()
+        }
+    }
+
     fun abort() {
         synchronized(lock) {
             aborted = true
