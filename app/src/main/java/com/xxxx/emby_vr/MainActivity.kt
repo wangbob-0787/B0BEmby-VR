@@ -5724,9 +5724,17 @@ class MainActivity : ComponentActivity() {
      * 标准 50s / 较大 90s / 最大 180s；实际字节数由解码器按片源码率折算并封顶 256MB。
      */
     private fun pipeMemWindowSec(): Int {
-        /* 缓冲秒数取档位；字节数由解码器按片源码率折算 */
-        val preset = com.xxxx.emby_vr.panel.BUFFER_PRESETS[bufferPresetIndex]
-        return (preset.second / 1000).coerceIn(5, 180)
+        /*
+         * 关闭（2026-11-21 两次实测都不成立）。
+         *
+         * 系统解封装（MediaExtractor）只接受一个"能任意位置随机读"的数据源；
+         * 我们试过两种：从头顺序滑窗、按请求取块。两次都在起播时判定"容器里没有视频轨"，
+         * 表现都是转圈结束后黑屏、无声（日志：`PIPE 起不来：容器里没有视频轨`）。
+         *
+         * 缓冲改到解封装之后做：解出来的数据包先排队（mpv/ffplay 的结构），
+         * 那一层不依赖随机访问，也不再受这个接口的限制。这里先返回 0，等于直读 —— 直读是能播的。
+         */
+        return 0
     }
 
     private fun bufferMaxMs(): Int = com.xxxx.emby_vr.panel.BUFFER_PRESETS[bufferPresetIndex].third
