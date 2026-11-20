@@ -99,6 +99,9 @@ class AudioPipe {
     private var seekFlushCount = 0
 
     private val ts = AudioTimestamp()
+
+    /** 起播是否允许直接出声：false 时写完第一块就按回去，等画面三帧齐再放开 */
+    private var autoPlayOn = true
     private var frameBase = 0L
     private var latencyUs = 0L
 
@@ -118,6 +121,12 @@ class AudioPipe {
         originSec: Double,
         clock: PlaybackClock,
         trackIndex: Int = -1,
+        /**
+         * 建轨后是否立刻出声。
+         *
+         * 放行之前必须为 false：声音先响、画面还握着三帧预热，就是"先说话后出人"。
+         */
+        autoPlay: Boolean = true,
     ): Boolean {
         stop()
         lastError = null
@@ -173,6 +182,11 @@ class AudioPipe {
                 val frames = at.bufferSizeInFrames
                 if (frames > 0) frames * 1_000_000L / sampleRate / 2 else 0L
             }.getOrDefault(0L)
+            autoPlayOn = autoPlay
+            /*
+             * 设备先起动再写：未起动时写缓冲会一直阻塞，第一块永远写不完，
+             * 上层等"首帧已写"就会死等。写完第一块立刻按回去（见 writePcm）。
+             */
             at.play()
             frameBase = 0L
 
@@ -429,6 +443,10 @@ class AudioPipe {
         if (firstPcmAtMs == 0L) {
             firstPcmAtMs = SystemClock.elapsedRealtime()
             Log.i(TAG, "AUDIO 首帧写入：${trackDesc} 起点=${"%.3f".format(originUs / US)}s")
+            if (!autoPlayOn) {
+                runCatching { at.pause() }
+                Log.i(TAG, "音频已备好但按回去：等画面三帧齐再放开")
+            }
         }
     }
 

@@ -49,12 +49,14 @@ class PlaybackControl {
     fun hasEngine(): Boolean = kernelActive || exoProvider() != null
 
     fun isPlaying(): Boolean {
+        selfPlayingProvider?.invoke()?.let { return it }
         mpvProvider()?.let { return !it.isPaused() }
         return exoProvider()?.playWhenReady ?: false
     }
 
     /** 暂停 / 继续。返回 false 表示当前没有可操作的引擎。 */
     fun togglePlayPause(): Boolean {
+        selfTogglePlayPause?.invoke()?.let { return it }
         mpvProvider()?.let { m ->
             val toPause = !m.isPaused()
             m.setPaused(toPause)
@@ -74,6 +76,7 @@ class PlaybackControl {
     }
 
     fun durationMs(): Long {
+        selfDurationProvider?.invoke()?.let { return it }
         mpvProvider()?.let {
             val d = (it.durationSec() * 1000.0).toLong()
             return if (d > 0L) d else 0L
@@ -88,6 +91,8 @@ class PlaybackControl {
      * 进度条上那一段浅色不至于空着。
      */
     fun bufferedMs(): Long {
+        /* 自管路没有中转、没有第二份缓冲：缓冲点就是当前播放位置 */
+        if (selfPositionProvider != null) return positionMs()
         mpvProvider()?.let { m ->
             /*
              * 内核路径：缓冲点 = mpv 缓存到的时间轴位置（父亲 2026-10-11）。
@@ -101,6 +106,15 @@ class PlaybackControl {
         }
         return exoProvider()?.bufferedPosition ?: 0L
     }
+
+    /** 自管路的时长（毫秒）；返回 null 表示当前不走自管路 */
+    var selfDurationProvider: (() -> Long?)? = null
+
+    /** 自管路的播放状态（true=在放） */
+    var selfPlayingProvider: (() -> Boolean?)? = null
+
+    /** 自管路的暂停/继续；返回 null 表示当前不走自管路 */
+    var selfTogglePlayPause: (() -> Boolean?)? = null
 
     /** 自管解码路的跳转钩子（由界面在起播时挂上）。 */
     var pipeSeek: ((Long) -> Unit)? = null

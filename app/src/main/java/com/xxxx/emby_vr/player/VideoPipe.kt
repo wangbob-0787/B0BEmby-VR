@@ -148,6 +148,15 @@ class VideoPipe {
 
     private var onOriginSec: ((Double) -> Unit)? = null
 
+    /**
+     * 片长（秒），打开容器时读一次。
+     *
+     * P5 这条路不加载内核之后，时长没有别处可问 —— 只能自己从容器头读。
+     */
+    @Volatile
+    var durationSec: Double = 0.0
+        private set
+
     /** 起点是否由画面首帧决定（P5 全自管路为 true） */
     private var originFromPicture = false
 
@@ -381,6 +390,11 @@ class VideoPipe {
                 return false
             }
             ex.selectTrack(trackIndex)
+            durationSec = runCatching {
+                val us = format?.getLong(MediaFormat.KEY_DURATION) ?: 0L
+                if (us > 0L) us / 1_000_000.0 else 0.0
+            }.getOrDefault(0.0)
+            Log.i(TAG, "片长：${"%.1f".format(durationSec)}s（来自容器头）")
             if (startSec > 0.5) {
                 // 续播：跳到与声音相同的位置。不按关键帧对齐会从更早的地方开始，
                 // 那样画面要先冲过一段才追上声音。
