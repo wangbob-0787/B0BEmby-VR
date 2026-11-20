@@ -108,6 +108,9 @@ class AudioPipe {
 
     /** 写入被设备拒收的次数（只用于限制日志量） */
     private var zeroWrites = 0
+
+    /** 位置日志节流 */
+    private var lastPosLogMs = 0L
     private var frameBase = 0L
     private var latencyUs = 0L
 
@@ -493,6 +496,17 @@ class AudioPipe {
     private fun notePosition() {
         val at = track ?: return
         val clk = clock ?: return
+        val nowMs = SystemClock.elapsedRealtime()
+        if (nowMs - lastPosLogMs >= 2000L) {
+            lastPosLogMs = nowMs
+            val played = (at.playbackHeadPosition - frameBase).coerceAtLeast(0)
+            /* 两者应当同步增长；已写远超已播 = 数据堆在缓冲里没放出来 */
+            Log.i(
+                TAG,
+                "AUDIOPOS|设备已播=${played}帧|已写=${writtenFrames}帧|采样率=$sampleRate|时钟=${clk.positionUs() / 1000}ms" +
+                    "|源=${clk.lastSource}",
+            )
+        }
         val posUs = if (at.getTimestamp(ts)) {
             val frames = ts.framePosition - frameBase
             val playedUs = frames * 1_000_000L / sampleRate

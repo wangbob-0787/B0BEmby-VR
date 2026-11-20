@@ -8686,7 +8686,8 @@ class MainActivity : ComponentActivity() {
         val tick = object : Runnable {
             override fun run() {
                 val p = videoPipe
-                val pos = runCatching { mpvBackend?.positionSec() }.getOrNull()
+                /* 自管路的读数只有自管时钟一个来源：问内核等于问人不在场 */
+                val pos = if (selfAudioOn) playClock?.positionSec() else runCatching { mpvBackend?.positionSec() }.getOrNull()
                 val shown = p?.lastShownPts ?: -1.0
                 val nexus = if (pos != null && shown > 0 && selfPipeReleased) {
                     "%.0fms".format((pos - shown) * 1000.0)
