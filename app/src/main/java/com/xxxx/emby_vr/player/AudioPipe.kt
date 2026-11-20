@@ -164,7 +164,15 @@ class AudioPipe {
                 return false
             }
             track = at
-            latencyUs = runCatching { at.latency.toLong() * 1000L }.getOrDefault(0L)
+            /*
+             * 输出延迟：设备不提供可用的延迟读数时，按缓冲区一半保守估计。
+             * 减多了会让位置略偏早（画面略微超前），减少了会让位置偏晚（画面略滞后），
+             * 宁可偏早不可偏晚 —— 偏晚在主观上就是"声音比画面慢"。
+             */
+            latencyUs = runCatching {
+                val frames = at.bufferSizeInFrames
+                if (frames > 0) frames * 1_000_000L / sampleRate / 2 else 0L
+            }.getOrDefault(0L)
             at.play()
             frameBase = 0L
 
