@@ -521,7 +521,7 @@ class VideoPipe {
             val target = feedSeekSec
             if (target >= 0.0) {
                 feedSeekSec = -1.0
-                runCatching { ex.seekTo((target * 1_000_000.0).toLong(), MediaExtractor.SEEK_TO_CLOSEST_SYNC) }
+                runCatching { ex.seekTo((target * 1_000_000.0).toLong(), MediaExtractor.SEEK_TO_PREVIOUS_SYNC) }
                 feedJustSought = true
                 feedQueue.flush()
                 Log.i(TAG, "读线程跳转到 ${"%.2f".format(target)}s（队列已清空）")
@@ -657,7 +657,7 @@ class VideoPipe {
             }.getOrDefault(0.0)
             Log.i(TAG, "片长：${"%.1f".format(durationSec)}s（来自容器头）")
             if (feedStartSec > 0.5) {
-                ex.seekTo((feedStartSec * 1_000_000.0).toLong(), MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+                ex.seekTo((feedStartSec * 1_000_000.0).toLong(), MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
                 feedJustSought = true
                 Log.i(TAG, "跳到 ${"%.1f".format(feedStartSec)} 秒起播")
             }
