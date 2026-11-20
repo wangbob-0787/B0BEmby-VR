@@ -9217,6 +9217,12 @@ class MainActivity : ComponentActivity() {
                         }
                         val clk = playClock
                         if (clk == null) return@Thread
+                        /*
+                         * 同一时刻只许有一个发声设备（2026-11-21 父亲实测「两个声音同时响」）。
+                         * 日志：04:33:32.467 与 .606 两次「音频起播」，起点还不一样 —— 旧实例没停就又建了一个。
+                         */
+                        audioPipe?.let { runCatching { it.stop() } }
+                        audioPipe = null
                         val ap = com.xxxx.emby_vr.player.AudioPipe()
                         /* 声音这一路停写 → 画面一起停；恢复 → 一起走（用户自己按暂停的情况除外） */
                         ap.onStall = { stalledNow ->
