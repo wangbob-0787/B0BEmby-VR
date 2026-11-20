@@ -70,6 +70,25 @@ class AudioPipe {
         private set
 
     private var extractor: MediaExtractor? = null
+
+    /*
+     * 读线程 + 包队列（与画面那套完全对称，2026-11-21 父亲定）。
+     *
+     * 为什么声音也要队列：之前声音是"边读边解"，网盘抖一下就断供，
+     * 而画面有三十多兆存货顶着 —— 所以每次卡顿都只打中声音，断一段就变成永久落后。
+     */
+    private var feedThread: Thread? = null
+    private val feedQueue = SampleQueue(8 * 1024 * 1024)
+    @Volatile private var feedSeekSec = -1.0
+    @Volatile private var feedJustSought = false
+    private var prepareLatch = java.util.concurrent.CountDownLatch(1)
+    @Volatile private var preparedFormat: MediaFormat? = null
+    @Volatile private var prepareError: String? = null
+    @Volatile private var feedUrl = ""
+    @Volatile private var feedHeaders: Map<String, String> = emptyMap()
+    @Volatile private var feedStartSec = 0.0
+    @Volatile private var feedTrackIndex = -1
+    @Volatile private var feedMemWindowSec = 0
     private var codec: MediaCodec? = null
     private var track: AudioTrack? = null
 
@@ -178,48 +197,50 @@ class AudioPipe {
         this.clock = clock
         originUs = (originSec * US).toLong()
 
-        val ex = MediaExtractor()
+        /* 解封装的打开、选轨、跳转、读全部交给读线程（系统接口要求同一线程） */
+        feedUrl = url
+        feedHeaders = headers
+        feedStartSec = startSec
+        feedTrackIndex = trackIndex
+        feedMemWindowSec = memWindowSec
+        feedQueue.reset()
+        prepareLatch = java.util.concurrent.CountDownLatch(1)
+        preparedFormat = null
+        prepareError = null
+        running.set(true)
         return try {
-            if (memWindowSec > 0 && headers.isEmpty()) {
-                val bytes = 32 * 1024 * 1024
-                Log.i(TAG, "音频数据源：内存窗 ${bytes / 1048576}MB（${memWindowSec}s 档）")
-                ex.setDataSource(MemWindowSource(url, bytes))
-            } else if (headers.isEmpty()) {
-                ex.setDataSource(url)
-            } else {
-                ex.setDataSource(url, headers)
-            }
-            val pick = pickAudioTrack(ex, trackIndex)
-            if (pick < 0) {
-                lastError = if (trackIndex >= 0) "指定音轨 $trackIndex 不可解" else "没有可解的音轨"
-                Log.w(TAG, "音频起不来：$lastError")
-                ex.release()
+            feedThread = Thread({ audioFeedLoop() }, "AudioFeed").apply { isDaemon = true; start() }
+            if (!prepareLatch.await(20, java.util.concurrent.TimeUnit.SECONDS)) {
+                lastError = "音频解封装准备超时"
+                Log.e(TAG, lastError!!)
+                stop()
                 return false
             }
-            val fmt = ex.getTrackFormat(pick)
+            val fmt = preparedFormat
+            val perr = prepareError
+            if (fmt == null || perr != null) {
+                lastError = perr ?: "音频解封装准备失败"
+                Log.e(TAG, lastError!!)
+                stop()
+                return false
+            }
             val mime = fmt.getString(MediaFormat.KEY_MIME) ?: ""
             sampleRate = fmt.getInteger(MediaFormat.KEY_SAMPLE_RATE)
             channelCount = runCatching { fmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT) }.getOrDefault(2)
             if (channelCount !in 1..8) channelCount = 2
-            trackDesc = "轨$pick 编码=$mime 采样率=$sampleRate 声道=$channelCount"
-            Log.i(TAG, "音轨选择：$trackDesc")
+            trackDesc = "编码=$mime 采样率=$sampleRate 声道=$channelCount"
+            Log.i(TAG, "音轨选择：$trackDesc（走队列，读线程已起）")
 
             val c = MediaCodec.createDecoderByType(mime)
             c.configure(fmt, null, null, 0)
             c.start()
             codec = c
 
-            ex.selectTrack(pick)
-            ex.seekTo((startSec * US).toLong(), MediaExtractor.SEEK_TO_CLOSEST_SYNC)
-            extractor = ex
-            /* seek 后第一帧的内容时间就是这一路的真实起点（跳转落点是关键帧，不等于请求位置） */
-            audioOriginUs = ex.sampleTime.coerceAtLeast(0L)
-
             val at = buildTrack()
             if (at == null) {
                 lastError = "音频设备建不起来"
                 c.stop(); c.release(); codec = null
-                ex.release(); extractor = null
+                feedQueue.abort()
                 return false
             }
             track = at
@@ -256,7 +277,7 @@ class AudioPipe {
             runCatching { codec?.stop() }
             runCatching { codec?.release() }
             runCatching { track?.release() }
-            runCatching { ex.release() }
+            feedQueue.abort()
             codec = null
             track = null
             extractor = null
@@ -301,6 +322,9 @@ class AudioPipe {
 
     fun stop(): Boolean {
         running.set(false)
+        feedQueue.abort()
+        feedThread?.let { runCatching { it.join(800) } }
+        feedThread = null
         val t = thread
         thread = null
         if (t != null && t.isAlive) {
@@ -378,12 +402,116 @@ class AudioPipe {
         }
     }
 
+    /**
+     * 读线程：打开、选轨、跳转、读包都在这个线程（系统解封装要求同一线程）。
+     *
+     * 与画面那套（VideoPipe.audioFeedLoop 式的结构）完全对称：读到的包进队列，
+     * 解码线程只从队列取，网络抖动被队列挡住。
+     */
+    private fun audioFeedLoop() {
+        val ex = MediaExtractor()
+        try {
+            val hdrs = feedHeaders
+            if (feedMemWindowSec > 0 && hdrs.isEmpty()) {
+                ex.setDataSource(MemWindowSource(feedUrl, 32 * 1024 * 1024))
+            } else if (hdrs.isEmpty()) {
+                ex.setDataSource(feedUrl)
+            } else {
+                ex.setDataSource(feedUrl, hdrs)
+            }
+            val pick = pickAudioTrack(ex, feedTrackIndex)
+            if (pick < 0) {
+                prepareError = "没有可解的音轨"
+                prepareLatch.countDown()
+                return
+            }
+            val fmt = ex.getTrackFormat(pick)
+            ex.selectTrack(pick)
+            if (feedStartSec > 0.5) {
+                ex.seekTo((feedStartSec * US).toLong(), MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+                feedJustSought = true
+            }
+            audioOriginUs = ex.sampleTime.coerceAtLeast(0L)
+            preparedFormat = fmt
+            extractor = ex
+            prepareLatch.countDown()
+            Log.i(TAG, "音频读线程就绪：轨道=$pick 起点=${"%.3f".format(audioOriginUs / US)}s")
+
+            var arr = ByteArray(1024 * 1024)
+            var bb = java.nio.ByteBuffer.wrap(arr)
+            while (running.get()) {
+                val target = feedSeekSec
+                if (target >= 0.0) {
+                    feedSeekSec = -1.0
+                    runCatching { ex.seekTo((target * US).toLong(), MediaExtractor.SEEK_TO_CLOSEST_SYNC) }
+                    feedJustSought = true
+                    audioOriginUs = runCatching { ex.sampleTime }.getOrDefault(0L).coerceAtLeast(0L)
+                    feedQueue.flush()
+                    Log.i(TAG, "音频读线程跳转到 ${"%.2f".format(target)}s（首帧=${"%.3f".format(audioOriginUs / US)}s）")
+                }
+                bb.clear()
+                var size = -1
+                var retries = 0
+                while (running.get()) {
+                    size = try {
+                        ex.readSampleData(bb, 0)
+                    } catch (t: Throwable) {
+                        -1
+                    }
+                    if (size >= 0) break
+                    /* 装不下就按帧大小扩缓冲（音频帧通常很小，这里只是兜底） */
+                    val need = runCatching { ex.sampleSize }.getOrDefault(0L)
+                    if (need > bb.capacity().toLong()) {
+                        arr = ByteArray((need + 1024L * 1024L).toInt())
+                        bb = java.nio.ByteBuffer.wrap(arr)
+                        bb.clear()
+                        size = try {
+                            ex.readSampleData(bb, 0)
+                        } catch (t: Throwable) {
+                            -1
+                        }
+                        if (size >= 0) break
+                    }
+                    if (!feedJustSought) break
+                    if (retries++ >= 100) break
+                    Thread.sleep(20)
+                }
+                if (size < 0) {
+                    feedQueue.putEos()
+                    Log.i(TAG, "音频读线程到结尾")
+                    break
+                }
+                feedJustSought = false
+                val pts = try {
+                    ex.sampleTime
+                } catch (t: Throwable) {
+                    break
+                }
+                val data = ByteArray(size)
+                bb.position(0)
+                bb.get(data, 0, size)
+                if (!feedQueue.put(SampleQueue.Packet(data, size, pts))) break
+                try {
+                    ex.advance()
+                } catch (t: Throwable) {
+                    break
+                }
+            }
+        } catch (t: Throwable) {
+            prepareError = "音频解封装异常：${t.javaClass.simpleName}: ${t.message}"
+            prepareLatch.countDown()
+            Log.e(TAG, prepareError!!)
+        } finally {
+            runCatching { ex.release() }
+            if (extractor === ex) extractor = null
+        }
+    }
+
     private fun loop() {
-        val ex = extractor ?: return
+        /* 读线程独占 extractor；这里只从队列取数据 */
         val c = codec ?: return
         val at = track ?: return
         val info = MediaCodec.BufferInfo()
-        val src = ByteBuffer.allocateDirect(1 shl 18)
         var inputDone = false
         var eos = false
 
@@ -396,12 +524,13 @@ class AudioPipe {
                     at.pause()
                     at.flush()
                     c.flush()
-                    ex.seekTo((seekTarget * US).toLong(), MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+                    /* 跳转交给读线程（extractor 归它）；这里只清队列与本地计数 */
+                    feedSeekSec = seekTarget
+                    feedQueue.flush()
                     originUs = (seekTarget * US).toLong()
                     writtenFrames = 0L
                     firstBlockHandled = false
                     seekFlushCount++
-                    audioOriginUs = ex.sampleTime.coerceAtLeast(0L)
                     /* flush 之后设备帧计数不一定归零（各机型行为不同），基准取当下值 */
                     frameBase = runCatching { at.playbackHeadPosition.toLong() }.getOrDefault(0L)
                     inputDone = false
@@ -427,22 +556,20 @@ class AudioPipe {
                 if (!inputDone) {
                     val ci = c.dequeueInputBuffer(5_000)
                     if (ci >= 0) {
-                        val n = ex.readSampleData(src, 0)
-                        if (n < 0) {
+                        /* 数据来自读线程攒好的队列（与画面同一套结构） */
+                        val pkt = feedQueue.get()
+                        if (pkt == null) {
                             c.queueInputBuffer(ci, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                             inputDone = true
                         } else {
                             val buf = c.getInputBuffer(ci)
                             if (buf != null) {
                                 buf.clear()
-                                src.position(0)
-                                src.limit(n)
-                                buf.put(src)
-                                c.queueInputBuffer(ci, 0, n, ex.sampleTime.coerceAtLeast(0L), 0)
+                                buf.put(pkt.data, 0, pkt.size)
+                                c.queueInputBuffer(ci, 0, pkt.size, pkt.ptsUs.coerceAtLeast(0L), 0)
                             } else {
                                 c.queueInputBuffer(ci, 0, 0, 0, 0)
                             }
-                            ex.advance()
                         }
                     }
                 }
