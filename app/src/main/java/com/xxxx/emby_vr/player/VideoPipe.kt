@@ -66,6 +66,9 @@ class VideoPipe {
      */
     @Volatile private var feedJustSought = false
 
+    /** 解码线程首包只报一次 */
+    private var pumpFirstLogged = false
+
     /** 读线程要用的起播参数（start() 的局部变量它看不到，必须落到字段） */
     @Volatile private var feedUrl: String = ""
     @Volatile private var feedHeaders: Map<String, String> = emptyMap()
@@ -510,6 +513,8 @@ class VideoPipe {
          */
         var arr = ByteArray(4 * 1024 * 1024)
         var bb = java.nio.ByteBuffer.wrap(arr)
+        Log.i(TAG, "读线程循环开始：缓冲=${arr.size / 1048576}MB")
+        var readOk = 0
         while (running.get()) {
             val target = feedSeekSec
             if (target >= 0.0) {
@@ -552,14 +557,29 @@ class VideoPipe {
             if (size >= 0) feedJustSought = false
             if (size < 0) {
                 feedQueue.putEos()
-                Log.i(TAG, "读线程到达结尾（已塞 ${statSamples} 帧，跳转后重试 $retries 次）")
+                Log.w(
+                    TAG,
+                    "读线程判结尾：已读 $readOk 帧 本帧返回=$size 样本大小=${ex.sampleSize} " +
+                        "缓冲=${arr.size / 1048576}MB 重试=$retries 刚跳过=$feedJustSought " +
+                        "样本时间=${ex.sampleTime} 轨道=${ex.sampleTrackIndex}",
+                )
                 break
             }
             val pts = ex.sampleTime
             val data = ByteArray(size)
             bb.position(0)
             bb.get(data, 0, size)
-            if (!feedQueue.put(SampleQueue.Packet(data, size, pts))) break
+            readOk++
+            if (readOk % 100 == 1) {
+                Log.i(
+                    TAG,
+                    "读帧 #$readOk：本帧=$size 字节 pts=${pts}us 缓冲=${arr.size / 1048576}MB 队列=${feedQueue.sizeBytes() / 1024}KB",
+                )
+            }
+            if (!feedQueue.put(SampleQueue.Packet(data, size, pts))) {
+                Log.w(TAG, "入队失败（队列已中止），退出。已读 $readOk 帧")
+                break
+            }
             ex.advance()
         }
         Log.i(TAG, "读线程退出：队列剩 ${feedQueue.sizeBytes() / 1024}KB")
@@ -572,7 +592,9 @@ class VideoPipe {
      * 主线程拿到它才能配解码器。
      */
     private fun prepareExtractor(): MediaExtractor? {
+        val t0 = android.os.SystemClock.elapsedRealtime()
         val ex = MediaExtractor()
+        Log.i(TAG, "解封装准备开始：url=${feedUrl.take(80)} 头=${feedHeaders.size} 个 起点=${"%.1f".format(feedStartSec)}s")
         try {
             var memSrc: MemWindowSource? = null
             val hdrs = feedHeaders
@@ -584,6 +606,10 @@ class VideoPipe {
             } else {
                 ex.setDataSource(feedUrl, hdrs)
             }
+            Log.i(
+                TAG,
+                "数据源已打开：耗时=${android.os.SystemClock.elapsedRealtime() - t0}ms 轨道数=${ex.trackCount}",
+            )
             var trackIndex = -1
             var format: MediaFormat? = null
             for (i in 0 until ex.trackCount) {
@@ -601,6 +627,12 @@ class VideoPipe {
                 return null
             }
             ex.selectTrack(trackIndex)
+            Log.i(
+                TAG,
+                "选轨完成：轨=$trackIndex 编码=${format.getString(MediaFormat.KEY_MIME)} " +
+                    "${format.getInteger(MediaFormat.KEY_WIDTH)}x${format.getInteger(MediaFormat.KEY_HEIGHT)} " +
+                    "码率=${runCatching { format.getInteger(MediaFormat.KEY_BIT_RATE) }.getOrDefault(0) / 1000}kbps",
+            )
             memSrc?.let { src ->
                 val bitrate = runCatching { format.getInteger(MediaFormat.KEY_BIT_RATE) }.getOrDefault(0)
                 src.configureBudget(budgetBytes(feedMemWindowSec, bitrate))
@@ -617,6 +649,7 @@ class VideoPipe {
             }
             extractor = ex
             preparedFormat = format
+            Log.i(TAG, "解封装准备完成：总耗时=${android.os.SystemClock.elapsedRealtime() - t0}ms 首样本大小=${ex.sampleSize} 首样本时间=${ex.sampleTime}")
             return ex
         } catch (t: Throwable) {
             prepareError = "打开输入失败：${t.javaClass.simpleName}: ${t.message}"
@@ -679,6 +712,10 @@ class VideoPipe {
                     val buf = codec.getInputBuffer(inIdx) ?: continue
                     /* 数据来自读线程攒好的队列；队列给 null 表示读完了或已中止 */
                     val pkt = feedQueue.get()
+                    if (pkt != null && !pumpFirstLogged) {
+                        pumpFirstLogged = true
+                        Log.i(TAG, "解码线程取到首包：$pkt.size 字节 pts=${pkt.ptsUs}us")
+                    }
                     statLastReadRet = (pkt?.size ?: -1).toLong()
                     if (pkt == null) {
                         codec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
