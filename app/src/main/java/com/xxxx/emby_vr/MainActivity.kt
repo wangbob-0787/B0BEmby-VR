@@ -8505,6 +8505,14 @@ class MainActivity : ComponentActivity() {
     @Volatile private var avStall = false
 
     /**
+     * 画面首帧**真正上屏**了没有。
+     *
+     * 放行动作（也就是声音设备起动）必须先看到它是 true。
+     * 之前只检查"首帧解出来了"，于是音频那边准备好的信号一到就放行，声音照旧抢在前面。
+     */
+    @Volatile private var selfFirstShown = false
+
+    /**
      * 自管解码起播时，声音要等画面首帧。
      *
      * 为 true 时：画面只放第一帧然后停住，声音也挂在校起播位置不发。
@@ -9018,6 +9026,7 @@ class MainActivity : ComponentActivity() {
         audioPipe = null
         selfOriginSec = 0.0
         selfPaused = false
+        selfFirstShown = false
 
         /*
          * 跳转：三样一起动，顺序固定 —— 时钟 → 声音 → 画面。
@@ -9069,6 +9078,11 @@ class MainActivity : ComponentActivity() {
         fun tryRelease(tries: Int) {
             if (released) return
             if (!pipeReady) return
+            /*
+             * 硬条件：画面首帧还没真正上屏，就不许放声音（父亲 2026-11-21 追问到底）。
+             * 只判"解出来"会让声音先出十几秒 —— 那段时间画面还在首帧渲染上。
+             */
+            if (!selfFirstShown) return
             val ap = audioPipe
             if (ap == null) {
                 if (tries < 80) ui.postDelayed({ tryRelease(tries + 1) }, 100)
@@ -9103,6 +9117,7 @@ class MainActivity : ComponentActivity() {
                 /* 暂停只认我们自己的状态：内核已不参与，问它等于问一个不在场的人 */
                 pausedNow = { selfPaused || avStall },
                 onFirstFrame = {
+                    selfFirstShown = true
                     /*
                      * 首帧**真正上屏**这一刻才允许放声音（父亲 2026-11-21 追问"为什么一直声音先出"）。
                      *

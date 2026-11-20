@@ -920,8 +920,13 @@ class VideoPipe {
             if (!running.get()) return finish(false)
         }
 
-        /* 起播放行闸门：门关着就持这一帧等，门一开立刻上屏 */
-        if (!firstFrameShown && holdGate?.invoke() == true) {
+        /*
+         * 起播放行闸门：门关着就持这一帧等，门一开立刻上屏。
+         *
+         * **首帧不拦**（2026-11-21）：上层的放行现在要等"首帧真正上屏"这个信号，
+         * 如果这里把首帧也拦住，信号永远等不到，就死锁了。所以首帧一律先上屏，闸门只拦后续帧。
+         */
+        if (firstFrameShown && holdGate?.invoke() == true) {
             while (running.get() && holdGate?.invoke() == true) {
                 try {
                     Thread.sleep(5)
