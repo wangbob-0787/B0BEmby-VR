@@ -127,7 +127,15 @@ class MemWindowSource(
     fun configureBudget(bytes: Int) {
         synchronized(lock) {
             if (closed || bytes <= buf.size) return
-            val nb = ByteArray(bytes)
+            /*
+             * 扩容要一次拿连续内存，拿不到就保持原窗继续跑 —— 宁可缓冲小一点，
+             * 也不能让一次分配失败把整条播放拖成黑屏（PICO 上 256MB 连续内存实测很可能失败）。
+             */
+            val nb = runCatching { ByteArray(bytes) }.getOrNull()
+            if (nb == null) {
+                Log.w(TAG, "内存窗扩容失败（要 ${bytes / 1048576}MB 连续内存），保持 ${buf.size / 1048576}MB")
+                return
+            }
             System.arraycopy(buf, 0, nb, 0, filled)
             buf = nb
             Log.i(TAG, "内存窗扩到 ${bytes / 1048576}MB（已存 ${filled / 1048576}MB）")

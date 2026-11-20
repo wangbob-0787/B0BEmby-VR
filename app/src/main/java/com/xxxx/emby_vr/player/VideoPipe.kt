@@ -857,9 +857,14 @@ class VideoPipe {
      * 照抄 mpv 的默认值不现实，必须给设备兜一个顶。
      */
     private fun budgetBytes(sec: Int, bitrate: Int): Int {
-        val bps = if (bitrate > 0) bitrate.toLong() else 64L * 1024 * 1024 / 8 * 8 / 8
+        /* 码率读不到就按 16Mbps 估（1080p 偏高、4K 偏低，都比"不缓冲"安全） */
+        val bps = if (bitrate > 0) bitrate.toLong() else 16_000_000L
         val raw = sec.toLong() * bps / 8L
-        return raw.coerceIn(32L * 1024 * 1024, 256L * 1024 * 1024).toInt()
+        /*
+         * 上限 96MB：一次要的是连续内存，PICO 上更大很容易分配失败（实测 256MB 会失败）。
+         * 按 4K 12MB/s 算，96MB 约 8 秒 —— 够挡住网盘抖动，又不至于把内存吃穿。
+         */
+        return raw.coerceIn(32L * 1024 * 1024, 96L * 1024 * 1024).toInt()
     }
 
     private val FRAME_DELAY_SEC = 0.05
