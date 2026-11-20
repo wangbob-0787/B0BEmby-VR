@@ -9145,9 +9145,11 @@ class MainActivity : ComponentActivity() {
                     playClock?.pause()
                     runCatching { audioPipe?.pause() }
                 },
+                /* 出一帧就上屏（父亲 2026-11-20 定）：三帧预热换来的是起播多等一拍、声音先出 */
+                preheatFrames = 1,
                 onPreheatReady = { spanMs, rpuReady ->
                     ui.post {
-                        Log.i(TAG, "READY 三帧跨度=${spanMs}ms RPU=${if (rpuReady) "就绪" else "未就绪"}")
+                        Log.i(TAG, "READY 首帧=${spanMs}ms RPU=${if (rpuReady) "就绪" else "未就绪"}")
                         pipeReady = true
                         selfPipeReady = true
                         selfPipePhase = "等放行"
