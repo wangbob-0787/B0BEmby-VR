@@ -218,9 +218,10 @@ class AudioPipe {
              * 减多了会让位置略偏早（画面略微超前），减少了会让位置偏晚（画面略滞后），
              * 宁可偏早不可偏晚 —— 偏晚在主观上就是"声音比画面慢"。
              */
+            /* 只在拿不到硬件时间戳时才用：取缓冲四分之一（原来是二分之一，实测把位置整体拖早了 200ms） */
             latencyUs = runCatching {
                 val frames = at.bufferSizeInFrames
-                if (frames > 0) frames * 1_000_000L / sampleRate / 2 else 0L
+                if (frames > 0) frames * 1_000_000L / sampleRate / 4 else 0L
             }.getOrDefault(0L)
             autoPlayOn = autoPlay
             /*
@@ -553,10 +554,15 @@ class AudioPipe {
             )
         }
         val posUs = if (at.getTimestamp(ts)) {
+            /*
+             * 硬件时间戳直接给的是"这一帧什么时候真正被放出来"，加上到现在的流逝就是当前播放位置。
+             * 这里**不能再减输出延迟**：减了等于把位置整体往前挪，画面就永远比声音早，
+             * 主观是"声音一直滞后"（2026-11-21 实测：估算延迟 250ms 过大，差值被算进了时钟）。
+             */
             val frames = ts.framePosition - frameBase
             val playedUs = frames * 1_000_000L / sampleRate
             val sinceTsUs = (System.nanoTime() - ts.nanoTime) / 1000L
-            originUs + playedUs + sinceTsUs - latencyUs
+            originUs + playedUs + sinceTsUs
         } else {
             /*
              * 拿不到硬件时间戳时用**设备已经播放的帧数**，不能用"已写进去的样本数"。
@@ -565,6 +571,7 @@ class AudioPipe {
              * 用它算出来的位置会慢慢偏大 —— 画面按这个位置判自己迟到、一路丢帧，
              * 观感就是"播一会儿声音就跑前面去了"。已播帧数是设备实际播到哪，长期不漂。
              */
+            /* 播放头位置不含设备缓冲里那一段，这里减一个保守的余量（缓冲四分之一） */
             val played = at.playbackHeadPosition - frameBase
             originUs + played.coerceAtLeast(0) * 1_000_000L / sampleRate - latencyUs
         }
