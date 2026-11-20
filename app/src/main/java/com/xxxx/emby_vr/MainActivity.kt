@@ -8519,6 +8519,15 @@ class MainActivity : ComponentActivity() {
     @Volatile private var selfFirstShown = false
 
     /**
+     * 最近一次跳转/重建的时刻（毫秒）。
+     *
+     * 时钟保护只在跳转后极短时间内生效：判据用「时间窗」而不是「距离」——
+     * 按距离判会把时钟永久钉在目标值上（差超过五秒就一直返回固定值），
+     * 画面于是越等越落后、声音照走，越差越大（2026-11-21 05:05 实测）。
+     */
+    @Volatile private var selfJumpAtMs = 0L
+
+    /**
      * 自管解码起播时，声音要等画面首帧。
      *
      * 为 true 时：画面只放第一帧然后停住，声音也挂在校起播位置不发。
@@ -9080,6 +9089,7 @@ class MainActivity : ComponentActivity() {
                  * 而重建要三四秒 —— 这几秒进度条读到的还是旧时钟，看起来就是"跳回老位置"。
                  */
                 selfOriginSec = sec
+                selfJumpAtMs = android.os.SystemClock.elapsedRealtime()
                 playClock?.resetTo((sec * 1_000_000.0).toLong())
                 pipeBootInFlight.set(false)
                 startSelfVideoPipe(jumpUrl, sec, jumpSurface, m, "跳转重建")
@@ -9143,16 +9153,18 @@ class MainActivity : ComponentActivity() {
             val ok = pipe.start(
                 url, emptyMap(), surface,
                 {
-                    /* 跳转重建期间：时钟还没跟上目标（差超过 5 秒）时以目标为准，否则会拿旧位置判断对齐 */
+                    /* 跳转后 1.5 秒内、时钟还没跟上目标时以目标为准；之后就正常跟随时钟 */
                     val now = playClock?.positionSec() ?: startSec
-                    if (Math.abs(now - startSec) > 5.0) startSec else now
+                    val justJumped = android.os.SystemClock.elapsedRealtime() - selfJumpAtMs < 1500L
+                    if (justJumped && Math.abs(now - startSec) > 5.0) startSec else now
                 },
                 { playClock?.isRunning() == true },
                 audioStart, doviPath,
                 holdGate = { selfPipeWaitingFirstFrame.get() },
                 clockReal = {
                     val now = playClock?.positionSec() ?: startSec
-                    if (Math.abs(now - startSec) > 5.0) startSec else now
+                    val justJumped = android.os.SystemClock.elapsedRealtime() - selfJumpAtMs < 1500L
+                    if (justJumped && Math.abs(now - startSec) > 5.0) startSec else now
                 },
                 /* 暂停只认我们自己的状态：内核已不参与，问它等于问一个不在场的人 */
                 pausedNow = { selfPaused || avStall },
