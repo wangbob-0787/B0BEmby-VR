@@ -5463,6 +5463,21 @@ void updateScreenLightFromVideo(VrContext &c) {
     if (c.dvReshapeLoc >= 0 && c.dvParamsLoc >= 0) {
         const bool dvOn = gDvRendererReshape.load() != 0 && gDvStreamActive.load() != 0 && gDvFileValid && g_doviFlat &&
                           g_doviReady && *g_doviReady;
+        /*
+         * 只在状态变化时打一行，报告五项条件各自的值。
+         * 画面偏紫但看不出为什么时，这一行直接说明是哪一项没满足（每帧打印会影响帧率）。
+         */
+        {
+            static int lastDvOn = -1;
+            const int nowDvOn = dvOn ? 1 : 0;
+            if (nowDvOn != lastDvOn) {
+                lastDvOn = nowDvOn;
+                LOGI_RAW("还原状态：生效=%d（开关=%d 数据流=%d 文件=%d 参数=%d 就绪=%d）",
+                         nowDvOn, gDvRendererReshape.load(), gDvStreamActive.load(),
+                         gDvFileValid ? 1 : 0, g_doviFlat ? 1 : 0,
+                         (g_doviReady && *g_doviReady) ? 1 : 0);
+            }
+        }
         glUniform1i(c.dvReshapeLoc, dvOn ? 1 : 0);
         if (dvOn) glUniform1fv(c.dvParamsLoc, 128, (const GLfloat *) g_doviFlat);
     }
