@@ -9144,15 +9144,15 @@ class MainActivity : ComponentActivity() {
                 url, emptyMap(), surface,
                 {
                     /* 跳转重建期间：时钟还没跟上目标（差超过 5 秒）时以目标为准，否则会拿旧位置判断对齐 */
-                    val now = playClock?.positionSec() ?: originSec
-                    if (Math.abs(now - originSec) > 5.0) originSec else now
+                    val now = playClock?.positionSec() ?: startSec
+                    if (Math.abs(now - startSec) > 5.0) startSec else now
                 },
                 { playClock?.isRunning() == true },
                 audioStart, doviPath,
                 holdGate = { selfPipeWaitingFirstFrame.get() },
                 clockReal = {
-                    val now = playClock?.positionSec() ?: originSec
-                    if (Math.abs(now - originSec) > 5.0) originSec else now
+                    val now = playClock?.positionSec() ?: startSec
+                    if (Math.abs(now - startSec) > 5.0) startSec else now
                 },
                 /* 暂停只认我们自己的状态：内核已不参与，问它等于问一个不在场的人 */
                 pausedNow = { selfPaused || avStall },
