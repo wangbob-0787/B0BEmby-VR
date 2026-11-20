@@ -565,7 +565,12 @@ class VideoPipe {
                 )
                 break
             }
-            val pts = ex.sampleTime
+            val pts = try {
+                ex.sampleTime
+            } catch (t: Throwable) {
+                Log.w(TAG, "取样本时间失败（解封装已失效？）：${t.javaClass.simpleName}")
+                break
+            }
             val data = ByteArray(size)
             bb.position(0)
             bb.get(data, 0, size)
@@ -580,9 +585,16 @@ class VideoPipe {
                 Log.w(TAG, "入队失败（队列已中止），退出。已读 $readOk 帧")
                 break
             }
-            ex.advance()
+            try {
+                ex.advance()
+            } catch (t: Throwable) {
+                Log.w(TAG, "推进样本失败：${t.javaClass.simpleName}")
+                break
+            }
         }
-        Log.i(TAG, "读线程退出：队列剩 ${feedQueue.sizeBytes() / 1024}KB")
+        runCatching { extractor?.release() }
+        extractor = null
+        Log.i(TAG, "读线程退出：已读 $readOk 帧，队列剩 ${feedQueue.sizeBytes() / 1024}KB")
     }
 
     /**
@@ -786,9 +798,8 @@ class VideoPipe {
         }
         runCatching { decoder?.stop() }
         runCatching { decoder?.release() }
-        runCatching { extractor?.release() }
+        /* extractor 归读线程所有，这里不许释放：释放了读线程下一次取时间戳就抛异常（实测崩溃） */
         decoder = null
-        extractor = null
     }
 
     /**
