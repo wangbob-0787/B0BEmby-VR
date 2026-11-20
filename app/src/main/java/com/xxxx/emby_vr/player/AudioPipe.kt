@@ -201,7 +201,7 @@ class AudioPipe {
              */
             started.set(autoPlay)
             if (autoPlay) at.play()
-            frameBase = 0L
+            frameBase = runCatching { at.playbackHeadPosition.toLong() }.getOrDefault(0L)
 
             running.set(true)
             thread = Thread({ loop() }, "audio-pipe").also { it.start() }
@@ -359,7 +359,8 @@ class AudioPipe {
                     firstBlockHandled = false
                     seekFlushCount++
                     audioOriginUs = ex.sampleTime.coerceAtLeast(0L)
-                    frameBase = 0L
+                    /* flush 之后设备帧计数不一定归零（各机型行为不同），基准取当下值 */
+                    frameBase = runCatching { at.playbackHeadPosition.toLong() }.getOrDefault(0L)
                     inputDone = false
                     eos = false
                     clock?.resetTo(originUs)

@@ -8999,15 +8999,21 @@ class MainActivity : ComponentActivity() {
         ctl.pipeSeek = { ms ->
             val sec = (ms / 1000.0).coerceAtLeast(0.0)
             pipeSeekT0 = android.os.SystemClock.elapsedRealtime()
-            playClock?.resetTo((sec * 1_000_000.0).toLong())
-            audioPipe?.seekTo(sec)
-            val vp = videoPipe
-            if (vp != null && vp.isRunning()) {
-                vp.requestSeek(sec)
-                Log.i(TAG, "跳转：自管两路同跳到 ${"%.2f".format(sec)}s")
+            /*
+             * 跳转 = 按新位置把整条自管路重建一遍（画面与声音一起）。
+             *
+             * 热跳（同一个解码器里跳）理论上更快，但它要求"解码器就地跳、音频换起点、时钟重置"
+             * 三件事落在同一拍；实测三者一旦错拍，现场就是"声音跳到别处、画面停在原处"。
+             * 位置准比省两秒重要，所以这条路上先只保留重建这一种做法。
+             */
+            val jumpUrl = selfPipeUrl
+            val jumpSurface = selfPipeSurface
+            if (jumpUrl == null || jumpSurface == null) {
+                Log.w(TAG, "跳转被忽略：当前没有在播的自管内容")
             } else {
-                Log.w(TAG, "跳转时画面解码没在跑，重建到 ${"%.2f".format(sec)}s")
-                restoreVideoPipeAt(sec)
+                Log.i(TAG, "跳转：按 ${"%.2f".format(sec)}s 重建整条自管路（画面+声音+时钟）")
+                pipeBootInFlight.set(false)
+                startSelfVideoPipe(jumpUrl, sec, jumpSurface, m, "跳转重建")
             }
         }
 
