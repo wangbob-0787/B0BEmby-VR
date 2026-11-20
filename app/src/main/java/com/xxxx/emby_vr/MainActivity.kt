@@ -9102,7 +9102,16 @@ class MainActivity : ComponentActivity() {
                 clockReal = { playClock?.positionSec() ?: 0.0 },
                 /* 暂停只认我们自己的状态：内核已不参与，问它等于问一个不在场的人 */
                 pausedNow = { selfPaused || avStall },
-                onFirstFrame = { Log.i(TAG, "首帧上屏（自管路）") },
+                onFirstFrame = {
+                    /*
+                     * 首帧**真正上屏**这一刻才允许放声音（父亲 2026-11-21 追问"为什么一直声音先出"）。
+                     *
+                     * 之前放行挂在"画面首帧解出来"上：解出来到显示还要一两帧渲染延迟，
+                     * 而声音是立刻出声，所以永远快半拍。改成这里触发，才是真正的同时。
+                     */
+                    Log.i(TAG, "首帧上屏（自管路）→ 允许放行")
+                    ui.post { tryRelease(0) }
+                },
                 /*
                  * 画面断流 → 声音与时钟一起停（父亲 2026-11-21 定：画面一停，声音必须跟着停）。
                  *
@@ -9216,8 +9225,8 @@ class MainActivity : ComponentActivity() {
                         Log.i(TAG, "READY 首帧=${spanMs}ms RPU=${if (rpuReady) "就绪" else "未就绪"}")
                         pipeReady = true
                         selfPipeReady = true
-                        selfPipePhase = "等放行"
-                        tryRelease(0)
+                        selfPipePhase = "等首帧上屏"
+                        /* 放行不在这里做：等 onFirstFrame（真正上屏）再放声音 */
                     }
                 },
             )
