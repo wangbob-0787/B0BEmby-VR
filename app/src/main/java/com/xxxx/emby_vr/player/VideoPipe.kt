@@ -283,6 +283,13 @@ class VideoPipe {
          * 音频时钟比较，不再有两套基准（两套基准就是忽快忽慢的来源）。
          */
         originFromPicture: Boolean = false,
+        /**
+         * 内存窗口大小（MB，0 = 不用）。
+         *
+         * 为什么要它：没有缓冲时网盘抖一下就直接打到解码器上，画面卡住、声音还在走。
+         * 缓冲档位由控制条的"标准/较大/最大"决定，这里只接收算好的兆数。
+         */
+        memWindowMb: Int = 0,
         onDoviParams: (() -> Unit)? = null,
         onEos: (() -> Unit)? = null,
         onNeedRestart: ((Double) -> Unit)? = null,
@@ -362,10 +369,9 @@ class VideoPipe {
              * 播放因此发涩（父亲 2026-11-18 定：给自管解码器配内存缓冲）。
              * 内存窗只对中转地址生效；其它地址（网页流等）仍按原样直读。
              */
-            val memMb = com.xxxx.emby_vr.vr.VrTuning.pipeMemMb
-            if (memMb > 0 && headers.isEmpty() && url.startsWith("http://127.0.0.1:8898")) {
-                Log.i(TAG, "解码数据源：内存窗 ${memMb}MB（不再逐块打开缓存文件）")
-                ex.setDataSource(MemWindowSource(url, memMb * 1024 * 1024))
+            if (memWindowMb > 0 && headers.isEmpty()) {
+                Log.i(TAG, "解码数据源：内存窗 ${memWindowMb}MB（后台连续读，解码器只从内存取）")
+                ex.setDataSource(MemWindowSource(url, memWindowMb * 1024 * 1024))
             } else if (headers.isEmpty()) {
                 ex.setDataSource(url)
             } else {

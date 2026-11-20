@@ -152,6 +152,8 @@ class AudioPipe {
          * 放行之前必须为 false：声音先响、画面还握着三帧预热，就是"先说话后出人"。
          */
         autoPlay: Boolean = true,
+        /** 内存窗口大小（MB，0 = 直读）。与画面用同一档位，两路各一个窗。 */
+        memWindowMb: Int = 0,
     ): Boolean {
         stop()
         lastError = null
@@ -163,7 +165,14 @@ class AudioPipe {
 
         val ex = MediaExtractor()
         return try {
-            if (headers.isEmpty()) ex.setDataSource(url) else ex.setDataSource(url, headers)
+            if (memWindowMb > 0 && headers.isEmpty()) {
+                Log.i(TAG, "音频数据源：内存窗 ${memWindowMb}MB")
+                ex.setDataSource(MemWindowSource(url, memWindowMb * 1024 * 1024))
+            } else if (headers.isEmpty()) {
+                ex.setDataSource(url)
+            } else {
+                ex.setDataSource(url, headers)
+            }
             val pick = pickAudioTrack(ex, trackIndex)
             if (pick < 0) {
                 lastError = if (trackIndex >= 0) "指定音轨 $trackIndex 不可解" else "没有可解的音轨"
