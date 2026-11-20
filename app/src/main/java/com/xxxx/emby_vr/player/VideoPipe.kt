@@ -732,7 +732,7 @@ class VideoPipe {
          * earlyUs = 这帧该显示的时刻 − 现在（µs）；负数=迟到。
          */
         val clockUs = (clockNowOrWall() * 1_000_000.0).toLong()
-        val earlyUs = ((ptsRaw + appliedOffset - FRAME_DELAY_SEC) * 1_000_000.0).toLong() - clockUs
+        val earlyUs = ((ptsRaw + appliedOffset + FRAME_DELAY_SEC) * 1_000_000.0).toLong() - clockUs
         val nowUs = android.os.SystemClock.elapsedRealtime() * 1000L
         val sinceLastRenderUs = if (lastShownAtMs > 0L) nowUs - lastShownAtMs * 1000L else Long.MAX_VALUE
 
@@ -827,7 +827,14 @@ class VideoPipe {
      * 有了它，解码慢一拍不会立刻变成"丢帧/等待"的来回切换。
      */
     /* 以下三个数值取自 ExoPlayer MediaCodecVideoRenderer，不改 */
-    private val FRAME_DELAY_SEC = 0.05          /* 目标延迟 ≈ 两帧 @24fps */
+    /**
+     * 画面相对时钟的显示偏移（秒）：正数 = 比时钟晚显示。
+     *
+     * 为什么取正：人耳对"声音略早"比对"声音略晚"宽容得多（行业容差是音频领先 45ms 到落后 125ms）。
+     * 2026-11-21 实测这个偏移写成了负数（`pts - 0.05` 等于提前 50ms 上屏），叠加解码缓冲后
+     * 画面净超前约 80ms，主观就是"声音一直滞后"。
+     */
+    private val FRAME_DELAY_SEC = 0.05
     private val MIN_EARLY_US_LATE_THRESHOLD = -30_000L
     private val MIN_EARLY_US_VERY_LATE_THRESHOLD = -500_000L
 
