@@ -9134,11 +9134,18 @@ class MainActivity : ComponentActivity() {
             Log.i(TAG, "画面管道启动：直连 起点=${"%.1f".format(audioStart)}s")
             val ok = pipe.start(
                 url, emptyMap(), surface,
-                { playClock?.positionSec() ?: 0.0 },
+                {
+                    /* 跳转重建期间：时钟还没跟上目标（差超过 5 秒）时以目标为准，否则会拿旧位置判断对齐 */
+                    val now = playClock?.positionSec() ?: originSec
+                    if (Math.abs(now - originSec) > 5.0) originSec else now
+                },
                 { playClock?.isRunning() == true },
                 audioStart, doviPath,
                 holdGate = { selfPipeWaitingFirstFrame.get() },
-                clockReal = { playClock?.positionSec() ?: 0.0 },
+                clockReal = {
+                    val now = playClock?.positionSec() ?: originSec
+                    if (Math.abs(now - originSec) > 5.0) originSec else now
+                },
                 /* 暂停只认我们自己的状态：内核已不参与，问它等于问一个不在场的人 */
                 pausedNow = { selfPaused || avStall },
                 onFirstFrame = {
