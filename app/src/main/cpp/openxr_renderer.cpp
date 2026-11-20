@@ -983,11 +983,19 @@ void main() {
             return;
         }
         if (uDvReshape == 1 && uDv[0] > 1.5) {
+            /*
+             * 杜比 P5 还原：十步照搬 `.15` 上验过的原型（`sim/p5render.c` 的 FS_SRC），
+             * 一条不多一条不少 —— 那份结果是父亲在 Mac 上确认过颜色的，搬过来就不用再比谁对。
+             *
+             * 与原型唯一的差别：原型直接拿 Y/Cb/Cr 三张纹理，我们这里是硬件转好的 RGB，
+             * 所以先按 BT.709 反解回 Y/Cb/Cr（曲线吃的是原值，不是 RGB）。
+             */
             float yv = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));
             float cbv = (c.rgb.b - yv) / 1.8556 + 0.5;
             float crv = (c.rgb.r - yv) / 1.5748 + 0.5;
             vec3 sig = clamp(vec3(yv, cbv, crv), 0.0, 1.0);
 
+            /* ① 逆重塑：逐通道分段多项式 */
             vec3 reshaped = sig;
             for (int ch = 0; ch < 3; ch++) {
                 int base = 2 + ch * 33;
@@ -1001,52 +1009,46 @@ void main() {
                 reshaped[ch] = clamp((uDv[c0 + 2] * x + uDv[c0 + 1]) * x + uDv[c0], 0.0, 1.0);
             }
 
-            /* 减偏移、乘码流自带的 YCbCr→LMS 矩阵（行主序，逐行点乘） */
+            /* ② 减偏移 → 乘码流自带的 YCbCr→LMS 矩阵 */
             vec3 d = reshaped - vec3(uDv[110], uDv[111], uDv[112]);
-            vec3 lmsEnc;
-            lmsEnc.x = uDv[101] * d.x + uDv[102] * d.y + uDv[103] * d.z;
-            lmsEnc.y = uDv[104] * d.x + uDv[105] * d.y + uDv[106] * d.z;
-            lmsEnc.z = uDv[107] * d.x + uDv[108] * d.y + uDv[109] * d.z;
-            lmsEnc = clamp(lmsEnc, 0.0, 1.0);
+            vec3 lms = clamp(vec3(
+                uDv[101] * d.x + uDv[102] * d.y + uDv[103] * d.z,
+                uDv[104] * d.x + uDv[105] * d.y + uDv[106] * d.z,
+                uDv[107] * d.x + uDv[108] * d.y + uDv[109] * d.z), 0.0, 1.0);
 
+            /* ③ 高光软限幅：PQ 逆曲线在接近 1 时分母趋零，单通道先溢出会把整幅带偏 */
+            {
+                float lmx = max(max(lms.r, lms.g), lms.b);
+                if (lmx > 0.985) lms *= (0.985 / lmx);
+            }
+
+            /* ④ PQ 逆曲线（ST2084） */
             const float M1 = 1.0 / 0.1593017578125;
             const float M2 = 1.0 / 78.84375;
             const float C1 = 0.8359375;
             const float C2 = 18.8515625;
             const float C3 = 18.6875;
-            vec3 pw = pow(lmsEnc, vec3(M2));
-            vec3 lmsLin = pow(max(pw - C1, 0.0) / max(C2 - C3 * pw, 1e-5), vec3(M1));
+            vec3 pw = pow(lms, vec3(M2));
+            vec3 lin = pow(max(pw - C1, 0.0) / max(C2 - C3 * pw, 1e-5), vec3(M1));
 
-            /* LMS → BT.2020 RGB（libplacebo 写死的常数，逐行点乘，避免矩阵方向搞混） */
+            /* ⑤ LMS → BT.2020 RGB（固定矩阵） */
             vec3 rgb2020 = max(vec3(
-                dot(lmsLin, vec3( 3.06441879, -2.16597676,  0.10155818)),
-                dot(lmsLin, vec3(-0.65612108,  1.78554118, -0.12943749)),
-                dot(lmsLin, vec3( 0.01736321, -0.04725154,  1.03004253))), 0.0);
+                dot(lin, vec3( 3.06441879, -2.16597676,  0.10155818)),
+                dot(lin, vec3(-0.65612108,  1.78554118, -0.12943749)),
+                dot(lin, vec3( 0.01736321, -0.04725154,  1.03004253))), 0.0);
 
-            /* BT.2020 → BT.709（线性光域），之后整体缩到显示白点再取 gamma */
+            /* ⑥ BT.2020 → BT.709（线性光域） */
             vec3 rgb709 = max(vec3(
                 dot(rgb2020, vec3( 1.660491, -0.587641, -0.072850)),
                 dot(rgb2020, vec3(-0.124550,  1.132900, -0.008349)),
                 dot(rgb2020, vec3(-0.018151, -0.100579,  1.118730))), 0.0);
-            /*
-             * 白点 + 高光滚降（2026-11-16 定参，.15 上四帧复验）。
-             *
-             * 1.0 对应一万尼特，显示白点约 200 尼特 → 先乘 50。
-             * 超过膝点 0.75 的部分不是逐通道硬裁，而是按「最大通道」等比压缩：
-             * 三个通道同乘一个系数，色度比例不变，所以高光不会烧成一块白。
-             * alpha=0.70、膝点 0.75 是四帧联合扫描出的最优（高光区误差 0.0499 → 0.0184）。
-             * 黑位偏移实测无益（会把全图差从 0.007 拉到 0.023），这里不做。
-             */
-            vec3 v = rgb709 * 50.0;
-            float mx = max(max(v.r, v.g), v.b);
-            if (mx > 0.75) {
-                float x = mx - 0.75;
-                float m2 = 0.75 + 0.25 * tanh(x / 0.25);
-                float mf = mx + 0.70 * (m2 - mx);
-                v *= mf / mx;
-            }
-            v = clamp(v, 0.0, 1.0);
-            c = vec4(pow(v, vec3(1.0 / 2.2)), 1.0);
+
+            /* ⑦ 白点：1.0 对应一万尼特，显示白点约 200 尼特 → 乘 50，并按峰值/0.75 等比压 */
+            float peak = max(max(rgb709.r, rgb709.g), max(rgb709.b, 1e-5));
+            vec3 o3 = rgb709 * (50.0 / max(peak / 0.75, 1.0));
+
+            /* ⑧ gamma 2.2 */
+            c = vec4(pow(clamp(o3, 0.0, 1.0), vec3(1.0 / 2.2)), 1.0);
         } else if (uDvReshape == 1 && uDv[0] > 0.5) {
             /*
              * 旧通道（版本 1，只有曲线没有矩阵）：保持原来的近似，避免回归。
