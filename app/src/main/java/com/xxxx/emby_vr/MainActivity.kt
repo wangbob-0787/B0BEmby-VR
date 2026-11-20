@@ -7301,6 +7301,7 @@ class MainActivity : ComponentActivity() {
          * 解码器重新拉起来 —— 表现是画面无故闪一下、或者跳转把新片打断。
          */
         ctl.pipeSeek = null
+        ctl.selfPositionProvider = null
         selfPipeUrl = null
         selfPipeSurface = null
         mpvSubtitleJob?.cancel()
@@ -8936,6 +8937,10 @@ class MainActivity : ComponentActivity() {
          */
         selfAudioOn = true
         if (playClock == null) playClock = com.xxxx.emby_vr.player.PlaybackClock()
+        /* 界面读数一律走自管时钟：控制条、进度条、连跳基准都用同一个数 */
+        ctl.selfPositionProvider = {
+            if (selfAudioOn) playClock?.let { it.positionUs() / 1000L } else null
+        }
         if (rawUrl != lastPipeUrlForCache) {
             lastPipeUrlForCache = rawUrl
             val why = "起播：$source"

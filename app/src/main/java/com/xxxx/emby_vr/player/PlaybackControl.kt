@@ -37,6 +37,14 @@ class PlaybackControl {
     /** 当前是否走内核 */
     val kernelActive: Boolean get() = mpvProvider() != null
 
+    /**
+     * P5 自管路的位置来源（毫秒）。返回 null 表示当前不走这条路。
+     *
+     * 这条路的声音与画面都归我们自己，位置只有一个权威来源 —— 自管时钟。
+     * 若继续读内核位置，控制条与进度条会跟实际播放差一小段，连跳还会跳偏。
+     */
+    var selfPositionProvider: (() -> Long?)? = null
+
     /** 现在有没有可操作的播放引擎 */
     fun hasEngine(): Boolean = kernelActive || exoProvider() != null
 
@@ -60,6 +68,7 @@ class PlaybackControl {
     }
 
     fun positionMs(): Long {
+        selfPositionProvider?.invoke()?.let { return it }
         mpvProvider()?.let { return (it.positionSec() * 1000.0).toLong() }
         return exoProvider()?.currentPosition ?: 0L
     }
