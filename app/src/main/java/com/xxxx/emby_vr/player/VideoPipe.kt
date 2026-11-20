@@ -56,6 +56,17 @@ class VideoPipe {
 
     /** 待执行的跳转（extractor 由读线程独占，跳转也交给它做） */
     @Volatile private var feedSeekSec = -1.0
+
+    /** 读线程要用的起播参数（start() 的局部变量它看不到，必须落到字段） */
+    @Volatile private var feedUrl: String = ""
+    @Volatile private var feedHeaders: Map<String, String> = emptyMap()
+    @Volatile private var feedStartSec: Double = 0.0
+    @Volatile private var feedMemWindowSec: Int = 0
+
+    /** 读线程准备完成会放行；主线程等它拿到轨道格式 */
+    private var prepareLatch = java.util.concurrent.CountDownLatch(1)
+    @Volatile private var preparedFormat: MediaFormat? = null
+    @Volatile private var prepareError: String? = null
     private val running = AtomicBoolean(false)
 
     /** 播放位置来源（音频侧）。为空时按自己的时间戳放。 */
@@ -375,63 +386,33 @@ class VideoPipe {
         prerollDropped = 0
         desyncSinceMs = 0L
         return try {
-            val ex = MediaExtractor()
             /*
-             * 走中转时优先用**内存窗**：后台连续把数据读进固定内存，解码器只从内存取。
-             * 原来走 URL 直读，每 64KB 就让中转重新打开一次缓存文件（四兆要开六十多次），
-             * 播放因此发涩（父亲 2026-11-18 定：给自管解码器配内存缓冲）。
-             * 内存窗只对中转地址生效；其它地址（网页流等）仍按原样直读。
+             * 解封装的打开、选轨、跳转、读，全部交给读线程（系统 MediaExtractor 要求同一线程）。
+             * 主线程在这里只等它准备完，拿到轨道格式之后才能配解码器。
              */
-            var memSrc: MemWindowSource? = null
-            if (memWindowSec > 0 && headers.isEmpty()) {
-                /* 先给 8MB 把头读出来，拿到码率之后再按预算扩容 */
-                memSrc = MemWindowSource(url, 8 * 1024 * 1024)
-                Log.i(TAG, "解码数据源：内存窗（先 8MB，按码率扩到 ${memWindowSec}s 的预算）")
-                ex.setDataSource(memSrc)
-            } else if (headers.isEmpty()) {
-                ex.setDataSource(url)
-            } else {
-                ex.setDataSource(url, headers)
-            }
-
-            var trackIndex = -1
-            var format: MediaFormat? = null
-            for (i in 0 until ex.trackCount) {
-                val f = ex.getTrackFormat(i)
-                val mime = f.getString(MediaFormat.KEY_MIME) ?: continue
-                if (mime.startsWith("video/")) {
-                    trackIndex = i
-                    format = f
-                    break
-                }
-            }
-            if (trackIndex < 0 || format == null) {
-                ex.release()
-                lastError = "容器里没有视频轨"
+            feedUrl = url
+            feedHeaders = headers
+            feedStartSec = startSec
+            feedMemWindowSec = memWindowSec
+            prepareLatch = java.util.concurrent.CountDownLatch(1)
+            prepareError = null
+            preparedFormat = null
+            running.set(true)
+            feedThread = Thread({ feedLoop() }, "VideoFeed").apply { isDaemon = true; start() }
+            if (!prepareLatch.await(20, java.util.concurrent.TimeUnit.SECONDS)) {
+                lastError = "解封装准备超时（20s）"
                 Log.e(TAG, lastError!!)
+                stop()
                 return false
             }
-            ex.selectTrack(trackIndex)
-            /* 拿到码率后把窗扩到"秒 × 码率"（读不到码率就按 64MB 兜底） */
-            memSrc?.let { src ->
-                val bitrate = runCatching { format?.getInteger(MediaFormat.KEY_BIT_RATE) ?: 0 }.getOrDefault(0)
-                val bytes = budgetBytes(memWindowSec, bitrate)
-                Log.i(TAG, "内存预算：${memWindowSec}s × ${bitrate / 1000}kbps → ${bytes / 1048576}MB")
-                src.configureBudget(bytes)
+            val format = preparedFormat
+            val perr = prepareError
+            if (format == null || perr != null) {
+                lastError = perr ?: "解封装准备失败"
+                Log.e(TAG, lastError!!)
+                stop()
+                return false
             }
-            durationSec = runCatching {
-                val us = format?.getLong(MediaFormat.KEY_DURATION) ?: 0L
-                if (us > 0L) us / 1_000_000.0 else 0.0
-            }.getOrDefault(0.0)
-            Log.i(TAG, "片长：${"%.1f".format(durationSec)}s（来自容器头）")
-            if (startSec > 0.5) {
-                // 续播：跳到与声音相同的位置。不按关键帧对齐会从更早的地方开始，
-                // 那样画面要先冲过一段才追上声音。
-                ex.seekTo((startSec * 1_000_000.0).toLong(), MediaExtractor.SEEK_TO_CLOSEST_SYNC)
-                Log.i(TAG, "跳到 ${"%.1f".format(startSec)} 秒起播")
-            }
-            extractor = ex
-
             val mime = format.getString(MediaFormat.KEY_MIME)!!
             val codec = MediaCodec.createDecoderByType(mime)
             /*
@@ -447,8 +428,6 @@ class VideoPipe {
             videoHeight = format.getInteger(MediaFormat.KEY_HEIGHT)
             Log.i(TAG, "起播 $mime ${videoWidth}x$videoHeight")
 
-            running.set(true)
-            feedThread = Thread({ feedLoop() }, "VideoFeed").apply { isDaemon = true; start() }
             thread = Thread({ pump() }, "VideoPipe").apply {
                 priority = Thread.NORM_PRIORITY + 2
                 start()
@@ -501,7 +480,19 @@ class VideoPipe {
      * 它独占 extractor：读、推进、跳转都在这个线程里做，解码线程不再碰它。
      */
     private fun feedLoop() {
-        val ex = extractor ?: run { Log.e(TAG, "feed 退出：extractor 为空"); return }
+        val ex = try {
+            prepareExtractor()
+        } catch (t: Throwable) {
+            prepareError = "解封装准备异常：${t.javaClass.simpleName}: ${t.message}"
+            Log.e(TAG, prepareError!!)
+            prepareLatch.countDown()
+            return
+        }
+        if (ex == null) {
+            prepareLatch.countDown()
+            return
+        }
+        prepareLatch.countDown()
         val arr = ByteArray(2 * 1024 * 1024)
         val bb = java.nio.ByteBuffer.wrap(arr)
         while (running.get()) {
@@ -532,6 +523,65 @@ class VideoPipe {
             ex.advance()
         }
         Log.i(TAG, "读线程退出：队列剩 ${feedQueue.sizeBytes() / 1024}KB")
+    }
+
+    /**
+     * 读线程里打开解封装并定位到起点（打开、选轨、跳转都在这个线程，不能跨线程）。
+     *
+     * 返回 null 表示失败，原因写进 [prepareError]；成功时把轨道格式放进 [preparedFormat]，
+     * 主线程拿到它才能配解码器。
+     */
+    private fun prepareExtractor(): MediaExtractor? {
+        val ex = MediaExtractor()
+        try {
+            var memSrc: MemWindowSource? = null
+            val hdrs = feedHeaders
+            if (feedMemWindowSec > 0 && hdrs.isEmpty()) {
+                memSrc = MemWindowSource(feedUrl, 8 * 1024 * 1024)
+                ex.setDataSource(memSrc)
+            } else if (hdrs.isEmpty()) {
+                ex.setDataSource(feedUrl)
+            } else {
+                ex.setDataSource(feedUrl, hdrs)
+            }
+            var trackIndex = -1
+            var format: MediaFormat? = null
+            for (i in 0 until ex.trackCount) {
+                val f = ex.getTrackFormat(i)
+                val mime = f.getString(MediaFormat.KEY_MIME) ?: continue
+                if (mime.startsWith("video/")) {
+                    trackIndex = i
+                    format = f
+                    break
+                }
+            }
+            if (trackIndex < 0 || format == null) {
+                prepareError = "容器里没有视频轨"
+                ex.release()
+                return null
+            }
+            ex.selectTrack(trackIndex)
+            memSrc?.let { src ->
+                val bitrate = runCatching { format.getInteger(MediaFormat.KEY_BIT_RATE) }.getOrDefault(0)
+                src.configureBudget(budgetBytes(feedMemWindowSec, bitrate))
+            }
+            durationSec = runCatching {
+                val us = format.getLong(MediaFormat.KEY_DURATION)
+                if (us > 0L) us / 1_000_000.0 else 0.0
+            }.getOrDefault(0.0)
+            Log.i(TAG, "片长：${"%.1f".format(durationSec)}s（来自容器头）")
+            if (feedStartSec > 0.5) {
+                ex.seekTo((feedStartSec * 1_000_000.0).toLong(), MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+                Log.i(TAG, "跳到 ${"%.1f".format(feedStartSec)} 秒起播")
+            }
+            extractor = ex
+            preparedFormat = format
+            return ex
+        } catch (t: Throwable) {
+            prepareError = "打开输入失败：${t.javaClass.simpleName}: ${t.message}"
+            runCatching { ex.release() }
+            return null
+        }
     }
 
     /** 解码主循环：喂码流、取画面，按时间轴送出去，直到停止或码流结束。 */
