@@ -502,8 +502,14 @@ class VideoPipe {
             return
         }
         prepareLatch.countDown()
-        val arr = ByteArray(2 * 1024 * 1024)
-        val bb = java.nio.ByteBuffer.wrap(arr)
+        /*
+         * 读缓冲：先给 4MB，装不下就按帧的实际大小扩。
+         *
+         * 实测（2026-11-21）：固定 2MB 时，4K P5 的关键帧读出来是 -1 —— 不是没数据，
+         * 是样本比缓冲大，接口直接回"装不下"，看起来跟结尾一模一样，于是读线程一帧不读就退出。
+         */
+        var arr = ByteArray(4 * 1024 * 1024)
+        var bb = java.nio.ByteBuffer.wrap(arr)
         while (running.get()) {
             val target = feedSeekSec
             if (target >= 0.0) {
@@ -523,7 +529,22 @@ class VideoPipe {
                     Log.w(TAG, "读样本异常：${t.javaClass.simpleName}: ${t.message}")
                     -1
                 }
-                if (size >= 0 || !feedJustSought) break
+                if (size >= 0) break
+                /* 装不下就按帧大小扩缓冲，重读一次 */
+                val need = ex.sampleSize
+                if (need > bb.capacity()) {
+                    arr = ByteArray(need + 1024 * 1024)
+                    bb = java.nio.ByteBuffer.wrap(arr)
+                    bb.clear()
+                    Log.i(TAG, "读缓冲扩到 ${arr.size / 1048576}MB（这一帧需要 $need 字节）")
+                    size = try {
+                        ex.readSampleData(bb, 0)
+                    } catch (t: Throwable) {
+                        -1
+                    }
+                    if (size >= 0) break
+                }
+                if (!feedJustSought) break
                 /* 刚跳过：给解封装一点时间把定位做完，最多等两秒 */
                 if (retries++ >= 100) break
                 Thread.sleep(20)
