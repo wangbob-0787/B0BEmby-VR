@@ -7762,8 +7762,15 @@ class MainActivity : ComponentActivity() {
 
     private fun tryRevealWaitingFrame() {
         if (!waitingFirstFrame) return
-        // 只认"播放器已渲染出第一帧"这一个条件（+150ms 纹理余量，见 onRenderedFirstFrame）
-        if (!playerFrameSeen) return
+        /*
+         * 出画判据有两条，任一条成立即可收幕：
+         *   ① 播放器（ExoPlayer / mpv 内核）报告已渲染第一帧 —— playerFrameSeen；
+         *   ② 自管解码这条路上，我们自己报"首帧真正上屏" —— selfFirstShown。
+         *
+         * 自管解码不走内核，永远不会置 ①，所以只认 ① 时黑幕会一直挂着、直到 20 秒兜底
+         * （2026-11-21 父亲实测：声音先出、画面一直转圈）。
+         */
+        if (!playerFrameSeen && !selfFirstShown) return
         /*
          * 【2026-10-20 18:47 父亲实测：第一次接管时画面是拉扁的，第二次才对】
          *
