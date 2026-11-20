@@ -9139,7 +9139,21 @@ class MainActivity : ComponentActivity() {
                      * 收幕那条通道原来只认播放器首帧（ExoPlayer / mpv 的回调），自管路没有那个回调，
                      * 于是画面其实早就上屏了，黑幕却一直挂着，靠 20 秒兜底才收 —— 看起来就是"十几秒后才出画"。
                      */
-                    ui.post { runCatching { tryRevealWaitingFrame() } }
+                    /*
+                     * 直接走收幕，不再经过 tryRevealWaitingFrame 的那组闸门。
+                     * 自管路没有播放器首帧回调，那组闸门会把它挡回去（实测：一行"收黑幕"日志都没有）。
+                     * 最短停留（父亲要的两秒）在这里单独保留。
+                     */
+                    ui.post {
+                        runCatching {
+                            val since = android.os.SystemClock.uptimeMillis() - waitingStartedAtMs
+                            if (since < kMinWaitingMs) {
+                                handler.postDelayed({ runCatching { revealDanmakuSubtitleLogo() } }, kMinWaitingMs - since)
+                            } else {
+                                revealDanmakuSubtitleLogo()
+                            }
+                        }
+                    }
                     /*
                      * 首帧**真正上屏**这一刻才允许放声音（父亲 2026-11-21 追问"为什么一直声音先出"）。
                      *
