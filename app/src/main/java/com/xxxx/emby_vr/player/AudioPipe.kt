@@ -322,6 +322,14 @@ class AudioPipe {
 
     fun stop(): Boolean {
         running.set(false)
+        /*
+         * 先让设备立刻闭嘴，再停线程（2026-11-21 父亲实测「两个声音同时响」）。
+         *
+         * 线程可能正卡在一次写入里，join 要等一会儿；这期间设备缓冲里还有几百毫秒的声音在放。
+         * pause + flush 是瞬时的，先把声音止住，再去收线程。
+         */
+        runCatching { track?.pause() }
+        runCatching { track?.flush() }
         feedQueue.abort()
         feedThread?.let { runCatching { it.join(800) } }
         feedThread = null
