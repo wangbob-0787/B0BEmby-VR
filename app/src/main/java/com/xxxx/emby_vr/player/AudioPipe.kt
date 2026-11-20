@@ -77,6 +77,9 @@ class AudioPipe {
     private val running = AtomicBoolean(false)
     private val paused = AtomicBoolean(false)
 
+    /** 是否已经放行（放行前不写、不播） */
+    private val started = AtomicBoolean(false)
+
     @Volatile
     private var pendingSeekSec = -1.0
 
@@ -100,8 +103,11 @@ class AudioPipe {
 
     private val ts = AudioTimestamp()
 
-    /** 起播是否允许直接出声：false 时写完第一块就按回去，等画面三帧齐再放开 */
+    /** 起播是否允许直接出声（false = 等放行，见 startNow） */
     private var autoPlayOn = true
+
+    /** 写入被设备拒收的次数（只用于限制日志量） */
+    private var zeroWrites = 0
     private var frameBase = 0L
     private var latencyUs = 0L
 
@@ -184,10 +190,14 @@ class AudioPipe {
             }.getOrDefault(0L)
             autoPlayOn = autoPlay
             /*
-             * 设备先起动再写：未起动时写缓冲会一直阻塞，第一块永远写不完，
-             * 上层等"首帧已写"就会死等。写完第一块立刻按回去（见 writePcm）。
+             * 放行前既不起动设备、也不写数据。
+             *
+             * 实测（PICO 4，2026-11-20）：设备未起动时 write 一律返回 0，数据进不去；
+             * 而起动了就等于开播，声音会抢在画面之前。两条都走不通，所以只能让
+             * "起动"和"开始写"发生在同一刻 —— 那一该由上层的放行来触发（见 resume）。
              */
-            at.play()
+            started.set(autoPlay)
+            if (autoPlay) at.play()
             frameBase = 0L
 
             running.set(true)
@@ -209,6 +219,19 @@ class AudioPipe {
         }
     }
 
+    /**
+     * 放行：起动设备并开始写数据。
+     *
+     * 只有这一处会把设备从"准备好但没动"变成"正在放"，所以声音与画面必然同刻开始。
+     */
+    fun startNow() {
+        if (started.get()) return
+        started.set(true)
+        paused.set(false)
+        runCatching { track?.play() }
+        Log.i(TAG, "音频放行：设备起动 + 开始写数据（位置中枢=${clock?.positionUs()?.div(1000L) ?: 0L}ms）")
+    }
+
     fun pause() {
         paused.set(true)
         runCatching { track?.pause() }
@@ -216,6 +239,7 @@ class AudioPipe {
     }
 
     fun resume() {
+        started.set(true)
         paused.set(false)
         runCatching { track?.play() }
         clock?.resume()
@@ -340,7 +364,7 @@ class AudioPipe {
                     Log.i(TAG, "音频跳转：目标=${"%.2f".format(seekTarget)}s 首帧=${"%.3f".format(audioOriginUs / US)}s")
                 }
 
-                if (paused.get()) {
+                if (!started.get() || paused.get()) {
                     Thread.sleep(10)
                     continue
                 }
@@ -432,7 +456,9 @@ class AudioPipe {
             buf.limit(info.offset + offsetBytes + bytes)
             val n = at.write(buf, bytes, AudioTrack.WRITE_BLOCKING)
             if (n <= 0) {
-                Log.w(TAG, "写入设备返回 $n，停止本次写入")
+                if (zeroWrites++ < 3) {
+                    Log.w(TAG, "写入设备返回 $n（设备未在放；只报前三次）")
+                }
                 return
             }
             offsetBytes += n
@@ -442,11 +468,8 @@ class AudioPipe {
         }
         if (firstPcmAtMs == 0L) {
             firstPcmAtMs = SystemClock.elapsedRealtime()
-            Log.i(TAG, "AUDIO 首帧写入：${trackDesc} 起点=${"%.3f".format(originUs / US)}s")
-            if (!autoPlayOn) {
-                runCatching { at.pause() }
-                Log.i(TAG, "音频已备好但按回去：等画面三帧齐再放开")
-            }
+            Log.i(TAG, "AUDIO 首帧写入：${trackDesc} 起点=${"%.3f".format(originUs / US)}s" +
+                if (autoPlayOn) "" else "（设备未起动，等放行）")
         }
     }
 
@@ -476,7 +499,15 @@ class AudioPipe {
             val sinceTsUs = (System.nanoTime() - ts.nanoTime) / 1000L
             originUs + playedUs + sinceTsUs - latencyUs
         } else {
-            originUs + writtenFrames * 1_000_000L / sampleRate - latencyUs
+            /*
+             * 拿不到硬件时间戳时用**设备已经播放的帧数**，不能用"已写进去的样本数"。
+             *
+             * 已写样本数包含还躺在缓冲里没放出来的那一截，它随缓冲涨落而变，
+             * 用它算出来的位置会慢慢偏大 —— 画面按这个位置判自己迟到、一路丢帧，
+             * 观感就是"播一会儿声音就跑前面去了"。已播帧数是设备实际播到哪，长期不漂。
+             */
+            val played = at.playbackHeadPosition - frameBase
+            originUs + played.coerceAtLeast(0) * 1_000_000L / sampleRate - latencyUs
         }
         clk.noteAudioPosition(posUs.coerceAtLeast(originUs))
     }

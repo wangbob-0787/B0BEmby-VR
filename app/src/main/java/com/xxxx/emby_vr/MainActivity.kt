@@ -9036,19 +9036,25 @@ class MainActivity : ComponentActivity() {
             if (released) return
             if (!pipeReady) return
             val ap = audioPipe
-            if (ap == null || ap.firstPcmAtMs == 0L) {
+            if (ap == null) {
                 if (tries < 80) ui.postDelayed({ tryRelease(tries + 1) }, 100)
-                else Log.w(TAG, "放行超时：等音频首帧已 ${tries * 100}ms，仍未出声")
+                else Log.w(TAG, "放行超时：等音频解码器就绪已 ${tries * 100}ms")
                 return
             }
             released = true
             selfPipeWaitingFirstFrame.set(false)
             selfPaused = false
+            /*
+             * 时钟、声音设备、画面闸门在同一拍动。
+             *
+             * 声音设备一经起动就开始按时间放样本，所以"起动"必须正好发生在画面放行的这一拍；
+             * 早一拍就是先说话后出人，晚一拍就是开头少一句。这是实测出来的边界（PICO 4）。
+             */
             playClock?.start((selfOriginSec * 1_000_000.0).toLong())
-            runCatching { ap.resume() }
+            runCatching { ap.startNow() }
             selfPipePhase = "PLAYING"
             selfPipeReleased = true
-            Log.i(TAG, "放行：画面三帧齐 + 音频首帧已出 → 同时开跑（音轨=${ap.trackDesc}）")
+            Log.i(TAG, "放行：画面三帧齐 + 音频设备同刻起动（音轨=${ap.trackDesc}）")
         }
 
         fun launchPipeline(audioStart: Double) {
@@ -9090,6 +9096,8 @@ class MainActivity : ComponentActivity() {
                         ui.post {
                             if (started) {
                                 audioPipe = ap
+                                /* 解码器与设备都备好但没动；放行那一刻才起动（见 tryRelease） */
+                                Log.i(TAG, "音频已备好（未起动）：${ap.trackDesc} 位置中枢=${ap.positionUs() / 1000}ms")
                                 tryRelease(0)
                             } else {
                                 /*
