@@ -9230,8 +9230,15 @@ class MainActivity : ComponentActivity() {
                     }
                 },
                 onDoviParams = {
+                    /*
+                     * 两件事都要做，缺一不可（2026-11-21 查实）：
+                     * ① 标记数据流是杜比 P5；② 打开渲染层还原总开关。
+                     * 之前只做了 ①，总开关一直是 0，于是每帧直接吐原始颜色（日志：「开关=0 ... 生效=0」），
+                     * 屏幕上是没做还原的原始画面 —— 这就是偏色的直接原因。
+                     */
                     com.xxxx.emby_vr.vr.VrNative.setDoviStreamActive(true)
-                    Log.i(TAG, "确认是杜比 P5：允许渲染层还原")
+                    com.xxxx.emby_vr.vr.VrNative.setDvRendererReshape(true)
+                    Log.i(TAG, "确认是杜比 P5：数据流与渲染层还原总开关都已打开")
                 },
                 onEos = {
                     if (videoPipe !== pipe) return@start
