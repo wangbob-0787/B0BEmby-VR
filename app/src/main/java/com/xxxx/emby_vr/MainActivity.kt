@@ -8478,6 +8478,14 @@ class MainActivity : ComponentActivity() {
     @Volatile private var selfOriginSec = 0.0
 
     /**
+     * 任意一路卡住时置 true：画面据此握帧、声音据此暂停。
+     *
+     * 与 [selfPaused]（用户按的暂停）分开存：用户暂停时两路都停，数据卡住时两路也都停，
+     * 但恢复的判据不同 —— 用户暂停只有用户能解，数据恢复自己就能解。
+     */
+    @Volatile private var avStall = false
+
+    /**
      * 自管解码起播时，声音要等画面首帧。
      *
      * 为 true 时：画面只放第一帧然后停住，声音也挂在校起播位置不发。
@@ -9074,7 +9082,7 @@ class MainActivity : ComponentActivity() {
                 holdGate = { selfPipeWaitingFirstFrame.get() },
                 clockReal = { playClock?.positionSec() ?: 0.0 },
                 /* 暂停只认我们自己的状态：内核已不参与，问它等于问一个不在场的人 */
-                pausedNow = { selfPaused },
+                pausedNow = { selfPaused || avStall },
                 onFirstFrame = { Log.i(TAG, "首帧上屏（自管路）") },
                 /*
                  * 画面断流 → 声音与时钟一起停（父亲 2026-11-21 定：画面一停，声音必须跟着停）。
@@ -9108,6 +9116,17 @@ class MainActivity : ComponentActivity() {
                         val clk = playClock
                         if (clk == null) return@Thread
                         val ap = com.xxxx.emby_vr.player.AudioPipe()
+                        /* 声音这一路停写 → 画面一起停；恢复 → 一起走（用户自己按暂停的情况除外） */
+                        ap.onStall = { stalledNow ->
+                            ui.post {
+                                avStall = stalledNow
+                                if (stalledNow) {
+                                    Log.w(TAG, "声音停写 → 画面一起停")
+                                } else if (!selfPaused) {
+                                    Log.i(TAG, "声音恢复 → 画面一起走")
+                                }
+                            }
+                        }
                         val started = ap.start(
                             url, emptyMap(), startSec = audioStart, originSec = originSec,
                             clock = clk, autoPlay = false,

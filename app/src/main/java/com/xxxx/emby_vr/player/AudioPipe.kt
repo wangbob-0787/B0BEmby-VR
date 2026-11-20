@@ -118,6 +118,22 @@ class AudioPipe {
     private var clock: PlaybackClock? = null
 
     /**
+     * 声音这一路停写/断流时通知上层（true=停了，false=恢复）。
+     *
+     * 父亲 2026-11-21 定的规矩是双向的：画面停声音停、声音停画面也停。
+     * 这里报的是"写不进去"，通常意味着上游数据断了或设备卡住。
+     */
+    @Volatile
+    var onStall: ((Boolean) -> Unit)? = null
+
+    /** 最近一次成功写入的时刻；断流判定只用它 */
+    @Volatile
+    private var lastWriteMs = 0L
+
+    /** 当前是否处于"报过停"的状态（避免每轮重复回调） */
+    private val stalled = AtomicBoolean(false)
+
+    /**
      * 起播。
      *
      * @param originSec 画面首个真实帧的时间（秒）。音频按它对齐：晚就补静音、早才裁。
@@ -372,6 +388,14 @@ class AudioPipe {
                     Thread.sleep(10)
                     continue
                 }
+                /* 声音停写超过 1.5 秒：通知上层把画面一起停住（父亲定的双向规矩） */
+                val lw = lastWriteMs
+                if (lw > 0L && SystemClock.elapsedRealtime() - lw > 1500L &&
+                    stalled.compareAndSet(false, true)
+                ) {
+                    Log.w(TAG, "声音停写超过 1.5 秒 → 通知画面一起停")
+                    runCatching { onStall?.invoke(true) }
+                }
 
                 if (!inputDone) {
                     val ci = c.dequeueInputBuffer(5_000)
@@ -468,6 +492,11 @@ class AudioPipe {
             offsetBytes += n
             bytes -= n
             writtenFrames += (n / bytesPerFrame).toLong()
+            lastWriteMs = SystemClock.elapsedRealtime()
+            if (stalled.compareAndSet(true, false)) {
+                Log.i(TAG, "声音恢复写入 → 通知画面一起走")
+                runCatching { onStall?.invoke(false) }
+            }
             notePosition()
         }
         if (firstPcmAtMs == 0L) {
