@@ -43,6 +43,19 @@ class VideoPipe {
     private var extractor: MediaExtractor? = null
     private var decoder: MediaCodec? = null
     private var thread: Thread? = null
+
+    /*
+     * 读线程 → 队列 → 解码线程（照 ffplay 的 packet queue，2026-11-21）。
+     *
+     * 为什么加这一层：网络一抖，原来解码线程直接卡在"读不到数据"上，画面就冻住；
+     * 有了队列，读线程可以在网络好的时候多攒几秒，解码线程只从内存拿。
+     * 队列按字节封顶（32MB，约两三秒 4K），满了读线程等 —— 与 ffplay 一样不丢帧。
+     */
+    private var feedThread: Thread? = null
+    private val feedQueue = SampleQueue(32 * 1024 * 1024)
+
+    /** 待执行的跳转（extractor 由读线程独占，跳转也交给它做） */
+    @Volatile private var feedSeekSec = -1.0
     private val running = AtomicBoolean(false)
 
     /** 播放位置来源（音频侧）。为空时按自己的时间戳放。 */
@@ -435,6 +448,7 @@ class VideoPipe {
             Log.i(TAG, "起播 $mime ${videoWidth}x$videoHeight")
 
             running.set(true)
+            feedThread = Thread({ feedLoop() }, "VideoFeed").apply { isDaemon = true; start() }
             thread = Thread({ pump() }, "VideoPipe").apply {
                 priority = Thread.NORM_PRIORITY + 2
                 start()
@@ -479,6 +493,45 @@ class VideoPipe {
             stop()
             false
         }
+    }
+
+    /**
+     * 读线程：把解复用出来的每一帧塞进队列（ffplay 的 packet_queue 那条读线程）。
+     *
+     * 它独占 extractor：读、推进、跳转都在这个线程里做，解码线程不再碰它。
+     */
+    private fun feedLoop() {
+        val ex = extractor ?: run { Log.e(TAG, "feed 退出：extractor 为空"); return }
+        val arr = ByteArray(2 * 1024 * 1024)
+        val bb = java.nio.ByteBuffer.wrap(arr)
+        while (running.get()) {
+            val target = feedSeekSec
+            if (target >= 0.0) {
+                feedSeekSec = -1.0
+                runCatching { ex.seekTo((target * 1_000_000.0).toLong(), MediaExtractor.SEEK_TO_CLOSEST_SYNC) }
+                feedQueue.flush()
+                Log.i(TAG, "读线程跳转到 ${"%.2f".format(target)}s（队列已清空）")
+            }
+            bb.clear()
+            val size = try {
+                ex.readSampleData(bb, 0)
+            } catch (t: Throwable) {
+                Log.w(TAG, "读样本异常：${t.javaClass.simpleName}: ${t.message}")
+                -1
+            }
+            if (size < 0) {
+                feedQueue.putEos()
+                Log.i(TAG, "读线程到达结尾（已塞 ${statSamples} 帧）")
+                break
+            }
+            val pts = ex.sampleTime
+            val data = ByteArray(size)
+            bb.position(0)
+            bb.get(data, 0, size)
+            if (!feedQueue.put(SampleQueue.Packet(data, size, pts))) break
+            ex.advance()
+        }
+        Log.i(TAG, "读线程退出：队列剩 ${feedQueue.sizeBytes() / 1024}KB")
     }
 
     /** 解码主循环：喂码流、取画面，按时间轴送出去，直到停止或码流结束。 */
@@ -533,17 +586,18 @@ class VideoPipe {
                     statInMiss++
                 } else {
                     val buf = codec.getInputBuffer(inIdx) ?: continue
-                    val size = ex.readSampleData(buf, 0)
-                    statLastReadRet = size.toLong()
-                    if (size >= 0) {
-                        statSamples++
-                        statBytes += size
-                    }
-                    if (size < 0) {
+                    /* 数据来自读线程攒好的队列；队列给 null 表示读完了或已中止 */
+                    val pkt = feedQueue.get()
+                    statLastReadRet = (pkt?.size ?: -1).toLong()
+                    if (pkt == null) {
                         codec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                         inputDone = true
                     } else {
-                        val pts = ex.sampleTime
+                        statSamples++
+                        statBytes += pkt.size
+                        buf.clear()
+                        buf.put(pkt.data, 0, pkt.size)
+                        val pts = if (pkt.ptsUs >= 0) pkt.ptsUs else 0L
                         /*
                          * 趁这帧还在手里，先解出杜比参数。
                          *
@@ -552,9 +606,8 @@ class VideoPipe {
                          * 不上屏"不影响颜色 —— 这是不留首帧的依据。
                          */
                         lastSeenInputPts = pts / 1_000_000.0
-                        harvestDovi(buf, size)
-                        codec.queueInputBuffer(inIdx, 0, size, pts, 0)
-                        ex.advance()
+                        runCatching { harvestDovi(java.nio.ByteBuffer.wrap(pkt.data, 0, pkt.size), pkt.size) }
+                        codec.queueInputBuffer(inIdx, 0, pkt.size, pts, 0)
                     }
                 }
             }
@@ -815,10 +868,14 @@ class VideoPipe {
      * 实测 6~9 秒；而 flush + seek 是同一个解码器内的动作，几百毫秒级。
      */
     private fun seekInPlace(targetSec: Double): Boolean {
-        val ex = extractor ?: return false
         val c = decoder ?: return false
         return try {
-            ex.seekTo((targetSec * 1_000_000.0).toLong(), MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+            /*
+             * extractor 由读线程独占，所以这里只递话：读线程看到目标就 seek 并清队，
+             * 解码线程只管把解码器 flush 掉。两个线程各碰各的对象，不会交叉。
+             */
+            feedSeekSec = targetSec
+            feedQueue.flush()
             c.flush()
             /*
              * 重定基准：跳到新处后第一帧重新定 offset，预卷丢弃重新计。
@@ -1004,6 +1061,9 @@ class VideoPipe {
         /* 释放权归线程自己：这里只置停止标志，不代解码线程 release（图 §5 I4） */
         stopping = true
         running.set(false)
+        feedQueue.abort()
+        feedThread?.let { runCatching { it.join(600) } }
+        feedThread = null
         holdGate = null
         onNeedRestart = null
         onAudioAlign = null
