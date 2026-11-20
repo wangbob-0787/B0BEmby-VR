@@ -852,8 +852,16 @@ class VideoPipe {
         }
         if (originPts < 0.0) {
             originPts = ptsRaw
-            /* 起点由画面定：声音侧本来就要按这个时刻对齐，offset 因此恒为 0 */
-            if (originFromPicture) audioStartSec = ptsRaw
+            /*
+             * 画面首帧落地这一刻，把时钟拨到它的真实时间（父亲 2026-11-21 定的第二步）。
+             *
+             * 关键帧可能在目标左侧几百毫秒到几秒，时钟必须跟着它走，
+             * 否则"目标时间"和"真实能动的位置"之间会一直差着一截，声音也没法对齐。
+             */
+            if (originFromPicture) {
+                audioStartSec = ptsRaw
+                runCatching { onOriginSec?.invoke(ptsRaw) }
+            }
             if (!originReported) {
                 originReported = true
                 runCatching { onOriginSec?.invoke(ptsRaw) }
