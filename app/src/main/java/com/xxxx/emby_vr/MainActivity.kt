@@ -9102,7 +9102,14 @@ class MainActivity : ComponentActivity() {
                  * 恢复时只有"用户没有自己按暂停"才放开，否则会把用户的暂停顶掉。
                  */
                 onStall = { stalled ->
-                    if (selfAudioOn) {
+                    /*
+                     * 只在**已经放行之后**才让断流信号去动声音。
+                     *
+                     * 起播阶段读流监视也会报"断流/恢复"（第一次读数据前必然报一次），
+                     * 恢复那一支会去 resume 音频 —— 那一刻还没放行，声音就提前出来了，
+                     * 现场正是"声音先出、画面还在转圈"（2026-11-21 00:52 实测）。
+                     */
+                    if (selfAudioOn && selfPipeReleased) {
                         if (stalled) {
                             Log.w(TAG, "画面断流 → 声音与时钟一起停")
                             runCatching { audioPipe?.pause() }
