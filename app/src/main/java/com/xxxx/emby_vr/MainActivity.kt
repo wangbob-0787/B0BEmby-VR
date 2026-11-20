@@ -9077,6 +9077,23 @@ class MainActivity : ComponentActivity() {
                 pausedNow = { selfPaused },
                 onFirstFrame = { Log.i(TAG, "首帧上屏（自管路）") },
                 /*
+                 * 画面断流 → 声音与时钟一起停（父亲 2026-11-21 定：画面一停，声音必须跟着停）。
+                 *
+                 * 断流来自解码线程的读流监视（约两秒一拍）：两拍之间样本数不涨就算断。
+                 * 恢复时只有"用户没有自己按暂停"才放开，否则会把用户的暂停顶掉。
+                 */
+                onStall = { stalled ->
+                    if (selfAudioOn) {
+                        if (stalled) {
+                            Log.w(TAG, "画面断流 → 声音与时钟一起停")
+                            runCatching { audioPipe?.pause() }
+                        } else if (!selfPaused) {
+                            Log.i(TAG, "画面恢复 → 声音与时钟一起走")
+                            runCatching { audioPipe?.resume() }
+                        }
+                    }
+                },
+                /*
                  * 画面首帧的真实时间到手 → 起音频（原型第 1 条）。
                  * 顺序不能反：先探测画面首帧再开音频，首帧出现之前的音频包才有地方放；
                  * 反过来做会把那半秒当成"早于起点"裁掉，声音开头少一截且补不回来。
