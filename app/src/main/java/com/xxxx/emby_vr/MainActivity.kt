@@ -8789,6 +8789,14 @@ class MainActivity : ComponentActivity() {
     private fun restoreVideoPipeAt(sec: Double) {
         val url = selfPipeUrl ?: return
         val surface = selfPipeSurface ?: return
+        /*
+         * 先把时钟设到新位置，再重建画面（2026-11-21 父亲实测：左跳后画面被拽回原处）。
+         *
+         * 原因：重建时画面已经在新位置（比如 6 分钟），而时钟还停在旧位置（20 多分钟），
+         * 「起播对齐」就把画面判成落后一千多秒、又把它拽回旧位置；两路互相拉，最终错开。
+         */
+        selfOriginSec = sec
+        playClock?.resetTo((sec * 1_000_000.0).toLong())
         val pipe = com.xxxx.emby_vr.player.VideoPipe()
         videoPipe = pipe
         val ok = pipe.start(
