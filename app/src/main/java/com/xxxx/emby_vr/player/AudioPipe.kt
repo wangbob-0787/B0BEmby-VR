@@ -412,7 +412,7 @@ class AudioPipe {
         val (chMask, outCh) = when (channelCount) {
             1 -> AudioFormat.CHANNEL_OUT_MONO to 1
             2 -> AudioFormat.CHANNEL_OUT_STEREO to 2
-            3 -> AudioFormat.CHANNEL_OUT_STEREO to 2
+            3 -> AudioFormat.CHANNEL_OUT_STEREO to 2   /* 3 声道极少，按立体声下混由解码器保证；见下方一致性校验 */
             4 -> AudioFormat.CHANNEL_OUT_QUAD to 4
             5, 6 -> AudioFormat.CHANNEL_OUT_5POINT1 to 6
             7, 8 -> AudioFormat.CHANNEL_OUT_7POINT1_SURROUND to 8
@@ -647,8 +647,15 @@ class AudioPipe {
                      */
                     val rc = runCatching { nf.getInteger(MediaFormat.KEY_CHANNEL_COUNT) }.getOrDefault(channelCount)
                     if (rc != channelCount) {
-                        Log.e(TAG, "解码输出声道与设备不一致：设备=${channelCount} 实际=$rc（声音会异常）")
+                        /*
+                         * 通道数已经和设备、bytesPerFrame 绑定；这里不符就只能把声音停掉，
+                         * 继续播就是三倍速/半速（豆豆 2026-11-21）。
+                         */
+                        Log.e(TAG, "解码输出声道与设备不一致：设备=${channelCount} 实际=$rc → 停掉声音")
                         lastError = "声道不一致（设备=$channelCount 实际=$rc）"
+                        runCatching { at.pause() }
+                        runCatching { at.flush() }
+                        break
                     }
                 }
 
@@ -728,15 +735,29 @@ class AudioPipe {
         }
     }
 
+    /**
+     * 补静音。
+     *
+     * `frames` 是**每声道帧数**，而 `AudioTrack.write(short[], off, size)` 的 size 是
+     * **短路样本数**（= 帧数 × 声道数）。原来直接把 frames 当样本数写：
+     * 双声道只补一半、5.1 只补六分之一，听感就是"声音比画面早到"（豆豆 2026-11-21 查实）。
+     * 另外 `writtenFrames` 也要按帧累加，不能拿样本数当帧数。
+     */
     private fun writeSilence(at: AudioTrack, frames: Int) {
+        val outCh = (bytesPerFrame / 2).coerceAtLeast(1)
         /* AudioTrack 只接受 byte/short/float 三种数组，静音用 short 全零 */
-        val chunk = ShortArray(minOf(frames, 4096))
-        var left = frames
-        while (left > 0 && running.get()) {
-            val n = minOf(left, chunk.size)
-            at.write(chunk, 0, n, AudioTrack.WRITE_BLOCKING)
-            left -= n
-            writtenFrames += n.toLong()
+        val chunk = ShortArray(minOf(frames, 4096 / outCh) * outCh)
+        var leftSamples = frames.toLong() * outCh
+        while (leftSamples > 0 && running.get()) {
+            val n = minOf(leftSamples, chunk.size.toLong()).toInt()
+            val wrote = at.write(chunk, 0, n, AudioTrack.WRITE_BLOCKING)
+            if (wrote <= 0) {
+                /* 设备没起动/写不进去：不能把没写进去的当成已写，否则位置会假前进 */
+                if (zeroWrites++ < 3) Log.w(TAG, "补静音写入返回 $wrote（设备未在放）")
+                break
+            }
+            leftSamples -= wrote
+            writtenFrames += (wrote / outCh).toLong()
         }
         notePosition()
     }
