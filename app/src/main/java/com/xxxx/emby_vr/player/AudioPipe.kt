@@ -312,7 +312,11 @@ class AudioPipe {
             val at = buildTrack()
             if (at == null) {
                 lastError = "音频设备建不起来"
-                c.stop(); c.release(); codec = null
+                runCatching { codec?.stop() }
+                runCatching { codec?.release() }
+                codec = null
+                ffDec?.close()
+                ffDec = null
                 feedQueue.abort()
                 return false
             }

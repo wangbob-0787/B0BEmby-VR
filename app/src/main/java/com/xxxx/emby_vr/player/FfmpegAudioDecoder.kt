@@ -50,10 +50,16 @@ class FfmpegAudioDecoder(
             return false
         }
         val codecName = codecNameOf(mime)
-        val csd = if (format.containsKey(MediaFormat.KEY_CSD0)) {
-            val bb = format.getByteBuffer(MediaFormat.KEY_CSD0)
-            ByteArray(bb.remaining()).also { bb.duplicate().get(it) }
-        } else null
+        /*
+         * 键名用字面量 "csd-0"：SDK 里没有公开的 MediaFormat.KEY_CSD0 常量（编译期 Unresolved reference）。
+         * csd 缓冲区常带 position 偏移，直接 get 会读到错位的数据，所以先 duplicate。
+         */
+        val csd: ByteArray? = runCatching {
+            format.getByteBuffer("csd-0")?.let { bb ->
+                val view = bb.duplicate()
+                ByteArray(view.remaining()).also { view.get(it) }
+            }
+        }.getOrNull()
         val rc = AudioDecoderNative.nativeOpen(handle, codecName, csd, targetChannels)
         if (rc != 0) {
             Log.e(TAG, "自检失败：nativeOpen($codecName) rc=$rc")
