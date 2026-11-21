@@ -7327,6 +7327,8 @@ class MainActivity : ComponentActivity() {
          */
         /* 自管解码标志跟着这条片子走：停播即复位，否则下一部非 P5 片子会误走服务端文本字幕（豆豆 2026-11-22） */
         selfPipeActive = false
+        /* 荧幕进度条的时长缓存跟着这条片子走，别把上一部的总时长带过去 */
+        danmakuView?.resetSeekHudCache()
         com.xxxx.emby_vr.vr.VrNative.setDvRendererReshape(false)
         com.xxxx.emby_vr.vr.VrNative.setDoviStreamActive(false)
         com.xxxx.emby_vr.vr.VrNative.resetDoviAll()

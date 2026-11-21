@@ -85,18 +85,40 @@ class DanmakuView(context: Context) : View(context) {
     @Volatile private var hudDurMs = 0L
     @Volatile private var hudBufMs = 0L
 
+    /**
+     * 上一次有效总时长。
+     *
+     * 跳转重建期间 `videoPipe` 会被置空，播放侧读到的时长是 0；绘制里 `if (duration > 0)`
+     * 整块跳过，画面上就只剩一条暗线（父亲 2026-11-22 报的"三个元素轮流出现"之一）。
+     * 这里缓存上一次的有效值，只在换片时清 —— 跳转期条照常完整显示。
+     */
+    private var lastGoodDurMs = 0L
+
+    /** 显示层插值位置：每帧朝最新目标靠拢，时间常数 0.16 秒（豆豆 2026-11-22 定） */
+    private var displayedPosMs = 0.0
+    private var lastDrawAtMs = 0L
+
     /** 快进快退进度条的显隐与数据（位置 / 总长 / 缓冲），由播放侧驱动 */
     fun setSeekHud(visible: Boolean, posMs: Long, durMs: Long, bufMs: Long) {
+        if (durMs > 0L) lastGoodDurMs = durMs
+        val shownDur = if (durMs > 0L) durMs else lastGoodDurMs
         if (visible == hudVisible && posMs == hudPosMs &&
-            durMs == hudDurMs && bufMs == hudBufMs
+            shownDur == hudDurMs && bufMs == hudBufMs
         ) {
             return
         }
         hudVisible = visible
         hudPosMs = posMs
-        hudDurMs = durMs
+        hudDurMs = shownDur
         hudBufMs = bufMs
         invalidate()
+    }
+
+    /** 换片/停播调用：缓存跟着这一条片子走，别把上一部的时长带过去 */
+    fun resetSeekHudCache() {
+        lastGoodDurMs = 0L
+        displayedPosMs = 0.0
+        lastDrawAtMs = 0L
     }
 
     private val hudTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -317,10 +339,25 @@ class DanmakuView(context: Context) : View(context) {
         val cursorW = max(3f, width * 0.0042f * 9f / 16f)
         val cursorH = width * 0.028f * 9f / 16f
 
-        val remain = (hudDurMs - hudPosMs).coerceAtLeast(0L)
-        val leftText = osdTimeText(hudPosMs)
+        /*
+         * 一帧一份快照：这一帧从开始画到结束只用这组局部量。
+         * 播放侧每 200ms 才更新一次目标，绘制期间不再回头读字段 —— 否则一帧内状态会变，
+         * 三个元素（绿段 / 游标 / 缓冲）就会各自按不同的时刻画（父亲 2026-11-22 的"轮流出现"）。
+         */
+        val nowAtDraw = System.nanoTime() / 1_000_000L
+        val dtMs = if (lastDrawAtMs == 0L) 16.0 else (nowAtDraw - lastDrawAtMs).coerceIn(0L, 200L).toDouble()
+        lastDrawAtMs = nowAtDraw
+        /* 朝最新目标靠拢（200ms 的台阶被抹平）；时间常数 0.16s，肉眼是连续移动 */
+        val k = 1.0 - Math.exp(-dtMs / 160.0)
+        displayedPosMs += (hudPosMs - displayedPosMs) * k
+        val posMs = displayedPosMs.toLong().coerceIn(0L, hudDurMs.coerceAtLeast(0L))
+        val durMs = hudDurMs
+        val bufMs = hudBufMs
+
+        val remain = (durMs - posMs).coerceAtLeast(0L)
+        val leftText = osdTimeText(posMs)
         // 文案与控制条完全一致：左「已播」，右「-剩余 / 总时长」（见 panel/PlayerOsd.kt）
-        val rightText = "-" + osdTimeText(remain) + " / " + osdTimeText(hudDurMs)
+        val rightText = "-" + osdTimeText(remain) + " / " + osdTimeText(durMs)
 
         val baseline = rowCy + textSize * 0.35f
         canvas.drawText(leftText, padX, baseline, hudTextPaint)
@@ -334,9 +371,9 @@ class DanmakuView(context: Context) : View(context) {
         val barW = barRight - barLeft
 
         canvas.drawRect(barLeft, rowCy - barH / 2f, barRight, rowCy + barH / 2f, hudTrackPaint)
-        if (hudDurMs > 0L) {
-            val frac = (hudPosMs.toFloat() / hudDurMs.toFloat()).coerceIn(0f, 1f)
-            val bufFrac = (hudBufMs.toFloat() / hudDurMs.toFloat()).coerceIn(0f, 1f)
+        if (durMs > 0L) {
+            val frac = (posMs.toFloat() / durMs.toFloat()).coerceIn(0f, 1f)
+            val bufFrac = (bufMs.toFloat() / durMs.toFloat()).coerceIn(0f, 1f)
             if (bufFrac > 0f) {
                 canvas.drawRect(
                     barLeft, rowCy - barH / 2f,
