@@ -1,0 +1,107 @@
+name: Build FFmpeg Audio（arm64，给自管音频解码用）
+
+# 目的：编一份**只带音频解码器**的 FFmpeg（LGPL），供 P5 自管路替换系统解码器。
+# 为什么在云端编：安卓工具链 CI 自带，本地不必装 2GB NDK。
+# 版本钉死 n7.1（豆豆 2026-11-21 要求：合规可追溯，不复用内核那份打补丁的源码）。
+#
+# 产物：libavcodec.so / libswresample.so / libavutil.so（arm64-v8a）+ 头文件
+# 用法：手动触发（workflow_dispatch），产物在 Release 标签 ffmpeg-audio-n7.1
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/build-ffmpeg-audio.yml'
+
+env:
+  FFMPEG_TAG: n7.1
+  ANDROID_API: 29          # PICO 4 是 Android 10
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 取 FFmpeg 源码（钉 tag）
+        run: |
+          set -e
+          git clone --depth 1 --branch "${FFMPEG_TAG}" https://github.com/FFmpeg/FFmpeg.git ffmpeg
+          cd ffmpeg
+          echo "COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          git log -1 --oneline
+
+      - name: 配置 NDK 工具链
+        run: |
+          set -e
+          # GitHub 的 linux runner 自带 NDK，路径随镜像版本变化，这里找出来
+          NDK=$(ls -d /usr/local/lib/android/sdk/ndk/* 2>/dev/null | sort -V | tail -1)
+          if [ -z "$NDK" ]; then NDK="$ANDROID_NDK_HOME"; fi
+          echo "NDK=$NDK" >> "$GITHUB_ENV"
+          echo "找到 NDK：$NDK"
+          ls "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin" | head -5
+
+      - name: configure（只开音频解码器 + 重采样）
+        run: |
+          set -e
+          NDK="$NDK"
+          TC="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
+          ./configure \
+            --prefix="$PWD/out-arm64" \
+            --target-os=android --arch=aarch64 --cpu=armv8-a \
+            --enable-cross-compile \
+            --sysroot="$TC/sysroot" \
+            --cc="$TC/bin/aarch64-linux-android${ANDROID_API}-clang" \
+            --cxx="$TC/bin/aarch64-linux-android${ANDROID_API}-clang++" \
+            --ar="$TC/bin/llvm-ar" --ranlib="$TC/bin/llvm-ranlib" --strip="$TC/bin/llvm-strip" \
+            --disable-everything \
+            --disable-programs --disable-doc --disable-network --disable-autodetect \
+            --disable-avdevice --disable-avfilter --disable-swscale --disable-postproc \
+            --disable-avformat --disable-devices --disable-filters --disable-encoders \
+            --disable-muxers --disable-demuxers --disable-parsers --disable-bsfs \
+            --disable-protocols --disable-indevs --disable-outdevs \
+            --enable-small \
+            --enable-static --disable-shared \
+            --enable-avcodec --enable-avutil --enable-swresample \
+            --enable-decoder=ac3,eac3,truehd,dca,aac,flac,opus,vorbis,mp3 \
+            --enable-parser=ac3,dca,aac,flac,opus,vorbis,mpegaudio
+        working-directory: ffmpeg
+
+      - name: 编译并安装
+        run: |
+          set -e
+          make -j"$(nproc)"
+          make install
+        working-directory: ffmpeg
+
+      - name: 打包产物
+        run: |
+          set -e
+          mkdir -p dist/lib/arm64-v8a dist/include dist/LICENSE
+          cp ffmpeg/out-arm64/lib/libavcodec.a ffmpeg/out-arm64/lib/libswresample.a ffmpeg/out-arm64/lib/libavutil.a dist/lib/arm64-v8a/
+          cp -r ffmpeg/out-arm64/include/* dist/include/
+          cp ffmpeg/COPYING.LGPLv2.1 ffmpeg/COPYING dist/LICENSE/ 2>/dev/null || true
+          echo "FFmpeg $FFMPEG_TAG commit=$COMMIT 静态库，LGPL 2.1+，动态链接说明见 README" > dist/LICENSE/版本与许可.txt
+          tar -czf ffmpeg-audio-arm64.tar.gz -C dist .
+          ls -lh ffmpeg-audio-arm64.tar.gz
+          du -sh dist/lib/arm64-v8a/*
+
+      - name: 发布到 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ffmpeg-audio-${{ env.FFMPEG_TAG }}
+          name: FFmpeg 音频解码库（${{ env.FFMPEG_TAG }}，arm64）
+          body: |
+            只带音频解码器（ac3/eac3/truehd/dca/aac/flac/opus/vorbis/mp3）+ swresample 的 FFmpeg 静态库。
+            源码 tag：${{ env.FFMPEG_TAG }}，commit：${{ env.COMMIT }}
+            许可：LGPL 2.1+（未启用 GPL 组件）
+          files: ffmpeg-audio-arm64.tar.gz
+          draft: false
+
+      - name: 上传到工作流产物（方便不用 release 也能取）
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-audio-arm64
+          path: ffmpeg-audio-arm64.tar.gz
+          retention-days: 7
