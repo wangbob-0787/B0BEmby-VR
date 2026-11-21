@@ -11,7 +11,9 @@
 #include <jni.h>
 #include <android/log.h>
 
+#include <cerrno>
 #include <cstring>
+#include <string>
 
 extern "C" {
 #include "libavcodec/avcodec.h"
