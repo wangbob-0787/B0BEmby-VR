@@ -31,14 +31,21 @@ extern "C" {
 
 namespace {
 
+constexpr int kMaxSub = 12;
+
 struct Demux {
     AVFormatContext *fmt = nullptr;
     int audioIdx = -1;
-    int subIdx = -1;          // 第一条「文字」字幕轨（图形字幕不走这里）
-    AVCodecContext *subDec = nullptr;
+    /*
+     * 全部「文字」字幕轨各自一个解码上下文。
+     *
+     * 必须全读、不能只读选中的那条：切换字幕轨要零等待，就得每条轨的包都已经在往里解；
+     * 只读一条的话，切轨仍要重定位重读，又退回"要等"（豆豆 2026-11-22）。
+     */
+    int subIdx[kMaxSub] = {0};
+    AVCodecContext *subDec[kMaxSub] = {nullptr};
+    int subN = 0;
     AVPacket *pkt = nullptr;
-    AVSubtitle sub{};
-    bool subInited = false;
 };
 
 std::string errStr(int err) {
@@ -49,8 +56,9 @@ std::string errStr(int err) {
 
 void freeDemux(Demux *d) {
     if (!d) return;
-    if (d->subInited && d->sub.num_rects > 0) avsubtitle_free(&d->sub);
-    if (d->subDec) avcodec_free_context(&d->subDec);
+    for (int i = 0; i < kMaxSub; ++i) {
+        if (d->subDec[i]) avcodec_free_context(&d->subDec[i]);
+    }
     if (d->pkt) av_packet_free(&d->pkt);
     if (d->fmt) avformat_close_input(&d->fmt);
     delete d;
@@ -119,12 +127,12 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxOpen(
     for (unsigned i = 0; i < fmt->nb_streams; ++i) {
         AVCodecParameters *p = fmt->streams[i]->codecpar;
         if (d->audioIdx < 0 && p->codec_type == AVMEDIA_TYPE_AUDIO) d->audioIdx = (int) i;
-        if (d->subIdx < 0 && p->codec_type == AVMEDIA_TYPE_SUBTITLE) {
+        if (p->codec_type == AVMEDIA_TYPE_SUBTITLE && d->subN < kMaxSub) {
             /* 只收文字字幕；位图字幕（PGS/DVD）留给内核那条路 */
             if (p->codec_id == AV_CODEC_ID_SUBRIP || p->codec_id == AV_CODEC_ID_ASS ||
                 p->codec_id == AV_CODEC_ID_SSA || p->codec_id == AV_CODEC_ID_WEBVTT ||
                 p->codec_id == AV_CODEC_ID_MOV_TEXT) {
-                d->subIdx = (int) i;
+                d->subIdx[d->subN++] = (int) i;
             }
         }
     }
@@ -136,26 +144,28 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxOpen(
     d->pkt = av_packet_alloc();
     if (!d->pkt) { freeDemux(d); return 0; }
 
-    if (d->subIdx >= 0) {
-        AVCodecParameters *sp = fmt->streams[d->subIdx]->codecpar;
+    for (int k = 0; k < d->subN; ++k) {
+        AVCodecParameters *sp = fmt->streams[d->subIdx[k]]->codecpar;
         const AVCodec *dec = avcodec_find_decoder(sp->codec_id);
-        if (dec) {
-            d->subDec = avcodec_alloc_context3(dec);
-            if (d->subDec && avcodec_parameters_to_context(d->subDec, sp) >= 0 &&
-                avcodec_open2(d->subDec, dec, nullptr) >= 0) {
-                LOGI("字幕轨就绪: 流 %d 编码 %s", d->subIdx, dec->name);
-            } else {
-                avcodec_free_context(&d->subDec);
-            }
+        if (!dec) continue;
+        AVCodecContext *ctx = avcodec_alloc_context3(dec);
+        if (ctx && avcodec_parameters_to_context(ctx, sp) >= 0 &&
+            avcodec_open2(ctx, dec, nullptr) >= 0) {
+            d->subDec[k] = ctx;
+            LOGI("字幕轨就绪: 第 %d 条（流 %d，%s）", k, d->subIdx[k], dec->name);
+        } else {
+            if (ctx) avcodec_free_context(&ctx);
         }
     }
-    LOGI("解封装就绪: 音频流 %d%s", d->audioIdx, d->subIdx >= 0 ? "，字幕轨已接" : "，无文字字幕轨");
+    LOGI("解封装就绪: 音频流 %d，文字字幕轨 %d 条", d->audioIdx, d->subN);
 
     if (startMs > 0) {
         int64_t ts = av_rescale(startMs, fmt->streams[d->audioIdx]->time_base.den,
                                 fmt->streams[d->audioIdx]->time_base.num * 1000);
         av_seek_frame(fmt, d->audioIdx, ts, AVSEEK_FLAG_BACKWARD);
-        avcodec_flush_buffers(d->subDec);
+        for (int k = 0; k < d->subN; ++k) {
+            if (d->subDec[k]) avcodec_flush_buffers(d->subDec[k]);
+        }
     }
     return static_cast<jlong>(reinterpret_cast<intptr_t>(d));
 }
@@ -193,39 +203,45 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxRead(
             av_packet_unref(d->pkt);
             return size;
         }
-        if (d->pkt->stream_index == d->subIdx && d->subDec) {
+        /* 字幕：先看这个包属于哪一条字幕轨（多轨各解各的，切轨零等待） */
+        int subK = -1;
+        for (int k = 0; k < d->subN; ++k) {
+            if (d->subIdx[k] == d->pkt->stream_index) { subK = k; break; }
+        }
+        if (subK >= 0 && d->subDec[subK]) {
+            AVSubtitle sub{};
             int got = 0;
-            int used = avcodec_decode_subtitle2(d->subDec, &d->sub, &got, d->pkt);
-            if (used >= 0 && got && d->sub.num_rects > 0) {
+            int used = avcodec_decode_subtitle2(d->subDec[subK], &sub, &got, d->pkt);
+            if (used >= 0 && got && sub.num_rects > 0) {
                 std::string text;
-                for (unsigned i = 0; i < d->sub.num_rects; ++i) {
-                    const char *line = d->sub.rects[i]->ass ? d->sub.rects[i]->ass
-                                                            : d->sub.rects[i]->text;
+                for (unsigned i = 0; i < sub.num_rects; ++i) {
+                    const char *line = sub.rects[i]->ass ? sub.rects[i]->ass
+                                                         : sub.rects[i]->text;
                     if (!line) continue;
-                    std::string t = d->sub.rects[i]->ass ? assText(line) : std::string(line);
+                    std::string t = sub.rects[i]->ass ? assText(line) : std::string(line);
                     if (t.empty()) continue;
                     if (!text.empty()) text.push_back('\n');
                     text += t;
                 }
-                AVStream *st = d->fmt->streams[d->subIdx];
-                int64_t ptsMs = d->sub.pts != AV_NOPTS_VALUE
-                                ? av_rescale_q(d->sub.pts, st->time_base, AVRational{1, 1000})
+                AVStream *st = d->fmt->streams[d->subIdx[subK]];
+                int64_t ptsMs = sub.pts != AV_NOPTS_VALUE
+                                ? av_rescale_q(sub.pts, st->time_base, AVRational{1, 1000})
                                 : 0;
                 if (!text.empty() && (int) text.size() <= cap) {
                     m[0] = 2;
                     m[1] = (jint) text.size();
                     m[2] = (jint) ptsMs;
-                    m[3] = (jint) ((d->sub.end_display_time > 0) ? d->sub.end_display_time : 0);
+                    m[3] = subK;   // 哪一条字幕轨（切轨时按它挑缓冲）
                     env->SetByteArrayRegion(out, 0, (jsize) text.size(),
                                             reinterpret_cast<const jbyte *>(text.data()));
                     env->SetIntArrayRegion(meta, 0, 4, m);
                 }
-                if (d->sub.num_rects > 0) avsubtitle_free(&d->sub);
+                avsubtitle_free(&sub);
                 av_packet_unref(d->pkt);
                 if (m[1] > 0) return m[1];
-                continue;   // 空字幕包，继续读
+                continue;
             }
-            if (got && d->sub.num_rects > 0) avsubtitle_free(&d->sub);
+            if (got) avsubtitle_free(&sub);
             av_packet_unref(d->pkt);
             continue;
         }
