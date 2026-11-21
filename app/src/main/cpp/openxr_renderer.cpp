@@ -69,6 +69,11 @@
 #define TAG "B0BEmbyVR-Native"
 #define LOGI_RAW(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 
+/* 当前正在显示的这一帧的片源时间（纳秒）。
+ * 说明：渲染层主结构 g 定义在文件后部，而参数对账代码在文件前部，
+ * 所以这里用一个文件级全局来承载，避免前部代码引用后部结构。 */
+static std::atomic<long long> gVideoFramePtsNs{-1};
+
 /*
  * 杜比逐帧参数：内核（libavcodec 里的 mediacodec 补丁）把每帧的还原参数写进
  * 默认可见性的全局符号，这里按需取地址。取不到（还没起播 / 内核没打补丁）
@@ -218,7 +223,7 @@ static void doviProbeShared()
      * 一致就说明"按帧取参"确实指向同一套参数，可以切换；不一致要先把原因找出来。
      */
     {
-        const long long pts = g.videoFramePtsUs.load();
+        const long long pts = gVideoFramePtsNs.load();
         if (pts > 0) {
             float tmp[128];
             if (dvPickByPts(pts, tmp, 128)) {
@@ -292,7 +297,8 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativePushDoviParams(
     if (data == nullptr || ptsNs <= 0) return;
     const jsize len = env->GetArrayLength(data);
     if (len <= 0 || len > 128) {
-        LOGE("参数长度异常（%d），丢弃这次推送", (int) len);
+        __android_log_print(ANDROID_LOG_ERROR, "B0BEmbyVR-Native",
+                            "参数长度异常（%d），丢弃这次推送", (int) len);
         return;
     }
     DvPtEntry entry;
@@ -3057,10 +3063,7 @@ struct VrContext {
      * 与停播前相同；若把它当成新片第一帧，黑幕/转圈就会被秒收。
      */
     int64_t lastVideoFrameTs = 0;
-    /* 当前正在显示的**这一帧**的片源时间（微秒）。SurfaceTexture 的 timestamp 由
-     * MediaCodec 写入，就是该帧的 presentationTimeUs —— 杜比参数按它取，才不会有
-     * "新场景用旧参数"的错位（2026-11-21）。 */
-    std::atomic<int64_t> videoFramePtsUs{-1};
+    /* 显示帧序号（片源时间改由文件级 gVideoFramePtsNs 承载，见文件前部说明） */
     std::atomic<int64_t> videoFrameSeq{0};
     /*
      * 换片 / 首播的等待期：Java 明确要求银幕转圈（父亲 2026-10-07）。
@@ -9843,7 +9846,7 @@ jobject makeOesSurface(JNIEnv *env, GLuint tex, std::function<void()> &out,
                 /* 视频那一路：记下当前显示帧的片源时间（纳秒 → 微秒）+ 递增序号。
                  * 参数按这个时间取，才不会整段延迟（2026-11-21）。 */
                 if (notifyFirstFrame) {
-                    g.videoFramePtsUs.store(tsNow / 1000);
+                    gVideoFramePtsNs.store(tsNow);
                     const int64_t seq = g.videoFrameSeq.fetch_add(1) + 1;
                     if (seq % 60 == 0) {
                         /* 走 INFO：VLOGI 受 gLogVerbose 控制、默认关，实测一行都不出来 */
