@@ -9010,6 +9010,8 @@ class MainActivity : ComponentActivity() {
         m: com.xxxx.emby_vr.player.MpvBackend,
         /** 调用来源（正常起播 / 重建），进日志便于对账 */
         source: String = "正常起播",
+        /** 入口已经用 CAS 认领过（跳转路径）：这里不再重复认领 */
+        alreadyClaimed: Boolean = false,
     ) {
         selfAudioOn = true
         val gen = selfGen.incrementAndGet()
@@ -9050,7 +9052,7 @@ class MainActivity : ComponentActivity() {
             /* 这里还没 CAS，标志不属于自己：清了会把别人正在飞的那条拆掉（豆豆 2026-11-21） */
             return
         }
-        if (!pipeBootInFlight.compareAndSet(false, true)) {
+        if (!alreadyClaimed && !pipeBootInFlight.compareAndSet(false, true)) {
             Log.w(TAG, "起播入口被拒：已有起播在飞|source=$source|url=${url.take(60)}")
             return
         }
@@ -9127,11 +9129,16 @@ class MainActivity : ComponentActivity() {
                  * Surface、各开一路连接，豆豆 2026-11-21 第二遍审出）。
                  * 已有一条在飞：只记下最新目标，等这条结束后再看一眼。
                  */
-                if (pipeBootInFlight.get()) {
+                /*
+                 * 入口用 CAS 认领：读和写在同一拍，避免"判定在一处、认领在另一处"的缝
+                 * （豆豆 2026-11-21：入口 get() + 起线程前 set(false) + 线程里 CAS 是三拍）。
+                 */
+                if (!pipeBootInFlight.compareAndSet(false, true)) {
                     pendingJumpSec = sec
                     Log.i(TAG, "跳转排队：已有重建在飞，记下目标 ${"%.2f".format(sec)}s")
                     return@jump
                 }
+                Log.i(TAG, "跳转认领：目标=${"%.2f".format(sec)}s")
                 Log.i(TAG, "跳转：按 ${"%.2f".format(sec)}s 重建整条自管路（画面+声音+时钟）")
                 /*
                  * 重建一开始就把时钟设到目标（父亲 2026-11-21 实测「进度条先退回老位置」）。
@@ -9149,7 +9156,6 @@ class MainActivity : ComponentActivity() {
                  */
                 playClock?.pause()
                 playClock?.resetTo((sec * 1_000_000.0).toLong())
-                pipeBootInFlight.set(false)
                 /*
                  * 整条重建挪到工作线程（豆豆 2026-11-21 审出）。
                  *
@@ -9157,7 +9163,9 @@ class MainActivity : ComponentActivity() {
                  * 原来全跑在界面线程上，跳一次界面就冻十几秒。
                  */
                 Thread({
-                    runCatching { startSelfVideoPipe(jumpUrl, sec, jumpSurface, m, "跳转重建") }
+                    runCatching {
+                        startSelfVideoPipe(jumpUrl, sec, jumpSurface, m, "跳转重建", alreadyClaimed = true)
+                    }
                 }, "pipe-jump").start()
             }
         }
@@ -9260,17 +9268,44 @@ class MainActivity : ComponentActivity() {
             runCatching { ap.startNow() }
             selfPipePhase = "PLAYING"
             selfPipeReleased = true
+            /*
+             * 放行成功 = 这条管线跑起来了，必须**无条件**交出在飞标志
+             * （原来只在"有排队目标"时才清，导致无人排队时标志永远为真，
+             *  之后左右跳全被判"已有重建在飞"而只记不执行 —— 2026-11-21 实测）。
+             */
+            pipeBootInFlight.set(false)
             /* 重建期间用户又拖过：现在这条已经跑起来，接着执行最新那个目标 */
             val pj = pendingJumpSec
             if (pj >= 0.0) {
                 pendingJumpSec = -1.0
                 Log.i(TAG, "执行排队中的跳转：${"%.2f".format(pj)}s")
-                /* 先清在飞标志：不清的话排队的这次会被单飞判断挡回去，永远丢在 pending 里 */
-                pipeBootInFlight.set(false)
                 ui.post { runCatching { ctl.pipeSeek?.invoke((pj * 1000.0).toLong()) } }
             }
             Log.i(TAG, "放行：画面三帧齐 + 音频设备同刻起动（音轨=${ap.trackDesc}）")
         }
+
+        /*
+         * 强制看门狗（豆豆 2026-11-21）：tryRelease 前三条（gen / released / pipeReady /
+         * selfFirstShown）任一为假就直接 return，根本不进那 80 次重试。
+         * 所以只要首帧迟迟不来，放行永远不会发生 → 在飞标志永远为真 → 之后跳转全被挡。
+         * 这条从起播那一刻计时，8 秒没放行就强制收场，保证标志一定被交出。
+         */
+        val pipeLoadT0 = android.os.SystemClock.elapsedRealtime()
+        ui.postDelayed({
+            if (gen != selfGen.get()) return@postDelayed
+            if (!released) {
+                Log.e(
+                    TAG,
+                    "放行看门狗：${android.os.SystemClock.elapsedRealtime() - pipeLoadT0}ms 未放行" +
+                        "（pipeReady=$pipeReady 首帧上屏=$selfFirstShown）→ 强制放行并报错",
+                )
+                released = true
+                selfPipeWaitingFirstFrame.set(false)
+                pipeBootInFlight.set(false)
+                ui.post { hud("画面迟迟不出，已强制放行") }
+                runCatching { playClock?.start((selfOriginSec * 1_000_000.0).toLong()) }
+            }
+        }, 8000L)
 
         /* 局部函数不能前向引用：先声明一个变量，等下面 Blocking 定义好再赋值，投线程时用它 */
         var pipelineLauncher: ((Double) -> Unit)? = null
