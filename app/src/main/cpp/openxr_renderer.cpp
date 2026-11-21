@@ -5761,8 +5761,8 @@ void updateScreenLightFromVideo(VrContext &c) {
          * 参数来源有二：按帧表（主）或文件（兜底）；表命中时 g_doviFlat 已指向表数据，
          * 所以这里不能再要求 gDvFileValid —— 否则重建瞬间文件被删就掉还原（偏色闪一下）。
          */
-        const bool hasParams = g_doviFlat != nullptr && g_doviFlat[0] >= 0.5f && g_doviFlat[0] < 2.5f;
-        const bool dvOn = gDvRendererReshape.load() != 0 && gDvStreamActive.load() != 0 && hasParams;
+        const bool dvOn = gDvRendererReshape.load() != 0 && gDvStreamActive.load() != 0 &&
+                          g_doviFlat != nullptr && g_doviFlat[0] >= 0.5f && g_doviFlat[0] < 2.5f;
         /*
          * 只在状态变化时打一行，报告五项条件各自的值。
          * 画面偏紫但看不出为什么时，这一行直接说明是哪一项没满足（每帧打印会影响帧率）。
@@ -5793,7 +5793,6 @@ void updateScreenLightFromVideo(VrContext &c) {
          * 这正是"有时偏、有时不偏"的第二个来源。写这个 uniform 只允许 renderQuadLayer 一处做
          * （豆豆 2026-11-21 复核结论）。
          */
-        (void) hasParams;
     }
     if (c.brightLoc >= 0) glUniform1f(c.brightLoc, 0.f);
     if (c.contrastLoc >= 0) glUniform1f(c.contrastLoc, 1.f);

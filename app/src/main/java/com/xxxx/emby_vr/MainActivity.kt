@@ -1327,6 +1327,13 @@ class MainActivity : ComponentActivity() {
             subtitleCues = cues
             Log.i(TAG, "自绘字幕：流 $index 取到 ${cues.size} 条")
             /*
+             * 菜单勾选与屏幕内容必须同源（父亲 2026-11-22）：
+             * 取到了就按"这条轨正在显示"刷新一次，避免菜单还停在上一次的勾选状态。
+             */
+            if (cues.isNotEmpty()) {
+                refreshMenuRows(com.xxxx.emby_vr.panel.MenuKind.SUBTITLE)
+            }
+            /*
              * 取不到就**清屏**（2026-10-09 父亲要求）。
              *
              * 原来失败了什么都不做，屏幕上继续显示上一条字幕的残留 ——
@@ -1342,6 +1349,13 @@ class MainActivity : ComponentActivity() {
                  * 网盘片源第一次要服务端现挖整片，可能真的取不到；再点一次字幕菜单
                  * 通常就成了（服务端挖完会缓存）。
                  */
+                /*
+                 * 取不到就**取消勾选**（父亲 2026-11-22：显示与勾选同步）。
+                 * 菜单上继续勾着一条屏幕上根本没有的字幕，就是在骗人；
+                 * 清掉之后用户再点同一条即可重试（服务端挖完会缓存）。
+                 */
+                selectedSubtitleIndex = null
+                refreshMenuRows(com.xxxx.emby_vr.panel.MenuKind.SUBTITLE)
                 hud("这条字幕服务端没取到，可在字幕菜单里再点一次")
             }
         }
@@ -5423,6 +5437,9 @@ class MainActivity : ComponentActivity() {
                              * 但命令里没有任何叠加字幕的滤镜，画面上什么都没有。
                              */
                             Log.i(TAG, "图形字幕 ${selectedSubtitleIndex} → 改走内核播放（内核自己画图片字幕）")
+                            if (selfPipeActive) {
+                                hud("图形字幕需要内核播放，正在切换（P5 自管路不支持图形字幕）")
+                            }
                             replayKeepingPosition()
                         }
                         wasKernelForSubs -> {
@@ -7308,6 +7325,8 @@ class MainActivity : ComponentActivity() {
          * 它只在 P5 起播时被置 true，此前没有任何收场路径复位；
          * 不复位时，只要某趟绘制忘了显式写 uniform，就会把杜比着色路径带到海报墙/面板上。
          */
+        /* 自管解码标志跟着这条片子走：停播即复位，否则下一部非 P5 片子会误走服务端文本字幕（豆豆 2026-11-22） */
+        selfPipeActive = false
         com.xxxx.emby_vr.vr.VrNative.setDvRendererReshape(false)
         com.xxxx.emby_vr.vr.VrNative.setDoviStreamActive(false)
         com.xxxx.emby_vr.vr.VrNative.resetDoviAll()
