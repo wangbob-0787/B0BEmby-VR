@@ -9041,9 +9041,22 @@ class MainActivity : ComponentActivity() {
             pipeBootInFlight.set(false)
             return
         }
-        /* 声音也一起收：换片时上一部的音频设备必须还回去，否则下一部一开播就有人声 */
-        audioPipe?.let { runCatching { it.stop() } }
+        /*
+         * 声音必须确认停干净再往下建（父亲 2026-11-21 实测：第二次跳转起有画面没声音）。
+         *
+         * 日志是「音频解封装准备超时」：旧的一路还没释放连接，新的那一路就又要连接，
+         * 网盘只给两路并发，第三路连不上，等满二十秒就判失败。
+         */
+        audioPipe?.let { ap ->
+            if (!ap.stop()) {
+                Log.w(TAG, "旧音频未在时限内退出，再收一次")
+                Thread.sleep(400)
+                runCatching { ap.stop() }
+            }
+        }
         audioPipe = null
+        /* 给解封装释放连接留一拍，避免新旧连接在网盘那一侧叠在一起 */
+        Thread.sleep(150)
         selfOriginSec = 0.0
         selfPaused = false
         selfFirstShown = false
