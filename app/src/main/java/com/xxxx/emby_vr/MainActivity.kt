@@ -9729,8 +9729,11 @@ class MainActivity : ComponentActivity() {
         } else {
             Log.i(TAG, "睡眠恢复|分支=整条重建|位置=${"%.2f".format(sec)}s|挂起=${suspendedMs}ms")
             selfPipeWaitingFirstFrame.set(false)
-            /* 复用跳转事务（同一把单飞锁），不新写第三条重建路径 */
-            ui.post { runCatching { ctl.pipeSeek?.invoke((sec * 1000.0).toLong()) } }
+            /* 复用跳转事务（同一把单飞锁），不新写第三条重建路径。
+               这里不在 ui 作用域里（onResume 是 Activity 方法），用主线程 handler 投递。 */
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                runCatching { ctl.pipeSeek?.invoke((sec * 1000.0).toLong()) }
+            }
         }
     }
 
