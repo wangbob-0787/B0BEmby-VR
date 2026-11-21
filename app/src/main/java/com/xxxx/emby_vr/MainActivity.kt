@@ -9273,7 +9273,24 @@ class MainActivity : ComponentActivity() {
         fun tryRelease(tries: Int) {
             /* 旧代的放行回调一律作废（豆豆 2026-11-21 第二遍审出） */
             if (gen != selfGen.get()) return
-            if (released) return
+            if (released) {
+                /*
+                 * 已经放行过（多半是看门狗强制放行的），但声音可能此刻才建好。
+                 * 这时必须补启动，否则"放行"这一刻之后再也不会有第二次机会 ——
+                 * 现场就是：看门狗放行 → 首帧后到 → 声音起播 → 永久静音
+                 * （2026-11-21 17:22 实测）。
+                 */
+                audioPipe?.let { ready ->
+                    if (!ready.isStarted()) {
+                        Log.i(TAG, "放行后补启动声音（看门狗放行时它还没建好）")
+                        runCatching {
+                            ready.bindClockToken(playClock?.token ?: 0L)
+                            ready.startNow()
+                        }
+                    }
+                }
+                return
+            }
             if (!pipeReady) return
             /*
              * 硬条件：画面首帧还没真正上屏，就不许放声音（父亲 2026-11-21 追问到底）。

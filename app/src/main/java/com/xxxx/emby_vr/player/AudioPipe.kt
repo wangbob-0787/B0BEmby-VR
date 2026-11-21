@@ -315,6 +315,9 @@ class AudioPipe {
      *
      * 只有这一处会把设备从"准备好但没动"变成"正在放"，所以声音与画面必然同刻开始。
      */
+    /** 设备是否已经起动（看门狗放行后要判断"声音补启动了没有"） */
+    fun isStarted(): Boolean = started.get()
+
     fun startNow() {
         if (started.get()) return
         started.set(true)
