@@ -155,6 +155,13 @@ static std::atomic<int> gDvFrameReady{0};
 static float gDvLastGood[128];
 static std::atomic<int> gDvHasLastGood{0};
 
+/*
+ * 冻结期（2026-11-21）：跳转已经认领、新画面还没放行。
+ * 这段时间里屏幕上是**上一帧**（VR 每帧重画同一张纹理），所以参数必须沿用它原来那套，
+ * 不能被"新片刚写进来的参数"覆盖 —— 否则冻住的旧画面会被套上新场景的颜色（偏紫）。
+ */
+static std::atomic<int> gDvFreeze{0};
+
 
 /**
  * 用当前显示帧的时间查参数（不超过它的最近一项）。
@@ -271,7 +278,10 @@ static void doviProbeShared()
         const long long pts = gVideoFramePtsNs.load();
         bool usedTable = false;
         bool usedFresh = false;
-        if (pts > 0 && dvPickByPts(pts, gDvPtsActive, 128)) {
+        if (gDvFreeze.load() != 0 && gDvHasLastGood.load() != 0) {
+            /* 冻结期：屏幕上还是上一帧，必须用它的那套参数 */
+            g_doviFlat = gDvLastGood;
+        } else if (pts > 0 && dvPickByPts(pts, gDvPtsActive, 128)) {
             g_doviFlat = gDvPtsActive;
             usedTable = true;
             usedFresh = true;
@@ -401,6 +411,12 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativePushDoviParams(
         LOGI_RAW("按帧参数通道已接通|gen=%lld|pts=%.3f|分段=%d 通道=%d 长度=%d",
                  (long long) gen, (double) ptsNs / 1e9, (int) segments, (int) channels, (int) len);
     }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetDoviFreeze(JNIEnv *, jclass, jint on) {
+    gDvFreeze.store(on != 0 ? 1 : 0);
+    LOGI_RAW("杜比参数冻结=%d", on);
 }
 
 extern "C" JNIEXPORT jboolean JNICALL

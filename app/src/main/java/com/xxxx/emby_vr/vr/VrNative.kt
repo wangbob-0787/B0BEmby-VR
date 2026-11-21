@@ -91,6 +91,16 @@ object VrNative {
      * 收黑幕与放声音共用这一个判据（父亲 2026-11-21 定的口径）：
      * 第一眼看到的必须是正确颜色，而不是"稍后自己变对"。
      */
+    /**
+     * 杜比参数冻结：跳转认领后置 true、放行/中止置 false。
+     *
+     * 冻结期屏幕上是上一帧（VR 每帧重画同一张纹理），参数必须继续用它的那套；
+     * 否则新场景刚写进来的参数会把旧画面染成新颜色（跳转时偏紫，2026-11-21）。
+     */
+    fun setDoviFreeze(on: Boolean) = runCatching { nativeSetDoviFreeze(if (on) 1 else 0) }
+
+    private external fun nativeSetDoviFreeze(on: Int)
+
     fun doviParamsReady(): Boolean =
         runCatching { nativeDoviParamsReady() }.getOrDefault(false)
 
