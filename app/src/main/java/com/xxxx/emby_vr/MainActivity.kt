@@ -8998,6 +8998,8 @@ class MainActivity : ComponentActivity() {
     ) {
         selfAudioOn = true
         if (playClock == null) playClock = com.xxxx.emby_vr.player.PlaybackClock()
+        /* 主线程投递句柄：这个函数现在可能跑在工作线程（跳转重建） */
+        val ui = android.os.Handler(android.os.Looper.getMainLooper())
         ctl.selfPositionProvider = { if (selfAudioOn) playClock?.positionUs()?.div(1000L) else null }
         ctl.selfDurationProvider = {
             if (!selfAudioOn) null
@@ -9134,7 +9136,6 @@ class MainActivity : ComponentActivity() {
         selfPipeSurface = surface
         val pipe = com.xxxx.emby_vr.player.VideoPipe()
         videoPipe = pipe
-        val ui = android.os.Handler(android.os.Looper.getMainLooper())
 
         var pipeReady = false
         var released = false
