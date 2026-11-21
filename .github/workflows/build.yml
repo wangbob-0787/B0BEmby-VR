@@ -97,6 +97,21 @@ jobs:
             "https://github.com/wangbob-0787/B0BEmby-VR/releases/download/kernel-dovi/libmpv-release.aar"
           unzip -tq app/libs/libmpv-dovi.aar
 
+      # 音频解码库走同一套思路：build-ffmpeg-audio.yml 编完发到 ffmpeg-audio-n7.1，
+      # 客户端编译时现取。库版本由那个 Release 钉住，改解码器不必动客户端仓库。
+      - name: 下载音频解码库（FFmpeg n7.1，arm64）
+        run: |
+          set -e
+          DEST=app/src/main/cpp/ffmpeg-audio
+          mkdir -p "$DEST"
+          curl -fL --retry 5 --retry-all-errors -o /tmp/ffmpeg-audio.tar.gz \
+            "https://github.com/wangbob-0787/B0BEmby-VR/releases/download/ffmpeg-audio-n7.1/ffmpeg-audio-arm64.tar.gz"
+          tar -xzf /tmp/ffmpeg-audio.tar.gz -C "$DEST"
+          for lib in libavcodec.a libswresample.a libavutil.a; do
+            test -s "$DEST/lib/arm64-v8a/$lib" || { echo "::error::缺 $lib"; exit 1; }
+          done
+          ls -lh "$DEST/lib/arm64-v8a/"
+
       - name: 写入 Emby 配置
         env:
           EMBY_API_KEY: ${{ secrets.EMBY_API_KEY }}

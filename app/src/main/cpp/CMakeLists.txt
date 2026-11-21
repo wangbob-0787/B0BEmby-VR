@@ -24,3 +24,26 @@ target_link_libraries(b0bvr
         android
         log
 )
+
+# 自带音频解码器：独立 target，不并进 b0bvr。
+# 理由：库是静态的、版本由 Release ffmpeg-audio-n7.1 钉住；混进主库后一旦符号冲突
+# 要排查两套代码，spike 阶段分开编能一眼看出是哪一层的问题。
+# 预编译库由 CI 现取（build.yml 的「下载音频解码库」）；本地没有就跳过，不阻断主库编译。
+set(FFAUDIO_DIR ${CMAKE_CURRENT_SOURCE_DIR}/ffmpeg-audio)
+if(EXISTS ${FFAUDIO_DIR}/lib/arm64-v8a/libavcodec.a)
+    add_library(audiodec SHARED audio_decoder_jni.cpp)
+    target_include_directories(audiodec PRIVATE ${FFAUDIO_DIR}/include)
+    target_link_libraries(audiodec
+            ${FFAUDIO_DIR}/lib/arm64-v8a/libavcodec.a
+            ${FFAUDIO_DIR}/lib/arm64-v8a/libswresample.a
+            ${FFAUDIO_DIR}/lib/arm64-v8a/libavutil.a
+            log
+            m
+            z
+            dl
+    )
+    # 只导出 JNI 入口，其余符号隐藏，避免和主库/系统库撞名。
+    target_compile_options(audiodec PRIVATE -fvisibility=hidden)
+else()
+    message(WARNING "缺 ${FFAUDIO_DIR}/lib/arm64-v8a/libavcodec.a，跳过 audiodec（CI 会现取）")
+endif()
