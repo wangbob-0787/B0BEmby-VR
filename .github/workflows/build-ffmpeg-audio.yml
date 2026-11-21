@@ -63,11 +63,15 @@ jobs:
             --cxx="$TC/bin/aarch64-linux-android${ANDROID_API}-clang++" \
             --ar="$TC/bin/llvm-ar" --ranlib="$TC/bin/llvm-ranlib" --strip="$TC/bin/llvm-strip" \
             --disable-everything \
-            --disable-programs --disable-doc --disable-network --disable-autodetect \
+            --disable-programs --disable-doc --disable-autodetect \
             --disable-avdevice --disable-avfilter --disable-swscale --disable-postproc \
-            --disable-avformat --disable-devices --disable-filters --disable-encoders \
-            --disable-muxers --disable-demuxers --disable-parsers --disable-bsfs \
-            --disable-protocols --disable-indevs --disable-outdevs \
+            --disable-devices --disable-filters --disable-encoders \
+            --disable-muxers --disable-parsers --disable-bsfs \
+            --disable-indevs --disable-outdevs \
+            --enable-network \
+            --enable-avformat \
+            --enable-demuxer=matroska,mov,mpegts,flv,avi \
+            --enable-protocol=http,tcp,file,crypto,data \
             --enable-small \
             --enable-pic \
             --extra-cflags="-fPIC" \
@@ -108,10 +112,11 @@ jobs:
         continue-on-error: true
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ffmpeg-audio-${{ env.FFMPEG_TAG }}
-          name: FFmpeg 音频解码库（${{ env.FFMPEG_TAG }}，arm64）
+          tag_name: ffmpeg-audio-n7.1-demux
+          name: FFmpeg 音频解码+解封装库（n7.1，arm64）
           body: |
-            只带音频解码器（ac3/eac3/truehd/dca/aac/flac/opus/vorbis/mp3）+ swresample 的 FFmpeg 静态库。
+            音频解码器（ac3/eac3/truehd/dca/aac/flac/opus/vorbis/mp3）+ swresample + avformat（解封装：matroska/mov/mpegts/flv/avi，协议 http/tcp/file）。
+            用途：音频那一路自己解封装，一次打开同时拿到音频包与字幕包，不额外占网盘连接。
             源码 tag：${{ env.FFMPEG_TAG }}，commit：${{ env.COMMIT }}
             许可：LGPL 2.1+（未启用 GPL 组件）
           files: ffmpeg-audio-arm64.tar.gz
