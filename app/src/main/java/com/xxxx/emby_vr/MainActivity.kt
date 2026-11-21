@@ -7019,7 +7019,7 @@ class MainActivity : ComponentActivity() {
         /* 闸门不能再关着，否则画面永远不上屏（17:22 现场：队列涨到 639 秒） */
         selfPipeWaitingFirstFrame.set(false)
         selfPipePhase = "起播失败"
-        com.xxxx.emby_vr.vr.VrNative.setDoviFreeze(false)
+        com.xxxx.emby_vr.vr.VrNative.setDoviHold(false)
     }
 
     private fun seekBy(deltaMs: Long) {
@@ -9220,7 +9220,7 @@ class MainActivity : ComponentActivity() {
                 Log.i(TAG, "跳转认领：目标=${"%.2f".format(sec)}s")
                 jumpFromSec = playClock?.positionSec() ?: 0.0
                 /* 冻结参数：屏幕上还是上一帧，别让新场景的参数把它染色 */
-                com.xxxx.emby_vr.vr.VrNative.setDoviFreeze(true)
+                com.xxxx.emby_vr.vr.VrNative.setDoviHold(true)
                 Log.i(TAG, "跳转：按 ${"%.2f".format(sec)}s 重建整条自管路（画面+声音+时钟）")
                 /*
                  * 重建一开始就把时钟设到目标（父亲 2026-11-21 实测「进度条先退回老位置」）。
@@ -9401,7 +9401,7 @@ class MainActivity : ComponentActivity() {
              */
             pipeBootInFlight.set(false)
             jumpFromSec = -1.0
-            com.xxxx.emby_vr.vr.VrNative.setDoviFreeze(false)
+            com.xxxx.emby_vr.vr.VrNative.setDoviHold(false)
             /* 重建期间用户又拖过：现在这条已经跑起来，接着执行最新那个目标 */
             val pj = pendingJumpSec
             if (pj >= 0.0) {

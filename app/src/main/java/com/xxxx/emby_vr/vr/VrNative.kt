@@ -97,7 +97,13 @@ object VrNative {
      * 冻结期屏幕上是上一帧（VR 每帧重画同一张纹理），参数必须继续用它的那套；
      * 否则新场景刚写进来的参数会把旧画面染成新颜色（跳转时偏紫，2026-11-21）。
      */
-    fun setDoviFreeze(on: Boolean) = runCatching { nativeSetDoviFreeze(if (on) 1 else 0) }
+    /**
+     * 保持当前参数：跳转认领后置 true、放行/中止置 false。
+     *
+     * 保持期内渲染层**根本不取参**，直接沿用 g_doviFlat 当前值 ——
+     * 屏幕上是上一帧，颜色自然不变（2026-11-21 定案，取代"冻结+最后一套"的组合）。
+     */
+    fun setDoviHold(on: Boolean) = runCatching { nativeSetDoviHold(if (on) 1 else 0) }
 
     private external fun nativeSetDoviFreeze(on: Int)
 
