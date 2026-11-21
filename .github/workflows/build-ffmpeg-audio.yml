@@ -66,6 +66,8 @@ jobs:
             --disable-muxers --disable-demuxers --disable-parsers --disable-bsfs \
             --disable-protocols --disable-indevs --disable-outdevs \
             --enable-small \
+            --enable-pic \
+            --extra-cflags="-fPIC" \
             --enable-static --disable-shared \
             --enable-avcodec --enable-avutil --enable-swresample \
             --enable-decoder=ac3,eac3,truehd,dca,aac,flac,opus,vorbis,mp3 \
