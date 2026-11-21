@@ -7258,6 +7258,8 @@ class MainActivity : ComponentActivity() {
     private fun currentPositionMs(): Long = ctl.positionMs()
 
     private fun stopPlaybackInternal(keepUi: Boolean = false) {
+        /* 停播时复位断流标记，否则下一次起播会被上一次的残留冻住（豆豆 2026-11-21 清单第 8 条） */
+        avStall = false
         /* 停播等多久只报数不判死（图 §4.1）：记起点，停完把耗时交给健康行 */
         val stopT0 = android.os.SystemClock.elapsedRealtime()
         /*
