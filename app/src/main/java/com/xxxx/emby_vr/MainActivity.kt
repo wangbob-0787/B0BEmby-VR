@@ -9214,6 +9214,16 @@ class MainActivity : ComponentActivity() {
                     selfPipeWaitingFirstFrame.set(false)
                     ui.post { hud("缓冲不足（${"%.1f".format(bufferedSec)} 秒），先出画面") }
                     runCatching { playClock?.start((selfOriginSec * 1_000_000.0).toLong()) }
+                    /*
+                     * 音频其实已经就绪时也要一起起动（豆豆 2026-11-21）：
+                     * released 置真之后 tryRelease 不会再进，不在这里起动就是"有画面没声音"。
+                     */
+                    audioPipe?.let { ready ->
+                        runCatching {
+                            ready.bindClockToken(playClock?.token ?: 0L)
+                            ready.startNow()
+                        }
+                    }
                 }
                 return
             }
