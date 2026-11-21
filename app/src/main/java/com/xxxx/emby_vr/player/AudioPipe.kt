@@ -148,6 +148,9 @@ class AudioPipe {
      */
     @Volatile
     private var startedAtMs = 0L
+
+    /** 起播时的时钟代次：上报位置时带上，旧实例的上报会被时钟丢弃 */
+    private var clockEpochAtStart = 0
     private var frameBase = 0L
     private var latencyUs = 0L
 
@@ -203,6 +206,7 @@ class AudioPipe {
         writtenFrames = 0L
         firstBlockHandled = false
         this.clock = clock
+        clockEpochAtStart = clock?.epoch ?: 0
         originUs = (originSec * US).toLong()
 
         /* 解封装的打开、选轨、跳转、读全部交给读线程（系统接口要求同一线程） */
@@ -757,6 +761,6 @@ class AudioPipe {
             val played = at.playbackHeadPosition - frameBase
             originUs + played.coerceAtLeast(0) * 1_000_000L / sampleRate - latencyUs
         }
-        clk.noteAudioPosition(posUs.coerceAtLeast(originUs))
+        clk.noteAudioPosition(posUs.coerceAtLeast(originUs), clockEpochAtStart)
     }
 }

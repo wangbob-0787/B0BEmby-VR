@@ -96,7 +96,16 @@ class PlaybackClock {
     }
 
     /** 跳转：两边基准一起重置，位置立刻落到目标 */
+    /**
+     * 代次：每次重置 +1。音频那一路上报位置时带上自己起播时的代次，
+     * 不匹配就丢弃 —— 否则旧实例的旧位置会把时钟顶回去（时钟单调只增，顶上去就回不来）。
+     */
+    @Volatile
+    var epoch: Int = 0
+        private set
+
     fun resetTo(us: Long) {
+        synchronized(lock) { epoch++ }
         synchronized(lock) {
             pausedAtUs = us
             wallBaseUs = us
@@ -113,7 +122,8 @@ class PlaybackClock {
      *
      * 由 [AudioPipe] 在每次写入后调用；位置语义是"这一帧音频现在真正被听到的位置"。
      */
-    fun noteAudioPosition(us: Long) {
+    fun noteAudioPosition(us: Long, fromEpoch: Int = -1) {
+        if (fromEpoch >= 0 && fromEpoch != epoch) return
         synchronized(lock) {
             audioUs = us
             audioAtMs = now()
