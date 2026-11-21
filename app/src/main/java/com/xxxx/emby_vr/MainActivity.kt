@@ -9047,7 +9047,7 @@ class MainActivity : ComponentActivity() {
              */
             Log.e(TAG, "拒绝起播：上一路解码器卡死，连接未归还")
             ui.post { hud("解码器卡死，请退出应用重进") }
-            pipeBootInFlight.set(false)
+            /* 这里还没 CAS，标志不属于自己：清了会把别人正在飞的那条拆掉（豆豆 2026-11-21） */
             return
         }
         if (!pipeBootInFlight.compareAndSet(false, true)) {
@@ -9283,6 +9283,15 @@ class MainActivity : ComponentActivity() {
 
         fun launchPipelineBlocking(audioStart: Double) {
             Log.i(TAG, "画面管道启动：直连 起点=${"%.1f".format(audioStart)}s")
+
+            /* 建完发现代数已变（用户已切走/又跳了）：这条管线自己收场。
+               注意这里不许碰 pipeBootInFlight —— 新一代可能已经 CAS 成功，
+               在这里清标志会把它的单飞拆掉（豆豆 2026-11-21）。 */
+            if (gen != selfGen.get()) {
+                Log.w(TAG, "起播线程收场：代数已变（gen=$gen 当前=${selfGen.get()}），丢弃这条管线")
+                runCatching { pipe.stop() }
+                return
+            }
             val ok = pipe.start(
                 url, emptyMap(), surface,
                 { playClock?.positionSec() ?: startSec },

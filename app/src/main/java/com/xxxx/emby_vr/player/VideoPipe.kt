@@ -78,6 +78,7 @@ class VideoPipe {
      */
     private var lateStreak = 0
     private var lateSinceMs = 0L
+    private var lastLateLogMs = 0L
 
     /** 健康行用：最近一次连续严重迟到的时长（毫秒），0 表示正常 */
     @Volatile
@@ -1041,7 +1042,8 @@ class VideoPipe {
                 if (lateStreak == 0) lateSinceMs = android.os.SystemClock.elapsedRealtime()
                 lateStreak++
                 lateStreakMs = android.os.SystemClock.elapsedRealtime() - lateSinceMs
-                if (lateStreakMs > 2000L && lateStreakMs % 2000L < 40L) {
+                if (lateStreakMs - lastLateLogMs >= 2000L) {
+                    lastLateLogMs = lateStreakMs
                     Log.e(TAG, "连续严重迟到 ${lateStreakMs}ms（$lateStreak 帧）→ 时钟疑似领先，画面在快进")
                 }
                 return finish(true)
@@ -1054,6 +1056,7 @@ class VideoPipe {
         if (lateStreak > 0) {
             lateStreak = 0
             lateStreakMs = 0L
+            lastLateLogMs = 0L
         }
         if (earlyUs < MIN_EARLY_US_LATE_THRESHOLD && sinceLastRenderUs > 100_000L) {
             forcedRender++
