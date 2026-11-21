@@ -232,12 +232,23 @@ static void doviProbeShared()
                                       (int) (tmp[1] + 0.5f) == (int) (g_doviFlat[1] + 0.5f) &&
                                       (int) (tmp[2] + 0.5f) == (int) (g_doviFlat[2] + 0.5f);
                     static long long lastCmp;
+                    static unsigned long long lastFpFrame, lastFpFile;
                     if (pts - lastCmp > 3000000000LL) {
                         lastCmp = pts;
-                        LOGI_RAW("参数对账|按帧=%.0f/%.0f/%.0f|文件=%.0f/%.0f/%.0f|%s",
-                                 (double) tmp[0], (double) tmp[1], (double) tmp[2],
-                                 (double) g_doviFlat[0], (double) g_doviFlat[1],
-                                 (double) g_doviFlat[2], same ? "一致" : "不一致");
+                        /* 指纹：版本/通道/分段在同一部片里几乎恒定，只看三位掩盖不了内容差异 */
+                        unsigned long long fpFrame = 1469598103934665603ULL;
+                        unsigned long long fpFile = 1469598103934665603ULL;
+                        for (int i = 0; i < 122; i++) {
+                            fpFrame = (fpFrame ^ (unsigned long long) (int) (tmp[i] * 1000.0f)) * 1099511628211ULL;
+                            fpFile = (fpFile ^ (unsigned long long) (int) (g_doviFlat[i] * 1000.0f)) * 1099511628211ULL;
+                        }
+                        lastFpFrame = fpFrame;
+                        lastFpFile = fpFile;
+                        (void) lastFpFrame;
+                        (void) lastFpFile;
+                        LOGI_RAW("参数对账|按帧=%llx|文件=%llx|%s",
+                                 (unsigned long long) fpFrame, (unsigned long long) fpFile,
+                                 same ? "一致" : "不一致");
                     }
                 }
             }
@@ -345,7 +356,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativePushDoviParams(
     }
 }
 
-extern "C" JNIEXPORT void JNICALL
+extern "C" JNIEXPORT jboolean JNICALL
 Java_com_xxxx_emby_1vr_vr_VrNative_nativeResetDoviParams(JNIEnv *, jclass, jlong gen) {
     pthread_mutex_lock(&gDvPtsLock);
     gDvPtsCount = 0;
@@ -354,6 +365,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeResetDoviParams(JNIEnv *, jclass, jlong
     gDvLastLookupPtsNs = -1;
     pthread_mutex_unlock(&gDvPtsLock);
     LOGI_RAW("参数表已清空|gen=%lld", (long long) gen);
+    return JNI_TRUE;
 }
 
 /**

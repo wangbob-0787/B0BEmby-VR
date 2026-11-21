@@ -82,9 +82,13 @@ object VrNative {
      */
     fun pushDoviParams(gen: Long, ptsNs: Long, segments: Int, channels: Int, data: FloatArray) =
         runCatching { nativePushDoviParams(gen, ptsNs, segments, channels, data) }
+            /* JNI 调用不许静默失败：符号缺失、签名不匹配都必须留痕（2026-11-21 踩过） */
+            .onFailure { android.util.Log.e("VrNative", "推送杜比参数失败：" + it.javaClass.simpleName + ": " + it.message) }
 
     /** 清空参数表（新管线起播前调用）：旧代的参数绝不能落到新管线头上 */
     fun resetDoviParams(gen: Long) = runCatching { nativeResetDoviParams(gen) }
+        .onFailure { android.util.Log.e("VrNative", "清空参数表失败：" + it.javaClass.simpleName + ": " + it.message) }
+        .getOrDefault(false)
 
     private external fun nativePushDoviParams(
         gen: Long,
@@ -94,7 +98,7 @@ object VrNative {
         data: FloatArray,
     )
 
-    private external fun nativeResetDoviParams(gen: Long)
+    private external fun nativeResetDoviParams(gen: Long): Boolean
 
     /** 运行时可调参数（key 见 VrTuning.KEY_*） */
     private external fun nativeSetTuning(key: Int, value: Float)
