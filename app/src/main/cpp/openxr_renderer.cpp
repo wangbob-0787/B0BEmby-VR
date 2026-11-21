@@ -2913,6 +2913,11 @@ struct VrContext {
      * 与停播前相同；若把它当成新片第一帧，黑幕/转圈就会被秒收。
      */
     int64_t lastVideoFrameTs = 0;
+    /* 当前正在显示的**这一帧**的片源时间（微秒）。SurfaceTexture 的 timestamp 由
+     * MediaCodec 写入，就是该帧的 presentationTimeUs —— 杜比参数按它取，才不会有
+     * "新场景用旧参数"的错位（2026-11-21）。 */
+    std::atomic<int64_t> videoFramePtsUs{-1};
+    std::atomic<int64_t> videoFrameSeq{0};
     /*
      * 换片 / 首播的等待期：Java 明确要求银幕转圈（父亲 2026-10-07）。
      *
@@ -9690,7 +9695,18 @@ jobject makeOesSurface(JNIEnv *env, GLuint tex, std::function<void()> &out,
             clearJavaException(e, "getTimestamp(换帧检测)");
             if (tsNow != *lastTs) {
                 *lastTs = tsNow;
-                outChanged->store(true);
+                if (outChanged != nullptr) outChanged->store(true);
+                /* 视频那一路：记下当前显示帧的片源时间（纳秒 → 微秒）+ 递增序号。
+                 * 参数按这个时间取，才不会整段延迟（2026-11-21）。 */
+                if (notifyFirstFrame) {
+                    g.videoFramePtsUs.store(tsNow / 1000);
+                    const int64_t seq = g.videoFrameSeq.fetch_add(1) + 1;
+                    if (seq % 60 == 0) {
+                        VLOGI("显示帧对账|序号=%lld|pts=%.3f|ts=%lld",
+                              (long long) seq, (double) (tsNow / 1000) / 1e6,
+                              (long long) tsNow);
+                    }
+                }
             }
         }
         if (!hasFrame.load() && getTimestamp != nullptr) {

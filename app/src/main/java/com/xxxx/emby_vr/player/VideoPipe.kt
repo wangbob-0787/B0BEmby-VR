@@ -891,6 +891,15 @@ class VideoPipe {
                 lastShownPts = ptsRaw + appliedOffset
                 lastShownAtMs = android.os.SystemClock.elapsedRealtime()
                 firstFrameShown = true
+                /* 与原生侧「显示帧对账」逐条比对：两边读到的片源时间应相差几十毫秒内
+                 * （原生读 SurfaceTexture.getTimestamp，这里读出帧 pts）。 */
+                if (decodedFrames % 60 == 0L) {
+                    Log.i(
+                        TAG,
+                        "出帧对账|序号=$decodedFrames|pts=${"%.3f".format(ptsRaw)}|" +
+                            "偏移=${"%.3f".format(appliedOffset)}",
+                    )
+                }
                 /* 跳转后的第一个上屏帧：外面的"画面侧信号"（见 onSeekRendered） */
                 if (seekAwaitFrame) {
                     seekAwaitFrame = false
