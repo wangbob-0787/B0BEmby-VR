@@ -31,9 +31,10 @@ target_link_libraries(b0bvr
 # 预编译库由 CI 现取（build.yml 的「下载音频解码库」）；本地没有就跳过，不阻断主库编译。
 set(FFAUDIO_DIR ${CMAKE_CURRENT_SOURCE_DIR}/ffmpeg-audio)
 if(EXISTS ${FFAUDIO_DIR}/lib/arm64-v8a/libavcodec.a)
-    add_library(audiodec SHARED audio_decoder_jni.cpp)
+    add_library(audiodec SHARED audio_decoder_jni.cpp audio_demux_jni.cpp)
     target_include_directories(audiodec PRIVATE ${FFAUDIO_DIR}/include)
     target_link_libraries(audiodec
+            ${FFAUDIO_DIR}/lib/arm64-v8a/libavformat.a
             ${FFAUDIO_DIR}/lib/arm64-v8a/libavcodec.a
             ${FFAUDIO_DIR}/lib/arm64-v8a/libswresample.a
             ${FFAUDIO_DIR}/lib/arm64-v8a/libavutil.a
