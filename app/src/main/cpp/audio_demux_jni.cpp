@@ -15,6 +15,7 @@
 #include <jni.h>
 #include <android/log.h>
 
+#include <atomic>
 #include <cstring>
 #include <string>
 
@@ -35,6 +36,8 @@ constexpr int kMaxSub = 12;
 
 struct Demux {
     AVFormatContext *fmt = nullptr;
+    /* stop 时置位：打断阻塞中的 open/read（MediaExtractor 打断不了，只能干等 8 秒） */
+    std::atomic<bool> abort{false};
     int audioIdx = -1;
     /*
      * 全部「文字」字幕轨各自一个解码上下文。
@@ -65,6 +68,11 @@ void freeDemux(Demux *d) {
 }
 
 Demux *fromHandle(jlong h) { return reinterpret_cast<Demux *>(static_cast<intptr_t>(h)); }
+
+int interruptCb(void *opaque) {
+    auto *d = static_cast<Demux *>(opaque);
+    return (d && d->abort.load()) ? 1 : 0;
+}
 
 /** ASS 事件行取正文：前 9 段是层/时间/样式等，第 10 段才是文字 */
 std::string assText(const char *ass) {
@@ -105,6 +113,7 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxOpen(
     avformat_network_init();
 
     auto *d = new Demux();
+    d->abort.store(false);
     AVFormatContext *fmt = nullptr;
     AVDictionary *opt = nullptr;
     av_dict_set(&opt, "timeout", "20000000", 0);        // 20s：网络源首字节慢是常态
@@ -118,6 +127,9 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxOpen(
         return 0;
     }
     d->fmt = fmt;
+    /* 打断回调必须在 open 之前挂上才管用；这里补挂一次（open 已被打断时下面会失败） */
+    fmt->interrupt_callback.callback = interruptCb;
+    fmt->interrupt_callback.opaque = d;
     ret = avformat_find_stream_info(fmt, nullptr);
     if (ret < 0) {
         LOGE("读流信息失败: %s", errStr(ret).c_str());
@@ -134,6 +146,27 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxOpen(
                 p->codec_id == AV_CODEC_ID_MOV_TEXT) {
                 d->subIdx[d->subN++] = (int) i;
             }
+        }
+    }
+    /*
+     * 显式丢掉不要的轨。
+     *
+     * av_read_frame 返回**所有轨**的包；命令行里没暴露是因为 -map 会自动 discard 未映射的轨。
+     * 不设的话这一路等于把 4K 视频也整片拉一遍 —— 网盘额度直接翻倍（豆豆 2026-11-22）。
+     * 字幕轨全部保留：切轨要零等待。
+     */
+    for (unsigned i = 0; i < fmt->nb_streams; ++i) {
+        AVStream *st = fmt->streams[i];
+        if ((int) i == d->audioIdx) continue;
+        if (st->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE) {
+            bool textSub = st->codecpar->codec_id == AV_CODEC_ID_SUBRIP ||
+                           st->codecpar->codec_id == AV_CODEC_ID_ASS ||
+                           st->codecpar->codec_id == AV_CODEC_ID_SSA ||
+                           st->codecpar->codec_id == AV_CODEC_ID_WEBVTT ||
+                           st->codecpar->codec_id == AV_CODEC_ID_MOV_TEXT;
+            st->discard = textSub ? AVDISCARD_DEFAULT : AVDISCARD_ALL;
+        } else {
+            st->discard = AVDISCARD_ALL;   // 视频 + 未选中的音频
         }
     }
     if (d->audioIdx < 0) {
@@ -196,7 +229,7 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxRead(
             AVStream *st = d->fmt->streams[d->audioIdx];
             m[0] = 0;
             m[1] = size;
-            m[2] = (jint) (d->pkt->pts == AV_NOPTS_VALUE ? 0
+            m[2] = (jint) (d->pkt->pts == AV_NOPTS_VALUE ? -1
                     : av_rescale_q(d->pkt->pts, st->time_base, AVRational{1, 1000}));
             env->SetByteArrayRegion(out, 0, size, reinterpret_cast<const jbyte *>(d->pkt->data));
             env->SetIntArrayRegion(meta, 0, 4, m);
@@ -226,7 +259,7 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxRead(
                 AVStream *st = d->fmt->streams[d->subIdx[subK]];
                 int64_t ptsMs = sub.pts != AV_NOPTS_VALUE
                                 ? av_rescale_q(sub.pts, st->time_base, AVRational{1, 1000})
-                                : 0;
+                                : -1;   // 未知时间戳不能当 0，否则字幕会被排到片头
                 if (!text.empty() && (int) text.size() <= cap) {
                     m[0] = 2;
                     m[1] = (jint) text.size();
@@ -261,8 +294,16 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxSeek(
         LOGE("跳转失败: %s", errStr(ret).c_str());
         return ret;
     }
-    if (d->subDec) avcodec_flush_buffers(d->subDec);
+    for (int k = 0; k < d->subN; ++k) {
+        if (d->subDec[k]) avcodec_flush_buffers(d->subDec[k]);
+    }
     return 0;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxAbort(JNIEnv *, jobject, jlong handle) {
+    Demux *d = fromHandle(handle);
+    if (d) d->abort.store(true);
 }
 
 extern "C" JNIEXPORT void JNICALL
