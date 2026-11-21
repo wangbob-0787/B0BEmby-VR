@@ -402,13 +402,24 @@ class AudioPipe {
         MIME_PRIORITY.contains(mime) && !mime.contains("dts", true) && !mime.contains("truehd", true)
 
     private fun buildTrack(): AudioTrack? {
-        val chMask = when (channelCount) {
-            1 -> AudioFormat.CHANNEL_OUT_MONO
-            2 -> AudioFormat.CHANNEL_OUT_STEREO
-            else -> AudioFormat.CHANNEL_OUT_STEREO
+        /*
+         * 声道必须按**解码器真实输出**来建（豆豆 2026-11-21 查实）。
+         *
+         * 这部片音轨是 6 声道（DDP5.1）。原来一律按双声道建设备、bytesPerFrame 固定 4，
+         * 而解码器吐出的是每帧 12 字节 → 设备把 12 字节当 3 帧消费 → 声音三倍速，
+         * writtenFrames 也跟着放大三倍，时钟被拽回起点附近，画面被判"来得早"一路等。
+         */
+        val (chMask, outCh) = when (channelCount) {
+            1 -> AudioFormat.CHANNEL_OUT_MONO to 1
+            2 -> AudioFormat.CHANNEL_OUT_STEREO to 2
+            3 -> AudioFormat.CHANNEL_OUT_STEREO to 2
+            4 -> AudioFormat.CHANNEL_OUT_QUAD to 4
+            5, 6 -> AudioFormat.CHANNEL_OUT_5POINT1 to 6
+            7, 8 -> AudioFormat.CHANNEL_OUT_7POINT1_SURROUND to 8
+            else -> AudioFormat.CHANNEL_OUT_STEREO to 2
         }
-        val outCh = if (channelCount == 1) 1 else 2
         bytesPerFrame = outCh * 2
+        Log.i(TAG, "音频设备：声道=$channelCount → 输出=${outCh}ch 每帧=${bytesPerFrame}字节")
         val minBuf = AudioTrack.getMinBufferSize(sampleRate, chMask, AudioFormat.ENCODING_PCM_16BIT)
         if (minBuf <= 0) return null
         /* 半秒缓冲：太短在 4K 解码抢 CPU 时会欠载，太长会让暂停/跳转感知变迟钝 */
@@ -629,6 +640,15 @@ class AudioPipe {
                     val r = runCatching { nf.getInteger(MediaFormat.KEY_SAMPLE_RATE) }.getOrDefault(sampleRate)
                     if (r != sampleRate) {
                         Log.w(TAG, "解码输出采样率与轨声明不一致：$sampleRate → $r（设备仍按 $sampleRate）")
+                    }
+                    /*
+                     * 通道数以**解码器实际输出**为准，和设备不一致就是三倍速/静音这类问题的源头，
+                     * 必须报出来而不是静默继续（豆豆 2026-11-21 查实）。
+                     */
+                    val rc = runCatching { nf.getInteger(MediaFormat.KEY_CHANNEL_COUNT) }.getOrDefault(channelCount)
+                    if (rc != channelCount) {
+                        Log.e(TAG, "解码输出声道与设备不一致：设备=${channelCount} 实际=$rc（声音会异常）")
+                        lastError = "声道不一致（设备=$channelCount 实际=$rc）"
                     }
                 }
 
