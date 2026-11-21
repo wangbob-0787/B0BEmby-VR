@@ -143,6 +143,8 @@ static long long gDvLastLookupPtsNs = -1;
  * 保证用户第一眼看到的就是正确颜色（父亲 2026-11-21）。
  */
 static std::atomic<int> gDvFrameReady{0};
+/* 本帧用的是否是"时间接近的新鲜参数"（收黑幕用这一问；放行用上面那一问） */
+static std::atomic<int> gDvFrameFresh{0};
 
 /*
  * 最后一套**真正用过的**有效参数（豆豆 2026-11-21）。
@@ -161,6 +163,14 @@ static std::atomic<int> gDvHasLastGood{0};
  * 不能被"新片刚写进来的参数"覆盖 —— 否则冻住的旧画面会被套上新场景的颜色（偏紫）。
  */
 static std::atomic<int> gDvFreeze{0};
+
+/*
+ * 保持期（2026-11-21，取代"冻结 + 最后一套"的组合）：
+ * 跳转已经认领、新画面还没放行 —— 这段时间**根本不取参**，
+ * 直接沿用 g_doviFlat 里上一次上色用的那套。屏幕上是上一帧，颜色自然不变。
+ * 少一个状态，就没有"冻结算不算就绪"这种语义污染（豆豆的建议）。
+ */
+static std::atomic<int> gDvHold{0};
 
 
 /**
@@ -278,6 +288,16 @@ static void doviProbeShared()
         const long long pts = gVideoFramePtsNs.load();
         bool usedTable = false;
         bool usedFresh = false;
+        if (gDvHold.load() != 0) {
+            /*
+             * 保持期：不取参、不改 g_doviFlat。
+             * 约定：push 到达时只进表，绝不直接改 g_doviFlat —— 否则刚到的
+             * 新场景参数会把"正在显示的上一帧"染色（豆豆 2026-11-21 的硬约束）。
+             */
+            gDvFrameReady.store(g_doviFlat != nullptr ? 1 : 0);
+            gDvFrameFresh.store(0);
+            return;
+        }
         if (gDvFreeze.load() != 0 && gDvHasLastGood.load() != 0) {
             /* 冻结期：屏幕上还是上一帧，必须用它的那套参数 */
             g_doviFlat = gDvLastGood;
@@ -305,6 +325,7 @@ static void doviProbeShared()
          */
         const bool frozenWithGood = gDvFreeze.load() != 0 && gDvHasLastGood.load() != 0;
         gDvFrameReady.store((usedFresh || frozenWithGood) ? 1 : 0);
+        gDvFrameFresh.store(usedFresh ? 1 : 0);
         /* 起播/跳转头几帧最关键：每帧都报来源，之后降到 3 秒一行 */
         {
             static long long frames;
@@ -418,6 +439,17 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativePushDoviParams(
         LOGI_RAW("按帧参数通道已接通|gen=%lld|pts=%.3f|分段=%d 通道=%d 长度=%d",
                  (long long) gen, (double) ptsNs / 1e9, (int) segments, (int) channels, (int) len);
     }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetDoviHold(JNIEnv *, jclass, jint on) {
+    gDvHold.store(on != 0 ? 1 : 0);
+    LOGI_RAW("杜比参数保持=%d", on);
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeDoviFreshReady(JNIEnv *, jclass) {
+    return gDvFrameFresh.load() != 0 ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT void JNICALL

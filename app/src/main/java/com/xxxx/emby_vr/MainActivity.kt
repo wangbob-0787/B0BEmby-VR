@@ -8567,6 +8567,15 @@ class MainActivity : ComponentActivity() {
      * 认领跳转时先把时钟拨到目标；中途任何一条中止都必须把它恢复回去，
      * 否则刻度停在目标、画面黑着、只能重进应用（豆豆 2026-11-21）。
      */
+    /**
+     * 睡眠挂起（2026-11-21，豆豆裁定 A 方案的第一步）：
+     * 摘头显后系统走 onPause，但我们原来什么都不做 —— 声音设备停了、时钟照样走，
+     * 醒来那一刻时钟把整段睡眠算成播放时间，画面怎么追都对不上。
+     * 这里记下挂起位置与挂起时刻，恢复时据此决定"原地"还是"整条重建"。
+     */
+    @Volatile private var sleepSuspendSec = -1.0
+    @Volatile private var sleepSuspendAtMs = 0L
+
     /** 每次起播/重建尝试的编号：旧尝试的定时器与回调据此作废（豆豆 2026-11-21 第七环） */
     private val selfTx = java.util.concurrent.atomic.AtomicInteger(0)
 
@@ -9687,8 +9696,47 @@ class MainActivity : ComponentActivity() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
+    /**
+     * 睡眠挂起：记位置、冻时钟、停声音，**不调解码器**（重建太贵）。
+     * 画面靠 holdGate 冻住最后一帧。
+     */
+    private fun suspendPlaybackForSleep() {
+        if (!selfAudioOn) return
+        val sec = playClock?.positionSec() ?: return
+        sleepSuspendSec = sec
+        sleepSuspendAtMs = android.os.SystemClock.elapsedRealtime()
+        selfPipeWaitingFirstFrame.set(true)
+        runCatching { playClock?.pause() }
+        runCatching { audioPipe?.pause() }
+        Log.i(TAG, "睡眠挂起|位置=${"%.2f".format(sec)}s|时刻=$sleepSuspendAtMs")
+    }
+
+    /**
+     * 睡眠恢复（豆豆 2026-11-21 的阈值建议）：
+     * 挂起 3 秒以内 → 原地继续；超过 3 秒 → 整条重建到挂起位置（复用跳转事务）。
+     * 短挂起看起来正常是有欺骗性的 —— 音频线程还没被卡到"上报停走"，时钟没转墙钟。
+     */
+    private fun resumePlaybackFromSleep() {
+        val sec = sleepSuspendSec
+        if (sec < 0.0) return
+        val suspendedMs = android.os.SystemClock.elapsedRealtime() - sleepSuspendAtMs
+        sleepSuspendSec = -1.0
+        if (suspendedMs < 3000L) {
+            selfPipeWaitingFirstFrame.set(false)
+            runCatching { playClock?.resume() }
+            runCatching { audioPipe?.resume() }
+            Log.i(TAG, "睡眠恢复|分支=原地|位置=${"%.2f".format(sec)}s|挂起=${suspendedMs}ms")
+        } else {
+            Log.i(TAG, "睡眠恢复|分支=整条重建|位置=${"%.2f".format(sec)}s|挂起=${suspendedMs}ms")
+            selfPipeWaitingFirstFrame.set(false)
+            /* 复用跳转事务（同一把单飞锁），不新写第三条重建路径 */
+            ui.post { runCatching { ctl.pipeSeek?.invoke((sec * 1000.0).toLong()) } }
+        }
+    }
+
     override fun onResume() {
         super.onResume()
+        resumePlaybackFromSleep()
         glView.onResume()
         vrSession.resume()
         /*
@@ -9703,6 +9751,8 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onPause() {
+        /* 摘头显 = 睡眠：把播放挂起，别让时钟继续走（豆豆 2026-11-21 裁定 A 的第一步） */
+        suspendPlaybackForSleep()
         // 海报墙的摆放先记下来，下次打开还原
         savePanelPlace()
         vrSession.pause()
