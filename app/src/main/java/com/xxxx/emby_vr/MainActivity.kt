@@ -8757,6 +8757,7 @@ class MainActivity : ComponentActivity() {
                         "|loadWaitedMs=${if (pipeLoadT0 > 0L) android.os.SystemClock.elapsedRealtime() - pipeLoadT0 else "-"}" +
                         "|seekWaitedMs=${if (pipeSeekT0 > 0L) android.os.SystemClock.elapsedRealtime() - pipeSeekT0 else "-"}" +
                         "|bufferWaitedMs=-|stopWaitedMs=${if (lastStopWaitedMs >= 0L) lastStopWaitedMs else "-"}" +
+                        "|queueSec=${"%.1f".format(videoPipe?.queuedSec() ?: 0.0)}" +
                         "|loadInput=-|loadDecoder=${if (selfPipeReady) "ok" else "-"}" +
                         "|loadAudioOut=${if (selfPipeCanOpen) "ok" else "-"}" +
                         "|canOpenBlk=${com.xxxx.emby_vr.player.MpvBackend.canOpenBlocker()}" +
@@ -9162,6 +9163,18 @@ class MainActivity : ComponentActivity() {
              * 只判"解出来"会让声音先出十几秒 —— 那段时间画面还在首帧渲染上。
              */
             if (!selfFirstShown) return
+            /*
+             * 队列要有存货才放行（豆豆 2026-11-21 第 2 条）。
+             *
+             * 原来准备完就放，等于第一秒裸跑网络：网盘一抖就直接暴露。
+             * 门槛取 2 秒（约档位低水位的三分之一）。
+             */
+            val bufferedSec = videoPipe?.queuedSec() ?: 0.0
+            if (bufferedSec < 2.0) {
+                if (tries < 80) ui.postDelayed({ tryRelease(tries + 1) }, 100)
+                else Log.w(TAG, "放行超时：队列只攒到 ${"%.1f".format(bufferedSec)}s")
+                return
+            }
             val ap = audioPipe
             if (ap == null) {
                 if (tries < 80) {

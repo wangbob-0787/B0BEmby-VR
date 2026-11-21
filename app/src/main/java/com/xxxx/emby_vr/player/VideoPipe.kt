@@ -52,7 +52,11 @@ class VideoPipe {
      * 队列按字节封顶（32MB，约两三秒 4K），满了读线程等 —— 与 ffplay 一样不丢帧。
      */
     private var feedThread: Thread? = null
-    private val feedQueue = SampleQueue(32 * 1024 * 1024)
+    /*
+     * 样本队列：按码率折算约 6~8 秒（4K 12MB/s → 96MB）。
+     * 32MB 只有两秒多，网盘抖 5~10 秒就挡不住（豆豆 2026-11-21 核）。
+     */
+    private val feedQueue = SampleQueue(96 * 1024 * 1024)
 
     /** 待执行的跳转（extractor 由读线程独占，跳转也交给它做） */
     @Volatile private var feedSeekSec = -1.0
@@ -249,6 +253,19 @@ class VideoPipe {
     private var appliedOffset = Double.NaN
     /** 预卷帧（pts < audioStart，不许上屏）丢弃计数，写日志用 */
     private var prerollDropped = 0
+
+    /** 队列里现有数据的字节数（水位口径，供放行与健康行使用） */
+    fun queuedBytes(): Int = feedQueue.sizeBytes()
+
+    /** 队列折算成秒：用码率估算；拿不到码率时按 4K 12MB/s 保守算 */
+    fun queuedSec(): Double {
+        val bps = estimatedBps.takeIf { it > 0 } ?: 12_000_000
+        return queuedBytes().toDouble() / bps
+    }
+
+    /** 码率估值（字节/秒）：从轨道格式的 bitrate 换算，拿不到就是 0 */
+    @Volatile
+    private var estimatedBps: Int = 0
     /** 偏差首次超过 500ms 的时刻（elapsedRealtime）；连续 3s 未追平才请求重启 */
     private var desyncSinceMs = 0L
     /** 时钟无效时连续挂起的次数（只用于日志节流；何时收场由上层按"无进度"判） */
@@ -641,6 +658,10 @@ class VideoPipe {
                 return null
             }
             ex.selectTrack(trackIndex)
+            runCatching {
+                val br = format.getInteger(MediaFormat.KEY_BIT_RATE)
+                if (br > 0) estimatedBps = br / 8
+            }
             Log.i(
                 TAG,
                 "选轨完成：轨=$trackIndex 编码=${format.getString(MediaFormat.KEY_MIME)} " +
