@@ -9162,11 +9162,21 @@ class MainActivity : ComponentActivity() {
                  * 重建里有「旧管线 join」「解封装 latch 最多 20 秒」「解码器 configure」，
                  * 原来全跑在界面线程上，跳一次界面就冻十几秒。
                  */
-                Thread({
+                val jumpBody = {
                     runCatching {
                         startSelfVideoPipe(jumpUrl, sec, jumpSurface, m, "跳转重建", alreadyClaimed = true)
+                    }.onFailure {
+                        /* 认领了却没跑起来：必须把标志交回去，否则之后再也跳不动 */
+                        Log.e(TAG, "跳转线程启动失败：${it.message}")
+                        pipeBootInFlight.set(false)
+                        ui.post { hud("跳转启动失败，请重试") }
                     }
-                }, "pipe-jump").start()
+                }
+                runCatching { Thread(jumpBody, "pipe-jump").start() }.onFailure {
+                    Log.e(TAG, "跳转线程无法创建：${it.message}")
+                    pipeBootInFlight.set(false)
+                    ui.post { hud("跳转启动失败，请重试") }
+                }
             }
         }
 
@@ -9290,13 +9300,18 @@ class MainActivity : ComponentActivity() {
          * 所以只要首帧迟迟不来，放行永远不会发生 → 在飞标志永远为真 → 之后跳转全被挡。
          * 这条从起播那一刻计时，8 秒没放行就强制收场，保证标志一定被交出。
          */
-        val pipeLoadT0 = android.os.SystemClock.elapsedRealtime()
+        val watchdogT0 = android.os.SystemClock.elapsedRealtime()
         ui.postDelayed({
             if (gen != selfGen.get()) return@postDelayed
-            if (!released) {
+            /*
+             * 只在「首帧还没上屏」时动手（豆豆 2026-11-21）：
+             * 队列门槛与音频等待在 tryRelease 里是串行的，合法最坏路径约 16 秒；
+             * 用 !released 判会把这条正常路径截断。首帧上屏之后就交给 tryRelease 自己的超时。
+             */
+            if (!released && (!pipeReady || !selfFirstShown)) {
                 Log.e(
                     TAG,
-                    "放行看门狗：${android.os.SystemClock.elapsedRealtime() - pipeLoadT0}ms 未放行" +
+                    "放行看门狗：${android.os.SystemClock.elapsedRealtime() - watchdogT0}ms 仍无首帧" +
                         "（pipeReady=$pipeReady 首帧上屏=$selfFirstShown）→ 强制放行并报错",
                 )
                 released = true
@@ -9304,6 +9319,13 @@ class MainActivity : ComponentActivity() {
                 pipeBootInFlight.set(false)
                 ui.post { hud("画面迟迟不出，已强制放行") }
                 runCatching { playClock?.start((selfOriginSec * 1_000_000.0).toLong()) }
+                /* 音频若已就绪要一起起动，否则 released 之后 tryRelease 不再进 = 有画无声 */
+                audioPipe?.let { ready ->
+                    runCatching {
+                        ready.bindClockToken(playClock?.token ?: 0L)
+                        ready.startNow()
+                    }
+                }
             }
         }, 8000L)
 
