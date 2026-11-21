@@ -9702,9 +9702,10 @@ jobject makeOesSurface(JNIEnv *env, GLuint tex, std::function<void()> &out,
                     g.videoFramePtsUs.store(tsNow / 1000);
                     const int64_t seq = g.videoFrameSeq.fetch_add(1) + 1;
                     if (seq % 60 == 0) {
-                        VLOGI("显示帧对账|序号=%lld|pts=%.3f|ts=%lld",
-                              (long long) seq, (double) (tsNow / 1000) / 1e6,
-                              (long long) tsNow);
+                        /* 走 INFO：VLOGI 受 gLogVerbose 控制、默认关，实测一行都不出来 */
+                        LOGI_RAW("显示帧对账|序号=%lld|pts=%.3f|ts=%lld",
+                                 (long long) seq, (double) (tsNow / 1000) / 1e6,
+                                 (long long) tsNow);
                     }
                 }
             }
