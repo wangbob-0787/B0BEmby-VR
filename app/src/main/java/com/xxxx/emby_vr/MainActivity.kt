@@ -7792,6 +7792,21 @@ class MainActivity : ComponentActivity() {
          * 第二次接管时尺寸已经有了，所以直接正确。
          * 修法：网页流起播时，等内核报出真实画面尺寸之后再揭幕（最多多等 1.2 秒，仍在黑幕里）。
          */
+        /*
+         * 颜色没到就不收黑幕（父亲 2026-11-21 定的口径）：
+         * 第一眼看到的必须是正确颜色，而不是"过一会儿自己变对"。
+         * 复用这里的重试循环（120ms 一拍），不另写第二套等待。
+         * 20 秒兜底：真遇到没有杜比参数的片子也要收幕，否则就是永久黑屏。
+         */
+        if (selfAudioOn && !com.xxxx.emby_vr.vr.VrNative.doviParamsReady()) {
+            val waited = android.os.SystemClock.uptimeMillis() - waitingStartedAtMs
+            if (waited < 20000L) {
+                handler.postDelayed({ tryRevealWaitingFrame() }, 120L)
+                return
+            }
+            Log.w(TAG, "收黑幕兜底：${waited}ms 参数仍未到达（本片可能没有杜比参数）")
+            hud("本片颜色参数未到达")
+        }
         if (webStreamSite != null && !webSizeKnown) {
             val waited = android.os.SystemClock.uptimeMillis() - waitingStartedAtMs
             if (waited < kMinWaitingMs + 1200L) {
@@ -9427,21 +9442,6 @@ class MainActivity : ComponentActivity() {
                 pausedNow = { selfPaused || avStall },
                 onFirstFrame = frame@{
                     if (gen != selfGen.get()) return@frame
-                    /*
-                     * 颜色没到就不收黑幕（父亲 2026-11-21 定的口径）：
-                     * 第一眼看到的必须是正确颜色，而不是"过一会儿自己变对"。
-                     * 参数在第一帧解码前就解出来了，实际只多等几十毫秒；
-                     * 万一这片没有 RPU，靠 20 秒兜底收幕并提示。
-                     */
-                    if (!com.xxxx.emby_vr.vr.VrNative.doviParamsReady()) {
-                        val waited = android.os.SystemClock.elapsedRealtime() - watchdogT0
-                        if (waited < 20000L) {
-                            ui.postDelayed({ runCatching { onFirstFrame?.invoke() } }, 100L)
-                            return@frame
-                        }
-                        Log.w(TAG, "收黑幕兜底：${waited}ms 参数仍未到达（本片可能没有杜比参数）")
-                        ui.post { hud("本片颜色参数未到达") }
-                    }
                     /*
                      * 首帧那一刻队列里已经有多少秒：用来判断"跳转慢"到底是不是放行门槛卡的
                      * （豆豆 2026-11-21：先有数再定门槛）。
