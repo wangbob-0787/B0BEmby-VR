@@ -144,6 +144,17 @@ static long long gDvLastLookupPtsNs = -1;
  */
 static std::atomic<int> gDvFrameReady{0};
 
+/*
+ * 最后一套**真正用过的**有效参数（豆豆 2026-11-21）。
+ *
+ * 为什么需要：跳转开始时清表 + 删文件，渲染层立刻"取不到参数"→ 关还原；
+ * 但 VR 渲染每帧都在重画同一张纹理（冻结期也一样），于是那张旧画面当场变紫。
+ * 清表/删文件都不动这里，所以冻结期沿用的还是它原来那套 → 颜色不变。
+ * 新帧解冻时走"表命中 / 文件有效"第 1、2 档，不会用到上一段的参数。
+ */
+static float gDvLastGood[128];
+static std::atomic<int> gDvHasLastGood{0};
+
 
 /**
  * 用当前显示帧的时间查参数（不超过它的最近一项）。
@@ -259,13 +270,24 @@ static void doviProbeShared()
     {
         const long long pts = gVideoFramePtsNs.load();
         bool usedTable = false;
+        bool usedFresh = false;
         if (pts > 0 && dvPickByPts(pts, gDvPtsActive, 128)) {
             g_doviFlat = gDvPtsActive;
             usedTable = true;
+            usedFresh = true;
         } else if (gDvFileValid) {
             g_doviFlat = g_doviFlatFile;
+            usedFresh = true;
         }
-        gDvFrameReady.store((usedTable || gDvFileValid) ? 1 : 0);
+        if (usedFresh) {
+            /* 记住这套：跳转/换片清参数期间，旧画面继续用它，颜色不会突然变 */
+            memcpy(gDvLastGood, (const void *) g_doviFlat, sizeof(float) * 128);
+            gDvHasLastGood.store(1);
+        } else if (gDvHasLastGood.load() != 0) {
+            /* 冻结期（还没换新帧）：沿用最后一套有效参数，避免"参数消失→还原关掉→变紫" */
+            g_doviFlat = gDvLastGood;
+        }
+        gDvFrameReady.store(usedFresh ? 1 : 0);
         /* 起播/跳转头几帧最关键：每帧都报来源，之后降到 3 秒一行 */
         {
             static long long frames;
