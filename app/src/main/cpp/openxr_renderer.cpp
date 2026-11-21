@@ -8341,12 +8341,16 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
          */
         const bool dvOn = videoLayerPass && gDvRendererReshape.load() != 0 && gDvStreamActive.load() != 0 &&
                           g_doviFlat && g_doviFlat[0] >= 0.5f && g_doviFlat[0] < 2.5f;
-        static int lastDvReshape = -1;
         const int nowReshape = dvOn ? 1 : 0;
-        if (nowReshape != lastDvReshape) {
-            lastDvReshape = nowReshape;
-            glUniform1i(u.dvReshape, nowReshape);
-        }
+        /*
+         * 每趟都写，不做"只在变化时写"的缓存。
+         *
+         * 原因：本函数会按 delayed 在 c.ringProg 与 c.program 两套程序之间切换，
+         * 而 uniform 是**按 program 保存**的 —— 用一个共享的"上次值"记录，切换 program 后
+         * 必然出现"以为没变化、其实这趟还没设"的情况，面板/海报墙就沿用了视频层那套颜色处理。
+         * 一次 glUniform1i 的开销可以忽略，正确性优先（豆豆 2026-11-21 定位）。
+         */
+        glUniform1i(u.dvReshape, nowReshape);
         if (dvOn) glUniform1fv(u.dvParams, 128, (const GLfloat *) g_doviFlat);
     }
     if (u.texel >= 0) glUniform2f(u.texel, c.texelX.load(), c.texelY.load());

@@ -7293,6 +7293,12 @@ class MainActivity : ComponentActivity() {
          * 参数表、文件标记、最后一套、"就地保持"全部复位，
          * 否则"P5 换 P5"时 streamActive 一直是 1，上一部片的参数会被继续用下去。
          */
+        /*
+         * 渲染层的还原总开关也必须关（豆豆 2026-11-21 清单第②条）：
+         * 它只在 P5 起播时被置 true，此前没有任何收场路径复位；
+         * 不复位时，只要某趟绘制忘了显式写 uniform，就会把杜比着色路径带到海报墙/面板上。
+         */
+        com.xxxx.emby_vr.vr.VrNative.setDvRendererReshape(false)
         com.xxxx.emby_vr.vr.VrNative.setDoviStreamActive(false)
         com.xxxx.emby_vr.vr.VrNative.resetDoviAll()
         /* 停播等多久只报数不判死（图 §4.1）：记起点，停完把耗时交给健康行 */
