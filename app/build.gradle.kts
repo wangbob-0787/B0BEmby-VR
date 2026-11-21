@@ -204,6 +204,9 @@ configurations.configureEach {
 }
 
 dependencies {
+    /* 单元测试：起播/跳转状态机的 11 条断言（src/test），编译期就跑，不进 APK */
+    testImplementation("junit:junit:4.13.2")
+
     implementation(libs.openxr.loader)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.material3)

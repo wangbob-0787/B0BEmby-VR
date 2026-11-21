@@ -126,6 +126,9 @@ jobs:
           BUILD_NUMBER: ${{ github.run_number }}
         run: |
           chmod +x gradlew
+          # 先跑状态机断言（不碰 Android，纯逻辑）：起播/跳转那几类回归在这里就红，
+          # 不用等装到头显上才发现（2026-11-21 加）
+          ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace
           ./gradlew :app:assembleDebug :app:assembleRelease --no-daemon --stacktrace --build-cache
 
       - name: 收集 APK
