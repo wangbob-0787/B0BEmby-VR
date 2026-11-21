@@ -7011,9 +7011,14 @@ class MainActivity : ComponentActivity() {
     private fun abortJump(why: String) {
         val from = jumpFromSec
         jumpFromSec = -1.0
+        /* 先作废这次尝试：看门狗、首帧回调、音频回调都会据此退场 */
+        selfTx.incrementAndGet()
         if (from < 0.0) return
         Log.e(TAG, "跳转中止：$why → 时钟回到 ${"%.2f".format(from)}s")
         runCatching { playClock?.start((from * 1_000_000.0).toLong()) }
+        /* 闸门不能再关着，否则画面永远不上屏（17:22 现场：队列涨到 639 秒） */
+        selfPipeWaitingFirstFrame.set(false)
+        selfPipePhase = "起播失败"
     }
 
     private fun seekBy(deltaMs: Long) {
@@ -8561,6 +8566,9 @@ class MainActivity : ComponentActivity() {
      * 认领跳转时先把时钟拨到目标；中途任何一条中止都必须把它恢复回去，
      * 否则刻度停在目标、画面黑着、只能重进应用（豆豆 2026-11-21）。
      */
+    /** 每次起播/重建尝试的编号：旧尝试的定时器与回调据此作废（豆豆 2026-11-21 第七环） */
+    private val selfTx = java.util.concurrent.atomic.AtomicInteger(0)
+
     @Volatile private var jumpFromSec = -1.0
 
 
@@ -9052,6 +9060,7 @@ class MainActivity : ComponentActivity() {
     ) {
         selfAudioOn = true
         val gen = selfGen.incrementAndGet()
+        val tx = selfTx.incrementAndGet()
         if (playClock == null) playClock = com.xxxx.emby_vr.player.PlaybackClock()
         /* 主线程投递句柄：这个函数现在可能跑在工作线程（跳转重建） */
         val ui = android.os.Handler(android.os.Looper.getMainLooper())
@@ -9398,7 +9407,11 @@ class MainActivity : ComponentActivity() {
          */
         val watchdogT0 = android.os.SystemClock.elapsedRealtime()
         ui.postDelayed({
-            if (gen != selfGen.get()) return@postDelayed
+            /* 这次尝试已作废（失败/中止/换代）：定时器直接退场，不许再开火 */
+            if (tx != selfTx.get() || gen != selfGen.get()) {
+                Log.i(TAG, "看门狗作废（tx=$tx 当前=${selfTx.get()}）")
+                return@postDelayed
+            }
             /*
              * 只在「首帧还没上屏」时动手（豆豆 2026-11-21）：
              * 队列门槛与音频等待在 tryRelease 里是串行的，合法最坏路径约 16 秒；
@@ -9656,6 +9669,10 @@ class MainActivity : ComponentActivity() {
                 Log.e(TAG, "PIPE 起不来：$why（停在起播，不放行、不出声）")
                 ui.post { hud("画面解码起不来") }
                 pipeBootInFlight.set(false)
+                /* 这条管线必须停掉：start 返回 false 不代表它已经退出 */
+                runCatching { pipe.stop() }
+                selfPipeWaitingFirstFrame.set(false)
+                selfPipePhase = "起播失败"
                 abortJump("画面解码起不来：$why")
             }
         }
