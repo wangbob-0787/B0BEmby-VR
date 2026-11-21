@@ -162,7 +162,6 @@ static std::atomic<int> gDvHasLastGood{0};
  * 这段时间里屏幕上是**上一帧**（VR 每帧重画同一张纹理），所以参数必须沿用它原来那套，
  * 不能被"新片刚写进来的参数"覆盖 —— 否则冻住的旧画面会被套上新场景的颜色（偏紫）。
  */
-static std::atomic<int> gDvFreeze{0};
 
 /*
  * 保持期（2026-11-21，取代"冻结 + 最后一套"的组合）：
@@ -298,10 +297,7 @@ static void doviProbeShared()
             gDvFrameFresh.store(0);
             return;
         }
-        if (gDvFreeze.load() != 0 && gDvHasLastGood.load() != 0) {
-            /* 冻结期：屏幕上还是上一帧，必须用它的那套参数 */
-            g_doviFlat = gDvLastGood;
-        } else if (pts > 0 && dvPickByPts(pts, gDvPtsActive, 128)) {
+        if ( (pts > 0 && dvPickByPts(pts, gDvPtsActive, 128)) {
             g_doviFlat = gDvPtsActive;
             usedTable = true;
             usedFresh = true;
@@ -323,8 +319,7 @@ static void doviProbeShared()
          * Kotlin 的放行门槛一直等 → 放行不发生 → 冻结永不解除，两边互相等待卡死
          * （2026-11-21 17:52 实测：跳转后画面冻住起不来）。
          */
-        const bool frozenWithGood = gDvFreeze.load() != 0 && gDvHasLastGood.load() != 0;
-        gDvFrameReady.store((usedFresh || frozenWithGood) ? 1 : 0);
+        gDvFrameReady.store(usedFresh ? 1 : 0);
         gDvFrameFresh.store(usedFresh ? 1 : 0);
         /* 起播/跳转头几帧最关键：每帧都报来源，之后降到 3 秒一行 */
         {
@@ -450,12 +445,6 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetDoviHold(JNIEnv *, jclass, jint on) 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_xxxx_emby_1vr_vr_VrNative_nativeDoviFreshReady(JNIEnv *, jclass) {
     return gDvFrameFresh.load() != 0 ? JNI_TRUE : JNI_FALSE;
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetDoviFreeze(JNIEnv *, jclass, jint on) {
-    gDvFreeze.store(on != 0 ? 1 : 0);
-    LOGI_RAW("杜比参数冻结=%d", on);
 }
 
 extern "C" JNIEXPORT void JNICALL
