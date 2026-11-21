@@ -498,6 +498,15 @@ class MainActivity : ComponentActivity() {
      * 没选任何一条时这里是空的，交给播放器按语言偏好自己挑（onCues 那条路）。
      */
     private var subtitleCues: List<SubtitleCue> = emptyList()
+
+    /**
+     * 当前这条片子是否走自管解码（P5）。
+     *
+     * 自管路没有播放器替我们解析内嵌字幕，所以「内嵌文字轨」在它上面等于不可见；
+     * 字幕路由必须因此改走服务端转 SRT 再自绘（2026-11-22）。
+     */
+    @Volatile
+    private var selfPipeActive = false
     private var subtitleCueStream: Int? = null
     /**
      * 起播崩过一次就改用 H.264 重来（父亲 2026-10-07）。
@@ -4479,6 +4488,7 @@ class MainActivity : ComponentActivity() {
                          * 服务端转码那条路不再保留 —— 两套解码器同时活着会互相抢资源，
                          * 而且它把音画同步交给外部服务，客户端这边就再也量不准。
                          */
+                        selfPipeActive = useSelfPipe
                         if (useSelfPipe) {
                             startSelfVideoPipe(directUrl, startMs / 1000.0, surface, m)
                         } else {
@@ -5019,7 +5029,7 @@ class MainActivity : ComponentActivity() {
                     subtitleCues = emptyList()
                     subtitleCueStream = null
                     selectServerSubtitleTrack(idx)
-                } else if (embeddedText) {
+                } else if (embeddedText && !selfPipeActive) {
                     selectEmbeddedTextTrack(idx)
                 } else {
                     Log.i(TAG, "字幕 $idx → 走服务端转 SRT 自绘（播放方式=$lastPlayMethod）")
@@ -5419,7 +5429,7 @@ class MainActivity : ComponentActivity() {
                             Log.i(TAG, "取消图形字幕 → 回到系统播放器")
                             replayKeepingPosition()
                         }
-                        embeddedText -> {
+                        embeddedText && !selfPipeActive -> {
                             subtitleCues = emptyList()
                             subtitleCueStream = null
                             if (lastPlayMethod == "Transcode") {
