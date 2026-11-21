@@ -292,8 +292,12 @@ class VideoPipe {
     fun queuedSec(): Double {
         val tail = feedQueue.lastPtsUs
         if (tail < 0L) return 0.0
-        val now = clockNowOrWall() * 1_000_000.0
-        if (now <= 0.0) return 0.0
+        /*
+         * 基准取"时钟；时钟没起来（起播时 running=false，读数恒为 0）就退回用起点。
+         * 不退回的话，首次起播每次都会判成 0 秒存货 → 白等满 8 秒超时才放行。
+         */
+        val clk = clockNowOrWall() * 1_000_000.0
+        val now = if (clk > 0.0) clk else audioStartSec * 1_000_000.0
         return ((tail - now) / 1_000_000.0).coerceAtLeast(0.0)
     }
 

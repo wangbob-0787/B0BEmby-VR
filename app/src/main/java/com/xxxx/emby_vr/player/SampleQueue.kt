@@ -98,6 +98,8 @@ class SampleQueue(private val maxBytes: Int) {
         synchronized(lock) {
             deque.clear()
             bytes = 0
+            /* 水位是"队尾时间戳"，清队必须一起清，否则跳转后用水位判断会读到旧队列的值 */
+            lastPtsUs = -1L
             eos = false
             lock.notifyAll()
         }
@@ -108,6 +110,7 @@ class SampleQueue(private val maxBytes: Int) {
         synchronized(lock) {
             deque.clear()
             bytes = 0
+            lastPtsUs = -1L
             eos = false
             aborted = false
             lock.notifyAll()
