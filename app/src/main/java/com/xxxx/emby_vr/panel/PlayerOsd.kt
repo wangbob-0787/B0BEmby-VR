@@ -557,11 +557,19 @@ private fun OsdProgress(state: OsdState, modifier: Modifier = Modifier) {
     } else {
         0f
     }
-    val bufFrac = if (duration > 0L) {
+    /*
+     * 缓冲段：真实比例太小就画成最小可见宽度（父亲 2026-11-21「缓冲量没显示」）。
+     *
+     * 队列里通常约 8 秒，45 分钟的片子只占画布 0.3%，功能正常也看不见；
+     * 这一段的用途是"还有没有余量"的信号，不是精确刻度，看不见等于没有。
+     */
+    val bufFracRaw = if (duration > 0L) {
         (state.bufferedMs.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
     } else {
         0f
     }
+    val hasBuffer = state.bufferedMs > state.positionMs + 500L
+    val bufFrac = if (hasBuffer) bufFracRaw.coerceAtLeast(0.015f) else frac
     /*
      * 复刻电视版播放页的进度条（父亲 2026-10-06 晚）：细轨道 + 一段浅色缓冲 +
      * 已播实色 + **一根绿色竖线游标**（电视版实测就是一根细竖条，不是圆点）。

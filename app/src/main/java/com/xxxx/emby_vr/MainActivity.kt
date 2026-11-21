@@ -7329,6 +7329,7 @@ class MainActivity : ComponentActivity() {
          */
         ctl.pipeSeek = null
         ctl.selfPositionProvider = null
+        ctl.selfBufferedProvider = null
         ctl.selfDurationProvider = null
         ctl.selfPlayingProvider = null
         ctl.selfTogglePlayPause = null
