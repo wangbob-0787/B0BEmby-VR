@@ -13,6 +13,10 @@ on:
     paths:
       - '.github/workflows/build-ffmpeg-audio.yml'
 
+# 发布 Release 需要写权限：默认 token 是只读，缺这一段时前七步全绿、只卡在最后发不出产物。
+permissions:
+  contents: write
+
 env:
   FFMPEG_TAG: n7.1
   ANDROID_API: 29          # PICO 4 是 Android 10
@@ -87,7 +91,15 @@ jobs:
           ls -lh ffmpeg-audio-arm64.tar.gz
           du -sh dist/lib/arm64-v8a/*
 
+      - name: 上传到工作流产物（方便不用 release 也能取）
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-audio-arm64
+          path: ffmpeg-audio-arm64.tar.gz
+          retention-days: 7
+
       - name: 发布到 Release
+        continue-on-error: true
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ffmpeg-audio-${{ env.FFMPEG_TAG }}
@@ -98,10 +110,3 @@ jobs:
             许可：LGPL 2.1+（未启用 GPL 组件）
           files: ffmpeg-audio-arm64.tar.gz
           draft: false
-
-      - name: 上传到工作流产物（方便不用 release 也能取）
-        uses: actions/upload-artifact@v4
-        with:
-          name: ffmpeg-audio-arm64
-          path: ffmpeg-audio-arm64.tar.gz
-          retention-days: 7
