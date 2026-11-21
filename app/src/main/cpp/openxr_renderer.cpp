@@ -130,6 +130,8 @@ struct DvPtEntry {
 };
 static const int DV_PTS_CAP = 64;
 static DvPtEntry gDvPtsRing[DV_PTS_CAP];
+/* 按帧取到的参数副本（g_doviFlat 指向它，渲染时直接用） */
+static float gDvPtsActive[128];
 static int gDvPtsCount = 0;
 static pthread_mutex_t gDvPtsLock = PTHREAD_MUTEX_INITIALIZER;
 static long long gDvGen = 0;          /* 只接受 >= 这个代次的推送 */
@@ -218,40 +220,19 @@ static void doviProbeShared()
      */
     dvLoadFromFile();
     /*
-     * 并行对账（2026-11-21）：只比对、不改行为。
-     * 按显示帧时间从参数表取一套，和文件里那套比前 3 个数（版本/通道/分段），
-     * 一致就说明"按帧取参"确实指向同一套参数，可以切换；不一致要先把原因找出来。
+     * 按帧取参（2026-11-21 切换完成）。
+     *
+     * 为什么必须用这套：实测「按帧取到 pts = 显示帧 pts，差 0ms」，
+     * 而文件里那套滞后 3 帧以上（写盘间隔 + 187ms 显示延迟），
+     * 场景切换那一瞬就是"新画面用旧参数"，颜色跳一下 —— 这就是偏色的来源。
+     * 表里没命中（跳转后 pts 回退、或刚起播还没推）时退回文件那套兜底。
      */
     {
         const long long pts = gVideoFramePtsNs.load();
-        if (pts > 0) {
-            float tmp[128];
-            if (dvPickByPts(pts, tmp, 128)) {
-                if (gDvFileValid && g_doviFlat != nullptr) {
-                    const bool same = (int) (tmp[0] + 0.5f) == (int) (g_doviFlat[0] + 0.5f) &&
-                                      (int) (tmp[1] + 0.5f) == (int) (g_doviFlat[1] + 0.5f) &&
-                                      (int) (tmp[2] + 0.5f) == (int) (g_doviFlat[2] + 0.5f);
-                    static long long lastCmp;
-                    static unsigned long long lastFpFrame, lastFpFile;
-                    if (pts - lastCmp > 3000000000LL) {
-                        lastCmp = pts;
-                        /* 指纹：版本/通道/分段在同一部片里几乎恒定，只看三位掩盖不了内容差异 */
-                        unsigned long long fpFrame = 1469598103934665603ULL;
-                        unsigned long long fpFile = 1469598103934665603ULL;
-                        for (int i = 0; i < 122; i++) {
-                            fpFrame = (fpFrame ^ (unsigned long long) (int) (tmp[i] * 1000.0f)) * 1099511628211ULL;
-                            fpFile = (fpFile ^ (unsigned long long) (int) (g_doviFlat[i] * 1000.0f)) * 1099511628211ULL;
-                        }
-                        lastFpFrame = fpFrame;
-                        lastFpFile = fpFile;
-                        (void) lastFpFrame;
-                        (void) lastFpFile;
-                        LOGI_RAW("参数对账|按帧=%llx|文件=%llx|%s",
-                                 (unsigned long long) fpFrame, (unsigned long long) fpFile,
-                                 same ? "一致" : "不一致");
-                    }
-                }
-            }
+        if (pts > 0 && dvPickByPts(pts, gDvPtsActive, 128)) {
+            g_doviFlat = gDvPtsActive;
+        } else if (gDvFileValid) {
+            g_doviFlat = g_doviFlatFile;
         }
     }
     if (!g_doviFlat) {
