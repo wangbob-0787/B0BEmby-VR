@@ -150,6 +150,9 @@ class AudioPipe {
     @Volatile
     private var startedAtMs = 0L
 
+    /** 暂停开始的时刻（0 = 没在暂停）；恢复时把这段时长从计时里补掉 */
+    private var pausedAtMs = 0L
+
     /** 写时钟的令牌：放行时由上层绑定；未绑定（-1）时上报会被时钟丢弃 */
     @Volatile
     private var clockToken = -1L
@@ -316,18 +319,26 @@ class AudioPipe {
         if (started.get()) return
         started.set(true)
         startedAtMs = SystemClock.elapsedRealtime()
+        pausedAtMs = 0L
         paused.set(false)
         runCatching { track?.play() }
         Log.i(TAG, "音频放行：设备起动 + 开始写数据（位置中枢=${clock?.positionUs()?.div(1000L) ?: 0L}ms）")
     }
 
     fun pause() {
+        /* 记下暂停时刻：这段时间不算播放时间，否则恢复后位置会一下多出几十秒 */
+        if (pausedAtMs == 0L) pausedAtMs = SystemClock.elapsedRealtime()
         paused.set(true)
         runCatching { track?.pause() }
         clock?.pause()
     }
 
     fun resume() {
+        /* 把暂停时长从"开始计时点"里补回来，位置才只包含真正在放的时间 */
+        if (pausedAtMs > 0L) {
+            if (startedAtMs > 0L) startedAtMs += SystemClock.elapsedRealtime() - pausedAtMs
+            pausedAtMs = 0L
+        }
         started.set(true)
         paused.set(false)
         runCatching { track?.play() }
@@ -790,7 +801,8 @@ class AudioPipe {
             val played = (at.playbackHeadPosition - frameBase).coerceAtLeast(0)
             val inFlightFrames = (writtenFrames - played).coerceAtLeast(0)
             val inFlightUs = inFlightFrames * 1_000_000L / sampleRate
-            originUs + (nowMs2 - startedAtMs) * 1000L - inFlightUs
+            val elapsedUs = (nowMs2 - startedAtMs) * 1000L
+            (originUs + elapsedUs - inFlightUs).coerceIn(originUs, originUs + elapsedUs)
         } else if (at.getTimestamp(ts)) {
             /*
              * 硬件时间戳直接给的是"这一帧什么时候真正被放出来"，加上到现在的流逝就是当前播放位置。

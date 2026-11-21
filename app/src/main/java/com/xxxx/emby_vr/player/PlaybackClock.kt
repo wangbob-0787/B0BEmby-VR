@@ -136,6 +136,17 @@ class PlaybackClock {
     fun noteAudioPosition(us: Long, fromToken: Long = -1L) {
         /* 未绑定（-1）或代次不符，一律不许写：否则旧实例以"默认值"混进来 */
         if (fromToken < 0L || fromToken != token) return
+        /*
+         * 跳变闸：一次上报比上一次多出 2 秒以上就丢弃。
+         *
+         * 暂停时长被算成播放时间、墙钟段落被当成播放段落，都会以"一次上报跳几十秒"的形式出现；
+         * 时钟只增不减，一旦被顶高就再也回不来（豆豆 2026-11-21）。这里是最后一道网。
+         */
+        val prevUs = synchronized(lock) { audioUs }
+        if (prevUs > 0L && us - prevUs > 2_000_000L) {
+            Log.w(TAG, "丢弃异常上报：位置一次跳了 ${(us - prevUs) / 1000}ms")
+            return
+        }
         synchronized(lock) {
             audioUs = us
             audioAtMs = now()
