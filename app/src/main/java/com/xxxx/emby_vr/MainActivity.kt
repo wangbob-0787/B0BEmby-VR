@@ -9037,7 +9037,7 @@ class MainActivity : ComponentActivity() {
         videoPipe = null
         if (!oldDead) {
             Log.e(TAG, "PIPE 起不来：zombie=true（旧解码线程未退出，拒绝新建，需重启应用）")
-            hud("画面解码起不来（需重启应用）")
+            ui.post { hud("画面解码起不来（需重启应用）") }
             pipeBootInFlight.set(false)
             return
         }
@@ -9051,7 +9051,6 @@ class MainActivity : ComponentActivity() {
             if (!ap.stop()) {
                 Log.w(TAG, "旧音频未在时限内退出，再收一次")
                 Thread.sleep(400)
-                runCatching { ap.stop() }
             }
         }
         audioPipe = null
@@ -9090,7 +9089,15 @@ class MainActivity : ComponentActivity() {
                 selfOriginSec = sec
                 playClock?.resetTo((sec * 1_000_000.0).toLong())
                 pipeBootInFlight.set(false)
-                startSelfVideoPipe(jumpUrl, sec, jumpSurface, m, "跳转重建")
+                /*
+                 * 整条重建挪到工作线程（豆豆 2026-11-21 审出）。
+                 *
+                 * 重建里有「旧管线 join」「解封装 latch 最多 20 秒」「解码器 configure」，
+                 * 原来全跑在界面线程上，跳一次界面就冻十几秒。
+                 */
+                Thread({
+                    runCatching { startSelfVideoPipe(jumpUrl, sec, jumpSurface, m, "跳转重建") }
+                }, "pipe-jump").start()
             }
         }
 
@@ -9267,7 +9274,7 @@ class MainActivity : ComponentActivity() {
                                  */
                                 playClock?.start((originSec * 1_000_000.0).toLong())
                                 selfPipeWaitingFirstFrame.set(false)
-                                hud("本片音轨无法自管（" + (ap.lastError ?: "未知") + "）")
+                                ui.post { hud("本片音轨无法自管（" + (ap.lastError ?: "未知") + "）") }
                                 Log.w(TAG, "音频自管起不来：${ap.lastError}")
                             }
                         }
@@ -9283,7 +9290,7 @@ class MainActivity : ComponentActivity() {
                         videoPipe = null
                         if (!dead) {
                             Log.e(TAG, "失步重启失败：zombie=true（放弃重启，避免两路抢画面）")
-                            hud("画面卡住（需重启应用）")
+                            ui.post { hud("画面卡住（需重启应用）") }
                             return@post
                         }
                         restoreVideoPipeAt(target)
@@ -9322,7 +9329,7 @@ class MainActivity : ComponentActivity() {
             if (!ok) {
                 val why = com.xxxx.emby_vr.player.VideoPipe.lastError
                 Log.e(TAG, "PIPE 起不来：$why（停在起播，不放行、不出声）")
-                hud("画面解码起不来")
+                ui.post { hud("画面解码起不来") }
                 pipeBootInFlight.set(false)
             }
         }
