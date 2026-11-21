@@ -9093,7 +9093,8 @@ class MainActivity : ComponentActivity() {
              */
             Log.e(TAG, "跳转中止：旧音频连接未归还（避免第三路连接）")
             pipeBootInFlight.set(false)
-            ui.post { hud("跳转失败：上一路声音还没停干净，请重试") }
+            /* 文案要如实：这时画面已经停了，写"请重试"会让人以为画面还在（豆豆 2026-11-21） */
+            ui.post { hud("跳转失败：画面已停，请重试") }
             return
         }
         /* 给解封装释放连接留一拍，避免新旧连接在网盘那一侧叠在一起 */
