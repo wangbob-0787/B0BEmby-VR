@@ -85,6 +85,17 @@ object VrNative {
             /* JNI 调用不许静默失败：符号缺失、签名不匹配都必须留痕（2026-11-21 踩过） */
             .onFailure { android.util.Log.e("VrNative", "推送杜比参数失败：" + it.javaClass.simpleName + ": " + it.message) }
 
+    /**
+     * 当前显示的这一帧是否已经取到杜比参数。
+     *
+     * 收黑幕与放声音共用这一个判据（父亲 2026-11-21 定的口径）：
+     * 第一眼看到的必须是正确颜色，而不是"稍后自己变对"。
+     */
+    fun doviParamsReady(): Boolean =
+        runCatching { nativeDoviParamsReady() }.getOrDefault(false)
+
+    private external fun nativeDoviParamsReady(): Boolean
+
     /** 清空参数表（新管线起播前调用）：旧代的参数绝不能落到新管线头上 */
     fun resetDoviParams(gen: Long) = runCatching { nativeResetDoviParams(gen) }
         .onFailure { android.util.Log.e("VrNative", "清空参数表失败：" + it.javaClass.simpleName + ": " + it.message) }

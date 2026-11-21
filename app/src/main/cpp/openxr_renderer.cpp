@@ -137,6 +137,12 @@ static pthread_mutex_t gDvPtsLock = PTHREAD_MUTEX_INITIALIZER;
 static long long gDvGen = 0;          /* 只接受 >= 这个代次的推送 */
 static long long gDvLastPushPtsNs = -1;
 static long long gDvLastLookupPtsNs = -1;
+/*
+ * 当前显示的这一帧是否取到了参数（1 = 取到）。
+ * Kotlin 侧用它在"收黑幕"和"放声音"两个闸门上问同一句话，
+ * 保证用户第一眼看到的就是正确颜色（父亲 2026-11-21）。
+ */
+static std::atomic<int> gDvFrameReady{0};
 
 
 /**
@@ -259,6 +265,7 @@ static void doviProbeShared()
         } else if (gDvFileValid) {
             g_doviFlat = g_doviFlatFile;
         }
+        gDvFrameReady.store((usedTable || gDvFileValid) ? 1 : 0);
         /* 起播/跳转头几帧最关键：每帧都报来源，之后降到 3 秒一行 */
         {
             static long long frames;
@@ -372,6 +379,11 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativePushDoviParams(
         LOGI_RAW("按帧参数通道已接通|gen=%lld|pts=%.3f|分段=%d 通道=%d 长度=%d",
                  (long long) gen, (double) ptsNs / 1e9, (int) segments, (int) channels, (int) len);
     }
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeDoviParamsReady(JNIEnv *, jclass) {
+    return gDvFrameReady.load() != 0 ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL

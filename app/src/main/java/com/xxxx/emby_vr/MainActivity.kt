@@ -9265,6 +9265,11 @@ class MainActivity : ComponentActivity() {
              * 只判"解出来"会让声音先出十几秒 —— 那段时间画面还在首帧渲染上。
              */
             if (!selfFirstShown) return
+            /* 与收黑幕同一个判据：声音也不许比正确画面先出来 */
+            if (!com.xxxx.emby_vr.vr.VrNative.doviParamsReady()) {
+                if (tries < 80) ui.postDelayed({ tryRelease(tries + 1) }, 100)
+                return
+            }
             /*
              * 队列要有存货才放行（豆豆 2026-11-21 第 2 条）。
              *
@@ -9422,6 +9427,21 @@ class MainActivity : ComponentActivity() {
                 pausedNow = { selfPaused || avStall },
                 onFirstFrame = frame@{
                     if (gen != selfGen.get()) return@frame
+                    /*
+                     * 颜色没到就不收黑幕（父亲 2026-11-21 定的口径）：
+                     * 第一眼看到的必须是正确颜色，而不是"过一会儿自己变对"。
+                     * 参数在第一帧解码前就解出来了，实际只多等几十毫秒；
+                     * 万一这片没有 RPU，靠 20 秒兜底收幕并提示。
+                     */
+                    if (!com.xxxx.emby_vr.vr.VrNative.doviParamsReady()) {
+                        val waited = android.os.SystemClock.elapsedRealtime() - watchdogT0
+                        if (waited < 20000L) {
+                            ui.postDelayed({ runCatching { onFirstFrame?.invoke() } }, 100L)
+                            return@frame
+                        }
+                        Log.w(TAG, "收黑幕兜底：${waited}ms 参数仍未到达（本片可能没有杜比参数）")
+                        ui.post { hud("本片颜色参数未到达") }
+                    }
                     /*
                      * 首帧那一刻队列里已经有多少秒：用来判断"跳转慢"到底是不是放行门槛卡的
                      * （豆豆 2026-11-21：先有数再定门槛）。
