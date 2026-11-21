@@ -9553,9 +9553,15 @@ class MainActivity : ComponentActivity() {
                                 (ap.lastError?.let { " 错误=$it" } ?: ""),
                         )
                         ui.post {
-                            if (started && (gen != selfGen.get() || released)) {
-                                /* 这一代已经放行过了（或有更新的一代在跑）：这个实例多余，收掉 */
-                                Log.w(TAG, "音频就绪但已放行/已换代，收掉这个实例")
+                            /*
+                             * 只有**真的换代**（更新的一代已经在跑）才收掉这个实例。
+                             *
+                             * 原来还带 released 条件，结果：看门狗强制放行 → 音频刚起动 →
+                             * 就绪回调看到 released=true → 把它自己收掉 → 静音
+                             * （2026-11-21 17:22 实测：音频起播后 10ms 线程退出，已写 0 帧）。
+                             */
+                            if (started && gen != selfGen.get()) {
+                                Log.w(TAG, "音频就绪但已换代，收掉这个实例")
                                 runCatching { ap.stop() }
                                 return@post
                             }
