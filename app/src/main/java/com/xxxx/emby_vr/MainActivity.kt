@@ -9024,6 +9024,16 @@ class MainActivity : ComponentActivity() {
             else videoPipe?.durationSec?.takeIf { it > 0.0 }?.let { (it * 1000.0).toLong() }
         }
         ctl.selfPlayingProvider = { if (selfAudioOn) !selfPaused else null }
+        /*
+         * 缓冲段：位置 + 队列里还攒着的秒数（内核不再加载文件，原来那个数没人给了）。
+         */
+        ctl.selfBufferedProvider = {
+            if (!selfAudioOn) null
+            else {
+                val ahead = (videoPipe?.queuedSec() ?: 0.0) * 1000.0
+                (playClock?.positionUs()?.div(1000L) ?: 0L) + ahead.toLong()
+            }
+        }
         ctl.selfTogglePlayPause = {
             if (!selfAudioOn) null else {
                 selfPaused = !selfPaused

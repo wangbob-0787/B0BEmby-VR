@@ -90,9 +90,21 @@ class PlaybackControl {
      * 内核不报自己的缓冲位置（mpv 有 demuxer-cache-time，精度一般），用当前位置兜底，
      * 进度条上那一段浅色不至于空着。
      */
+    /**
+     * 自管路的缓冲点（毫秒）：播放位置 + 队列里还攒着多少秒。
+     *
+     * 以前这个数由内核给（mpv 的 demuxer-cache-time）。音视频全部自管之后内核不再加载文件，
+     * 这个数就没人给了，进度条前那段浅色一直是空的（父亲 2026-11-21 指出）。
+     * 现在用我们自己的队列读数换算。
+     */
+    var selfBufferedProvider: (() -> Long?)? = null
+
     fun bufferedMs(): Long {
-        /* 自管路没有中转、没有第二份缓冲：缓冲点就是当前播放位置 */
-        if (selfPositionProvider != null) return positionMs()
+        /* 自管路：缓冲点 = 当前位置 + 队列存货 */
+        if (selfPositionProvider != null) {
+            selfBufferedProvider?.invoke()?.let { return it }
+            return positionMs()
+        }
         mpvProvider()?.let { m ->
             /*
              * 内核路径：缓冲点 = mpv 缓存到的时间轴位置（父亲 2026-10-11）。
