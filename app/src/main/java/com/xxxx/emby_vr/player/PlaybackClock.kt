@@ -64,9 +64,15 @@ class PlaybackClock {
 
     fun start(atUs: Long = 0L) {
         synchronized(lock) {
+            /*
+             * 起播同样递增代次：重建路径走的是 start()，不是 resetTo()。
+             * 不递增的话，上一代音频实例的上报仍会被接受，把时钟顶到旧位置（2026-11-21）。
+             */
+            epoch++
             pausedAtUs = atUs
             wallBaseUs = atUs
             wallBaseMs = now()
+            audioUs = atUs
             audioAtMs = 0L
             lastUs = atUs
             running = true
@@ -105,8 +111,8 @@ class PlaybackClock {
         private set
 
     fun resetTo(us: Long) {
-        synchronized(lock) { epoch++ }
         synchronized(lock) {
+            epoch++
             pausedAtUs = us
             wallBaseUs = us
             wallBaseMs = now()
