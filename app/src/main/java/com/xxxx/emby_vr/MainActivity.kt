@@ -9062,9 +9062,29 @@ class MainActivity : ComponentActivity() {
         )
         com.xxxx.emby_vr.player.PlaybackFlags.webSource = false
 
-        /* 旧实例没退出就不许新建：两路解码抢同一张画面是最难查的一类故障 */
-        val oldDead = videoPipe?.stop() ?: true
+        /*
+         * 两路同时停（豆豆 2026-11-21）：串行 join 最坏 1.5+0.6+1.5+1.5 ≈ 5.1 秒，
+         * 并行只取其中最大的那个 ≈ 2.6 秒，直接省 2~3 秒，风险为零。
+         */
+        val oldVideo = videoPipe
+        val oldAudio = audioPipe
         videoPipe = null
+        audioPipe = null
+        var oldDead = true
+        var audioDead = true
+        val stopVideo = Thread({ oldDead = runCatching { oldVideo?.stop() ?: true }.getOrDefault(false) }, "stop-video")
+        val stopAudio = Thread({ audioDead = runCatching { oldAudio?.stop() ?: true }.getOrDefault(false) }, "stop-audio")
+        stopVideo.start()
+        stopAudio.start()
+        runCatching { stopVideo.join(9000) }
+        runCatching { stopAudio.join(9000) }
+        if (!oldDead || !audioDead) {
+            /* 偶发没退干净：隔 200ms 各再收一次（保留重试，缩到 200ms） */
+            Log.w(TAG, "旧管线未全部退出（画面=${oldDead} 声音=${audioDead}），再收一次")
+            Thread.sleep(200)
+            if (!oldDead) oldDead = runCatching { oldVideo?.stop() ?: true }.getOrDefault(false)
+            if (!audioDead) audioDead = runCatching { oldAudio?.stop() ?: true }.getOrDefault(false)
+        }
         if (!oldDead) {
             Log.e(TAG, "PIPE 起不来：zombie=true（旧解码线程未退出，拒绝新建，需重启应用）")
             ui.post { hud("画面解码起不来（需重启应用）") }
@@ -9077,16 +9097,6 @@ class MainActivity : ComponentActivity() {
          * 日志是「音频解封装准备超时」：旧的一路还没释放连接，新的那一路就又要连接，
          * 网盘只给两路并发，第三路连不上，等满二十秒就判失败。
          */
-        var audioDead = true
-        audioPipe?.let { ap ->
-            audioDead = ap.stop()
-            if (!audioDead) {
-                Log.w(TAG, "旧音频未在时限内退出，再收一次")
-                Thread.sleep(400)
-                audioDead = runCatching { ap.stop() }.getOrDefault(false)
-            }
-        }
-        audioPipe = null
         if (!audioDead) {
             /*
              * 旧音频没退干净就绝不开新连接：网盘只给两路，第三路必被拒，
@@ -9218,7 +9228,11 @@ class MainActivity : ComponentActivity() {
              * 门槛取 2 秒（约档位低水位的三分之一）。
              */
             val bufferedSec = videoPipe?.queuedSec() ?: 0.0
-            if (bufferedSec < 2.0) {
+            /*
+             * 门槛 1.0 秒（豆豆 2026-11-21）：0.5 秒 4K 只有三帧，抖一下就停；
+             * 跳转是用户明确要到那个位置，没必要像冷起播那样攒两秒。
+             */
+            if (bufferedSec < 1.0) {
                 if (tries < 80) {
                     ui.postDelayed({ tryRelease(tries + 1) }, 100)
                 } else {
@@ -9363,6 +9377,15 @@ class MainActivity : ComponentActivity() {
                 pausedNow = { selfPaused || avStall },
                 onFirstFrame = frame@{
                     if (gen != selfGen.get()) return@frame
+                    /*
+                     * 首帧那一刻队列里已经有多少秒：用来判断"跳转慢"到底是不是放行门槛卡的
+                     * （豆豆 2026-11-21：先有数再定门槛）。
+                     */
+                    Log.i(
+                        TAG,
+                        "首帧上屏|队列=${"%.1f".format(videoPipe?.queuedSec() ?: 0.0)}s" +
+                            "|等待起播=${android.os.SystemClock.elapsedRealtime() - watchdogT0}ms",
+                    )
                     selfFirstShown = true
                     /*
                      * 自管路的首帧上屏 = 收黑幕 / 转圈 / 片名的时机（父亲 2026-11-21 提的"黑屏没收掉"）。
