@@ -9187,8 +9187,21 @@ class MainActivity : ComponentActivity() {
              */
             val bufferedSec = videoPipe?.queuedSec() ?: 0.0
             if (bufferedSec < 2.0) {
-                if (tries < 80) ui.postDelayed({ tryRelease(tries + 1) }, 100)
-                else Log.w(TAG, "放行超时：队列只攒到 ${"%.1f".format(bufferedSec)}s")
+                if (tries < 80) {
+                    ui.postDelayed({ tryRelease(tries + 1) }, 100)
+                } else {
+                    /*
+                     * 队列攒不到门槛也必须放行并报错（豆豆 2026-11-21 第三遍审出）。
+                     *
+                     * 原来超时只打一行日志就 return —— 闸门永远关着：画面定格、没声音、没提示。
+                     * 门槛是"尽量攒够"，不是"攒不够就不许播"。
+                     */
+                    Log.e(TAG, "放行超时：队列只攒到 ${"%.1f".format(bufferedSec)}s，先放画面并报错")
+                    released = true
+                    selfPipeWaitingFirstFrame.set(false)
+                    ui.post { hud("缓冲不足（${"%.1f".format(bufferedSec)} 秒），先出画面") }
+                    runCatching { playClock?.start((selfOriginSec * 1_000_000.0).toLong()) }
+                }
                 return
             }
             val ap = audioPipe
