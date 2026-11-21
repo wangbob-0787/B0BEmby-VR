@@ -146,12 +146,33 @@ static long long gDvLastLookupPtsNs = -1;
 static bool dvPickByPts(long long ptsNs, float *out, int cap)
 {
     if (ptsNs <= 0) return false;
+    /* 只认"离当前显示帧 2 秒以内"的项：宁可这一帧不还原，也不要用错场景的参数 */
+    const long long kMaxDeltaNs = 2000000000LL;
     bool hit = false;
+    bool fromFuture = false;
     pthread_mutex_lock(&gDvPtsLock);
     DvPtEntry *best = nullptr;
     for (int i = 0; i < gDvPtsCount; i++) {
         DvPtEntry &e = gDvPtsRing[i];
-        if (e.ptsNs <= ptsNs && (best == nullptr || e.ptsNs > best->ptsNs)) best = &e;
+        if (e.ptsNs <= ptsNs && ptsNs - e.ptsNs <= kMaxDeltaNs &&
+            (best == nullptr || e.ptsNs > best->ptsNs)) {
+            best = &e;
+        }
+    }
+    if (best == nullptr) {
+        /*
+         * 表里最小一项都比当前显示帧晚（跳转/起播头一帧常见：参数是按关键帧推的，
+         * 而首帧显示时间可能略早）。这时用最接近的一项，并用日志标明"略晚"，
+         * 总比整帧不还原（明显偏色）好（豆豆 2026-11-21 的判断）。
+         */
+        for (int i = 0; i < gDvPtsCount; i++) {
+            DvPtEntry &e = gDvPtsRing[i];
+            if (e.ptsNs > ptsNs && e.ptsNs - ptsNs <= kMaxDeltaNs &&
+                (best == nullptr || e.ptsNs < best->ptsNs)) {
+                best = &e;
+                fromFuture = true;
+            }
+        }
     }
     if (best != nullptr) {
         const int n = best->count < cap ? best->count : cap;
@@ -159,8 +180,10 @@ static bool dvPickByPts(long long ptsNs, float *out, int cap)
         hit = true;
         if (best->ptsNs != gDvLastLookupPtsNs) {
             gDvLastLookupPtsNs = best->ptsNs;
-            LOGI_RAW("按帧取参|取到 pts=%.3f|显示帧 pts=%.3f|差=%lldms", (double) best->ptsNs / 1e9,
-                     (double) ptsNs / 1e9, (long long) ((ptsNs - best->ptsNs) / 1000000));
+            LOGI_RAW("按帧取参|取到 pts=%.3f|显示帧 pts=%.3f|差=%lldms%s",
+                     (double) best->ptsNs / 1e9, (double) ptsNs / 1e9,
+                     (long long) ((ptsNs - best->ptsNs) / 1000000),
+                     fromFuture ? "（略晚）" : "");
         }
     }
     pthread_mutex_unlock(&gDvPtsLock);
@@ -229,10 +252,24 @@ static void doviProbeShared()
      */
     {
         const long long pts = gVideoFramePtsNs.load();
+        bool usedTable = false;
         if (pts > 0 && dvPickByPts(pts, gDvPtsActive, 128)) {
             g_doviFlat = gDvPtsActive;
+            usedTable = true;
         } else if (gDvFileValid) {
             g_doviFlat = g_doviFlatFile;
+        }
+        /* 起播/跳转头几帧最关键：每帧都报来源，之后降到 3 秒一行 */
+        {
+            static long long frames;
+            static long long lastLogNs;
+            frames++;
+            if (frames <= 5 || pts - lastLogNs > 3000000000LL) {
+                lastLogNs = pts;
+                LOGI_RAW("本帧取参=%s|显示帧 pts=%.3f|表项=%d",
+                         usedTable ? "表" : (gDvFileValid ? "文件" : "无"),
+                         (double) pts / 1e9, gDvPtsCount);
+            }
         }
     }
     if (!g_doviFlat) {
@@ -344,6 +381,12 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeResetDoviParams(JNIEnv *, jclass, jlong
     gDvGen = (long long) gen;
     gDvLastPushPtsNs = -1;
     gDvLastLookupPtsNs = -1;
+    /*
+     * 文件也必须一起作废（豆豆 2026-11-21）：清表后、第一套新参数到达前，
+     * 文件里还是上一部片/上一段的参数，若仍当作兜底就会被新片头几帧用上 —— 颜色闪一下。
+     */
+    gDvFileValid = false;
+    gDvFileStamp = -1;
     pthread_mutex_unlock(&gDvPtsLock);
     LOGI_RAW("参数表已清空|gen=%lld", (long long) gen);
     return JNI_TRUE;
@@ -5619,8 +5662,13 @@ void updateScreenLightFromVideo(VrContext &c) {
          * 自管解码不走内核，这个信号永远不置位，于是日志一直显示"生效=0"，
          * 与实际画面不符（2026-11-21 查）。
          */
-        const bool dvOn = gDvRendererReshape.load() != 0 && gDvStreamActive.load() != 0 && gDvFileValid &&
-                          g_doviFlat && g_doviFlat[0] >= 0.5f && g_doviFlat[0] < 2.5f;
+        /*
+         * 生效 = 开关 + 数据流 + 有一套可用参数。
+         * 参数来源有二：按帧表（主）或文件（兜底）；表命中时 g_doviFlat 已指向表数据，
+         * 所以这里不能再要求 gDvFileValid —— 否则重建瞬间文件被删就掉还原（偏色闪一下）。
+         */
+        const bool hasParams = g_doviFlat != nullptr && g_doviFlat[0] >= 0.5f && g_doviFlat[0] < 2.5f;
+        const bool dvOn = gDvRendererReshape.load() != 0 && gDvStreamActive.load() != 0 && hasParams;
         /*
          * 只在状态变化时打一行，报告五项条件各自的值。
          * 画面偏紫但看不出为什么时，这一行直接说明是哪一项没满足（每帧打印会影响帧率）。
@@ -5630,10 +5678,9 @@ void updateScreenLightFromVideo(VrContext &c) {
             const int nowDvOn = dvOn ? 1 : 0;
             if (nowDvOn != lastDvOn) {
                 lastDvOn = nowDvOn;
-                LOGI_RAW("还原状态：生效=%d（开关=%d 数据流=%d 文件=%d 参数=%d 就绪=%d）",
+                LOGI_RAW("还原状态：生效=%d（开关=%d 数据流=%d 表项=%d 文件=%d 参数=%d）",
                          nowDvOn, gDvRendererReshape.load(), gDvStreamActive.load(),
-                         gDvFileValid ? 1 : 0, g_doviFlat ? 1 : 0,
-                         (g_doviReady && *g_doviReady) ? 1 : 0);
+                         gDvPtsCount, gDvFileValid ? 1 : 0, g_doviFlat ? 1 : 0);
             }
         }
         glUniform1i(c.dvReshapeLoc, dvOn ? 1 : 0);
