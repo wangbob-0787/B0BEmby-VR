@@ -4,7 +4,10 @@ name: Build FFmpeg Audio（arm64，给自管音频解码用）
 # 为什么在云端编：安卓工具链 CI 自带，本地不必装 2GB NDK。
 # 版本钉死 n7.1（豆豆 2026-11-21 要求：合规可追溯，不复用内核那份打补丁的源码）。
 #
-# 产物：libavcodec.so / libswresample.so / libavutil.so（arm64-v8a）+ 头文件
+# 产物：libavcodec.a / libswresample.a / libavutil.a（arm64-v8a）+ 头文件
+# 关汇编（--disable-asm）：aarch64 的 tx_float_neon.S 在 --disable-shared 下按非位置无关生成，
+# 链进 libaudiodec.so 报 R_AARCH64_ADR_PREL_PG_HI21。音频解码用不到那段汇编，先关掉保通；
+# 要用汇编提速，得单独解决它在静态库里的 PIC 生成，别在这里顺手打开。
 # 用法：手动触发（workflow_dispatch），产物在 Release 标签 ffmpeg-audio-n7.1
 
 on:
@@ -68,6 +71,7 @@ jobs:
             --enable-small \
             --enable-pic \
             --extra-cflags="-fPIC" \
+            --disable-asm \
             --enable-static --disable-shared \
             --enable-avcodec --enable-avutil --enable-swresample \
             --enable-decoder=ac3,eac3,truehd,dca,aac,flac,opus,vorbis,mp3 \
