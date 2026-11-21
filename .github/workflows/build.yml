@@ -152,6 +152,13 @@ jobs:
           cp app/build/outputs/apk/debug/*.apk out/ 2>/dev/null || true
           cp app/build/outputs/apk/release/*.apk out/ 2>/dev/null || true
           ls -la out/
+          # 自管音频解码库是独立 target，漏打包时运行时才会炸；这里在编译期就把结果打出来，
+          # 不用等装到头显上才发现缺库。
+          for f in out/*.apk; do
+            echo "== $f 内的原生库："
+            unzip -l "$f" | grep -E 'lib/arm64-v8a/.*\.so' || echo "（无）"
+            unzip -l "$f" | grep -q 'lib/arm64-v8a/libaudiodec.so' || { echo "::error::$f 缺 libaudiodec.so"; exit 1; }
+          done
 
       - name: 发布到 Release
         uses: softprops/action-gh-release@v2
