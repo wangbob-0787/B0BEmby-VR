@@ -93,7 +93,7 @@ jobs:
         run: |
           set -e
           mkdir -p dist/lib/arm64-v8a dist/include dist/LICENSE
-          cp ffmpeg/out-arm64/lib/libavcodec.a ffmpeg/out-arm64/lib/libswresample.a ffmpeg/out-arm64/lib/libavutil.a dist/lib/arm64-v8a/
+          cp ffmpeg/out-arm64/lib/libavformat.a ffmpeg/out-arm64/lib/libavcodec.a ffmpeg/out-arm64/lib/libswresample.a ffmpeg/out-arm64/lib/libavutil.a dist/lib/arm64-v8a/
           cp -r ffmpeg/out-arm64/include/* dist/include/
           cp ffmpeg/COPYING.LGPLv2.1 ffmpeg/COPYING dist/LICENSE/ 2>/dev/null || true
           echo "FFmpeg $FFMPEG_TAG commit=$COMMIT 静态库，LGPL 2.1+，动态链接说明见 README" > dist/LICENSE/版本与许可.txt
