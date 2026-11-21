@@ -366,10 +366,12 @@ class AudioPipe {
         runCatching { codec?.stop() }
         runCatching { codec?.release() }
         runCatching { track?.release() }
-        runCatching { extractor?.release() }
+        /*
+         * extractor 不在这里释放：它归读线程所有，由 audioFeedLoop 的 finally 释放。
+         * 读线程还没退出就从这里拆，它下一次碰 extractor 必抛（豆豆 2026-11-21 第二遍审出）。
+         */
         codec = null
         track = null
-        extractor = null
         paused.set(false)
         return (t == null || !t.isAlive) && feedDead
     }

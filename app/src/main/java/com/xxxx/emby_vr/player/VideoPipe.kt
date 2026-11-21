@@ -58,6 +58,14 @@ class VideoPipe {
      */
     private val feedQueue = SampleQueue(96 * 1024 * 1024)
 
+    /**
+     * 致命态：读线程卡在网络读里退不出来，连接也就还不回去。
+     * 置位后上层不再尝试新建（网盘只给两路，强开只会被拒），只提示重启应用。
+     */
+    @Volatile
+    var fatal = false
+        private set
+
     /** 待执行的跳转（extractor 由读线程独占，跳转也交给它做） */
     @Volatile private var feedSeekSec = -1.0
 
@@ -992,6 +1000,17 @@ class VideoPipe {
         val sinceLastRenderUs = if (lastShownAtMs > 0L) nowUs - lastShownAtMs * 1000L else Long.MAX_VALUE
 
         if (earlyUs < MIN_EARLY_US_VERY_LATE_THRESHOLD) {
+            /*
+             * 自管路上禁止内跳（豆豆 2026-11-21 第二遍审出：这一段上轮没改到）。
+             *
+             * 内跳会清原点 → 下一帧重报 → 上层再起一个音频实例；新音频一旦起不来，
+             * 就是"画面在新位置、声音在旧位置"，而时钟单调只增会把偏差固化。
+             * 自管路的失步只走整条重建（两路一起动）。
+             */
+            if (originFromPicture) {
+                Log.w(TAG, "严重迟到 ${"%.2f".format(-earlyUs / 1e6)}s：自管路不内跳，按迟到直接上屏")
+                return finish(true)
+            }
             val target = (clockNowOrWall() - 0.15).coerceAtLeast(0.0)
             Log.w(TAG, "严重迟到 ${"%.2f".format(-earlyUs / 1e6)}s → 丢掉这一段，跳到 ${"%.2f".format(target)}s")
             pendingSeekSec = target
@@ -1252,7 +1271,8 @@ class VideoPipe {
         feedQueue.abort()
         /* 读线程才是**持有连接**的那一个：它没退出就等于连接没归还，必须进返回值 */
         val ft = feedThread
-        ft?.let { runCatching { it.join(1500) } }
+        /* 读线程可能卡在一次网络读里：给足 8 秒；仍不退就进致命态，不再尝试开新连接 */
+        ft?.let { runCatching { it.join(8000) } }
         feedThread = null
         val feedDead = ft == null || !ft.isAlive
         holdGate = null
@@ -1281,6 +1301,7 @@ class VideoPipe {
          *
          * 释放权归线程自己：这里不代它们 release（那是拆正在用的实例）。
          */
+        if (!feedDead) fatal.set(true)
         if (t0?.isAlive == true || !feedDead) {
             Log.e(
                 TAG,

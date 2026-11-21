@@ -8526,6 +8526,9 @@ class MainActivity : ComponentActivity() {
      */
     private val selfGen = java.util.concurrent.atomic.AtomicInteger(0)
 
+    /** 重建期间用户又拖了一次：只留最新目标，等这次结束再执行 */
+    @Volatile private var pendingJumpSec = -1.0
+
 
     /**
      * 自管解码起播时，声音要等画面首帧。
@@ -9076,6 +9079,7 @@ class MainActivity : ComponentActivity() {
              * 宁可停在旧画面上并明确报错。
              */
             Log.e(TAG, "跳转中止：旧音频连接未归还（避免第三路连接）")
+            pipeBootInFlight.set(false)
             ui.post { hud("跳转失败：上一路声音还没停干净，请重试") }
             return
         }
@@ -9104,6 +9108,16 @@ class MainActivity : ComponentActivity() {
             if (jumpUrl == null || jumpSurface == null) {
                 Log.w(TAG, "跳转被忽略：当前没有在播的自管内容")
             } else {
+                /*
+                 * 单飞：重建要 3~8 秒，这期间再按一次快进不能又起一条（两路并发重建会抢同一张
+                 * Surface、各开一路连接，豆豆 2026-11-21 第二遍审出）。
+                 * 已有一条在飞：只记下最新目标，等这条结束后再看一眼。
+                 */
+                if (pipeBootInFlight.get()) {
+                    pendingJumpSec = sec
+                    Log.i(TAG, "跳转排队：已有重建在飞，记下目标 ${"%.2f".format(sec)}s")
+                    return@let
+                }
                 Log.i(TAG, "跳转：按 ${"%.2f".format(sec)}s 重建整条自管路（画面+声音+时钟）")
                 /*
                  * 重建一开始就把时钟设到目标（父亲 2026-11-21 实测「进度条先退回老位置」）。
@@ -9156,6 +9170,8 @@ class MainActivity : ComponentActivity() {
          * 这里没有水位、没有第二道闸门：数据直连，解码器自己要得到就说明数据在。
          */
         fun tryRelease(tries: Int) {
+            /* 旧代的放行回调一律作废（豆豆 2026-11-21 第二遍审出） */
+            if (gen != selfGen.get()) return
             if (released) return
             if (!pipeReady) return
             /*
@@ -9207,10 +9223,27 @@ class MainActivity : ComponentActivity() {
             runCatching { ap.startNow() }
             selfPipePhase = "PLAYING"
             selfPipeReleased = true
+            /* 重建期间用户又拖过：现在这条已经跑起来，接着执行最新那个目标 */
+            val pj = pendingJumpSec
+            if (pj >= 0.0) {
+                pendingJumpSec = -1.0
+                Log.i(TAG, "执行排队中的跳转：${"%.2f".format(pj)}s")
+                ui.post { runCatching { ctl.pipeSeek?.invoke((pj * 1000.0).toLong()) } }
+            }
             Log.i(TAG, "放行：画面三帧齐 + 音频设备同刻起动（音轨=${ap.trackDesc}）")
         }
 
+        /**
+         * 起播也投工作线程（豆豆 2026-11-21 第二遍审出）。
+         *
+         * 这轮只挪了跳转；0 起播/续播仍由 startPlayer 在界面线程调进来，
+         * 管道 start 里的解封装 latch（最长 20 秒）与解码器 configure 照样冻 UI。
+         */
         fun launchPipeline(audioStart: Double) {
+            Thread({ launchPipelineBlocking(audioStart) }, "pipe-start").start()
+        }
+
+        fun launchPipelineBlocking(audioStart: Double) {
             Log.i(TAG, "画面管道启动：直连 起点=${"%.1f".format(audioStart)}s")
             val ok = pipe.start(
                 url, emptyMap(), surface,
@@ -9288,7 +9321,13 @@ class MainActivity : ComponentActivity() {
                          * 同一时刻只许有一个发声设备（2026-11-21 父亲实测「两个声音同时响」）。
                          * 日志：04:33:32.467 与 .606 两次「音频起播」，起点还不一样 —— 旧实例没停就又建了一个。
                          */
-                        audioPipe?.let { runCatching { it.stop() } }
+                        audioPipe?.let { old ->
+                            /* 旧实例没退干净就不再建新的：第三路必被网盘拒（豆豆 2026-11-21 第二遍审出） */
+                            if (!old.stop()) {
+                                Log.e(TAG, "旧音频未退出，放弃这次音频起播")
+                                return@Thread
+                            }
+                        }
                         audioPipe = null
                         val ap = com.xxxx.emby_vr.player.AudioPipe()
                         /* 声音这一路停写 → 画面一起停；恢复 → 一起走（用户自己按暂停的情况除外） */
@@ -9319,6 +9358,12 @@ class MainActivity : ComponentActivity() {
                                 (ap.lastError?.let { " 错误=$it" } ?: ""),
                         )
                         ui.post {
+                            if (started && (gen != selfGen.get() || released)) {
+                                /* 这一代已经放行过了（或有更新的一代在跑）：这个实例多余，收掉 */
+                                Log.w(TAG, "音频就绪但已放行/已换代，收掉这个实例")
+                                runCatching { ap.stop() }
+                                return@post
+                            }
                             if (started) {
                                 audioPipe = ap
                                 /* 解码器与设备都备好但没动；放行那一刻才起动（见 tryRelease） */

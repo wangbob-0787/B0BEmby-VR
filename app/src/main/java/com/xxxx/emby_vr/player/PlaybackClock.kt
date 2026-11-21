@@ -134,7 +134,8 @@ class PlaybackClock {
      * 由 [AudioPipe] 在每次写入后调用；位置语义是"这一帧音频现在真正被听到的位置"。
      */
     fun noteAudioPosition(us: Long, fromToken: Long = -1L) {
-        if (fromToken >= 0L && fromToken != token) return
+        /* 未绑定（-1）或代次不符，一律不许写：否则旧实例以"默认值"混进来 */
+        if (fromToken < 0L || fromToken != token) return
         synchronized(lock) {
             audioUs = us
             audioAtMs = now()
