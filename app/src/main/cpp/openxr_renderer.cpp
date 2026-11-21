@@ -290,7 +290,11 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetDoviParamPath(JNIEnv *env, jobject /
  * ptsNs：这一帧的片源时间（纳秒，与 SurfaceTexture.getTimestamp 同单位）
  * data：版本/通道/分段 + 3×33 曲线 + 21 色块，最多 128 个数（渲染层 uniform 容量）
  */
-JNIEXPORT void JNICALL
+/*
+ * 必须带 extern "C"：不带的话 C++ 会把符号名改写，Kotlin 侧调用就找不到、
+ * runCatching 把 UnsatisfiedLinkError 吞掉，表现是"完全没有日志"（2026-11-21 踩过）。
+ */
+extern "C" JNIEXPORT void JNICALL
 Java_com_xxxx_emby_1vr_vr_VrNative_nativePushDoviParams(
         JNIEnv *env, jclass, jlong gen, jlong ptsNs, jint segments, jint channels,
         jfloatArray data) {
@@ -341,7 +345,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativePushDoviParams(
     }
 }
 
-JNIEXPORT void JNICALL
+extern "C" JNIEXPORT void JNICALL
 Java_com_xxxx_emby_1vr_vr_VrNative_nativeResetDoviParams(JNIEnv *, jclass, jlong gen) {
     pthread_mutex_lock(&gDvPtsLock);
     gDvPtsCount = 0;
