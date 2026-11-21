@@ -7007,6 +7007,15 @@ class MainActivity : ComponentActivity() {
     private var seekTargetMs: Long? = null
     private var seekTargetAt = 0L
 
+    /** 跳转中止的统一出口：把时钟恢复回跳转前的位置 */
+    private fun abortJump(why: String) {
+        val from = jumpFromSec
+        jumpFromSec = -1.0
+        if (from < 0.0) return
+        Log.e(TAG, "跳转中止：$why → 时钟回到 ${"%.2f".format(from)}s")
+        runCatching { playClock?.start((from * 1_000_000.0).toLong()) }
+    }
+
     private fun seekBy(deltaMs: Long) {
         if (!ctl.hasEngine()) return
         /*
@@ -8531,6 +8540,13 @@ class MainActivity : ComponentActivity() {
     /** 重建期间用户又拖了一次：只留最新目标，等这次结束再执行 */
     @Volatile private var pendingJumpSec = -1.0
 
+    /**
+     * 本次跳转开始前的真实位置（<0 表示当前不是跳转）。
+     * 认领跳转时先把时钟拨到目标；中途任何一条中止都必须把它恢复回去，
+     * 否则刻度停在目标、画面黑着、只能重进应用（豆豆 2026-11-21）。
+     */
+    @Volatile private var jumpFromSec = -1.0
+
 
     /**
      * 自管解码起播时，声音要等画面首帧。
@@ -9057,6 +9073,7 @@ class MainActivity : ComponentActivity() {
              * 读线程卡在网络读里退不出来，连接也就还不回去；强开新连接只会被网盘拒。
              * 这种状态只能退出应用重进（豆豆 2026-11-21）。
              */
+            abortJump("上一路解码器卡死")
             Log.e(TAG, "拒绝起播：上一路解码器卡死，连接未归还")
             ui.post { hud("解码器卡死，请退出应用重进") }
             /* 这里还没 CAS，标志不属于自己：清了会把别人正在飞的那条拆掉（豆豆 2026-11-21） */
@@ -9099,6 +9116,7 @@ class MainActivity : ComponentActivity() {
             Log.e(TAG, "PIPE 起不来：zombie=true（旧解码线程未退出，拒绝新建，需重启应用）")
             ui.post { hud("画面解码起不来（需重启应用）") }
             pipeBootInFlight.set(false)
+            abortJump("旧画面线程未退出")
             return
         }
         /*
@@ -9114,6 +9132,7 @@ class MainActivity : ComponentActivity() {
              * 宁可停在旧画面上并明确报错。
              */
             Log.e(TAG, "跳转中止：旧音频连接未归还（避免第三路连接）")
+            abortJump("旧音频连接未归还")
             pipeBootInFlight.set(false)
             /* 文案要如实：这时画面已经停了，写"请重试"会让人以为画面还在（豆豆 2026-11-21） */
             ui.post { hud("跳转失败：画面已停，请重试") }
@@ -9159,6 +9178,7 @@ class MainActivity : ComponentActivity() {
                     return@jump
                 }
                 Log.i(TAG, "跳转认领：目标=${"%.2f".format(sec)}s")
+                jumpFromSec = playClock?.positionSec() ?: 0.0
                 Log.i(TAG, "跳转：按 ${"%.2f".format(sec)}s 重建整条自管路（画面+声音+时钟）")
                 /*
                  * 重建一开始就把时钟设到目标（父亲 2026-11-21 实测「进度条先退回老位置」）。
@@ -9195,6 +9215,7 @@ class MainActivity : ComponentActivity() {
                 runCatching { Thread(jumpBody, "pipe-jump").start() }.onFailure {
                     Log.e(TAG, "跳转线程无法创建：${it.message}")
                     pipeBootInFlight.set(false)
+                    abortJump("跳转线程无法创建")
                     ui.post { hud("跳转启动失败，请重试") }
                 }
             }
@@ -9308,6 +9329,7 @@ class MainActivity : ComponentActivity() {
              *  之后左右跳全被判"已有重建在飞"而只记不执行 —— 2026-11-21 实测）。
              */
             pipeBootInFlight.set(false)
+            jumpFromSec = -1.0
             /* 重建期间用户又拖过：现在这条已经跑起来，接着执行最新那个目标 */
             val pj = pendingJumpSec
             if (pj >= 0.0) {
@@ -9573,6 +9595,7 @@ class MainActivity : ComponentActivity() {
                 Log.e(TAG, "PIPE 起不来：$why（停在起播，不放行、不出声）")
                 ui.post { hud("画面解码起不来") }
                 pipeBootInFlight.set(false)
+                abortJump("画面解码起不来：$why")
             }
         }
 
