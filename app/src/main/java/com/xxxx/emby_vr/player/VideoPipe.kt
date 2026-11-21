@@ -886,8 +886,19 @@ class VideoPipe {
             } else {
                 appliedOffset = audioStartSec - originPts
                 if (clockAtFix > 0.0 && -gap > 0.5) {
-                    Log.w(TAG, "起播对齐：画面落后声音 ${"%.2f".format(-gap)}s → 画面跳到时钟处追")
-                    pendingSeekSec = (clockAtFix - 0.15).coerceAtLeast(0.0)
+                    /*
+                     * 自管路上禁止画面单方面内跳（豆豆 2026-11-21 审出）。
+                     *
+                     * 内跳会把 originPts 清掉、下一帧重报原点，上层于是再起一个音频实例；
+                     * 新音频一旦起不来（第三路被拒），就是"画面在新位置、声音在旧位置"。
+                     * 要跳只能整条事务重建，两路一起动。
+                     */
+                    if (originFromPicture) {
+                        Log.w(TAG, "画面落后 ${"%.2f".format(-gap)}s：自管路不内跳，保持原状等整条重建")
+                    } else {
+                        Log.w(TAG, "起播对齐：画面落后声音 ${"%.2f".format(-gap)}s → 画面跳到时钟处追")
+                        pendingSeekSec = (clockAtFix - 0.15).coerceAtLeast(0.0)
+                    }
                 }
             }
             Log.i(
