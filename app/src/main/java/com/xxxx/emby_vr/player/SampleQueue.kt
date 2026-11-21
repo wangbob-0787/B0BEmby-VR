@@ -33,6 +33,15 @@ class SampleQueue(private val maxBytes: Int) {
     var droppedAfterAbort = 0L
         private set
 
+    /**
+     * 队尾那一帧的时间戳（微秒），没有数据时为 -1。
+     *
+     * 水位用「队尾 pts 减当前播放位置」算最准：不用估码率，低码率片也不会被高估。
+     */
+    @Volatile
+    var lastPtsUs: Long = -1L
+        private set
+
     /** 塞一帧；队列满了就等（ffplay 的 SDL_CondWait 等价） */
     fun put(packet: Packet): Boolean {
         synchronized(lock) {
@@ -50,6 +59,7 @@ class SampleQueue(private val maxBytes: Int) {
             }
             deque.addLast(packet)
             bytes += packet.size
+            if (packet.ptsUs > lastPtsUs) lastPtsUs = packet.ptsUs
             lock.notifyAll()
             return true
         }

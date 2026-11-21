@@ -56,7 +56,10 @@ class VideoPipe {
      * 样本队列：按码率折算约 6~8 秒（4K 12MB/s → 96MB）。
      * 32MB 只有两秒多，网盘抖 5~10 秒就挡不住（豆豆 2026-11-21 核）。
      */
-    private val feedQueue = SampleQueue(96 * 1024 * 1024)
+    private val feedQueue = SampleQueue(
+        /* 上限保护：最多占进程可用内存的四分之一，避免 96MB 常驻把堆压爆 */
+        minOf(96 * 1024 * 1024, (Runtime.getRuntime().maxMemory() / 4).toInt()),
+    )
 
     /**
      * 致命态：读线程卡在网络读里退不出来，连接也就还不回去。
@@ -265,10 +268,18 @@ class VideoPipe {
     /** 队列里现有数据的字节数（水位口径，供放行与健康行使用） */
     fun queuedBytes(): Int = feedQueue.sizeBytes()
 
-    /** 队列折算成秒：用码率估算；拿不到码率时按 4K 12MB/s 保守算 */
+    /**
+     * 队列里还有多少秒数据：用「队尾时间戳 − 当前播放位置」算。
+     *
+     * 不用字节除码率：低码率片（1080p 2~3MB/s）会被按 12MB/s 低估四五倍，
+     * 于是"攒够 2 秒"实际要攒二十多兆，起播白等（豆豆 2026-11-21 第三遍审出）。
+     */
     fun queuedSec(): Double {
-        val bps = estimatedBps.takeIf { it > 0 } ?: 12_000_000
-        return queuedBytes().toDouble() / bps
+        val tail = feedQueue.lastPtsUs
+        if (tail < 0L) return 0.0
+        val now = clockNowOrWall() * 1_000_000.0
+        if (now <= 0.0) return 0.0
+        return ((tail - now) / 1_000_000.0).coerceAtLeast(0.0)
     }
 
     /** 码率估值（字节/秒）：从轨道格式的 bitrate 换算，拿不到就是 0 */

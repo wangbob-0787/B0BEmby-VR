@@ -78,8 +78,8 @@ class AudioPipe {
      * 而画面有三十多兆存货顶着 —— 所以每次卡顿都只打中声音，断一段就变成永久落后。
      */
     private var feedThread: Thread? = null
-    /* 音频码率低（约 176KB/s），16MB 约 90 秒，足够吸收抖动 */
-    private val feedQueue = SampleQueue(16 * 1024 * 1024)
+    /* 音频码率低（128~512kbps），8MB 已是几分钟存货，够用，把内存留给画面 */
+    private val feedQueue = SampleQueue(8 * 1024 * 1024)
     @Volatile private var feedSeekSec = -1.0
     @Volatile private var feedJustSought = false
     private var prepareLatch = java.util.concurrent.CountDownLatch(1)
