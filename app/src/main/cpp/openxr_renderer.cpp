@@ -5784,12 +5784,16 @@ void updateScreenLightFromVideo(VrContext &c) {
          * 代价：换片没清干净时会把上一部片的参数一直用下去 —— 所以换片流程必须
          * 显式清 streamActive + flat + hasLastGood（见 stopPlaybackInternal 的配套）。
          */
-        if (!hasParams) {
-            /* 保持上一帧的上色状态，不动 uniform */
-        } else {
-            glUniform1i(c.dvReshapeLoc, dvOn ? 1 : 0);
-            if (dvOn) glUniform1fv(c.dvParamsLoc, 128, (const GLfloat *) g_doviFlat);
-        }
+        /*
+         * 只读参数、不写 uniform。
+         *
+         * `c.dvReshapeLoc` 与 renderQuadLayer 的 `u.dvReshape` 是**同一套 program 的同一个 uniform**
+         * （9902 把 quadU.dvReshape 赋给 dvReshapeLoc）。这一段没有 videoLayerPass 门，
+         * 一旦写就可能把 renderQuadLayer 刚设好的 0 改成 1，面板/海报墙随之沿用杜比还原分支 ——
+         * 这正是"有时偏、有时不偏"的第二个来源。写这个 uniform 只允许 renderQuadLayer 一处做
+         * （豆豆 2026-11-21 复核结论）。
+         */
+        (void) hasParams;
     }
     if (c.brightLoc >= 0) glUniform1f(c.brightLoc, 0.f);
     if (c.contrastLoc >= 0) glUniform1f(c.contrastLoc, 1.f);
@@ -8351,7 +8355,14 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
          * 一次 glUniform1i 的开销可以忽略，正确性优先（豆豆 2026-11-21 定位）。
          */
         glUniform1i(u.dvReshape, nowReshape);
-        if (dvOn) glUniform1fv(u.dvParams, 128, (const GLfloat *) g_doviFlat);
+        /*
+         * 参数也每趟写：uniform 是按 program 保存的，"看起来持久、其实这一趟还没设"的假设
+         * 正是出过的坑。128 个 float 的上传开销可忽略。
+         */
+        if (u.dvParams >= 0) {
+            static const GLfloat zeroDv[128] = {0.f};
+            glUniform1fv(u.dvParams, 128, dvOn ? (const GLfloat *) g_doviFlat : zeroDv);
+        }
     }
     if (u.texel >= 0) glUniform2f(u.texel, c.texelX.load(), c.texelY.load());
     if (u.jitter >= 0) {
