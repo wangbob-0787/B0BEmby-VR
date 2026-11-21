@@ -8518,6 +8518,12 @@ class MainActivity : ComponentActivity() {
      */
     @Volatile private var selfFirstShown = false
 
+    /**
+     * 起播代次：每次重建 +1。所有管线回调都要带代次，晚到的旧回调一律丢弃。
+     * 只比 URL 拦不住 —— 同片跳转 URL 完全相等。
+     */
+    private val selfGen = java.util.concurrent.atomic.AtomicInteger(0)
+
 
     /**
      * 自管解码起播时，声音要等画面首帧。
@@ -8997,6 +9003,7 @@ class MainActivity : ComponentActivity() {
         source: String = "正常起播",
     ) {
         selfAudioOn = true
+        val gen = selfGen.incrementAndGet()
         if (playClock == null) playClock = com.xxxx.emby_vr.player.PlaybackClock()
         /* 主线程投递句柄：这个函数现在可能跑在工作线程（跳转重建） */
         val ui = android.os.Handler(android.os.Looper.getMainLooper())
@@ -9199,7 +9206,8 @@ class MainActivity : ComponentActivity() {
                 clockReal = { playClock?.positionSec() ?: startSec },
                 /* 暂停只认我们自己的状态：内核已不参与，问它等于问一个不在场的人 */
                 pausedNow = { selfPaused || avStall },
-                onFirstFrame = {
+                onFirstFrame = frame@{
+                    if (gen != selfGen.get()) return@frame
                     selfFirstShown = true
                     /*
                      * 自管路的首帧上屏 = 收黑幕 / 转圈 / 片名的时机（父亲 2026-11-21 提的"黑屏没收掉"）。
@@ -9228,7 +9236,8 @@ class MainActivity : ComponentActivity() {
                  * 断流来自解码线程的读流监视（约两秒一拍）：两拍之间样本数不涨就算断。
                  * 恢复时只有"用户没有自己按暂停"才放开，否则会把用户的暂停顶掉。
                  */
-                onStall = { stalled ->
+                onStall = stall@{ stalled ->
+                    if (gen != selfGen.get()) return@stall
                     /*
                      * 只在**已经放行之后**才让断流信号去动声音。
                      *
@@ -9251,13 +9260,13 @@ class MainActivity : ComponentActivity() {
                  * 顺序不能反：先探测画面首帧再开音频，首帧出现之前的音频包才有地方放；
                  * 反过来做会把那半秒当成"早于起点"裁掉，声音开头少一截且补不回来。
                  */
-                onOriginSec = { originSec ->
+                onOriginSec = origin@{ originSec ->
+                    if (gen != selfGen.get()) {
+                        Log.w(TAG, "丢弃迟到的画面起点上报（gen=$gen 当前=${selfGen.get()}）")
+                        return@origin
+                    }
                     selfOriginSec = originSec
                     Thread {
-                        if (selfPipeUrl != url) {
-                            Log.w(TAG, "画面起点到达时已换片，丢弃这次音频起播")
-                            return@Thread
-                        }
                         val clk = playClock
                         if (clk == null) return@Thread
                         /*
