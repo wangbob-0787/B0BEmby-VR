@@ -9271,14 +9271,16 @@ class MainActivity : ComponentActivity() {
             Log.i(TAG, "放行：画面三帧齐 + 音频设备同刻起动（音轨=${ap.trackDesc}）")
         }
 
-        /**
-         * 起播也投工作线程（豆豆 2026-11-21 第二遍审出）。
-         *
-         * 这轮只挪了跳转；0 起播/续播仍由 startPlayer 在界面线程调进来，
-         * 管道 start 里的解封装 latch（最长 20 秒）与解码器 configure 照样冻 UI。
-         */
+        /* 局部函数不能前向引用：先声明一个变量，等下面 Blocking 定义好再赋值，投线程时用它 */
+        var pipelineLauncher: ((Double) -> Unit)? = null
+
         fun launchPipeline(audioStart: Double) {
-            Thread({ launchPipelineBlocking(audioStart) }, "pipe-start").start()
+            val body = pipelineLauncher
+            if (body == null) {
+                Log.e(TAG, "起播被拒：启动器还没就绪")
+                return
+            }
+            Thread({ body(audioStart) }, "pipe-start").start()
         }
 
         fun launchPipelineBlocking(audioStart: Double) {
@@ -9483,6 +9485,7 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        pipelineLauncher = { it -> launchPipelineBlocking(it) }
         launchPipeline(startSec)
     }
 
