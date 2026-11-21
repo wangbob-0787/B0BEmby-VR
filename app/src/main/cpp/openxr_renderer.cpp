@@ -297,7 +297,7 @@ static void doviProbeShared()
             gDvFrameFresh.store(0);
             return;
         }
-        if ( (pts > 0 && dvPickByPts(pts, gDvPtsActive, 128)) {
+        if (pts > 0 && dvPickByPts(pts, gDvPtsActive, 128)) {
             g_doviFlat = gDvPtsActive;
             usedTable = true;
             usedFresh = true;
