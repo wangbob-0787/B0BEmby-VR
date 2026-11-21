@@ -107,6 +107,17 @@ object VrNative {
 
     private external fun nativeSetDoviFreeze(on: Int)
 
+    /** 本帧用的是否"时间接近的新鲜参数"（收黑幕、解除保持用这一问） */
+    fun doviFreshReady(): Boolean =
+        runCatching { nativeDoviFreshReady() }.getOrDefault(false)
+
+    private external fun nativeDoviFreshReady(): Boolean
+
+    /** 换片/停播时全清（表、文件标记、最后一套、就绪、保持） */
+    fun resetDoviAll() = runCatching { nativeResetDoviAll() }
+
+    private external fun nativeResetDoviAll()
+
     fun doviParamsReady(): Boolean =
         runCatching { nativeDoviParamsReady() }.getOrDefault(false)
 

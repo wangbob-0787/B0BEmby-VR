@@ -7008,6 +7008,17 @@ class MainActivity : ComponentActivity() {
     private var seekTargetAt = 0L
 
     /** 跳转中止的统一出口：把时钟恢复回跳转前的位置 */
+    /** 等"第一套新鲜参数"到达再解除保持；8 秒兜底（豆豆 2026-11-21） */
+    private fun waitFreshThenUnhold(tries: Int) {
+        if (com.xxxx.emby_vr.vr.VrNative.doviFreshReady() || tries >= 80) {
+            if (tries >= 80) Log.w(TAG, "保持超时 8 秒：新鲜参数仍未到达，强制解除")
+            com.xxxx.emby_vr.vr.VrNative.setDoviHold(false)
+            return
+        }
+        android.os.Handler(android.os.Looper.getMainLooper())
+            .postDelayed({ waitFreshThenUnhold(tries + 1) }, 100L)
+    }
+
     private fun abortJump(why: String) {
         val from = jumpFromSec
         jumpFromSec = -1.0
@@ -7277,6 +7288,13 @@ class MainActivity : ComponentActivity() {
         avStall = false
         /* 换代：正在建的那条线程建完会发现代次不符，自己收场，不留孤儿管线 */
         selfGen.incrementAndGet()
+        /*
+         * 换片固定步骤（豆豆 2026-11-21 的硬约束）：
+         * 参数表、文件标记、最后一套、"就地保持"全部复位，
+         * 否则"P5 换 P5"时 streamActive 一直是 1，上一部片的参数会被继续用下去。
+         */
+        com.xxxx.emby_vr.vr.VrNative.setDoviStreamActive(false)
+        com.xxxx.emby_vr.vr.VrNative.resetDoviAll()
         /* 停播等多久只报数不判死（图 §4.1）：记起点，停完把耗时交给健康行 */
         val stopT0 = android.os.SystemClock.elapsedRealtime()
         /*
@@ -9401,6 +9419,7 @@ class MainActivity : ComponentActivity() {
              */
             pipeBootInFlight.set(false)
             jumpFromSec = -1.0
+            waitFreshThenUnhold(0)
             com.xxxx.emby_vr.vr.VrNative.setDoviHold(false)
             /* 重建期间用户又拖过：现在这条已经跑起来，接着执行最新那个目标 */
             val pj = pendingJumpSec
