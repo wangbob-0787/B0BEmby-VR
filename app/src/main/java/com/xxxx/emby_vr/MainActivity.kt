@@ -9162,7 +9162,7 @@ class MainActivity : ComponentActivity() {
                  * 重建里有「旧管线 join」「解封装 latch 最多 20 秒」「解码器 configure」，
                  * 原来全跑在界面线程上，跳一次界面就冻十几秒。
                  */
-                val jumpBody = {
+                val jumpBody = Runnable {
                     runCatching {
                         startSelfVideoPipe(jumpUrl, sec, jumpSurface, m, "跳转重建", alreadyClaimed = true)
                     }.onFailure {
