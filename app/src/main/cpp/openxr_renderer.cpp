@@ -297,7 +297,14 @@ static void doviProbeShared()
             /* 冻结期（还没换新帧）：沿用最后一套有效参数，避免"参数消失→还原关掉→变紫" */
             g_doviFlat = gDvLastGood;
         }
-        gDvFrameReady.store(usedFresh ? 1 : 0);
+        /*
+         * 冻结期沿用 lastGood 也算"本帧有参数"。
+         * 原来这里只认 usedFresh，于是：跳转认领 → 冻结 → 参数就绪恒为假 →
+         * Kotlin 的放行门槛一直等 → 放行不发生 → 冻结永不解除，两边互相等待卡死
+         * （2026-11-21 17:52 实测：跳转后画面冻住起不来）。
+         */
+        const bool frozenWithGood = gDvFreeze.load() != 0 && gDvHasLastGood.load() != 0;
+        gDvFrameReady.store((usedFresh || frozenWithGood) ? 1 : 0);
         /* 起播/跳转头几帧最关键：每帧都报来源，之后降到 3 秒一行 */
         {
             static long long frames;
