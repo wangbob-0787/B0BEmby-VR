@@ -149,8 +149,14 @@ class AudioPipe {
     @Volatile
     private var startedAtMs = 0L
 
-    /** 起播时的时钟代次：上报位置时带上，旧实例的上报会被时钟丢弃 */
-    private var clockEpochAtStart = 0
+    /** 写时钟的令牌：放行时由上层绑定；未绑定（-1）时上报会被时钟丢弃 */
+    @Volatile
+    private var clockToken = -1L
+
+    /** 放行时绑定写权（时钟在放行那一刻才换发新令牌） */
+    fun bindClockToken(t: Long) {
+        clockToken = t
+    }
     private var frameBase = 0L
     private var latencyUs = 0L
 
@@ -206,7 +212,6 @@ class AudioPipe {
         writtenFrames = 0L
         firstBlockHandled = false
         this.clock = clock
-        clockEpochAtStart = clock?.epoch ?: 0
         originUs = (originSec * US).toLong()
 
         /* 解封装的打开、选轨、跳转、读全部交给读线程（系统接口要求同一线程） */
@@ -347,8 +352,11 @@ class AudioPipe {
         runCatching { track?.pause() }
         runCatching { track?.flush() }
         feedQueue.abort()
-        feedThread?.let { runCatching { it.join(800) } }
+        /* 读线程持连接：它没退出就等于连接没归还，必须进返回值（豆豆 2026-11-21 审出） */
+        val ft = feedThread
+        ft?.let { runCatching { it.join(1500) } }
         feedThread = null
+        val feedDead = ft == null || !ft.isAlive
         val t = thread
         thread = null
         if (t != null && t.isAlive) {
@@ -362,7 +370,7 @@ class AudioPipe {
         track = null
         extractor = null
         paused.set(false)
-        return t == null || !t.isAlive
+        return (t == null || !t.isAlive) && feedDead
     }
 
     // ------------------------------------------------------------------ 内部
@@ -761,6 +769,6 @@ class AudioPipe {
             val played = at.playbackHeadPosition - frameBase
             originUs + played.coerceAtLeast(0) * 1_000_000L / sampleRate - latencyUs
         }
-        clk.noteAudioPosition(posUs.coerceAtLeast(originUs), clockEpochAtStart)
+        clk.noteAudioPosition(posUs.coerceAtLeast(originUs), clockToken)
     }
 }

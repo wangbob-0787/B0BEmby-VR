@@ -9140,6 +9140,8 @@ class MainActivity : ComponentActivity() {
              * 早一拍就是先说话后出人，晚一拍就是开头少一句。这是实测出来的边界（PICO 4）。
              */
             playClock?.start((selfOriginSec * 1_000_000.0).toLong())
+            /* 放行这一刻才把写权交给这一路音频（时钟刚换过令牌） */
+            ap.bindClockToken(playClock?.token ?: 0L)
             runCatching { ap.startNow() }
             selfPipePhase = "PLAYING"
             selfPipeReleased = true

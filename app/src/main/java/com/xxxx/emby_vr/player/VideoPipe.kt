@@ -1218,8 +1218,11 @@ class VideoPipe {
         stopping = true
         running.set(false)
         feedQueue.abort()
-        feedThread?.let { runCatching { it.join(600) } }
+        /* 读线程才是**持有连接**的那一个：它没退出就等于连接没归还，必须进返回值 */
+        val ft = feedThread
+        ft?.let { runCatching { it.join(1500) } }
         feedThread = null
+        val feedDead = ft == null || !ft.isAlive
         holdGate = null
         onNeedRestart = null
         onAudioAlign = null
@@ -1237,31 +1240,22 @@ class VideoPipe {
             }
         }
         thread = null
-        if (t0?.isAlive == true) {
-            /*
-             * 图 §5 I4：线程还没退出时**禁止外部代它 release**（那是拆正在用的实例）。
-             * 释放留给线程自己的退出路径；这里只留痕，下次 start 前会确认旧实例已死。
-             */
-            Log.e(TAG, "ASSERT joinTimeout thread=VideoPipe（600ms 未退出，不代它释放解码器，禁止新建）")
+        /*
+         * 两个线程都要确认退出，才算"资源已归还"。
+         *
+         * 只判解码线程是错的：真正持有网盘连接的是读线程。它超时仍在跑、
+         * 这里却返回"已停"，上层就会立刻建新连接 —— 网盘只给两路，第三路被拒，
+         * 现场表现就是"旧连接没关"的三种随机结果（2026-11-21 豆豆审出）。
+         *
+         * 释放权归线程自己：这里不代它们 release（那是拆正在用的实例）。
+         */
+        if (t0?.isAlive == true || !feedDead) {
+            Log.e(
+                TAG,
+                "ASSERT 旧管线未退出：解码线程=${t0?.isAlive == true} 读线程=${!feedDead}（禁止新建）",
+            )
             return false
         }
-        try {
-            decoder?.stop()
-        } catch (t: Throwable) {
-            Log.w(TAG, "解码器停止异常：${t.message}")
-        }
-        try {
-            decoder?.release()
-        } catch (t: Throwable) {
-            Log.w(TAG, "解码器释放异常：${t.message}")
-        }
-        decoder = null
-        try {
-            extractor?.release()
-        } catch (t: Throwable) {
-            Log.w(TAG, "解复用器释放异常：${t.message}")
-        }
         return true
-        extractor = null
     }
 }

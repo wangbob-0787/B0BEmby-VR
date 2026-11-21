@@ -68,7 +68,7 @@ class PlaybackClock {
              * 起播同样递增代次：重建路径走的是 start()，不是 resetTo()。
              * 不递增的话，上一代音频实例的上报仍会被接受，把时钟顶到旧位置（2026-11-21）。
              */
-            epoch++
+            token++
             pausedAtUs = atUs
             wallBaseUs = atUs
             wallBaseMs = now()
@@ -103,16 +103,21 @@ class PlaybackClock {
 
     /** 跳转：两边基准一起重置，位置立刻落到目标 */
     /**
-     * 代次：每次重置 +1。音频那一路上报位置时带上自己起播时的代次，
-     * 不匹配就丢弃 —— 否则旧实例的旧位置会把时钟顶回去（时钟单调只增，顶上去就回不来）。
+     * 写权令牌：由时钟自己发。
+     *
+     * 音频实例在**放行那一刻**领令牌（不是出生那一刻）—— 出生代与放行代之间差一代，
+     * 会让这一代的位置上报全被丢弃、时钟退化成纯墙钟（豆豆 2026-11-21 审出）。
      */
     @Volatile
-    var epoch: Int = 0
+    var token: Long = 0L
         private set
+
+    /** 换发新令牌：只有持最新令牌的那一路音频可以写时钟 */
+    fun issueToken(): Long = synchronized(lock) { token++; token }
 
     fun resetTo(us: Long) {
         synchronized(lock) {
-            epoch++
+            token++
             pausedAtUs = us
             wallBaseUs = us
             wallBaseMs = now()
@@ -128,8 +133,8 @@ class PlaybackClock {
      *
      * 由 [AudioPipe] 在每次写入后调用；位置语义是"这一帧音频现在真正被听到的位置"。
      */
-    fun noteAudioPosition(us: Long, fromEpoch: Int = -1) {
-        if (fromEpoch >= 0 && fromEpoch != epoch) return
+    fun noteAudioPosition(us: Long, fromToken: Long = -1L) {
+        if (fromToken >= 0L && fromToken != token) return
         synchronized(lock) {
             audioUs = us
             audioAtMs = now()
