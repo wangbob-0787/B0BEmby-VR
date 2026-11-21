@@ -6143,6 +6143,25 @@ class MainActivity : ComponentActivity() {
      * 图形字幕（PGS/VobSub）仍走序号 —— 那是图片，Emby 转不成文字，内核自己读文件才对。
      */
     private fun applyKernelSubtitle(index: Int?) {
+        /*
+         * 自管解码这条路**没有内核**：mpv 不加载文件，选它的字幕轨必然失败
+         * （实测日志："内核没有报出字幕轨，选字幕失败"正是这条）。
+         * 自管时文字字幕一律交给服务端转 SRT 自绘；关闭字幕就清屏（2026-11-22）。
+         */
+        if (selfPipeActive) {
+            if (index == null) {
+                subtitleCues = emptyList()
+                subtitleCueStream = null
+                subtitleNow = ""
+                if (!waitingFirstFrame) danmakuView?.setSubtitle("")
+                refreshMenuRows(com.xxxx.emby_vr.panel.MenuKind.SUBTITLE)
+                Log.i(TAG, "自管解码：关闭字幕 → 清屏")
+            } else {
+                Log.i(TAG, "自管解码：字幕 $index → 服务端转 SRT 自绘（不经过内核）")
+                loadSubtitleTrack(index)
+            }
+            return
+        }
         val m = mpvBackend ?: return
         if (index == null) {
             m.setSubtitleByOrdinal(null)
