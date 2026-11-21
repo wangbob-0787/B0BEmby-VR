@@ -8831,6 +8831,13 @@ class MainActivity : ComponentActivity() {
         playClock?.resetTo((sec * 1_000_000.0).toLong())
         val pipe = com.xxxx.emby_vr.player.VideoPipe()
         videoPipe = pipe
+        /*
+         * 新管线起播前先清空原生参数表（豆豆 2026-11-21）：
+         * 放在 pipe.start() 之前 —— 此刻新解码线程还没起，不可能有旧推送抢在前面；
+         * 代次同时带下去，万一旧线程晚到一条推送也会被原生按代次丢弃。
+         */
+        pipe.pipeGen = gen.toLong()
+        com.xxxx.emby_vr.vr.VrNative.resetDoviParams(gen.toLong())
         val ok = pipe.start(
             url, emptyMap(), surface,
             /* 时钟只有自管这一个来源：不再问内核 */

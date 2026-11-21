@@ -110,6 +110,56 @@ static long long gDvFileStamp = -1;   /* 秒+纳秒合成，秒级时间戳抓�
  */
 static bool gDvFileValid = false;
 
+/*
+ * 按帧参数表（2026-11-21）：Kotlin 解出来的参数带着「这一帧的片源时间」直传过来，
+ * 渲染时用**当前显示帧的时间**查"不超过它的最近一项"。
+ *
+ * 为什么不走文件：参数按场景变，写盘再按 mtime 重读，写入时刻与显示时刻差好几帧
+ * （显示侧有 187ms 环形缓冲），切场景那一瞬就是"新画面用旧参数"，颜色跳一下。
+ * 单写（解码线程）单读（渲染线程），用一把短锁保护。
+ */
+struct DvPtEntry {
+    long long ptsNs;
+    int count;
+    float data[128];
+};
+static const int DV_PTS_CAP = 64;
+static DvPtEntry gDvPtsRing[DV_PTS_CAP];
+static int gDvPtsCount = 0;
+static pthread_mutex_t gDvPtsLock = PTHREAD_MUTEX_INITIALIZER;
+static long long gDvGen = 0;          /* 只接受 >= 这个代次的推送 */
+static long long gDvLastPushPtsNs = -1;
+static long long gDvLastLookupPtsNs = -1;
+
+
+/**
+ * 用当前显示帧的时间查参数（不超过它的最近一项）。
+ * 返回 false = 没命中，调用方退回文件里的兜底参数。
+ */
+static bool dvPickByPts(long long ptsNs, float *out, int cap)
+{
+    if (ptsNs <= 0) return false;
+    bool hit = false;
+    pthread_mutex_lock(&gDvPtsLock);
+    DvPtEntry *best = nullptr;
+    for (int i = 0; i < gDvPtsCount; i++) {
+        DvPtEntry &e = gDvPtsRing[i];
+        if (e.ptsNs <= ptsNs && (best == nullptr || e.ptsNs > best->ptsNs)) best = &e;
+    }
+    if (best != nullptr) {
+        const int n = best->count < cap ? best->count : cap;
+        memcpy(out, best->data, (size_t) n * sizeof(float));
+        hit = true;
+        if (best->ptsNs != gDvLastLookupPtsNs) {
+            gDvLastLookupPtsNs = best->ptsNs;
+            LOGI_RAW("按帧取参|取到 pts=%.3f|显示帧 pts=%.3f|差=%lldms", (double) best->ptsNs / 1e9,
+                     (double) ptsNs / 1e9, (long long) ((ptsNs - best->ptsNs) / 1000000));
+        }
+    }
+    pthread_mutex_unlock(&gDvPtsLock);
+    return hit;
+}
+
 static void dvLoadFromFile()
 {
     static bool once;
@@ -162,6 +212,32 @@ static void doviProbeShared()
      * 于是永不再读 —— 逐帧参数实际被冻在第一次那份上，换镜头也不更新。
      */
     dvLoadFromFile();
+    /*
+     * 并行对账（2026-11-21）：只比对、不改行为。
+     * 按显示帧时间从参数表取一套，和文件里那套比前 3 个数（版本/通道/分段），
+     * 一致就说明"按帧取参"确实指向同一套参数，可以切换；不一致要先把原因找出来。
+     */
+    {
+        const long long pts = g.videoFramePtsUs.load();
+        if (pts > 0) {
+            float tmp[128];
+            if (dvPickByPts(pts, tmp, 128)) {
+                if (gDvFileValid && g_doviFlat != nullptr) {
+                    const bool same = (int) (tmp[0] + 0.5f) == (int) (g_doviFlat[0] + 0.5f) &&
+                                      (int) (tmp[1] + 0.5f) == (int) (g_doviFlat[1] + 0.5f) &&
+                                      (int) (tmp[2] + 0.5f) == (int) (g_doviFlat[2] + 0.5f);
+                    static long long lastCmp;
+                    if (pts - lastCmp > 3000000000LL) {
+                        lastCmp = pts;
+                        LOGI_RAW("参数对账|按帧=%.0f/%.0f/%.0f|文件=%.0f/%.0f/%.0f|%s",
+                                 (double) tmp[0], (double) tmp[1], (double) tmp[2],
+                                 (double) g_doviFlat[0], (double) g_doviFlat[1],
+                                 (double) g_doviFlat[2], same ? "一致" : "不一致");
+                    }
+                }
+            }
+        }
+    }
     if (!g_doviFlat) {
         /*
          * 必须先按名字取到内核那个库的句柄再查符号（2026-11-13 实测）：
@@ -200,6 +276,74 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetDoviParamPath(JNIEnv *env, jobject /
         LOGI_RAW("杜比参数文件：%s", p);
         env->ReleaseStringUTFChars(path, p);
     }
+}
+
+/*
+ * 按帧推送杜比参数（2026-11-21）。
+ *
+ * gen：管线代次，只接受不小于当前代次的推送（旧 VideoPipe 线程晚到的会被丢掉）
+ * ptsNs：这一帧的片源时间（纳秒，与 SurfaceTexture.getTimestamp 同单位）
+ * data：版本/通道/分段 + 3×33 曲线 + 21 色块，最多 128 个数（渲染层 uniform 容量）
+ */
+JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativePushDoviParams(
+        JNIEnv *env, jclass, jlong gen, jlong ptsNs, jint segments, jint channels,
+        jfloatArray data) {
+    if (data == nullptr || ptsNs <= 0) return;
+    const jsize len = env->GetArrayLength(data);
+    if (len <= 0 || len > 128) {
+        LOGE("参数长度异常（%d），丢弃这次推送", (int) len);
+        return;
+    }
+    DvPtEntry entry;
+    memset(&entry, 0, sizeof(entry));
+    entry.ptsNs = (long long) ptsNs;
+    entry.count = len;
+    env->GetFloatArrayRegion(data, 0, len, entry.data);
+
+    pthread_mutex_lock(&gDvPtsLock);
+    if ((long long) gen < gDvGen) {
+        pthread_mutex_unlock(&gDvPtsLock);
+        LOGI_RAW("丢弃旧代参数推送|gen=%lld 当前=%lld", (long long) gen, gDvGen);
+        return;
+    }
+    bool replaced = false;
+    for (int i = 0; i < gDvPtsCount; i++) {
+        if (gDvPtsRing[i].ptsNs == entry.ptsNs) {
+            gDvPtsRing[i] = entry;
+            replaced = true;
+            break;
+        }
+    }
+    if (!replaced) {
+        if (gDvPtsCount < DV_PTS_CAP) {
+            gDvPtsRing[gDvPtsCount++] = entry;
+        } else {
+            int oldest = 0;
+            for (int i = 1; i < gDvPtsCount; i++) {
+                if (gDvPtsRing[i].ptsNs < gDvPtsRing[oldest].ptsNs) oldest = i;
+            }
+            gDvPtsRing[oldest] = entry;
+        }
+    }
+    const bool first = (gDvLastPushPtsNs < 0);
+    gDvLastPushPtsNs = entry.ptsNs;
+    pthread_mutex_unlock(&gDvPtsLock);
+    if (first) {
+        LOGI_RAW("按帧参数通道已接通|gen=%lld|pts=%.3f|分段=%d 通道=%d 长度=%d",
+                 (long long) gen, (double) ptsNs / 1e9, (int) segments, (int) channels, (int) len);
+    }
+}
+
+JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeResetDoviParams(JNIEnv *, jclass, jlong gen) {
+    pthread_mutex_lock(&gDvPtsLock);
+    gDvPtsCount = 0;
+    gDvGen = (long long) gen;
+    gDvLastPushPtsNs = -1;
+    gDvLastLookupPtsNs = -1;
+    pthread_mutex_unlock(&gDvPtsLock);
+    LOGI_RAW("参数表已清空|gen=%lld", (long long) gen);
 }
 
 /**

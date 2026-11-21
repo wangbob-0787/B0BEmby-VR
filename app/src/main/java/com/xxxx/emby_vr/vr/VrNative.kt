@@ -67,6 +67,35 @@ object VrNative {
 
     fun setDoviParamPath(path: String) = runCatching { nativeSetDoviParamPath(path) }
 
+    /**
+     * 把一帧的杜比参数直接交给渲染层（2026-11-21）。
+     *
+     * 为什么不走文件：参数按场景变，写盘再按 mtime 重读，写入时刻与**显示**时刻差好几帧
+     * （显示侧有 187ms 环形缓冲），场景切换那一瞬就会"新画面用旧参数"，颜色跳一下。
+     * 直传后渲染层按"当前显示帧的时间"取参数，参数与帧天然对齐。
+     *
+     * @param gen       管线代次：原生只接受不小于当前代次的推送，旧线程晚到的推送会被丢弃
+     * @param ptsNs     这一帧的片源时间（纳秒，与 SurfaceTexture.getTimestamp 同单位）
+     * @param segments  分段数（P5 固定 9）
+     * @param channels  通道数（P5 固定 3）
+     * @param data      参数（segments × channels × 33 个 float）
+     */
+    fun pushDoviParams(gen: Long, ptsNs: Long, segments: Int, channels: Int, data: FloatArray) =
+        runCatching { nativePushDoviParams(gen, ptsNs, segments, channels, data) }
+
+    /** 清空参数表（新管线起播前调用）：旧代的参数绝不能落到新管线头上 */
+    fun resetDoviParams(gen: Long) = runCatching { nativeResetDoviParams(gen) }
+
+    private external fun nativePushDoviParams(
+        gen: Long,
+        ptsNs: Long,
+        segments: Int,
+        channels: Int,
+        data: FloatArray,
+    )
+
+    private external fun nativeResetDoviParams(gen: Long)
+
     /** 运行时可调参数（key 见 VrTuning.KEY_*） */
     private external fun nativeSetTuning(key: Int, value: Float)
 

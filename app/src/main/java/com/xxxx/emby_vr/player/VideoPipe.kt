@@ -261,6 +261,10 @@ class VideoPipe {
     /** 参数落盘的最小间隔（帧）：每帧都写会让渲染层每帧重读文件 */
     private var doviWriteSkip = 0
 
+    /** 管线代次：推参数时带上，原生据此丢弃旧代晚到的推送 */
+    @Volatile
+    var pipeGen: Long = 0L
+
     /** 解不出参数的前几帧各打一条日志，别刷屏 */
     private var doviMissLog = 0
 
@@ -1294,6 +1298,27 @@ class VideoPipe {
              * 颜色就会跳一下。稳定优先 —— 第一条参数定下来之后不再更新，
              * 调参文件写 dovi_freeze=0 可恢复逐帧更新。
              */
+            /*
+             * 并行对账阶段（2026-11-21）：既推给原生、也照旧写盘，
+             * 日志里比对"按帧取到的那套"与"文件里那套"是否同一套；确认一致后删掉写盘。
+             */
+            runCatching {
+                /*
+                 * 参数布局：版本 / 通道数 / 分段数 + 3×33 曲线 + 21 色块 = 122 个数，
+                 * 渲染层 uniform 是 128 个 float，正好装得下。长度超了就不推（宁可偏一下也别越界）。
+                 */
+                if (params.size in 4..128) {
+                    com.xxxx.emby_vr.vr.VrNative.pushDoviParams(
+                        gen = pipeGen,
+                        ptsNs = (lastSeenInputPts * 1_000_000_000.0).toLong(),
+                        segments = params[2].toInt(),
+                        channels = params[1].toInt(),
+                        data = params,
+                    )
+                } else {
+                    Log.e(TAG, "参数长度异常（${params.size}），跳过本次推送")
+                }
+            }
             doviWriteSkip = if (com.xxxx.emby_vr.vr.VrTuning.doviFreeze) Int.MAX_VALUE else 3
             java.io.File(path).outputStream().use { out ->
                 val bb = java.nio.ByteBuffer.allocate(params.size * 4)
