@@ -458,6 +458,22 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetDoviFreeze(JNIEnv *, jclass, jint on
     LOGI_RAW("杜比参数冻结=%d", on);
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeResetDoviAll(JNIEnv *, jclass) {
+    pthread_mutex_lock(&gDvPtsLock);
+    gDvPtsCount = 0;
+    gDvLastPushPtsNs = -1;
+    gDvLastLookupPtsNs = -1;
+    pthread_mutex_unlock(&gDvPtsLock);
+    gDvFileValid = false;
+    gDvFileStamp = -1;
+    gDvHasLastGood.store(0);
+    gDvFrameReady.store(0);
+    gDvFrameFresh.store(0);
+    gDvHold.store(0);
+    LOGI_RAW("杜比参数全清（换片）：表/文件/最后一套/就绪/保持 全部复位");
+}
+
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_xxxx_emby_1vr_vr_VrNative_nativeDoviParamsReady(JNIEnv *, jclass) {
     return gDvFrameReady.load() != 0 ? JNI_TRUE : JNI_FALSE;
@@ -5772,8 +5788,19 @@ void updateScreenLightFromVideo(VrContext &c) {
                          gDvPtsCount, gDvFileValid ? 1 : 0, g_doviFlat ? 1 : 0);
             }
         }
-        glUniform1i(c.dvReshapeLoc, dvOn ? 1 : 0);
-        if (dvOn) glUniform1fv(c.dvParamsLoc, 128, (const GLfloat *) g_doviFlat);
+        /*
+         * 本帧取不到参数时**什么都不改**（豆豆 2026-11-21）：
+         * GL 的 uniform 是持久的，不设置它就还是上一次上色用的值。
+         * 这样"参数暂时没有"的任何窗口都不会把还原关掉、让画面变紫。
+         * 代价：换片没清干净时会把上一部片的参数一直用下去 —— 所以换片流程必须
+         * 显式清 streamActive + flat + hasLastGood（见 stopPlaybackInternal 的配套）。
+         */
+        if (!hasParams) {
+            /* 保持上一帧的上色状态，不动 uniform */
+        } else {
+            glUniform1i(c.dvReshapeLoc, dvOn ? 1 : 0);
+            if (dvOn) glUniform1fv(c.dvParamsLoc, 128, (const GLfloat *) g_doviFlat);
+        }
     }
     if (c.brightLoc >= 0) glUniform1f(c.brightLoc, 0.f);
     if (c.contrastLoc >= 0) glUniform1f(c.contrastLoc, 1.f);
@@ -8315,10 +8342,22 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
          * 参数一直在，却被这个条件挡在门外。
          */
         /* 版本 1 = 客户端自管解码写的（只有曲线）；版本 2 = 内核写的（曲线后面还带两份矩阵） */
+        /*
+         * 这里原来是**第二套判据**：比日志那处多一个 gDvFileValid。
+         * 于是清表（把文件标记失效）之后，上色每帧都把 dvReshape 写成 0 → 旧画面立刻变紫，
+         * 而日志那边显示"生效=1"，两边对不上（豆豆 2026-11-21 找到的真凶）。
+         * 现在与日志同一口径：只看开关、数据流、有没有参数。
+         * 且**只在状态变化时写** uniform —— 否则每帧无条件写会把
+         * "取不到参数就什么都不改"的设计直接架空。
+         */
         const bool dvOn = videoLayerPass && gDvRendererReshape.load() != 0 && gDvStreamActive.load() != 0 &&
-                          gDvFileValid &&
                           g_doviFlat && g_doviFlat[0] >= 0.5f && g_doviFlat[0] < 2.5f;
-        glUniform1i(u.dvReshape, dvOn ? 1 : 0);
+        static int lastDvReshape = -1;
+        const int nowReshape = dvOn ? 1 : 0;
+        if (nowReshape != lastDvReshape) {
+            lastDvReshape = nowReshape;
+            glUniform1i(u.dvReshape, nowReshape);
+        }
         if (dvOn) glUniform1fv(u.dvParams, 128, (const GLfloat *) g_doviFlat);
     }
     if (u.texel >= 0) glUniform2f(u.texel, c.texelX.load(), c.texelY.load());
