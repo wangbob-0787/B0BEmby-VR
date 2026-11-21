@@ -9047,13 +9047,26 @@ class MainActivity : ComponentActivity() {
          * 日志是「音频解封装准备超时」：旧的一路还没释放连接，新的那一路就又要连接，
          * 网盘只给两路并发，第三路连不上，等满二十秒就判失败。
          */
+        var audioDead = true
         audioPipe?.let { ap ->
-            if (!ap.stop()) {
+            audioDead = ap.stop()
+            if (!audioDead) {
                 Log.w(TAG, "旧音频未在时限内退出，再收一次")
                 Thread.sleep(400)
+                audioDead = runCatching { ap.stop() }.getOrDefault(false)
             }
         }
         audioPipe = null
+        if (!audioDead) {
+            /*
+             * 旧音频没退干净就绝不开新连接：网盘只给两路，第三路必被拒，
+             * 结果是"画面在新位置、声音在旧位置"这类随机态（豆豆 2026-11-21 审出）。
+             * 宁可停在旧画面上并明确报错。
+             */
+            Log.e(TAG, "跳转中止：旧音频连接未归还（避免第三路连接）")
+            ui.post { hud("跳转失败：上一路声音还没停干净，请重试") }
+            return
+        }
         /* 给解封装释放连接留一拍，避免新旧连接在网盘那一侧叠在一起 */
         Thread.sleep(150)
         selfOriginSec = 0.0
@@ -9087,6 +9100,14 @@ class MainActivity : ComponentActivity() {
                  * 而重建要三四秒 —— 这几秒进度条读到的还是旧时钟，看起来就是"跳回老位置"。
                  */
                 selfOriginSec = sec
+                /*
+                 * 重建期间把时钟冻住（豆豆 2026-11-21 审出）。
+                 *
+                 * 原来只 resetTo，时钟仍在跑：重建要几秒，墙钟就自己走了几秒，
+                 * 日志里「时钟比起点多 8.3 秒 ≈ 重建耗时」正是这条。
+                 * 冻结后由放行那一刻 start(origin) 一次起步。
+                 */
+                playClock?.pause()
                 playClock?.resetTo((sec * 1_000_000.0).toLong())
                 pipeBootInFlight.set(false)
                 /*
@@ -9133,8 +9154,19 @@ class MainActivity : ComponentActivity() {
             if (!selfFirstShown) return
             val ap = audioPipe
             if (ap == null) {
-                if (tries < 80) ui.postDelayed({ tryRelease(tries + 1) }, 100)
-                else Log.w(TAG, "放行超时：等音频解码器就绪已 ${tries * 100}ms")
+                if (tries < 80) {
+                    ui.postDelayed({ tryRelease(tries + 1) }, 100)
+                } else {
+                    /*
+                     * 看门狗：等了八秒音频还没就绪，不能再把画面闸门永远关着
+                     * （否则就是"永久定格、没有任何提示"）。放开闸门让画面先走，并明确报错。
+                     */
+                    Log.e(TAG, "放行超时：等音频解码器就绪已 ${tries * 100}ms，放开画面闸门并报错")
+                    released = true
+                    selfPipeWaitingFirstFrame.set(false)
+                    ui.post { hud("声音起不来：画面先播，声音缺失") }
+                    runCatching { playClock?.start((selfOriginSec * 1_000_000.0).toLong()) }
+                }
                 return
             }
             released = true
