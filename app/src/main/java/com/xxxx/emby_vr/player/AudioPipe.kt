@@ -48,6 +48,15 @@ class AudioPipe {
             MediaFormat.MIMETYPE_AUDIO_MPEG,
             MediaFormat.MIMETYPE_AUDIO_FLAC,
         )
+
+        /** 头显自带解码器解不了的编码 —— 交给自带库（libaudiodec.so） */
+        private val NATIVE_ONLY = listOf(
+            MediaFormat.MIMETYPE_AUDIO_EAC3,
+            MediaFormat.MIMETYPE_AUDIO_AC3,
+            "audio/truehd",
+            "audio/vnd.dts",
+            "audio/vnd.dts.hd",
+        )
     }
 
     @Volatile
@@ -91,6 +100,20 @@ class AudioPipe {
     @Volatile private var feedTrackIndex = -1
     @Volatile private var feedMemWindowSec = 0
     private var codec: MediaCodec? = null
+    /*
+     * 两个后端二选一：
+     *  system = 头显自带解码器（AAC/MP3/FLAC 这些够用，EAC3/TrueHD/DTS 解不了）
+     *  ffmpeg = 自带库（libaudiodec.so），覆盖杜比数字+ / TrueHD / DTS
+     * 起播时定一次，运行中不热切（热切要在同一线程保存两套解码器状态，风险大于收益）。
+     */
+    private var ffDec: FfmpegAudioDecoder? = null
+    @Volatile private var decoderKind = "system"
+    /** 起播时定下的后端偏好（auto/system/ffmpeg），选轨阶段要用它决定哪些编码能选 */
+    @Volatile private var prefBackend = "auto"
+    private var trackMime = ""
+    private var trackFormat: MediaFormat? = null
+    /** 自带库累计解出的 PCM 字节（判据：应与写入设备字节大致一比一） */
+    @Volatile private var ffmpegBytes = 0L
     private var track: AudioTrack? = null
 
     private var thread: Thread? = null
@@ -209,8 +232,16 @@ class AudioPipe {
          * 足够几分钟音频，再大只是白占内存。档位只影响画面那一路的预算。
          */
         memWindowSec: Int = 0,
+        /**
+         * 音频解码后端：auto / system / ffmpeg。
+         *
+         * auto = 系统解不了的编码（EAC3/TrueHD/DTS）用自带库，其余走系统 ——
+         * 不去动一条已经验证过的路。调参项 audio_decoder 可在 vr-tuning 里覆盖。
+         */
+        decoderPref: String = "auto",
     ): Boolean {
         stop()
+        prefBackend = decoderPref.trim().lowercase()
         lastError = null
         firstPcmAtMs = 0L
         writtenFrames = 0L
@@ -249,13 +280,34 @@ class AudioPipe {
             sampleRate = fmt.getInteger(MediaFormat.KEY_SAMPLE_RATE)
             channelCount = runCatching { fmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT) }.getOrDefault(2)
             if (channelCount !in 1..8) channelCount = 2
+            trackMime = mime
+            trackFormat = fmt
             trackDesc = "编码=$mime 采样率=$sampleRate 声道=$channelCount"
             Log.i(TAG, "音轨选择：$trackDesc（走队列，读线程已起）")
 
-            val c = MediaCodec.createDecoderByType(mime)
-            c.configure(fmt, null, null, 0)
-            c.start()
-            codec = c
+            val want = decoderPref.trim().lowercase()
+            val useFfmpeg = when (want) {
+                "ffmpeg" -> true
+                "system" -> false
+                else -> isNativeOnlyCodec(mime)
+            }
+            if (useFfmpeg) {
+                val d = FfmpegAudioDecoder(mime, fmt)
+                if (d.open()) {
+                    ffDec = d
+                    decoderKind = "ffmpeg(${d.desc})"
+                } else {
+                    Log.w(TAG, "自带解码器打开失败 → 退回系统解码器（$mime）")
+                }
+            }
+            if (ffDec == null) {
+                val c = MediaCodec.createDecoderByType(mime)
+                c.configure(fmt, null, null, 0)
+                c.start()
+                codec = c
+                decoderKind = "system"
+            }
+            Log.i(TAG, "音频后端=$decoderKind 编码=$mime")
 
             val at = buildTrack()
             if (at == null) {
@@ -377,6 +429,7 @@ class AudioPipe {
         if (t != null && t.isAlive) {
             runCatching { t.join(1500) }
         }
+        runCatching { ffDec?.close() }
         runCatching { codec?.stop() }
         runCatching { codec?.release() }
         runCatching { track?.release() }
@@ -385,6 +438,7 @@ class AudioPipe {
          * 读线程还没退出就从这里拆，它下一次碰 extractor 必抛（豆豆 2026-11-21 第二遍审出）。
          */
         codec = null
+        ffDec = null
         track = null
         paused.set(false)
         return (t == null || !t.isAlive) && feedDead
@@ -403,7 +457,7 @@ class AudioPipe {
             val f = ex.getTrackFormat(i)
             val mime = f.getString(MediaFormat.KEY_MIME) ?: continue
             if (!mime.startsWith("audio/")) continue
-            val rank = MIME_PRIORITY.indexOf(mime)
+            val rank = pickRank(mime)
             if (rank >= 0 && rank < bestRank) {
                 bestRank = rank
                 best = i
@@ -412,8 +466,19 @@ class AudioPipe {
         return best
     }
 
-    private fun isDecodable(mime: String): Boolean =
-        MIME_PRIORITY.contains(mime) && !mime.contains("dts", true) && !mime.contains("truehd", true)
+    private fun isDecodable(mime: String): Boolean = pickRank(mime) >= 0
+
+    /** 排序用；-1 表示这条轨在当前后端下不可用 */
+    private fun pickRank(mime: String): Int {
+        val i = MIME_PRIORITY.indexOf(mime)
+        if (i >= 0) return i
+        if (prefBackend == "system") return -1
+        val j = NATIVE_ONLY.indexOf(mime)
+        return if (j >= 0) MIME_PRIORITY.size + j else -1
+    }
+
+    private fun isNativeOnlyCodec(mime: String): Boolean = NATIVE_ONLY.contains(mime) ||
+        mime.contains("dts", true) || mime.contains("truehd", true)
 
     private fun buildTrack(): AudioTrack? {
         /*
@@ -569,7 +634,8 @@ class AudioPipe {
 
     private fun loop() {
         /* 读线程独占 extractor；这里只从队列取数据 */
-        val c = codec ?: return
+        val c = codec
+        if (c == null && ffDec == null) return
         val at = track ?: return
         val info = MediaCodec.BufferInfo()
         var inputDone = false
@@ -583,7 +649,23 @@ class AudioPipe {
                     pendingSeekSec = -1.0
                     at.pause()
                     at.flush()
-                    c.flush()
+                    if (ffDec != null) {
+                        /*
+                         * 自带库没有"清缓存"这条路：直接重建解码上下文。
+                         * 同一时刻只允许一个 AVCodecContext，所以先 close 再 open。
+                         */
+                        ffDec?.close()
+                        val d = FfmpegAudioDecoder(trackMime, trackFormat ?: MediaFormat())
+                        if (d.open()) {
+                            ffDec = d
+                        } else {
+                            lastError = "跳转后重建自带解码器失败（$trackMime）"
+                            Log.e(TAG, lastError!!)
+                            break
+                        }
+                    } else {
+                        c?.flush()
+                    }
                     /* 跳转交给读线程（extractor 归它）；这里只清队列与本地计数 */
                     feedSeekSec = seekTarget
                     feedQueue.flush()
@@ -618,58 +700,77 @@ class AudioPipe {
                     runCatching { onStall?.invoke(true) }
                 }
 
-                if (!inputDone) {
-                    val ci = c.dequeueInputBuffer(5_000)
-                    if (ci >= 0) {
-                        /* 数据来自读线程攒好的队列（与画面同一套结构） */
+                if (ffDec != null) {
+                    val dec = ffDec!!
+                    if (!inputDone) {
                         val pkt = feedQueue.get()
                         if (pkt == null) {
-                            c.queueInputBuffer(ci, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                             inputDone = true
                         } else {
-                            val buf = c.getInputBuffer(ci)
-                            if (buf != null) {
-                                buf.clear()
-                                buf.put(pkt.data, 0, pkt.size)
-                                c.queueInputBuffer(ci, 0, pkt.size, pkt.ptsUs.coerceAtLeast(0L), 0)
+                            val chunk = dec.decode(pkt.data, pkt.size, pkt.ptsUs)
+                            if (chunk != null && chunk.isNotEmpty()) {
+                                info.set(0, chunk.size, pkt.ptsUs.coerceAtLeast(0L), 0)
+                                writePcm(java.nio.ByteBuffer.wrap(chunk), info)
+                                ffmpegBytes += chunk.size
+                            }
+                        }
+                    } else {
+                        /* 收尾：把解码器里残留的 PCM 取干净（不 drain 会丢尾部几十毫秒） */
+                        val tail = dec.flush()
+                        if (tail != null && tail.isNotEmpty()) {
+                            info.set(0, tail.size, 0L, 0)
+                            writePcm(java.nio.ByteBuffer.wrap(tail), info)
+                            ffmpegBytes += tail.size
+                        } else {
+                            eos = true
+                        }
+                    }
+                } else {
+                    val cc = c ?: break
+                    if (!inputDone) {
+                        val ci = cc.dequeueInputBuffer(5_000)
+                        if (ci >= 0) {
+                            val pkt = feedQueue.get()
+                            if (pkt == null) {
+                                cc.queueInputBuffer(ci, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                inputDone = true
                             } else {
-                                c.queueInputBuffer(ci, 0, 0, 0, 0)
+                                val buf = cc.getInputBuffer(ci)
+                                if (buf != null) {
+                                    buf.clear()
+                                    buf.put(pkt.data, 0, pkt.size)
+                                    cc.queueInputBuffer(ci, 0, pkt.size, pkt.ptsUs.coerceAtLeast(0L), 0)
+                                } else {
+                                    cc.queueInputBuffer(ci, 0, 0, 0, 0)
+                                }
                             }
                         }
                     }
-                }
 
-                val oi = c.dequeueOutputBuffer(info, 5_000)
-                if (oi >= 0) {
-                    val out = c.getOutputBuffer(oi)
-                    if (out != null && info.size > 0) {
-                        out.position(info.offset)
-                        out.limit(info.offset + info.size)
-                        writePcm(out, info)
-                    }
-                    c.releaseOutputBuffer(oi, false)
-                    if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) eos = true
-                } else if (oi == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    val nf = c.outputFormat
-                    val r = runCatching { nf.getInteger(MediaFormat.KEY_SAMPLE_RATE) }.getOrDefault(sampleRate)
-                    if (r != sampleRate) {
-                        Log.w(TAG, "解码输出采样率与轨声明不一致：$sampleRate → $r（设备仍按 $sampleRate）")
-                    }
-                    /*
-                     * 通道数以**解码器实际输出**为准，和设备不一致就是三倍速/静音这类问题的源头，
-                     * 必须报出来而不是静默继续（豆豆 2026-11-21 查实）。
-                     */
-                    val rc = runCatching { nf.getInteger(MediaFormat.KEY_CHANNEL_COUNT) }.getOrDefault(channelCount)
-                    if (rc != channelCount) {
-                        /*
-                         * 通道数已经和设备、bytesPerFrame 绑定；这里不符就只能把声音停掉，
-                         * 继续播就是三倍速/半速（豆豆 2026-11-21）。
-                         */
-                        Log.e(TAG, "解码输出声道与设备不一致：设备=${channelCount} 实际=$rc → 停掉声音")
-                        lastError = "声道不一致（设备=$channelCount 实际=$rc）"
-                        runCatching { at.pause() }
-                        runCatching { at.flush() }
-                        break
+                    val oi = cc.dequeueOutputBuffer(info, 5_000)
+                    if (oi >= 0) {
+                        val out = cc.getOutputBuffer(oi)
+                        if (out != null && info.size > 0) {
+                            out.position(info.offset)
+                            out.limit(info.offset + info.size)
+                            writePcm(out, info)
+                        }
+                        cc.releaseOutputBuffer(oi, false)
+                        if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) eos = true
+                    } else if (oi == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        val nf = cc.outputFormat
+                        val r = runCatching { nf.getInteger(MediaFormat.KEY_SAMPLE_RATE) }.getOrDefault(sampleRate)
+                        if (r != sampleRate) {
+                            Log.w(TAG, "解码输出采样率与轨声明不一致：$sampleRate → $r（设备仍按 $sampleRate）")
+                        }
+                        val rc = runCatching { nf.getInteger(MediaFormat.KEY_CHANNEL_COUNT) }.getOrDefault(channelCount)
+                        if (rc != channelCount) {
+                            Log.e(TAG, "解码输出声道与设备不一致：设备=${channelCount} 实际=$rc → 停掉声音")
+                            lastError = "声道不一致（设备=$channelCount 实际=$rc）"
+                            runCatching { at.pause() }
+                            runCatching { at.flush() }
+                            break
+                        }
                     }
                 }
 
@@ -746,6 +847,9 @@ class AudioPipe {
             firstPcmAtMs = SystemClock.elapsedRealtime()
             Log.i(TAG, "AUDIO 首帧写入：${trackDesc} 起点=${"%.3f".format(originUs / US)}s" +
                 if (autoPlayOn) "" else "（设备未起动，等放行）")
+            /* 自检结论：库没链上 / 打不开 / 解不出来，三种情况在日志里必须能分开 */
+            Log.i(TAG, "AUDIO 自检|后端=$decoderKind|轨=$trackMime|设备=${channelCount}ch|每帧=$bytesPerFrame B" +
+                if (ffDec == null) "|解出=走系统解码器" else "|解出=${ffmpegBytes}B（首帧后继续累计）")
         }
     }
 
@@ -791,7 +895,7 @@ class AudioPipe {
             Log.i(
                 TAG,
                 "AUDIOPOS|设备已播=${played}帧|已写=${writtenFrames}帧|采样率=$sampleRate|时钟=${clk.positionUs() / 1000}ms" +
-                    "|源=${clk.lastSource}",
+                    "|源=${clk.lastSource}|后端=$decoderKind|解出=${ffmpegBytes}B",
             )
         }
         val nowMs2 = SystemClock.elapsedRealtime()

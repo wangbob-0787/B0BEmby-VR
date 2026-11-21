@@ -9608,6 +9608,8 @@ class MainActivity : ComponentActivity() {
                             url, emptyMap(), startSec = originSec, originSec = originSec,
                             clock = clk, autoPlay = false,
                             memWindowSec = pipeMemWindowSec(),
+                            /* 调参可覆盖：audio_decoder=system|ffmpeg；默认 auto（系统解不了的走自带库） */
+                            decoderPref = com.xxxx.emby_vr.vr.VrTuning.value(this, "audio_decoder") ?: "auto",
                         )
                         Log.i(
                             TAG,
