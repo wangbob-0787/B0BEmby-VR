@@ -9630,6 +9630,11 @@ class MainActivity : ComponentActivity() {
                 },
             )
             if (!ok) {
+                /*
+                 * 立刻读：lastError 是静态字段，下一次 start 一开头就会清空它，
+                 * 所以这里晚一点读就只剩 null（2026-11-21 17:22 实测：
+                 * 跳转中止报的"PIPE 起不来：null"，真因被下一次重启擦掉了）。
+                 */
                 val why = com.xxxx.emby_vr.player.VideoPipe.lastError
                 Log.e(TAG, "PIPE 起不来：$why（停在起播，不放行、不出声）")
                 ui.post { hud("画面解码起不来") }
