@@ -7260,6 +7260,8 @@ class MainActivity : ComponentActivity() {
     private fun stopPlaybackInternal(keepUi: Boolean = false) {
         /* 停播时复位断流标记，否则下一次起播会被上一次的残留冻住（豆豆 2026-11-21 清单第 8 条） */
         avStall = false
+        /* 换代：正在建的那条线程建完会发现代次不符，自己收场，不留孤儿管线 */
+        selfGen.incrementAndGet()
         /* 停播等多久只报数不判死（图 §4.1）：记起点，停完把耗时交给健康行 */
         val stopT0 = android.os.SystemClock.elapsedRealtime()
         /*
@@ -8761,6 +8763,7 @@ class MainActivity : ComponentActivity() {
                         "|seekWaitedMs=${if (pipeSeekT0 > 0L) android.os.SystemClock.elapsedRealtime() - pipeSeekT0 else "-"}" +
                         "|bufferWaitedMs=-|stopWaitedMs=${if (lastStopWaitedMs >= 0L) lastStopWaitedMs else "-"}" +
                         "|queueSec=${"%.1f".format(videoPipe?.queuedSec() ?: 0.0)}" +
+                        "|lateMs=${videoPipe?.lateStreakMs ?: 0L}" +
                         "|loadInput=-|loadDecoder=${if (selfPipeReady) "ok" else "-"}" +
                         "|loadAudioOut=${if (selfPipeCanOpen) "ok" else "-"}" +
                         "|canOpenBlk=${com.xxxx.emby_vr.player.MpvBackend.canOpenBlocker()}" +
@@ -9037,6 +9040,16 @@ class MainActivity : ComponentActivity() {
         /* 直连：这条路上不经中转，画面与声音各一条连接 */
         val url = rawUrl
 
+        if (videoPipe?.fatal == true) {
+            /*
+             * 读线程卡在网络读里退不出来，连接也就还不回去；强开新连接只会被网盘拒。
+             * 这种状态只能退出应用重进（豆豆 2026-11-21）。
+             */
+            Log.e(TAG, "拒绝起播：上一路解码器卡死，连接未归还")
+            ui.post { hud("解码器卡死，请退出应用重进") }
+            pipeBootInFlight.set(false)
+            return
+        }
         if (!pipeBootInFlight.compareAndSet(false, true)) {
             Log.w(TAG, "起播入口被拒：已有起播在飞|source=$source|url=${url.take(60)}")
             return
@@ -9093,7 +9106,7 @@ class MainActivity : ComponentActivity() {
          * 跳转：三样一起动，顺序固定 —— 时钟 → 声音 → 画面。
          * 画面在同一个解码器内跳（几百毫秒），不重建：重建要重新开连接、重新定位，实测六到九秒。
          */
-        ctl.pipeSeek = { ms ->
+        ctl.pipeSeek = jump@{ ms ->
             val sec = (ms / 1000.0).coerceAtLeast(0.0)
             pipeSeekT0 = android.os.SystemClock.elapsedRealtime()
             /*
@@ -9116,7 +9129,7 @@ class MainActivity : ComponentActivity() {
                 if (pipeBootInFlight.get()) {
                     pendingJumpSec = sec
                     Log.i(TAG, "跳转排队：已有重建在飞，记下目标 ${"%.2f".format(sec)}s")
-                    return@let
+                    return@jump
                 }
                 Log.i(TAG, "跳转：按 ${"%.2f".format(sec)}s 重建整条自管路（画面+声音+时钟）")
                 /*
@@ -9241,6 +9254,8 @@ class MainActivity : ComponentActivity() {
             if (pj >= 0.0) {
                 pendingJumpSec = -1.0
                 Log.i(TAG, "执行排队中的跳转：${"%.2f".format(pj)}s")
+                /* 先清在飞标志：不清的话排队的这次会被单飞判断挡回去，永远丢在 pending 里 */
+                pipeBootInFlight.set(false)
                 ui.post { runCatching { ctl.pipeSeek?.invoke((pj * 1000.0).toLong()) } }
             }
             Log.i(TAG, "放行：画面三帧齐 + 音频设备同刻起动（音轨=${ap.trackDesc}）")

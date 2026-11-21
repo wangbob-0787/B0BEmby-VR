@@ -69,6 +69,21 @@ class VideoPipe {
     var fatal = false
         private set
 
+    /**
+     * 连续"严重迟到"的帧数与起始时刻。
+     *
+     * 时钟一旦永久领先（多声道三倍速、令牌错走墙钟等），每一帧都会严重迟到、
+     * 每一帧都立刻上屏 → 解码器全速跑 → 永久快进，而且这条路径原来没有任何恢复动作。
+     * 连续 2 秒都处于严重迟到就报一次，供上层决定是否整条重建（这一代只允许一次）。
+     */
+    private var lateStreak = 0
+    private var lateSinceMs = 0L
+
+    /** 健康行用：最近一次连续严重迟到的时长（毫秒），0 表示正常 */
+    @Volatile
+    var lateStreakMs = 0L
+        private set
+
     /** 待执行的跳转（extractor 由读线程独占，跳转也交给它做） */
     @Volatile private var feedSeekSec = -1.0
 
@@ -1019,13 +1034,22 @@ class VideoPipe {
              * 自管路的失步只走整条重建（两路一起动）。
              */
             if (originFromPicture) {
-                Log.w(TAG, "严重迟到 ${"%.2f".format(-earlyUs / 1e6)}s：自管路不内跳，按迟到直接上屏")
+                if (lateStreak == 0) lateSinceMs = android.os.SystemClock.elapsedRealtime()
+                lateStreak++
+                lateStreakMs = android.os.SystemClock.elapsedRealtime() - lateSinceMs
+                if (lateStreakMs > 2000L && lateStreakMs % 2000L < 40L) {
+                    Log.e(TAG, "连续严重迟到 ${lateStreakMs}ms（$lateStreak 帧）→ 时钟疑似领先，画面在快进")
+                }
                 return finish(true)
             }
             val target = (clockNowOrWall() - 0.15).coerceAtLeast(0.0)
             Log.w(TAG, "严重迟到 ${"%.2f".format(-earlyUs / 1e6)}s → 丢掉这一段，跳到 ${"%.2f".format(target)}s")
             pendingSeekSec = target
             return finish(false)
+        }
+        if (lateStreak > 0) {
+            lateStreak = 0
+            lateStreakMs = 0L
         }
         if (earlyUs < MIN_EARLY_US_LATE_THRESHOLD && sinceLastRenderUs > 100_000L) {
             forcedRender++
@@ -1312,7 +1336,7 @@ class VideoPipe {
          *
          * 释放权归线程自己：这里不代它们 release（那是拆正在用的实例）。
          */
-        if (!feedDead) fatal.set(true)
+        if (!feedDead) fatal = true
         if (t0?.isAlive == true || !feedDead) {
             Log.e(
                 TAG,
