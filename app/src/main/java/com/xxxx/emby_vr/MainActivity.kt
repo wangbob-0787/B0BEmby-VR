@@ -511,6 +511,19 @@ class MainActivity : ComponentActivity() {
     /** 解封装直供的字幕（边播边到）：按开始时间排序，只保留最近的若干条 */
     private val demuxSubCues = java.util.TreeMap<Long, SubtitleCue>()
 
+    /** 收场判据：两路都到结尾才结束（任一路先完不许动另一路，豆豆 2026-11-22） */
+    @Volatile private var videoEos = false
+    @Volatile private var audioEos = false
+
+    /** 两路都到结尾才收场 */
+    private fun maybeFinishPlayback() {
+        if (!videoEos || !audioEos) return
+        Log.i(TAG, "自管解码：两路都到结尾 → 收场")
+        selfPaused = true
+        playClock?.pause()
+        runCatching { audioPipe?.pause() }
+    }
+
     /** 当前要让解封装交付第几条文字字幕轨（-1 = 不要） */
     @Volatile
     private var demuxSubTrackWanted = -1
@@ -9184,6 +9197,8 @@ class MainActivity : ComponentActivity() {
         alreadyClaimed: Boolean = false,
     ) {
         selfAudioOn = true
+        videoEos = false
+        audioEos = false
         /* 跳转/重建：字幕表跟着清，否则新位置的画面上会显示旧位置的字幕（豆豆 2026-11-22） */
         demuxSubCues.clear()
         subtitleCues = if (demuxSubTrackWanted >= 0) emptyList() else subtitleCues
@@ -9693,6 +9708,12 @@ class MainActivity : ComponentActivity() {
                         audioPipe = null
                         val ap = com.xxxx.emby_vr.player.AudioPipe()
                         /* 解封装随播放交付字幕：只收用户选中的那条轨 */
+                        ap.onFeedEnd = {
+                            ui.post {
+                                audioEos = true
+                                maybeFinishPlayback()
+                            }
+                        }
                         ap.onSubtitle = { startMs, endMs, text, track ->
                             if (track == demuxSubTrackWanted) {
                                 ui.post { appendDemuxCue(startMs, endMs, text) }
@@ -9787,10 +9808,10 @@ class MainActivity : ComponentActivity() {
                 },
                 onEos = {
                     if (videoPipe !== pipe) return@start
-                    Log.i(TAG, "自管解码：画面已到结尾 → 两路一起收")
-                    selfPaused = true
-                    playClock?.pause()
-                    runCatching { audioPipe?.pause() }
+                    /* 只标记自己结束；声音可能还有尾巴，不许把它一起按停 */
+                    Log.i(TAG, "自管解码：画面到结尾（等声音也结束再收）")
+                    videoEos = true
+                    maybeFinishPlayback()
                 },
                 /* 出一帧就上屏（父亲 2026-11-20 定）：三帧预热换来的是起播多等一拍、声音先出 */
                 preheatFrames = 1,

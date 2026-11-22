@@ -124,6 +124,9 @@ class AudioPipe {
     /** 容器时长（毫秒，0=未知）：判"真结尾"用 */
     private var demuxDurationMs = 0L
 
+    /** 这一路读到真结尾时回调（收场要等两路都结束，见豆豆 2026-11-22） */
+    var onFeedEnd: (() -> Unit)? = null
+
     /** 字幕文本回调：起点毫秒、结束毫秒、文本、第几条字幕轨 */
     var onSubtitle: ((Long, Long, String, Int) -> Unit)? = null
     /** 自带库累计解出的 PCM 字节（判据：应与写入设备字节大致一比一） */
@@ -619,6 +622,7 @@ class AudioPipe {
                         /* 真结尾（解封装侧已连击三次确认） */
                         Log.i(TAG, "解封装真结尾（时长=${demuxDurationMs / 1000}s）")
                         feedQueue.putEos()
+                        runCatching { onFeedEnd?.invoke() }
                         break
                     }
                     -2 -> {

@@ -16,6 +16,8 @@
 #include <android/log.h>
 
 #include <atomic>
+#include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <string>
 
@@ -226,7 +228,8 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxRead(
              * 一次 EOF 不算结尾：假性 EOF 的特征是"偶发一次、伴随网络错误"。
              * 连续三次、间隔 300ms 以上，才判真结尾（豆豆 2026-11-22）。
              */
-            int64_t now = av_gettime_relative() / 1000;
+            int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count();
             if (now - d->lastEofMs > 300) {
                 d->eofStreak = (d->eofStreak > 0 && now - d->lastEofMs < 1500) ? d->eofStreak + 1 : 1;
             } else {
