@@ -566,12 +566,13 @@ class VideoPipe {
                 val c0 = format.getByteBuffer("csd-0")
                 val c1 = format.getByteBuffer("csd-1")
                 val n0 = c0?.remaining() ?: 0
-                val head = if (c0 != null) {
-                    val d = ByteArray(minOf(12, n0))
+                /* 全量 hex（最多 256 字节）：两条路逐字节比 csd 是判定"参数集是否同源"的唯一硬证据 */
+                val full = if (c0 != null) {
+                    val d = ByteArray(minOf(256, n0))
                     c0.duplicate().get(d)
                     d.joinToString(" ") { "%02x".format(it) }
                 } else ""
-                Log.i(TAG, "格式取证：全包档=$fullMode csd0=${n0}B csd1=${c1?.remaining() ?: 0}B 头=$head")
+                Log.i(TAG, "格式取证：全包档=$fullMode csd0=${n0}B csd1=${c1?.remaining() ?: 0}B hex=$full")
             }
 
             thread = Thread({ pump() }, "VideoPipe").apply {
