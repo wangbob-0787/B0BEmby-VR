@@ -214,7 +214,7 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxRead(
     Demux *d = fromHandle(handle);
     if (!d || !d->fmt) return -2;
     jsize cap = env->GetArrayLength(out);
-    jint m[4] = {0, 0, 0, 0};
+    jint m[5] = {0, 0, 0, 0, 0};
 
     while (true) {
         int ret = av_read_frame(d->fmt, d->pkt);
@@ -232,7 +232,7 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxRead(
             m[2] = (jint) (d->pkt->pts == AV_NOPTS_VALUE ? -1
                     : av_rescale_q(d->pkt->pts, st->time_base, AVRational{1, 1000}));
             env->SetByteArrayRegion(out, 0, size, reinterpret_cast<const jbyte *>(d->pkt->data));
-            env->SetIntArrayRegion(meta, 0, 4, m);
+            env->SetIntArrayRegion(meta, 0, 5, m);
             av_packet_unref(d->pkt);
             return size;
         }
@@ -265,9 +265,12 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxRead(
                     m[1] = (jint) text.size();
                     m[2] = (jint) ptsMs;
                     m[3] = subK;   // 哪一条字幕轨（切轨时按它挑缓冲）
+                    /* 结束时间：AVSubtitle 给的是相对 start 的毫秒；缺失就用 0 让上层兜底 */
+                    m[4] = (jint) ((sub.end_display_time > sub.start_display_time)
+                                   ? (ptsMs + sub.end_display_time) : 0);
                     env->SetByteArrayRegion(out, 0, (jsize) text.size(),
                                             reinterpret_cast<const jbyte *>(text.data()));
-                    env->SetIntArrayRegion(meta, 0, 4, m);
+                    env->SetIntArrayRegion(meta, 0, 5, m);
                 }
                 avsubtitle_free(&sub);
                 av_packet_unref(d->pkt);

@@ -122,8 +122,8 @@ class AudioPipe {
     private var demuxCodec = ""
     private var demuxSubN = 0
 
-    /** 字幕文本回调：起点毫秒、文本、第几条字幕轨 */
-    var onSubtitle: ((Long, String, Int) -> Unit)? = null
+    /** 字幕文本回调：起点毫秒、结束毫秒、文本、第几条字幕轨 */
+    var onSubtitle: ((Long, Long, String, Int) -> Unit)? = null
     /** 自带库累计解出的 PCM 字节（判据：应与写入设备字节大致一比一） */
     @Volatile private var ffmpegBytes = 0L
     private var track: AudioTrack? = null
@@ -581,17 +581,25 @@ class AudioPipe {
         channelCount = info[1].takeIf { it in 1..8 } ?: 2
         demuxSubN = info[3]
         demuxCodec = runCatching { AudioDemuxNative.nativeDemuxCodecName(h) }.getOrDefault("")
+        /*
+         * 音频内容起点：旧路径靠 ex.sampleTime 给出；解封装这条没有，必须自己填。
+         * 不填的话首块对齐会把整片音频当成"早于画面"裁光（豆豆 2026-11-22 审出的必现无声）。
+         */
+        audioOriginUs = (feedStartSec * US).toLong().coerceAtLeast(0L)
         prepareLatch.countDown()
         Log.i(TAG, "解封装就绪：采样率=$sampleRate 声道=$channelCount 解码器=$demuxCodec 文字字幕轨=$demuxSubN")
 
         val buf = ByteArray(512 * 1024)
-        val meta = IntArray(4)
+        val meta = IntArray(5)
+        var firstAudioPts = true
         while (running.get()) {
             val target = feedSeekSec
             if (target >= 0.0) {
                 feedSeekSec = -1.0
                 runCatching { AudioDemuxNative.nativeDemuxSeek(h, (target * 1000).toLong()) }
                 feedQueue.flush()
+                audioOriginUs = (target * US).toLong().coerceAtLeast(0L)
+                firstAudioPts = true
                 Log.i(TAG, "解封装跳转到 ${"%.2f".format(target)}s")
             }
             val n = try {
@@ -602,18 +610,26 @@ class AudioPipe {
             }
             if (n < 0) {
                 if (n == -1) Log.i(TAG, "解封装读到结尾") else Log.w(TAG, "解封装读失败 rc=$n")
+                /* 必须告诉解码线程"没有更多数据"，否则它会一直阻塞在队列上（豆豆 2026-11-22） */
+                feedQueue.putEos()
                 break
             }
             when (meta[0]) {
                 0 -> {
                     val ptsUs = if (meta[2] >= 0) meta[2] * 1000L else 0L
+                    /* 第一包的真实时间用来校正起点（与旧路径 audioOriginUs=sampleTime 的语义对齐） */
+                    if (firstAudioPts && ptsUs > 0L) {
+                        firstAudioPts = false
+                        audioOriginUs = ptsUs
+                    }
                     if (!feedQueue.put(SampleQueue.Packet(buf.copyOf(n), n, ptsUs))) break
                 }
                 2 -> {
                     val text = String(buf, 0, n, Charsets.UTF_8)
                     if (text.isNotBlank()) {
                         val startMs = if (meta[2] >= 0) meta[2].toLong() else 0L
-                        runCatching { onSubtitle?.invoke(startMs, text, meta[3]) }
+                                val endMs = if (meta[4] > startMs) meta[4].toLong() else 0L
+                        runCatching { onSubtitle?.invoke(startMs, endMs, text, meta[3]) }
                     }
                 }
             }
@@ -626,6 +642,9 @@ class AudioPipe {
         if (AudioDemuxNative.available && feedMemWindowSec == 0) {
             demuxFeedLoop()
             return
+        }
+        if (AudioDemuxNative.available) {
+            Log.w(TAG, "内存窗口档位下仍走系统解封装：这一路拿不到字幕（解封装直供只在直读模式生效）")
         }
         val ex = MediaExtractor()
         try {

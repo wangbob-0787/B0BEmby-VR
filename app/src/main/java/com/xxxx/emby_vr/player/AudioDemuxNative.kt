@@ -20,7 +20,7 @@ object AudioDemuxNative {
     /**
      * 读下一个包。
      * meta[0]：0 = 音频包，2 = 字幕文本
-     * meta[1]：字节数；meta[2]：时间戳（毫秒）；meta[3]：字幕显示时长（毫秒，0=未知）
+     * meta[1]：字节数；meta[2]：时间戳（毫秒）；meta[3]：第几条字幕轨；meta[4]：字幕结束时间（毫秒，0=未知）
      * 返回 >=0 字节数；-1 结束；<0 出错。
      */
     external fun nativeDemuxRead(handle: Long, out: ByteArray, meta: IntArray): Int

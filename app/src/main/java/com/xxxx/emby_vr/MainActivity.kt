@@ -515,10 +515,11 @@ class MainActivity : ComponentActivity() {
     @Volatile
     private var demuxSubTrackWanted = -1
 
-    /** 解封装来了一条字幕：并入自绘字幕表 */
-    private fun appendDemuxCue(startMs: Long, text: String) {
+    /** 解封装来了一条字幕：并入自绘字幕表（endMs 来自流里的真实时长，缺失才兜底） */
+    private fun appendDemuxCue(startMs: Long, endMs: Long, text: String) {
         if (startMs < 0L || text.isBlank()) return
-        demuxSubCues[startMs] = SubtitleCue(startMs, startMs + 6000L, text, emptyList())
+        val end = if (endMs > startMs) endMs else startMs + 3000L
+        demuxSubCues[startMs] = SubtitleCue(startMs, end, text, emptyList())
         if (demuxSubCues.size > 4000) runCatching { demuxSubCues.pollFirstEntry() }
         subtitleCues = demuxSubCues.values.toList()
     }
@@ -6187,6 +6188,9 @@ class MainActivity : ComponentActivity() {
                  * 不再走服务端转 SRT —— 那条路在播放期必然拿不到（网盘两路已被占满，实测 90 秒零字节）。
                  */
                 demuxSubTrackWanted = demuxSubtitleOrdinal(index)
+                if (demuxSubTrackWanted < 0) {
+                    Log.w(TAG, "自管解码：字幕 $index 在文件文字字幕里找不到对应轨（可能顺序不一致）→ 不要字幕")
+                }
                 demuxSubCues.clear()
                 subtitleCues = emptyList()
                 subtitleNow = ""
@@ -9180,6 +9184,9 @@ class MainActivity : ComponentActivity() {
         alreadyClaimed: Boolean = false,
     ) {
         selfAudioOn = true
+        /* 跳转/重建：字幕表跟着清，否则新位置的画面上会显示旧位置的字幕（豆豆 2026-11-22） */
+        demuxSubCues.clear()
+        subtitleCues = if (demuxSubTrackWanted >= 0) emptyList() else subtitleCues
         val gen = selfGen.incrementAndGet()
         val tx = selfTx.incrementAndGet()
         if (playClock == null) playClock = com.xxxx.emby_vr.player.PlaybackClock()
@@ -9681,9 +9688,9 @@ class MainActivity : ComponentActivity() {
                         audioPipe = null
                         val ap = com.xxxx.emby_vr.player.AudioPipe()
                         /* 解封装随播放交付字幕：只收用户选中的那条轨 */
-                        ap.onSubtitle = { startMs, text, track ->
+                        ap.onSubtitle = { startMs, endMs, text, track ->
                             if (track == demuxSubTrackWanted) {
-                                ui.post { appendDemuxCue(startMs, text) }
+                                ui.post { appendDemuxCue(startMs, endMs, text) }
                             }
                         }
                         /* 声音这一路停写 → 画面一起停；恢复 → 一起走（用户自己按暂停的情况除外） */
