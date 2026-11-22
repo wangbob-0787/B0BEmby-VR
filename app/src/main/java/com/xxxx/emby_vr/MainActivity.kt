@@ -9724,19 +9724,24 @@ class MainActivity : ComponentActivity() {
                         val ap = com.xxxx.emby_vr.player.AudioPipe()
                         /* 解封装随播放交付字幕：只收用户选中的那条轨 */
                         ap.onFeedEnd = {
+                            /* 实例守卫：旧管线的回调不许打到新周期（豆豆 2026-11-22） */
+                            if (audioPipe !== ap) return@onFeedEnd
                             ui.post {
+                                if (audioPipe !== ap) return@post
                                 audioEos = true
-                                Log.i(TAG, "TRACK_DONE|audio|pts=${"%.3f".format(originSec)}")
+                                Log.i(TAG, "TRACK_DONE|audio|pts=${"%.3f".format(playClock?.positionUs()?.div(1_000_000.0) ?: 0.0)}")
                                 maybeFinishPlayback()
                             }
                         }
                         ap.onSubtitle = { startMs, endMs, text, track ->
+                            if (audioPipe !== ap) return@onSubtitle
                             if (track == demuxSubTrackWanted) {
                                 ui.post { appendDemuxCue(startMs, endMs, text) }
                             }
                         }
                         /* 声音这一路停写 → 画面一起停；恢复 → 一起走（用户自己按暂停的情况除外） */
                         ap.onStall = { stalledNow ->
+                            if (audioPipe !== ap) return@onStall
                             ui.post {
                                 avStall = stalledNow
                                 if (stalledNow) {
@@ -9824,10 +9829,20 @@ class MainActivity : ComponentActivity() {
                 },
                 onEos = {
                     if (videoPipe !== pipe) return@start
+                    /*
+                     * 假性 EOS 防护：网络抖一下 readSampleData 也会返回 -1。
+                     * 只有"当前位置距总时长 5 秒以内"才算真结束，否则只重试、不宣布结束（豆豆 2026-11-22）。
+                     */
+                    val dur = pipe.durationSec
+                    val pos = (playClock?.positionUs() ?: 0L) / 1_000_000.0
+                    if (dur > 1.0 && pos < dur - 5.0) {
+                        Log.w(TAG, "画面报 EOS 但位置 ${"%.1f".format(pos)}s 距总长 ${"%.1f".format(dur)}s 还有距离 → 不判结束")
+                        return@start
+                    }
                     /* 只标记自己结束；声音可能还有尾巴，不许把它一起按停 */
                     Log.i(TAG, "自管解码：画面到结尾（等声音也结束再收）")
                     videoEos = true
-                    Log.i(TAG, "TRACK_DONE|video|pts=${"%.3f".format(originSec)}")
+                    Log.i(TAG, "TRACK_DONE|video|pts=${"%.3f".format(playClock?.positionUs()?.div(1_000_000.0) ?: 0.0)}")
                     maybeFinishPlayback()
                 },
                 /* 出一帧就上屏（父亲 2026-11-20 定）：三帧预热换来的是起播多等一拍、声音先出 */

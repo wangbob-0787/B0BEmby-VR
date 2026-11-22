@@ -643,26 +643,39 @@ class AudioPipe {
                         break
                     }
                     -2 -> {
-                        /* 暂时没数据：等一会儿再读；总等待超过 8 秒就按网络错误处理 */
+                        /*
+                         * 暂时没数据：分片等待，每片都检查 abort（用户按返回要立刻能退）。
+                         * 等太久也不许发 EOS —— 那是"把等待当结尾"，会让上层误判播完（豆豆 2026-11-22）。
+                         */
                         waitMs += 300L
                         if (waitMs > 8_000L) {
-                            Log.w(TAG, "解封装连续 8 秒没有数据 → 按网络错误处理")
-                            feedQueue.putEos()
+                            Log.w(TAG, "解封装连续 8 秒没有数据 → 上报网络错误（不发 EOS）")
+                            lastError = "音频解封装等待超时"
+                            runCatching { onStall?.invoke(true) }
                             break
                         }
-                        Thread.sleep(300)
+                        var slept = 0L
+                        while (slept < 300L && running.get()) {
+                            Thread.sleep(100)
+                            slept += 100
+                        }
                         continue
                     }
                     -3 -> {
-                        /* 网络类错误：短退避后重试一次，仍失败就收场（断流判决表下一版接） */
+                        /* 网络类错误：退避重试；仍失败只上报，不发 EOS（断网不等于播完） */
                         netRetry++
                         if (netRetry > 2) {
-                            Log.w(TAG, "解封装网络错误连续 $netRetry 次 → 停止这一路")
-                            feedQueue.putEos()
+                            Log.w(TAG, "解封装网络错误连续 $netRetry 次 → 停止这一路（不发 EOS）")
+                            lastError = "音频解封装网络错误"
+                            runCatching { onStall?.invoke(true) }
                             break
                         }
-                        Log.w(TAG, "解封装网络错误，${netRetry} 次后重试")
-                        Thread.sleep(500)
+                        Log.w(TAG, "解封装网络错误，第 $netRetry 次后重试")
+                        var slept2 = 0L
+                        while (slept2 < 500L && running.get()) {
+                            Thread.sleep(100)
+                            slept2 += 100
+                        }
                         continue
                     }
                     else -> {

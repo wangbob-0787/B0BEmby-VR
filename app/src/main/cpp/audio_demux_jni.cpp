@@ -264,7 +264,11 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxRead(
         d->eofStreak = 0;
         if (d->pkt->stream_index == d->audioIdx) {
             int size = d->pkt->size;
-            if (size > cap) { av_packet_unref(d->pkt); return -3; }
+            if (size > cap) {
+                LOGE("输出缓冲不足 need=%d cap=%d → 致命（不是网络错误）", size, cap);
+                av_packet_unref(d->pkt);
+                return -4;
+            }
             AVStream *st = d->fmt->streams[d->audioIdx];
             m[0] = 0;
             m[1] = size;
@@ -392,11 +396,12 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxClose(JNIEnv *, jobject, jlong handle) {
     if (handle == 0) {
         gConDupe.fetch_add(1);
-        LOGE("重复关闭（handle=0）→ 只记数，不重复减");
+        LOGI("重复关闭（handle=0）→ 只记数，不重复减");
         return;
     }
-    gConClose.fetch_add(1);
     freeDemux(fromHandle(handle));
+    /* 真正释放之后才减，"在飞"才不会少算（豆豆 2026-11-22） */
+    gConClose.fetch_add(1);
 }
 
 /** out[0]=open out[1]=close out[2]=fail out[3]=dupe out[4]=inFlight */
