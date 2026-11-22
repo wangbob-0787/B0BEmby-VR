@@ -338,6 +338,10 @@ class DemuxSession(
             else -> "video/hevc"
         }
         val annexB = hvcCToAnnexB(csd)
+        runCatching {
+            val head = annexB.copyOf(minOf(12, annexB.size)).joinToString(" ") { "%02x".format(it) }
+            Log.i(TAG, "csd 转换：hvcC=${csd.size}B → Annex-B=${annexB.size}B 头=$head")
+        }
         return MediaFormat.createVideoFormat(mime, videoWidth, videoHeight).apply {
             setByteBuffer("csd-0", java.nio.ByteBuffer.wrap(annexB))
         }
@@ -350,21 +354,27 @@ class DemuxSession(
         val out = java.io.ByteArrayOutputStream(hvcc.size + 32)
         var p = 23
         val arrays = hvcc[22].toInt() and 0xFF
+        var parsed = 0
+        var broken = false
         for (a in 0 until arrays) {
-            if (p + 3 > hvcc.size) break
+            if (p + 3 > hvcc.size) { broken = true; break }
             p++                                            // array_completeness + NAL_unit_type
             var nals = ((hvcc[p].toInt() and 0xFF) shl 8) or (hvcc[p + 1].toInt() and 0xFF)
             p += 2
             while (nals-- > 0) {
-                if (p + 2 > hvcc.size) break
+                if (p + 2 > hvcc.size) { broken = true; break }
                 val len = ((hvcc[p].toInt() and 0xFF) shl 8) or (hvcc[p + 1].toInt() and 0xFF)
                 p += 2
-                if (len <= 0 || p + len > hvcc.size) break
+                if (len <= 0 || p + len > hvcc.size) { broken = true; break }
                 out.write(byteArrayOf(0, 0, 0, 1))
                 out.write(hvcc, p, len)
                 p += len
+                parsed++
             }
+            if (broken) break
         }
+        /* 解析不完整要留痕：静默回退会又变成"设备零输出、日志看不出为什么"（豆豆 2026-11-22） */
+        if (broken) Log.w(TAG, "hvcC 解析不完整：arrays=$arrays 已解析 NAL=$parsed（可能回退原 csd）")
         return if (out.size() > 0) out.toByteArray() else hvcc
     }
 
