@@ -9801,7 +9801,11 @@ class MainActivity : ComponentActivity() {
                                 if (gen != selfGen.get()) return@post
                                 seekOriginSeq++
                                 val originSec = if (videoPtsUs > 0) videoPtsUs / 1_000_000.0 else targetMs / 1000.0
-                                videoPipe?.flushForSessionSeek()
+                                /*
+                                 * 回灌只改基准，**不再清解码器**（豆豆 2026-11-23）：
+                                 * 清解码器已在 pipeSeek 那一刻做过一次；这里再清会把刚喂进去的关键帧冲掉，
+                                 * 于是重新进入"等关键帧"，队列里剩下的多半是 P 帧 → 画面定住（快退定住即此因）。
+                                 */
                                 audioPipe?.onSessionSeek(targetMs / 1000.0, originSec, audioPtsUs)
                                 Log.i(
                                     TAG,
