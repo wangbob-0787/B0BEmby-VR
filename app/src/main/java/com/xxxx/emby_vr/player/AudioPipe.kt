@@ -121,6 +121,7 @@ class AudioPipe {
     private var demuxHandle = 0L
     private var demuxCodec = ""
     private var demuxDiscardSetting = 1
+    private var demuxOffSetting = 1
     private var demuxSubN = 0
     /** 容器时长（毫秒，0=未知）：判"真结尾"用 */
     private var demuxDurationMs = 0L
@@ -259,10 +260,13 @@ class AudioPipe {
         decoderPref: String = "auto",
         /** 1=解封装时丢弃非本路轨（默认）；0=不丢弃（排查用，验证通过后连开关一起删） */
         demuxDiscard: Int = 1,
+        /** 1=关掉 avformat 那一路，回到系统解封装读包 + 自带解码（默认）；0=用 avformat 路 */
+        demuxOff: Int = 1,
     ): Boolean {
         stop()
         prefBackend = decoderPref.trim().lowercase()
         demuxDiscardSetting = demuxDiscard
+        demuxOffSetting = demuxOff
         lastError = null
         firstPcmAtMs = 0L
         writtenFrames = 0L
@@ -298,7 +302,22 @@ class AudioPipe {
                 return false
             }
             /* 解封装模式没有 MediaFormat：采样率/声道由 demuxFeedLoop 从流参数里填好 */
-            val mime = fmt?.getString(MediaFormat.KEY_MIME) ?: "audio/${demuxCodec}"
+            /*
+             * 格式名可能为空：走系统解封装时 demuxCodec 是空的，拼出来就是 "audio/"，
+             * 解码器拿到空格式名会直接起不来（Failed to initialize audio/）。
+             */
+            val mimeRaw = runCatching { fmt?.getString(MediaFormat.KEY_MIME) }.getOrNull()
+            val mime = when {
+                !mimeRaw.isNullOrBlank() -> mimeRaw
+                demuxCodec.isNotBlank() -> "audio/$demuxCodec"
+                else -> runCatching { fmt?.getString("mime") }.getOrNull().orEmpty()
+            }
+            if (mime.isBlank()) {
+                lastError = "音频格式名为空（解封装未给出 mime）"
+                Log.e(TAG, lastError!!)
+                stop()
+                return false
+            }
             if (fmt != null) {
                 sampleRate = fmt.getInteger(MediaFormat.KEY_SAMPLE_RATE)
                 channelCount = runCatching { fmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT) }.getOrDefault(2)
@@ -734,7 +753,11 @@ class AudioPipe {
     }
 
     private fun audioFeedLoop() {
-        if (AudioDemuxNative.available && feedMemWindowSec == 0) {
+        /*
+         * avformat 那一路在本机读不到完整响应（起播只到 7.7KB 就结束、跳转重开 500），
+         * 默认关掉，回到系统解封装读包 + 自带解码；开关只为对照保留。
+         */
+        if (demuxOffSetting == 0 && AudioDemuxNative.available && feedMemWindowSec == 0) {
             demuxFeedLoop()
             return
         }
