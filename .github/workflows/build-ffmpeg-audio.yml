@@ -69,6 +69,7 @@ jobs:
             --disable-muxers --disable-parsers --disable-bsfs \
             --disable-indevs --disable-outdevs \
             --enable-network \
+            --enable-zlib \
             --enable-avformat \
             --enable-demuxer=matroska,mov,mpegts,flv,avi \
             --enable-protocol=http,tcp,file,crypto,data \
@@ -78,8 +79,8 @@ jobs:
             --disable-asm \
             --enable-static --disable-shared \
             --enable-avcodec --enable-avutil --enable-swresample \
-            --enable-decoder=ac3,eac3,truehd,dca,aac,flac,opus,vorbis,mp3 \
-            --enable-parser=ac3,dca,aac,flac,opus,vorbis,mpegaudio
+            --enable-decoder=ac3,eac3,truehd,dca,aac,flac,opus,vorbis,mp3,subrip,ass,ssa,webvtt,mov_text \
+            --enable-parser=ac3,dca,aac,flac,opus,vorbis,mpegaudio,h264,hevc
         working-directory: ffmpeg
 
       - name: 编译并安装
