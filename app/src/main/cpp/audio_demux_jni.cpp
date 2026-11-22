@@ -461,16 +461,19 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxRead(
                      * 落点必然落在关键帧上（BACKWARD），提前量取决于 GOP（实测约 4 秒，最坏十几秒）。
                      * 提前 15 秒以内算正常；只有"比目标还晚"或"早得离谱"才是源没按 Range 生效。
                      */
+                    /*
+                     * 只警告、不判死：落点必然在关键帧上（BACKWARD），提前量由 GOP 决定，
+                     * 实测这集 18 秒。真落点由 Session 的 onSeekOrigin 回灌，不需要这条判生死
+                     * （豆豆 2026-11-22 P0-2）。
+                     */
                     if (diff > 5000 || diff < -15000) {
-                        /* 位置错了但所有返回值都正常：说明源没按 Range 生效，读回的是文件头 */
-                        LOGE("首包位置偏差=%lldms（目标=%lldms，实际=%lldms）→ 源未按 Range 生效",
+                        LOGW("首包位置偏差=%lldms（目标=%lldms，实际=%lldms）→ 仅记录，不判失败",
                              (long long) diff, (long long) d->openStartMs,
                              (long long) d->lastAudioPtsMs);
-                        av_packet_unref(d->pkt);
-                        return -3;
+                    } else {
+                        LOGI("首包位置：目标=%lldms 实际=%lldms 偏差=%lldms",
+                             (long long) d->openStartMs, (long long) d->lastAudioPtsMs, (long long) diff);
                     }
-                    LOGI("首包位置校验通过：目标=%lldms 实际=%lldms", (long long) d->openStartMs,
-                         (long long) d->lastAudioPtsMs);
                 }
             }
             m[2] = (jint) (d->pkt->pts == AV_NOPTS_VALUE ? -1
