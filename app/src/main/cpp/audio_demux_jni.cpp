@@ -66,6 +66,8 @@ struct Demux {
     /* 首包位置校验：确认源真的按 Range 给了我们要的那一段 */
     bool firstAudioChecked = false;
     int64_t openStartMs = 0;
+    /* 三级 seek 全失败：只说明"不能从中间定位"，不代表文件不能播 */
+    bool seekFailed = false;
 };
 
 std::string errStr(int err) {
@@ -231,6 +233,7 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxOpen(
          (int) (fmt->ctx_flags & AVFMTCTX_UNSEEKABLE ? 0 : 1));
 
     d->openStartMs = startMs;
+    LOGI("DBG|default_stream=%d", av_find_default_stream_index(fmt));
     if (startMs > 3000 && fmt->pb && !(fmt->pb->seekable & AVIO_SEEKABLE_NORMAL)) {
         LOGE("端点不可 seek，无法从 %lldms 开始 → 判打开失败", (long long) startMs);
         freeDemux(d);
@@ -238,24 +241,35 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxOpen(
     }
     if (startMs > 0) {
         AVStream *as = fmt->streams[d->audioIdx];
-        int64_t ts = av_rescale(startMs, as->time_base.den, as->time_base.num * 1000);
+        /* 目标必须换算到**音频流的**时间基：用微秒当流时间基会飞出片尾 */
+        int64_t tsSb = av_rescale_q(startMs * 1000, AVRational{1, 1000}, as->time_base);
+        int64_t tsUs = (int64_t) startMs * 1000;
         int64_t before = fmt->pb ? avio_tell(fmt->pb) : -1;
         /*
-         * 用全局时间基（-1）seek，与命令行 `-ss` 走同一条路。
-         * 带 stream_index 的版本会再用 stream->start_time 做相对换算，mkv 的 start_time 非 0 时落点会偏。
+         * 三级回退：先按音频流定位（最准），再退回带 stream 的旧接口，
+         * 最后才是全局时间基（那一版在真机上返回 EPERM，留作最后证据）。
          */
-        int64_t tsUs = (int64_t) startMs * 1000;
-        int ret = avformat_seek_file(fmt, -1, INT64_MIN, tsUs, tsUs, AVSEEK_FLAG_BACKWARD);
+        int r1 = avformat_seek_file(fmt, d->audioIdx, INT64_MIN, tsSb, tsSb, AVSEEK_FLAG_BACKWARD);
+        LOGI("DBG|seekTry=1 ret=%d err=%s tb=%d/%d target_ts=%lld",
+             r1, errStr(r1).c_str(), as->time_base.num, as->time_base.den, (long long) tsSb);
+        int r2 = 0, r3 = 0;
+        if (r1 < 0) {
+            r2 = av_seek_frame(fmt, d->audioIdx, tsSb, AVSEEK_FLAG_BACKWARD);
+            LOGI("DBG|seekTry=2 ret=%d err=%s", r2, errStr(r2).c_str());
+            if (r2 < 0) {
+                r3 = avformat_seek_file(fmt, -1, INT64_MIN, tsUs, tsUs, AVSEEK_FLAG_BACKWARD);
+                LOGI("DBG|seekTry=3 ret=%d err=%s", r3, errStr(r3).c_str());
+            }
+        }
         int64_t after = fmt->pb ? avio_tell(fmt->pb) : -1;
-        LOGI("DBG|seek前=%lld|stream=%d|tb=%d/%d|target_ts=%lld|ret=%d|seek后=%lld|start_time=%lld",
-             (long long) before, d->audioIdx, as->time_base.num, as->time_base.den,
-             (long long) ts, ret, (long long) after,
-             (long long) (as->start_time == AV_NOPTS_VALUE ? -1 : as->start_time));
-        if (ret < 0) {
-            /* seek 失败就当打开失败：绝不能在"指针停着"的状态下继续读，否则会被上层当成"播完" */
-            LOGE("从 %lldms 定位失败：%s → 判打开失败", (long long) startMs, errStr(ret).c_str());
-            freeDemux(d);
-            return 0;
+        LOGI("DBG|seek前=%lld|seek后=%lld", (long long) before, (long long) after);
+        if (r1 < 0 && r2 < 0 && r3 < 0) {
+            /*
+             * 只是"不能从中间定位"，不是"文件不能播"：句柄照交，把状态告诉上层。
+             * 判成打开失败会让上层以为这个文件坏了。
+             */
+            LOGE("三级 seek 全失败：不能从 %lldms 定位（文件本身可播）", (long long) startMs);
+            d->seekFailed = true;
         }
         for (int k = 0; k < d->subN; ++k) {
             if (d->subDec[k]) avcodec_flush_buffers(d->subDec[k]);
@@ -427,11 +441,22 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxSeek(
         JNIEnv *env, jobject, jlong handle, jlong ms) {
     Demux *d = fromHandle(handle);
     if (!d || !d->fmt || d->audioIdx < 0) return -1;
-    /* 与起播一致：全局时间基 seek（带 stream_index 会叠加 start_time 换算） */
+    /* 与起播一致：先按音频流时间基定位，再退回两级 */
+    AVStream *as = d->fmt->streams[d->audioIdx];
+    int64_t tsSb = av_rescale_q(ms * 1000, AVRational{1, 1000}, as->time_base);
     int64_t tsUs = (int64_t) ms * 1000;
-    int ret = avformat_seek_file(d->fmt, -1, INT64_MIN, tsUs, tsUs, AVSEEK_FLAG_BACKWARD);
+    int ret = avformat_seek_file(d->fmt, d->audioIdx, INT64_MIN, tsSb, tsSb, AVSEEK_FLAG_BACKWARD);
+    LOGI("DBG|jump seekTry=1 ret=%d err=%s", ret, errStr(ret).c_str());
     if (ret < 0) {
-        LOGE("跳转失败: %s", errStr(ret).c_str());
+        ret = av_seek_frame(d->fmt, d->audioIdx, tsSb, AVSEEK_FLAG_BACKWARD);
+        LOGI("DBG|jump seekTry=2 ret=%d err=%s", ret, errStr(ret).c_str());
+    }
+    if (ret < 0) {
+        ret = avformat_seek_file(d->fmt, -1, INT64_MIN, tsUs, tsUs, AVSEEK_FLAG_BACKWARD);
+        LOGI("DBG|jump seekTry=3 ret=%d err=%s", ret, errStr(ret).c_str());
+    }
+    if (ret < 0) {
+        LOGE("跳转三级全失败: %s", errStr(ret).c_str());
         return ret;
     }
     for (int k = 0; k < d->subN; ++k) {
@@ -477,8 +502,9 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxInfo(
         }
     }
     if (durMs <= 0) LOGE("无容器时长，EOF 判据降级为仅连击");
-    jint v[5] = {p->sample_rate, p->ch_layout.nb_channels, (jint) p->codec_id, d->subN, (jint) durMs};
-    env->SetIntArrayRegion(out, 0, 5, v);
+    jint v[6] = {p->sample_rate, p->ch_layout.nb_channels, (jint) p->codec_id, d->subN,
+                 (jint) durMs, d->seekFailed ? 1 : 0};
+    env->SetIntArrayRegion(out, 0, 6, v);
     return 0;
 }
 

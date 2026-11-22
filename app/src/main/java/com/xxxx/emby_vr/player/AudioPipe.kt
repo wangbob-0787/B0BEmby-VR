@@ -586,7 +586,7 @@ class AudioPipe {
             return
         }
         demuxHandle = h
-        val info = IntArray(5)
+        val info = IntArray(6)
         if (AudioDemuxNative.nativeDemuxInfo(h, info) != 0) {
             prepareError = "解封装参数读取失败"
             runCatching { AudioDemuxNative.nativeDemuxClose(h) }
@@ -598,6 +598,14 @@ class AudioPipe {
         channelCount = info[1].takeIf { it in 1..8 } ?: 2
         demuxSubN = info[3]
         demuxDurationMs = info[4].takeIf { it > 0 }?.toLong() ?: 0L
+        if (info[5] != 0) {
+            /* 定位失败不等于文件不能播：报上去，让上层决定，不要说成"打开失败" */
+            Log.w(TAG, "解封装：不能从 ${"%.1f".format(feedStartSec)}s 定位（文件本身可播）")
+            lastError = "音频不能从当前进度定位"
+            runCatching { onStall?.invoke(true) }
+            prepareLatch.countDown()
+            return
+        }
         demuxCodec = runCatching { AudioDemuxNative.nativeDemuxCodecName(h) }.getOrDefault("")
         /*
          * 音频内容起点：旧路径靠 ex.sampleTime 给出；解封装这条没有，必须自己填。
