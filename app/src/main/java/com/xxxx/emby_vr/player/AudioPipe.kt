@@ -620,7 +620,15 @@ class AudioPipe {
                     /* 第一包的真实时间用来校正起点（与旧路径 audioOriginUs=sampleTime 的语义对齐） */
                     if (firstAudioPts && ptsUs > 0L) {
                         firstAudioPts = false
-                        audioOriginUs = ptsUs
+                        /*
+                         * 只在"离起点不远"时才拿它当真实起点：seek 没落到目标附近时，
+                         * 第一个包可能差几十秒，盲目覆盖会变成"起播位置错"，比无声更难查（豆豆 2026-11-22）。
+                         */
+                        if (kotlin.math.abs(ptsUs - audioOriginUs) < 3_000_000L) {
+                            audioOriginUs = ptsUs
+                        } else {
+                            Log.w(TAG, "首个音频包离起点差 ${"%.1f".format((ptsUs - audioOriginUs) / US)}s，不用于校正起点")
+                        }
                     }
                     if (!feedQueue.put(SampleQueue.Packet(buf.copyOf(n), n, ptsUs))) break
                 }

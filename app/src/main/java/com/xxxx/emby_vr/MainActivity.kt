@@ -9187,6 +9187,11 @@ class MainActivity : ComponentActivity() {
         /* 跳转/重建：字幕表跟着清，否则新位置的画面上会显示旧位置的字幕（豆豆 2026-11-22） */
         demuxSubCues.clear()
         subtitleCues = if (demuxSubTrackWanted >= 0) emptyList() else subtitleCues
+        /* 清完当场重绘，否则旧字幕会留在屏上直到下一次重绘（豆豆 2026-11-22） */
+        if (demuxSubTrackWanted >= 0) {
+            subtitleNow = ""
+            danmakuView?.setSubtitle("")
+        }
         val gen = selfGen.incrementAndGet()
         val tx = selfTx.incrementAndGet()
         if (playClock == null) playClock = com.xxxx.emby_vr.player.PlaybackClock()
