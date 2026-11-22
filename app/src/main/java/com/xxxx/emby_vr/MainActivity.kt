@@ -564,8 +564,13 @@ class MainActivity : ComponentActivity() {
 
     /** Emby 字幕流序号 → 文件内第几条「文字」字幕（解封装按这个序号交付） */
     private fun demuxSubtitleOrdinal(index: Int): Int {
+        /*
+         * 只数**容器内的文字字幕**：外挂字幕（IsExternal）不在文件里，
+         * 计数时算进来会让全包档的轨序号整体错位、选到别的内封轨（豆豆 2026-11-23）。
+         */
         val textSubs = currentStreams.filter {
-            it.type.equals("Subtitle", true) && !isDanmakuStream(it) && !isImageSubtitle(it)
+            it.type.equals("Subtitle", true) && !isDanmakuStream(it) && !isImageSubtitle(it) &&
+                !it.isExternal
         }
         return textSubs.indexOfFirst { it.index == index }
     }
@@ -6229,14 +6234,20 @@ class MainActivity : ComponentActivity() {
                  * 全包档（demux_mode=full）音频与字幕都走同一条连接，选中的轨会随播放直接交付；
                  * 只有旧路径（off 档，音频走系统解封装）才拿不到字幕包 —— 那时才强制不要字幕。
                  */
-                if (selfSession == null) {
+                val sess = selfSession
+                if (sess == null) {
                     Log.w(TAG, "P5 文字字幕暂不可用（off 档音频走系统解封装，拿不到字幕包）")
                     demuxSubTrackWanted = -1
                 } else {
-                    demuxSubTrackWanted = demuxSubtitleOrdinal(index)
-                }
-                if (demuxSubTrackWanted < 0) {
-                    Log.w(TAG, "自管解码：字幕 $index 在文件文字字幕里找不到对应轨（可能顺序不一致）→ 不要字幕")
+                    val o = demuxSubtitleOrdinal(index)
+                    demuxSubTrackWanted = if (o >= 0 && o < sess.subTrackCount) o else -1
+                    if (demuxSubTrackWanted < 0) {
+                        Log.w(
+                            TAG,
+                            "自管解码：字幕 $index 不在本文件内（序号=$o 容器文字轨=${sess.subTrackCount}）" +
+                                "→ 全包档只出内封文字字幕，外挂/位图轨仍走原路",
+                        )
+                    }
                 }
                 demuxSubCues.clear()
                 subtitleCues = emptyList()
