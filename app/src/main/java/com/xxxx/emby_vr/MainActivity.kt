@@ -9726,9 +9726,9 @@ class MainActivity : ComponentActivity() {
                         audioPipe = null
                         val ap = com.xxxx.emby_vr.player.AudioPipe()
                         /* 解封装随播放交付字幕：只收用户选中的那条轨 */
-                        ap.onFeedEnd = {
+                        ap.onFeedEnd = feedEnd@{
                             /* 实例守卫：旧管线的回调不许打到新周期（豆豆 2026-11-22） */
-                            if (audioPipe !== ap) return@onFeedEnd
+                            if (audioPipe !== ap) return@feedEnd
                             ui.post {
                                 if (audioPipe !== ap) return@post
                                 audioEos = true
@@ -9736,15 +9736,15 @@ class MainActivity : ComponentActivity() {
                                 maybeFinishPlayback()
                             }
                         }
-                        ap.onSubtitle = { startMs, endMs, text, track ->
-                            if (audioPipe !== ap) return@onSubtitle
+                        ap.onSubtitle = subCb@{ startMs, endMs, text, track ->
+                            if (audioPipe !== ap) return@subCb
                             if (track == demuxSubTrackWanted) {
                                 ui.post { appendDemuxCue(startMs, endMs, text) }
                             }
                         }
                         /* 声音这一路停写 → 画面一起停；恢复 → 一起走（用户自己按暂停的情况除外） */
-                        ap.onStall = { stalledNow ->
-                            if (audioPipe !== ap) return@onStall
+                        ap.onStall = stallCb@{ stalledNow ->
+                            if (audioPipe !== ap) return@stallCb
                             ui.post {
                                 avStall = stalledNow
                                 if (stalledNow) {
