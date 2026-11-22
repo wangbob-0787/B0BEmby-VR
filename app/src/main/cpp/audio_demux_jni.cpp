@@ -124,7 +124,7 @@ std::string assText(const char *ass) {
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxOpen(
-        JNIEnv *env, jobject, jstring url, jlong startMs) {
+        JNIEnv *env, jobject, jstring url, jlong startMs, jint discardOn) {
     const char *u = env->GetStringUTFChars(url, nullptr);
     if (!u) return 0;
     avformat_network_init();
@@ -173,7 +173,8 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxOpen(
      * 不设的话这一路等于把 4K 视频也整片拉一遍 —— 网盘额度直接翻倍（豆豆 2026-11-22）。
      * 字幕轨全部保留：切轨要零等待。
      */
-    for (unsigned i = 0; i < fmt->nb_streams; ++i) {
+    LOGI("DBG|discard_set=%d streams=%d", discardOn, (int) fmt->nb_streams);
+    for (unsigned i = 0; discardOn != 0 && i < fmt->nb_streams; ++i) {
         AVStream *st = fmt->streams[i];
         if ((int) i == d->audioIdx) continue;
         if (st->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE) {

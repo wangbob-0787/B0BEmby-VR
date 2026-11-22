@@ -120,6 +120,7 @@ class AudioPipe {
      */
     private var demuxHandle = 0L
     private var demuxCodec = ""
+    private var demuxDiscardSetting = 1
     private var demuxSubN = 0
     /** 容器时长（毫秒，0=未知）：判"真结尾"用 */
     private var demuxDurationMs = 0L
@@ -256,9 +257,12 @@ class AudioPipe {
          * 不去动一条已经验证过的路。调参项 audio_decoder 可在 vr-tuning 里覆盖。
          */
         decoderPref: String = "auto",
+        /** 1=解封装时丢弃非本路轨（默认）；0=不丢弃（排查用，验证通过后连开关一起删） */
+        demuxDiscard: Int = 1,
     ): Boolean {
         stop()
         prefBackend = decoderPref.trim().lowercase()
+        demuxDiscardSetting = demuxDiscard
         lastError = null
         firstPcmAtMs = 0L
         writtenFrames = 0L
@@ -575,7 +579,7 @@ class AudioPipe {
      * 解码线程只从 feedQueue 取（豆豆 2026-11-22）。
      */
     private fun demuxFeedLoop() {
-        val h = AudioDemuxNative.nativeDemuxOpen(feedUrl, (feedStartSec * 1000).toLong())
+        val h = AudioDemuxNative.nativeDemuxOpen(feedUrl, (feedStartSec * 1000).toLong(), demuxDiscardSetting)
         if (h == 0L) {
             prepareError = "解封装打开失败"
             prepareLatch.countDown()

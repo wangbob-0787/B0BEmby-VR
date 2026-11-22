@@ -14,8 +14,11 @@ object AudioDemuxNative {
     private val libLoaded: Boolean = runCatching { System.loadLibrary("audiodec") }.isSuccess
     val available: Boolean get() = libLoaded
 
-    /** 打开：startMs 为起点（0 = 从头）。失败返回 0。 */
-    external fun nativeDemuxOpen(url: String, startMs: Long): Long
+    /**
+     * 打开：startMs 为起点（0 = 从头）；discardOn=1 表示丢弃非本路轨（调参 demux_discard 可拨 0）。
+     * 失败返回 0。
+     */
+    external fun nativeDemuxOpen(url: String, startMs: Long, discardOn: Int): Long
 
     /**
      * 读下一个包。

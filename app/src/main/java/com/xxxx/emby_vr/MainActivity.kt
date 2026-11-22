@@ -9766,6 +9766,9 @@ class MainActivity : ComponentActivity() {
                             memWindowSec = pipeMemWindowSec(),
                             /* 调参可覆盖：audio_decoder=system|ffmpeg；默认 auto（系统解不了的走自带库） */
                             decoderPref = com.xxxx.emby_vr.vr.VrTuning.value(this, "audio_decoder") ?: "auto",
+                            /* 排查开关：demux_discard=0 时不丢弃非本路轨（默认 1）；验证通过后连开关一起删 */
+                            demuxDiscard = com.xxxx.emby_vr.vr.VrTuning.value(this, "demux_discard")
+                                ?.trim()?.toIntOrNull() ?: 1,
                         )
                         Log.i(
                             TAG,
