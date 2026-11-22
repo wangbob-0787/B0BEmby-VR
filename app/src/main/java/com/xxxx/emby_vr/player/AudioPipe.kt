@@ -627,7 +627,8 @@ class AudioPipe {
      * 解码线程只从 feedQueue 取（豆豆 2026-11-22）。
      */
     private fun demuxFeedLoop() {
-        val h = AudioDemuxNative.nativeDemuxOpen(feedUrl, (feedStartSec * 1000).toLong(), demuxDiscardSetting)
+        /* 老对照档（demux_off=0）：这条不接打开期打断，传 null */
+        val h = AudioDemuxNative.nativeDemuxOpen(feedUrl, (feedStartSec * 1000).toLong(), demuxDiscardSetting, null)
         if (h == 0L) {
             prepareError = "解封装打开失败"
             prepareLatch.countDown()
