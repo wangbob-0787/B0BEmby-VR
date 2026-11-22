@@ -513,6 +513,8 @@ class MainActivity : ComponentActivity() {
 
     /** 收场判据：两路都到结尾才结束（任一路先完不许动另一路，豆豆 2026-11-22） */
     @Volatile private var videoEos = false
+    /** 拿不到时长时，画面要连报两次结尾才认（防假 EOS） */
+    private var videoEosCount = 0
     @Volatile private var audioEos = false
 
     /** 两路都到结尾才收场；一路坏掉不完成时，10 秒后按完成收场（兜底，豆豆 2026-11-22） */
@@ -9213,6 +9215,7 @@ class MainActivity : ComponentActivity() {
         selfAudioOn = true
         videoEos = false
         audioEos = false
+        videoEosCount = 0
         eosWatchdogPosted = false
         /* 跳转/重建：字幕表跟着清，否则新位置的画面上会显示旧位置的字幕（豆豆 2026-11-22） */
         demuxSubCues.clear()
@@ -9835,6 +9838,13 @@ class MainActivity : ComponentActivity() {
                      */
                     val dur = pipe.durationSec
                     val pos = (playClock?.positionUs() ?: 0L) / 1_000_000.0
+                    if (dur <= 1.0) {
+                        videoEosCount++
+                        if (videoEosCount < 2) {
+                            Log.w(TAG, "画面报 EOS 但拿不到时长（第 $videoEosCount 次）→ 再等一次")
+                            return@start
+                        }
+                    }
                     if (dur > 1.0 && pos < dur - 5.0) {
                         Log.w(TAG, "画面报 EOS 但位置 ${"%.1f".format(pos)}s 距总长 ${"%.1f".format(dur)}s 还有距离 → 不判结束")
                         return@start
