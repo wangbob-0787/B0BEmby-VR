@@ -679,8 +679,10 @@ class AudioPipe {
                         continue
                     }
                     else -> {
-                        Log.e(TAG, "解封装致命错误 rc=$n → 停止这一路")
-                        feedQueue.putEos()
+                        /* 致命错误也不许发 EOS：那会把"坏了"报成"播完"（豆豆 2026-11-22） */
+                        Log.e(TAG, "解封装致命错误 rc=$n → 停止这一路（不发 EOS）")
+                        lastError = "音频解封装致命错误 rc=$n"
+                        runCatching { onStall?.invoke(true) }
                         break
                     }
                 }
