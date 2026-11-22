@@ -89,6 +89,15 @@ class AudioPipe {
     /* 音频码率低（128~512kbps），8MB 已是几分钟存货，够用，把内存留给画面 */
     private val feedQueue = SampleQueue(8 * 1024 * 1024)
 
+    /*
+     * 全包档跳转回灌：主线程只登记，真正的"关解码器/重建/重定基准"必须由解码线程做。
+     * 直接在 UI 线程 close/重建 ffDec，会和正在解码的线程撞成 use-after-free
+     * （2026-11-23 真机连续两次 SIGSEGV，栈顶 av_new_packet ← nativeDecode ← FfmpegAudioDecoder.decode）。
+     */
+    @Volatile private var pendingSessionSeekSec = -1.0
+    @Volatile private var pendingSessionSeekOrigin = 0.0
+    @Volatile private var pendingSessionAudioFirstUs = -1L
+
     /** 全包档：连接与读线程归 [DemuxSession]，本类不建 feed 线程、不关连接 */
     @Volatile private var fullMode = false
     @Volatile private var sourceQueue: SampleQueue = feedQueue
@@ -903,6 +912,23 @@ class AudioPipe {
             Log.w(TAG, "全包档跳转回灌被忽略：实例未运行")
             return
         }
+        /*
+         * 只登记，不在这里动 ffDec / codec：本方法从 UI 线程调进来，
+         * 直接 close 解码器会与解码线程并发（2026-11-23 两次崩溃就出在这）。
+         */
+        pendingSessionSeekOrigin = originSec
+        pendingSessionAudioFirstUs = audioFirstUs
+        pendingSessionSeekSec = targetSec
+        Log.i(TAG, "全包档跳转回灌已登记：目标=${"%.2f".format(targetSec)}s（由解码线程执行）")
+    }
+
+    /** 解码线程内执行登记好的跳转回灌 */
+    private fun applyPendingSessionSeek() {
+        val targetSec = pendingSessionSeekSec
+        if (targetSec < 0.0) return
+        pendingSessionSeekSec = -1.0
+        val originSec = pendingSessionSeekOrigin
+        val audioFirstUs = pendingSessionAudioFirstUs
         runCatching { track?.pause() }
         runCatching { track?.flush() }
         if (ffDec != null) {
@@ -957,6 +983,8 @@ class AudioPipe {
 
         while (running.get()) {
             try {
+                /* 全包档跳转回灌：在这里做（解码器归本线程所有） */
+                applyPendingSessionSeek()
                 /* 跳转：顺序固定 —— 停设备 → 清解码器 → 定新起点 → 重新起播 */
                 val seekTarget = pendingSeekSec
                 if (seekTarget >= 0.0 && fullMode) {
