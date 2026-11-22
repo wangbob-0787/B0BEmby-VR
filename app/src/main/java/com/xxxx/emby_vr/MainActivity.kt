@@ -9709,6 +9709,8 @@ class MainActivity : ComponentActivity() {
 
         fun launchPipelineBlocking(audioStart: Double) {
             Log.i(TAG, "画面管道启动：直连 起点=${"%.1f".format(audioStart)}s")
+            /* 线程体兜底：任何意外异常都要落到"起播失败"，不许线程静默死掉（豆豆 2026-11-22 P1-1） */
+            try {
 
             /* 建完发现代数已变（用户已切走/又跳了）：这条管线自己收场。
                注意这里不许碰 pipeBootInFlight —— 新一代可能已经 CAS 成功，
@@ -9746,7 +9748,7 @@ class MainActivity : ComponentActivity() {
                     }
                     watchdog.isDaemon = true
                     watchdog.start()
-                    opened.set(probe.open())
+                    opened.set(runCatching { probe.open() }.getOrDefault(false))
                     watchdog.interrupt()
                 }
                 if (!opened.get()) {
@@ -10089,6 +10091,16 @@ class MainActivity : ComponentActivity() {
                 selfPipeWaitingFirstFrame.set(false)
                 selfPipePhase = "起播失败"
                 abortJump("画面解码起不来：$why")
+            }
+            } catch (t: Throwable) {
+                Log.e(TAG, "起播线程异常：${t.javaClass.simpleName}: ${t.message}", t)
+                ui.post { hud("起播线程异常：${t.javaClass.simpleName}") }
+                pipeBootInFlight.set(false)
+                selfPipeWaitingFirstFrame.set(false)
+                selfPipePhase = "起播失败"
+                runCatching { pipe.stop() }
+                runCatching { session?.stop() }
+                selfSession = null
             }
         }
 

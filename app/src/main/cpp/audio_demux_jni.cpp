@@ -178,6 +178,12 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxOpen(
         jclass cls = env->GetObjectClass(abortFlag);
         d->abortGet = env->GetMethodID(cls, "get", "()Z");
         env->DeleteLocalRef(cls);
+        /* 方法找不到会留下 pending 异常，返回 Java 时会抛出去；置空降级为"只能用 abort 打断" */
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            d->abortGet = nullptr;
+            LOGE("绑定打断标志失败：找不到 AtomicBoolean.get()，降级为只能 abort 打断");
+        }
     }
     AVFormatContext *fmt = avformat_alloc_context();
     if (!fmt) {
