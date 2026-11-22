@@ -1401,20 +1401,15 @@ class VideoPipe {
                 dumpStream = it
                 Log.i(TAG, "取证落盘：$path（从关键帧起，最多 60 包）")
             }
-            var p = 0
+            /*
+             * 包体在 DemuxSession 里已经转成 Annex-B（起始码），这里原样写即可；
+             * 再转一遍会写出一份垃圾文件（豆豆 2026-11-23 提醒）。
+             */
             val d = pkt.data
             val size = pkt.size
-            while (p + 4 <= size) {
-                /* 四字节长度按大端取；每字节都要 and 0xFF（Kotlin Byte 有符号） */
-                val n = ((d[p].toInt() and 0xFF) shl 24) or ((d[p + 1].toInt() and 0xFF) shl 16) or
-                    ((d[p + 2].toInt() and 0xFF) shl 8) or (d[p + 3].toInt() and 0xFF)
-                if (n <= 0 || p + 4 + n > size) break
-                out.write(byteArrayOf(0, 0, 0, 1))
-                out.write(d, p + 4, n)
-                p += 4 + n
-            }
+            out.write(d, 0, size)
             dumpedPackets++
-            dumpedBytes += p.toLong()
+            dumpedBytes += size.toLong()
             if (dumpedPackets >= 60) {
                 out.flush()
                 out.close()

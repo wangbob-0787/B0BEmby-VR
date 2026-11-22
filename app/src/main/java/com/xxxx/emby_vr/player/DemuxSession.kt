@@ -293,7 +293,17 @@ class DemuxSession(
                                 }
                             }
                             val key = meta[3] != 0
-                            if (!videoQueue.put(SampleQueue.Packet(buf.copyOf(n), n, ptsUs, key))) break
+                            /*
+                             * 包体也要转 Annex-B：ffmpeg 给的是"四字节长度前缀"，而 csd 已转成起始码、
+                             * 系统解封装那条能播的路也是起始码（实测两路首包逐字节对比：
+                             * 旧路 00 00 00 01 46 01…，我们原来 00 00 00 05 46 01…）。
+                             * 两种形态混用，硬解只认出开头一小段、每包吐 8 字节空输出（豆豆 2026-11-23）。
+                             *
+                             * 两种前缀宽度相同，原地改写即可，不搬数据（改的是 copyOf 后的副本）。
+                             */
+                            val data = buf.copyOf(n)
+                            toAnnexBInPlace(data, n)
+                            if (!videoQueue.put(SampleQueue.Packet(data, n, ptsUs, key))) break
                         }
                         2 -> {
                             val text = String(buf, 0, n, Charsets.UTF_8)
@@ -399,6 +409,21 @@ class DemuxSession(
             handle = 0L
         }
         Log.e(TAG, "解封装失败收场：$reason（连接已归还）")
+    }
+
+    /** 把四字节长度前缀原地改成四字节起始码（长度不合法就停在最后一个完整 NAL） */
+    private fun toAnnexBInPlace(d: ByteArray, n: Int) {
+        var p = 0
+        while (p + 4 <= n) {
+            val len = ((d[p].toInt() and 0xFF) shl 24) or ((d[p + 1].toInt() and 0xFF) shl 16) or
+                ((d[p + 2].toInt() and 0xFF) shl 8) or (d[p + 3].toInt() and 0xFF)
+            if (len <= 0 || p + 4 + len > n) break
+            /* 已经是起始码就不再改（防止对已转过的包重复处理） */
+            if (!(d[p].toInt() == 0 && d[p + 1].toInt() == 0 && d[p + 2].toInt() == 0 && d[p + 3].toInt() == 1)) {
+                d[p] = 0; d[p + 1] = 0; d[p + 2] = 0; d[p + 3] = 1
+            }
+            p += 4 + len
+        }
     }
 
     fun stop() {
