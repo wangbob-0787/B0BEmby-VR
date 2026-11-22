@@ -861,12 +861,14 @@ class AudioPipe {
      *
      * 这不是第二个跳转入口 —— 定位只由 Session 做，这里只做"本 Pipe 的收尾"（图 §2-7）。
      */
-    fun onSessionSeek(targetSec: Double, originSec: Double) {
+    fun onSessionSeek(targetSec: Double, originSec: Double, audioFirstUs: Long = -1L) {
         runCatching { track?.pause() }
         runCatching { track?.flush() }
         if (ffDec != null) {
             /* 自带库没有清缓存这条路：重建上下文（与 off 档跳转同一做法） */
             ffDec?.close()
+            /* 先置空：重建失败时绝不能留着指向已关闭实例（下次 decode 必炸，豆豆 2026-11-22） */
+            ffDec = null
             val d = FfmpegAudioDecoder(trackMime, trackFormat ?: MediaFormat())
             if (d.open()) {
                 ffDec = d
@@ -878,7 +880,11 @@ class AudioPipe {
             runCatching { codec?.flush() }
         }
         originUs = (originSec * US).toLong()
-        audioOriginUs = session?.audioFirstPtsUs?.takeIf { it > 0L } ?: (targetSec * US).toLong()
+        /*
+         * 音频起点优先用 Session 回灌的真实首包时间；没拿到就留 -1，
+         * 由第一包到达时定（用请求目标顶会在每条跳上偏一个关键帧间隔，豆豆 2026-11-22）。
+         */
+        audioOriginUs = audioFirstUs.takeIf { it > 0L } ?: -1L
         firstBlockHandled = false
         pendingSkipBytes = 0L
         seekFlushCount++
@@ -890,6 +896,13 @@ class AudioPipe {
             runCatching { track?.play() }
         }
         Log.i(TAG, "全包档音频跳转：目标=${"%.2f".format(targetSec)}s 起点=${"%.3f".format(audioOriginUs / US)}s 画面起点=${"%.3f".format(originSec)}s")
+    }
+
+    /** 全包档：音频起点以真实首包为准（off 档由 extractor 的 sampleTime 给） */
+    private fun noteFirstSourcePacket(ptsUs: Long) {
+        if (!fullMode || audioOriginUs > 0L) return
+        audioOriginUs = ptsUs
+        Log.i(TAG, "全包档音频起点取首包：${"%.3f".format(ptsUs / US)}s")
     }
 
     private fun loop() {
@@ -968,6 +981,7 @@ class AudioPipe {
                     val dec = ffDec!!
                     if (!inputDone) {
                         val pkt = sourceQueue.get()
+                        if (pkt != null) noteFirstSourcePacket(pkt.ptsUs)
                         if (pkt == null) {
                             inputDone = true
                         } else {
@@ -995,6 +1009,7 @@ class AudioPipe {
                         val ci = cc.dequeueInputBuffer(5_000)
                         if (ci >= 0) {
                             val pkt = sourceQueue.get()
+                            if (pkt != null) noteFirstSourcePacket(pkt.ptsUs)
                             if (pkt == null) {
                                 cc.queueInputBuffer(ci, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                                 inputDone = true

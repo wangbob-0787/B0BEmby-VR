@@ -512,7 +512,7 @@ class MainActivity : ComponentActivity() {
      * 全包档（demux_mode=full）的解封装会话：一条连接同时出画面/声音/字幕。
      * 归这条播放周期所有；停播、换集、换代都要收掉（连接只有一条，泄漏就是 403）。
      */
-    private var selfSession: com.xxxx.emby_vr.player.DemuxSession? = null
+    @Volatile private var selfSession: com.xxxx.emby_vr.player.DemuxSession? = null
 
     /** 解封装直供的字幕（边播边到）：按开始时间排序，只保留最近的若干条 */
     private val demuxSubCues = java.util.TreeMap<Long, SubtitleCue>()
@@ -9017,6 +9017,16 @@ class MainActivity : ComponentActivity() {
      * 重建要重新开流、跳到关键帧，实测六到九秒；热跳是几百毫秒。
      */
     private fun restoreVideoPipeAt(sec: Double) {
+        /*
+         * 全包档不重建：重建出来的是 off 档 pipe（它自己起 feedLoop），会和还活着的 Session
+         * 各读一条连接（豆豆 2026-11-22 P0-2）。失步只让 Session 重新定位。
+         */
+        val sessRestore = selfSession
+        if (sessRestore != null) {
+            Log.i(TAG, "全包档：失步重启改为 Session 定位（不重建）→ ${"%.2f".format(sec)}s")
+            sessRestore.requestSeek((sec * 1000.0).toLong())
+            return
+        }
         val url = selfPipeUrl ?: return
         val surface = selfPipeSurface ?: return
         /*
@@ -9054,9 +9064,13 @@ class MainActivity : ComponentActivity() {
             originFromPicture = true,
             onDoviParams = { com.xxxx.emby_vr.vr.VrNative.setDoviStreamActive(true) },
             onNeedRestart = { t ->
-                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
-                    { runCatching { restoreVideoPipeAt(t) } }, 1500,
-                )
+                if (selfSession != null) {
+                    selfSession?.requestSeek((t * 1000.0).toLong())
+                } else {
+                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
+                        { runCatching { restoreVideoPipeAt(t) } }, 1500,
+                    )
+                }
             },
         )
         if (ok) {
@@ -9376,6 +9390,18 @@ class MainActivity : ComponentActivity() {
             val sec = (ms / 1000.0).coerceAtLeast(0.0)
             pipeSeekT0 = android.os.SystemClock.elapsedRealtime()
             /*
+             * 全包档：跳转**不重建**。重建会新建第二个 Session，旧的那条没人 stop
+             * —— 客户端两条连接、旧读线程还在往队列塞包，网盘额度当场爆（豆豆 2026-11-22 P0-1）。
+             * 这里只让 Session 定位；解码器清理由 flushForSessionSeek 登记、两条 Pipe 自己执行。
+             */
+            val sessJump = selfSession
+            if (sessJump != null) {
+                pipe.flushForSessionSeek()
+                sessJump.requestSeek(ms)
+                Log.i(TAG, "全包档跳转：Session 定位到 ${"%.1f".format(sec)}s（不重建）")
+                return@jump
+            }
+            /*
              * 跳转 = 按新位置把整条自管路重建一遍（画面与声音一起）。
              *
              * 热跳（同一个解码器里跳）理论上更快，但它要求"解码器就地跳、音频换起点、时钟重置"
@@ -9457,6 +9483,7 @@ class MainActivity : ComponentActivity() {
         ).absolutePath
         selfPipeUrl = url
         selfPipeSurface = surface
+        val pipe = com.xxxx.emby_vr.player.VideoPipe()
         /*
          * 全包档：画面/声音/字幕走**同一条**连接（图 §2）。
          * 默认 off；装配任何一步失败都退回 off（off 是已经验收过的路径，不许被这版拖坏）。
@@ -9491,6 +9518,23 @@ class MainActivity : ComponentActivity() {
                         Log.e(TAG, "全包解封装上报失败：$reason")
                         ui.post { if (gen == selfGen.get()) hud("全包解封装失败：$reason") }
                     }
+                    /*
+                     * 跳转落点：Session 拿到首视频包后回灌真实起点（关键帧落点，比请求目标早一截）。
+                     * 拿它当画面与声音的共同基准，首块对齐才不会每条跳都偏（豆豆 2026-11-22 P1-2）。
+                     */
+                    probe.onSeekOrigin = seekOrigin@{ targetMs, videoPtsUs, audioPtsUs ->
+                        ui.post {
+                            if (gen != selfGen.get()) return@post
+                            val originSec = if (videoPtsUs > 0) videoPtsUs / 1_000_000.0 else targetMs / 1000.0
+                            pipe.flushForSessionSeek()
+                            audioPipe?.onSessionSeek(targetMs / 1000.0, originSec, audioPtsUs)
+                            Log.i(
+                                TAG,
+                                "全包档落点：目标=${"%.3f".format(targetMs / 1000.0)}s " +
+                                    "画面首包=${"%.3f".format(originSec)}s 音频首包=${if (audioPtsUs > 0) "%.3f".format(audioPtsUs / 1_000_000.0) else "未知"}",
+                            )
+                        }
+                    }
                     session = probe
                     Log.i(
                         TAG,
@@ -9500,7 +9544,6 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-        val pipe = com.xxxx.emby_vr.player.VideoPipe()
         /*
          * 新管线起播前先清空原生参数表（豆豆 2026-11-21）：
          * 放在 pipe.start() 之前 —— 此刻新解码线程还没起，不可能有旧推送抢在前面；
@@ -9795,6 +9838,15 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                         audioPipe = null
+                        /*
+                         * 起音频这一刻把 Session 抓到局部：字段若正好被停播清掉，
+                         * 传 null 会让 AudioPipe 退回 off 档、当场开第三条连接（豆豆 2026-11-22 P1-5）。
+                         */
+                        val sessAudio = selfSession
+                        if (wantFullDemux && sessAudio == null) {
+                            Log.e(TAG, "全包档 Session 已收场 → 不起音频（避免退回 off 开第三条连接）")
+                            return@Thread
+                        }
                         val ap = com.xxxx.emby_vr.player.AudioPipe()
                         /* 解封装随播放交付字幕：只收用户选中的那条轨 */
                         ap.onFeedEnd = feedEnd@{
@@ -9844,8 +9896,8 @@ class MainActivity : ComponentActivity() {
                             demuxOff = com.xxxx.emby_vr.vr.VrTuning.value(this, "demux_off")
                                 ?.trim()?.toIntOrNull() ?: 1,
                             /* 全包档：音频也从同一条连接的队列取，格式由 Session 给 */
-                            demuxSession = selfSession,
-                            formatOverride = selfSession?.audioFormat(),
+                            demuxSession = sessAudio,
+                            formatOverride = sessAudio?.audioFormat(),
                         )
                         Log.i(
                             TAG,
@@ -9886,7 +9938,12 @@ class MainActivity : ComponentActivity() {
                 /* 起点由画面首帧定：offset 恒为 0，帧 pts 直接与音频时钟比 */
                 originFromPicture = true,
                 memWindowSec = pipeMemWindowSec(),
-                onNeedRestart = { target ->
+                onNeedRestart = restart@{ target ->
+                    if (selfSession != null) {
+                        /* 全包档：失步只让 Session 重新定位，绝不再建一条连接 */
+                        selfSession?.requestSeek((target * 1000.0).toLong())
+                        return@restart
+                    }
                     /* 回调来自解码线程：重建必须投主控线程，否则 start() 第一行会 join 自己 */
                     ui.post {
                         val dead = runCatching { videoPipe?.stop() ?: true }.getOrDefault(false)

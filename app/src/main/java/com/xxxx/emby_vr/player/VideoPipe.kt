@@ -70,6 +70,8 @@ class VideoPipe {
     /** 全包档断流判定：低水位起点与当前是否已判停（<0.5s 连续 2.0s 判停，≥1.5s 恢复） */
     private var lowWaterSinceMs = 0L
     private var queueStalled = false
+    /** 待执行的解码器清理（主线程只登记，由解码线程在两帧之间做） */
+    @Volatile private var pendingSourceFlush = false
 
     /**
      * 致命态：读线程卡在网络读里退不出来，连接也就还不回去。
@@ -700,6 +702,8 @@ class VideoPipe {
         }
 
         while (running.get() && !outputDone) {
+            /* 全包档跳转：清解码器必须在这里做（两帧之间、手里没攥 buffer） */
+            applyPendingFlush()
             /* 待办：解码器内跳转（在两次 buffer 操作之间做，flush 时手里不能攥着 buffer） */
             val wantSeek = pendingSeekSec
             if (wantSeek >= 0.0) {
@@ -1290,8 +1294,23 @@ class VideoPipe {
         return queueStalled
     }
 
-    /** 全包档：跳转由 Session 统一发起，这里只清解码器与本地状态（图 §2-7） */
+    /**
+     * 全包档：跳转由 Session 统一发起，这里只登记"要清解码器"。
+     *
+     * 不能在这里直接 flush：主线程调 flush 时解码线程可能正握着输出缓冲，
+     * MediaCodec 规定持有 buffer 时不许 flush（轻则丢帧，重则把解码线程打死）。
+     * 真正的 flush 由解码线程在两帧之间自己做（见 pump 顶部）。
+     */
     fun flushForSessionSeek() {
+        pendingSourceFlush = true
+        Log.i(TAG, "全包档跳转：已登记清解码器，等解码线程在两帧之间执行")
+    }
+
+    /** 由解码线程执行的清解码器（只在没握着输出缓冲时） */
+    private fun applyPendingFlush() {
+        if (!pendingSourceFlush) return
+        if (heldIdx >= 0) return
+        pendingSourceFlush = false
         runCatching { decoder?.flush() }
         originPts = -1.0
         appliedOffset = Double.NaN
@@ -1299,7 +1318,7 @@ class VideoPipe {
         pumpFirstLogged = false
         lowWaterSinceMs = 0L
         queueStalled = false
-        Log.i(TAG, "全包档跳转：解码器已清，等新队列数据")
+        Log.i(TAG, "全包档跳转：解码器已清（解码线程内执行）")
     }
 
     /** 停止并释放。可重复调用。 */
@@ -1315,8 +1334,15 @@ class VideoPipe {
         /* 释放权归线程自己：这里只置停止标志，不代解码线程 release（图 §5 I4） */
         stopping = true
         running.set(false)
-        /* 全包档的队列归 Session，本类不许 abort 它（abort 会让消费端永久 null） */
-        if (!fullMode) feedQueue.abort()
+        /*
+         * 全包档的队列归 Session：这里不 abort 队列，但必须让 Session 中止阻塞读，
+         * 否则解码线程会一直卡在 queue.get() 上、join 超时被判僵尸（豆豆 2026-11-22 P1-6）。
+         */
+        if (fullMode) {
+            runCatching { session?.abort() }
+        } else {
+            feedQueue.abort()
+        }
         /* 读线程才是**持有连接**的那一个：它没退出就等于连接没归还，必须进返回值 */
         val ft = feedThread
         /* 读线程可能卡在一次网络读里：给足 8 秒；仍不退就进致命态，不再尝试开新连接 */

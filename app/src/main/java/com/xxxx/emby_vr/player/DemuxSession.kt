@@ -50,6 +50,19 @@ class DemuxSession(
     /** 跳转失败：不重建、不静默，必须让上层知道 */
     var onSeekFailed: ((reason: String) -> Unit)? = null
 
+    /**
+     * 跳转落点（首包到手后回灌一次）：目标毫秒、首视频 pts、首音频 pts（未知为 -1）。
+     *
+     * 为什么不在 seek 返回那一刻就报：`avformat_seek_file` 只保证"定位完成"，
+     * 真实落点在关键帧上（实测 1987.4 → 1986.120，早 1.28 秒）。上层若拿请求目标当起点，
+     * 首块对齐会把这段当成"音频早到"而裁掉/补静音，每条跳都偏一截。
+     */
+    var onSeekOrigin: ((targetMs: Long, videoPtsUs: Long, audioPtsUs: Long) -> Unit)? = null
+
+    /** 跳转后等首视频包回灌落点 */
+    private var seekOriginPending = false
+    private var seekOriginTargetMs = 0L
+
     @Volatile
     var sampleRate: Int = 48000
         private set
@@ -174,6 +187,10 @@ class DemuxSession(
                 val r = runCatching { AudioDemuxNative.nativeDemuxSeek(h, target) }.getOrDefault(-1)
                 Log.i(TAG, "跳转到 ${target}ms 结果=$r")
                 if (r >= 0) {
+                    seekOriginPending = true
+                    seekOriginTargetMs = target
+                }
+                if (r >= 0) {
                     runCatching { onSeekDone?.invoke(target) }
                 } else {
                     /* 跳转失败却当成成功，会让画面/声音停在两个不同的位置 */
@@ -247,6 +264,12 @@ class DemuxSession(
                         }
                         1 -> {
                             if (videoFirstPtsUs < 0L) videoFirstPtsUs = ptsUs
+                            if (seekOriginPending) {
+                                seekOriginPending = false
+                                runCatching {
+                                    onSeekOrigin?.invoke(seekOriginTargetMs, videoFirstPtsUs, audioFirstPtsUs)
+                                }
+                            }
                             val key = meta[3] != 0
                             if (!videoQueue.put(SampleQueue.Packet(buf.copyOf(n), n, ptsUs))) break
                         }
