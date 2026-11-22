@@ -861,7 +861,27 @@ class AudioPipe {
      *
      * 这不是第二个跳转入口 —— 定位只由 Session 做，这里只做"本 Pipe 的收尾"（图 §2-7）。
      */
+    /**
+     * 全包档跳转第一步：立刻闭嘴。
+     *
+     * 落点要等会话拿到首个视频包才回灌（几百毫秒到两秒），这段里设备缓冲里还有旧位置的
+     * 零点几秒声音。off 档跳转会重建整个音频实例所以听不到，全包档必须显式静音（豆豆 2026-11-22 P1-A）。
+     */
+    fun silenceForSessionSeek() {
+        runCatching { track?.pause() }
+        runCatching { track?.flush() }
+        writtenFrames = 0L
+        firstBlockHandled = false
+        pendingSkipBytes = 0L
+        Log.i(TAG, "全包档跳转：设备已静音（等落点回灌再重建解码器）")
+    }
+
     fun onSessionSeek(targetSec: Double, originSec: Double, audioFirstUs: Long = -1L) {
+        /* 死实例不许被唤起：下面的 track.play() 会把已停的设备重新放起来（豆豆 2026-11-22 P1-B） */
+        if (!fullMode || !running.get()) {
+            Log.w(TAG, "全包档跳转回灌被忽略：实例未运行")
+            return
+        }
         runCatching { track?.pause() }
         runCatching { track?.flush() }
         if (ffDec != null) {
