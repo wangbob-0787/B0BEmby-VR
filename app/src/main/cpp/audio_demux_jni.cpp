@@ -320,8 +320,14 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxOpen(
         return 0;
     }
     if (startMs > 0) {
-        AVStream *as = fmt->streams[d->audioIdx];
-        /* 目标必须换算到**音频流的**时间基：用微秒当流时间基会飞出片尾 */
+        /*
+         * 按**视频流**定位到关键帧，音频跟着它走。
+         * 用音频流定位在 mkv 上粒度太粗：实测目标 221.7s 落到 203.6s（早 18 秒），
+         * 首包校验直接判失败（2026-11-22 真机）。
+         */
+        int seekIdx = d->videoIdx >= 0 ? d->videoIdx : d->audioIdx;
+        AVStream *as = fmt->streams[seekIdx];
+        /* 目标必须换算到**该流的**时间基：用微秒当流时间基会飞出片尾 */
         int64_t tsSb = av_rescale_q(startMs * 1000, AVRational{1, 1000}, as->time_base);
         int64_t tsUs = (int64_t) startMs * 1000;
         int64_t before = fmt->pb ? avio_tell(fmt->pb) : -1;
@@ -329,12 +335,12 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxOpen(
          * 三级回退：先按音频流定位（最准），再退回带 stream 的旧接口，
          * 最后才是全局时间基（那一版在真机上返回 EPERM，留作最后证据）。
          */
-        int r1 = avformat_seek_file(fmt, d->audioIdx, INT64_MIN, tsSb, tsSb, AVSEEK_FLAG_BACKWARD);
-        LOGI("DBG|seekTry=1 ret=%d err=%s tb=%d/%d target_ts=%lld",
-             r1, errStr(r1).c_str(), as->time_base.num, as->time_base.den, (long long) tsSb);
+        int r1 = avformat_seek_file(fmt, seekIdx, INT64_MIN, tsSb, tsSb, AVSEEK_FLAG_BACKWARD);
+        LOGI("DBG|seekTry=1 ret=%d err=%s stream=%d tb=%d/%d target_ts=%lld",
+             r1, errStr(r1).c_str(), seekIdx, as->time_base.num, as->time_base.den, (long long) tsSb);
         int r2 = 0, r3 = 0;
         if (r1 < 0) {
-            r2 = av_seek_frame(fmt, d->audioIdx, tsSb, AVSEEK_FLAG_BACKWARD);
+            r2 = av_seek_frame(fmt, seekIdx, tsSb, AVSEEK_FLAG_BACKWARD);
             LOGI("DBG|seekTry=2 ret=%d err=%s", r2, errStr(r2).c_str());
             if (r2 < 0) {
                 r3 = avformat_seek_file(fmt, -1, INT64_MIN, tsUs, tsUs, AVSEEK_FLAG_BACKWARD);
@@ -451,7 +457,11 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxRead(
                 if (!d->firstAudioChecked) {
                     d->firstAudioChecked = true;
                     int64_t diff = d->lastAudioPtsMs - d->openStartMs;
-                    if (diff > 5000 || diff < -5000) {
+                    /*
+                     * 落点必然落在关键帧上（BACKWARD），提前量取决于 GOP（实测约 4 秒，最坏十几秒）。
+                     * 提前 15 秒以内算正常；只有"比目标还晚"或"早得离谱"才是源没按 Range 生效。
+                     */
+                    if (diff > 5000 || diff < -15000) {
                         /* 位置错了但所有返回值都正常：说明源没按 Range 生效，读回的是文件头 */
                         LOGE("首包位置偏差=%lldms（目标=%lldms，实际=%lldms）→ 源未按 Range 生效",
                              (long long) diff, (long long) d->openStartMs,
@@ -548,10 +558,11 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxSeek(
     Demux *d = fromHandle(handle);
     if (!d || !d->fmt || d->audioIdx < 0) return -1;
     /* 与起播一致：先按音频流时间基定位，再退回两级 */
-    AVStream *as = d->fmt->streams[d->audioIdx];
+    int seekIdx = d->videoIdx >= 0 ? d->videoIdx : d->audioIdx;
+    AVStream *as = d->fmt->streams[seekIdx];
     int64_t tsSb = av_rescale_q(ms * 1000, AVRational{1, 1000}, as->time_base);
     int64_t tsUs = (int64_t) ms * 1000;
-    int ret = avformat_seek_file(d->fmt, d->audioIdx, INT64_MIN, tsSb, tsSb, AVSEEK_FLAG_BACKWARD);
+    int ret = avformat_seek_file(d->fmt, seekIdx, INT64_MIN, tsSb, tsSb, AVSEEK_FLAG_BACKWARD);
     LOGI("DBG|jump seekTry=1 ret=%d err=%s", ret, errStr(ret).c_str());
     if (ret < 0) {
         ret = av_seek_frame(d->fmt, d->audioIdx, tsSb, AVSEEK_FLAG_BACKWARD);

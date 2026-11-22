@@ -237,9 +237,9 @@ class DemuxSession(
                         -2 -> {
                             waitMs += 300L
                             if (waitMs > 8_000L) {
-                                /* 等太久不是结尾：上报，不发 EOS */
+                                /* 等太久不是结尾：上报并收场 */
                                 Log.w(TAG, "连续 8 秒没有数据 → 上报网络错误")
-                                runCatching { onRouteFailed?.invoke("等待超时") }
+                                failAndClose("等待超时")
                                 return
                             }
                             var slept = 0L
@@ -257,8 +257,8 @@ class DemuxSession(
                             if (!running.get()) return
                             netRetry++
                             if (netRetry > 2) {
-                                Log.w(TAG, "网络错误连续 $netRetry 次 → 上报")
-                                runCatching { onRouteFailed?.invoke("网络错误") }
+                                Log.w(TAG, "网络错误连续 $netRetry 次 → 上报并收场")
+                                failAndClose("网络错误")
                                 return
                             }
                             var slept = 0L
@@ -268,8 +268,8 @@ class DemuxSession(
                             }
                         }
                         else -> {
-                            Log.e(TAG, "致命错误 rc=$n → 上报")
-                            runCatching { onRouteFailed?.invoke("解封装致命错误") }
+                            Log.e(TAG, "致命错误 rc=$n → 上报并收场")
+                            failAndClose("解封装致命错误")
                             return
                         }
                     }
@@ -339,6 +339,24 @@ class DemuxSession(
     fun audioFormat(): MediaFormat = MediaFormat.createAudioFormat(
         "audio/" + audioCodecName.ifBlank { "eac3" }, sampleRate, channelCount,
     )
+
+    /**
+     * 失败收场：关连接、把两个队列置 EOS 唤醒消费端，再上报。
+     *
+     * 只在读线程里调用（句柄归它）。不这样做的话读线程退出了但连接还在飞，
+     * `CONN 泄漏：退出时 inFlight=1|open=1|close=0` 就是 2026-11-22 真机留下的证据。
+     */
+    private fun failAndClose(reason: String) {
+        running.set(false)
+        runCatching { onRouteFailed?.invoke(reason) }
+        videoQueue.putEos()
+        audioQueue.putEos()
+        if (handle != 0L) {
+            runCatching { AudioDemuxNative.nativeDemuxClose(handle) }
+            handle = 0L
+        }
+        Log.e(TAG, "解封装失败收场：$reason（连接已归还）")
+    }
 
     fun stop() {
         running.set(false)
