@@ -570,7 +570,7 @@ class MainActivity : ComponentActivity() {
          */
         val textSubs = currentStreams.filter {
             it.type.equals("Subtitle", true) && !isDanmakuStream(it) && !isImageSubtitle(it) &&
-                !it.isExternal
+                it.isExternal != true
         }
         return textSubs.indexOfFirst { it.index == index }
     }
