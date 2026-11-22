@@ -47,6 +47,7 @@ struct Demux {
     /* stop 时置位：打断阻塞中的 open/read（MediaExtractor 打断不了，只能干等 8 秒） */
     std::atomic<bool> abort{false};
     int audioIdx = -1;
+    int videoIdx = -1;
     /*
      * 全部「文字」字幕轨各自一个解码上下文。
      *
@@ -293,6 +294,7 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxRead(
     jsize cap = env->GetArrayLength(out);
     jint m[5] = {0, 0, 0, 0, 0};
 
+    if (d->abort.load()) return -5;   // 被上层主动打断：不是网络错，也不是结尾
     while (true) {
         int ret = av_read_frame(d->fmt, d->pkt);
         if (ret == AVERROR_EOF) {
@@ -336,6 +338,7 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxRead(
             }
             return -2;   // WAITING：上层等 300ms 再来
         }
+        if (d->abort.load()) return -5;
         if (ret == AVERROR_EXIT) {
             /* 被打断 ≠ 读完 ≠ 网络错误：单独记，否则日志只是一句"致命" */
             LOGE("DBG|读包被中断（interrupt）abort=%d", d->abort.load() ? 1 : 0);
@@ -509,6 +512,24 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxInfo(
 }
 
 /** 音频解码器名（"eac3"/"truehd"/"dca" 等），给自带解码器用 */
+/**
+ * 视频轨的设备参数：out[0]=宽 out[1]=高 out[2]=extradata 长度 out[3]=codec_id
+ * 返回的 byte[] 就是 MediaCodec 的 csd（mkv 里是 hvcC，正是它要的格式）。
+ */
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxVideoCsd(
+        JNIEnv *env, jobject, jlong handle, jintArray out) {
+    Demux *d = fromHandle(handle);
+    if (!d || !d->fmt || d->videoIdx < 0) return nullptr;
+    AVCodecParameters *p = d->fmt->streams[d->videoIdx]->codecpar;
+    jint v[4] = {p->width, p->height, p->extradata_size, (jint) p->codec_id};
+    env->SetIntArrayRegion(out, 0, 4, v);
+    if (!p->extradata || p->extradata_size <= 0) return nullptr;
+    jbyteArray r = env->NewByteArray(p->extradata_size);
+    env->SetByteArrayRegion(r, 0, p->extradata_size, (const jbyte *) p->extradata);
+    return r;
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxCodecName(JNIEnv *env, jobject, jlong handle) {
     Demux *d = fromHandle(handle);

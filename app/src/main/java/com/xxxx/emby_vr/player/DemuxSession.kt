@@ -43,6 +43,12 @@ class DemuxSession(
     /** 这一路彻底没了（单向，不配对）：上层据此提示并决定是否自愈 */
     var onRouteFailed: ((reason: String) -> Unit)? = null
 
+    /** 跳转完成：上层据此统一新起点（首帧基准、首块对齐、字幕表） */
+    var onSeekDone: ((targetMs: Long) -> Unit)? = null
+
+    /** 跳转失败：不重建、不静默，必须让上层知道 */
+    var onSeekFailed: ((reason: String) -> Unit)? = null
+
     @Volatile
     var sampleRate: Int = 48000
         private set
@@ -129,7 +135,8 @@ class DemuxSession(
 
     private fun loop() {
         val h = handle
-        val buf = ByteArray(1024 * 1024)
+        /* 4K HEVC 的关键帧包常有 2~4MB：缓冲小于它会被 native 判成致命错，整片直接停 */
+        val buf = ByteArray(8 * 1024 * 1024)
         val meta = IntArray(5)
         var waitMs = 0L
         var netRetry = 0
@@ -142,6 +149,12 @@ class DemuxSession(
                 audioQueue.flush()
                 val r = runCatching { AudioDemuxNative.nativeDemuxSeek(h, target) }.getOrDefault(-1)
                 Log.i(TAG, "跳转到 ${target}ms 结果=$r")
+                if (r >= 0) {
+                    runCatching { onSeekDone?.invoke(target) }
+                } else {
+                    /* 跳转失败却当成成功，会让画面/声音停在两个不同的位置 */
+                    runCatching { onSeekFailed?.invoke("跳转失败 rc=$r") }
+                }
             }
             val n = try {
                 AudioDemuxNative.nativeDemuxRead(h, buf, meta)
@@ -172,7 +185,13 @@ class DemuxSession(
                                 slept += 100
                             }
                         }
+                        -5 -> {
+                            /* 被我们自己打断（停播/换片）：不是网络错，也不是结尾 */
+                            Log.i(TAG, "解封装被主动打断，读线程退出")
+                            return
+                        }
                         -3 -> {
+                            if (!running.get()) return
                             netRetry++
                             if (netRetry > 2) {
                                 Log.w(TAG, "网络错误连续 $netRetry 次 → 上报")
