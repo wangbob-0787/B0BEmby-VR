@@ -25,6 +25,15 @@ object AudioDemuxNative {
      */
     external fun nativeDemuxRead(handle: Long, out: ByteArray, meta: IntArray): Int
 
+    /** out[0]=采样率 out[1]=声道数 out[2]=codec_id out[3]=文字字幕轨条数 */
+    external fun nativeDemuxInfo(handle: Long, out: IntArray): Int
+
+    /** 音频解码器名（eac3/truehd/dca 等） */
+    external fun nativeDemuxCodecName(handle: Long): String
+
+    /** 打断阻塞中的读/打开（stop 用）；打断后这个 handle 作废，必须重新 open */
+    external fun nativeDemuxAbort(handle: Long)
+
     external fun nativeDemuxSeek(handle: Long, ms: Long): Int
 
     external fun nativeDemuxClose(handle: Long)

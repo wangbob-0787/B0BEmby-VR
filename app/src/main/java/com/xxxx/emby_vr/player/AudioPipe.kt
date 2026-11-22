@@ -112,6 +112,18 @@ class AudioPipe {
     @Volatile private var prefBackend = "auto"
     private var trackMime = ""
     private var trackFormat: MediaFormat? = null
+
+    /*
+     * 音频那一路的解封装句柄（FFmpeg avformat）。
+     * 为什么换：系统解封装一次只能读一条轨，音频+字幕要多开一路；网盘只给两路，
+     * 第三路必被拒（2026-11-22 实测）。avformat 一次打开就能把音频包和字幕包都拿到。
+     */
+    private var demuxHandle = 0L
+    private var demuxCodec = ""
+    private var demuxSubN = 0
+
+    /** 字幕文本回调：起点毫秒、文本、第几条字幕轨 */
+    var onSubtitle: ((Long, String, Int) -> Unit)? = null
     /** 自带库累计解出的 PCM 字节（判据：应与写入设备字节大致一比一） */
     @Volatile private var ffmpegBytes = 0L
     private var track: AudioTrack? = null
@@ -270,15 +282,18 @@ class AudioPipe {
             }
             val fmt = preparedFormat
             val perr = prepareError
-            if (fmt == null || perr != null) {
+            if (perr != null || (fmt == null && demuxHandle == 0L)) {
                 lastError = perr ?: "音频解封装准备失败"
                 Log.e(TAG, lastError!!)
                 stop()
                 return false
             }
-            val mime = fmt.getString(MediaFormat.KEY_MIME) ?: ""
-            sampleRate = fmt.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-            channelCount = runCatching { fmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT) }.getOrDefault(2)
+            /* 解封装模式没有 MediaFormat：采样率/声道由 demuxFeedLoop 从流参数里填好 */
+            val mime = fmt?.getString(MediaFormat.KEY_MIME) ?: "audio/${demuxCodec}"
+            if (fmt != null) {
+                sampleRate = fmt.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                channelCount = runCatching { fmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT) }.getOrDefault(2)
+            }
             if (channelCount !in 1..8) channelCount = 2
             trackMime = mime
             trackFormat = fmt
@@ -292,8 +307,9 @@ class AudioPipe {
                 else -> isNativeOnlyCodec(mime)
             }
             if (useFfmpeg) {
-                val d = FfmpegAudioDecoder(mime, fmt)
-                if (d.open()) {
+                val d = FfmpegAudioDecoder(mime, fmt ?: MediaFormat())
+                val opened = if (fmt != null) d.open() else d.openWithParams(demuxCodec, channelCount)
+                if (opened) {
                     ffDec = d
                     decoderKind = "ffmpeg(${d.desc})"
                 } else {
@@ -422,6 +438,8 @@ class AudioPipe {
          */
         runCatching { track?.pause() }
         runCatching { track?.flush() }
+        /* 解封装：先打断阻塞中的读，再收线程（MediaExtractor 打断不了，avformat 可以） */
+        runCatching { if (demuxHandle != 0L) AudioDemuxNative.nativeDemuxAbort(demuxHandle) }
         feedQueue.abort()
         /* 读线程持连接：它没退出就等于连接没归还，必须进返回值（豆豆 2026-11-21 审出） */
         val ft = feedThread
@@ -537,7 +555,78 @@ class AudioPipe {
      * 与画面那套（VideoPipe.audioFeedLoop 式的结构）完全对称：读到的包进队列，
      * 解码线程只从队列取，网络抖动被队列挡住。
      */
+    /**
+     * 解封装读线程：一次打开，音频包进队列、字幕文本直接回调。
+     *
+     * 线程约束：同一个 AVFormatContext 只能在这一个线程里 open/read/seek/close，
+     * 解码线程只从 feedQueue 取（豆豆 2026-11-22）。
+     */
+    private fun demuxFeedLoop() {
+        val h = AudioDemuxNative.nativeDemuxOpen(feedUrl, (feedStartSec * 1000).toLong())
+        if (h == 0L) {
+            prepareError = "解封装打开失败"
+            prepareLatch.countDown()
+            return
+        }
+        demuxHandle = h
+        val info = IntArray(4)
+        if (AudioDemuxNative.nativeDemuxInfo(h, info) != 0) {
+            prepareError = "解封装参数读取失败"
+            runCatching { AudioDemuxNative.nativeDemuxClose(h) }
+            demuxHandle = 0L
+            prepareLatch.countDown()
+            return
+        }
+        sampleRate = info[0].takeIf { it > 0 } ?: 48000
+        channelCount = info[1].takeIf { it in 1..8 } ?: 2
+        demuxSubN = info[3]
+        demuxCodec = runCatching { AudioDemuxNative.nativeDemuxCodecName(h) }.getOrDefault("")
+        prepareLatch.countDown()
+        Log.i(TAG, "解封装就绪：采样率=$sampleRate 声道=$channelCount 解码器=$demuxCodec 文字字幕轨=$demuxSubN")
+
+        val buf = ByteArray(512 * 1024)
+        val meta = IntArray(4)
+        while (running.get()) {
+            val target = feedSeekSec
+            if (target >= 0.0) {
+                feedSeekSec = -1.0
+                runCatching { AudioDemuxNative.nativeDemuxSeek(h, (target * 1000).toLong()) }
+                feedQueue.flush()
+                Log.i(TAG, "解封装跳转到 ${"%.2f".format(target)}s")
+            }
+            val n = try {
+                AudioDemuxNative.nativeDemuxRead(h, buf, meta)
+            } catch (t: Throwable) {
+                Log.w(TAG, "解封装读异常：${t.javaClass.simpleName}")
+                -9
+            }
+            if (n < 0) {
+                if (n == -1) Log.i(TAG, "解封装读到结尾") else Log.w(TAG, "解封装读失败 rc=$n")
+                break
+            }
+            when (meta[0]) {
+                0 -> {
+                    val ptsUs = if (meta[2] >= 0) meta[2] * 1000L else 0L
+                    if (!feedQueue.put(SampleQueue.Packet(buf.copyOf(n), n, ptsUs))) break
+                }
+                2 -> {
+                    val text = String(buf, 0, n, Charsets.UTF_8)
+                    if (text.isNotBlank()) {
+                        val startMs = if (meta[2] >= 0) meta[2].toLong() else 0L
+                        runCatching { onSubtitle?.invoke(startMs, text, meta[3]) }
+                    }
+                }
+            }
+        }
+        runCatching { AudioDemuxNative.nativeDemuxClose(h) }
+        if (demuxHandle == h) demuxHandle = 0L
+    }
+
     private fun audioFeedLoop() {
+        if (AudioDemuxNative.available && feedMemWindowSec == 0) {
+            demuxFeedLoop()
+            return
+        }
         val ex = MediaExtractor()
         try {
             val hdrs = feedHeaders

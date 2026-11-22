@@ -507,6 +507,29 @@ class MainActivity : ComponentActivity() {
      */
     @Volatile
     private var selfPipeActive = false
+
+    /** 解封装直供的字幕（边播边到）：按开始时间排序，只保留最近的若干条 */
+    private val demuxSubCues = java.util.TreeMap<Long, SubtitleCue>()
+
+    /** 当前要让解封装交付第几条文字字幕轨（-1 = 不要） */
+    @Volatile
+    private var demuxSubTrackWanted = -1
+
+    /** 解封装来了一条字幕：并入自绘字幕表 */
+    private fun appendDemuxCue(startMs: Long, text: String) {
+        if (startMs < 0L || text.isBlank()) return
+        demuxSubCues[startMs] = SubtitleCue(startMs, startMs + 6000L, text, emptyList())
+        if (demuxSubCues.size > 4000) runCatching { demuxSubCues.pollFirstEntry() }
+        subtitleCues = demuxSubCues.values.toList()
+    }
+
+    /** Emby 字幕流序号 → 文件内第几条「文字」字幕（解封装按这个序号交付） */
+    private fun demuxSubtitleOrdinal(index: Int): Int {
+        val textSubs = currentStreams.filter {
+            it.type.equals("Subtitle", true) && !isDanmakuStream(it) && !isImageSubtitle(it)
+        }
+        return textSubs.indexOfFirst { it.index == index }
+    }
     private var subtitleCueStream: Int? = null
     /**
      * 起播崩过一次就改用 H.264 重来（父亲 2026-10-07）。
@@ -6150,6 +6173,8 @@ class MainActivity : ComponentActivity() {
          */
         if (selfPipeActive) {
             if (index == null) {
+                demuxSubTrackWanted = -1
+                demuxSubCues.clear()
                 subtitleCues = emptyList()
                 subtitleCueStream = null
                 subtitleNow = ""
@@ -6157,8 +6182,17 @@ class MainActivity : ComponentActivity() {
                 refreshMenuRows(com.xxxx.emby_vr.panel.MenuKind.SUBTITLE)
                 Log.i(TAG, "自管解码：关闭字幕 → 清屏")
             } else {
-                Log.i(TAG, "自管解码：字幕 $index → 服务端转 SRT 自绘（不经过内核）")
-                loadSubtitleTrack(index)
+                /*
+                 * 自管解码时字幕由**解封装随播放直接交付**（avformat 一条连接同时读音频与字幕包），
+                 * 不再走服务端转 SRT —— 那条路在播放期必然拿不到（网盘两路已被占满，实测 90 秒零字节）。
+                 */
+                demuxSubTrackWanted = demuxSubtitleOrdinal(index)
+                demuxSubCues.clear()
+                subtitleCues = emptyList()
+                subtitleNow = ""
+                if (!waitingFirstFrame) danmakuView?.setSubtitle("")
+                refreshMenuRows(com.xxxx.emby_vr.panel.MenuKind.SUBTITLE)
+                Log.i(TAG, "自管解码：字幕 $index → 文件内第 $demuxSubTrackWanted 条文字字幕（解封装直供）")
             }
             return
         }
@@ -7348,6 +7382,9 @@ class MainActivity : ComponentActivity() {
         selfPipeActive = false
         /* 荧幕进度条的时长缓存跟着这条片子走，别把上一部的总时长带过去 */
         danmakuView?.resetSeekHudCache()
+        /* 解封装字幕跟着这条片子走 */
+        demuxSubTrackWanted = -1
+        demuxSubCues.clear()
         com.xxxx.emby_vr.vr.VrNative.setDvRendererReshape(false)
         com.xxxx.emby_vr.vr.VrNative.setDoviStreamActive(false)
         com.xxxx.emby_vr.vr.VrNative.resetDoviAll()
@@ -9643,6 +9680,12 @@ class MainActivity : ComponentActivity() {
                         }
                         audioPipe = null
                         val ap = com.xxxx.emby_vr.player.AudioPipe()
+                        /* 解封装随播放交付字幕：只收用户选中的那条轨 */
+                        ap.onSubtitle = { startMs, text, track ->
+                            if (track == demuxSubTrackWanted) {
+                                ui.post { appendDemuxCue(startMs, text) }
+                            }
+                        }
                         /* 声音这一路停写 → 画面一起停；恢复 → 一起走（用户自己按暂停的情况除外） */
                         ap.onStall = { stalledNow ->
                             ui.post {

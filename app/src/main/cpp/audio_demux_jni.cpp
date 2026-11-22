@@ -300,6 +300,32 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxSeek(
     return 0;
 }
 
+/**
+ * 音频参数：out[0]=采样率 out[1]=声道数 out[2]=codec_id out[3]=文字字幕轨条数
+ * 换了 MediaExtractor 之后，建 AudioTrack 与开解码器只能从这里拿参数。
+ */
+extern "C" JNIEXPORT jint JNICALL
+Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxInfo(
+        JNIEnv *env, jobject, jlong handle, jintArray out) {
+    Demux *d = fromHandle(handle);
+    if (!d || !d->fmt || d->audioIdx < 0) return -1;
+    AVCodecParameters *p = d->fmt->streams[d->audioIdx]->codecpar;
+    jint v[4] = {p->sample_rate, p->ch_layout.nb_channels, (jint) p->codec_id, d->subN};
+    env->SetIntArrayRegion(out, 0, 4, v);
+    return 0;
+}
+
+/** 音频解码器名（"eac3"/"truehd"/"dca" 等），给自带解码器用 */
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxCodecName(JNIEnv *env, jobject, jlong handle) {
+    Demux *d = fromHandle(handle);
+    if (!d || !d->fmt || d->audioIdx < 0) return env->NewStringUTF("");
+    const AVCodecDescriptor *desc =
+            avcodec_descriptor_get(d->fmt->streams[d->audioIdx]->codecpar->codec_id);
+    if (!desc || !desc->name) return env->NewStringUTF("");
+    return env->NewStringUTF(desc->name);
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxAbort(JNIEnv *, jobject, jlong handle) {
     Demux *d = fromHandle(handle);

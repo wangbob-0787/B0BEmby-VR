@@ -38,6 +38,32 @@ class FfmpegAudioDecoder(
 
     val isOpen: Boolean get() = handle != 0L
 
+    /**
+     * 直接从解封装给的参数打开（不再依赖 MediaFormat）。
+     *
+     * 音频那一路换成 avformat 之后，没有 MediaFormat 可读；extradata 由解封装自己处理，
+     * 这里只传解码器名与声道数。targetChannels 传 0 表示保持源布局。
+     */
+    fun openWithParams(codecName: String, channels: Int): Boolean {
+        close()
+        if (!AudioDecoderNative.available) {
+            Log.e(TAG, "自检失败：audiodec 未加载")
+            return false
+        }
+        handle = AudioDecoderNative.nativeNew()
+        if (handle == 0L) return false
+        val rc = AudioDecoderNative.nativeOpen(handle, codecName, null, 0)
+        if (rc != 0) {
+            Log.e(TAG, "自检失败：nativeOpen($codecName) rc=$rc")
+            close()
+            return false
+        }
+        outChannels = channels.coerceIn(1, 8)
+        desc = "$codecName|解封装直供|${outChannels} ch"
+        Log.i(TAG, "解码器就绪：$desc")
+        return true
+    }
+
     fun open(): Boolean {
         close()
         if (!AudioDecoderNative.available) {
