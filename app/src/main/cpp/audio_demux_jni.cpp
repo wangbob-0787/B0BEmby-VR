@@ -63,6 +63,9 @@ struct Demux {
     /* 最后一个音频包的片源时间（毫秒）：判"真结尾"的第二道判据 */
     int64_t lastAudioPtsMs = -1;
     int64_t durMs = 0;
+    /* 首包位置校验：确认源真的按 Range 给了我们要的那一段 */
+    bool firstAudioChecked = false;
+    int64_t openStartMs = 0;
 };
 
 std::string errStr(int err) {
@@ -225,6 +228,7 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxOpen(
          fmt->pb ? (int) (fmt->pb->seekable & AVIO_SEEKABLE_NORMAL) : -1,
          (int) (fmt->ctx_flags & AVFMTCTX_UNSEEKABLE ? 0 : 1));
 
+    d->openStartMs = startMs;
     if (startMs > 3000 && fmt->pb && !(fmt->pb->seekable & AVIO_SEEKABLE_NORMAL)) {
         LOGE("端点不可 seek，无法从 %lldms 开始 → 判打开失败", (long long) startMs);
         freeDemux(d);
@@ -234,7 +238,12 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxOpen(
         AVStream *as = fmt->streams[d->audioIdx];
         int64_t ts = av_rescale(startMs, as->time_base.den, as->time_base.num * 1000);
         int64_t before = fmt->pb ? avio_tell(fmt->pb) : -1;
-        int ret = av_seek_frame(fmt, d->audioIdx, ts, AVSEEK_FLAG_BACKWARD);
+        /*
+         * 用全局时间基（-1）seek，与命令行 `-ss` 走同一条路。
+         * 带 stream_index 的版本会再用 stream->start_time 做相对换算，mkv 的 start_time 非 0 时落点会偏。
+         */
+        int64_t tsUs = (int64_t) startMs * 1000;
+        int ret = avformat_seek_file(fmt, -1, INT64_MIN, tsUs, tsUs, AVSEEK_FLAG_BACKWARD);
         int64_t after = fmt->pb ? avio_tell(fmt->pb) : -1;
         LOGI("DBG|seek前=%lld|stream=%d|tb=%d/%d|target_ts=%lld|ret=%d|seek后=%lld|start_time=%lld",
              (long long) before, d->audioIdx, as->time_base.num, as->time_base.den,
@@ -271,9 +280,14 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxRead(
     while (true) {
         int ret = av_read_frame(d->fmt, d->pkt);
         if (ret == AVERROR_EOF) {
+            LOGI("DBG|EOF ret=%d abort=%d", ret, d->abort.load() ? 1 : 0);
             /*
              * 一次 EOF 不算结尾：假性 EOF 的特征是"偶发一次、伴随网络错误"。
              * 连续三次、间隔 300ms 以上，才判真结尾（豆豆 2026-11-22）。
+             */
+            /*
+             * 计数照常走：真结尾时本来就没有新数据，"必须先读到数据才计数"会把片尾永远挡掉。
+             * 真结尾的主判据是"位置已贴近片尾"（duration），连击只是辅助。
              */
             int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -326,6 +340,20 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxRead(
             m[1] = size;
             if (d->pkt->pts != AV_NOPTS_VALUE) {
                 d->lastAudioPtsMs = av_rescale_q(d->pkt->pts, st->time_base, AVRational{1, 1000});
+                if (!d->firstAudioChecked) {
+                    d->firstAudioChecked = true;
+                    int64_t diff = d->lastAudioPtsMs - d->openStartMs;
+                    if (diff > 5000 || diff < -5000) {
+                        /* 位置错了但所有返回值都正常：说明源没按 Range 生效，读回的是文件头 */
+                        LOGE("首包位置偏差=%lldms（目标=%lldms，实际=%lldms）→ 源未按 Range 生效",
+                             (long long) diff, (long long) d->openStartMs,
+                             (long long) d->lastAudioPtsMs);
+                        av_packet_unref(d->pkt);
+                        return -3;
+                    }
+                    LOGI("首包位置校验通过：目标=%lldms 实际=%lldms", (long long) d->openStartMs,
+                         (long long) d->lastAudioPtsMs);
+                }
             }
             m[2] = (jint) (d->pkt->pts == AV_NOPTS_VALUE ? -1
                     : av_rescale_q(d->pkt->pts, st->time_base, AVRational{1, 1000}));
@@ -388,9 +416,9 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxSeek(
         JNIEnv *env, jobject, jlong handle, jlong ms) {
     Demux *d = fromHandle(handle);
     if (!d || !d->fmt || d->audioIdx < 0) return -1;
-    AVStream *st = d->fmt->streams[d->audioIdx];
-    int64_t ts = av_rescale(ms, st->time_base.den, st->time_base.num * 1000);
-    int ret = av_seek_frame(d->fmt, d->audioIdx, ts, AVSEEK_FLAG_BACKWARD);
+    /* 与起播一致：全局时间基 seek（带 stream_index 会叠加 start_time 换算） */
+    int64_t tsUs = (int64_t) ms * 1000;
+    int ret = avformat_seek_file(d->fmt, -1, INT64_MIN, tsUs, tsUs, AVSEEK_FLAG_BACKWARD);
     if (ret < 0) {
         LOGE("跳转失败: %s", errStr(ret).c_str());
         return ret;
@@ -398,6 +426,19 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxSeek(
     for (int k = 0; k < d->subN; ++k) {
         if (d->subDec[k]) avcodec_flush_buffers(d->subDec[k]);
     }
+    /*
+     * 跳转后这些字段必须全部重置，否则：
+     * ① firstAudioChecked 还是 true → 新位置的首包不校验，"读回文件头"这条防不住；
+     * ② eofStreak / lastEofMs 残留 → 新位置几次 EOF 就凑满连击；
+     * ③ lastAudioPtsMs 是旧位置 → 尾判据拿旧值比，必然不满足 → 判"等待" → 8 秒超时没声音。
+     */
+    d->openStartMs = ms;
+    d->firstAudioChecked = false;
+    d->eofStreak = 0;
+    d->lastEofMs = 0;
+    d->lastAudioPtsMs = -1;
+    LOGI("DBG|seek ok target=%lld seek后=%lld", (long long) ms,
+         (long long) (d->fmt->pb ? avio_tell(d->fmt->pb) : -1));
     return 0;
 }
 
