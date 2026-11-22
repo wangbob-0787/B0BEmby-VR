@@ -762,54 +762,58 @@ class AudioPipe {
             Log.w(TAG, "内存窗口档位下仍走系统解封装：这一路拿不到字幕（解封装直供只在直读模式生效）")
         }
         val src = newPacketSource()
+        /* 读坏过的标志：解封装抛异常时不能补 EOS，否则"坏了"会被上层当成"播完了" */
+        var diedByError = false
         try {
             if (!src.open()) {
-                prepareError = src.error ?: "音频解封装失败"
+                prepareError = src.lastError ?: "音频解封装失败"
                 Log.e(TAG, prepareError!!)
-                prepareLatch.countDown()
                 return
             }
-        } catch (t: Throwable) {
-            prepareError = "音频解封装异常：${t.javaClass.simpleName}: ${t.message}"
-            Log.e(TAG, prepareError!!)
+            /*
+             * 音频内容起点：旧路径靠解封装给出的样本时间；队列档从 seek 目标推出。
+             * 不填的话首块对齐会把整片音频当成"早于画面"裁光（豆豆 2026-11-22 审出的必现无声）。
+             */
+            audioOriginUs = src.startUs.coerceAtLeast(0L)
+            preparedFormat = src.format
             prepareLatch.countDown()
-            return
-        }
-        /*
-         * 音频内容起点：旧路径靠解封装给出的样本时间；队列档从 seek 目标推出。
-         * 不填的话首块对齐会把整片音频当成"早于画面"裁光（豆豆 2026-11-22 审出的必现无声）。
-         */
-        audioOriginUs = src.startUs.coerceAtLeast(0L)
-        preparedFormat = src.format
-        prepareLatch.countDown()
-        Log.i(TAG, "音频解封装=${src.name}")
+            Log.i(TAG, "音频解封装=${src.name}")
 
-        while (running.get()) {
-            val target = feedSeekSec
-            if (target >= 0.0) {
-                feedSeekSec = -1.0
-                src.seekTo(target)
-                audioOriginUs = src.startUs.coerceAtLeast(0L)
-                feedQueue.flush()
-                Log.i(TAG, "音频读线程跳转到 ${"%.2f".format(target)}s（首帧=${"%.3f".format(audioOriginUs / US)}s）")
-            }
-            val s = try {
-                src.next()
-            } catch (t: Throwable) {
-                null
-            }
-            if (s == null) {
-                /* 真读完才补 EOS：解封装坏了不等于播完 */
-                if (!src.endedByError) {
-                    feedQueue.putEos()
-                    Log.i(TAG, "音频读线程到结尾")
+            while (running.get()) {
+                val target = feedSeekSec
+                if (target >= 0.0) {
+                    feedSeekSec = -1.0
+                    src.seekTo(target)
+                    audioOriginUs = src.startUs.coerceAtLeast(0L)
+                    feedQueue.flush()
+                    Log.i(TAG, "音频读线程跳转到 ${"%.2f".format(target)}s（首帧=${"%.3f".format(audioOriginUs / US)}s）")
                 }
-                break
+                val s = try {
+                    src.next()
+                } catch (t: Throwable) {
+                    Log.w(TAG, "读样本异常：${t.javaClass.simpleName}: ${t.message}")
+                    diedByError = true
+                    null
+                }
+                if (s == null) {
+                    /* 真读完才补 EOS：解封装坏了不等于播完 */
+                    if (!diedByError && !src.endedByError) {
+                        feedQueue.putEos()
+                        Log.i(TAG, "音频读线程到结尾")
+                    }
+                    break
+                }
+                if (!feedQueue.put(SampleQueue.Packet(s.data, s.data.size, s.ptsUs))) break
+                if (src.endedByError) break
             }
-            if (!feedQueue.put(SampleQueue.Packet(s.data, s.data.size, s.ptsUs))) break
-            if (src.endedByError) break
+        } catch (t: Throwable) {
+            /* 读线程意外死掉也必须把连接还回去，否则下一个窗口打不开（403/500 的老账） */
+            prepareError = "音频解封装异常：${t.javaClass.simpleName}: ${t.message}"
+            Log.e(TAG, prepareError!!, t)
+        } finally {
+            prepareLatch.countDown()
+            runCatching { src.close() }
         }
-        runCatching { src.close() }
     }
 
     /** 声音这一路的解封装做法：系统解封装读音轨（全包档下一步接 QueuePacketSource） */

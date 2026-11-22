@@ -21,8 +21,10 @@ interface PacketSource {
     /** 准备阶段产出的轨道格式；全包档没有 MediaFormat，返回 null */
     val format: MediaFormat?
 
-    /** 最近一次失败的说明；[open] 返回 false 时必须给出原因 */
-    val error: String?
+    /** 最近一次失败的说明；[open] 返回 false 时必须给出原因。
+     *  不叫 error：实现类里还会用 kotlin.error() 做断言，同名会让那处编译失败。
+     */
+    val lastError: String?
 
     /** 打开数据源、选轨、定位到起点 */
     fun open(): Boolean
@@ -33,7 +35,12 @@ interface PacketSource {
     /** 跳到 [sec] 秒。落在哪一帧由实现决定（各实现的定位粒度不同） */
     fun seekTo(sec: Double)
 
-    /** 只清本侧的本地状态（刚跳过标志、重试计数）；队列归 Pipe，不许在这里碰 */
+    /**
+     * 只清本侧的本地状态（刚跳过标志、重试计数）；队列归 Pipe，不许在这里碰。
+     *
+     * **不许在 seekTo 之后调用**：刚跳过的那段"读不到数据不算结尾"的重试窗口
+     * 就靠这个标志撑着，清掉等于把窗口关掉（2026-11-21 实测：seek 后立刻读会返回 -1）。
+     */
     fun flush()
 
     /** 释放连接 */
@@ -84,7 +91,7 @@ class ExtractorVideoSource(
 
     override var format: MediaFormat? = null
         private set
-    override var error: String? = null
+    override var lastError: String? = null
         private set
 
     override var bitRate: Int = 0
@@ -137,7 +144,7 @@ class ExtractorVideoSource(
                 }
             }
             if (trackIndex < 0 || fmt == null) {
-                error = "容器里没有视频轨"
+                lastError = "容器里没有视频轨"
                 e.release()
                 return false
             }
@@ -169,7 +176,7 @@ class ExtractorVideoSource(
             )
             return true
         } catch (t: Throwable) {
-            error = "打开输入失败：${t.javaClass.simpleName}: ${t.message}"
+            lastError = "打开输入失败：${t.javaClass.simpleName}: ${t.message}"
             runCatching { e.release() }
             return false
         }
@@ -286,7 +293,7 @@ class ExtractorAudioSource(
 
     override var format: MediaFormat? = null
         private set
-    override var error: String? = null
+    override var lastError: String? = null
         private set
 
     /** 选中的音轨序号 */
@@ -315,7 +322,7 @@ class ExtractorAudioSource(
             }
             val pick = chooseTrack(e)
             if (pick < 0) {
-                error = "没有可解的音轨"
+                lastError = "没有可解的音轨"
                 e.release()
                 return false
             }
@@ -335,7 +342,7 @@ class ExtractorAudioSource(
             )
             return true
         } catch (t: Throwable) {
-            error = "音频解封装异常：${t.javaClass.simpleName}: ${t.message}"
+            lastError = "音频解封装异常：${t.javaClass.simpleName}: ${t.message}"
             runCatching { e.release() }
             return false
         }

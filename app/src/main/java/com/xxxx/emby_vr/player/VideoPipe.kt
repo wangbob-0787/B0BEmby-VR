@@ -547,7 +547,7 @@ class VideoPipe {
         val src = newPacketSource()
         try {
             if (!src.open()) {
-                prepareError = src.error ?: "解封装准备失败"
+                prepareError = src.lastError ?: "解封装准备失败"
                 Log.e(TAG, prepareError!!)
                 prepareLatch.countDown()
                 return
@@ -565,6 +565,7 @@ class VideoPipe {
         prepareLatch.countDown()
         Log.i(TAG, "读线程循环开始：缓冲=${src.bufferBytes / 1048576}MB")
         var readOk = 0
+        var diedByError = false
         while (running.get()) {
             val target = feedSeekSec
             if (target >= 0.0) {
@@ -577,11 +578,12 @@ class VideoPipe {
                 src.next()
             } catch (t: Throwable) {
                 Log.w(TAG, "读样本异常：${t.javaClass.simpleName}: ${t.message}")
+                diedByError = true
                 null
             }
             if (s == null) {
                 /* 真读完才补 EOS：解封装坏了不等于播完 */
-                if (!src.endedByError) feedQueue.putEos()
+                if (!diedByError && !src.endedByError) feedQueue.putEos()
                 Log.w(TAG, "读线程判结尾：已读 $readOk 帧 ${src.endDetail()}")
                 break
             }
