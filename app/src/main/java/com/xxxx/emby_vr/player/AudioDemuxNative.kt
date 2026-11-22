@@ -37,4 +37,7 @@ object AudioDemuxNative {
     external fun nativeDemuxSeek(handle: Long, ms: Long): Int
 
     external fun nativeDemuxClose(handle: Long)
+
+    /** out[0]=open out[1]=close out[2]=fail out[3]=dupe out[4]=inFlight */
+    external fun nativeDemuxStats(out: IntArray): Int
 }

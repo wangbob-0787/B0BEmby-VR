@@ -467,6 +467,14 @@ class AudioPipe {
         codec = null
         ffDec = null
         track = null
+        /* 退出时连接没归零 = 泄漏的铁证（豆豆 2026-11-22） */
+        runCatching {
+            val st = IntArray(5)
+            AudioDemuxNative.nativeDemuxStats(st)
+            if (st[4] != 0) {
+                Log.e(TAG, "CONN 泄漏：退出时 inFlight=${st[4]}|open=${st[0]}|close=${st[1]}|fail=${st[2]}")
+            }
+        }
         paused.set(false)
         return (t == null || !t.isAlive) && feedDead
     }
@@ -600,7 +608,16 @@ class AudioPipe {
         var firstAudioPts = true
         var waitMs = 0L
         var netRetry = 0
+        var lastConnLog = 0L
         while (running.get()) {
+            /* 每 5 秒一行连接账：在飞数、打开/关闭/失败/重复关闭次数（豆豆 2026-11-22） */
+            val nowConn = android.os.SystemClock.elapsedRealtime()
+            if (nowConn - lastConnLog >= 5000L) {
+                lastConnLog = nowConn
+                val st = IntArray(5)
+                runCatching { AudioDemuxNative.nativeDemuxStats(st) }
+                Log.i(TAG, "CONN|inFlight=${st[4]}|open=${st[0]}|close=${st[1]}|fail=${st[2]}|dupe=${st[3]}")
+            }
             val target = feedSeekSec
             if (target >= 0.0) {
                 feedSeekSec = -1.0

@@ -515,13 +515,27 @@ class MainActivity : ComponentActivity() {
     @Volatile private var videoEos = false
     @Volatile private var audioEos = false
 
-    /** 两路都到结尾才收场 */
+    /** 两路都到结尾才收场；一路坏掉不完成时，10 秒后按完成收场（兜底，豆豆 2026-11-22） */
+    private var eosWatchdogPosted = false
+
     private fun maybeFinishPlayback() {
-        if (!videoEos || !audioEos) return
-        Log.i(TAG, "自管解码：两路都到结尾 → 收场")
-        selfPaused = true
-        playClock?.pause()
-        runCatching { audioPipe?.pause() }
+        if (videoEos && audioEos) {
+            Log.i(TAG, "自管解码：两路都到结尾 → 收场")
+            selfPaused = true
+            playClock?.pause()
+            runCatching { audioPipe?.pause() }
+            return
+        }
+        if (eosWatchdogPosted) return
+        eosWatchdogPosted = true
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            if (videoEos != audioEos) {
+                Log.w(TAG, "收场兜底：一路结束 10 秒后另一路仍未完成 → 按完成收场")
+                videoEos = true
+                audioEos = true
+            }
+            maybeFinishPlayback()
+        }, 10_000L)
     }
 
     /** 当前要让解封装交付第几条文字字幕轨（-1 = 不要） */
@@ -9199,6 +9213,7 @@ class MainActivity : ComponentActivity() {
         selfAudioOn = true
         videoEos = false
         audioEos = false
+        eosWatchdogPosted = false
         /* 跳转/重建：字幕表跟着清，否则新位置的画面上会显示旧位置的字幕（豆豆 2026-11-22） */
         demuxSubCues.clear()
         subtitleCues = if (demuxSubTrackWanted >= 0) emptyList() else subtitleCues
@@ -9711,6 +9726,7 @@ class MainActivity : ComponentActivity() {
                         ap.onFeedEnd = {
                             ui.post {
                                 audioEos = true
+                                Log.i(TAG, "TRACK_DONE|audio|pts=${"%.3f".format(originSec)}")
                                 maybeFinishPlayback()
                             }
                         }
@@ -9811,6 +9827,7 @@ class MainActivity : ComponentActivity() {
                     /* 只标记自己结束；声音可能还有尾巴，不许把它一起按停 */
                     Log.i(TAG, "自管解码：画面到结尾（等声音也结束再收）")
                     videoEos = true
+                    Log.i(TAG, "TRACK_DONE|video|pts=${"%.3f".format(originSec)}")
                     maybeFinishPlayback()
                 },
                 /* 出一帧就上屏（父亲 2026-11-20 定）：三帧预热换来的是起播多等一拍、声音先出 */

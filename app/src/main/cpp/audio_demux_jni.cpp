@@ -36,6 +36,12 @@ namespace {
 
 constexpr int kMaxSub = 12;
 
+/* 连接生命周期计数（豆豆 2026-11-22：这一行是"旧连接有没有还"的铁证） */
+static std::atomic<int> gConOpen{0};
+static std::atomic<int> gConClose{0};
+static std::atomic<int> gConFail{0};
+static std::atomic<int> gConDupe{0};
+
 struct Demux {
     AVFormatContext *fmt = nullptr;
     /* stop 时置位：打断阻塞中的 open/read（MediaExtractor 打断不了，只能干等 8 秒） */
@@ -128,6 +134,7 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxOpen(
     env->ReleaseStringUTFChars(url, u);
     if (ret < 0) {
         LOGE("打开失败: %s", errStr(ret).c_str());
+        gConFail.fetch_add(1);
         delete d;
         return 0;
     }
@@ -195,6 +202,7 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxOpen(
             if (ctx) avcodec_free_context(&ctx);
         }
     }
+    gConOpen.fetch_add(1);
     LOGI("解封装就绪: 音频流 %d，文字字幕轨 %d 条", d->audioIdx, d->subN);
 
     if (startMs > 0) {
@@ -382,5 +390,21 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxAbort(JNIEnv *, jobjec
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxClose(JNIEnv *, jobject, jlong handle) {
+    if (handle == 0) {
+        gConDupe.fetch_add(1);
+        LOGE("重复关闭（handle=0）→ 只记数，不重复减");
+        return;
+    }
+    gConClose.fetch_add(1);
     freeDemux(fromHandle(handle));
+}
+
+/** out[0]=open out[1]=close out[2]=fail out[3]=dupe out[4]=inFlight */
+extern "C" JNIEXPORT jint JNICALL
+Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxStats(
+        JNIEnv *env, jobject, jintArray out) {
+    int o = gConOpen.load(), c = gConClose.load();
+    jint v[5] = {o, c, gConFail.load(), gConDupe.load(), o - c};
+    env->SetIntArrayRegion(out, 0, 5, v);
+    return 0;
 }
