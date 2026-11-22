@@ -60,6 +60,9 @@ struct Demux {
     /* 真结尾判据：连续三次 AVERROR_EOF、间隔 300ms 以上、期间无网络错误（豆豆 2026-11-22） */
     int eofStreak = 0;
     int64_t lastEofMs = 0;
+    /* 最后一个音频包的片源时间（毫秒）：判"真结尾"的第二道判据 */
+    int64_t lastAudioPtsMs = -1;
+    int64_t durMs = 0;
 };
 
 std::string errStr(int err) {
@@ -206,10 +209,27 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxOpen(
     LOGI("解封装就绪: 音频流 %d，文字字幕轨 %d 条", d->audioIdx, d->subN);
 
     /* 诊断：可 seek 性、seek 前后位置、换算后的目标——"读不出包"必须先分清是源不可 seek 还是换算错 */
+    d->durMs = 0;
+    if (fmt->duration != AV_NOPTS_VALUE && fmt->duration > 0) {
+        d->durMs = fmt->duration / (AV_TIME_BASE / 1000);
+    } else if (d->audioIdx >= 0) {
+        AVStream *as0 = fmt->streams[d->audioIdx];
+        if (as0->duration != AV_NOPTS_VALUE && as0->duration > 0) {
+            d->durMs = (int64_t) (as0->duration * av_q2d(as0->time_base) * 1000.0);
+            if (as0->start_time != AV_NOPTS_VALUE) {
+                d->durMs -= (int64_t) (as0->start_time * av_q2d(as0->time_base) * 1000.0);
+            }
+        }
+    }
     LOGI("DBG|url_seekable=%d|fmt_seekable=%d",
          fmt->pb ? (int) (fmt->pb->seekable & AVIO_SEEKABLE_NORMAL) : -1,
          (int) (fmt->ctx_flags & AVFMTCTX_UNSEEKABLE ? 0 : 1));
 
+    if (startMs > 3000 && fmt->pb && !(fmt->pb->seekable & AVIO_SEEKABLE_NORMAL)) {
+        LOGE("端点不可 seek，无法从 %lldms 开始 → 判打开失败", (long long) startMs);
+        freeDemux(d);
+        return 0;
+    }
     if (startMs > 0) {
         AVStream *as = fmt->streams[d->audioIdx];
         int64_t ts = av_rescale(startMs, as->time_base.den, as->time_base.num * 1000);
@@ -264,7 +284,20 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxRead(
             }
             d->lastEofMs = now;
             if (d->eofStreak >= 3) {
-                LOGI("连续三次读到结尾 → 判为真 EOF");
+                /* 第二道判据：位置必须已经贴近片尾；否则这是"网络抖动造成的连续 EOF"，只能等 */
+                if (d->durMs > 0) {
+                    if (d->lastAudioPtsMs >= 0 && d->lastAudioPtsMs >= d->durMs - 5000) {
+                        LOGI("真 EOF|位置=%lldms 时长=%lldms", (long long) d->lastAudioPtsMs,
+                             (long long) d->durMs);
+                        return -1;
+                    }
+                    LOGI("连续 EOF 但位置=%lldms 距片尾 %lldms → 判等待（不是结尾）",
+                         (long long) d->lastAudioPtsMs,
+                         (long long) (d->durMs - d->lastAudioPtsMs));
+                    d->eofStreak = 0;
+                    return -2;
+                }
+                LOGI("连续三次读到结尾（无容器时长，按连击判 EOF）");
                 return -1;
             }
             return -2;   // WAITING：上层等 300ms 再来
@@ -291,6 +324,9 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxRead(
             AVStream *st = d->fmt->streams[d->audioIdx];
             m[0] = 0;
             m[1] = size;
+            if (d->pkt->pts != AV_NOPTS_VALUE) {
+                d->lastAudioPtsMs = av_rescale_q(d->pkt->pts, st->time_base, AVRational{1, 1000});
+            }
             m[2] = (jint) (d->pkt->pts == AV_NOPTS_VALUE ? -1
                     : av_rescale_q(d->pkt->pts, st->time_base, AVRational{1, 1000}));
             env->SetByteArrayRegion(out, 0, size, reinterpret_cast<const jbyte *>(d->pkt->data));
@@ -375,8 +411,8 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxInfo(
     Demux *d = fromHandle(handle);
     if (!d || !d->fmt || d->audioIdx < 0) return -1;
     AVCodecParameters *p = d->fmt->streams[d->audioIdx]->codecpar;
-    /* 时长三级回退：容器 → 音频流 → 无（无时长时上层只用 EOF 连击判据） */
-    int64_t durMs = 0;
+    /* 时长三级回退：容器 → 音频流 → 无（无时长时只能用 EOF 连击判据） */
+    int64_t durMs = d->durMs;
     if (d->fmt->duration != AV_NOPTS_VALUE && d->fmt->duration > 0) {
         durMs = d->fmt->duration / (AV_TIME_BASE / 1000);
     } else {
