@@ -10067,6 +10067,17 @@ class MainActivity : ComponentActivity() {
                 /* 全包档：把 Session 与画面格式交进去，本类不再建读线程/解封装 */
                 demuxSession = session,
                 formatOverride = fullVideoFormat,
+                /*
+                 * 取证开关（调参 video_probe=1）：把前 60 个视频包转 Annex-B 落到应用目录，
+                 * 拉回 .15 用 `ffmpeg -f hevc -i 文件 -frames:v 3 -f null -` 试解，
+                 * 一次切开"数据不对"还是"设备解码器不对"（豆豆 2026-11-22）。
+                 */
+                probeDumpPath = if (session != null && (com.xxxx.emby_vr.vr.VrTuning.value(this, "video_probe")
+                        ?.trim()?.toIntOrNull() ?: 0) == 1) {
+                    java.io.File(getExternalFilesDir(null) ?: filesDir, "pkt_dump.hevc").absolutePath
+                } else {
+                    null
+                },
             )
             if (ok && session != null) {
                 /*

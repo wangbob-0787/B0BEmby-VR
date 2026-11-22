@@ -80,6 +80,12 @@ class VideoPipe {
     /* 排查用计数：前 20 个包、前 30 次取输出各打一遍（2026-11-22 全包档零输出） */
     private var pktProbe = 0
     private var outProbe = 0
+    /** 取证落盘：把前 60 个视频包转 Annex-B 写成文件，拿去 .15 上让 ffmpeg 解 */
+    private var dumpStream: java.io.FileOutputStream? = null
+    private var dumpPath: String? = null
+    private var dumpedPackets = 0
+    private var dumpedBytes = 0L
+    private var totalFed = 0L
 
     /**
      * 致命态：读线程卡在网络读里退不出来，连接也就还不回去。
@@ -412,6 +418,8 @@ class VideoPipe {
          */
         demuxSession: DemuxSession? = null,
         formatOverride: MediaFormat? = null,
+        /** 取证用：把前若干个视频包转成 Annex-B 落盘（null = 不落盘） */
+        probeDumpPath: String? = null,
     ): Boolean {
         /*
          * 旧实例必须先确认退出。`stop()` 返回 false = 旧线程还活着、可能仍占着 MediaCodec
@@ -509,6 +517,10 @@ class VideoPipe {
                 awaitingKeyframe = true
                 skippedToKeyframe = 0
                 keyWaitSinceMs = 0L
+                dumpPath = probeDumpPath
+                dumpedPackets = 0
+                dumpedBytes = 0L
+                totalFed = 0L
                 /* 片长由 Session 报（全包档没有 MediaExtractor 的 KEY_DURATION） */
                 durationSec = (demuxSession?.durationMs ?: 0L) / 1000.0
                 Log.i(
@@ -541,6 +553,7 @@ class VideoPipe {
              * 这里让它按普通 HEVC 解即可。硬件若擅自做色调映射，画面会显得亮度被压平，
              * 那属于要在实测里发现的问题，不在这里猜。
              */
+            Log.i(TAG, "解码组件：${codec.name}（软解会是 c2.android.* 之类）")
             codec.configure(format, surface, null, 0)
             codec.start()
             decoder = codec
@@ -799,6 +812,8 @@ class VideoPipe {
                          */
                         lastSeenInputPts = pts / 1_000_000.0
                         runCatching { harvestDovi(java.nio.ByteBuffer.wrap(pkt.data, 0, pkt.size), pkt.size) }
+                        totalFed++
+                        dumpPacketIfNeeded(pkt)
                         if (pktProbe < 20) {
                             pktProbe++
                             val head = pkt.data.copyOf(minOf(12, pkt.size)).joinToString(" ") { "%02x".format(it) }
@@ -823,7 +838,7 @@ class VideoPipe {
                     TAG,
                     "取输出#$outProbe 返回=$outIdx" +
                         (if (outIdx >= 0) " size=${info.size} 标志=${info.flags}" else "") +
-                        " 已喂=${pktProbe}",
+                        " 已喂=$totalFed",
                 )
             }
             if (outIdx < 0 && outIdx != MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) statOutMiss++
@@ -839,6 +854,7 @@ class VideoPipe {
                 }
                 outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                     val f = codec.outputFormat
+                    Log.i(TAG, "输出格式：$f")
                     videoWidth = f.getInteger(MediaFormat.KEY_WIDTH)
                     videoHeight = f.getInteger(MediaFormat.KEY_HEIGHT)
                     Log.i(TAG, "输出格式确定 ${videoWidth}x$videoHeight")
@@ -1413,6 +1429,11 @@ class VideoPipe {
          * 全包档的队列归 Session：这里不 abort 队列，但必须让 Session 中止阻塞读，
          * 否则解码线程会一直卡在 queue.get() 上、join 超时被判僵尸（豆豆 2026-11-22 P1-6）。
          */
+        runCatching {
+            dumpStream?.flush()
+            dumpStream?.close()
+            dumpStream = null
+        }
         if (fullMode) {
             runCatching { session?.abort() }
         } else {
