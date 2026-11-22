@@ -77,6 +77,9 @@ class VideoPipe {
     private var skippedToKeyframe = 0
     /** 等关键帧的起点（elapsedRealtime）；0 = 没在等 */
     private var keyWaitSinceMs = 0L
+    /* 排查用计数：前 20 个包、前 30 次取输出各打一遍（2026-11-22 全包档零输出） */
+    private var pktProbe = 0
+    private var outProbe = 0
 
     /**
      * 致命态：读线程卡在网络读里退不出来，连接也就还不回去。
@@ -545,6 +548,18 @@ class VideoPipe {
             videoWidth = format.getInteger(MediaFormat.KEY_WIDTH)
             videoHeight = format.getInteger(MediaFormat.KEY_HEIGHT)
             Log.i(TAG, "起播 $mime ${videoWidth}x$videoHeight")
+            /* 取证：两条路的格式头逐字节对比（全包档零输出时先看这里） */
+            runCatching {
+                val c0 = format.getByteBuffer("csd-0")
+                val c1 = format.getByteBuffer("csd-1")
+                val n0 = c0?.remaining() ?: 0
+                val head = if (c0 != null) {
+                    val d = ByteArray(minOf(12, n0))
+                    c0.duplicate().get(d)
+                    d.joinToString(" ") { "%02x".format(it) }
+                } else ""
+                Log.i(TAG, "格式取证：全包档=$fullMode csd0=${n0}B csd1=${c1?.remaining() ?: 0}B 头=$head")
+            }
 
             thread = Thread({ pump() }, "VideoPipe").apply {
                 priority = Thread.NORM_PRIORITY + 2
@@ -780,6 +795,11 @@ class VideoPipe {
                          */
                         lastSeenInputPts = pts / 1_000_000.0
                         runCatching { harvestDovi(java.nio.ByteBuffer.wrap(pkt.data, 0, pkt.size), pkt.size) }
+                        if (pktProbe < 20) {
+                            pktProbe++
+                            val head = pkt.data.copyOf(minOf(12, pkt.size)).joinToString(" ") { "%02x".format(it) }
+                            Log.i(TAG, "包取证#$pktProbe size=${pkt.size} pts=${pkt.ptsUs} key=${pkt.key} 头=$head")
+                        }
                         codec.queueInputBuffer(inIdx, 0, pkt.size, pts, 0)
                     }
                 }
@@ -793,6 +813,15 @@ class VideoPipe {
             }
 
             val outIdx = codec.dequeueOutputBuffer(info, DEQUEUE_TIMEOUT_US)
+            if (outProbe < 30) {
+                outProbe++
+                Log.i(
+                    TAG,
+                    "取输出#$outProbe 返回=$outIdx" +
+                        (if (outIdx >= 0) " size=${info.size} 标志=${info.flags}" else "") +
+                        " 已喂=${pktProbe}",
+                )
+            }
             if (outIdx < 0 && outIdx != MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) statOutMiss++
             when {
                 outIdx >= 0 -> {
