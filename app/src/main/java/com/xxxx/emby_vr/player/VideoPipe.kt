@@ -72,6 +72,9 @@ class VideoPipe {
     private var queueStalled = false
     /** 待执行的解码器清理（主线程只登记，由解码线程在两帧之间做） */
     @Volatile private var pendingSourceFlush = false
+    /** 全包档：跳转后要等关键帧再喂包，否则硬解报错/花屏（豆豆 2026-11-22 P1-1） */
+    @Volatile private var awaitingKeyframe = false
+    private var skippedToKeyframe = 0
 
     /**
      * 致命态：读线程卡在网络读里退不出来，连接也就还不回去。
@@ -723,6 +726,19 @@ class VideoPipe {
                         Log.i(TAG, "解码线程取到首包：$pkt.size 字节 pts=${pkt.ptsUs}us")
                     }
                     statLastReadRet = (pkt?.size ?: -1).toLong()
+                    /*
+                     * 全包档跳转后：先等关键帧。落点不是关键帧时硬解会报错或花屏几秒，
+                     * 丢掉非关键帧最多黑到下一个关键帧（豆豆 2026-11-22 P1-1）。
+                     */
+                    if (fullMode && awaitingKeyframe && pkt != null) {
+                        if (!pkt.key) {
+                            skippedToKeyframe++
+                            codec.queueInputBuffer(inIdx, 0, 0, 0, 0)
+                            continue
+                        }
+                        awaitingKeyframe = false
+                        Log.i(TAG, "全包档跳转后等到关键帧：pts=${pkt.ptsUs}us（丢弃 $skippedToKeyframe 包）")
+                    }
                     if (pkt == null) {
                         codec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                         inputDone = true
@@ -1311,6 +1327,8 @@ class VideoPipe {
         if (!pendingSourceFlush) return
         if (heldIdx >= 0) return
         pendingSourceFlush = false
+        awaitingKeyframe = true
+        skippedToKeyframe = 0
         runCatching { decoder?.flush() }
         originPts = -1.0
         appliedOffset = Double.NaN

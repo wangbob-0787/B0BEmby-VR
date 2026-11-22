@@ -477,9 +477,10 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxRead(
         if (d->videoIdx >= 0 && d->pkt->stream_index == d->videoIdx) {
             int size = d->pkt->size;
             if (size > cap) {
-                LOGE("视频包超过输出缓冲 need=%d cap=%d → 致命", size, cap);
+                /* 丢这一包继续读：丢一个关键帧最多黑到下一个关键帧，比"整部片播不了"轻得多 */
+                LOGE("视频包超过输出缓冲 need=%d cap=%d → 丢这一包继续读（豆豆 2026-11-22）", size, cap);
                 av_packet_unref(d->pkt);
-                return -4;
+                continue;
             }
             AVStream *vs = d->fmt->streams[d->videoIdx];
             m[0] = 1;

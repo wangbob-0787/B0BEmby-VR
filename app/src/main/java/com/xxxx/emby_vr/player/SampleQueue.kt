@@ -21,7 +21,7 @@ class SampleQueue(private val maxBytes: Int) {
     }
 
     /** 一帧样本：数据、字节数、片源时间戳（微秒） */
-    class Packet(val data: ByteArray, val size: Int, val ptsUs: Long)
+    class Packet(val data: ByteArray, val size: Int, val ptsUs: Long, val key: Boolean = false)
 
     private val lock = Object()
     private val deque = ArrayDeque<Packet>()

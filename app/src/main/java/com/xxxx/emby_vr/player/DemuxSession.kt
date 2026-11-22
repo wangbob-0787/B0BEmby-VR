@@ -293,7 +293,7 @@ class DemuxSession(
                                 }
                             }
                             val key = meta[3] != 0
-                            if (!videoQueue.put(SampleQueue.Packet(buf.copyOf(n), n, ptsUs))) break
+                            if (!videoQueue.put(SampleQueue.Packet(buf.copyOf(n), n, ptsUs, key))) break
                         }
                         2 -> {
                             val text = String(buf, 0, n, Charsets.UTF_8)
