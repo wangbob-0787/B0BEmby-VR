@@ -890,7 +890,7 @@ class AudioPipe {
             return
         }
         /* 设备基准跟着重置：静音时清过 writtenFrames，基准不重设位置会偏掉那零点几秒 */
-        frameBase = runCatching { track?.playbackHeadPosition?.toLong() }.getOrDefault(0L)
+        frameBase = runCatching { track?.playbackHeadPosition?.toLong() ?: 0L }.getOrDefault(0L)
         startedAtMs = SystemClock.elapsedRealtime()
         runCatching { track?.play() }
         Log.w(TAG, "全包档跳转失败：声音已放回（位置沿用当前基准）")
@@ -929,7 +929,7 @@ class AudioPipe {
         pendingSkipBytes = 0L
         seekFlushCount++
         writtenFrames = 0L
-        frameBase = runCatching { track?.playbackHeadPosition?.toLong() }.getOrDefault(0L)
+        frameBase = runCatching { track?.playbackHeadPosition?.toLong() ?: 0L }.getOrDefault(0L)
         clock?.resetTo(originUs)
         if (!paused.get()) {
             startedAtMs = SystemClock.elapsedRealtime()

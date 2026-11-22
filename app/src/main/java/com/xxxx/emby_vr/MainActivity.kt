@@ -9401,7 +9401,8 @@ class MainActivity : ComponentActivity() {
             if (sessJump != null) {
                 /* 先立刻静音：落点回灌前不能让旧位置的声音继续放完 */
                 audioPipe?.silenceForSessionSeek()
-                pipe.flushForSessionSeek()
+                /* 用字段访问：这个 lambda 在 pipe 局部变量声明之前，直接引用会编译不过 */
+                videoPipe?.flushForSessionSeek()
                 sessJump.requestSeek(ms)
                 Log.i(TAG, "全包档跳转：Session 定位到 ${"%.1f".format(sec)}s（不重建）")
                 /*
