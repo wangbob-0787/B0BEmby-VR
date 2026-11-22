@@ -25,7 +25,7 @@ object AudioDemuxNative {
      */
     external fun nativeDemuxRead(handle: Long, out: ByteArray, meta: IntArray): Int
 
-    /** out[0]=采样率 out[1]=声道数 out[2]=codec_id out[3]=文字字幕轨条数 */
+    /** out[0]=采样率 out[1]=声道数 out[2]=codec_id out[3]=文字字幕轨条数 out[4]=时长毫秒(0=未知) */
     external fun nativeDemuxInfo(handle: Long, out: IntArray): Int
 
     /** 音频解码器名（eac3/truehd/dca 等） */

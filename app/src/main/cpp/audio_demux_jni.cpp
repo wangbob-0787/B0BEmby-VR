@@ -49,6 +49,9 @@ struct Demux {
     AVCodecContext *subDec[kMaxSub] = {nullptr};
     int subN = 0;
     AVPacket *pkt = nullptr;
+    /* 真结尾判据：连续三次 AVERROR_EOF、间隔 300ms 以上、期间无网络错误（豆豆 2026-11-22） */
+    int eofStreak = 0;
+    int64_t lastEofMs = 0;
 };
 
 std::string errStr(int err) {
@@ -218,11 +221,36 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxRead(
 
     while (true) {
         int ret = av_read_frame(d->fmt, d->pkt);
-        if (ret == AVERROR_EOF) return -1;
-        if (ret < 0) {
-            LOGE("读包失败: %s", errStr(ret).c_str());
-            return ret;
+        if (ret == AVERROR_EOF) {
+            /*
+             * 一次 EOF 不算结尾：假性 EOF 的特征是"偶发一次、伴随网络错误"。
+             * 连续三次、间隔 300ms 以上，才判真结尾（豆豆 2026-11-22）。
+             */
+            int64_t now = av_gettime_relative() / 1000;
+            if (now - d->lastEofMs > 300) {
+                d->eofStreak = (d->eofStreak > 0 && now - d->lastEofMs < 1500) ? d->eofStreak + 1 : 1;
+            } else {
+                d->eofStreak++;
+            }
+            d->lastEofMs = now;
+            if (d->eofStreak >= 3) {
+                LOGI("连续三次读到结尾 → 判为真 EOF");
+                return -1;
+            }
+            return -2;   // WAITING：上层等 300ms 再来
         }
+        if (ret < 0) {
+            d->eofStreak = 0;
+            /* 网络类错误与致命错误分开：前者可以等/重连，后者重试无意义 */
+            if (ret == AVERROR(EAGAIN) || ret == AVERROR(ETIMEDOUT) ||
+                ret == AVERROR(ECONNRESET) || ret == AVERROR(EIO)) {
+                LOGE("读包网络类错误: %s", errStr(ret).c_str());
+                return -3;
+            }
+            LOGE("读包失败（致命）: %s", errStr(ret).c_str());
+            return -4;
+        }
+        d->eofStreak = 0;
         if (d->pkt->stream_index == d->audioIdx) {
             int size = d->pkt->size;
             if (size > cap) { av_packet_unref(d->pkt); return -3; }
@@ -313,8 +341,22 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxInfo(
     Demux *d = fromHandle(handle);
     if (!d || !d->fmt || d->audioIdx < 0) return -1;
     AVCodecParameters *p = d->fmt->streams[d->audioIdx]->codecpar;
-    jint v[4] = {p->sample_rate, p->ch_layout.nb_channels, (jint) p->codec_id, d->subN};
-    env->SetIntArrayRegion(out, 0, 4, v);
+    /* 时长三级回退：容器 → 音频流 → 无（无时长时上层只用 EOF 连击判据） */
+    int64_t durMs = 0;
+    if (d->fmt->duration != AV_NOPTS_VALUE && d->fmt->duration > 0) {
+        durMs = d->fmt->duration / (AV_TIME_BASE / 1000);
+    } else {
+        AVStream *st = d->fmt->streams[d->audioIdx];
+        if (st->duration != AV_NOPTS_VALUE && st->duration > 0) {
+            durMs = (int64_t) (st->duration * av_q2d(st->time_base) * 1000.0);
+            if (st->start_time != AV_NOPTS_VALUE) {
+                durMs -= (int64_t) (st->start_time * av_q2d(st->time_base) * 1000.0);
+            }
+        }
+    }
+    if (durMs <= 0) LOGE("无容器时长，EOF 判据降级为仅连击");
+    jint v[5] = {p->sample_rate, p->ch_layout.nb_channels, (jint) p->codec_id, d->subN, (jint) durMs};
+    env->SetIntArrayRegion(out, 0, 5, v);
     return 0;
 }
 

@@ -121,6 +121,8 @@ class AudioPipe {
     private var demuxHandle = 0L
     private var demuxCodec = ""
     private var demuxSubN = 0
+    /** 容器时长（毫秒，0=未知）：判"真结尾"用 */
+    private var demuxDurationMs = 0L
 
     /** 字幕文本回调：起点毫秒、结束毫秒、文本、第几条字幕轨 */
     var onSubtitle: ((Long, Long, String, Int) -> Unit)? = null
@@ -569,7 +571,7 @@ class AudioPipe {
             return
         }
         demuxHandle = h
-        val info = IntArray(4)
+        val info = IntArray(5)
         if (AudioDemuxNative.nativeDemuxInfo(h, info) != 0) {
             prepareError = "解封装参数读取失败"
             runCatching { AudioDemuxNative.nativeDemuxClose(h) }
@@ -580,6 +582,7 @@ class AudioPipe {
         sampleRate = info[0].takeIf { it > 0 } ?: 48000
         channelCount = info[1].takeIf { it in 1..8 } ?: 2
         demuxSubN = info[3]
+        demuxDurationMs = info[4].takeIf { it > 0 }?.toLong() ?: 0L
         demuxCodec = runCatching { AudioDemuxNative.nativeDemuxCodecName(h) }.getOrDefault("")
         /*
          * 音频内容起点：旧路径靠 ex.sampleTime 给出；解封装这条没有，必须自己填。
@@ -592,6 +595,8 @@ class AudioPipe {
         val buf = ByteArray(512 * 1024)
         val meta = IntArray(5)
         var firstAudioPts = true
+        var waitMs = 0L
+        var netRetry = 0
         while (running.get()) {
             val target = feedSeekSec
             if (target >= 0.0) {
@@ -609,11 +614,45 @@ class AudioPipe {
                 -9
             }
             if (n < 0) {
-                if (n == -1) Log.i(TAG, "解封装读到结尾") else Log.w(TAG, "解封装读失败 rc=$n")
-                /* 必须告诉解码线程"没有更多数据"，否则它会一直阻塞在队列上（豆豆 2026-11-22） */
-                feedQueue.putEos()
-                break
+                when (n) {
+                    -1 -> {
+                        /* 真结尾（解封装侧已连击三次确认） */
+                        Log.i(TAG, "解封装真结尾（时长=${demuxDurationMs / 1000}s）")
+                        feedQueue.putEos()
+                        break
+                    }
+                    -2 -> {
+                        /* 暂时没数据：等一会儿再读；总等待超过 8 秒就按网络错误处理 */
+                        waitMs += 300L
+                        if (waitMs > 8_000L) {
+                            Log.w(TAG, "解封装连续 8 秒没有数据 → 按网络错误处理")
+                            feedQueue.putEos()
+                            break
+                        }
+                        Thread.sleep(300)
+                        continue
+                    }
+                    -3 -> {
+                        /* 网络类错误：短退避后重试一次，仍失败就收场（断流判决表下一版接） */
+                        netRetry++
+                        if (netRetry > 2) {
+                            Log.w(TAG, "解封装网络错误连续 $netRetry 次 → 停止这一路")
+                            feedQueue.putEos()
+                            break
+                        }
+                        Log.w(TAG, "解封装网络错误，${netRetry} 次后重试")
+                        Thread.sleep(500)
+                        continue
+                    }
+                    else -> {
+                        Log.e(TAG, "解封装致命错误 rc=$n → 停止这一路")
+                        feedQueue.putEos()
+                        break
+                    }
+                }
             }
+            waitMs = 0L
+            netRetry = 0
             when (meta[0]) {
                 0 -> {
                     val ptsUs = if (meta[2] >= 0) meta[2] * 1000L else 0L
