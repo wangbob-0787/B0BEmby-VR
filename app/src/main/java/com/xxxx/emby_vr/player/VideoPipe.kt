@@ -1383,6 +1383,53 @@ class VideoPipe {
     }
 
     /**
+     * 取证：前 60 个视频包转 Annex-B 落盘，拿去 .15 上让 `ffmpeg -f hevc` 试解。
+     *
+     * 从**第一个关键帧**开始计数：落点不在 IDR 时文件头没有 VPS/SPS/PPS，
+     * 那样 dump 出来的东西解不出来，不是证据而是误导（豆豆 2026-11-22）。
+     */
+    private fun dumpPacketIfNeeded(pkt: SampleQueue.Packet) {
+        val path = dumpPath ?: return
+        if (dumpedPackets >= 60) return
+        if (dumpStream == null) {
+            if (dumpedPackets > 0) return          // 已落完并关掉，别重开覆盖
+            if (!pkt.key) return                   // 等第一个关键帧再开始
+        }
+        try {
+            val out = dumpStream ?: java.io.FileOutputStream(path).also {
+                dumpStream = it
+                Log.i(TAG, "取证落盘：$path（从关键帧起，最多 60 包）")
+            }
+            var p = 0
+            val d = pkt.data
+            val size = pkt.size
+            while (p + 4 <= size) {
+                /* 四字节长度按大端取；每字节都要 and 0xFF（Kotlin Byte 有符号） */
+                val n = ((d[p].toInt() and 0xFF) shl 24) or ((d[p + 1].toInt() and 0xFF) shl 16) or
+                    ((d[p + 2].toInt() and 0xFF) shl 8) or (d[p + 3].toInt() and 0xFF)
+                if (n <= 0 || p + 4 + n > size) break
+                out.write(byteArrayOf(0, 0, 0, 1))
+                out.write(d, p + 4, n)
+                p += 4 + n
+            }
+            dumpedPackets++
+            dumpedBytes += p.toLong()
+            if (dumpedPackets >= 60) {
+                out.flush()
+                out.close()
+                dumpStream = null
+                Log.i(TAG, "取证落盘完成：$path 包=$dumpedPackets 字节=$dumpedBytes")
+            }
+        } catch (t: Throwable) {
+            /* 取证不许把解码线程带崩：磁盘满/权限失败都只记一行 */
+            Log.w(TAG, "取证落盘失败：${t.javaClass.simpleName}: ${t.message}")
+            runCatching { dumpStream?.close() }
+            dumpStream = null
+            dumpPath = null
+        }
+    }
+
+    /**
      * 全包档：跳转由 Session 统一发起，这里只登记"要清解码器"。
      *
      * 不能在这里直接 flush：主线程调 flush 时解码线程可能正握着输出缓冲，
