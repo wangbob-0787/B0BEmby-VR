@@ -75,6 +75,8 @@ class VideoPipe {
     /** 全包档：跳转后要等关键帧再喂包，否则硬解报错/花屏（豆豆 2026-11-22 P1-1） */
     @Volatile private var awaitingKeyframe = false
     private var skippedToKeyframe = 0
+    /** 等关键帧的起点（elapsedRealtime）；0 = 没在等 */
+    private var keyWaitSinceMs = 0L
 
     /**
      * 致命态：读线程卡在网络读里退不出来，连接也就还不回去。
@@ -500,6 +502,10 @@ class VideoPipe {
                     stop()
                     return false
                 }
+                /* 起播也走过同一条保险：万一首包不是关键帧，先等关键帧再喂（豆豆 2026-11-22） */
+                awaitingKeyframe = true
+                skippedToKeyframe = 0
+                keyWaitSinceMs = 0L
                 /* 片长由 Session 报（全包档没有 MediaExtractor 的 KEY_DURATION） */
                 durationSec = (demuxSession?.durationMs ?: 0L) / 1000.0
                 Log.i(
@@ -731,13 +737,30 @@ class VideoPipe {
                      * 丢掉非关键帧最多黑到下一个关键帧（豆豆 2026-11-22 P1-1）。
                      */
                     if (fullMode && awaitingKeyframe && pkt != null) {
-                        if (!pkt.key) {
+                        val nowMs = android.os.SystemClock.elapsedRealtime()
+                        if (keyWaitSinceMs == 0L) keyWaitSinceMs = nowMs
+                        /*
+                         * 丢包闸：坏源可能一直不出关键帧。丢满 300 包或等满 5 秒就停手 ——
+                         * 把这一包直接喂进去让硬解自己报错/恢复，并在日志里说清"源里可能没有关键帧"，
+                         * 不许无声地一直等（豆豆 2026-11-22）。
+                         */
+                        val waitedMs = nowMs - keyWaitSinceMs
+                        val giveUp = skippedToKeyframe >= 300 || waitedMs >= 5000L
+                        if (!pkt.key && !giveUp) {
                             skippedToKeyframe++
+                            if (skippedToKeyframe % 100 == 0) {
+                                Log.w(TAG, "全包档等关键帧：已丢 $skippedToKeyframe 包（等了 ${waitedMs}ms）")
+                            }
                             codec.queueInputBuffer(inIdx, 0, 0, 0, 0)
                             continue
                         }
                         awaitingKeyframe = false
-                        Log.i(TAG, "全包档跳转后等到关键帧：pts=${pkt.ptsUs}us（丢弃 $skippedToKeyframe 包）")
+                        keyWaitSinceMs = 0L
+                        if (!pkt.key) {
+                            Log.e(TAG, "全包档等关键帧超限（丢 $skippedToKeyframe 包，等 ${waitedMs}ms）→ 硬喂这一包")
+                        } else {
+                            Log.i(TAG, "全包档等到关键帧：pts=${pkt.ptsUs}us（丢弃 $skippedToKeyframe 包，等 ${waitedMs}ms）")
+                        }
                     }
                     if (pkt == null) {
                         codec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
@@ -1329,6 +1352,7 @@ class VideoPipe {
         pendingSourceFlush = false
         awaitingKeyframe = true
         skippedToKeyframe = 0
+        keyWaitSinceMs = 0L
         runCatching { decoder?.flush() }
         originPts = -1.0
         appliedOffset = Double.NaN
