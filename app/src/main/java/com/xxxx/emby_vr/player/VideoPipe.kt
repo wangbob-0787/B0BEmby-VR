@@ -495,7 +495,13 @@ class VideoPipe {
                     stop()
                     return false
                 }
-                Log.i(TAG, "全包档起播：格式=${formatOverride.getString(MediaFormat.KEY_MIME)} 队列=${sourceQueue.sizeBytes() / 1024}KB")
+                /* 片长由 Session 报（全包档没有 MediaExtractor 的 KEY_DURATION） */
+                durationSec = (demuxSession?.durationMs ?: 0L) / 1000.0
+                Log.i(
+                    TAG,
+                    "全包档起播：格式=${formatOverride.getString(MediaFormat.KEY_MIME)} " +
+                        "片长=${"%.1f".format(durationSec)}s 队列=${sourceQueue.sizeBytes() / 1024}KB",
+                )
             } else {
                 preparedFormat = null
                 feedThread = Thread({ feedLoop() }, "VideoFeed").apply { isDaemon = true; start() }

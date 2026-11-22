@@ -508,6 +508,12 @@ class MainActivity : ComponentActivity() {
     @Volatile
     private var selfPipeActive = false
 
+    /**
+     * 全包档（demux_mode=full）的解封装会话：一条连接同时出画面/声音/字幕。
+     * 归这条播放周期所有；停播、换集、换代都要收掉（连接只有一条，泄漏就是 403）。
+     */
+    private var selfSession: com.xxxx.emby_vr.player.DemuxSession? = null
+
     /** 解封装直供的字幕（边播边到）：按开始时间排序，只保留最近的若干条 */
     private val demuxSubCues = java.util.TreeMap<Long, SubtitleCue>()
 
@@ -7467,6 +7473,11 @@ class MainActivity : ComponentActivity() {
         }
         mpvBackend = null
         lastStopWaitedMs = android.os.SystemClock.elapsedRealtime() - stopT0
+        /*
+         * 全包档收场顺序（图 §2-8）：先 abort Session 把阻塞在队列上的消费端叫醒，
+         * 再收两条 Pipe，最后关 Session —— 反过来会让 Pipe 的 join 等到超时。
+         */
+        selfSession?.let { s -> runCatching { s.abort() } }
         /* 自管音频先收：它占着音频设备，留着会让下一部片一开播就有人声 */
         audioPipe?.let { runCatching { it.stop() } }
         audioPipe = null
@@ -7477,6 +7488,11 @@ class MainActivity : ComponentActivity() {
             runCatching { it.stop() }
         }
         videoPipe = null
+        selfSession?.let { s ->
+            runCatching { s.stop() }
+            Log.i(TAG, "全包档收场：Session 已关（连接归还）")
+        }
+        selfSession = null
         /*
          * 画图时发现的问题（2026-11-17）：控制层的跳转钩子和这部的地址/表面在停播时没清。
          * 停掉 P5 再播别的片，一按快进仍会走到"重启自管解码"那一支，用旧地址把已经停掉的
@@ -9094,7 +9110,14 @@ class MainActivity : ComponentActivity() {
                 }
             }
             runCatching { m.seekToSec(sec) }
-            pipe.requestSeek(sec)
+            if (selfSession != null) {
+                /* 全包档：跳转只有 Session 一个入口；两条 Pipe 只清解码器与本地状态（图 §2-7） */
+                pipe.flushForSessionSeek()
+                selfSession?.requestSeek((sec * 1000.0).toLong())
+                audioPipe?.onSessionSeek(sec, sec)
+            } else {
+                pipe.requestSeek(sec)
+            }
             /*
              * 跳转后**不立刻放开**（父亲 2026-11-18 双信号口径）：先把声音压住，
              * 等画面出新帧（`pipe.onSeekRendered`）+ 内核报出的位置和这一帧对得上，
@@ -9434,6 +9457,49 @@ class MainActivity : ComponentActivity() {
         ).absolutePath
         selfPipeUrl = url
         selfPipeSurface = surface
+        /*
+         * 全包档：画面/声音/字幕走**同一条**连接（图 §2）。
+         * 默认 off；装配任何一步失败都退回 off（off 是已经验收过的路径，不许被这版拖坏）。
+         */
+        val wantFullDemux = runCatching {
+            (com.xxxx.emby_vr.vr.VrTuning.value(this, "demux_mode") ?: "off").trim().lowercase() == "full"
+        }.getOrDefault(false)
+        var session: com.xxxx.emby_vr.player.DemuxSession? = null
+        var fullVideoFormat: android.media.MediaFormat? = null
+        if (wantFullDemux) {
+            val probe = com.xxxx.emby_vr.player.DemuxSession(url, (startSec * 1000.0).toLong())
+            if (!probe.open()) {
+                Log.w(TAG, "全包档：解封装打开失败 → 退回 off 档")
+            } else {
+                fullVideoFormat = probe.videoFormat()
+                if (fullVideoFormat == null) {
+                    Log.w(TAG, "全包档：没有画面格式（csd 缺失）→ 退回 off 档")
+                    runCatching { probe.stop() }
+                } else {
+                    /*
+                     * 字幕回调必须在 session.start() 之前挂好：读线程一起来就出包，
+                     * 放行前那 1~5 秒的字幕挂晚了就丢（图 §2-4）。
+                     */
+                    probe.onSubtitle = subCb@{ cStart, cEnd, text, track ->
+                        if (track != demuxSubTrackWanted) return@subCb
+                        ui.post {
+                            if (gen != selfGen.get()) return@post
+                            appendDemuxCue(cStart, cEnd, text)
+                        }
+                    }
+                    probe.onRouteFailed = failCb@{ reason ->
+                        Log.e(TAG, "全包解封装上报失败：$reason")
+                        ui.post { if (gen == selfGen.get()) hud("全包解封装失败：$reason") }
+                    }
+                    session = probe
+                    Log.i(
+                        TAG,
+                        "全包档就绪：${probe.videoWidth}x${probe.videoHeight} csd=${probe.videoCsd?.size ?: 0}B " +
+                            "音频=${probe.audioCodecName}/${probe.sampleRate}Hz/${probe.channelCount}ch 字幕轨=${probe.subTrackCount}",
+                    )
+                }
+            }
+        }
         val pipe = com.xxxx.emby_vr.player.VideoPipe()
         /*
          * 新管线起播前先清空原生参数表（豆豆 2026-11-21）：
@@ -9777,6 +9843,9 @@ class MainActivity : ComponentActivity() {
                             /* 默认走系统解封装读包 + 自带解码（avformat 路在本机读不到完整响应） */
                             demuxOff = com.xxxx.emby_vr.vr.VrTuning.value(this, "demux_off")
                                 ?.trim()?.toIntOrNull() ?: 1,
+                            /* 全包档：音频也从同一条连接的队列取，格式由 Session 给 */
+                            demuxSession = selfSession,
+                            formatOverride = selfSession?.audioFormat(),
                         )
                         Log.i(
                             TAG,
@@ -9877,7 +9946,18 @@ class MainActivity : ComponentActivity() {
                         /* 放行不在这里做：等 onFirstFrame（真正上屏）再放声音 */
                     }
                 },
+                /* 全包档：把 Session 与画面格式交进去，本类不再建读线程/解封装 */
+                demuxSession = session,
+                formatOverride = fullVideoFormat,
             )
+            if (ok && session != null) {
+                /* 解码器已配好、两条 Pipe 都不消费，这时才起读线程（图 §2-5） */
+                session.start()
+                selfSession = session
+                Log.i(TAG, "全包档已启动：画面/声音/字幕同一条连接")
+            } else if (session != null) {
+                runCatching { session.stop() }
+            }
             if (!ok) {
                 /*
                  * 立刻读：lastError 是静态字段，下一次 start 一开头就会清空它，
