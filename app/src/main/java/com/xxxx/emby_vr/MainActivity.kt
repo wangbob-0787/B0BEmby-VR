@@ -10095,12 +10095,21 @@ class MainActivity : ComponentActivity() {
             } catch (t: Throwable) {
                 Log.e(TAG, "起播线程异常：${t.javaClass.simpleName}: ${t.message}", t)
                 ui.post { hud("起播线程异常：${t.javaClass.simpleName}") }
-                pipeBootInFlight.set(false)
-                selfPipeWaitingFirstFrame.set(false)
-                selfPipePhase = "起播失败"
+                /*
+                 * 两处必须带代次/身份守卫（豆豆 2026-11-22）：
+                 * 老一代线程抛异常时，新一代可能已经认领单飞并建好会话，
+                 * 无条件清标志 = 拆掉它的防线（两路并发起播），无条件清会话 = 抹掉它的连接引用（泄漏）。
+                 */
+                if (gen == selfGen.get()) {
+                    pipeBootInFlight.set(false)
+                    selfPipeWaitingFirstFrame.set(false)
+                    selfPipePhase = "起播失败"
+                }
+                /* 异常可能发生在 pipe.start 之前（pipe 还没进全包档、不会替我们 abort），先叫停读线程 */
+                runCatching { session?.abort() }
                 runCatching { pipe.stop() }
                 runCatching { session?.stop() }
-                selfSession = null
+                if (selfSession === session) selfSession = null
             }
         }
 
