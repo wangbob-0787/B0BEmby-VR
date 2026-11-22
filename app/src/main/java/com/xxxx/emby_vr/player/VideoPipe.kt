@@ -60,6 +60,18 @@ class VideoPipe {
     )
 
     /**
+     * 全包档：连接与读线程归 [DemuxSession]，本类不建 feed 线程、不建解封装、不关连接。
+     *
+     * 队列也跟着换：off 档用本类自己攒的 [feedQueue]，全包档直接消费 Session 的队列。
+     */
+    @Volatile private var fullMode = false
+    @Volatile private var sourceQueue: SampleQueue = feedQueue
+    @Volatile private var session: DemuxSession? = null
+    /** 全包档断流判定：低水位起点与当前是否已判停（<0.5s 连续 2.0s 判停，≥1.5s 恢复） */
+    private var lowWaterSinceMs = 0L
+    private var queueStalled = false
+
+    /**
      * 致命态：读线程卡在网络读里退不出来，连接也就还不回去。
      * 置位后上层不再尝试新建（网盘只给两路，强开只会被拒），只提示重启应用。
      */
@@ -275,7 +287,7 @@ class VideoPipe {
     private var prerollDropped = 0
 
     /** 队列里现有数据的字节数（水位口径，供放行与健康行使用） */
-    fun queuedBytes(): Int = feedQueue.sizeBytes()
+    fun queuedBytes(): Int = sourceQueue.sizeBytes()
 
     /**
      * 队列里还有多少秒数据：用「队尾时间戳 − 当前播放位置」算。
@@ -284,7 +296,7 @@ class VideoPipe {
      * 于是"攒够 2 秒"实际要攒二十多兆，起播白等（豆豆 2026-11-21 第三遍审出）。
      */
     fun queuedSec(): Double {
-        val tail = feedQueue.lastPtsUs
+        val tail = sourceQueue.lastPtsUs
         if (tail < 0L) return 0.0
         /*
          * 基准取"时钟；时钟没起来（起播时 running=false，读数恒为 0）就退回用起点。
@@ -382,6 +394,14 @@ class VideoPipe {
         preheatFrames: Int = 3,
         /** 预热完成（三帧全部解出并归还）→ 报跨度与 RPU 状态，等外部放行 */
         onPreheatReady: ((Long, Boolean) -> Unit)? = null,
+        /**
+         * 全包档：把 Session 与画面格式直接交进来。
+         *
+         * 非 null 时本类**不建 feed 线程、不建解封装**，只配解码器并从 Session 的队列取包
+         * （图 §3 铁律：多一条 feed 线程就是第二条连接，网盘立刻拒）。
+         */
+        demuxSession: DemuxSession? = null,
+        formatOverride: MediaFormat? = null,
     ): Boolean {
         /*
          * 旧实例必须先确认退出。`stop()` 返回 false = 旧线程还活着、可能仍占着 MediaCodec
@@ -394,6 +414,11 @@ class VideoPipe {
             return false
         }
         lastError = null
+        fullMode = demuxSession != null
+        session = demuxSession
+        sourceQueue = demuxSession?.videoQueue ?: feedQueue
+        lowWaterSinceMs = 0L
+        queueStalled = false
         clockProvider = clock
         clockValidProvider = clockValid
         doviParamPath = doviPath
@@ -452,21 +477,34 @@ class VideoPipe {
              * 主线程在这里只等它准备完，拿到轨道格式之后才能配解码器。
              */
             /* stop() 会把队列置成中止；复用一个实例起播前必须解开，否则第一帧就入队失败 */
-            feedQueue.reset()
+            if (!fullMode) feedQueue.reset()
             feedUrl = url
             feedHeaders = headers
             feedStartSec = startSec
             feedMemWindowSec = memWindowSec
             prepareLatch = java.util.concurrent.CountDownLatch(1)
             prepareError = null
-            preparedFormat = null
             running.set(true)
-            feedThread = Thread({ feedLoop() }, "VideoFeed").apply { isDaemon = true; start() }
-            if (!prepareLatch.await(20, java.util.concurrent.TimeUnit.SECONDS)) {
-                lastError = "解封装准备超时（20s）"
-                Log.e(TAG, lastError!!)
-                stop()
-                return false
+            if (fullMode) {
+                /* 全包档：队列已由 Session 建好，本类不再起读线程 */
+                preparedFormat = formatOverride
+                prepareLatch.countDown()
+                if (formatOverride == null) {
+                    lastError = "全包档没有给出画面格式"
+                    Log.e(TAG, lastError!!)
+                    stop()
+                    return false
+                }
+                Log.i(TAG, "全包档起播：格式=${formatOverride.getString(MediaFormat.KEY_MIME)} 队列=${sourceQueue.sizeBytes() / 1024}KB")
+            } else {
+                preparedFormat = null
+                feedThread = Thread({ feedLoop() }, "VideoFeed").apply { isDaemon = true; start() }
+                if (!prepareLatch.await(20, java.util.concurrent.TimeUnit.SECONDS)) {
+                    lastError = "解封装准备超时（20s）"
+                    Log.e(TAG, lastError!!)
+                    stop()
+                    return false
+                }
             }
             val format = preparedFormat
             val perr = prepareError
@@ -512,8 +550,14 @@ class VideoPipe {
                      * 断流判定：两拍之间样本数没涨，说明读不到数据了。
                      * 超过 1 拍（约 2 秒）就通知上层把声音一起停住；恢复了再通知放开。
                      */
-                    val grew = statSamples != lastWatchSamples
-                    val nowStalled = !grew && statSamples > 0
+                    /*
+                     * 全包档读在 Session 里，本类的"样本数没涨"不再代表断流 —— 改看队列水位
+                     * （图 §3 P1-3：<0.5 秒连续 2.0 秒判停，≥1.5 秒判恢复）。
+                     */
+                    val nowStalled = if (fullMode) queueWaterStalled() else {
+                        val grew = statSamples != lastWatchSamples
+                        !grew && statSamples > 0
+                    }
                     if (nowStalled != stalled) {
                         stalled = nowStalled
                         Log.w(TAG, if (nowStalled) "断流：读不到数据 → 请上层暂停声音" else "断流恢复：数据来了 → 请上层继续")
@@ -663,7 +707,7 @@ class VideoPipe {
                 } else {
                     val buf = codec.getInputBuffer(inIdx) ?: continue
                     /* 数据来自读线程攒好的队列；队列给 null 表示读完了或已中止 */
-                    val pkt = feedQueue.get()
+                    val pkt = sourceQueue.get()
                     if (pkt != null && !pumpFirstLogged) {
                         pumpFirstLogged = true
                         Log.i(TAG, "解码线程取到首包：$pkt.size 字节 pts=${pkt.ptsUs}us")
@@ -1003,6 +1047,17 @@ class VideoPipe {
      */
     private fun seekInPlace(targetSec: Double): Boolean {
         val c = decoder ?: return false
+        if (fullMode) {
+            /*
+             * 全包档跳转只有一个入口：Session。这里只清解码器，绝不写 feedSeekSec（没人消费它）、
+             * 不重定 originPts/audioStartSec（会把上层诱导去再起一个音频实例）。
+             */
+            val s = session ?: return false
+            runCatching { c.flush() }
+            s.requestSeek((targetSec * 1000.0).toLong())
+            Log.i(TAG, "全包档：跳转交给 Session → ${"%.2f".format(targetSec)}s（解码器已清）")
+            return true
+        }
         return try {
             /*
              * 解封装由读线程独占，所以这里只递话：读线程看到目标就定位并清队，
@@ -1205,6 +1260,42 @@ class VideoPipe {
         }
     }
 
+    /**
+     * 全包档断流判定：队列里还剩几秒（队尾 pts 与当前播放位置换算，不用字节除码率）。
+     *
+     * 阈值按图 §3：低于 0.5 秒且连续 2.0 秒 → 判停；回到 1.5 秒以上 → 判恢复。
+     * 滞后判据（2 秒）是为了不被一次正常出队打穿，恢复阈值（1.5 秒）留出缓冲回填的时间。
+     */
+    private fun queueWaterStalled(): Boolean {
+        val tail = sourceQueue.lastPtsUs
+        val posUs = (clockNowOrWall() * 1_000_000.0).toLong()
+        val queuedSec = if (tail < 0L) 0.0 else (tail - posUs) / 1_000_000.0
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (queuedSec < 0.5) {
+            if (lowWaterSinceMs == 0L) lowWaterSinceMs = now
+            if (!queueStalled && now - lowWaterSinceMs >= 2000L) {
+                queueStalled = true
+                Log.w(TAG, "队列水位 ${"%.2f".format(queuedSec)}s 连续 2 秒 → 判断流")
+            }
+        } else if (queuedSec >= 1.5) {
+            lowWaterSinceMs = 0L
+            queueStalled = false
+        }
+        return queueStalled
+    }
+
+    /** 全包档：跳转由 Session 统一发起，这里只清解码器与本地状态（图 §2-7） */
+    fun flushForSessionSeek() {
+        runCatching { decoder?.flush() }
+        originPts = -1.0
+        appliedOffset = Double.NaN
+        firstFrameShown = false
+        pumpFirstLogged = false
+        lowWaterSinceMs = 0L
+        queueStalled = false
+        Log.i(TAG, "全包档跳转：解码器已清，等新队列数据")
+    }
+
     /** 停止并释放。可重复调用。 */
     /**
      * 停止解码并释放解码器。
@@ -1218,7 +1309,8 @@ class VideoPipe {
         /* 释放权归线程自己：这里只置停止标志，不代解码线程 release（图 §5 I4） */
         stopping = true
         running.set(false)
-        feedQueue.abort()
+        /* 全包档的队列归 Session，本类不许 abort 它（abort 会让消费端永久 null） */
+        if (!fullMode) feedQueue.abort()
         /* 读线程才是**持有连接**的那一个：它没退出就等于连接没归还，必须进返回值 */
         val ft = feedThread
         /* 读线程可能卡在一次网络读里：给足 8 秒；仍不退就进致命态，不再尝试开新连接 */

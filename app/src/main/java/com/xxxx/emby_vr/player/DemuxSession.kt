@@ -1,5 +1,6 @@
 package com.xxxx.emby_vr.player
 
+import android.media.MediaFormat
 import android.util.Log
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -82,6 +83,27 @@ class DemuxSession(
     var videoHeight: Int = 0
         private set
 
+    /** 本次打开/跳转之后第一条音频包的时间（微秒），-1 = 还没读到。音频起点对齐要用它 */
+    @Volatile
+    var audioFirstPtsUs: Long = -1L
+        private set
+
+    /** 本次打开/跳转之后第一条视频包的时间（微秒），-1 = 还没读到。落点判据用它 */
+    @Volatile
+    var videoFirstPtsUs: Long = -1L
+        private set
+
+    /** 读取轨道参数后，把"首包时间"清回未知（跳转与重新打开都要清） */
+    private fun resetFirstPts() {
+        audioFirstPtsUs = -1L
+        videoFirstPtsUs = -1L
+    }
+
+    /** 画面编码（FFmpeg 的 codec_id）：173=hevc、27=h264；其余按 hevc 处理 */
+    @Volatile
+    var videoCodecId: Int = 0
+        private set
+
     private var handle = 0L
     private val running = AtomicBoolean(false)
     private var thread: Thread? = null
@@ -117,6 +139,7 @@ class DemuxSession(
         videoCsd = runCatching { AudioDemuxNative.nativeDemuxVideoCsd(h, csdOut) }.getOrNull()
         videoWidth = csdOut[0]
         videoHeight = csdOut[1]
+        videoCodecId = csdOut[3]
         Log.i(
             TAG,
             "解封装就绪：采样率=$sampleRate 声道=$channelCount 解码器=$audioCodecName " +
@@ -147,6 +170,7 @@ class DemuxSession(
                 /* 跳转只在这里做：先清两个队列，再定位，最后恢复读 */
                 videoQueue.flush()
                 audioQueue.flush()
+                resetFirstPts()
                 val r = runCatching { AudioDemuxNative.nativeDemuxSeek(h, target) }.getOrDefault(-1)
                 Log.i(TAG, "跳转到 ${target}ms 结果=$r")
                 if (r >= 0) {
@@ -217,8 +241,12 @@ class DemuxSession(
                     netRetry = 0
                     val ptsUs = if (meta[2] >= 0) meta[2] * 1000L else 0L
                     when (meta[0]) {
-                        0 -> if (!audioQueue.put(SampleQueue.Packet(buf.copyOf(n), n, ptsUs))) break
+                        0 -> {
+                            if (audioFirstPtsUs < 0L) audioFirstPtsUs = ptsUs
+                            if (!audioQueue.put(SampleQueue.Packet(buf.copyOf(n), n, ptsUs))) break
+                        }
                         1 -> {
+                            if (videoFirstPtsUs < 0L) videoFirstPtsUs = ptsUs
                             val key = meta[3] != 0
                             if (!videoQueue.put(SampleQueue.Packet(buf.copyOf(n), n, ptsUs))) break
                         }
@@ -234,6 +262,37 @@ class DemuxSession(
             }
         }
     }
+
+    /**
+     * 中止：停读线程并作废两个队列，把阻塞在 get() 上的消费端叫醒。
+     *
+     * 只能用在停止路径 —— 跳转清队列必须用 flush()：abort 之后 get() 永久返回 null，
+     * 两条 Pipe 会同时走"本路结束"，现场就是跳一下整片当播完（图 §2-7）。
+     */
+    fun abort() {
+        running.set(false)
+        if (handle != 0L) runCatching { AudioDemuxNative.nativeDemuxAbort(handle) }
+        videoQueue.abort()
+        audioQueue.abort()
+    }
+
+    /** 画面解码器要的格式；没有 extradata 或宽高时返回 null（调用方按起播失败处理） */
+    fun videoFormat(): MediaFormat? {
+        val csd = videoCsd ?: return null
+        if (videoWidth <= 0 || videoHeight <= 0) return null
+        val mime = when (videoCodecId) {
+            27 -> "video/avc"
+            else -> "video/hevc"
+        }
+        return MediaFormat.createVideoFormat(mime, videoWidth, videoHeight).apply {
+            setByteBuffer("csd-0", java.nio.ByteBuffer.wrap(csd))
+        }
+    }
+
+    /** 音频解码器要的格式（自带库按 mime + 采样率 + 声道打开） */
+    fun audioFormat(): MediaFormat = MediaFormat.createAudioFormat(
+        "audio/" + audioCodecName.ifBlank { "eac3" }, sampleRate, channelCount,
+    )
 
     fun stop() {
         running.set(false)

@@ -88,6 +88,11 @@ class AudioPipe {
     private var feedThread: Thread? = null
     /* 音频码率低（128~512kbps），8MB 已是几分钟存货，够用，把内存留给画面 */
     private val feedQueue = SampleQueue(8 * 1024 * 1024)
+
+    /** 全包档：连接与读线程归 [DemuxSession]，本类不建 feed 线程、不关连接 */
+    @Volatile private var fullMode = false
+    @Volatile private var sourceQueue: SampleQueue = feedQueue
+    @Volatile private var session: DemuxSession? = null
     @Volatile private var feedSeekSec = -1.0
     private var prepareLatch = java.util.concurrent.CountDownLatch(1)
     @Volatile private var preparedFormat: MediaFormat? = null
@@ -260,6 +265,9 @@ class AudioPipe {
         demuxDiscard: Int = 1,
         /** 1=关掉 avformat 那一路，回到系统解封装读包 + 自带解码（默认）；0=用 avformat 路 */
         demuxOff: Int = 1,
+        /** 全包档：Session 与音频格式直接交进来，本类不起 feed 线程（图 §3 铁律） */
+        demuxSession: DemuxSession? = null,
+        formatOverride: MediaFormat? = null,
     ): Boolean {
         stop()
         prefBackend = decoderPref.trim().lowercase()
@@ -278,18 +286,37 @@ class AudioPipe {
         feedStartSec = startSec
         feedTrackIndex = trackIndex
         feedMemWindowSec = memWindowSec
-        feedQueue.reset()
+        fullMode = demuxSession != null
+        session = demuxSession
+        sourceQueue = demuxSession?.audioQueue ?: feedQueue
+        if (!fullMode) feedQueue.reset()
         prepareLatch = java.util.concurrent.CountDownLatch(1)
-        preparedFormat = null
         prepareError = null
         running.set(true)
         return try {
-            feedThread = Thread({ audioFeedLoop() }, "AudioFeed").apply { isDaemon = true; start() }
-            if (!prepareLatch.await(20, java.util.concurrent.TimeUnit.SECONDS)) {
-                lastError = "音频解封装准备超时"
-                Log.e(TAG, lastError!!)
-                stop()
-                return false
+            if (fullMode) {
+                /* 全包档：参数由 Session 给，读线程已在 Session 里跑；本类只等第一次取包 */
+                preparedFormat = formatOverride
+                if (formatOverride == null) {
+                    lastError = "全包档没有给出音频格式"
+                    Log.e(TAG, lastError!!)
+                    stop()
+                    return false
+                }
+                /* 音频内容起点取 Session 记下的首包时间；还没读到就退回起点（首块对齐会再校） */
+                audioOriginUs = demuxSession?.audioFirstPtsUs?.takeIf { it > 0L }
+                    ?: (startSec * US).toLong()
+                prepareLatch.countDown()
+                Log.i(TAG, "全包档音频：编码=${formatOverride.getString(MediaFormat.KEY_MIME)} 起点=${"%.3f".format(audioOriginUs / US)}s")
+            } else {
+                preparedFormat = null
+                feedThread = Thread({ audioFeedLoop() }, "AudioFeed").apply { isDaemon = true; start() }
+                if (!prepareLatch.await(20, java.util.concurrent.TimeUnit.SECONDS)) {
+                    lastError = "音频解封装准备超时"
+                    Log.e(TAG, lastError!!)
+                    stop()
+                    return false
+                }
             }
             val fmt = preparedFormat
             val perr = prepareError
@@ -465,7 +492,8 @@ class AudioPipe {
         runCatching { track?.flush() }
         /* 解封装：先打断阻塞中的读，再收线程（MediaExtractor 打断不了，avformat 可以） */
         runCatching { if (demuxHandle != 0L) AudioDemuxNative.nativeDemuxAbort(demuxHandle) }
-        feedQueue.abort()
+        /* 全包档的队列归 Session：abort 会让消费端永久 null，这里不许碰 */
+        if (!fullMode) feedQueue.abort()
         /*
          * 读线程持连接：它没退出就等于连接没归还，必须进返回值（豆豆 2026-11-21 审出）。
          * 等 3 秒：跳转后读线程可能正处在"刚跳过、最多盲等 2.02 秒"的重试窗口里，
@@ -828,6 +856,42 @@ class AudioPipe {
         TAG, feedUrl, feedHeaders, feedMemWindowSec, feedStartSec,
     ) { ex -> pickAudioTrack(ex, feedTrackIndex) }
 
+    /**
+     * 全包档：Session 跳转后由上层调用，清设备与解码器、按新起点重对齐首块。
+     *
+     * 这不是第二个跳转入口 —— 定位只由 Session 做，这里只做"本 Pipe 的收尾"（图 §2-7）。
+     */
+    fun onSessionSeek(targetSec: Double, originSec: Double) {
+        runCatching { track?.pause() }
+        runCatching { track?.flush() }
+        if (ffDec != null) {
+            /* 自带库没有清缓存这条路：重建上下文（与 off 档跳转同一做法） */
+            ffDec?.close()
+            val d = FfmpegAudioDecoder(trackMime, trackFormat ?: MediaFormat())
+            if (d.open()) {
+                ffDec = d
+            } else {
+                lastError = "跳转后重建自带解码器失败（$trackMime）"
+                Log.e(TAG, lastError!!)
+            }
+        } else {
+            runCatching { codec?.flush() }
+        }
+        originUs = (originSec * US).toLong()
+        audioOriginUs = session?.audioFirstPtsUs?.takeIf { it > 0L } ?: (targetSec * US).toLong()
+        firstBlockHandled = false
+        pendingSkipBytes = 0L
+        seekFlushCount++
+        writtenFrames = 0L
+        frameBase = runCatching { track?.playbackHeadPosition?.toLong() }.getOrDefault(0L)
+        clock?.resetTo(originUs)
+        if (!paused.get()) {
+            startedAtMs = SystemClock.elapsedRealtime()
+            runCatching { track?.play() }
+        }
+        Log.i(TAG, "全包档音频跳转：目标=${"%.2f".format(targetSec)}s 起点=${"%.3f".format(audioOriginUs / US)}s 画面起点=${"%.3f".format(originSec)}s")
+    }
+
     private fun loop() {
         /* 解封装归读线程；这里只从队列取数据 */
         val c = codec
@@ -841,7 +905,11 @@ class AudioPipe {
             try {
                 /* 跳转：顺序固定 —— 停设备 → 清解码器 → 定新起点 → 重新起播 */
                 val seekTarget = pendingSeekSec
-                if (seekTarget >= 0.0) {
+                if (seekTarget >= 0.0 && fullMode) {
+                    /* 全包档跳转只由 Session 一个入口发起；这里收到的是旧调用，忽略并记一笔 */
+                    pendingSeekSec = -1.0
+                    Log.w(TAG, "全包档忽略 Pipe 侧跳转请求 ${"%.2f".format(seekTarget)}s（跳转归 Session）")
+                } else if (seekTarget >= 0.0) {
                     pendingSeekSec = -1.0
                     at.pause()
                     at.flush()
@@ -899,7 +967,7 @@ class AudioPipe {
                 if (ffDec != null) {
                     val dec = ffDec!!
                     if (!inputDone) {
-                        val pkt = feedQueue.get()
+                        val pkt = sourceQueue.get()
                         if (pkt == null) {
                             inputDone = true
                         } else {
@@ -926,7 +994,7 @@ class AudioPipe {
                     if (!inputDone) {
                         val ci = cc.dequeueInputBuffer(5_000)
                         if (ci >= 0) {
-                            val pkt = feedQueue.get()
+                            val pkt = sourceQueue.get()
                             if (pkt == null) {
                                 cc.queueInputBuffer(ci, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                                 inputDone = true
