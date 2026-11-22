@@ -23,13 +23,16 @@ object AudioDemuxNative {
     /**
      * 读下一个包。
      * meta[0]：0 = 音频包，2 = 字幕文本
-     * meta[1]：字节数；meta[2]：时间戳（毫秒）；meta[3]：第几条字幕轨；meta[4]：字幕结束时间（毫秒，0=未知）
+     * meta[0]：0=音频 1=视频 2=字幕；meta[1]：字节数；meta[2]：时间戳（毫秒）；meta[3]：字幕轨序号 / 视频关键帧标志；meta[4]：字幕结束时间（毫秒，0=未知）
      * 返回 >=0 字节数；-1 结束；<0 出错。
      */
     external fun nativeDemuxRead(handle: Long, out: ByteArray, meta: IntArray): Int
 
     /** out[0]=采样率 out[1]=声道数 out[2]=codec_id out[3]=文字字幕轨条数 out[4]=时长毫秒(0=未知) */
     external fun nativeDemuxInfo(handle: Long, out: IntArray): Int
+
+    /** out[0]=宽 out[1]=高 out[2]=extradata 长度 out[3]=codec_id；返回 csd 字节（MediaCodec 直接用） */
+    external fun nativeDemuxVideoCsd(handle: Long, out: IntArray): ByteArray?
 
     /** 音频解码器名（eac3/truehd/dca 等） */
     external fun nativeDemuxCodecName(handle: Long): String

@@ -6216,7 +6216,12 @@ class MainActivity : ComponentActivity() {
                  * 自管解码时字幕由**解封装随播放直接交付**（avformat 一条连接同时读音频与字幕包），
                  * 不再走服务端转 SRT —— 那条路在播放期必然拿不到（网盘两路已被占满，实测 90 秒零字节）。
                  */
-                demuxSubTrackWanted = demuxSubtitleOrdinal(index)
+                /*
+                 * 本版音频走系统解封装（一条轨），拿不到字幕包：文字字幕暂时不可用。
+                 * avformat 那一路能同时出字幕，但它在这台机器上读不到完整响应，等它修好再开。
+                 */
+                Log.w(TAG, "P5 文字字幕暂不可用（本版音频走系统解封装）")
+                demuxSubTrackWanted = -1
                 if (demuxSubTrackWanted < 0) {
                     Log.w(TAG, "自管解码：字幕 $index 在文件文字字幕里找不到对应轨（可能顺序不一致）→ 不要字幕")
                 }
@@ -9768,6 +9773,9 @@ class MainActivity : ComponentActivity() {
                             decoderPref = com.xxxx.emby_vr.vr.VrTuning.value(this, "audio_decoder") ?: "auto",
                             /* 排查开关：demux_discard=0 时不丢弃非本路轨（默认 1）；验证通过后连开关一起删 */
                             demuxDiscard = com.xxxx.emby_vr.vr.VrTuning.value(this, "demux_discard")
+                                ?.trim()?.toIntOrNull() ?: 1,
+                            /* 默认走系统解封装读包 + 自带解码（avformat 路在本机读不到完整响应） */
+                            demuxOff = com.xxxx.emby_vr.vr.VrTuning.value(this, "demux_off")
                                 ?.trim()?.toIntOrNull() ?: 1,
                         )
                         Log.i(
