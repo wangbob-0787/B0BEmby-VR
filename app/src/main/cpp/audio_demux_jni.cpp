@@ -329,7 +329,8 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxOpen(
         int seekIdx = d->videoIdx >= 0 ? d->videoIdx : d->audioIdx;
         AVStream *as = fmt->streams[seekIdx];
         /* 目标必须换算到**该流的**时间基：用微秒当流时间基会飞出片尾 */
-        int64_t tsSb = av_rescale_q(startMs * 1000, AVRational{1, 1000}, as->time_base);
+        /* startMs 本身就是毫秒：直接按 1/1000 → 流时间基换算（多乘 1000 会把落点放大成片尾） */
+        int64_t tsSb = av_rescale_q(startMs, AVRational{1, 1000}, as->time_base);
         int64_t tsUs = (int64_t) startMs * 1000;
         int64_t before = fmt->pb ? avio_tell(fmt->pb) : -1;
         /*
@@ -564,7 +565,7 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxSeek(
     /* 与起播一致：先按音频流时间基定位，再退回两级 */
     int seekIdx = d->videoIdx >= 0 ? d->videoIdx : d->audioIdx;
     AVStream *as = d->fmt->streams[seekIdx];
-    int64_t tsSb = av_rescale_q(ms * 1000, AVRational{1, 1000}, as->time_base);
+    int64_t tsSb = av_rescale_q(ms, AVRational{1, 1000}, as->time_base);
     int64_t tsUs = (int64_t) ms * 1000;
     int ret = avformat_seek_file(d->fmt, seekIdx, INT64_MIN, tsSb, tsSb, AVSEEK_FLAG_BACKWARD);
     LOGI("DBG|jump seekTry=1 ret=%d err=%s", ret, errStr(ret).c_str());
