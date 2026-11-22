@@ -9412,6 +9412,8 @@ class MainActivity : ComponentActivity() {
                 ui.postDelayed({
                     if (mySeq == seekOriginSeq && gen == selfGen.get()) {
                         Log.w(TAG, "全包档跳转 3 秒未收到落点 → 用请求目标兜底恢复声音")
+                        /* 这次跳转的起点已经定过：晚到的回灌作废，别再清一次解码器/断一次声 */
+                        seekOriginSeq++
                         audioPipe?.onSessionSeek(sec, sec, -1L)
                     }
                 }, 3000L)
