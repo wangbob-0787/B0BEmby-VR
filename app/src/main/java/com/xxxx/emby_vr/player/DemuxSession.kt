@@ -322,7 +322,14 @@ class DemuxSession(
         audioQueue.abort()
     }
 
-    /** 画面解码器要的格式；没有 extradata 或宽高时返回 null（调用方按起播失败处理） */
+    /**
+     * 画面解码器要的格式；没有 extradata 或宽高时返回 null（调用方按起播失败处理）。
+     *
+     * csd 必须转成 **Annex-B**（每段前加 00 00 00 01）：
+     * 实机对比过同一部片 —— 系统解封装给硬解的 csd0 是 103 字节、开头 `00 00 00 01 40 01 …`（Annex-B），
+     * 而 ffmpeg 的 extradata 是 hvcC（129 字节、开头 `01 22 60 …`）。这份 hvcC 硬解吃了配置，
+     * 但一帧都不吐（满屏纯色 / 黑屏），换成 Annex-B 才与能播的那条路一致。
+     */
     fun videoFormat(): MediaFormat? {
         val csd = videoCsd ?: return null
         if (videoWidth <= 0 || videoHeight <= 0) return null
@@ -330,9 +337,35 @@ class DemuxSession(
             27 -> "video/avc"
             else -> "video/hevc"
         }
+        val annexB = hvcCToAnnexB(csd)
         return MediaFormat.createVideoFormat(mime, videoWidth, videoHeight).apply {
-            setByteBuffer("csd-0", java.nio.ByteBuffer.wrap(csd))
+            setByteBuffer("csd-0", java.nio.ByteBuffer.wrap(annexB))
         }
+    }
+
+    /** hvcC（HEVCDecoderConfigurationRecord）→ Annex-B：拆出 VPS/SPS/PPS，每段补四字节起始码 */
+    private fun hvcCToAnnexB(hvcc: ByteArray): ByteArray {
+        /* 头 23 字节：版本/档位/色度/位深/长度位 + numOfArrays；不足就不用转 */
+        if (hvcc.size < 23) return hvcc
+        val out = java.io.ByteArrayOutputStream(hvcc.size + 32)
+        var p = 23
+        val arrays = hvcc[22].toInt() and 0xFF
+        for (a in 0 until arrays) {
+            if (p + 3 > hvcc.size) break
+            p++                                            // array_completeness + NAL_unit_type
+            var nals = ((hvcc[p].toInt() and 0xFF) shl 8) or (hvcc[p + 1].toInt() and 0xFF)
+            p += 2
+            while (nals-- > 0) {
+                if (p + 2 > hvcc.size) break
+                val len = ((hvcc[p].toInt() and 0xFF) shl 8) or (hvcc[p + 1].toInt() and 0xFF)
+                p += 2
+                if (len <= 0 || p + len > hvcc.size) break
+                out.write(byteArrayOf(0, 0, 0, 1))
+                out.write(hvcc, p, len)
+                p += len
+            }
+        }
+        return if (out.size() > 0) out.toByteArray() else hvcc
     }
 
     /** 音频解码器要的格式（自带库按 mime + 采样率 + 声道打开） */
