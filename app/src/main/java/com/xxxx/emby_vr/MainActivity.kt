@@ -514,6 +514,9 @@ class MainActivity : ComponentActivity() {
      */
     @Volatile private var selfSession: com.xxxx.emby_vr.player.DemuxSession? = null
 
+    /** 全包档跳转的代次：落点回灌与 3 秒兜底谁先到用谁，后到的作废 */
+    private var seekOriginSeq = 0
+
     /** 解封装直供的字幕（边播边到）：按开始时间排序，只保留最近的若干条 */
     private val demuxSubCues = java.util.TreeMap<Long, SubtitleCue>()
 
@@ -9401,6 +9404,17 @@ class MainActivity : ComponentActivity() {
                 pipe.flushForSessionSeek()
                 sessJump.requestSeek(ms)
                 Log.i(TAG, "全包档跳转：Session 定位到 ${"%.1f".format(sec)}s（不重建）")
+                /*
+                 * 3 秒兜底：目标靠近片尾或读取失败时，首个视频包可能永远不来，
+                 * 落点回灌也就永不发生 —— 静音必须是有时限的（豆豆 2026-11-22 P1-2）。
+                 */
+                val mySeq = ++seekOriginSeq
+                ui.postDelayed({
+                    if (mySeq == seekOriginSeq && gen == selfGen.get()) {
+                        Log.w(TAG, "全包档跳转 3 秒未收到落点 → 用请求目标兜底恢复声音")
+                        audioPipe?.onSessionSeek(sec, sec, -1L)
+                    }
+                }, 3000L)
                 return@jump
             }
             /*
@@ -9524,9 +9538,23 @@ class MainActivity : ComponentActivity() {
                      * 跳转落点：Session 拿到首视频包后回灌真实起点（关键帧落点，比请求目标早一截）。
                      * 拿它当画面与声音的共同基准，首块对齐才不会每条跳都偏（豆豆 2026-11-22 P1-2）。
                      */
+                    /*
+                     * 跳转失败必须有人把声音放回来：静音是跳转第一步做的，没人恢复就是永久哑声
+                     * （豆豆 2026-11-22 P1-1）。
+                     */
+                    probe.onSeekFailed = seekFail@{ reason ->
+                        ui.post {
+                            if (gen != selfGen.get()) return@post
+                            seekOriginSeq++
+                            Log.e(TAG, "全包档跳转失败：$reason")
+                            hud("跳转失败：$reason")
+                            audioPipe?.resumeAfterFailedSeek()
+                        }
+                    }
                     probe.onSeekOrigin = seekOrigin@{ targetMs, videoPtsUs, audioPtsUs ->
                         ui.post {
                             if (gen != selfGen.get()) return@post
+                            seekOriginSeq++
                             val originSec = if (videoPtsUs > 0) videoPtsUs / 1_000_000.0 else targetMs / 1000.0
                             pipe.flushForSessionSeek()
                             audioPipe?.onSessionSeek(targetMs / 1000.0, originSec, audioPtsUs)

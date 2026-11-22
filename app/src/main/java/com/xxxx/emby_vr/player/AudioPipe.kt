@@ -876,6 +876,19 @@ class AudioPipe {
         Log.i(TAG, "全包档跳转：设备已静音（等落点回灌再重建解码器）")
     }
 
+    /**
+     * 全包档跳转失败时的"把声音放回来"。
+     *
+     * 静音是跳转第一步做的，如果定位失败或落点迟迟不来，必须有人把设备重新放起来 ——
+     * 否则画面在走、声音永久哑掉（豆豆 2026-11-22 P1-1）。
+     */
+    fun resumeAfterFailedSeek() {
+        if (!fullMode || !running.get()) return
+        startedAtMs = SystemClock.elapsedRealtime()
+        runCatching { track?.play() }
+        Log.w(TAG, "全包档跳转失败：声音已放回（位置沿用当前基准）")
+    }
+
     fun onSessionSeek(targetSec: Double, originSec: Double, audioFirstUs: Long = -1L) {
         /* 死实例不许被唤起：下面的 track.play() 会把已停的设备重新放起来（豆豆 2026-11-22 P1-B） */
         if (!fullMode || !running.get()) {
