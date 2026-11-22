@@ -6226,11 +6226,15 @@ class MainActivity : ComponentActivity() {
                  * 不再走服务端转 SRT —— 那条路在播放期必然拿不到（网盘两路已被占满，实测 90 秒零字节）。
                  */
                 /*
-                 * 本版音频走系统解封装（一条轨），拿不到字幕包：文字字幕暂时不可用。
-                 * avformat 那一路能同时出字幕，但它在这台机器上读不到完整响应，等它修好再开。
+                 * 全包档（demux_mode=full）音频与字幕都走同一条连接，选中的轨会随播放直接交付；
+                 * 只有旧路径（off 档，音频走系统解封装）才拿不到字幕包 —— 那时才强制不要字幕。
                  */
-                Log.w(TAG, "P5 文字字幕暂不可用（本版音频走系统解封装）")
-                demuxSubTrackWanted = -1
+                if (selfSession == null) {
+                    Log.w(TAG, "P5 文字字幕暂不可用（off 档音频走系统解封装，拿不到字幕包）")
+                    demuxSubTrackWanted = -1
+                } else {
+                    demuxSubTrackWanted = demuxSubtitleOrdinal(index)
+                }
                 if (demuxSubTrackWanted < 0) {
                     Log.w(TAG, "自管解码：字幕 $index 在文件文字字幕里找不到对应轨（可能顺序不一致）→ 不要字幕")
                 }
