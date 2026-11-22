@@ -740,12 +740,12 @@ class VideoPipe {
                         val nowMs = android.os.SystemClock.elapsedRealtime()
                         if (keyWaitSinceMs == 0L) keyWaitSinceMs = nowMs
                         /*
-                         * 丢包闸：坏源可能一直不出关键帧。丢满 300 包或等满 5 秒就停手 ——
-                         * 把这一包直接喂进去让硬解自己报错/恢复，并在日志里说清"源里可能没有关键帧"，
-                         * 不许无声地一直等（豆豆 2026-11-22）。
+                         * 丢包闸：坏源可能一直不出关键帧。
+                         * 阈值取"约两倍最长 GOP"（实测这部片关键帧间隔 ~4 秒）：10 秒 / 600 包，
+                         * 正常片永不误触发；坏源最多多黑 5 秒就报错（豆豆 2026-11-22）。
                          */
                         val waitedMs = nowMs - keyWaitSinceMs
-                        val giveUp = skippedToKeyframe >= 300 || waitedMs >= 5000L
+                        val giveUp = skippedToKeyframe >= 600 || waitedMs >= 10_000L
                         if (!pkt.key && !giveUp) {
                             skippedToKeyframe++
                             if (skippedToKeyframe % 100 == 0) {
