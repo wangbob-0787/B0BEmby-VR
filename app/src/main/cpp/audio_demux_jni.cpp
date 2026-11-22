@@ -205,13 +205,32 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxOpen(
     gConOpen.fetch_add(1);
     LOGI("解封装就绪: 音频流 %d，文字字幕轨 %d 条", d->audioIdx, d->subN);
 
+    /* 诊断：可 seek 性、seek 前后位置、换算后的目标——"读不出包"必须先分清是源不可 seek 还是换算错 */
+    LOGI("DBG|url_seekable=%d|fmt_seekable=%d",
+         fmt->pb ? (int) (fmt->pb->seekable & AVIO_SEEKABLE_NORMAL) : -1,
+         (int) (fmt->ctx_flags & AVFMTCTX_UNSEEKABLE ? 0 : 1));
+
     if (startMs > 0) {
-        int64_t ts = av_rescale(startMs, fmt->streams[d->audioIdx]->time_base.den,
-                                fmt->streams[d->audioIdx]->time_base.num * 1000);
-        av_seek_frame(fmt, d->audioIdx, ts, AVSEEK_FLAG_BACKWARD);
+        AVStream *as = fmt->streams[d->audioIdx];
+        int64_t ts = av_rescale(startMs, as->time_base.den, as->time_base.num * 1000);
+        int64_t before = fmt->pb ? avio_tell(fmt->pb) : -1;
+        int ret = av_seek_frame(fmt, d->audioIdx, ts, AVSEEK_FLAG_BACKWARD);
+        int64_t after = fmt->pb ? avio_tell(fmt->pb) : -1;
+        LOGI("DBG|seek前=%lld|stream=%d|tb=%d/%d|target_ts=%lld|ret=%d|seek后=%lld|start_time=%lld",
+             (long long) before, d->audioIdx, as->time_base.num, as->time_base.den,
+             (long long) ts, ret, (long long) after,
+             (long long) (as->start_time == AV_NOPTS_VALUE ? -1 : as->start_time));
+        if (ret < 0) {
+            /* seek 失败就当打开失败：绝不能在"指针停着"的状态下继续读，否则会被上层当成"播完" */
+            LOGE("从 %lldms 定位失败：%s → 判打开失败", (long long) startMs, errStr(ret).c_str());
+            freeDemux(d);
+            return 0;
+        }
         for (int k = 0; k < d->subN; ++k) {
             if (d->subDec[k]) avcodec_flush_buffers(d->subDec[k]);
         }
+    } else if (fmt->pb && !(fmt->pb->seekable & AVIO_SEEKABLE_NORMAL)) {
+        LOGE("端点不可 seek，只支持从头播");
     }
     return static_cast<jlong>(reinterpret_cast<intptr_t>(d));
 }
