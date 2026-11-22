@@ -9729,7 +9729,8 @@ class MainActivity : ComponentActivity() {
                 val probe = runCatching {
                     com.xxxx.emby_vr.player.DemuxSession(url, (startSec * 1000.0).toLong())
                 }.getOrNull()
-                var opened = false
+                /* 用原子量：工作线程写、守护线程读，普通变量在 JMM 下可能读到旧值 */
+                val opened = java.util.concurrent.atomic.AtomicBoolean(false)
                 if (probe != null) {
                     /* 15 秒兜底：到点还没返回就置打断标志，让 native 从网络定位里退出来 */
                     val watchdog = Thread {
@@ -9738,17 +9739,17 @@ class MainActivity : ComponentActivity() {
                         } catch (t: InterruptedException) {
                             return@Thread
                         }
-                        if (!opened) {
+                        if (!opened.get()) {
                             Log.e(TAG, "全包档：打开超过 15 秒仍未返回 → 打断并退回 off")
                             runCatching { probe.abortOpeningNow() }
                         }
                     }
                     watchdog.isDaemon = true
                     watchdog.start()
-                    opened = probe.open()
+                    opened.set(probe.open())
                     watchdog.interrupt()
                 }
-                if (!opened) {
+                if (!opened.get()) {
                     Log.w(TAG, "全包档：解封装打开失败 → 退回 off 档")
                     runCatching { probe?.stop() }
                 } else {

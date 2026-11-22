@@ -141,6 +141,10 @@ class DemuxSession(
     fun open(): Boolean {
         val t0 = android.os.SystemClock.elapsedRealtime()
         Log.i(TAG, "开始打开解封装（起点=${startMs}ms）")
+        /*
+         * 一周期一实例：stop() 过的会话绝不复用，所以这里清标志不会抹掉别人的中止意图
+         * （豆豆 2026-11-22 P1-4 —— 加复用路径时这条必须重新考虑）。
+         */
         abortOpening.set(false)
         val h = AudioDemuxNative.nativeDemuxOpen(url, startMs, if (discardOthers) 1 else 0, abortOpening)
         Log.i(TAG, "解封装打开返回：handle=${if (h == 0L) "失败" else "成功"} 耗时=${android.os.SystemClock.elapsedRealtime() - t0}ms")
