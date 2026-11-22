@@ -226,6 +226,9 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxOpen(
     for (unsigned i = 0; i < fmt->nb_streams; ++i) {
         AVCodecParameters *p = fmt->streams[i]->codecpar;
         if (d->audioIdx < 0 && p->codec_type == AVMEDIA_TYPE_AUDIO) d->audioIdx = (int) i;
+        /* 全包档要出画面：记下第一条视频轨（d->videoIdx 之前一直是 -1，
+           nativeDemuxVideoCsd 因此恒返回 null —— 豆豆 2026-11-22 查出） */
+        if (d->videoIdx < 0 && p->codec_type == AVMEDIA_TYPE_VIDEO) d->videoIdx = (int) i;
         if (p->codec_type == AVMEDIA_TYPE_SUBTITLE && d->subN < kMaxSub) {
             /* 只收文字字幕；位图字幕（PGS/DVD）留给内核那条路 */
             if (p->codec_id == AV_CODEC_ID_SUBRIP || p->codec_id == AV_CODEC_ID_ASS ||
@@ -244,9 +247,17 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxOpen(
      */
     LOGI("DBG|ffmpeg=%s", avformat_configuration());
     LOGI("DBG|discard_set=%d streams=%d", discardOn, (int) fmt->nb_streams);
-    for (unsigned i = 0; discardOn != 0 && i < fmt->nb_streams; ++i) {
+    for (unsigned i = 0; i < fmt->nb_streams; ++i) {
         AVStream *st = fmt->streams[i];
         if ((int) i == d->audioIdx) continue;
+        /*
+         * 视频轨：discardOn=0（全包档）才保留，否则照旧丢弃 ——
+         * 保留的那一路是画面的唯一来源；丢弃的那一路只是"音频+字幕"的对照档。
+         */
+        if ((int) i == d->videoIdx) {
+            st->discard = (discardOn != 0) ? AVDISCARD_ALL : AVDISCARD_DEFAULT;
+            continue;
+        }
         if (st->codecpar->codec_type == AVMEDIA_TYPE_SUBTITLE) {
             bool textSub = st->codecpar->codec_id == AV_CODEC_ID_SUBRIP ||
                            st->codecpar->codec_id == AV_CODEC_ID_ASS ||
@@ -454,6 +465,28 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxRead(
             }
             m[2] = (jint) (d->pkt->pts == AV_NOPTS_VALUE ? -1
                     : av_rescale_q(d->pkt->pts, st->time_base, AVRational{1, 1000}));
+            env->SetByteArrayRegion(out, 0, size, reinterpret_cast<const jbyte *>(d->pkt->data));
+            env->SetIntArrayRegion(meta, 0, 5, m);
+            av_packet_unref(d->pkt);
+            return size;
+        }
+        /*
+         * 视频包：全包档把它交给画面解码线程。
+         * meta[0]=1；meta[3]=关键帧标志（0/1）；pts 换算成毫秒，与音频同一口径。
+         */
+        if (d->videoIdx >= 0 && d->pkt->stream_index == d->videoIdx) {
+            int size = d->pkt->size;
+            if (size > cap) {
+                LOGE("视频包超过输出缓冲 need=%d cap=%d → 致命", size, cap);
+                av_packet_unref(d->pkt);
+                return -4;
+            }
+            AVStream *vs = d->fmt->streams[d->videoIdx];
+            m[0] = 1;
+            m[1] = size;
+            m[2] = (jint) (d->pkt->pts == AV_NOPTS_VALUE ? -1
+                    : av_rescale_q(d->pkt->pts, vs->time_base, AVRational{1, 1000}));
+            m[3] = (d->pkt->flags & AV_PKT_FLAG_KEY) ? 1 : 0;
             env->SetByteArrayRegion(out, 0, size, reinterpret_cast<const jbyte *>(d->pkt->data));
             env->SetIntArrayRegion(meta, 0, 5, m);
             av_packet_unref(d->pkt);

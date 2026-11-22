@@ -22,7 +22,11 @@ import java.util.concurrent.atomic.AtomicBoolean
 class DemuxSession(
     private val url: String,
     private val startMs: Long,
-    private val discardOthers: Boolean = true,
+    /**
+     * 是否丢弃非本路轨。全包档必须 false：视频轨要读，丢了就永远没有画面包；
+     * 只有"只要音频+字幕"的对照档才传 true。
+     */
+    private val discardOthers: Boolean = false,
 ) {
     companion object {
         private const val TAG = "DemuxSession"
