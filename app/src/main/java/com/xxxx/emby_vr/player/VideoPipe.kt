@@ -664,6 +664,10 @@ class VideoPipe {
                 break
             }
             readOk++
+            if (readOk == 1) {
+                val head = data.copyOf(minOf(12, size)).joinToString(" ") { "%02x".format(it) }
+                Log.i(TAG, "包取证(extractor)#1 size=$size pts=${pts}us 头=$head")
+            }
             if (readOk % 100 == 1) {
                 Log.i(
                     TAG,
