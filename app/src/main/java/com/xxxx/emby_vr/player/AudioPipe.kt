@@ -884,6 +884,13 @@ class AudioPipe {
      */
     fun resumeAfterFailedSeek() {
         if (!fullMode || !running.get()) return
+        /* 用户按着暂停：跳转失败也不能自己出声（豆豆 2026-11-22） */
+        if (paused.get()) {
+            Log.w(TAG, "全包档跳转失败：用户处于暂停，保持静音")
+            return
+        }
+        /* 设备基准跟着重置：静音时清过 writtenFrames，基准不重设位置会偏掉那零点几秒 */
+        frameBase = runCatching { track?.playbackHeadPosition?.toLong() }.getOrDefault(0L)
         startedAtMs = SystemClock.elapsedRealtime()
         runCatching { track?.play() }
         Log.w(TAG, "全包档跳转失败：声音已放回（位置沿用当前基准）")
