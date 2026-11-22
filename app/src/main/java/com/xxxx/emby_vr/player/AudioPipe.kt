@@ -78,7 +78,6 @@ class AudioPipe {
     var audioOriginUs: Long = 0L
         private set
 
-    private var extractor: MediaExtractor? = null
 
     /*
      * 读线程 + 包队列（与画面那套完全对称，2026-11-21 父亲定）。
@@ -90,7 +89,6 @@ class AudioPipe {
     /* 音频码率低（128~512kbps），8MB 已是几分钟存货，够用，把内存留给画面 */
     private val feedQueue = SampleQueue(8 * 1024 * 1024)
     @Volatile private var feedSeekSec = -1.0
-    @Volatile private var feedJustSought = false
     private var prepareLatch = java.util.concurrent.CountDownLatch(1)
     @Volatile private var preparedFormat: MediaFormat? = null
     @Volatile private var prepareError: String? = null
@@ -405,7 +403,6 @@ class AudioPipe {
             feedQueue.abort()
             codec = null
             track = null
-            extractor = null
             false
         }
     }
@@ -484,8 +481,8 @@ class AudioPipe {
         runCatching { codec?.release() }
         runCatching { track?.release() }
         /*
-         * extractor 不在这里释放：它归读线程所有，由 audioFeedLoop 的 finally 释放。
-         * 读线程还没退出就从这里拆，它下一次碰 extractor 必抛（豆豆 2026-11-21 第二遍审出）。
+         * 解封装不在这里关闭：它归读线程所有，由读循环退出时关。
+         * 读线程还没退出就从这里拆，它下一次取样本必抛（豆豆 2026-11-21 第二遍审出）。
          */
         codec = null
         ffDec = null
@@ -764,106 +761,64 @@ class AudioPipe {
         if (AudioDemuxNative.available) {
             Log.w(TAG, "内存窗口档位下仍走系统解封装：这一路拿不到字幕（解封装直供只在直读模式生效）")
         }
-        val ex = MediaExtractor()
+        val src = newPacketSource()
         try {
-            val hdrs = feedHeaders
-            if (feedMemWindowSec > 0 && hdrs.isEmpty()) {
-                ex.setDataSource(MemWindowSource(feedUrl, 32 * 1024 * 1024))
-            } else if (hdrs.isEmpty()) {
-                ex.setDataSource(feedUrl)
-            } else {
-                ex.setDataSource(feedUrl, hdrs)
-            }
-            val pick = pickAudioTrack(ex, feedTrackIndex)
-            if (pick < 0) {
-                prepareError = "没有可解的音轨"
+            if (!src.open()) {
+                prepareError = src.error ?: "音频解封装失败"
+                Log.e(TAG, prepareError!!)
                 prepareLatch.countDown()
                 return
             }
-            val fmt = ex.getTrackFormat(pick)
-            ex.selectTrack(pick)
-            if (feedStartSec > 0.5) {
-                ex.seekTo((feedStartSec * US).toLong(), MediaExtractor.SEEK_TO_CLOSEST_SYNC)
-                feedJustSought = true
-            }
-            audioOriginUs = ex.sampleTime.coerceAtLeast(0L)
-            preparedFormat = fmt
-            extractor = ex
-            prepareLatch.countDown()
-            Log.i(TAG, "音频读线程就绪：轨道=$pick 起点=${"%.3f".format(audioOriginUs / US)}s")
-
-            var arr = ByteArray(1024 * 1024)
-            var bb = java.nio.ByteBuffer.wrap(arr)
-            while (running.get()) {
-                val target = feedSeekSec
-                if (target >= 0.0) {
-                    feedSeekSec = -1.0
-                    runCatching { ex.seekTo((target * US).toLong(), MediaExtractor.SEEK_TO_CLOSEST_SYNC) }
-                    feedJustSought = true
-                    audioOriginUs = runCatching { ex.sampleTime }.getOrDefault(0L).coerceAtLeast(0L)
-                    feedQueue.flush()
-                    Log.i(TAG, "音频读线程跳转到 ${"%.2f".format(target)}s（首帧=${"%.3f".format(audioOriginUs / US)}s）")
-                }
-                bb.clear()
-                var size = -1
-                var retries = 0
-                while (running.get()) {
-                    size = try {
-                        ex.readSampleData(bb, 0)
-                    } catch (t: Throwable) {
-                        -1
-                    }
-                    if (size >= 0) break
-                    /* 装不下就按帧大小扩缓冲（音频帧通常很小，这里只是兜底） */
-                    val need = runCatching { ex.sampleSize }.getOrDefault(0L)
-                    if (need > bb.capacity().toLong()) {
-                        arr = ByteArray((need + 1024L * 1024L).toInt())
-                        bb = java.nio.ByteBuffer.wrap(arr)
-                        bb.clear()
-                        size = try {
-                            ex.readSampleData(bb, 0)
-                        } catch (t: Throwable) {
-                            -1
-                        }
-                        if (size >= 0) break
-                    }
-                    if (!feedJustSought) break
-                    if (retries++ >= 100) break
-                    Thread.sleep(20)
-                }
-                if (size < 0) {
-                    feedQueue.putEos()
-                    Log.i(TAG, "音频读线程到结尾")
-                    break
-                }
-                feedJustSought = false
-                val pts = try {
-                    ex.sampleTime
-                } catch (t: Throwable) {
-                    break
-                }
-                val data = ByteArray(size)
-                bb.position(0)
-                bb.get(data, 0, size)
-                if (!feedQueue.put(SampleQueue.Packet(data, size, pts))) break
-                try {
-                    ex.advance()
-                } catch (t: Throwable) {
-                    break
-                }
-            }
         } catch (t: Throwable) {
             prepareError = "音频解封装异常：${t.javaClass.simpleName}: ${t.message}"
-            prepareLatch.countDown()
             Log.e(TAG, prepareError!!)
-        } finally {
-            runCatching { ex.release() }
-            if (extractor === ex) extractor = null
+            prepareLatch.countDown()
+            return
         }
+        /*
+         * 音频内容起点：旧路径靠解封装给出的样本时间；队列档从 seek 目标推出。
+         * 不填的话首块对齐会把整片音频当成"早于画面"裁光（豆豆 2026-11-22 审出的必现无声）。
+         */
+        audioOriginUs = src.startUs.coerceAtLeast(0L)
+        preparedFormat = src.format
+        prepareLatch.countDown()
+        Log.i(TAG, "音频解封装=${src.name}")
+
+        while (running.get()) {
+            val target = feedSeekSec
+            if (target >= 0.0) {
+                feedSeekSec = -1.0
+                src.seekTo(target)
+                audioOriginUs = src.startUs.coerceAtLeast(0L)
+                feedQueue.flush()
+                Log.i(TAG, "音频读线程跳转到 ${"%.2f".format(target)}s（首帧=${"%.3f".format(audioOriginUs / US)}s）")
+            }
+            val s = try {
+                src.next()
+            } catch (t: Throwable) {
+                null
+            }
+            if (s == null) {
+                /* 真读完才补 EOS：解封装坏了不等于播完 */
+                if (!src.endedByError) {
+                    feedQueue.putEos()
+                    Log.i(TAG, "音频读线程到结尾")
+                }
+                break
+            }
+            if (!feedQueue.put(SampleQueue.Packet(s.data, s.data.size, s.ptsUs))) break
+            if (src.endedByError) break
+        }
+        runCatching { src.close() }
     }
 
+    /** 声音这一路的解封装做法：系统解封装读音轨（全包档下一步接 QueuePacketSource） */
+    private fun newPacketSource(): PacketSource = ExtractorAudioSource(
+        TAG, feedUrl, feedHeaders, feedMemWindowSec, feedStartSec,
+    ) { ex -> pickAudioTrack(ex, feedTrackIndex) }
+
     private fun loop() {
-        /* 读线程独占 extractor；这里只从队列取数据 */
+        /* 解封装归读线程；这里只从队列取数据 */
         val c = codec
         if (c == null && ffDec == null) return
         val at = track ?: return
@@ -896,7 +851,7 @@ class AudioPipe {
                     } else {
                         c?.flush()
                     }
-                    /* 跳转交给读线程（extractor 归它）；这里只清队列与本地计数 */
+                    /* 跳转交给读线程（解封装归它）；这里只清队列与本地计数 */
                     feedSeekSec = seekTarget
                     feedQueue.flush()
                     originUs = (seekTarget * US).toLong()

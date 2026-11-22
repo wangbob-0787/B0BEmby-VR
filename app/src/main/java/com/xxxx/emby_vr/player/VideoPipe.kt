@@ -1,7 +1,6 @@
 package com.xxxx.emby_vr.player
 
 import android.media.MediaCodec
-import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.util.Log
 import android.view.Surface
@@ -40,7 +39,6 @@ class VideoPipe {
             private set
     }
 
-    private var extractor: MediaExtractor? = null
     private var decoder: MediaCodec? = null
     private var thread: Thread? = null
 
@@ -85,17 +83,8 @@ class VideoPipe {
     var lateStreakMs = 0L
         private set
 
-    /** 待执行的跳转（extractor 由读线程独占，跳转也交给它做） */
+    /** 待执行的跳转（解封装归读线程独占，跳转也交给它做） */
     @Volatile private var feedSeekSec = -1.0
-
-    /**
-     * 刚跳转过：接下来读不到数据不算结尾，等一会儿再读。
-     *
-     * 实测（2026-11-21）：`seekTo` 之后立刻 `readSampleData` 会返回 -1，
-     * 读线程把它当 EOS 直接退出，于是画面 0 帧、黑屏。
-     * `.15` 的原型没有这个问题，因为 ffmpeg 的 `av_read_frame` 内部自己会重试。
-     */
-    @Volatile private var feedJustSought = false
 
     /** 解码线程首包只报一次 */
     private var pumpFirstLogged = false
@@ -549,192 +538,75 @@ class VideoPipe {
     }
 
     /**
-     * 读线程：把解复用出来的每一帧塞进队列（ffplay 的 packet_queue 那条读线程）。
+     * 读线程：把解封装出来的每一包塞进队列（ffplay 的 packet_queue 那条读线程）。
      *
-     * 它独占 extractor：读、推进、跳转都在这个线程里做，解码线程不再碰它。
+     * 解封装归 [PacketSource]：打开、选轨、跳转、推进都在这个线程里，解码线程只从队列取。
+     * 换解封装做法（系统解封装 / 一次解封装全包）只换工厂，不动这个循环。
      */
     private fun feedLoop() {
-        val ex = try {
-            prepareExtractor()
+        val src = newPacketSource()
+        try {
+            if (!src.open()) {
+                prepareError = src.error ?: "解封装准备失败"
+                Log.e(TAG, prepareError!!)
+                prepareLatch.countDown()
+                return
+            }
         } catch (t: Throwable) {
             prepareError = "解封装准备异常：${t.javaClass.simpleName}: ${t.message}"
             Log.e(TAG, prepareError!!)
             prepareLatch.countDown()
             return
         }
-        if (ex == null) {
-            prepareLatch.countDown()
-            return
-        }
+        src.configureBudget(budgetBytes(feedMemWindowSec, src.bitRate))
+        estimatedBps = src.bitRate / 8
+        durationSec = src.durationSec
+        preparedFormat = src.format
         prepareLatch.countDown()
-        /*
-         * 读缓冲：先给 4MB，装不下就按帧的实际大小扩。
-         *
-         * 实测（2026-11-21）：固定 2MB 时，4K P5 的关键帧读出来是 -1 —— 不是没数据，
-         * 是样本比缓冲大，接口直接回"装不下"，看起来跟结尾一模一样，于是读线程一帧不读就退出。
-         */
-        var arr = ByteArray(4 * 1024 * 1024)
-        var bb = java.nio.ByteBuffer.wrap(arr)
-        Log.i(TAG, "读线程循环开始：缓冲=${arr.size / 1048576}MB")
+        Log.i(TAG, "读线程循环开始：缓冲=${src.bufferBytes / 1048576}MB")
         var readOk = 0
         while (running.get()) {
             val target = feedSeekSec
             if (target >= 0.0) {
                 feedSeekSec = -1.0
-                runCatching { ex.seekTo((target * 1_000_000.0).toLong(), MediaExtractor.SEEK_TO_PREVIOUS_SYNC) }
-                feedJustSought = true
+                src.seekTo(target)
                 feedQueue.flush()
                 Log.i(TAG, "读线程跳转到 ${"%.2f".format(target)}s（队列已清空）")
             }
-            bb.clear()
-            var size = -1
-            var retries = 0
-            while (running.get()) {
-                size = try {
-                    ex.readSampleData(bb, 0)
-                } catch (t: Throwable) {
-                    Log.w(TAG, "读样本异常：${t.javaClass.simpleName}: ${t.message}")
-                    -1
-                }
-                if (size >= 0) break
-                /* 装不下就按帧大小扩缓冲，重读一次 */
-                val need = ex.sampleSize          /* 长整型：接口给的是 Long */
-                if (need > bb.capacity().toLong()) {
-                    arr = ByteArray((need + 1024L * 1024L).toInt())
-                    bb = java.nio.ByteBuffer.wrap(arr)
-                    bb.clear()
-                    Log.i(TAG, "读缓冲扩到 ${arr.size / 1048576}MB（这一帧需要 $need 字节）")
-                    size = try {
-                        ex.readSampleData(bb, 0)
-                    } catch (t: Throwable) {
-                        -1
-                    }
-                    if (size >= 0) break
-                }
-                if (!feedJustSought) break
-                /* 刚跳过：给解封装一点时间把定位做完，最多等两秒 */
-                if (retries++ >= 100) break
-                Thread.sleep(20)
-            }
-            if (size >= 0) feedJustSought = false
-            if (size < 0) {
-                feedQueue.putEos()
-                Log.w(
-                    TAG,
-                    "读线程判结尾：已读 $readOk 帧 本帧返回=$size 样本大小=${ex.sampleSize} " +
-                        "缓冲=${arr.size / 1048576}MB 重试=$retries 刚跳过=$feedJustSought " +
-                        "样本时间=${ex.sampleTime} 轨道=${ex.sampleTrackIndex}",
-                )
-                break
-            }
-            val pts = try {
-                ex.sampleTime
+            val s = try {
+                src.next()
             } catch (t: Throwable) {
-                Log.w(TAG, "取样本时间失败（解封装已失效？）：${t.javaClass.simpleName}")
+                Log.w(TAG, "读样本异常：${t.javaClass.simpleName}: ${t.message}")
+                null
+            }
+            if (s == null) {
+                /* 真读完才补 EOS：解封装坏了不等于播完 */
+                if (!src.endedByError) feedQueue.putEos()
+                Log.w(TAG, "读线程判结尾：已读 $readOk 帧 ${src.endDetail()}")
                 break
             }
-            val data = ByteArray(size)
-            bb.position(0)
-            bb.get(data, 0, size)
             readOk++
             if (readOk % 100 == 1) {
                 Log.i(
                     TAG,
-                    "读帧 #$readOk：本帧=$size 字节 pts=${pts}us 缓冲=${arr.size / 1048576}MB 队列=${feedQueue.sizeBytes() / 1024}KB",
+                    "读帧 #$readOk：本帧=${s.data.size} 字节 pts=${s.ptsUs}us " +
+                        "缓冲=${src.bufferBytes / 1048576}MB 队列=${feedQueue.sizeBytes() / 1024}KB",
                 )
             }
-            if (!feedQueue.put(SampleQueue.Packet(data, size, pts))) {
+            if (!feedQueue.put(SampleQueue.Packet(s.data, s.data.size, s.ptsUs))) {
                 Log.w(TAG, "入队失败（队列已中止），退出。已读 $readOk 帧")
                 break
             }
-            try {
-                ex.advance()
-            } catch (t: Throwable) {
-                Log.w(TAG, "推进样本失败：${t.javaClass.simpleName}")
-                break
-            }
+            /* 解封装已经不能往下走（推进失败）：这一包照常解，然后收工 */
+            if (src.endedByError) break
         }
-        runCatching { extractor?.release() }
-        extractor = null
+        runCatching { src.close() }
         Log.i(TAG, "读线程退出：已读 $readOk 帧，队列剩 ${feedQueue.sizeBytes() / 1024}KB")
     }
 
-    /**
-     * 读线程里打开解封装并定位到起点（打开、选轨、跳转都在这个线程，不能跨线程）。
-     *
-     * 返回 null 表示失败，原因写进 [prepareError]；成功时把轨道格式放进 [preparedFormat]，
-     * 主线程拿到它才能配解码器。
-     */
-    private fun prepareExtractor(): MediaExtractor? {
-        val t0 = android.os.SystemClock.elapsedRealtime()
-        val ex = MediaExtractor()
-        Log.i(TAG, "解封装准备开始：url=${feedUrl.take(80)} 头=${feedHeaders.size} 个 起点=${"%.1f".format(feedStartSec)}s")
-        try {
-            var memSrc: MemWindowSource? = null
-            val hdrs = feedHeaders
-            if (feedMemWindowSec > 0 && hdrs.isEmpty()) {
-                memSrc = MemWindowSource(feedUrl, 8 * 1024 * 1024)
-                ex.setDataSource(memSrc)
-            } else if (hdrs.isEmpty()) {
-                ex.setDataSource(feedUrl)
-            } else {
-                ex.setDataSource(feedUrl, hdrs)
-            }
-            Log.i(
-                TAG,
-                "数据源已打开：耗时=${android.os.SystemClock.elapsedRealtime() - t0}ms 轨道数=${ex.trackCount}",
-            )
-            var trackIndex = -1
-            var format: MediaFormat? = null
-            for (i in 0 until ex.trackCount) {
-                val f = ex.getTrackFormat(i)
-                val mime = f.getString(MediaFormat.KEY_MIME) ?: continue
-                if (mime.startsWith("video/")) {
-                    trackIndex = i
-                    format = f
-                    break
-                }
-            }
-            if (trackIndex < 0 || format == null) {
-                prepareError = "容器里没有视频轨"
-                ex.release()
-                return null
-            }
-            ex.selectTrack(trackIndex)
-            runCatching {
-                val br = format.getInteger(MediaFormat.KEY_BIT_RATE)
-                if (br > 0) estimatedBps = br / 8
-            }
-            Log.i(
-                TAG,
-                "选轨完成：轨=$trackIndex 编码=${format.getString(MediaFormat.KEY_MIME)} " +
-                    "${format.getInteger(MediaFormat.KEY_WIDTH)}x${format.getInteger(MediaFormat.KEY_HEIGHT)} " +
-                    "码率=${runCatching { format.getInteger(MediaFormat.KEY_BIT_RATE) }.getOrDefault(0) / 1000}kbps",
-            )
-            memSrc?.let { src ->
-                val bitrate = runCatching { format.getInteger(MediaFormat.KEY_BIT_RATE) }.getOrDefault(0)
-                src.configureBudget(budgetBytes(feedMemWindowSec, bitrate))
-            }
-            durationSec = runCatching {
-                val us = format.getLong(MediaFormat.KEY_DURATION)
-                if (us > 0L) us / 1_000_000.0 else 0.0
-            }.getOrDefault(0.0)
-            Log.i(TAG, "片长：${"%.1f".format(durationSec)}s（来自容器头）")
-            if (feedStartSec > 0.5) {
-                ex.seekTo((feedStartSec * 1_000_000.0).toLong(), MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
-                feedJustSought = true
-                Log.i(TAG, "跳到 ${"%.1f".format(feedStartSec)} 秒起播")
-            }
-            extractor = ex
-            preparedFormat = format
-            Log.i(TAG, "解封装准备完成：总耗时=${android.os.SystemClock.elapsedRealtime() - t0}ms 首样本大小=${ex.sampleSize} 首样本时间=${ex.sampleTime}")
-            return ex
-        } catch (t: Throwable) {
-            prepareError = "打开输入失败：${t.javaClass.simpleName}: ${t.message}"
-            runCatching { ex.release() }
-            return null
-        }
-    }
+    /** 画面这一路的解封装做法：系统解封装读视频轨（全包档下一步接 QueuePacketSource） */
+    private fun newPacketSource(): PacketSource =
+        ExtractorVideoSource(TAG, feedUrl, feedHeaders, feedMemWindowSec, feedStartSec)
 
     /** 解码主循环：喂码流、取画面，按时间轴送出去，直到停止或码流结束。 */
     /**
@@ -864,7 +736,7 @@ class VideoPipe {
         }
         runCatching { decoder?.stop() }
         runCatching { decoder?.release() }
-        /* extractor 归读线程所有，这里不许释放：释放了读线程下一次取时间戳就抛异常（实测崩溃） */
+        /* 解封装归读线程所有，这里不许关闭：关了读线程下一次取样本就抛异常（实测崩溃） */
         decoder = null
     }
 
@@ -879,7 +751,7 @@ class VideoPipe {
      *
      * **2026-11-17 父亲定：约束一条条加，先把花活删干净。** 现在只有两条规则：
      *  ① 主时钟可用时，偏差在 ±0.5 秒内 → 照常上屏（不做"超前等/落后丢"的分档）；
-     *  ② 偏差超过 0.5 秒 → **在同一个解码器里跳过去**（extractor.seekTo + codec.flush），
+     *  ② 偏差超过 0.5 秒 → **在同一个解码器里跳过去**（解封装定位 + codec.flush），
      *     不重建解码器、不空转丢帧。
      * 时钟不可用（没有读数）时**不压画面**：按最后位置 + 墙钟自己走，照常出帧。
      */
@@ -1131,7 +1003,7 @@ class VideoPipe {
         val c = decoder ?: return false
         return try {
             /*
-             * extractor 由读线程独占，所以这里只递话：读线程看到目标就 seek 并清队，
+             * 解封装由读线程独占，所以这里只递话：读线程看到目标就定位并清队，
              * 解码线程只管把解码器 flush 掉。两个线程各碰各的对象，不会交叉。
              */
             feedSeekSec = targetSec
