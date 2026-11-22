@@ -46,6 +46,14 @@ struct Demux {
     AVFormatContext *fmt = nullptr;
     /* stop 时置位：打断阻塞中的 open/read（MediaExtractor 打断不了，只能干等 8 秒） */
     std::atomic<bool> abort{false};
+    /*
+     * 打开期的打断源：Java 侧传进来的 AtomicBoolean（全局引用）。
+     * 打开时 Java 还没有句柄，nativeDemuxAbort 叫不动它，只能靠这个标志
+     * 让 avformat_open_input 与首次 seek 能被打断（豆豆 2026-11-22 P0-1）。
+     */
+    JavaVM *vm = nullptr;
+    jobject abortFlag = nullptr;
+    jmethodID abortGet = nullptr;
     int audioIdx = -1;
     int videoIdx = -1;
     /*
@@ -77,8 +85,12 @@ std::string errStr(int err) {
     return std::string(buf);
 }
 
-void freeDemux(Demux *d) {
+void freeDemux(JNIEnv *env, Demux *d) {
     if (!d) return;
+    if (d->abortFlag && env) {
+        env->DeleteGlobalRef(d->abortFlag);
+        d->abortFlag = nullptr;
+    }
     for (int i = 0; i < kMaxSub; ++i) {
         if (d->subDec[i]) avcodec_free_context(&d->subDec[i]);
     }
@@ -91,7 +103,19 @@ Demux *fromHandle(jlong h) { return reinterpret_cast<Demux *>(static_cast<intptr
 
 int interruptCb(void *opaque) {
     auto *d = static_cast<Demux *>(opaque);
-    return (d && d->abort.load()) ? 1 : 0;
+    if (!d) return 0;
+    if (d->abort.load()) return 1;
+    if (!d->abortFlag || !d->vm || !d->abortGet) return 0;
+    JNIEnv *env = nullptr;
+    bool attached = false;
+    if (d->vm->GetEnv((void **) &env, JNI_VERSION_1_6) != JNI_OK) {
+        if (d->vm->AttachCurrentThread(&env, nullptr) != JNI_OK) return 0;
+        attached = true;
+    }
+    jboolean v = env->CallBooleanMethod(d->abortFlag, d->abortGet);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    if (attached) d->vm->DetachCurrentThread();
+    return v ? 1 : 0;
 }
 
 /** ASS 事件行取正文：前 9 段是层/时间/样式等，第 10 段才是文字 */
@@ -127,14 +151,32 @@ std::string assText(const char *ass) {
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxOpen(
-        JNIEnv *env, jobject, jstring url, jlong startMs, jint discardOn) {
+        JNIEnv *env, jobject, jstring url, jlong startMs, jint discardOn, jobject abortFlag) {
     const char *u = env->GetStringUTFChars(url, nullptr);
     if (!u) return 0;
     avformat_network_init();
 
     auto *d = new Demux();
     d->abort.store(false);
-    AVFormatContext *fmt = nullptr;
+    /* 绑定 Java 的打断标志：打开期只有它能让网络 IO 停下来 */
+    if (abortFlag) {
+        env->GetJavaVM(&d->vm);
+        d->abortFlag = env->NewGlobalRef(abortFlag);
+        jclass cls = env->GetObjectClass(abortFlag);
+        d->abortGet = env->GetMethodID(cls, "get", "()Z");
+    }
+    AVFormatContext *fmt = avformat_alloc_context();
+    if (!fmt) {
+        if (d->abortFlag) env->DeleteGlobalRef(d->abortFlag);
+        delete d;
+        return 0;
+    }
+    /*
+     * 打断回调必须在 avformat_open_input **之前**挂上：
+     * 打开自己慢起来的时候（DNS/首字节/重定向）同样要能被打断。
+     */
+    fmt->interrupt_callback.callback = interruptCb;
+    fmt->interrupt_callback.opaque = d;
     AVDictionary *opt = nullptr;
     av_dict_set(&opt, "timeout", "20000000", 0);        // 20s：网络源首字节慢是常态
     av_dict_set(&opt, "reconnect", "1", 0);
@@ -144,6 +186,7 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxOpen(
     if (ret < 0) {
         LOGE("打开失败: %s", errStr(ret).c_str());
         gConFail.fetch_add(1);
+        if (d->abortFlag) env->DeleteGlobalRef(d->abortFlag);
         delete d;
         return 0;
     }
@@ -154,7 +197,7 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxOpen(
     ret = avformat_find_stream_info(fmt, nullptr);
     if (ret < 0) {
         LOGE("读流信息失败: %s", errStr(ret).c_str());
-        freeDemux(d);
+        freeDemux(env, d);
         return 0;
     }
     for (unsigned i = 0; i < fmt->nb_streams; ++i) {
@@ -194,7 +237,7 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxOpen(
     }
     if (d->audioIdx < 0) {
         LOGE("这条片没有音频轨");
-        freeDemux(d);
+        freeDemux(env, d);
         return 0;
     }
     d->pkt = av_packet_alloc();
@@ -237,7 +280,7 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxOpen(
     LOGI("DBG|default_stream=%d", av_find_default_stream_index(fmt));
     if (startMs > 3000 && fmt->pb && !(fmt->pb->seekable & AVIO_SEEKABLE_NORMAL)) {
         LOGE("端点不可 seek，无法从 %lldms 开始 → 判打开失败", (long long) startMs);
-        freeDemux(d);
+        freeDemux(env, d);
         return 0;
     }
     if (startMs > 0) {
@@ -547,13 +590,13 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxAbort(JNIEnv *, jobjec
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxClose(JNIEnv *, jobject, jlong handle) {
+Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxClose(JNIEnv *env, jobject, jlong handle) {
     if (handle == 0) {
         gConDupe.fetch_add(1);
         LOGI("重复关闭（handle=0）→ 只记数，不重复减");
         return;
     }
-    freeDemux(fromHandle(handle));
+    freeDemux(env, fromHandle(handle));
     /* 真正释放之后才减，"在飞"才不会少算（豆豆 2026-11-22） */
     gConClose.fetch_add(1);
 }

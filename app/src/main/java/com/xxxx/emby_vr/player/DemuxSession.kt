@@ -119,6 +119,11 @@ class DemuxSession(
 
     private var handle = 0L
     private val running = AtomicBoolean(false)
+    /**
+     * 打开期打断标志：打开时 Java 还没有句柄，nativeDemuxAbort 叫不动它，
+     * 只能靠这个标志让 native 的打开与首次定位退出（豆豆 2026-11-22 P0-1）。
+     */
+    private val abortOpening = AtomicBoolean(false)
     private var thread: Thread? = null
     private val seekTargetMs = java.util.concurrent.atomic.AtomicLong(-1L)
 
@@ -127,9 +132,18 @@ class DemuxSession(
         seekTargetMs.set(ms)
     }
 
+    /** 打开期打断：超时或停播时调用，让 native 从打开/首次定位里退出来 */
+    fun abortOpeningNow() {
+        abortOpening.set(true)
+    }
+
     /** 打开并读取轨道参数；成功返回 true。此时还没开始读包。 */
     fun open(): Boolean {
-        val h = AudioDemuxNative.nativeDemuxOpen(url, startMs, if (discardOthers) 1 else 0)
+        val t0 = android.os.SystemClock.elapsedRealtime()
+        Log.i(TAG, "开始打开解封装（起点=${startMs}ms）")
+        abortOpening.set(false)
+        val h = AudioDemuxNative.nativeDemuxOpen(url, startMs, if (discardOthers) 1 else 0, abortOpening)
+        Log.i(TAG, "解封装打开返回：handle=${if (h == 0L) "失败" else "成功"} 耗时=${android.os.SystemClock.elapsedRealtime() - t0}ms")
         if (h == 0L) {
             Log.e(TAG, "解封装打开失败：$url")
             return false
@@ -294,6 +308,7 @@ class DemuxSession(
      */
     fun abort() {
         running.set(false)
+        abortOpening.set(true)
         if (handle != 0L) runCatching { AudioDemuxNative.nativeDemuxAbort(handle) }
         videoQueue.abort()
         audioQueue.abort()

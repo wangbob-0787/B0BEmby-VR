@@ -9507,76 +9507,16 @@ class MainActivity : ComponentActivity() {
          * 全包档：画面/声音/字幕走**同一条**连接（图 §2）。
          * 默认 off；装配任何一步失败都退回 off（off 是已经验收过的路径，不许被这版拖坏）。
          */
+        /*
+         * 全包档开关：demux_mode=full 时画面/声音/字幕走同一条连接（图 §2）。
+         * 这里只读调参文件；真正开会话是一次网络动作，必须放到工作线程
+         * （2026-11-22 真机实测：放在界面线程会把控制条/海报墙一起冻死）。
+         */
         val wantFullDemux = runCatching {
             (com.xxxx.emby_vr.vr.VrTuning.value(this, "demux_mode") ?: "off").trim().lowercase() == "full"
         }.getOrDefault(false)
         var session: com.xxxx.emby_vr.player.DemuxSession? = null
         var fullVideoFormat: android.media.MediaFormat? = null
-        if (wantFullDemux) {
-            val probe = com.xxxx.emby_vr.player.DemuxSession(url, (startSec * 1000.0).toLong())
-            if (!probe.open()) {
-                Log.w(TAG, "全包档：解封装打开失败 → 退回 off 档")
-            } else {
-                fullVideoFormat = probe.videoFormat()
-                if (fullVideoFormat == null) {
-                    Log.w(TAG, "全包档：没有画面格式（csd 缺失）→ 退回 off 档")
-                    runCatching { probe.stop() }
-                } else {
-                    /*
-                     * 字幕回调必须在 session.start() 之前挂好：读线程一起来就出包，
-                     * 放行前那 1~5 秒的字幕挂晚了就丢（图 §2-4）。
-                     */
-                    probe.onSubtitle = subCb@{ cStart, cEnd, text, track ->
-                        if (track != demuxSubTrackWanted) return@subCb
-                        ui.post {
-                            if (gen != selfGen.get()) return@post
-                            appendDemuxCue(cStart, cEnd, text)
-                        }
-                    }
-                    probe.onRouteFailed = failCb@{ reason ->
-                        Log.e(TAG, "全包解封装上报失败：$reason")
-                        ui.post { if (gen == selfGen.get()) hud("全包解封装失败：$reason") }
-                    }
-                    /*
-                     * 跳转落点：Session 拿到首视频包后回灌真实起点（关键帧落点，比请求目标早一截）。
-                     * 拿它当画面与声音的共同基准，首块对齐才不会每条跳都偏（豆豆 2026-11-22 P1-2）。
-                     */
-                    /*
-                     * 跳转失败必须有人把声音放回来：静音是跳转第一步做的，没人恢复就是永久哑声
-                     * （豆豆 2026-11-22 P1-1）。
-                     */
-                    probe.onSeekFailed = seekFail@{ reason ->
-                        ui.post {
-                            if (gen != selfGen.get()) return@post
-                            seekOriginSeq++
-                            Log.e(TAG, "全包档跳转失败：$reason")
-                            hud("跳转失败：$reason")
-                            audioPipe?.resumeAfterFailedSeek()
-                        }
-                    }
-                    probe.onSeekOrigin = seekOrigin@{ targetMs, videoPtsUs, audioPtsUs ->
-                        ui.post {
-                            if (gen != selfGen.get()) return@post
-                            seekOriginSeq++
-                            val originSec = if (videoPtsUs > 0) videoPtsUs / 1_000_000.0 else targetMs / 1000.0
-                            pipe.flushForSessionSeek()
-                            audioPipe?.onSessionSeek(targetMs / 1000.0, originSec, audioPtsUs)
-                            Log.i(
-                                TAG,
-                                "全包档落点：目标=${"%.3f".format(targetMs / 1000.0)}s " +
-                                    "画面首包=${"%.3f".format(originSec)}s 音频首包=${if (audioPtsUs > 0) "%.3f".format(audioPtsUs / 1_000_000.0) else "未知"}",
-                            )
-                        }
-                    }
-                    session = probe
-                    Log.i(
-                        TAG,
-                        "全包档就绪：${probe.videoWidth}x${probe.videoHeight} csd=${probe.videoCsd?.size ?: 0}B " +
-                            "音频=${probe.audioCodecName}/${probe.sampleRate}Hz/${probe.channelCount}ch 字幕轨=${probe.subTrackCount}",
-                    )
-                }
-            }
-        }
         /*
          * 新管线起播前先清空原生参数表（豆豆 2026-11-21）：
          * 放在 pipe.start() 之前 —— 此刻新解码线程还没起，不可能有旧推送抢在前面；
@@ -9753,7 +9693,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
-        }, 8000L)
+        }, 25_000L)
 
         /* 局部函数不能前向引用：先声明一个变量，等下面 Blocking 定义好再赋值，投线程时用它 */
         var pipelineLauncher: ((Double) -> Unit)? = null
@@ -9777,6 +9717,91 @@ class MainActivity : ComponentActivity() {
                 Log.w(TAG, "起播线程收场：代数已变（gen=$gen 当前=${selfGen.get()}），丢弃这条管线")
                 runCatching { pipe.stop() }
                 return
+            }
+            /*
+             * 全包档会话在**工作线程**里开：nativeDemuxOpen 内含一次网络定位
+             * （mkv 索引在文件尾，续播必须先读尾部），实测能把界面线程堵死几十秒。
+             * 打开期没有句柄，靠 session.abortOpeningNow() 打断（15 秒兜底）。
+             */
+            if (wantFullDemux && session == null) {
+                val tOpen = android.os.SystemClock.elapsedRealtime()
+                Log.i(TAG, "全包档：开始打开会话（工作线程，起点=${"%.1f".format(startSec)}s）")
+                val probe = runCatching {
+                    com.xxxx.emby_vr.player.DemuxSession(url, (startSec * 1000.0).toLong())
+                }.getOrNull()
+                var opened = false
+                if (probe != null) {
+                    /* 15 秒兜底：到点还没返回就置打断标志，让 native 从网络定位里退出来 */
+                    val watchdog = Thread {
+                        try {
+                            Thread.sleep(15_000)
+                        } catch (t: InterruptedException) {
+                            return@Thread
+                        }
+                        if (!opened) {
+                            Log.e(TAG, "全包档：打开超过 15 秒仍未返回 → 打断并退回 off")
+                            runCatching { probe.abortOpeningNow() }
+                        }
+                    }
+                    watchdog.isDaemon = true
+                    watchdog.start()
+                    opened = probe.open()
+                    watchdog.interrupt()
+                }
+                if (!opened) {
+                    Log.w(TAG, "全包档：解封装打开失败 → 退回 off 档")
+                    runCatching { probe?.stop() }
+                } else {
+                    val vf = probe!!.videoFormat()
+                    if (vf == null) {
+                        Log.w(TAG, "全包档：没有画面格式（csd 缺失）→ 退回 off 档")
+                        runCatching { probe.stop() }
+                    } else {
+                        /* 字幕回调必须在 session.start() 之前挂好（图 §2-4） */
+                        probe.onSubtitle = subCb@{ cStart, cEnd, text, track ->
+                            if (track != demuxSubTrackWanted) return@subCb
+                            ui.post {
+                                if (gen != selfGen.get()) return@post
+                                appendDemuxCue(cStart, cEnd, text)
+                            }
+                        }
+                        probe.onRouteFailed = failCb@{ reason ->
+                            Log.e(TAG, "全包解封装上报失败：$reason")
+                            ui.post { if (gen == selfGen.get()) hud("全包解封装失败：$reason") }
+                        }
+                        probe.onSeekFailed = seekFail@{ reason ->
+                            ui.post {
+                                if (gen != selfGen.get()) return@post
+                                seekOriginSeq++
+                                Log.e(TAG, "全包档跳转失败：$reason")
+                                hud("跳转失败：$reason")
+                                audioPipe?.resumeAfterFailedSeek()
+                            }
+                        }
+                        probe.onSeekOrigin = seekOrigin@{ targetMs, videoPtsUs, audioPtsUs ->
+                            ui.post {
+                                if (gen != selfGen.get()) return@post
+                                seekOriginSeq++
+                                val originSec = if (videoPtsUs > 0) videoPtsUs / 1_000_000.0 else targetMs / 1000.0
+                                videoPipe?.flushForSessionSeek()
+                                audioPipe?.onSessionSeek(targetMs / 1000.0, originSec, audioPtsUs)
+                                Log.i(
+                                    TAG,
+                                    "全包档落点：目标=${"%.3f".format(targetMs / 1000.0)}s " +
+                                        "画面首包=${"%.3f".format(originSec)}s 音频首包=${if (audioPtsUs > 0) "%.3f".format(audioPtsUs / 1_000_000.0) else "未知"}",
+                                )
+                            }
+                        }
+                        session = probe
+                        fullVideoFormat = vf
+                        Log.i(
+                            TAG,
+                            "全包档就绪（${android.os.SystemClock.elapsedRealtime() - tOpen}ms）：" +
+                                "${probe.videoWidth}x${probe.videoHeight} csd=${probe.videoCsd?.size ?: 0}B " +
+                                "音频=${probe.audioCodecName}/${probe.sampleRate}Hz/${probe.channelCount}ch 字幕轨=${probe.subTrackCount}",
+                        )
+                    }
+                }
             }
             val ok = pipe.start(
                 url, emptyMap(), surface,

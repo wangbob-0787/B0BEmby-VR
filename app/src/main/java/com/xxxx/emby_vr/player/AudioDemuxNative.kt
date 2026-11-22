@@ -18,7 +18,13 @@ object AudioDemuxNative {
      * 打开：startMs 为起点（0 = 从头）；discardOn=1 表示丢弃非本路轨（调参 demux_discard 可拨 0）。
      * 失败返回 0。
      */
-    external fun nativeDemuxOpen(url: String, startMs: Long, discardOn: Int): Long
+    external fun nativeDemuxOpen(
+        url: String,
+        startMs: Long,
+        discard: Int,
+        /** 打开期打断标志：置真后 avformat 的打开与首次定位会尽快退出（打开时还没有句柄，只能靠它） */
+        abortFlag: java.util.concurrent.atomic.AtomicBoolean?,
+    ): Long
 
     /**
      * 读下一个包。
