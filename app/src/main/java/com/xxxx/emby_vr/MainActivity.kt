@@ -10069,9 +10069,14 @@ class MainActivity : ComponentActivity() {
                 formatOverride = fullVideoFormat,
             )
             if (ok && session != null) {
-                /* 解码器已配好、两条 Pipe 都不消费，这时才起读线程（图 §2-5） */
-                session.start()
+                /*
+                 * 先后顺序有讲究：**先发引用、再起读线程**。
+                 * 反过来的话，读线程已开跑而字段还是 null，主线程这一瞬间按快进会走"整条重建"，
+                 * 又开一条连接（豆豆 2026-11-22 P1-A）。跳转不会丢：requestSeek 只是写标志，
+                 * 读循环第一轮就会取走。
+                 */
                 selfSession = session
+                session.start()
                 Log.i(TAG, "全包档已启动：画面/声音/字幕同一条连接")
             } else if (session != null) {
                 runCatching { session.stop() }
@@ -10105,6 +10110,8 @@ class MainActivity : ComponentActivity() {
                     selfPipeWaitingFirstFrame.set(false)
                     selfPipePhase = "起播失败"
                 }
+                /* 作废 25 秒放行看门狗：它只看代次，不清理会让用户连收两条"起播失败"提示 */
+                selfTx.incrementAndGet()
                 /* 异常可能发生在 pipe.start 之前（pipe 还没进全包档、不会替我们 abort），先叫停读线程 */
                 runCatching { session?.abort() }
                 runCatching { pipe.stop() }
