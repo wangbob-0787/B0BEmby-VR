@@ -173,6 +173,7 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxOpen(
      * 不设的话这一路等于把 4K 视频也整片拉一遍 —— 网盘额度直接翻倍（豆豆 2026-11-22）。
      * 字幕轨全部保留：切轨要零等待。
      */
+    LOGI("DBG|ffmpeg=%s", avformat_configuration());
     LOGI("DBG|discard_set=%d streams=%d", discardOn, (int) fmt->nb_streams);
     for (unsigned i = 0; discardOn != 0 && i < fmt->nb_streams; ++i) {
         AVStream *st = fmt->streams[i];
@@ -281,7 +282,11 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxRead(
     while (true) {
         int ret = av_read_frame(d->fmt, d->pkt);
         if (ret == AVERROR_EOF) {
-            LOGI("DBG|EOF ret=%d abort=%d", ret, d->abort.load() ? 1 : 0);
+            LOGE("DBG|EOF ret=%d abort=%d avio_error=%d eof_reached=%d pos=%lld",
+                 ret, d->abort.load() ? 1 : 0,
+                 d->fmt->pb ? d->fmt->pb->error : 0,
+                 d->fmt->pb ? d->fmt->pb->eof_reached : -1,
+                 d->fmt->pb ? (long long) avio_tell(d->fmt->pb) : -1);
             /*
              * 一次 EOF 不算结尾：假性 EOF 的特征是"偶发一次、伴随网络错误"。
              * 连续三次、间隔 300ms 以上，才判真结尾（豆豆 2026-11-22）。
@@ -316,6 +321,11 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxRead(
                 return -1;
             }
             return -2;   // WAITING：上层等 300ms 再来
+        }
+        if (ret == AVERROR_EXIT) {
+            /* 被打断 ≠ 读完 ≠ 网络错误：单独记，否则日志只是一句"致命" */
+            LOGE("DBG|读包被中断（interrupt）abort=%d", d->abort.load() ? 1 : 0);
+            return -3;
         }
         if (ret < 0) {
             d->eofStreak = 0;
