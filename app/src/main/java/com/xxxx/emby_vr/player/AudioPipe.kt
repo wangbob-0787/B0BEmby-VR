@@ -466,9 +466,13 @@ class AudioPipe {
         /* 解封装：先打断阻塞中的读，再收线程（MediaExtractor 打断不了，avformat 可以） */
         runCatching { if (demuxHandle != 0L) AudioDemuxNative.nativeDemuxAbort(demuxHandle) }
         feedQueue.abort()
-        /* 读线程持连接：它没退出就等于连接没归还，必须进返回值（豆豆 2026-11-21 审出） */
+        /*
+         * 读线程持连接：它没退出就等于连接没归还，必须进返回值（豆豆 2026-11-21 审出）。
+         * 等 3 秒：跳转后读线程可能正处在"刚跳过、最多盲等 2.02 秒"的重试窗口里，
+         * 1.5 秒会在窗口没走完时就判它没退出（豆豆 2026-11-22 二审的 P0）。
+         */
         val ft = feedThread
-        ft?.let { runCatching { it.join(1500) } }
+        ft?.let { runCatching { it.join(3000) } }
         feedThread = null
         val feedDead = ft == null || !ft.isAlive
         val t = thread
@@ -750,6 +754,9 @@ class AudioPipe {
     }
 
     private fun audioFeedLoop() {
+        /* 本次运行的 latch 先抓在手里：旧读线程 join 超时后仍可能活到下一次 start()，
+         * 那时字段已被换成新 latch，扣错会让新一次起播误报"准备失败"（豆豆 2026-11-22 二审） */
+        val latch = prepareLatch
         /*
          * avformat 那一路在本机读不到完整响应（起播只到 7.7KB 就结束、跳转重开 500），
          * 默认关掉，回到系统解封装读包 + 自带解码；开关只为对照保留。
@@ -776,7 +783,7 @@ class AudioPipe {
              */
             audioOriginUs = src.startUs.coerceAtLeast(0L)
             preparedFormat = src.format
-            prepareLatch.countDown()
+            latch.countDown()
             Log.i(TAG, "音频解封装=${src.name}")
 
             while (running.get()) {
@@ -811,7 +818,7 @@ class AudioPipe {
             prepareError = "音频解封装异常：${t.javaClass.simpleName}: ${t.message}"
             Log.e(TAG, prepareError!!, t)
         } finally {
-            prepareLatch.countDown()
+            latch.countDown()
             runCatching { src.close() }
         }
     }
