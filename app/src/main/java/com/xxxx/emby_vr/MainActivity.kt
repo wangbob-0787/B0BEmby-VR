@@ -6165,6 +6165,9 @@ class MainActivity : ComponentActivity() {
     private fun replayKeepingPosition() {
         if (currentMediaId.isBlank()) return
         replaying = true
+        /* 决策已经做过：这次重播要进内核。重播会先停播，停播里会复位标志，
+           所以这里在重播前再置一次，直到换片才清（2026-11-23 真机：日志说切了却还在系统播放器） */
+        com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForHdr10 = true
         playMedia(currentMediaId, 0L, keepPosition = true)
     }
 
@@ -7668,8 +7671,8 @@ class MainActivity : ComponentActivity() {
         avStall = false
         /* 换代：正在建的那条线程建完会发现代次不符，自己收场，不留孤儿管线 */
         selfGen.incrementAndGet()
-        /* HDR10 强制内核只对当前这一部有效，换片必须复位，否则普通片也被拽进内核 */
-        com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForHdr10 = false
+        /* HDR10 强制内核只对当前这一部有效；切换动作（如"决定改走内核后重播"）不能清掉它 */
+        if (!replaying) com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForHdr10 = false
         /*
          * 换片固定步骤（豆豆 2026-11-21 的硬约束）：
          * 参数表、文件标记、最后一套、"就地保持"全部复位，
