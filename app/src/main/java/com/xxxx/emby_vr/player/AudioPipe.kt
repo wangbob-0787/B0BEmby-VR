@@ -951,7 +951,12 @@ class AudioPipe {
          * 音频起点优先用 Session 回灌的真实首包时间；没拿到就留 -1，
          * 由第一包到达时定（用请求目标顶会在每条跳上偏一个关键帧间隔，豆豆 2026-11-22）。
          */
-        audioOriginUs = audioFirstUs.takeIf { it > 0L } ?: -1L
+        /*
+         * 起点不能留 -1：首块对齐会算 delta = audioOriginUs - originUs，
+         * -1 相当于"音频早于画面一整段时间"，随后 pendingSkipBytes 会把接下来的音频**全部裁掉**
+         * （真机表现：跳几次之后彻底没声，2026-11-23）。拿不到首包时间就退回目标位置。
+         */
+        audioOriginUs = audioFirstUs.takeIf { it > 0L } ?: (targetSec * US).toLong()
         firstBlockHandled = false
         pendingSkipBytes = 0L
         seekFlushCount++
