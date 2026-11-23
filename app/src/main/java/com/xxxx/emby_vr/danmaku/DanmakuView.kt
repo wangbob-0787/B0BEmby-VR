@@ -33,7 +33,7 @@ class DanmakuView(context: Context) : View(context) {
      * 传入一个 (位置ms) -> 正文 的函数，绘制线程每帧自己取一次，
      * 不再靠 250ms/50ms 的定时器去问 —— 短句也不会被采样漏掉。
      */
-    private var subtitleProvider: ((Long) -> String)? = null
+    private var subtitleProvider: ((Long) -> String?)? = null
     private var running = false
 
     /** 弹幕整体缩放倍率(用户在设置里可调,默认 1.0) */
@@ -183,7 +183,7 @@ class DanmakuView(context: Context) : View(context) {
     }
 
     /** 设置"每帧现算字幕"的取文函数（null = 关掉，回到 setSubtitle 推模式） */
-    fun setSubtitleProvider(provider: ((Long) -> String)?) {
+    fun setSubtitleProvider(provider: ((Long) -> String?)?) {
         subtitleProvider = provider
         invalidate()
     }
@@ -413,6 +413,11 @@ class DanmakuView(context: Context) : View(context) {
      * 画视频字幕：最下方居中，多行时往上叠，带黑描边保证任何画面上都看得清。
      */
     private fun drawSubtitle(canvas: Canvas) {
+        /*
+         * 返回 null = "这条路不管字幕"，交给 setSubtitle 推过来的文本（系统播放器路径）。
+         * 只有全包档才返回字符串 —— 否则切换片源后残留的 provider 会把普通片的字幕每帧清空
+         * （2026-11-23 真机：播过 P5 再看 HDR10，字幕闪一下就没了）。
+         */
         val live = subtitleProvider?.invoke(positionProvider?.invoke() ?: 0L)
         if (live != null && live != subtitle) {
             subtitle = live
