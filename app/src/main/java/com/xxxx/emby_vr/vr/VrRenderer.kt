@@ -372,7 +372,20 @@ class VrRenderer(
      * 包成 Surface，交给 ExoPlayer 输出视频帧。
      */
     fun setVrVideoSurface(st: android.graphics.SurfaceTexture) {
-        vrVideoSurfaceTexture?.release()
+        /*
+         * 同一张纹理被重复推送时**什么都不能做**。
+         *
+         * 原实现无条件 `vrVideoSurfaceTexture?.release()`；只要原生把同一张 SurfaceTexture 再推一次，
+         * 这里就会把刚拿到手的纹理 release 掉（释放的正是即将使用的同一个对象），
+         * 之后任何解码器再往这张纹理送帧都会失败：真机报 `nativeWindowConnect -22`，
+         * 表现就是"播过 P5 之后普通片黑屏，重启应用才恢复"（2026-11-23）。
+         */
+        if (vrVideoSurfaceTexture === st && vrVideoSurface != null) {
+            if (pendingVideoW > 0) runCatching { st.setDefaultBufferSize(pendingVideoW, pendingVideoH) }
+            return
+        }
+        val oldTexture = vrVideoSurfaceTexture
+        if (oldTexture != null && oldTexture !== st) runCatching { oldTexture.release() }
         vrVideoSurfaceTexture = st
         /*
          * 缓冲尺寸要在播放器连上来之前设好（见 pendingVideoW 的注释）：
@@ -381,7 +394,7 @@ class VrRenderer(
         if (pendingVideoW > 0) {
             runCatching { st.setDefaultBufferSize(pendingVideoW, pendingVideoH) }
         }
-        vrVideoSurface?.release()
+        runCatching { vrVideoSurface?.release() }
         vrVideoSurface = android.view.Surface(st)
         Log.i(TAG, "VR 播放画面就绪（纹理由渲染线程创建）")
     }
