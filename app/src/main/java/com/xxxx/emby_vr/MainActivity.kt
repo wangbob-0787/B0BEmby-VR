@@ -570,10 +570,28 @@ class MainActivity : ComponentActivity() {
         refreshDemuxSubtitleCues()
     }
 
-    /** 只把"当前选中轨"的条目交给显示层（切轨后旧轨条目留在表里但不上屏） */
+    /**
+     * 只把"当前选中轨"的条目交给显示层（切轨后旧轨条目留在表里但不上屏）。
+     *
+     * 顺手把相邻条目之间的小空档补上：字幕轨里两句之间常有 100~400 毫秒的空隙，
+     * 显示层按"命中才画"的逻辑就会一闪一灭。规则：**同轨下一条的开始时间早于本条结束 + 1.5 秒**时，
+     * 把本条延长到下一条开始（多出来的空档本来就是同一段对话的间隔）。
+     */
     private fun refreshDemuxSubtitleCues() {
         val want = demuxSubTrackWanted
-        subtitleCues = demuxSubCues.values.filter { it.track == want }.sortedBy { it.startMs }
+        val list = demuxSubCues.values.filter { it.track == want }.sortedBy { it.startMs }
+        subtitleCues = if (list.size < 2) {
+            list
+        } else {
+            list.mapIndexed { i, c ->
+                val next = list.getOrNull(i + 1)
+                if (next != null && next.startMs > c.endMs && next.startMs - c.endMs <= 1500L) {
+                    c.copy(endMs = next.startMs)
+                } else {
+                    c
+                }
+            }
+        }
     }
 
     /** Emby 字幕流序号 → 文件内第几条「文字」字幕（解封装按这个序号交付） */
