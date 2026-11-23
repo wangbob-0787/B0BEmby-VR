@@ -379,7 +379,9 @@ class AudioPipe {
                 }
             }
             if (ffDec == null) {
-                val c = MediaCodec.createDecoderByType(mime)
+                /* Android 的 AAC 组件名是 audio/mp4a-latm；拿 audio/aac 会 NAME_NOT_FOUND(-2) */
+                val androidMime = if (mime.equals("audio/aac", true)) "audio/mp4a-latm" else mime
+                val c = MediaCodec.createDecoderByType(androidMime)
                 c.configure(fmt, null, null, 0)
                 c.start()
                 codec = c
