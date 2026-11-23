@@ -9782,7 +9782,7 @@ class MainActivity : ComponentActivity() {
                         probe.onSubtitle = subCb@{ cStart, cEnd, text, track ->
                             /* 诊断（节流）：前 20 条逐条，之后每 50 条一行；轨号不匹配的单列 */
                             subRecv++
-                            if (subRecv <= 20 || subRecv % 50 == 0) {
+                            if (subRecv <= 20L || subRecv % 50L == 0L) {
                                 Log.i(TAG, "字幕包到达#$subRecv 轨=$track 想要=$demuxSubTrackWanted 起点=${cStart}ms 长度=${text.length}")
                             } else if (track != demuxSubTrackWanted) {
                                 Log.w(TAG, "字幕包轨号不匹配#$subRecv 来=$track 想要=$demuxSubTrackWanted")
