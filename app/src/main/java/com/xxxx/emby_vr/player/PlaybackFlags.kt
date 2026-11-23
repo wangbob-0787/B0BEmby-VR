@@ -39,6 +39,15 @@ object PlaybackFlags {
     @Volatile
     var forceKernelForHdr10: Boolean = false
 
+    /**
+     * 本条片源是纯 HDR10（非杜比，PQ/BT.2020）。
+     *
+     * 父亲 2026-11-23 定：HDR10 走**自管解码 + 渲染层做颜色**（全包），
+     * 不再交给 MPV（4K 帧率扛不住），也不再交给系统播放器（颜色发灰）。
+     */
+    @Volatile
+    var hdr10Source: Boolean = false
+
     /** 探到的杜比视界版本（如 "DoviProfile81" / "DoviProfile50" / "未探到"），只写日志。 */
     @Volatile
     var dolbyVisionProfile: String? = null

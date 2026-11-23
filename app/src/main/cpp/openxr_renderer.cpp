@@ -510,6 +510,16 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetRawVideo(JNIEnv * /* env */,
     LOGI_RAW("原始画面直出 → %d", on ? 1 : 0);
 }
 
+/* HDR10 走自管解码时，颜色由渲染层做（父亲 2026-11-23 定） */
+static std::atomic<int> gHdr10Active{0};
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetHdr10StreamActive(JNIEnv * /* env */,
+                                                             jobject /* this */, jint on) {
+    gHdr10Active.store(on ? 1 : 0);
+    LOGI_RAW("本次播放是 HDR10（渲染层做亮度与色域）→ %d", on ? 1 : 0);
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetDoviStreamActive(JNIEnv * /* env */,
                                                             jobject /* this */, jint on) {
@@ -825,6 +835,7 @@ uniform int uDownsample;      // 1 = 视频降采样（4×4 盒式平均）
 uniform float uJitter;        // 每帧变的抖动种子（打散 8 位量化的色带）
 uniform int uTestPattern;     // 1 = 用固定测试图替代视频纹理（黑纹诊断，2026-10-09）
 uniform int uRawVideo;        // 1 = 视频层直接吐原始取样值（定位画面变灰用，2026-11-16）
+uniform int uHdr10;           // 1 = HDR10 自管路：渲染层做 PQ→线性→压亮度→BT.2020→709
 /*
  * 杜比视界还原（2026-11-13）：内核把每帧参数拍平成 96 个 float，这里整段上传。
  * 布局：0=版本 1=通道数；之后每通道 26 个 —— 1 个分段数 + 8 个分段点 + 8×3 段系数。
@@ -1264,6 +1275,43 @@ void main() {
          */
         if (uRawVideo == 1) {
             outColor = vec4(c.rgb, 1.0);
+            return;
+        }
+        /*
+         * HDR10（父亲 2026-11-23 定）：参数在 .15 上按真机观感扫定 ——
+         * mobius 曲线（拐点 0.3、高光去饱和 2、目标亮度 52），色域 BT.2020→BT.709，
+         * 输出按 BT.709 编码。单位约定：线性量 1.0 = 100 nit。
+         */
+        if (uHdr10 == 1) {
+            vec3 pq = clamp(c.rgb, 0.0, 1.0);
+            /* ST2084 EOTF：PQ 码值 → 归一化亮度（1.0 = 10000 nit），再换成 1.0 = 100 nit */
+            vec3 n = pow(pq, vec3(1.0 / 78.84375));            /* m2 */
+            vec3 num = max(n - 0.8359375, 0.0);                /* c1 */
+            vec3 den = max(18.8515625 - 18.6875 * n, 1e-6);    /* c2 - c3*n */
+            vec3 lq = pow(num / den, vec3(1.0 / 0.1593017578));/* m1；0..1 = 0..10000 nit */
+            vec3 lin = lq * 100.0;                             /* 换成 1.0 = 100 nit */
+            /* 高光去饱和（ffmpeg tonemap 的 desat 语义：亮度超过阈值才往灰收） */
+            float y = dot(lin, vec3(0.2627, 0.6780, 0.0593));
+            float over = max(y - 2.0, 1e-6) / max(y, 1e-6);
+            lin = mix(lin, vec3(y), over);
+            /* mobius：按最大分量压缩，三通道同比缩放（色相守恒） */
+            float sig = max(max(lin.r, lin.g), lin.b);
+            float j = 0.3;
+            float peak = 0.52;
+            float aa = -j * j * (peak - 1.0) / (j * j - 2.0 * j + peak);
+            float bb = (j * j - 2.0 * j * peak + peak) / max(peak - 1.0, 1e-6);
+            float comp = (bb * bb + 2.0 * bb * j + j * j) / (bb - aa) * (sig + aa) / (sig + bb);
+            float sig2 = sig <= j ? sig : comp;
+            lin *= sig2 / max(sig, 1e-6);
+            /* BT.2020 → BT.709（线性光） */
+            vec3 r709 = vec3(
+                dot(lin, vec3( 1.6605, -0.5876, -0.0728)),
+                dot(lin, vec3(-0.1246,  1.1329, -0.0083)),
+                dot(lin, vec3(-0.0182, -0.1006,  1.1187)));
+            r709 = clamp(r709, 0.0, 1.0);
+            /* BT.709 编码 */
+            vec3 enc = mix(4.5 * r709, 1.099 * pow(r709, vec3(0.45)) - 0.099, step(0.018, r709));
+            outColor = vec4(clamp(enc, 0.0, 1.0), 1.0);
             return;
         }
         if (uDvReshape == 1 && uDv[0] > 1.5) {
@@ -2793,6 +2841,7 @@ void fillQuadLocs(GLuint prog, QuadLocs &u) {
     u.jitter = glGetUniformLocation(prog, "uJitter");
     u.testPattern = glGetUniformLocation(prog, "uTestPattern");
     u.rawVideo = glGetUniformLocation(prog, "uRawVideo");
+    u.hdr10 = glGetUniformLocation(prog, "uHdr10");
     u.dvReshape = glGetUniformLocation(prog, "uDvReshape");
     u.dvParams = glGetUniformLocation(prog, "uDv");
     u.delayed = glGetUniformLocation(prog, "uDelayedTex");   // 只有 B0B_RING 版有
@@ -2860,6 +2909,7 @@ struct VrContext {
     GLint jitterLoc = -1;          // uJitter：抖动种子
     GLint testPatternLoc = -1;     // uTestPattern：固定测试图（黑纹诊断）
     GLint rawVideoLoc = -1;        // uRawVideo：直接吐原始取样值（画面变灰定位）
+    GLint hdr10Loc = -1;           // uHdr10：HDR10 自管路的颜色处理
     GLint dvReshapeLoc = -1;       // uDvReshape：1 = 由渲染层做杜比还原
     GLint dvParamsLoc = -1;        // uDv[96]：内核上传的还原参数
     GLuint vbo = 0;                // 单位方块（面板 / 光点）
@@ -8354,6 +8404,9 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
          * 一次 glUniform1i 的开销可以忽略，正确性优先（豆豆 2026-11-21 定位）。
          */
         glUniform1i(u.dvReshape, nowReshape);
+        if (u.hdr10 >= 0) {
+            glUniform1i(u.hdr10, (videoLayerPass && gHdr10Active.load() != 0) ? 1 : 0);
+        }
         /*
          * 参数也每趟写：uniform 是按 program 保存的，"看起来持久、其实这一趟还没设"的假设
          * 正是出过的坑。128 个 float 的上传开销可忽略。

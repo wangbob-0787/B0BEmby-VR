@@ -4014,6 +4014,7 @@ class MainActivity : ComponentActivity() {
      */
     private fun clearDoviState() {
         com.xxxx.emby_vr.vr.VrNative.setDoviStreamActive(false)
+        com.xxxx.emby_vr.vr.VrNative.setHdr10StreamActive(false)
         /*
          * 内核还没建起来（本进程还没播过片）时没有残留可清，整段跳过：
          * 否则会连打十几行 SKIP，把真正的故障淹掉。渲染层标志不属于内核，照常归零。
@@ -4758,8 +4759,17 @@ class MainActivity : ComponentActivity() {
                          */
                         val isP5Source = com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource &&
                             com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionProfile?.contains("50") == true
-                        val useSelfPipe = pipeOn && isP5Source
-                        Log.i(TAG, "起播分支判定：开关=$pipeOn 本片P5=$isP5Source 自管解码=$useSelfPipe")
+                        /* HDR10 也走自管路（父亲 2026-11-23）；调参写 0 可退回 */
+                        val hdr10Self = com.xxxx.emby_vr.player.PlaybackFlags.hdr10Source &&
+                            com.xxxx.emby_vr.vr.VrTuning.value(this@MainActivity, "hdr10_to_mpv")
+                                ?.trim() != "0"
+                        val useSelfPipe = pipeOn && (isP5Source || hdr10Self)
+                        Log.i(
+                            TAG,
+                            "起播分支判定：开关=$pipeOn 本片P5=$isP5Source 本片HDR10=$hdr10Self 自管解码=$useSelfPipe",
+                        )
+                        /* 渲染层按片源切换颜色算法：P5 走杜比还原，HDR10 走 PQ+色域映射 */
+                        com.xxxx.emby_vr.vr.VrNative.setHdr10StreamActive(useSelfPipe && hdr10Self)
                         /*
                          * 只有一条路（父亲 2026-11-20 定）：音视频全部客户端自管。
                          * 服务端转码那条路不再保留 —— 两套解码器同时活着会互相抢资源，
@@ -6098,12 +6108,7 @@ class MainActivity : ComponentActivity() {
          * 现在内核与渲染都换过，性能要重新量一遍，所以留这个开关做 A/B，
          * 默认不开，不影响任何现有行为。
          */
-        /* 默认开启（父亲 2026-11-23：把 HDR10 接到 MPV）；调参写 0 可关回系统播放器 */
-        val hdrToMpv = com.xxxx.emby_vr.vr.VrTuning.value(this, "hdr10_to_mpv")?.trim() != "0"
-        if (!isDv && hdr && mpvBackend == null && hdrToMpv) {
-            Log.i(TAG, "HDR10 对照：调参要求走内核 → 切 MPV")
-            switchToKernelForFallback("HDR10 对照实验（hdr10_to_mpv=1）")
-        }
+
     }
 
     /**

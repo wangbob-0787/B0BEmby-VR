@@ -729,6 +729,11 @@ object EmbyApi {
                 com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForImageSubs
             Log.i(TAG, "片源判定：杜比视界=$isDolbyVision 版本=$dvProfile HDR10打底=$hdr10Base 走内核=$useKernel" +
                 "（按名=$dvByName 按流=$dvByStream）path=${sourcePath.takeLast(70)}")
+            /* 纯 HDR10（非杜比）标记：给自管路分流用（父亲 2026-11-23：HDR10 走全包） */
+            val videoStream = dto.mediaSources?.firstOrNull()?.mediaStreams
+                ?.firstOrNull { it.type.equals("Video", true) }
+            com.xxxx.emby_vr.player.PlaybackFlags.hdr10Source =
+                !isDolbyVision && (videoStream?.videoRange?.contains("HDR", true) == true)
             com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource = isDolbyVision
             com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionProfile = dvProfile
             com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder = useKernel
