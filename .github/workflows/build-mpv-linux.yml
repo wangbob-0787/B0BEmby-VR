@@ -78,19 +78,21 @@ jobs:
           PKG_CONFIG_PATH=/opt/ff/lib/pkgconfig:/opt/lp/lib/x86_64-linux-gnu/pkgconfig \
             meson setup build --prefix=/opt/mpv --buildtype=release \
             -Dlibmpv=true -Dcplayer=true \
-            --prefer-static --default-library=static \
             -Dvulkan=enabled -Dgl=enabled -Ddrm=enabled
           ninja -C build -j"$(nproc)" >/tmp/mpv.log 2>&1 || { tail -60 /tmp/mpv.log; exit 1; }
           ./build/mpv --version
           ldd ./build/mpv | head -20
 
-      - name: 打包
+      - name: 打包（连依赖库一起带上，运行时用 LD_LIBRARY_PATH）
         run: |
-          mkdir -p out
-          cp /tmp/mpv/build/mpv out/
-          strip out/mpv || true
+          mkdir -p out/bin out/lib
+          cp /tmp/mpv/build/mpv out/bin/
+          cp -a /opt/ff/lib/libav*.so* /opt/ff/lib/libsw*.so* out/lib/ 2>/dev/null || true
+          cp -a /opt/lp/lib/x86_64-linux-gnu/libplacebo*.so* out/lib/ 2>/dev/null || true
+          strip out/bin/mpv || true
           tar czf mpv-static-x86_64.tar.gz -C out .
           ls -lh mpv-static-x86_64.tar.gz
+          du -sh out/lib
 
       - uses: actions/upload-artifact@v4
         with:
