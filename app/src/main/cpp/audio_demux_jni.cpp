@@ -529,9 +529,15 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxRead(
                     text += t;
                 }
                 AVStream *st = d->fmt->streams[d->subIdx[subK]];
-                int64_t ptsMs = sub.pts != AV_NOPTS_VALUE
-                                ? av_rescale_q(sub.pts, st->time_base, AVRational{1, 1000})
-                                : -1;   // 未知时间戳不能当 0，否则字幕会被排到片头
+                /*
+                 * 字幕时间戳：先用解码器给的 sub.pts；它为 NOPTS 时**退回用这个包自己的 pts**
+                 * （subrip 解码常常不给 sub.pts，一律当 -1 会让全部字幕挤到片头，0 秒后就不再显示
+                 *  —— 2026-11-23 真机就是"包到了、屏上没有"）。
+                 */
+                int64_t srcPts = sub.pts != AV_NOPTS_VALUE ? sub.pts : d->pkt->pts;
+                int64_t ptsMs = srcPts != AV_NOPTS_VALUE
+                                ? av_rescale_q(srcPts, st->time_base, AVRational{1, 1000})
+                                : -1;   // 仍然未知：不能当 0
                 if (!text.empty() && (int) text.size() <= cap) {
                     m[0] = 2;
                     m[1] = (jint) text.size();
