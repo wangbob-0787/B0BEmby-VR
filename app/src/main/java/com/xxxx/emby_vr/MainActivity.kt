@@ -3607,7 +3607,14 @@ class MainActivity : ComponentActivity() {
                         com.xxxx.emby_vr.player.PlaybackFlags.hdr10Source || graphicSub) &&
                     strmPath?.endsWith(".strm") == true
                 ) fetchStrmUrl(strmPath) else null
-                val path0 = when {
+                /*
+                 * 本地文件对照实验开关：调参写 local_test_url=file:///sdcard/Download/xxx.mkv
+                 * 时，起播直接用这个地址（同一套解封装 + 同一套解码），唯一变量是"网络 vs 本地"。
+                 * 实验完必须删掉这一行，否则下次起播还会播这个文件。
+                 */
+                val localTestUrl = com.xxxx.emby_vr.vr.VrTuning.value(this, "local_test_url")?.trim().orEmpty()
+                if (localTestUrl.isNotEmpty()) Log.i(TAG, "取地址：local_test_url=$localTestUrl（本地对照实验）")
+                val path0 = if (localTestUrl.isNotEmpty()) localTestUrl else when {
                     strmDirectUrl != null -> {
                         Log.i(TAG, "走 strm 原始地址：$strmDirectUrl")
                         lastPlayMethod = "DirectPlay"
