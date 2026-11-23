@@ -560,7 +560,6 @@ class MainActivity : ComponentActivity() {
 
     /** 解封装来了一条字幕：并入自绘字幕表（endMs 来自流里的真实时长，缺失才兜底） */
     /** 字幕诊断日志节流 */
-    private var subDiagAtMs = 0L
     private var subtitleNowMissing = 0
 
     /** 字幕包到达计数（只用于诊断日志节流） */
