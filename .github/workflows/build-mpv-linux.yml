@@ -51,7 +51,7 @@ jobs:
           cd /tmp/ff
           ./configure --prefix=/opt/ff --enable-static --disable-shared --disable-doc \
             --disable-programs --disable-avdevice --disable-postproc \
-            --enable-gpl --enable-pic
+            --enable-gpl --enable-pic --disable-vulkan
           make -j"$(nproc)" >/tmp/ff.log 2>&1 || { tail -40 /tmp/ff.log; exit 1; }
           sudo make install >/dev/null
           PKG_CONFIG_PATH=/opt/ff/lib/pkgconfig pkg-config --modversion libavcodec
@@ -64,7 +64,7 @@ jobs:
           cd /tmp/lp && git submodule update --init --recursive --depth 1
           PKG_CONFIG_PATH=/opt/ff/lib/pkgconfig meson setup build --prefix=/opt/lp \
             --buildtype=release -Ddefault_library=static -Ddemos=false \
-            -Dvulkan=enabled -Dshaderc=disabled -Dglslang=enabled
+            -Dvulkan=disabled -Dshaderc=disabled -Dglslang=enabled
           ninja -C build -j"$(nproc)" >/tmp/lp.log 2>&1 || { tail -40 /tmp/lp.log; exit 1; }
           sudo ninja -C build install >/dev/null
           PKG_CONFIG_PATH=/opt/lp/lib/x86_64-linux-gnu/pkgconfig pkg-config --modversion libplacebo
