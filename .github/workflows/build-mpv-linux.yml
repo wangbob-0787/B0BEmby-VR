@@ -27,8 +27,9 @@ jobs:
       - name: 依赖
         run: |
           sudo apt-get update
+          # 22.04 没有 libshaderc-dev；用 glslang 编着色器（libplacebo 支持）
           sudo apt-get install -y build-essential meson ninja-build pkg-config git nasm yasm \
-            libvulkan-dev libshaderc-dev glslang-tools liblcms2-dev libzimg-dev \
+            libvulkan-dev glslang-dev glslang-tools liblcms2-dev libzimg-dev \
             python3-jinja2 python3-markupsafe libarchive-dev libjpeg-dev libass-dev libdrm-dev
 
       - name: 编 FFmpeg（静态）
@@ -52,7 +53,7 @@ jobs:
           cd /tmp/lp && git submodule update --init --recursive --depth 1
           PKG_CONFIG_PATH=/opt/ff/lib/pkgconfig meson setup build --prefix=/opt/lp \
             --buildtype=release -Ddefault_library=static -Ddemos=false \
-            -Dvulkan=enabled -Dshaderc=enabled -Dglslang=disabled
+            -Dvulkan=enabled -Dshaderc=disabled -Dglslang=enabled
           ninja -C build -j"$(nproc)" >/tmp/lp.log 2>&1 || { tail -40 /tmp/lp.log; exit 1; }
           sudo ninja -C build install >/dev/null
           PKG_CONFIG_PATH=/opt/lp/lib/x86_64-linux-gnu/pkgconfig pkg-config --modversion libplacebo
