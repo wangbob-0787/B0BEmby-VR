@@ -561,11 +561,19 @@ class MainActivity : ComponentActivity() {
     /** 字幕包到达计数（只用于诊断日志节流） */
     private var subRecv = 0L
 
+    /** 字幕原文取证计数（前 3 条） */
+    private var subRawDbg = 0
+
     /** 字幕明细取证计数（前 30 条打起止与时长） */
     private var subCueDetail = 0
 
     private fun appendDemuxCue(startMs: Long, endMs: Long, text: String, track: Int = 0) {
         if (startMs < 0L || text.isBlank()) return
+        /* 取证：前 3 条打原文（含字段前缀），用来确认格式 */
+        if (subRawDbg < 3) {
+            subRawDbg++
+            Log.i(TAG, "字幕原文#$subRawDbg：${text.replace("\n", "\\n")}")
+        }
         /*
          * 去掉每行前面的样式字段。解封装交上来的正文带 ASS 的字段前缀
          * （例 `1,0,Default,0,0,0,台词`，实测还会多一个 `0,,`），直接画出来就是乱码。
