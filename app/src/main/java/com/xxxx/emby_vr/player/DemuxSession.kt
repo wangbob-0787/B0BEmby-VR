@@ -207,6 +207,8 @@ class DemuxSession(
         /* 4K HEVC 的关键帧包常有 2~4MB：缓冲小于它会被 native 判成致命错，整片直接停 */
         val buf = ByteArray(8 * 1024 * 1024)
         var readCount = 0
+        var rxVideo = 0
+        var enqVideo = 0
         val meta = IntArray(5)
         var waitMs = 0L
         var netRetry = 0
@@ -231,6 +233,9 @@ class DemuxSession(
                     runCatching { onSeekFailed?.invoke("跳转失败 rc=$r") }
                 }
             }
+            if (readCount % 200 == 0 && readCount > 0) {
+                Log.i(TAG, "视频管道|收到视频=$rxVideo 入队成功=$enqVideo（读循环第 $readCount 次）")
+            }
             if (readCount++ < 1) {
                 Log.i(TAG, "连接身份=视频|线程=${'$'}{Thread.currentThread().name}")
             }
@@ -240,6 +245,7 @@ class DemuxSession(
                 Log.w(TAG, "读异常：${t.javaClass.simpleName}")
                 -9
             }
+            if (n > 0 && meta[0] == 1) rxVideo++
             when {
                 n < 0 -> {
                     when (n) {
@@ -326,6 +332,7 @@ class DemuxSession(
                             val putOk = videoQueue.put(SampleQueue.Packet(data, n, ptsUs, key))
                             val putMs = System.currentTimeMillis() - putT0
                             if (!putOk) break
+                            enqVideo++
                             if (putMs > 200) Log.w(TAG, "写视频队列耗时 ${putMs}ms（队列满在等）")
                         }
                         2 -> {

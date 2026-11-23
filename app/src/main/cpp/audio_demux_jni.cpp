@@ -113,6 +113,8 @@ void freeDemux(JNIEnv *env, Demux *d) {
 }
 
 static std::atomic<long long> gReadTotal{0}, gReadVideo{0}, gReadAudio{0}, gReadOther{0};
+/* 六段计数：读成功 → 判成视频 → 返回给 Java（父 2026-11-24 转来的建议） */
+static std::atomic<long long> gVideoMatch{0}, gVideoReturn{0};
 
 Demux *fromHandle(jlong h) { return reinterpret_cast<Demux *>(static_cast<intptr_t>(h)); }
 
@@ -472,9 +474,9 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxRead(
             else gReadOther.fetch_add(1);
             const long long tot = gReadTotal.load();
             if (tot % 200 == 1) {
-                LOGI("读计数|总=%lld 视频=%lld 音频=%lld 其他=%lld vidx=%d aidx=%d",
+                LOGI("读计数|总=%lld 视频=%lld 音频=%lld 其他=%lld 判成视频=%lld 返回视频=%lld vidx=%d aidx=%d",
                      tot, gReadVideo.load(), gReadAudio.load(), gReadOther.load(),
-                     d->videoIdx, d->audioIdx);
+                     gVideoMatch.load(), gVideoReturn.load(), d->videoIdx, d->audioIdx);
             }
         }
         if (ret == AVERROR_EOF) {
@@ -590,6 +592,7 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxRead(
                 continue;
             }
             AVStream *vs = d->fmt->streams[d->videoIdx];
+            gVideoMatch.fetch_add(1);
             m[0] = 1;
             m[1] = size;
             m[2] = (jint) (d->pkt->pts == AV_NOPTS_VALUE ? -1
@@ -598,6 +601,7 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxRead(
             env->SetByteArrayRegion(out, 0, size, reinterpret_cast<const jbyte *>(d->pkt->data));
             env->SetIntArrayRegion(meta, 0, 5, m);
             av_packet_unref(d->pkt);
+            gVideoReturn.fetch_add(1);
             return size;
         }
         /* 字幕：先看这个包属于哪一条字幕轨（多轨各解各的，切轨零等待） */
