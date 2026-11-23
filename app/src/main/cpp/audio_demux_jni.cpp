@@ -226,7 +226,12 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxOpen(
      * （真机 HDR10 实测：读到第 12 个样本后计数两分钟不动，无任何报错）。
      * 设了之后读会失败返回，读循环能报错并重试。
      */
+    /*
+     * 三把都要下：通用 rw_timeout、http 协议自己的 timeout、以及 open 之后再设一次。
+     * 实测只写 rw_timeout 时 36 秒都不超时 —— 说明它没进到协议层（豆豆 2026-11-23）。
+     */
     av_dict_set(&opt, "rw_timeout", "15000000", 0);
+    av_dict_set(&opt, "timeout", "15000000", 0);
     /*
      * 打开前把地址打出来（只留前 120 字符、api_key 遮掉）：
      * 用来一次分清"连的是本地中转还是 Emby 原地址"，这条以前完全看不到。
@@ -240,6 +245,12 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxOpen(
     }
     int ret = avformat_open_input(&fmt, u, nullptr, &opt);
     av_dict_free(&opt);
+    if (ret >= 0 && fmt) {
+        /* open 成功后再兜一手：把超时真正落到 AVIO/协议层 */
+        if (fmt->pb) av_opt_set_int(fmt->pb, "rw_timeout", 15000000, 0);
+        else av_opt_set_int(fmt, "rw_timeout", 15000000, 0);
+        d->lastReadOkMs.store(nowMs());
+    }
     env->ReleaseStringUTFChars(url, u);
     if (ret < 0) {
         LOGE("打开失败: %s", errStr(ret).c_str());
