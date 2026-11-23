@@ -9777,6 +9777,8 @@ class MainActivity : ComponentActivity() {
                     } else {
                         /* 字幕回调必须在 session.start() 之前挂好（图 §2-4） */
                         probe.onSubtitle = subCb@{ cStart, cEnd, text, track ->
+                            /* 诊断：确认字幕包到达与轨号过滤（2026-11-23 字幕不上屏） */
+                            Log.i(TAG, "字幕包到达：轨=$track 想要=$demuxSubTrackWanted 起点=${cStart}ms 长度=${text.length}")
                             if (track != demuxSubTrackWanted) return@subCb
                             ui.post {
                                 if (gen != selfGen.get()) return@post

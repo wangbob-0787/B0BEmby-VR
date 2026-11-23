@@ -64,6 +64,8 @@ class DemuxSession(
     var onSeekOrigin: ((targetMs: Long, videoPtsUs: Long, audioPtsUs: Long) -> Unit)? = null
 
     /** 跳转后等首视频包回灌落点 */
+    /** 收到多少条字幕包（诊断用） */
+    private var subCueCount = 0
     private var seekOriginPending = false
     private var seekOriginTargetMs = 0L
 
@@ -306,6 +308,8 @@ class DemuxSession(
                             if (!videoQueue.put(SampleQueue.Packet(data, n, ptsUs, key))) break
                         }
                         2 -> {
+                            subCueCount++
+                            if (subCueCount % 20 == 1) Log.i(TAG, "字幕包#$subCueCount 轨=${meta[3]} 长度=$n")
                             val text = String(buf, 0, n, Charsets.UTF_8)
                             if (text.isNotBlank()) {
                                 val endMs = if (meta[4] > meta[2]) meta[4].toLong() else 0L
