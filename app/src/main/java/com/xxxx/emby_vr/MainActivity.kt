@@ -9846,7 +9846,8 @@ class MainActivity : ComponentActivity() {
                                  * 于是重新进入"等关键帧"，队列里剩下的多半是 P 帧 → 画面定住（快退定住即此因）。
                                  */
                                 videoPipe?.setPrerollStart(originSec)
-                                audioPipe?.onSessionSeek(targetMs / 1000.0, originSec, audioPtsUs)
+                                /* 目标也传共同起点：delta=0 → 不补静音、不裁内容 */
+                                audioPipe?.onSessionSeek(originSec, originSec, audioPtsUs)
                                 Log.i(
                                     TAG,
                                     "全包档落点：目标=${"%.3f".format(targetMs / 1000.0)}s " +
