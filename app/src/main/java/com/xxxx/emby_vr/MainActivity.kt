@@ -1753,7 +1753,7 @@ class MainActivity : ComponentActivity() {
                         val g = ((n shr 8) and 0xFF).toInt()
                         val r = ((n shr 16) and 0xFF).toInt()
                         val a = (255 - ((n shr 24) and 0xFF)).toInt().coerceIn(0, 255)
-                        (a shl 24) or (r shl 16) or (g shl 8) or b
+                        return (a shl 24) or (r shl 16) or (g shl 8) or b
                     }
                     val name = str("name")
                     if (name.isNotEmpty()) {
