@@ -1437,6 +1437,16 @@ class VideoPipe {
         Log.i(TAG, "全包档跳转：已登记清解码器，等解码线程在两帧之间执行")
     }
 
+    /**
+     * 全包档跳转后更新"预滚阈值"。
+     *
+     * `audioStartSec` 是"早于这个时刻的帧当作起播前的预滚、直接丢"的判据；
+     * 跳转后不更新它，往回跳就会把所有新帧都当预滚丢掉（表现：声音走了、画面留在原地）。
+     */
+    fun setPrerollStart(sec: Double) {
+        audioStartSec = sec
+    }
+
     /** 由解码线程执行的清解码器（只在没握着输出缓冲时） */
     private fun applyPendingFlush() {
         if (!pendingSourceFlush) return

@@ -9808,6 +9808,7 @@ class MainActivity : ComponentActivity() {
                                  * 清解码器已在 pipeSeek 那一刻做过一次；这里再清会把刚喂进去的关键帧冲掉，
                                  * 于是重新进入"等关键帧"，队列里剩下的多半是 P 帧 → 画面定住（快退定住即此因）。
                                  */
+                                videoPipe?.setPrerollStart(originSec)
                                 audioPipe?.onSessionSeek(targetMs / 1000.0, originSec, audioPtsUs)
                                 Log.i(
                                     TAG,
