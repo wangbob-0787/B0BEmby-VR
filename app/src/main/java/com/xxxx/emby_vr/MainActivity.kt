@@ -6272,12 +6272,15 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 }
-                demuxSubCues.clear()
-                subtitleCues = emptyList()
+                /*
+                 * **不要清空已攒好的字幕表**：读线程比播放位置早几十秒，选轨那一刻表里已经有
+                 * "未来"的条目；清掉以后那段已读过的字幕不会重发，要等播放追上读线程才有新包，
+                 * 表现为"选了字幕却长时间不出字"（2026-11-23 真机：表=6 条、首条 452.999s、进度 418s）。
+                 */
                 subtitleNow = ""
                 if (!waitingFirstFrame) danmakuView?.setSubtitle("")
                 refreshMenuRows(com.xxxx.emby_vr.panel.MenuKind.SUBTITLE)
-                Log.i(TAG, "自管解码：字幕 $index → 文件内第 $demuxSubTrackWanted 条文字字幕（解封装直供）")
+                Log.i(TAG, "自管解码：字幕 $index → 文件内第 $demuxSubTrackWanted 条文字字幕（解封装直供，已攒 ${demuxSubCues.size} 条）")
             }
             return
         }
