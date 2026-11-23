@@ -203,6 +203,23 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxOpen(
     AVDictionary *opt = nullptr;
     av_dict_set(&opt, "timeout", "20000000", 0);        // 20s：网络源首字节慢是常态
     av_dict_set(&opt, "reconnect", "1", 0);
+    /*
+     * 读超时：没有它，一条死掉的 TCP 会让 av_read_frame 永久阻塞
+     * （真机 HDR10 实测：读到第 12 个样本后计数两分钟不动，无任何报错）。
+     * 设了之后读会失败返回，读循环能报错并重试。
+     */
+    av_dict_set(&opt, "rw_timeout", "15000000", 0);
+    /*
+     * 打开前把地址打出来（只留前 120 字符、api_key 遮掉）：
+     * 用来一次分清"连的是本地中转还是 Emby 原地址"，这条以前完全看不到。
+     */
+    {
+        char head[160];
+        snprintf(head, sizeof(head), "%s", u);
+        char *k = strstr(head, "api_key=");
+        if (k) head[k - head + 8] = '\0';
+        LOGI("解封装打开：url=%s", head);
+    }
     int ret = avformat_open_input(&fmt, u, nullptr, &opt);
     av_dict_free(&opt);
     env->ReleaseStringUTFChars(url, u);
