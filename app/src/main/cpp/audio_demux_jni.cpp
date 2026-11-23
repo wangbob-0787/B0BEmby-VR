@@ -112,6 +112,8 @@ void freeDemux(JNIEnv *env, Demux *d) {
     delete d;
 }
 
+static std::atomic<long long> gReadTotal{0}, gReadVideo{0}, gReadAudio{0}, gReadOther{0};
+
 Demux *fromHandle(jlong h) { return reinterpret_cast<Demux *>(static_cast<intptr_t>(h)); }
 
 static long long nowMs() {
@@ -457,6 +459,23 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxRead(
         } else if (ret != AVERROR(EAGAIN)) {
             /* 读失败：把"卡了多久"和返回码一起打出来，配合看门狗定位（豆豆 2026-11-23） */
             LOGE("读中断/失败 rc=%d 阻塞=%lldms abort=%d", ret, dt, d->abort.load() ? 1 : 0);
+        }
+        /*
+         * 分轨计数（父亲 2026-11-24 从外部建议里拿来的三条计数器）：
+         * 读成功多少次、其中各轨各多少包 —— 用来判断"视频包在哪一层消失"。
+         */
+        if (ret >= 0) {
+            const int si = d->pkt->stream_index;
+            gReadTotal.fetch_add(1);
+            if (si == d->videoIdx) gReadVideo.fetch_add(1);
+            else if (si == d->audioIdx) gReadAudio.fetch_add(1);
+            else gReadOther.fetch_add(1);
+            const long long tot = gReadTotal.load();
+            if (tot % 200 == 1) {
+                LOGI("读计数|总=%lld 视频=%lld 音频=%lld 其他=%lld vidx=%d aidx=%d",
+                     tot, gReadVideo.load(), gReadAudio.load(), gReadOther.load(),
+                     d->videoIdx, d->audioIdx);
+            }
         }
         if (ret == AVERROR_EOF) {
             LOGE("DBG|EOF ret=%d abort=%d avio_error=%d eof_reached=%d pos=%lld",
