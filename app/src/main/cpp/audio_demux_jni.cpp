@@ -707,6 +707,7 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxSubtitleHeader(
     return static_cast<jstring>(out);
 }
 
+extern "C" JNIEXPORT void JNICALL
 Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxClose(JNIEnv *env, jobject, jlong handle) {
     if (handle == 0) {
         gConDupe.fetch_add(1);
