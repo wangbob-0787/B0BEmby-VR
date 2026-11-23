@@ -683,7 +683,6 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxAbort(JNIEnv *, jobjec
     if (d) d->abort.store(true);
 }
 
-extern "C" JNIEXPORT void JNICALL
 /*
  * 字幕头的原始文本（ASS/SSA 的 [Script Info] / [V4+ Styles] 段就在里面）。
  * Java 侧解析样式表用；取不到返回 null。
