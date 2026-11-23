@@ -10301,7 +10301,12 @@ class MainActivity : ComponentActivity() {
                  */
                 ui.post {
                     if (selfGen.get() == gen) {
-                        danmakuView?.setSubtitleProvider { pos -> lookupDemuxCueText(pos) }
+                        /*
+                         * 位置必须用**我们自己的播放时钟**：弹幕视图内部的 positionProvider
+                         * 在播放这条路上从来没被设置过（一直返回 0），
+                         * 传进来的 pos 恒为 0 → 查表恒空，字幕出现一帧就消失（2026-11-23 真机）。
+                         */
+                        danmakuView?.setSubtitleProvider { _ -> lookupDemuxCueText(currentPositionMs()) }
                     }
                 }
                 val wantSub = selectedSubtitleIndex
