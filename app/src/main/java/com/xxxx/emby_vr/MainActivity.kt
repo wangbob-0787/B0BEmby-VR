@@ -9811,14 +9811,18 @@ class MainActivity : ComponentActivity() {
                     } else {
                         /* 字幕回调必须在 session.start() 之前挂好（图 §2-4） */
                         probe.onSubtitle = subCb@{ cStart, cEnd, text, track ->
-                            /* 诊断（节流）：前 20 条逐条，之后每 50 条一行；轨号不匹配的单列 */
+                            /*
+                             * **所有文字轨的 cue 都进表**，不在入口按"当前选中轨"过滤。
+                             *
+                             * 读线程比播放位置超前几十秒（96MB 队列 ÷ 码率，实测约 56 秒）。如果入口就按
+                             * 选中轨丢弃，用户选轨之前已经读过去的那段字幕就永远拿不回来了 —— 选完只能干等到
+                             * 播放追上读线程才有字（2026-11-23 真机：选轨后表里只有 6 条、首条在 30 秒之后）。
+                             * 过滤放在出口（refreshDemuxSubtitleCues 按轨筛），既保住历史，也不会串轨。
+                             */
                             subRecv++
                             if (subRecv <= 20L || subRecv % 50L == 0L) {
                                 Log.i(TAG, "字幕包到达#$subRecv 轨=$track 想要=$demuxSubTrackWanted 起点=${cStart}ms 长度=${text.length}")
-                            } else if (track != demuxSubTrackWanted) {
-                                Log.w(TAG, "字幕包轨号不匹配#$subRecv 来=$track 想要=$demuxSubTrackWanted")
                             }
-                            if (track != demuxSubTrackWanted) return@subCb
                             ui.post {
                                 if (gen != selfGen.get()) return@post
                                 appendDemuxCue(cStart, cEnd, text, track)
