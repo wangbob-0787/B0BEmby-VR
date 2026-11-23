@@ -206,6 +206,7 @@ class DemuxSession(
         val h = handle
         /* 4K HEVC 的关键帧包常有 2~4MB：缓冲小于它会被 native 判成致命错，整片直接停 */
         val buf = ByteArray(8 * 1024 * 1024)
+        var readCount = 0
         val meta = IntArray(5)
         var waitMs = 0L
         var netRetry = 0
@@ -229,6 +230,9 @@ class DemuxSession(
                     /* 跳转失败却当成成功，会让画面/声音停在两个不同的位置 */
                     runCatching { onSeekFailed?.invoke("跳转失败 rc=$r") }
                 }
+            }
+            if (readCount++ < 1) {
+                Log.i(TAG, "连接身份=视频|线程=${'$'}{Thread.currentThread().name}")
             }
             val n = try {
                 AudioDemuxNative.nativeDemuxRead(h, buf, meta)
