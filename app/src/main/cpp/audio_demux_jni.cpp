@@ -61,6 +61,11 @@ struct Demux {
      * 之后每次读包都被判中断（豆豆 2026-11-22 P0-2）。
      */
     std::atomic<bool> opening{false};
+    /*
+     * 读停滞看门狗：距上次 av_read_frame 成功返回的毫秒数（monotonic）。
+     * 真机 HDR10 实测读到 11 包后永久阻塞、无错误、rw_timeout 也不生效 —— 只能靠它。
+     */
+    std::atomic<long long> lastReadOkMs{0};
     int subDbg = 0;   // 字幕时长取证计数
     int audioIdx = -1;
     int videoIdx = -1;
@@ -109,10 +114,23 @@ void freeDemux(JNIEnv *env, Demux *d) {
 
 Demux *fromHandle(jlong h) { return reinterpret_cast<Demux *>(static_cast<intptr_t>(h)); }
 
+static long long nowMs() {
+    return (long long) std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 int interruptCb(void *opaque) {
     auto *d = static_cast<Demux *>(opaque);
     if (!d) return 0;
     if (d->abort.load()) return 1;
+    /*
+     * 读停滞看门狗：8 秒没有成功读到包就打断本次读。
+     * 只对读相位生效（opening=false 之后），不干扰打开期的 20 秒超时策略。
+     */
+    if (!d->opening.load()) {
+        const long long last = d->lastReadOkMs.load();
+        if (last > 0 && nowMs() - last > 8000) return 1;
+    }
     /* 打开结束后不再看 Java 标志：脏标志不许影响已经建好的会话 */
     if (!d->opening.load()) return 0;
     if (!d->abortFlag || !d->vm || !d->abortGet) return 0;
@@ -404,7 +422,15 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxRead(
 
     if (d->abort.load()) return -5;   // 被上层主动打断：不是网络错，也不是结尾
     while (true) {
+        const long long t0 = nowMs();
         int ret = av_read_frame(d->fmt, d->pkt);
+        const long long dt = nowMs() - t0;
+        if (ret >= 0) {
+            d->lastReadOkMs.store(nowMs());
+        } else if (ret != AVERROR(EAGAIN)) {
+            /* 读失败：把"卡了多久"和返回码一起打出来，配合看门狗定位（豆豆 2026-11-23） */
+            LOGE("读中断/失败 rc=%d 阻塞=%lldms abort=%d", ret, dt, d->abort.load() ? 1 : 0);
+        }
         if (ret == AVERROR_EOF) {
             LOGE("DBG|EOF ret=%d abort=%d avio_error=%d eof_reached=%d pos=%lld",
                  ret, d->abort.load() ? 1 : 0,
