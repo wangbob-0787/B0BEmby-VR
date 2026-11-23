@@ -561,12 +561,19 @@ class MainActivity : ComponentActivity() {
     /** 字幕包到达计数（只用于诊断日志节流） */
     private var subRecv = 0L
 
-    private fun appendDemuxCue(startMs: Long, endMs: Long, text: String) {
+    private fun appendDemuxCue(startMs: Long, endMs: Long, text: String, track: Int = 0) {
         if (startMs < 0L || text.isBlank()) return
         val end = if (endMs > startMs) endMs else startMs + 3000L
-        demuxSubCues[startMs] = SubtitleCue(startMs, end, text, emptyList())
+        /* 键里混入轨号：不同轨会有同一时刻的条目，只按时间当键会互相覆盖 */
+        demuxSubCues[startMs * 8L + (track and 7)] = SubtitleCue(startMs, end, text, emptyList(), track)
         if (demuxSubCues.size > 4000) runCatching { demuxSubCues.pollFirstEntry() }
-        subtitleCues = demuxSubCues.values.toList()
+        refreshDemuxSubtitleCues()
+    }
+
+    /** 只把"当前选中轨"的条目交给显示层（切轨后旧轨条目留在表里但不上屏） */
+    private fun refreshDemuxSubtitleCues() {
+        val want = demuxSubTrackWanted
+        subtitleCues = demuxSubCues.values.filter { it.track == want }.sortedBy { it.startMs }
     }
 
     /** Emby 字幕流序号 → 文件内第几条「文字」字幕（解封装按这个序号交付） */
@@ -6277,10 +6284,11 @@ class MainActivity : ComponentActivity() {
                  * "未来"的条目；清掉以后那段已读过的字幕不会重发，要等播放追上读线程才有新包，
                  * 表现为"选了字幕却长时间不出字"（2026-11-23 真机：表=6 条、首条 452.999s、进度 418s）。
                  */
+                refreshDemuxSubtitleCues()
                 subtitleNow = ""
                 if (!waitingFirstFrame) danmakuView?.setSubtitle("")
                 refreshMenuRows(com.xxxx.emby_vr.panel.MenuKind.SUBTITLE)
-                Log.i(TAG, "自管解码：字幕 $index → 文件内第 $demuxSubTrackWanted 条文字字幕（解封装直供，已攒 ${demuxSubCues.size} 条）")
+                Log.i(TAG, "自管解码：字幕 $index → 文件内第 $demuxSubTrackWanted 条文字字幕（解封装直供，本轨已攒 ${subtitleCues.size} 条）")
             }
             return
         }
@@ -9813,7 +9821,7 @@ class MainActivity : ComponentActivity() {
                             if (track != demuxSubTrackWanted) return@subCb
                             ui.post {
                                 if (gen != selfGen.get()) return@post
-                                appendDemuxCue(cStart, cEnd, text)
+                                appendDemuxCue(cStart, cEnd, text, track)
                             }
                         }
                         probe.onRouteFailed = failCb@{ reason ->
@@ -10566,6 +10574,8 @@ data class SubtitleCue(
     val text: String,
     /** 带样式的行（字号倍数 / 颜色）；纯文本 SRT 时为空，退回 text 那条老路 */
     val lines: List<com.xxxx.emby_vr.danmaku.SubtitleLine> = emptyList(),
+    /** 来自文件内第几条文字字幕（0 起）。切轨时按它过滤，避免显示上一条轨的条目 */
+    val track: Int = 0,
 )
 
 /** 解析中间产物：一段字幕的原始行（还带着 HTML 风格样式标签） */
