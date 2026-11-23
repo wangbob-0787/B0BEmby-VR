@@ -567,17 +567,24 @@ class MainActivity : ComponentActivity() {
     private fun appendDemuxCue(startMs: Long, endMs: Long, text: String, track: Int = 0) {
         if (startMs < 0L || text.isBlank()) return
         /*
-         * 去掉每行前面的样式字段。解封装交上来的正文是 ASS 的
-         * `层,起,样式,0,0,0,正文` 形状（例 `1,0,Default,0,0,0,台词`），
-         * 直接画出来就是"1,0,Default,0,0,0 台词"（2026-11-23 真机）。
-         * 这里按行拆前 7 段：前两段是数字、第三段是 Default 时，只保留第 7 段起的正文。
+         * 去掉每行前面的样式字段。解封装交上来的正文带 ASS 的字段前缀
+         * （例 `1,0,Default,0,0,0,台词`，实测还会多一个 `0,,`），直接画出来就是乱码。
+         * 做法：按逗号拆开，找到**第一个既不是数字、也不是 Default 的字段**，
+         * 从它开始拼回正文；找不到就原样保留。
          */
         val cleaned = text.lines().joinToString("\n") { line ->
-            val p = line.split(",", limit = 7)
-            if (p.size == 7 && p[2].equals("Default", true) &&
-                p[0].trim().toIntOrNull() != null && p[1].trim().toIntOrNull() != null
+            val parts = line.split(",")
+            val idx = parts.indexOfFirst { p ->
+                val t = p.trim()
+                t.isNotEmpty() && t.toIntOrNull() == null && !t.equals("Default", true) &&
+                    t.any { it.isLetter() }
+            }
+            if (idx > 0 && parts.take(idx).all {
+                    val t = it.trim()
+                    t.isEmpty() || t.toIntOrNull() != null || t.equals("Default", true)
+                }
             ) {
-                p[6]
+                parts.drop(idx).joinToString(",").trim()
             } else {
                 line
             }
