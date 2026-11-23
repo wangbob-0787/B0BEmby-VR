@@ -314,7 +314,15 @@ class DemuxSession(
                              */
                             val data = buf.copyOf(n)
                             toAnnexBInPlace(data, n)
-                            if (!videoQueue.put(SampleQueue.Packet(data, n, ptsUs, key))) break
+                            /*
+                             * 写入前先报"排了多久"：HDR10 真机上样本停在 11 包、解码器只出 1 帧，
+                             * 怀疑卡在队列写入而不是读网络（r1720 的读停滞看门狗没触发）。
+                             */
+                            val putT0 = System.currentTimeMillis()
+                            val putOk = videoQueue.put(SampleQueue.Packet(data, n, ptsUs, key))
+                            val putMs = System.currentTimeMillis() - putT0
+                            if (!putOk) break
+                            if (putMs > 200) Log.w(TAG, "写视频队列耗时 ${putMs}ms（队列满在等）")
                         }
                         2 -> {
                             subCueCount++
