@@ -382,6 +382,9 @@ class MainActivity : ComponentActivity() {
      */
     @Volatile
     private var smoothPosMs = 0.0
+    /* 弹幕时钟的实测播放速率（低通后），见 refreshPosBase */
+    private var rateSmoothed = 1.0
+    private var rateLogAtMs = 0L
 
     @Volatile
     private var smoothAtMs = 0L
@@ -431,7 +434,23 @@ class MainActivity : ComponentActivity() {
             posBaseAtMs = now
             return
         }
-        var est = smoothPosMs + (now - smoothAtMs)
+        /*
+         * 推进速率按**实测播放速率**算，不再固定 1:1 墙钟。
+         *
+         * 根因（豆豆 2026-11-23 实测）：设备每秒实际只放 43640 个样本（标称 44100），
+         * 播放位置每 100 秒比墙钟慢约 1 秒 —— 弹幕时钟按墙钟走就必然越走越前，
+         * 爬到 800ms 阈值再被硬拉回，形成"领先一段、回跳一次"的锯齿。
+         * 三条路（自管 / 内核 / 系统播放器）位置源都慢这 1%，所以修在公共层。
+         */
+        val dtMs = (now - posBaseAtMs).coerceAtLeast(1L)
+        val rateRaw = (target - posBaseMs).toDouble() / dtMs.toDouble()
+        val rate = when {
+            /// 位置源异常（没暂停却是 0 或负数）→ 按 1:1 走，别把时钟带飞
+            rateRaw <= 0.0 && !danmakuPaused -> 1.0
+            else -> rateRaw.coerceIn(0.0, 4.0)
+        }
+        rateSmoothed = 0.8 * rateSmoothed + 0.2 * rate
+        var est = smoothPosMs + (now - smoothAtMs) * rateSmoothed
         val err = target - est
         est += when {
             // 换集 / 拖动进度 / 起播：差得离谱就认播放器的值
@@ -440,6 +459,13 @@ class MainActivity : ComponentActivity() {
             err > 0.0 -> kotlin.math.min(err, kDanmakuSlewMs)
             // 超前（缓冲卡住等）：原地等播放器追上来，绝不往回跳
             else -> 0.0
+        }
+        if (now - rateLogAtMs > 5000L) {
+            rateLogAtMs = now
+            Log.i(
+                TAG,
+                "弹幕时钟 位置=${target}ms 时钟=${est.toLong()}ms 差=${(target - est).toLong()}ms 速率=%.3f".format(rateSmoothed),
+            )
         }
         smoothPosMs = est
         smoothAtMs = now
