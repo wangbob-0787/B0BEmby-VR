@@ -4553,6 +4553,12 @@ class MainActivity : ComponentActivity() {
             }.getOrDefault(false) || com.xxxx.emby_vr.vr.VrTuning.videoPipeOn
             val hdr10ToPipe = com.xxxx.emby_vr.player.PlaybackFlags.hdr10Source && pipeOnEarly &&
                 com.xxxx.emby_vr.vr.VrTuning.value(this, "hdr10_to_mpv")?.trim() != "0"
+            /*
+             * 本次画面是否由自管路接管（P5 或 HDR10）。
+             * 后面"内核这条路要不要跳过起播"必须认它——只认杜比 P5 的话，
+             * HDR10 会出现"自管在放 + 内核也去 play"的双路故障（豆豆 2026-11-23）。
+             */
+            var selfPipeOwnsVideoThisPlay = false
             if (isWeb || com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder ||
                 com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForHdr10 || hdr10ToPipe) {
                 /*
@@ -4763,13 +4769,8 @@ class MainActivity : ComponentActivity() {
                          * 轮询是周期性的，起播落在两次轮询之间时会读到旧值，
                          * 表现就是「文件里明明写了 videopipe=1，跑的却是老链路」。
                          */
-                        val pipeOn = runCatching {
-                            java.io.File(
-                                getExternalFilesDir(null) ?: filesDir,
-                                "vr-tuning.txt",
-                            ).readLines().firstOrNull { it.startsWith("videopipe=") }
-                                ?.substringAfter("=")?.trim()?.toIntOrNull() == 1
-                        }.getOrDefault(false) || com.xxxx.emby_vr.vr.VrTuning.videoPipeOn
+                        /* 与外层 pipeOnEarly 共用同一份判断（三处各算一次是隐患，豆豆 2026-11-23） */
+                        val pipeOn = pipeOnEarly
                         /*
                          * 新路径只给杜比 P5（2026-11-16 父亲定）。
                          *
@@ -4801,6 +4802,7 @@ class MainActivity : ComponentActivity() {
                          */
                         selfPipeActive = useSelfPipe
                         if (useSelfPipe) {
+                            selfPipeOwnsVideoThisPlay = true
                             startSelfVideoPipe(directUrl, startMs / 1000.0, surface, m)
                         } else {
                             m.play(directUrl, startMs / 1000.0, source = "内核起播")
@@ -5051,11 +5053,8 @@ class MainActivity : ComponentActivity() {
                  * 两条路同时跑，后跑的这条把色彩目标切回了 SDR，P5 的 IPT 数据被当普通视频
                  * 解释 → 整幅偏绿；它又用 vid=no 重新加载一次，内核直接回 idle → 没声音。
                  */
-                val selfPipeOwnsVideo = com.xxxx.emby_vr.vr.VrTuning.videoPipeOn &&
-                    com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource &&
-                    com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionProfile?.contains("50") == true
-                if (selfPipeOwnsVideo) {
-                    Log.i(TAG, "P5 + 自管解码：内核这条路跳过起播（画面与颜色归渲染层）")
+                if (selfPipeOwnsVideoThisPlay) {
+                    Log.i(TAG, "自管解码（P5 或 HDR10）：内核这条路跳过起播（画面与颜色归渲染层）")
                     if (!isWeb) startPlaybackReporting()
                     return
                 }
