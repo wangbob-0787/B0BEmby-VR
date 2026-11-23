@@ -1282,7 +1282,7 @@ void main() {
          * mobius 曲线（拐点 0.3、高光去饱和 2、目标亮度 52），色域 BT.2020→BT.709，
          * 输出按 BT.709 编码。单位约定：线性量 1.0 = 100 nit。
          */
-        if (uHdr10 == 1) {
+        if (uHdr10 == 1 && uDvReshape == 0) {
             vec3 pq = clamp(c.rgb, 0.0, 1.0);
             /* ST2084 EOTF：PQ 码值 → 归一化亮度（1.0 = 10000 nit），再换成 1.0 = 100 nit */
             vec3 n = pow(pq, vec3(1.0 / 78.84375));            /* m2 */
@@ -1296,8 +1296,14 @@ void main() {
             lin = mix(lin, vec3(y), over);
             /* mobius：按最大分量压缩，三通道同比缩放（色相守恒） */
             float sig = max(max(lin.r, lin.g), lin.b);
+            /*
+             * 参数与 ffmpeg 同刻度（1.0 = 100 nit）：desat=2 → 200 nit，
+             * peak=52 → 5200 nit。写成 52.0；若误写成 0.52，b 分母会塌成 1e-6、
+             * 压缩结果反而比原值大 4.32，整屏过曝（豆豆 2026-11-23 审出）。
+             * peak 还必须大于 j：小于等于 j 时同样会炸，这里兜一手。
+             */
             float j = 0.3;
-            float peak = 0.52;
+            float peak = max(52.0, j + 1e-3);
             float aa = -j * j * (peak - 1.0) / (j * j - 2.0 * j + peak);
             float bb = (j * j - 2.0 * j * peak + peak) / max(peak - 1.0, 1e-6);
             float comp = (bb * bb + 2.0 * bb * j + j * j) / (bb - aa) * (sig + aa) / (sig + bb);

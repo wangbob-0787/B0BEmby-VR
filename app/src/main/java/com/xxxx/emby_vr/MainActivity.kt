@@ -4130,6 +4130,8 @@ class MainActivity : ComponentActivity() {
      * 只改一半就是最典型的偏绿/发灰（P5 的 IPT 数据被当普通视频解释）。
      */
     private fun setColorPair(doviRenderer: Boolean) {
+        /* HDR10 与杜比互斥：置一边就清另一边，避免着色器两个分支同时成立 */
+        if (doviRenderer) com.xxxx.emby_vr.vr.VrNative.setHdr10StreamActive(false)
         com.xxxx.emby_vr.vr.VrNative.setDoviStreamActive(doviRenderer)
         runCatching { com.xxxx.emby_vr.player.MpvBackend.applyDoviPipeline(doviRenderer) }
         Log.i(TAG, "色彩二元组 → 内核DOVI管线=$doviRenderer 渲染层DOVI标志=$doviRenderer")
@@ -4770,6 +4772,11 @@ class MainActivity : ComponentActivity() {
                         )
                         /* 渲染层按片源切换颜色算法：P5 走杜比还原，HDR10 走 PQ+色域映射 */
                         com.xxxx.emby_vr.vr.VrNative.setHdr10StreamActive(useSelfPipe && hdr10Self)
+                        Log.i(
+                            TAG,
+                            "片源色彩：杜比=${PlaybackFlags.dolbyVisionSource} 档=${PlaybackFlags.dolbyVisionProfile} " +
+                                "HDR10=${PlaybackFlags.hdr10Source} 自管=${useSelfPipe}",
+                        )
                         /*
                          * 只有一条路（父亲 2026-11-20 定）：音视频全部客户端自管。
                          * 服务端转码那条路不再保留 —— 两套解码器同时活着会互相抢资源，
