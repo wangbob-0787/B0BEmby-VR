@@ -569,6 +569,12 @@ class MainActivity : ComponentActivity() {
     /** 字幕原文取证计数（前 3 条） */
     private var subRawDbg = 0
 
+    /** "当前没有字幕"的哨兵值 */
+    private val NO_CUE = Long.MIN_VALUE
+
+    /** 当前已上屏的是哪一条（按 startMs 认身份；NO_CUE = 当前没有字幕） */
+    private var shownCueStart = NO_CUE
+
     /** 字幕明细取证计数（前 30 条打起止与时长） */
     private var subCueDetail = 0
 
@@ -1690,34 +1696,60 @@ class MainActivity : ComponentActivity() {
     private fun updateDrawnSubtitle() {
         /*
          * 内核（Profile 5）这条路的字幕由 mpvSubtitleJob 从内嵌轨道取文，别两边抢着写。
-         * 但全包档（selfSession != null）画面与字幕都归我们自己：mpv 对象可能仍存在，
-         * 这里必须放行，否则下面全部逻辑（含诊断日志）一行都不会执行 —— 字幕永远不上屏
-         * （豆豆 2026-11-23 定位）。
+         * 全包档（selfSession != null）画面与字幕都归我们自己：mpv 对象可能仍存在，
+         * 这里必须放行，否则整段逻辑（含诊断日志）都不会执行（豆豆 2026-11-23）。
          */
         if (mpvBackend != null && selfSession == null) return
-        if (subtitleCues.isEmpty()) return
+        if (subtitleCues.isEmpty()) {
+            if (shownCueStart != NO_CUE) {
+                shownCueStart = NO_CUE
+                applySubtitleText("", null)
+            }
+            return
+        }
         val pos = currentPositionMs()
         val cue = subtitleCues.firstOrNull { pos >= it.startMs && pos <= it.endMs }
-        /* 诊断：字幕表有内容却不上屏时，对照"当前进度"与"表里时刻"（每 2 秒一行） */
+        /*
+         * **只在"命中的那条变了"时才改屏幕上的字**（豆豆 2026-11-23 定的状态机）。
+         *
+         * 原来是每次 tick 都重新算一遍"哪条命中"再写屏幕 —— 位置只要抖几十毫秒，
+         * 输出就在"有字/无字"之间跳，肉眼就是不停闪。现在把它变成状态机：
+         * 同一段字幕期间无论 tick 多少次都不改变显示，只有越过边界才切。
+         * 内容时间一个字没动：短句显示多久还是由文件的起止时间决定。
+         */
+        val key = cue?.startMs ?: NO_CUE
+        if (key != shownCueStart) {
+            val clockUs = runCatching { playClock?.positionUs() }.getOrNull() ?: -1L
+            val ctlMs = runCatching { ctl.positionMs() }.getOrNull() ?: -1L
+            Log.i(
+                TAG,
+                "字幕切换|pos=${pos}ms|旧=$shownCueStart|新=$key|表=${subtitleCues.size}条" +
+                    "|selfAudioOn=$selfAudioOn|clock=${clockUs / 1000}ms|ctl=${ctlMs}ms",
+            )
+            shownCueStart = key
+            applySubtitleText(cue?.text.orEmpty(), cue)
+        }
+        /* 诊断：每 2 秒对照一次"当前进度 / 表 / 命中"（排障用，正常可忽略） */
         val nowMs = android.os.SystemClock.elapsedRealtime()
-        if (subtitleCues.isNotEmpty() && nowMs - subDiagAtMs > 2000L) {
+        if (nowMs - subDiagAtMs > 2000L) {
             subDiagAtMs = nowMs
             Log.i(
                 TAG,
-                "字幕诊断|进度=${pos}ms|表=${subtitleCues.size}条|首条=${subtitleCues.first().startMs}ms|" +
-                    "命中=${cue?.text?.length ?: -1}|waitingFirstFrame=$waitingFirstFrame|" +
-                    "队列尾=${(selfSession?.videoQueueTailUs ?: -1L) / 1000}ms",
+                "字幕诊断|进度=${pos}ms|表=${subtitleCues.size}条|首条=${subtitleCues.first().startMs}ms" +
+                    "|命中=${cue?.text?.length ?: -1}|waitingFirstFrame=$waitingFirstFrame" +
+                    "|队列尾=${(selfSession?.videoQueueTailUs ?: -1L) / 1000}ms",
             )
         }
-        val text = cue?.text.orEmpty()
+    }
+
+    /** 把一条字幕真正写到屏幕上（空文本 = 清屏） */
+    private fun applySubtitleText(text: String, cue: SubtitleCue?) {
         subtitleNow = text
-        if (!waitingFirstFrame) {
-            // 有样式信息就按样式画（字号/颜色），没有就走纯文本那条老路
-            if (cue != null && cue.lines.isNotEmpty()) {
-                danmakuView?.setSubtitleRich(cue.lines)
-            } else {
-                danmakuView?.setSubtitle(text)
-            }
+        if (waitingFirstFrame) return
+        if (cue != null && cue.lines.isNotEmpty()) {
+            danmakuView?.setSubtitleRich(cue.lines)
+        } else {
+            danmakuView?.setSubtitle(text)
         }
     }
 
