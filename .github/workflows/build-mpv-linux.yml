@@ -36,9 +36,12 @@ jobs:
 
       - name: 装新版 meson（22.04 自带 0.61，mpv 0.42 要 >=1.3）
         run: |
-          python3 -m pip install --user --upgrade --force-reinstall "meson>=1.3"
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
-          hash -r; $HOME/.local/bin/meson --version
+          # 系统包和 pip --user 会互相干扰，这里用独立虚拟环境，彻底隔离
+          python3 -m venv /opt/meson
+          /opt/meson/bin/pip install -q --upgrade pip
+          /opt/meson/bin/pip install -q "meson>=1.3" ninja
+          echo "/opt/meson/bin" >> $GITHUB_PATH
+          /opt/meson/bin/meson --version
 
       - name: 编 FFmpeg（静态）
         env:
