@@ -561,6 +561,9 @@ class MainActivity : ComponentActivity() {
     /** 字幕包到达计数（只用于诊断日志节流） */
     private var subRecv = 0L
 
+    /** 字幕明细取证计数（前 30 条打起止与时长） */
+    private var subCueDetail = 0
+
     private fun appendDemuxCue(startMs: Long, endMs: Long, text: String, track: Int = 0) {
         if (startMs < 0L || text.isBlank()) return
         /*
