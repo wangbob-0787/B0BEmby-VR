@@ -63,6 +63,9 @@ class DemuxSession(
      */
     var onSeekOrigin: ((targetMs: Long, videoPtsUs: Long, audioPtsUs: Long) -> Unit)? = null
 
+    /** 视频队列里最后一包的 pts（微秒，-1=空）：诊断用，判断读线程有没有跑在播放位置前面 */
+    val videoQueueTailUs: Long get() = videoQueue.lastPtsUs
+
     /** 收到多少条字幕包（诊断用） */
     private var subCueCount = 0
 

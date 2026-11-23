@@ -1616,8 +1616,13 @@ class MainActivity : ComponentActivity() {
      * 自绘字幕跟片走（父亲 2026-10-07）：按当前播放位置找命中的那一条。
      */
     private fun updateDrawnSubtitle() {
-        // 内核（Profile 5）这条路的字幕由 mpvSubtitleJob 从内嵌轨道取文，别两边抢着写
-        if (mpvBackend != null) return
+        /*
+         * 内核（Profile 5）这条路的字幕由 mpvSubtitleJob 从内嵌轨道取文，别两边抢着写。
+         * 但全包档（selfSession != null）画面与字幕都归我们自己：mpv 对象可能仍存在，
+         * 这里必须放行，否则下面全部逻辑（含诊断日志）一行都不会执行 —— 字幕永远不上屏
+         * （豆豆 2026-11-23 定位）。
+         */
+        if (mpvBackend != null && selfSession == null) return
         if (subtitleCues.isEmpty()) return
         val pos = currentPositionMs()
         val cue = subtitleCues.firstOrNull { pos >= it.startMs && pos <= it.endMs }
@@ -1628,7 +1633,8 @@ class MainActivity : ComponentActivity() {
             Log.i(
                 TAG,
                 "字幕诊断|进度=${pos}ms|表=${subtitleCues.size}条|首条=${subtitleCues.first().startMs}ms|" +
-                    "命中=${cue?.text?.length ?: -1}|waitingFirstFrame=$waitingFirstFrame|缺失=$subtitleNowMissing",
+                    "命中=${cue?.text?.length ?: -1}|waitingFirstFrame=$waitingFirstFrame|" +
+                    "队列尾=${(selfSession?.videoQueueTailUs ?: -1L) / 1000}ms",
             )
         }
         val text = cue?.text.orEmpty()
