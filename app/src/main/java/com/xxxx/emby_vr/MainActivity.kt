@@ -582,6 +582,12 @@ class MainActivity : ComponentActivity() {
         if (cleaned.isBlank()) return
         val end = if (endMs > startMs) endMs else startMs + 3000L
         /* 键里混入轨号：不同轨会有同一时刻的条目，只按时间当键会互相覆盖 */
+        /* 取证：前 30 条打 start/end/时长，和文件真值对拍（2026-11-23 字幕闪烁） */
+        if (subCueDetail < 30) {
+            subCueDetail++
+            val prevStart = demuxSubCues.values.filter { it.track == track }.maxOfOrNull { it.startMs } ?: -1L
+            Log.i(TAG, "字幕明细#$subCueDetail 轨=$track 起=$startMs 止=$end 时长=${end - startMs} 上一条起=$prevStart")
+        }
         demuxSubCues[startMs * 8L + (track and 7)] = SubtitleCue(startMs, end, cleaned, emptyList(), track)
         if (demuxSubCues.size > 4000) runCatching { demuxSubCues.pollFirstEntry() }
         refreshDemuxSubtitleCues()
