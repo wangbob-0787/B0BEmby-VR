@@ -398,7 +398,12 @@ class MainActivity : ComponentActivity() {
             if (com.xxxx.emby_vr.vr.VrTuning.danmakuCanvasW != danmakuCanvasW) {
                 applyDanmakuCanvas(lastDanmakuAspect)
             }
-            handler.postDelayed(this, 250L)
+            /*
+             * 有字幕时把查询间隔压到 50ms：字幕条目实测只有 240~280ms，
+             * 250ms 一拍会和它同量级 —— 一拍命中、一拍不中，屏幕上就是"起止时间之内不停闪"
+             * （2026-11-23 真机）。这里只改"多久查一次"，不动任何内容时间。
+             */
+            handler.postDelayed(this, if (subtitleCues.isNotEmpty()) 50L else 250L)
         }
     }
 
@@ -604,7 +609,8 @@ class MainActivity : ComponentActivity() {
         if (subCueDetail < 30) {
             subCueDetail++
             val prevStart = demuxSubCues.values.filter { it.track == track }.maxOfOrNull { it.startMs } ?: -1L
-            Log.i(TAG, "字幕明细#$subCueDetail 轨=$track 起=$startMs 止=$end 时长=${end - startMs} 上一条起=$prevStart")
+            val preview = cleaned.take(12).replace("\n", " ")
+            Log.i(TAG, "字幕明细#$subCueDetail 轨=$track 起=$startMs 止=$end 时长=${end - startMs} 上一条起=$prevStart 文=[$preview]")
         }
         demuxSubCues[startMs * 8L + (track and 7)] = SubtitleCue(startMs, end, cleaned, emptyList(), track)
         if (demuxSubCues.size > 4000) runCatching { demuxSubCues.pollFirstEntry() }
