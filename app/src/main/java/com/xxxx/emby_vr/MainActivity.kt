@@ -9835,10 +9835,14 @@ class MainActivity : ComponentActivity() {
                                  * 取画面首包会让声音晚到的那一段被补静音 → 跳转后声音一直落后 1.27 秒；
                                  * 取声音起点则让画面先把早于它的几帧当预滚丢掉，两边从同一点开跑。
                                  */
-                                val videoSec = if (videoPtsUs > 0) videoPtsUs / 1_000_000.0 else targetMs / 1000.0
-                                /* 共同起点取"音频首包"：那 1.27 秒音频我们根本没读到，没人能填，只能让画面等它 */
-                                val originSec = if (audioPtsUs > 0) audioPtsUs / 1_000_000.0 else videoSec
-                                /* 时钟也以它为基准（原来用画面起点，会让位置虚高 1.27 秒） */
+                                /*
+                                 * 三步法（父亲 2026-11-21 定，2026-11-23 重申）：
+                                 *   ① 时钟先到目标；② 在目标左侧找最近关键帧，拿到关键帧真实时刻后
+                                 *   时钟拨到**关键帧时刻**；③ 画面从关键帧起解、早于目标的帧丢弃，
+                                 *   声音也从关键帧时刻开始。
+                                 * 所以共同的起点就是**关键帧时刻**，不是音频首包、也不补静音。
+                                 */
+                                val originSec = if (videoPtsUs > 0) videoPtsUs / 1_000_000.0 else targetMs / 1000.0
                                 runCatching { playClock?.resetTo((originSec * 1_000_000.0).toLong()) }
                                 /*
                                  * 回灌只改基准，**不再清解码器**（豆豆 2026-11-23）：
@@ -9846,8 +9850,8 @@ class MainActivity : ComponentActivity() {
                                  * 于是重新进入"等关键帧"，队列里剩下的多半是 P 帧 → 画面定住（快退定住即此因）。
                                  */
                                 videoPipe?.setPrerollStart(originSec)
-                                /* 目标也传共同起点：delta=0 → 不补静音、不裁内容 */
-                                audioPipe?.onSessionSeek(originSec, originSec, audioPtsUs)
+                                /* 声音从关键帧时刻开始：audioFirstUs 传 -1，避免又按"音频首包晚到"补静音 */
+                                audioPipe?.onSessionSeek(originSec, originSec, -1L)
                                 Log.i(
                                     TAG,
                                     "全包档落点：目标=${"%.3f".format(targetMs / 1000.0)}s " +
