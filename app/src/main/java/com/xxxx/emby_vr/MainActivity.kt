@@ -6082,9 +6082,9 @@ class MainActivity : ComponentActivity() {
          * 现在内核与渲染都换过，性能要重新量一遍，所以留这个开关做 A/B，
          * 默认不开，不影响任何现有行为。
          */
-        if (!isDv && hdr && mpvBackend == null &&
-            com.xxxx.emby_vr.vr.VrTuning.value(this, "hdr10_to_mpv")?.trim() == "1"
-        ) {
+        /* 默认开启（父亲 2026-11-23：把 HDR10 接到 MPV）；调参写 0 可关回系统播放器 */
+        val hdrToMpv = com.xxxx.emby_vr.vr.VrTuning.value(this, "hdr10_to_mpv")?.trim() != "0"
+        if (!isDv && hdr && mpvBackend == null && hdrToMpv) {
             Log.i(TAG, "HDR10 对照：调参要求走内核 → 切 MPV")
             switchToKernelForFallback("HDR10 对照实验（hdr10_to_mpv=1）")
         }
