@@ -432,12 +432,19 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxRead(
     jint m[5] = {0, 0, 0, 0, 0};
 
     if (d->abort.load()) return -5;   // 被上层主动打断：不是网络错，也不是结尾
+    static std::atomic<long long> readSeq{0};
     while (true) {
+        const long long seq = readSeq.fetch_add(1) + 1;
         const long long t0 = nowMs();
+        if (seq % 20 == 1) {
+            LOGI("读循环#%lld 进|上次成功=%lldms 前", seq,
+                 d->lastReadOkMs.load() > 0 ? (t0 - d->lastReadOkMs.load()) : -1LL);
+        }
         int ret = av_read_frame(d->fmt, d->pkt);
         const long long dt = nowMs() - t0;
         if (ret >= 0) {
             d->lastReadOkMs.store(nowMs());
+            if (seq % 20 == 1) LOGI("读循环#%lld 出|rc=%d 耗时=%lldms", seq, ret, dt);
         } else if (ret != AVERROR(EAGAIN)) {
             /* 读失败：把"卡了多久"和返回码一起打出来，配合看门狗定位（豆豆 2026-11-23） */
             LOGE("读中断/失败 rc=%d 阻塞=%lldms abort=%d", ret, dt, d->abort.load() ? 1 : 0);
