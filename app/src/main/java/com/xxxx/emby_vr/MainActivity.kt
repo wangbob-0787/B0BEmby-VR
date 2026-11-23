@@ -3388,6 +3388,9 @@ class MainActivity : ComponentActivity() {
         if (mediaId != currentMediaId) {
             forceH264 = false
             clearForNewMedia()
+            /* HDR10 强制内核只对当前这一部有效：换片才清（豆豆 2026-11-23 建议，
+               放停播里会被"切内核前那次重播"吃掉，导致内核永远起不来） */
+            com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForHdr10 = false
         }
         currentMediaId = mediaId
         /*
@@ -4484,7 +4487,9 @@ class MainActivity : ComponentActivity() {
         }
         val useVrScreen = vrSurface != null
         try {
+            Log.i(TAG, "停播前标志：useKernel=${com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder} forceHdr10=${com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForHdr10} replaying=$replaying")
             stopPlaybackInternal(keepUi = replaying)
+            Log.i(TAG, "停播后标志：useKernel=${com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder} forceHdr10=${com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForHdr10}")
             /* 起播自愈校验：必须排在本片任何 vid/loop/mute 设置之前（施工图 §4.2.3.1） */
             startupSelfHeal()
             /*
@@ -4526,6 +4531,7 @@ class MainActivity : ComponentActivity() {
              * 标题跟着被清空 —— 于是控制条显示"什么都没在播"，而画面上明明在放。
              */
 
+            Log.i(TAG, "内核分支判定：isWeb=$isWeb useKernel=${com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder} forceHdr10=${com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForHdr10} method=$method")
             if (isWeb || com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder ||
                 com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForHdr10) {
                 /*
@@ -6165,8 +6171,7 @@ class MainActivity : ComponentActivity() {
     private fun replayKeepingPosition() {
         if (currentMediaId.isBlank()) return
         replaying = true
-        /* 决策已经做过：这次重播要进内核。重播会先停播，停播里会复位标志，
-           所以这里在重播前再置一次，直到换片才清（2026-11-23 真机：日志说切了却还在系统播放器） */
+        /* 决策已经做过：这次重播要进内核。标志的清除只发生在"换片"，所以这里置一次即可 */
         com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForHdr10 = true
         playMedia(currentMediaId, 0L, keepPosition = true)
     }
@@ -7671,8 +7676,7 @@ class MainActivity : ComponentActivity() {
         avStall = false
         /* 换代：正在建的那条线程建完会发现代次不符，自己收场，不留孤儿管线 */
         selfGen.incrementAndGet()
-        /* HDR10 强制内核只对当前这一部有效；切换动作（如"决定改走内核后重播"）不能清掉它 */
-        if (!replaying) com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForHdr10 = false
+
         /*
          * 换片固定步骤（豆豆 2026-11-21 的硬约束）：
          * 参数表、文件标记、最后一套、"就地保持"全部复位，
