@@ -566,25 +566,14 @@ class MainActivity : ComponentActivity() {
     /** 字幕包到达计数（只用于诊断日志节流） */
     private var subRecv = 0L
 
-    /** 字幕原文取证计数（前 3 条） */
-    private var subRawDbg = 0
-
     /** "当前没有字幕"的哨兵值 */
     private val NO_CUE = Long.MIN_VALUE
 
     /** 当前已上屏的是哪一条（按 startMs 认身份；NO_CUE = 当前没有字幕） */
     private var shownCueStart = NO_CUE
 
-    /** 字幕明细取证计数（前 30 条打起止与时长） */
-    private var subCueDetail = 0
-
     private fun appendDemuxCue(startMs: Long, endMs: Long, text: String, track: Int = 0) {
         if (startMs < 0L || text.isBlank()) return
-        /* 取证：前 3 条打原文（含字段前缀），用来确认格式 */
-        if (subRawDbg < 3) {
-            subRawDbg++
-            Log.i(TAG, "字幕原文#$subRawDbg：${text.replace("\n", "\\n")}")
-        }
         /*
          * 去掉每行前面的样式字段。解封装交上来的正文带 ASS 的字段前缀
          * （例 `1,0,Default,0,0,0,台词`，实测还会多一个 `0,,`），直接画出来就是乱码。
@@ -615,13 +604,6 @@ class MainActivity : ComponentActivity() {
         if (cleaned.isBlank()) return
         val end = if (endMs > startMs) endMs else startMs + 3000L
         /* 键里混入轨号：不同轨会有同一时刻的条目，只按时间当键会互相覆盖 */
-        /* 取证：前 30 条打 start/end/时长，和文件真值对拍（2026-11-23 字幕闪烁） */
-        if (subCueDetail < 30) {
-            subCueDetail++
-            val prevStart = demuxSubCues.values.filter { it.track == track }.maxOfOrNull { it.startMs } ?: -1L
-            val preview = cleaned.take(12).replace("\n", " ")
-            Log.i(TAG, "字幕明细#$subCueDetail 轨=$track 起=$startMs 止=$end 时长=${end - startMs} 上一条起=$prevStart 文=[$preview]")
-        }
         demuxSubCues[startMs * 8L + (track and 7)] = SubtitleCue(startMs, end, cleaned, emptyList(), track)
         if (demuxSubCues.size > 4000) runCatching { demuxSubCues.pollFirstEntry() }
         refreshDemuxSubtitleCues()
@@ -1723,26 +1705,8 @@ class MainActivity : ComponentActivity() {
          */
         val key = cue?.startMs ?: NO_CUE
         if (key != shownCueStart) {
-            val clockUs = runCatching { playClock?.positionUs() }.getOrNull() ?: -1L
-            val ctlMs = runCatching { ctl.positionMs() }.getOrNull() ?: -1L
-            Log.i(
-                TAG,
-                "字幕切换|pos=${pos}ms|旧=$shownCueStart|新=$key|表=${subtitleCues.size}条" +
-                    "|selfAudioOn=$selfAudioOn|clock=${clockUs / 1000}ms|ctl=${ctlMs}ms",
-            )
             shownCueStart = key
             applySubtitleText(cue?.text.orEmpty(), cue)
-        }
-        /* 诊断：每 2 秒对照一次"当前进度 / 表 / 命中"（排障用，正常可忽略） */
-        val nowMs = android.os.SystemClock.elapsedRealtime()
-        if (nowMs - subDiagAtMs > 2000L) {
-            subDiagAtMs = nowMs
-            Log.i(
-                TAG,
-                "字幕诊断|进度=${pos}ms|表=${subtitleCues.size}条|首条=${subtitleCues.first().startMs}ms" +
-                    "|命中=${cue?.text?.length ?: -1}|waitingFirstFrame=$waitingFirstFrame" +
-                    "|队列尾=${(selfSession?.videoQueueTailUs ?: -1L) / 1000}ms",
-            )
         }
     }
 
