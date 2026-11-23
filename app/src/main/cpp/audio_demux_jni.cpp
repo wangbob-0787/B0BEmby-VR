@@ -284,6 +284,8 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxOpen(
         const AVCodec *dec = avcodec_find_decoder(sp->codec_id);
         if (!dec) continue;
         AVCodecContext *ctx = avcodec_alloc_context3(dec);
+        /* 字幕解码器要 pkt_timebase 才会把包时间换算进 sub.pts（我们不用 sub.pts，但补上更稳） */
+        if (ctx) ctx->pkt_timebase = fmt->streams[d->subIdx[k]]->time_base;
         if (ctx && avcodec_parameters_to_context(ctx, sp) >= 0 &&
             avcodec_open2(ctx, dec, nullptr) >= 0) {
             d->subDec[k] = ctx;
@@ -530,11 +532,13 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxRead(
                 }
                 AVStream *st = d->fmt->streams[d->subIdx[subK]];
                 /*
-                 * 字幕时间戳：先用解码器给的 sub.pts；它为 NOPTS 时**退回用这个包自己的 pts**
-                 * （subrip 解码常常不给 sub.pts，一律当 -1 会让全部字幕挤到片头，0 秒后就不再显示
-                 *  —— 2026-11-23 真机就是"包到了、屏上没有"）。
+                 * 字幕时间戳**一律用这个包自己的 pts**（在流时间基下，唯一可靠来源）。
+                 *
+                 * 不用 `sub.pts`：它在 ffmpeg 里是 AV_TIME_BASE（微秒），而我们其它地方按流时间基算；
+                 * 混用会差 1000 倍（豆豆 2026-11-23）。而且 subrip 解码通常根本不填它（我们建解码器时
+                 * 没设 pkt_timebase），一律当 -1 会让全部字幕挤到片头 —— 真机"包到了、屏上没有"就是这个。
                  */
-                int64_t srcPts = sub.pts != AV_NOPTS_VALUE ? sub.pts : d->pkt->pts;
+                int64_t srcPts = d->pkt->pts;
                 int64_t ptsMs = srcPts != AV_NOPTS_VALUE
                                 ? av_rescale_q(srcPts, st->time_base, AVRational{1, 1000})
                                 : -1;   // 仍然未知：不能当 0
