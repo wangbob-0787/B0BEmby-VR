@@ -1709,6 +1709,70 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** 一条字幕样式（只取对画面有影响的字段） */
+    private data class AssStyle(
+        val name: String,
+        val fontName: String,
+        val fontSize: Float,
+        val primaryColor: Int,
+        val outlineColor: Int,
+        val outlineWidth: Float,
+        val alignment: Int,
+    )
+
+    /**
+     * 解析 ASS/SSA 头里的样式表（[V4+ Styles] / [V4 Styles] 段）。
+     *
+     * 这是"按片源样式上色"的第一步：先把样式读出来、写日志核对，
+     * 确认字段和取值对得上，再改绘制。解析不出来就返回空表，不改任何画面行为。
+     */
+    private fun parseAssStyles(header: String): Map<String, AssStyle> {
+        val out = LinkedHashMap<String, AssStyle>()
+        var inStyles = false
+        var fmt: List<String> = emptyList()
+        header.lineSequence().forEach { raw ->
+            val line = raw.trim()
+            when {
+                line.startsWith("[") -> inStyles = line.contains("Styles", ignoreCase = true)
+                !inStyles -> Unit
+                line.startsWith("Format:", ignoreCase = true) ->
+                    fmt = line.substringAfter(':').split(',').map { it.trim().lowercase() }
+                line.startsWith("Style:", ignoreCase = true) && fmt.isNotEmpty() -> {
+                    val f = line.substringAfter(':').split(',')
+                    fun idx(k: String) = fmt.indexOf(k)
+                    fun str(k: String) = idx(k).takeIf { it >= 0 && it < f.size }?.let { f[it].trim() }.orEmpty()
+                    fun num(k: String) = str(k).toFloatOrNull()
+                    /* ASS 颜色是 &HAABBGGRR / 十进制 BGR：转成 ARGB 给画笔用 */
+                    fun color(k: String): Int {
+                        val v = str(k)
+                        val n = when {
+                            v.startsWith("&H", true) -> v.drop(2).toLongOrNull(16) ?: 0L
+                            else -> v.toLongOrNull() ?: 0L
+                        }
+                        val b = (n and 0xFF).toInt()
+                        val g = ((n shr 8) and 0xFF).toInt()
+                        val r = ((n shr 16) and 0xFF).toInt()
+                        val a = (255 - ((n shr 24) and 0xFF)).toInt().coerceIn(0, 255)
+                        (a shl 24) or (r shl 16) or (g shl 8) or b
+                    }
+                    val name = str("name")
+                    if (name.isNotEmpty()) {
+                        out[name] = AssStyle(
+                            name = name,
+                            fontName = str("fontname"),
+                            fontSize = num("fontsize") ?: 0f,
+                            primaryColor = color("primarycolour"),
+                            outlineColor = color("outlinecolour"),
+                            outlineWidth = num("outline") ?: 0f,
+                            alignment = num("alignment")?.toInt() ?: 2,
+                        )
+                    }
+                }
+            }
+        }
+        return out
+    }
+
     /**
      * 按位置查当前该显示的字幕正文（绘制线程每帧调用）。
      *
@@ -6369,6 +6433,24 @@ class MainActivity : ComponentActivity() {
                 } else {
                     val o = demuxSubtitleOrdinal(index)
                     demuxSubTrackWanted = if (o >= 0 && o < sess.subTrackCount) o else -1
+                    if (demuxSubTrackWanted >= 0) {
+                        runCatching {
+                            val st = parseAssStyles(sess.subtitleHeader(demuxSubTrackWanted).orEmpty())
+                            if (st.isEmpty()) {
+                                Log.i(TAG, "字幕样式：第 $demuxSubTrackWanted 条没有样式表（纯文本字幕）")
+                            } else {
+                                st.values.take(3).forEach { x ->
+                                    Log.i(
+                                        TAG,
+                                        "字幕样式：${x.name} 字体=${x.fontName} 字号=${x.fontSize} " +
+                                            "主色=#${Integer.toHexString(x.primaryColor)} " +
+                                            "描边=#${Integer.toHexString(x.outlineColor)}/${x.outlineWidth} 对齐=${x.alignment}",
+                                    )
+                                }
+                                Log.i(TAG, "字幕样式：共 ${st.size} 条")
+                            }
+                        }
+                    }
                     if (demuxSubTrackWanted < 0) {
                         Log.w(
                             TAG,

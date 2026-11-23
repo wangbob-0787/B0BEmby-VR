@@ -63,6 +63,11 @@ class DemuxSession(
      */
     var onSeekOrigin: ((targetMs: Long, videoPtsUs: Long, audioPtsUs: Long) -> Unit)? = null
 
+    /** 第 k 条文字字幕的头文本（ASS 的样式段在这里）；取不到返回 null */
+    fun subtitleHeader(k: Int): String? = runCatching {
+        if (handle == 0L) null else AudioDemuxNative.nativeDemuxSubtitleHeader(handle, k)
+    }.getOrNull()
+
     /** 视频队列里最后一包的 pts（微秒，-1=空）：诊断用，判断读线程有没有跑在播放位置前面 */
     val videoQueueTailUs: Long get() = videoQueue.lastPtsUs
 
