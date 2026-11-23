@@ -9830,7 +9830,14 @@ class MainActivity : ComponentActivity() {
                             ui.post {
                                 if (gen != selfGen.get()) return@post
                                 seekOriginSeq++
-                                val originSec = if (videoPtsUs > 0) videoPtsUs / 1_000_000.0 else targetMs / 1000.0
+                                /*
+                                 * 新起点取"声音实际第一包"与"画面首包"里**更晚**的那个（三步法：定新起点再起播）。
+                                 * 取画面首包会让声音晚到的那一段被补静音 → 跳转后声音一直落后 1.27 秒；
+                                 * 取声音起点则让画面先把早于它的几帧当预滚丢掉，两边从同一点开跑。
+                                 */
+                                val videoSec = if (videoPtsUs > 0) videoPtsUs / 1_000_000.0 else targetMs / 1000.0
+                                val audioSec = if (audioPtsUs > 0) audioPtsUs / 1_000_000.0 else videoSec
+                                val originSec = if (audioSec > videoSec) audioSec else videoSec
                                 /*
                                  * 回灌只改基准，**不再清解码器**（豆豆 2026-11-23）：
                                  * 清解码器已在 pipeSeek 那一刻做过一次；这里再清会把刚喂进去的关键帧冲掉，
