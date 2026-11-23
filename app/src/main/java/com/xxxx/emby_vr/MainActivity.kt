@@ -384,6 +384,8 @@ class MainActivity : ComponentActivity() {
     private var smoothPosMs = 0.0
     /* 弹幕时钟的实测播放速率（低通后），见 refreshPosBase */
     private var rateSmoothed = 1.0
+    /* 上一拍播放器原值：算速率必须用它，不能用我们自己的时钟（否则形成反馈回路） */
+    private var lastTargetMs = 0L
     private var rateLogAtMs = 0L
 
     @Volatile
@@ -432,6 +434,7 @@ class MainActivity : ComponentActivity() {
             smoothAtMs = now
             posBaseMs = target
             posBaseAtMs = now
+            lastTargetMs = target
             return
         }
         /*
@@ -443,11 +446,15 @@ class MainActivity : ComponentActivity() {
          * 三条路（自管 / 内核 / 系统播放器）位置源都慢这 1%，所以修在公共层。
          */
         val dtMs = (now - posBaseAtMs).coerceAtLeast(1L)
-        val rateRaw = (target - posBaseMs).toDouble() / dtMs.toDouble()
+        val rateRaw = (target - lastTargetMs).toDouble() / dtMs.toDouble()
+        /*
+         * 不做"暂停判断"：暂停时位置不动 → rate=0 → 时钟不动，弹幕天然冻住。
+         * 位置回退（噪声）沿用上拍速率；跳变（seek/换集）限到 4 倍。
+         */
         val rate = when {
-            /// 位置源异常（没暂停却是 0 或负数）→ 按 1:1 走，别把时钟带飞
-            rateRaw <= 0.0 && !danmakuPaused -> 1.0
-            else -> rateRaw.coerceIn(0.0, 4.0)
+            rateRaw < 0.0 -> rateSmoothed
+            rateRaw > 4.0 -> 4.0
+            else -> rateRaw
         }
         rateSmoothed = 0.8 * rateSmoothed + 0.2 * rate
         var est = smoothPosMs + (now - smoothAtMs) * rateSmoothed
@@ -464,11 +471,12 @@ class MainActivity : ComponentActivity() {
             rateLogAtMs = now
             Log.i(
                 TAG,
-                "弹幕时钟 位置=${target}ms 时钟=${est.toLong()}ms 差=${(target - est).toLong()}ms 速率=%.3f".format(rateSmoothed),
+                "弹幕时钟 位置=${target}ms 时钟=${est.toLong()}ms 差=${(target - est).toLong()}ms 速率=" + String.format(java.util.Locale.US, "%.3f", rateSmoothed),
             )
         }
         smoothPosMs = est
         smoothAtMs = now
+        lastTargetMs = target
         // 旧字段留着给"没有平滑时钟"的兜底路径读，保持单调
         posBaseMs = est.toLong()
         posBaseAtMs = now
@@ -7860,6 +7868,8 @@ class MainActivity : ComponentActivity() {
         // 平滑时钟一起清零：下一集从头对齐，免得拿上一集的位置去纠偏
         smoothAtMs = 0L
         smoothPosMs = 0.0
+        rateSmoothed = 1.0
+        lastTargetMs = 0L
         posBaseAtMs = 0L
         posBaseMs = 0L
         logoUrl.value = null
