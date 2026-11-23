@@ -3567,7 +3567,8 @@ class MainActivity : ComponentActivity() {
                 val strmPath = source?.path
                 val strmDirectUrl = if (
                     (dvSource && com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder ||
-                        com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForHdr10 || graphicSub) &&
+                        com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForHdr10 ||
+                        com.xxxx.emby_vr.player.PlaybackFlags.hdr10Source || graphicSub) &&
                     strmPath?.endsWith(".strm") == true
                 ) fetchStrmUrl(strmPath) else null
                 val path0 = when {
