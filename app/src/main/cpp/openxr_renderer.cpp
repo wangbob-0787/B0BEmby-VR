@@ -2790,6 +2790,7 @@ struct QuadLocs {
     GLint sharpen = -1, temp = -1, texel = -1, screenStep = -1, down = -1;
     GLint jitter = -1, testPattern = -1, rawVideo = -1;
     GLint dvReshape = -1, dvParams = -1;   // 杜比还原：开关 + 每帧参数（2026-11-13）
+    GLint hdr10 = -1;                      // HDR10 自管路：渲染层做 PQ/色域（2026-11-23）
     GLint delayed = -1, useDelayed = -1;   // 只有 B0B_RING 版有
 };
 
