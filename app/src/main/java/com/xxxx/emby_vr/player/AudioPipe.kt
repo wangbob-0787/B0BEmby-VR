@@ -1248,6 +1248,7 @@ class AudioPipe {
             Log.i(
                 TAG,
                 "AUDIOPOS|设备已播=${played}帧|已写=${writtenFrames}帧|采样率=$sampleRate|时钟=${clk.positionUs() / 1000}ms" +
+                    "|内容=${"%.3f".format(audioOriginUs / US + writtenFrames.toDouble() / sampleRate)}s" +
                     "|源=${clk.lastSource}|后端=$decoderKind|解出=${ffmpegBytes}B",
             )
         }
