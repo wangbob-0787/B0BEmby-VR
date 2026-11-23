@@ -4531,7 +4531,7 @@ class MainActivity : ComponentActivity() {
              * 标题跟着被清空 —— 于是控制条显示"什么都没在播"，而画面上明明在放。
              */
 
-            Log.i(TAG, "内核分支判定：isWeb=$isWeb useKernel=${com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder} forceHdr10=${com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForHdr10} method=$method")
+            Log.i(TAG, "内核分支判定：isWeb=$isWeb useKernel=${com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder} forceHdr10=${com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForHdr10} )
             if (isWeb || com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder ||
                 com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForHdr10) {
                 /*
