@@ -4776,8 +4776,9 @@ class MainActivity : ComponentActivity() {
                         com.xxxx.emby_vr.vr.VrNative.setHdr10StreamActive(useSelfPipe && hdr10Self)
                         Log.i(
                             TAG,
-                            "片源色彩：杜比=${PlaybackFlags.dolbyVisionSource} 档=${PlaybackFlags.dolbyVisionProfile} " +
-                                "HDR10=${PlaybackFlags.hdr10Source} 自管=${useSelfPipe}",
+                            "片源色彩：杜比=${com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource} " +
+                                "档=${com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionProfile} " +
+                                "HDR10=${com.xxxx.emby_vr.player.PlaybackFlags.hdr10Source} 自管=${useSelfPipe}",
                         )
                         /*
                          * 只有一条路（父亲 2026-11-20 定）：音视频全部客户端自管。
