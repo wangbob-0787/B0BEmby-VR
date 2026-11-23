@@ -1,55 +1,87 @@
 name: build-mpv-linux
 
+# 目的：在云端编一份「全静态」的 Linux x86_64 mpv，拿到 .15 上和系统自带版本做对比。
+# 关键约束：
+#   · runner 用 ubuntu-22.04（glibc 与 .15 相同），静态链接后可直接在 .15 上跑；
+#   · FFmpeg 7.1 + libplacebo 7.387 + mpv 0.42 全部从源码静态编，避免运行时库不匹配。
 on:
   workflow_dispatch:
+    inputs:
+      mpv_tag:
+        description: mpv 版本 tag
+        default: v0.42.0
+      lp_tag:
+        description: libplacebo 版本 tag
+        default: v7.387.0
+      ff_tag:
+        description: FFmpeg 版本 tag
+        default: n7.1
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
       - name: 依赖
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential meson ninja-build pkg-config git \
-            libass-dev libdrm-dev libx11-dev libxext-dev libxrandr-dev libegl1-mesa-dev \
-            libgles2-mesa-dev libgbm-dev libvulkan-dev libshaderc-dev \
-            glslang-tools libarchive-dev libluajit-5.1-dev libjpeg-dev libzimg-dev \
-            libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev libswscale-dev libswresample-dev
+          sudo apt-get install -y build-essential meson ninja-build pkg-config git nasm yasm \
+            libvulkan-dev libshaderc-dev glslang-tools liblcms2-dev libzimg-dev \
+            python3-jinja2 python3-markupsafe libarchive-dev libjpeg-dev libass-dev libdrm-dev
 
-      - name: 编 libplacebo（带杜比还原）
+      - name: 编 FFmpeg（静态）
+        env:
+          FF_TAG: ${{ inputs.ff_tag }}
         run: |
-          git clone --depth 1 --branch v7.349.0 https://github.com/haasn/libplacebo.git /tmp/lp
+          git clone --depth 1 --branch "$FF_TAG" https://github.com/FFmpeg/FFmpeg.git /tmp/ff
+          cd /tmp/ff
+          ./configure --prefix=/opt/ff --enable-static --disable-shared --disable-doc \
+            --disable-programs --disable-avdevice --disable-postproc \
+            --enable-gpl --enable-pic
+          make -j"$(nproc)" >/tmp/ff.log 2>&1 || { tail -40 /tmp/ff.log; exit 1; }
+          sudo make install >/dev/null
+          PKG_CONFIG_PATH=/opt/ff/lib/pkgconfig pkg-config --modversion libavcodec
+
+      - name: 编 libplacebo（静态）
+        env:
+          LP_TAG: ${{ inputs.lp_tag }}
+        run: |
+          git clone --branch "$LP_TAG" https://github.com/haasn/libplacebo.git /tmp/lp
           cd /tmp/lp && git submodule update --init --recursive --depth 1
-          meson setup build --prefix=/usr/local -Ddemos=false -Dvulkan=enabled -Dshaderc=enabled -Dglslang=disabled
-          ninja -C build -j"$(nproc)"
-          sudo ninja -C build install
-          sudo ldconfig
+          PKG_CONFIG_PATH=/opt/ff/lib/pkgconfig meson setup build --prefix=/opt/lp \
+            --buildtype=release -Ddefault_library=static -Ddemos=false \
+            -Dvulkan=enabled -Dshaderc=enabled -Dglslang=disabled
+          ninja -C build -j"$(nproc)" >/tmp/lp.log 2>&1 || { tail -40 /tmp/lp.log; exit 1; }
+          sudo ninja -C build install >/dev/null
+          PKG_CONFIG_PATH=/opt/lp/lib/x86_64-linux-gnu/pkgconfig pkg-config --modversion libplacebo
 
-      - name: 编 mpv
+      - name: 编 mpv（静态）
+        env:
+          MPV_TAG: ${{ inputs.mpv_tag }}
         run: |
-          git clone --depth 1 --branch v0.39.0 https://github.com/mpv-player/mpv.git /tmp/mpv
+          git clone --depth 1 --branch "$MPV_TAG" https://github.com/mpv-player/mpv.git /tmp/mpv
           cd /tmp/mpv
-          meson setup build --prefix=/usr/local -Dvulkan=enabled -Dlibmpv=true
-          ninja -C build -j"$(nproc)"
+          PKG_CONFIG_PATH=/opt/ff/lib/pkgconfig:/opt/lp/lib/x86_64-linux-gnu/pkgconfig \
+            meson setup build --prefix=/opt/mpv --buildtype=release \
+            -Dlibmpv=true -Dcplayer=true \
+            --prefer-static --default-library=static \
+            -Dvulkan=enabled -Dgl=enabled -Ddrm=enabled
+          ninja -C build -j"$(nproc)" >/tmp/mpv.log 2>&1 || { tail -60 /tmp/mpv.log; exit 1; }
           ./build/mpv --version
+          ldd ./build/mpv | head -20
 
       - name: 打包
         run: |
           mkdir -p out
           cp /tmp/mpv/build/mpv out/
-          cp /tmp/mpv/build/libmpv.so* out/ 2>/dev/null || true
-          mkdir -p out/include
-          HDR=$(dirname "$(find /tmp/mpv -name client.h | head -1)")
-          echo "headers: $HDR"
-          cp "$HDR"/*.h out/include/
-          ldd /tmp/mpv/build/mpv | grep -E "libplacebo|libav|libsw" || true
-          tar czf mpv-linux-x86_64.tar.gz -C out .
-          ls -lh mpv-linux-x86_64.tar.gz
+          strip out/mpv || true
+          tar czf mpv-static-x86_64.tar.gz -C out .
+          ls -lh mpv-static-x86_64.tar.gz
 
       - uses: actions/upload-artifact@v4
         with:
-          name: mpv-linux-x86_64
-          path: mpv-linux-x86_64.tar.gz
-          retention-days: 7
+          name: mpv-static-x86_64
+          path: mpv-static-x86_64.tar.gz
+          retention-days: 14
