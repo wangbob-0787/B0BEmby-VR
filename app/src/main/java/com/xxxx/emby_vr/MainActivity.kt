@@ -4537,8 +4537,24 @@ class MainActivity : ComponentActivity() {
              */
 
             Log.i(TAG, "内核分支判定：isWeb=$isWeb useKernel=${com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder} forceHdr10=${com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForHdr10}")
+            /*
+             * HDR10 走全包，必须先**进这段分支**才轮得到 useSelfPipe 判定。
+             *
+             * 原来这里只认"网页 / 杜比 P5 / 图形字幕"，HDR10 三条都不满足，
+             * 于是直接掉进 else 交给系统播放器 —— 2026-11-23 真机就是"日志说 HDR10=true、
+             * 但根本没进全包"（父亲实测）。调参关掉或未开自管时不进，行为与原来一致。
+             */
+            val pipeOnEarly = runCatching {
+                java.io.File(
+                    getExternalFilesDir(null) ?: filesDir,
+                    "vr-tuning.txt",
+                ).readLines().firstOrNull { it.startsWith("videopipe=") }
+                    ?.substringAfter("=")?.trim()?.toIntOrNull() == 1
+            }.getOrDefault(false) || com.xxxx.emby_vr.vr.VrTuning.videoPipeOn
+            val hdr10ToPipe = com.xxxx.emby_vr.player.PlaybackFlags.hdr10Source && pipeOnEarly &&
+                com.xxxx.emby_vr.vr.VrTuning.value(this, "hdr10_to_mpv")?.trim() != "0"
             if (isWeb || com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder ||
-                com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForHdr10) {
+                com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForHdr10 || hdr10ToPipe) {
                 /*
                  * 起播时画质档位归位到第一档：上一条片子选的档位（比如 Emby 片的「1 兆」= 第 3 档）
                  * 带到 P5 这条只有两档的路上就没有对应项，菜单里一个都不亮。
@@ -4764,9 +4780,7 @@ class MainActivity : ComponentActivity() {
                         val isP5Source = com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource &&
                             com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionProfile?.contains("50") == true
                         /* HDR10 也走自管路（父亲 2026-11-23）；调参写 0 可退回 */
-                        val hdr10Self = com.xxxx.emby_vr.player.PlaybackFlags.hdr10Source &&
-                            com.xxxx.emby_vr.vr.VrTuning.value(this@MainActivity, "hdr10_to_mpv")
-                                ?.trim() != "0"
+                        val hdr10Self = hdr10ToPipe
                         val useSelfPipe = pipeOn && (isP5Source || hdr10Self)
                         Log.i(
                             TAG,
