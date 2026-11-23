@@ -6074,6 +6074,20 @@ class MainActivity : ComponentActivity() {
         if (dv5 && mpvBackend == null) {
             switchToKernelForFallback("真实轨道是杜比视界 Profile 5（系统解不出颜色）")
         }
+        /*
+         * HDR10 走内核的对照开关（调参 hdr10_to_mpv=1，默认关）。
+         *
+         * 历史：2026-11-08 父亲拍板 HDR10 交给系统播放器 + 服务端转码，
+         * 原因是当时 MPV 播 4K60 HDR10 掉到 45~64 帧；颜色这条路反而更糊（发灰）。
+         * 现在内核与渲染都换过，性能要重新量一遍，所以留这个开关做 A/B，
+         * 默认不开，不影响任何现有行为。
+         */
+        if (!isDv && hdr && mpvBackend == null &&
+            com.xxxx.emby_vr.vr.VrTuning.value(this, "hdr10_to_mpv")?.trim() == "1"
+        ) {
+            Log.i(TAG, "HDR10 对照：调参要求走内核 → 切 MPV")
+            switchToKernelForFallback("HDR10 对照实验（hdr10_to_mpv=1）")
+        }
     }
 
     /**
