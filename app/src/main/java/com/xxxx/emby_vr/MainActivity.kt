@@ -554,6 +554,10 @@ class MainActivity : ComponentActivity() {
     private var demuxSubTrackWanted = -1
 
     /** 解封装来了一条字幕：并入自绘字幕表（endMs 来自流里的真实时长，缺失才兜底） */
+    /** 最近一次真正写进屏幕的字幕文本与时刻（清屏防抖用） */
+    private var subLastText = ""
+    private var subLastShownAtMs = 0L
+
     /** 字幕诊断日志节流 */
     private var subDiagAtMs = 0L
     private var subtitleNowMissing = 0
@@ -585,11 +589,13 @@ class MainActivity : ComponentActivity() {
         } else {
             list.mapIndexed { i, c ->
                 val next = list.getOrNull(i + 1)
-                if (next != null && next.startMs > c.endMs && next.startMs - c.endMs <= 1500L) {
+                val bridged = if (next != null && next.startMs > c.endMs && next.startMs - c.endMs <= 400L) {
                     c.copy(endMs = next.startMs)
                 } else {
                     c
                 }
+                /* 最小显示 600ms：个别条目 native 给的持续时长偏短，肉眼就是"闪一下" */
+                if (bridged.endMs - bridged.startMs < 600L) bridged.copy(endMs = bridged.startMs + 600L) else bridged
             }
         }
     }
@@ -1650,7 +1656,23 @@ class MainActivity : ComponentActivity() {
         if (mpvBackend != null && selfSession == null) return
         if (subtitleCues.isEmpty()) return
         val pos = currentPositionMs()
-        val cue = subtitleCues.firstOrNull { pos >= it.startMs && pos <= it.endMs }
+        var cue = subtitleCues.firstOrNull { pos >= it.startMs && pos <= it.endMs }
+        /*
+         * 清屏防抖（豆豆 2026-11-23）：两句之间本来就该空，但"一灭一亮"太干脆会被看成一闪一灭。
+         * 没命中时，若上一次有字还在 250ms 内、或下一条其实 250ms 内就到，就先别清屏。
+         */
+        val nowTick = android.os.SystemClock.elapsedRealtime()
+        if (cue == null) {
+            val lastShownAgo = nowTick - subLastShownAtMs
+            if (subLastText.isNotEmpty() && lastShownAgo <= 250L) {
+                cue = SubtitleCue(pos, pos, subLastText, emptyList(), demuxSubTrackWanted)
+            } else {
+                val nextCue = subtitleCues.firstOrNull { it.startMs > pos }
+                if (subLastText.isNotEmpty() && nextCue != null && nextCue.startMs - pos <= 250L) {
+                    cue = SubtitleCue(pos, pos, subLastText, emptyList(), demuxSubTrackWanted)
+                }
+            }
+        }
         /* 诊断：字幕表有内容却不上屏时，对照"当前进度"与"表里时刻"（每 2 秒一行） */
         val nowMs = android.os.SystemClock.elapsedRealtime()
         if (subtitleCues.isNotEmpty() && nowMs - subDiagAtMs > 2000L) {
@@ -1663,6 +1685,10 @@ class MainActivity : ComponentActivity() {
             )
         }
         val text = cue?.text.orEmpty()
+        if (text.isNotEmpty()) {
+            subLastText = text
+            subLastShownAtMs = android.os.SystemClock.elapsedRealtime()
+        }
         subtitleNow = text
         if (!waitingFirstFrame) {
             // 有样式信息就按样式画（字号/颜色），没有就走纯文本那条老路
