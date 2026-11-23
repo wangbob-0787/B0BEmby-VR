@@ -61,6 +61,7 @@ struct Demux {
      * 之后每次读包都被判中断（豆豆 2026-11-22 P0-2）。
      */
     std::atomic<bool> opening{false};
+    int subDbg = 0;   // 字幕时长取证计数
     int audioIdx = -1;
     int videoIdx = -1;
     /*
@@ -548,6 +549,13 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxRead(
                     m[2] = (jint) ptsMs;
                     m[3] = subK;   // 哪一条字幕轨（切轨时按它挑缓冲）
                     /* 结束时间：AVSubtitle 给的是相对 start 的毫秒；缺失就用 0 让上层兜底 */
+                    /* 取证：subrip/ass 到底给不给时长（2026-11-23 字幕闪烁） */
+                    if (d->subDbg < 5) {
+                        d->subDbg++;
+                        LOGI("字幕时长取证: start_display=%d end_display=%d pts=%lld",
+                             (int) sub.start_display_time, (int) sub.end_display_time,
+                             (long long) srcPts);
+                    }
                     m[4] = (jint) ((sub.end_display_time > sub.start_display_time)
                                    ? (ptsMs + sub.end_display_time) : 0);
                     env->SetByteArrayRegion(out, 0, (jsize) text.size(),
