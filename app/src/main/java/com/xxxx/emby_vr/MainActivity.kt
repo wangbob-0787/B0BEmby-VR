@@ -1746,6 +1746,29 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * 按位置查当前该显示的字幕正文（绘制线程每帧调用）。
+     *
+     * 与系统播放器那条路同形态：谁画谁算，不依赖定时器采样。
+     * 表是"按 startMs 排序、互不重叠"的显示用快照，用二分找。
+     */
+    private fun lookupDemuxCueText(posMs: Long): String {
+        val list = subtitleCues
+        if (list.isEmpty()) return ""
+        var lo = 0
+        var hi = list.size - 1
+        while (lo <= hi) {
+            val mid = (lo + hi) ushr 1
+            val c = list[mid]
+            when {
+                posMs < c.startMs -> hi = mid - 1
+                posMs > c.endMs -> lo = mid + 1
+                else -> return c.text
+            }
+        }
+        return ""
+    }
+
     /** 把一条字幕真正写到屏幕上（空文本 = 清屏） */
     private fun applySubtitleText(text: String, cue: SubtitleCue?) {
         subtitleNow = text
@@ -10276,6 +10299,11 @@ class MainActivity : ComponentActivity() {
                  * applyKernelSubtitle，所以 demuxSubTrackWanted 一直是 -1、字幕包全被过滤掉；
                  * 父亲看到的就是"菜单里有勾选、屏幕上没字幕，必须重新点一次才出来"（2026-11-23）。
                  */
+                ui.post {
+                    if (selfGen.get() == gen) {
+                        danmakuView?.setSubtitleProvider { pos -> lookupDemuxCueText(pos) }
+                    }
+                }
                 val wantSub = selectedSubtitleIndex
                 if (wantSub != null) {
                     ui.post {
