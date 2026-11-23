@@ -29,6 +29,16 @@ object PlaybackFlags {
     @Volatile
     var useKernelDecoder: Boolean = false
 
+    /**
+     * HDR10 强制走内核（2026-11-23 父亲定：HDR10 交给 MPV）。
+     *
+     * 与 [useKernelDecoder] 分开的原因：取播放地址与起播两处都按"杜比 P5"判断，
+     * HDR10 只置 useKernelDecoder 会被重新交回系统播放器（真机实测：日志说切了、
+     * 画面还是系统播放器）。这个标志只由 HDR10 那条路置位，并在换片时清掉。
+     */
+    @Volatile
+    var forceKernelForHdr10: Boolean = false
+
     /** 探到的杜比视界版本（如 "DoviProfile81" / "DoviProfile50" / "未探到"），只写日志。 */
     @Volatile
     var dolbyVisionProfile: String? = null

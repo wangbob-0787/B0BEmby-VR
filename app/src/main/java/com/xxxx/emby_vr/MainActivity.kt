@@ -3563,7 +3563,8 @@ class MainActivity : ComponentActivity() {
                 } ?: false
                 val strmPath = source?.path
                 val strmDirectUrl = if (
-                    (dvSource && com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder || graphicSub) &&
+                    (dvSource && com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder ||
+                        com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForHdr10 || graphicSub) &&
                     strmPath?.endsWith(".strm") == true
                 ) fetchStrmUrl(strmPath) else null
                 val path0 = when {
@@ -3577,7 +3578,8 @@ class MainActivity : ComponentActivity() {
                      * 8.1 / 7 的基础层就是普通 HDR10，照常交给系统播放器，
                      * 强换直连反而让系统解不了、只剩声音（父亲 2026-11-01 实测）。
                      */
-                    dvSource && com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder &&
+                    (dvSource && com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder ||
+                        com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForHdr10) &&
                         method != "DirectPlay" -> {
                         /*
                          * 杜比 P5 一律直连原文件（2026-11-13）。
@@ -4524,7 +4526,8 @@ class MainActivity : ComponentActivity() {
              * 标题跟着被清空 —— 于是控制条显示"什么都没在播"，而画面上明明在放。
              */
 
-            if (isWeb || com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder) {
+            if (isWeb || com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder ||
+                com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForHdr10) {
                 /*
                  * 起播时画质档位归位到第一档：上一条片子选的档位（比如 Emby 片的「1 兆」= 第 3 档）
                  * 带到 P5 这条只有两档的路上就没有对应项，菜单里一个都不亮。
@@ -6036,6 +6039,13 @@ class MainActivity : ComponentActivity() {
         Log.w(TAG, "兜底：$reason → 改走自带内核重播（位置接着走）")
         hud("这条流系统解不了，改用内核解码重来")
         com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder = true
+        /* HDR10 走内核要单独一个标志：下面取地址与起播两处都按"杜比 P5"判断，
+           只置 useKernelDecoder 的话，HDR10 会被重新交回系统播放器（2026-11-23 真机） */
+        if (!com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionProfile.isNullOrEmpty()) {
+            /* 杜比 P5：沿用原标志 */
+        } else {
+            com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForHdr10 = true
+        }
         replayKeepingPosition()
         return true
     }
@@ -7658,6 +7668,8 @@ class MainActivity : ComponentActivity() {
         avStall = false
         /* 换代：正在建的那条线程建完会发现代次不符，自己收场，不留孤儿管线 */
         selfGen.incrementAndGet()
+        /* HDR10 强制内核只对当前这一部有效，换片必须复位，否则普通片也被拽进内核 */
+        com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForHdr10 = false
         /*
          * 换片固定步骤（豆豆 2026-11-21 的硬约束）：
          * 参数表、文件标记、最后一套、"就地保持"全部复位，
