@@ -729,11 +729,27 @@ object EmbyApi {
                 com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForImageSubs
             Log.i(TAG, "片源判定：杜比视界=$isDolbyVision 版本=$dvProfile HDR10打底=$hdr10Base 走内核=$useKernel" +
                 "（按名=$dvByName 按流=$dvByStream）path=${sourcePath.takeLast(70)}")
-            /* 纯 HDR10（非杜比）标记：给自管路分流用（父亲 2026-11-23：HDR10 走全包） */
-            val videoStream = dto.mediaSources?.firstOrNull()?.mediaStreams
+            /*
+             * 纯 HDR10（非杜比）标记：给自管路分流用（父亲 2026-11-23：HDR10 走全包）。
+             *
+             * **必须按选中的那一版取**，不能取第一个：同一部片可能有
+             * 2160p HDR10 与 1080p SDR 两个版本（豆豆 2026-11-23 实测
+             * 《007：女王密使》详情接口返回 5 个 MediaSources），
+             * 按第一个版本判会把 SDR 当成 HDR10，着色器对 SDR 做 PQ 解码 → 整片发灰。
+             */
+            val requestedSource = com.xxxx.emby_vr.player.PlaybackFlags.mediaSourceId
+            val chosenSource = dto.mediaSources?.firstOrNull { it.id == requestedSource }
+                ?: dto.mediaSources?.firstOrNull()
+            val videoStream = chosenSource?.mediaStreams
                 ?.firstOrNull { it.type.equals("Video", true) }
             com.xxxx.emby_vr.player.PlaybackFlags.hdr10Source =
                 !isDolbyVision && (videoStream?.videoRange?.contains("HDR", true) == true)
+            Log.i(
+                TAG,
+                "片源色彩判定：版本数=${dto.mediaSources?.size ?: 0} 请求=${requestedSource ?: "无"} " +
+                    "命中=${chosenSource?.id ?: "无"} 范围=${videoStream?.videoRange ?: "未知"} " +
+                    "HDR10=${com.xxxx.emby_vr.player.PlaybackFlags.hdr10Source}",
+            )
             com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource = isDolbyVision
             com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionProfile = dvProfile
             com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder = useKernel
