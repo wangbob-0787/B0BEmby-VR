@@ -445,7 +445,9 @@ class MainActivity : ComponentActivity() {
          * 爬到 800ms 阈值再被硬拉回，形成"领先一段、回跳一次"的锯齿。
          * 三条路（自管 / 内核 / 系统播放器）位置源都慢这 1%，所以修在公共层。
          */
-        val dtMs = (now - posBaseAtMs).coerceAtLeast(1L)
+        /* 速率与推进共用同一个 dt（都取 smoothAtMs）：两个字段各有别的写入者，
+           一旦只动其一，速率和推进就会用不同时间基，误差不报错只会慢慢跑偏 */
+        val dtMs = (now - smoothAtMs).coerceAtLeast(1L)
         val rateRaw = (target - lastTargetMs).toDouble() / dtMs.toDouble()
         /*
          * 不做"暂停判断"：暂停时位置不动 → rate=0 → 时钟不动，弹幕天然冻住。
