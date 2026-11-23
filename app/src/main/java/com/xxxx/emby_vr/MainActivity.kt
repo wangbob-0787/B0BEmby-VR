@@ -10265,6 +10265,19 @@ class MainActivity : ComponentActivity() {
                 selfSession = session
                 session.start()
                 Log.i(TAG, "全包档已启动：画面/声音/字幕同一条连接")
+                /*
+                 * 起播时把"记住的字幕选择"真正落到解封装上。
+                 *
+                 * 菜单里显示的那条勾选只写了 selectedSubtitleIndex（界面态），从来没调用
+                 * applyKernelSubtitle，所以 demuxSubTrackWanted 一直是 -1、字幕包全被过滤掉；
+                 * 父亲看到的就是"菜单里有勾选、屏幕上没字幕，必须重新点一次才出来"（2026-11-23）。
+                 */
+                val wantSub = selectedSubtitleIndex
+                if (wantSub != null) {
+                    ui.post {
+                        if (selfGen.get() == gen) applyKernelSubtitle(wantSub)
+                    }
+                }
             } else if (session != null) {
                 runCatching { session.stop() }
             }
