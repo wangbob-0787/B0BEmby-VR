@@ -25,6 +25,15 @@ class DanmakuView(context: Context) : View(context) {
 
     private var track: DanmakuTrack? = null
     private var positionProvider: (() -> Long)? = null
+
+    /**
+     * 每帧现算字幕正文（全包档用）。
+     *
+     * 系统播放器那条路是"播放器把当前这句回调过来"，我们照抄这个形态：
+     * 传入一个 (位置ms) -> 正文 的函数，绘制线程每帧自己取一次，
+     * 不再靠 250ms/50ms 的定时器去问 —— 短句也不会被采样漏掉。
+     */
+    private var subtitleProvider: ((Long) -> String)? = null
     private var running = false
 
     /** 弹幕整体缩放倍率(用户在设置里可调,默认 1.0) */
@@ -171,6 +180,12 @@ class DanmakuView(context: Context) : View(context) {
 
     fun setPositionProvider(provider: () -> Long) {
         positionProvider = provider
+    }
+
+    /** 设置"每帧现算字幕"的取文函数（null = 关掉，回到 setSubtitle 推模式） */
+    fun setSubtitleProvider(provider: ((Long) -> String)?) {
+        subtitleProvider = provider
+        invalidate()
     }
 
     fun start() {
@@ -398,6 +413,11 @@ class DanmakuView(context: Context) : View(context) {
      * 画视频字幕：最下方居中，多行时往上叠，带黑描边保证任何画面上都看得清。
      */
     private fun drawSubtitle(canvas: Canvas) {
+        val live = subtitleProvider?.invoke(positionProvider?.invoke() ?: 0L)
+        if (live != null && live != subtitle) {
+            subtitle = live
+            richLines = null
+        }
         if (subtitle.isEmpty() || height <= 0) return
         val baseSize = max(12f, width * 0.05f * 9f / 16f)
         /*
