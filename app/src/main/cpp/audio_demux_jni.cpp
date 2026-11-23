@@ -233,6 +233,15 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxOpen(
     av_dict_set(&opt, "rw_timeout", "15000000", 0);
     av_dict_set(&opt, "timeout", "15000000", 0);
     /*
+     * 连接复用是"活着但不吐包"的常见来源：长连接被服务端/中间设备收回带宽后，
+     * ffmpeg 仍在原连接上等 —— 一直读不到、也不报错（r1721/r1722 实测）。
+     * 关掉持久连接 + 开重连，让每次读都落在一条健康的连接上（豆豆 2026-11-24）。
+     */
+    av_dict_set(&opt, "http_persistent", "0", 0);
+    av_dict_set(&opt, "blocksize", "65536", 0);
+    av_dict_set(&opt, "reconnect_streamed", "1", 0);
+    av_dict_set(&opt, "reconnect_delay_max", "2", 0);
+    /*
      * 打开前把地址打出来（只留前 120 字符、api_key 遮掉）：
      * 用来一次分清"连的是本地中转还是 Emby 原地址"，这条以前完全看不到。
      */
