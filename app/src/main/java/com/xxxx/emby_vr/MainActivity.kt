@@ -554,6 +554,9 @@ class MainActivity : ComponentActivity() {
     private var demuxSubTrackWanted = -1
 
     /** 解封装来了一条字幕：并入自绘字幕表（endMs 来自流里的真实时长，缺失才兜底） */
+    /** 字幕包到达计数（只用于诊断日志节流） */
+    private var subRecv = 0L
+
     private fun appendDemuxCue(startMs: Long, endMs: Long, text: String) {
         if (startMs < 0L || text.isBlank()) return
         val end = if (endMs > startMs) endMs else startMs + 3000L
@@ -9777,8 +9780,13 @@ class MainActivity : ComponentActivity() {
                     } else {
                         /* 字幕回调必须在 session.start() 之前挂好（图 §2-4） */
                         probe.onSubtitle = subCb@{ cStart, cEnd, text, track ->
-                            /* 诊断：确认字幕包到达与轨号过滤（2026-11-23 字幕不上屏） */
-                            Log.i(TAG, "字幕包到达：轨=$track 想要=$demuxSubTrackWanted 起点=${cStart}ms 长度=${text.length}")
+                            /* 诊断（节流）：前 20 条逐条，之后每 50 条一行；轨号不匹配的单列 */
+                            subRecv++
+                            if (subRecv <= 20 || subRecv % 50 == 0) {
+                                Log.i(TAG, "字幕包到达#$subRecv 轨=$track 想要=$demuxSubTrackWanted 起点=${cStart}ms 长度=${text.length}")
+                            } else if (track != demuxSubTrackWanted) {
+                                Log.w(TAG, "字幕包轨号不匹配#$subRecv 来=$track 想要=$demuxSubTrackWanted")
+                            }
                             if (track != demuxSubTrackWanted) return@subCb
                             ui.post {
                                 if (gen != selfGen.get()) return@post

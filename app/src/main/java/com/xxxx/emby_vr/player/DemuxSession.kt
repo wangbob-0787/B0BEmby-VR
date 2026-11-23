@@ -66,6 +66,8 @@ class DemuxSession(
     /** 跳转后等首视频包回灌落点 */
     /** 收到多少条字幕包（诊断用） */
     private var subCueCount = 0
+
+    /** 跳转后等首视频包回灌落点 */
     private var seekOriginPending = false
     private var seekOriginTargetMs = 0L
 
