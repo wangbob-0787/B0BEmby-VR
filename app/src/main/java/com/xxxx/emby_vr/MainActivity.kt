@@ -10202,6 +10202,15 @@ class MainActivity : ComponentActivity() {
             selfPipeWaitingFirstFrame.set(false)
             /* 复用跳转事务（同一把单飞锁），不新写第三条重建路径。
                这里不在 ui 作用域里（onResume 是 Activity 方法），用主线程 handler 投递。 */
+            /*
+             * 重建分支里也要把"暂停态"解除：睡眠时 AudioPipe.pause() 把 paused 置真，
+             * 只有短挂起那条分支会 resume；长挂起走重建时若不解，音频解码线程会一直
+             * 停在"paused 就不写"上 → 唤醒后无声、时钟不走、进度与弹幕全冻（2026-11-23 真机）。
+             */
+            if (!selfPaused) {
+                runCatching { audioPipe?.resume() }
+                runCatching { playClock?.resume() }
+            }
             android.os.Handler(android.os.Looper.getMainLooper()).post {
                 runCatching { ctl.pipeSeek?.invoke((sec * 1000.0).toLong()) }
             }
