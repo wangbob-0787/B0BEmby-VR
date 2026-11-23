@@ -40,6 +40,9 @@ object AudioDemuxNative {
     /** out[0]=宽 out[1]=高 out[2]=extradata 长度 out[3]=codec_id；返回 csd 字节（MediaCodec 直接用） */
     external fun nativeDemuxVideoCsd(handle: Long, out: IntArray): ByteArray?
 
+
+    /** 第 k 条文字字幕的原始头文本（ASS 样式段在里头）；没有就 null */
+    external fun nativeDemuxSubtitleHeader(handle: Long, k: Int): String?
     /** 音频解码器名（eac3/truehd/dca 等） */
     external fun nativeDemuxCodecName(handle: Long): String
 

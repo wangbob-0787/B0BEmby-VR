@@ -684,6 +684,30 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxAbort(JNIEnv *, jobjec
 }
 
 extern "C" JNIEXPORT void JNICALL
+/*
+ * 字幕头的原始文本（ASS/SSA 的 [Script Info] / [V4+ Styles] 段就在里面）。
+ * Java 侧解析样式表用；取不到返回 null。
+ */
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxSubtitleHeader(
+    JNIEnv *env, jobject, jlong handle, jint k) {
+    Demux *d = reinterpret_cast<Demux *>(handle);
+    if (!d || k < 0 || k >= d->subN) return nullptr;
+    AVCodecParameters *sp = d->fmt->streams[d->subIdx[k]]->codecpar;
+    if (!sp->extradata || sp->extradata_size <= 0) return nullptr;
+    /* extradata 不是以 0 结尾的，按长度造一条 Java 字符串 */
+    jbyteArray arr = env->NewByteArray(sp->extradata_size);
+    if (!arr) return nullptr;
+    env->SetByteArrayRegion(arr, 0, sp->extradata_size, reinterpret_cast<const jbyte *>(sp->extradata));
+    jclass strCls = env->FindClass("java/lang/String");
+    jmethodID ctor = env->GetMethodID(strCls, "<init>", "([BLjava/lang/String;)V");
+    jstring cs = env->NewStringUTF("UTF-8");
+    jobject out = env->NewObject(strCls, ctor, arr, cs);
+    env->DeleteLocalRef(arr);
+    env->DeleteLocalRef(cs);
+    return static_cast<jstring>(out);
+}
+
 Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxClose(JNIEnv *env, jobject, jlong handle) {
     if (handle == 0) {
         gConDupe.fetch_add(1);
