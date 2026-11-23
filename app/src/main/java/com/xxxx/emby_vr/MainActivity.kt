@@ -2734,8 +2734,14 @@ class MainActivity : ComponentActivity() {
             }
             InputRouter.Action.PLAY_PAUSE ->
                 if (renderer.videoActive && !panelTouchedRecently()) togglePlayPause()
-            InputRouter.Action.SEEK_BACK -> if (renderer.videoActive) seekBy(-10_000)
-            InputRouter.Action.SEEK_FORWARD -> if (renderer.videoActive) seekBy(+10_000)
+            /*
+             * 判据改成"有引擎"：`renderer.videoActive` 只在老 2D 画面管线出帧后才为真，
+             * VR 模式下普通片的画面走 vrVideoSurface，这个标志一直 false ——
+             * 于是普通片推摇杆快进快退既不跳、银幕上也不出进度条
+             * （父亲 2026-11-23：网络视频正常、Emby 普通片没有进度条）。
+             */
+            InputRouter.Action.SEEK_BACK -> if (ctl.hasEngine()) seekBy(-10_000)
+            InputRouter.Action.SEEK_FORWARD -> if (ctl.hasEngine()) seekBy(+10_000)
             else -> { /* 余下动作后续接 */ }
         }
     }
