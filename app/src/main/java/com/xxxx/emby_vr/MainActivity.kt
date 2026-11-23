@@ -554,6 +554,10 @@ class MainActivity : ComponentActivity() {
     private var demuxSubTrackWanted = -1
 
     /** 解封装来了一条字幕：并入自绘字幕表（endMs 来自流里的真实时长，缺失才兜底） */
+    /** 字幕诊断日志节流 */
+    private var subDiagAtMs = 0L
+    private var subtitleNowMissing = 0
+
     /** 字幕包到达计数（只用于诊断日志节流） */
     private var subRecv = 0L
 
@@ -1617,6 +1621,16 @@ class MainActivity : ComponentActivity() {
         if (subtitleCues.isEmpty()) return
         val pos = currentPositionMs()
         val cue = subtitleCues.firstOrNull { pos >= it.startMs && pos <= it.endMs }
+        /* 诊断：字幕表有内容却不上屏时，对照"当前进度"与"表里时刻"（每 2 秒一行） */
+        val nowMs = android.os.SystemClock.elapsedRealtime()
+        if (subtitleCues.isNotEmpty() && nowMs - subDiagAtMs > 2000L) {
+            subDiagAtMs = nowMs
+            Log.i(
+                TAG,
+                "字幕诊断|进度=${pos}ms|表=${subtitleCues.size}条|首条=${subtitleCues.first().startMs}ms|" +
+                    "命中=${cue?.text?.length ?: -1}|waitingFirstFrame=$waitingFirstFrame|缺失=$subtitleNowMissing",
+            )
+        }
         val text = cue?.text.orEmpty()
         subtitleNow = text
         if (!waitingFirstFrame) {
