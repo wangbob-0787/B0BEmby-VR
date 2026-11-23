@@ -607,7 +607,11 @@ class MainActivity : ComponentActivity() {
             } else {
                 line
             }
-        }.trim()
+        }/* 处理 ASS 的换行与样式标签：\N/\n 是换行，{\...} 是字体/位置标签 */
+            .replace(Regex("\\{[^}]*\\}"), "")
+            .replace("\\N", "\n")
+            .replace("\\n", "\n")
+            .trim()
         if (cleaned.isBlank()) return
         val end = if (endMs > startMs) endMs else startMs + 3000L
         /* 键里混入轨号：不同轨会有同一时刻的条目，只按时间当键会互相覆盖 */
