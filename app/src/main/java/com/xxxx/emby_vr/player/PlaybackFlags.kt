@@ -118,6 +118,7 @@ object PlaybackFlags {
         dolbyVisionSource = false
         dolbyVisionProfile = null
         useKernelDecoder = false
+        hdr10Source = false
         videoDescriptor = null
     }
 

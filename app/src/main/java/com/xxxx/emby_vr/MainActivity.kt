@@ -3582,7 +3582,8 @@ class MainActivity : ComponentActivity() {
                      * 强换直连反而让系统解不了、只剩声音（父亲 2026-11-01 实测）。
                      */
                     (dvSource && com.xxxx.emby_vr.player.PlaybackFlags.useKernelDecoder ||
-                        com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForHdr10) &&
+                        com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForHdr10 ||
+                        com.xxxx.emby_vr.player.PlaybackFlags.hdr10Source) &&
                         method != "DirectPlay" -> {
                         /*
                          * 杜比 P5 一律直连原文件（2026-11-13）。
@@ -6183,8 +6184,6 @@ class MainActivity : ComponentActivity() {
     private fun replayKeepingPosition() {
         if (currentMediaId.isBlank()) return
         replaying = true
-        /* 决策已经做过：这次重播要进内核。标志的清除只发生在"换片"，所以这里置一次即可 */
-        com.xxxx.emby_vr.player.PlaybackFlags.forceKernelForHdr10 = true
         playMedia(currentMediaId, 0L, keepPosition = true)
     }
 
