@@ -4823,8 +4823,17 @@ class MainActivity : ComponentActivity() {
                             TAG,
                             "起播分支判定：开关=$pipeOn 本片P5=$isP5Source 本片HDR10=$hdr10Self 自管解码=$useSelfPipe",
                         )
-                        /* 渲染层按片源切换颜色算法：P5 走杜比还原，HDR10 走 PQ+色域映射 */
-                        com.xxxx.emby_vr.vr.VrNative.setHdr10StreamActive(useSelfPipe && hdr10Self)
+                        /*
+                         * 渲染层按片源切换颜色算法：P5 走杜比还原，HDR10 走 PQ+色域映射。
+                         * 调参 `hdr10_shader=0` 可临时关掉这条分支（画面发灰但能看），
+                         * 用来一次装机就把"黑屏是着色器算的"与"纹理没接上"区分开。
+                         */
+                        val hdr10ShaderOn = com.xxxx.emby_vr.vr.VrTuning.value(this@MainActivity, "hdr10_shader")
+                            ?.trim() != "0"
+                        com.xxxx.emby_vr.vr.VrNative.setHdr10StreamActive(
+                            useSelfPipe && hdr10Self && hdr10ShaderOn,
+                        )
+                        Log.i(TAG, "HDR10 着色器分支=$hdr10ShaderOn（调参 hdr10_shader 控制）")
                         Log.i(
                             TAG,
                             "片源色彩：杜比=${com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource} " +
@@ -10183,6 +10192,9 @@ class MainActivity : ComponentActivity() {
                             "|等待起播=${android.os.SystemClock.elapsedRealtime() - watchdogT0}ms",
                     )
                     selfFirstShown = true
+                    /* 阶段字段一起推进：否则 PIPEHEALTH 永远显示"等首帧上屏"，会把排障带偏（豆豆 2026-11-23） */
+                    selfPipePhase = "播放中"
+                    Log.i(TAG, "首帧上屏后置阶段=播放中")
                     /*
                      * 自管路的首帧上屏 = 收黑幕 / 转圈 / 片名的时机（父亲 2026-11-21 提的"黑屏没收掉"）。
                      *

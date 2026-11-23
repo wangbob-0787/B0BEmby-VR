@@ -573,8 +573,16 @@ class AudioPipe {
         return if (j >= 0) MIME_PRIORITY.size + j else -1
     }
 
+    /*
+     * AAC 也走 FFmpeg 软解（豆豆 2026-11-23 定位）。
+     *
+     * Android 的 AAC MIME 是 `audio/mp4a-latm`，不是 `audio/aac`；
+     * 拿 `audio/aac` 去 createDecoderByType 找不到组件，返回 NAME_NOT_FOUND(-2)，
+     * 日志里就是 `Failed to initialize audio/aac, error 0xfffffffe`。
+     * 与"音频统一 FFmpeg"的规格一致，AAC 也交给软解，省掉 MIME 映射与 csd 的坑。
+     */
     private fun isNativeOnlyCodec(mime: String): Boolean = NATIVE_ONLY.contains(mime) ||
-        mime.contains("dts", true) || mime.contains("truehd", true)
+        mime.contains("dts", true) || mime.contains("truehd", true) || mime.contains("aac", true)
 
     private fun buildTrack(): AudioTrack? {
         /*
