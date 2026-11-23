@@ -609,11 +609,16 @@ class VideoPipe {
                         Log.w(TAG, if (nowStalled) "断流：读不到数据 → 请上层暂停声音" else "断流恢复：数据来了 → 请上层继续")
                         runCatching { onStall?.invoke(nowStalled) }
                     }
+                    /* 无进展秒数：数字冻结时靠它一眼看出"读不动"多久了（豆豆 2026-11-23） */
+                    if (statSamples != lastWatchSamples) noProgressSince = System.currentTimeMillis()
+                    val noProgressSec = if (statSamples == 0L) 0L
+                    else (System.currentTimeMillis() - noProgressSince) / 1000
                     lastWatchSamples = statSamples
                     Log.i(
                         TAG,
                         "PIPEREAD|样本=$statSamples|字节=$statBytes|读返回=$statLastReadRet" +
-                            "|要不到输入格=$statInMiss|取不到输出帧=$statOutMiss|held=$heldIdx",
+                            "|要不到输入格=$statInMiss|取不到输出帧=$statOutMiss|held=$heldIdx" +
+                            "|无进展=${noProgressSec}s",
                     )
                 }
             }, "PipeWatch").apply { isDaemon = true; start() }
@@ -1239,7 +1244,8 @@ class VideoPipe {
     @Volatile private var statLastReadRet = 0L
     @Volatile private var statOutMiss = 0L
     /** 监视线程上一拍的样本数（判断流用） */
-    @Volatile private var lastWatchSamples = 0L
+    @Volatile private var noProgressSince = System.currentTimeMillis()
+            private var lastWatchSamples = 0L
 
     /** 需要"解码器内跳转"到的位置（秒，<0 表示没有待办）。由解码线程自己执行 */
     @Volatile private var pendingSeekSec = -1.0
