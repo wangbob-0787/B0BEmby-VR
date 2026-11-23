@@ -567,9 +567,15 @@ class MainActivity : ComponentActivity() {
 
     private fun appendDemuxCue(startMs: Long, endMs: Long, text: String, track: Int = 0) {
         if (startMs < 0L || text.isBlank()) return
+        /*
+         * 去掉字幕文件里的样式头。ASS/SSA 的头部在解封装里会被当成一段正文交上来，
+         * 画面上就是"1,0,Default,0,0,0,…"这种乱码（2026-11-23 真机）。
+         */
+        val cleaned = text.replace(Regex("^\\s*\\d+,\\d+,Default[^\\n]*\\n?"), "").trim()
+        if (cleaned.isBlank()) return
         val end = if (endMs > startMs) endMs else startMs + 3000L
         /* 键里混入轨号：不同轨会有同一时刻的条目，只按时间当键会互相覆盖 */
-        demuxSubCues[startMs * 8L + (track and 7)] = SubtitleCue(startMs, end, text, emptyList(), track)
+        demuxSubCues[startMs * 8L + (track and 7)] = SubtitleCue(startMs, end, cleaned, emptyList(), track)
         if (demuxSubCues.size > 4000) runCatching { demuxSubCues.pollFirstEntry() }
         refreshDemuxSubtitleCues()
     }
