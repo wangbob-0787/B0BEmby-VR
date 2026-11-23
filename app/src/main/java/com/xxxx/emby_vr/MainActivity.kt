@@ -9836,8 +9836,10 @@ class MainActivity : ComponentActivity() {
                                  * 取声音起点则让画面先把早于它的几帧当预滚丢掉，两边从同一点开跑。
                                  */
                                 val videoSec = if (videoPtsUs > 0) videoPtsUs / 1_000_000.0 else targetMs / 1000.0
-                                val audioSec = if (audioPtsUs > 0) audioPtsUs / 1_000_000.0 else videoSec
-                                val originSec = if (audioSec > videoSec) audioSec else videoSec
+                                /* 共同起点取"音频首包"：那 1.27 秒音频我们根本没读到，没人能填，只能让画面等它 */
+                                val originSec = if (audioPtsUs > 0) audioPtsUs / 1_000_000.0 else videoSec
+                                /* 时钟也以它为基准（原来用画面起点，会让位置虚高 1.27 秒） */
+                                runCatching { playClock?.resetTo((originSec * 1_000_000.0).toLong()) }
                                 /*
                                  * 回灌只改基准，**不再清解码器**（豆豆 2026-11-23）：
                                  * 清解码器已在 pipeSeek 那一刻做过一次；这里再清会把刚喂进去的关键帧冲掉，
