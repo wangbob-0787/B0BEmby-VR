@@ -63,7 +63,6 @@ class DemuxSession(
      */
     var onSeekOrigin: ((targetMs: Long, videoPtsUs: Long, audioPtsUs: Long) -> Unit)? = null
 
-    /** 跳转后等首视频包回灌落点 */
     /** 收到多少条字幕包（诊断用） */
     private var subCueCount = 0
 
