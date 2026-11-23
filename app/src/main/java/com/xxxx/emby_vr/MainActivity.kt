@@ -6372,7 +6372,12 @@ class MainActivity : ComponentActivity() {
         if (selfPipeActive) {
             if (index == null) {
                 demuxSubTrackWanted = -1
-                demuxSubCues.clear()
+                /*
+                 * **不要清空已攒好的字幕表**：读线程比播放位置超前几十秒，
+                 * 清掉之后再选回来，那一段字幕已经读过去、不会重发，
+                 * 只能干等播放追上读线程（真机：取消再选后首条在 1150s、进度 1067s，几十秒没字）。
+                 * 这里只把"要显示的轨"清掉，数据留着。
+                 */
                 subtitleCues = emptyList()
                 subtitleCueStream = null
                 subtitleNow = ""
