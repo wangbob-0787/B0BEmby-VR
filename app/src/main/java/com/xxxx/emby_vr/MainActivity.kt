@@ -9402,9 +9402,6 @@ class MainActivity : ComponentActivity() {
          * 放在 pipe.start() 之前 —— 此刻新解码线程还没起，不可能有旧推送抢在前面；
          * 代次同时带下去，万一旧线程晚到一条推送也会被原生按代次丢弃。
          */
-        /* 本片是 HDR10 时向系统声明 PQ 色彩空间（决定纹理是否高精度） */
-        pipe.hdr10Stream = com.xxxx.emby_vr.player.PlaybackFlags.hdr10Source &&
-            !com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource
         val ok = pipe.start(
             url, emptyMap(), surface,
             /* 时钟只有自管这一个来源：不再问内核 */
@@ -9534,9 +9531,6 @@ class MainActivity : ComponentActivity() {
          * 图 §4.4：跳转重建必须判返回值。原来这里静默丢弃 false ——
          * `setDataSource`/`seekTo` 抛异常时一声不响，用户观感就是"快进无效"。
          */
-        /* 本片是 HDR10 时向系统声明 PQ 色彩空间（决定纹理是否高精度） */
-        pipe.hdr10Stream = com.xxxx.emby_vr.player.PlaybackFlags.hdr10Source &&
-            !com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource
         val ok = pipe.start(
             url, emptyMap(), surface,
             /* 重建路径也用推算时钟（同一条口径，不再分可用/不可用） */
