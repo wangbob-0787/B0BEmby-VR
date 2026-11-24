@@ -8813,11 +8813,11 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
                     /* 遮挡查询：这一趟到底有没有像素写进小图（区分"没画上"与"画了但颜色是 0"） */
                     GLuint qid = 0;
                     glGenQueries(1, &qid);
-                    glBeginQuery(GL_SAMPLES_PASSED, qid);
+                    glBeginQuery(GL_ANY_SAMPLES_PASSED, qid);
                     glBindVertexArray(c.videoLayerVao);
                     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
                     glBindVertexArray(0);
-                    glEndQuery(GL_SAMPLES_PASSED);
+                    glEndQuery(GL_ANY_SAMPLES_PASSED);
                     GLint passed = -1;
                     glGetQueryObjectiv(qid, GL_QUERY_RESULT, &passed);
                     glDeleteQueries(1, &qid);
