@@ -527,7 +527,6 @@ extern "C" void setHdr10Mini(int on) { gMiniOn.store(on ? 1 : 0); }
 static std::atomic<int> gHdr10Active{0};
 
 extern "C" JNIEXPORT void JNICALL
-extern "C" JNIEXPORT void JNICALL
 Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetHdr10Mini(JNIEnv * /* env */, jobject /* this */,
                                                       jint on) {
     setHdr10Mini((int) on);
