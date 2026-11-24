@@ -1354,11 +1354,19 @@ void main() {
             float knee = uHdr10Knee * 0.01;
             float over = max(y - knee, 1e-6) / max(y, 1e-6);
             lin = mix(lin, vec3(y), over);
-            /* mobius 压缩：按最大分量压，三通道同比缩放（色相守恒）；peak 单位尼特 */
-            float sig = max(max(lin.r, lin.g), lin.b);
-            float peak = uHdr10Peak;
-            float sig2 = sig * peak / (sig + peak);
-            lin *= sig2 / max(sig, 1e-6);
+            /*
+             * 肩部压缩（2026-11-25 逐像素比对定案，替掉原来的"整幅等比缩放"）。
+             *
+             * 旧写法 sig2 = sig*peak/(sig+peak)、lin *= sig2/sig 是按画面最亮点整体缩，
+             * 结果中间调跟着一起暗（.15 上与官方客户端比对：削顶 0% 但均值只有 0.325，官方 0.701）。
+             * 现在只压超过拐点的部分：低于 knee 的原样保留，高于的部分指数平滑压到 peak 以内。
+             * peak 单位尼特（100 = 10000nit 刻度的 1.0）。
+             */
+            float peak = uHdr10Peak * 0.01;
+            float span = max(peak - knee, 1e-4);
+            vec3 ex = max(lin - knee, 0.0);
+            vec3 shoulder = knee + span * (1.0 - exp(-ex / span));
+            lin = mix(lin, shoulder, step(knee, lin));
             /* BT.2020 → BT.709（线性光） */
             vec3 r709 = vec3(
                 dot(lin, vec3( 1.6605, -0.5876, -0.0728)),
