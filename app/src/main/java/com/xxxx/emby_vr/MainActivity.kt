@@ -9993,7 +9993,17 @@ class MainActivity : ComponentActivity() {
             playClock?.start((selfOriginSec * 1_000_000.0).toLong())
             /* 放行这一刻才把写权交给这一路音频（时钟刚换过令牌） */
             ap.bindClockToken(playClock?.token ?: 0L)
+            /*
+             * 音频放行探针：这行打不出来 = 音频从没被放行（画面在播、声音全无的典型）。
+             * 后面的 running/已写帧数由 AudioPipe 自己打。
+             */
+            Log.i(
+                TAG,
+                "放行拍：时钟令牌=${playClock?.token} 音频已就绪=${audioPipe != null} " +
+                    "起点=${selfOriginSec}s",
+            )
             runCatching { ap.startNow() }
+                .onFailure { Log.e(TAG, "音频放行抛异常：${it.javaClass.simpleName} ${it.message}") }
             selfPipePhase = "PLAYING"
             selfPipeReleased = true
             /*

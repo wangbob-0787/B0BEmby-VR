@@ -369,6 +369,15 @@ class AudioPipe {
                 else -> isNativeOnlyCodec(mime)
             }
             if (useFfmpeg) {
+                /*
+                 * 全包档下 AudioPipe 自己没有解封装句柄，demuxCodec 一直是空串，
+                 * 直接把空名字传给 FFmpeg 会 rc=-2（找不到解码器）——冷起播和跳转都无声。
+                 * 从会话取名字（日志里的"解码器=aac"就是它），再不行从 mime 剥。
+                 */
+                if (demuxCodec.isBlank()) {
+                    demuxCodec = session?.audioCodecName?.takeIf { it.isNotBlank() }
+                        ?: mime.substringAfter('/', "").replace("mp4a-latm", "aac")
+                }
                 val d = FfmpegAudioDecoder(mime, fmt ?: MediaFormat())
                 /*
                  * 全包档没有可用的 MediaFormat：必须走 openWithParams 并带上音频 csd。
@@ -397,7 +406,17 @@ class AudioPipe {
                 /* Android 的 AAC 组件名是 audio/mp4a-latm；拿 audio/aac 会 NAME_NOT_FOUND(-2) */
                 val androidMime = if (mime.equals("audio/aac", true)) "audio/mp4a-latm" else mime
                 val c = MediaCodec.createDecoderByType(androidMime)
-                c.configure(fmt, null, null, 0)
+                /*
+                 * fmt 全包档下是 null（没有 MediaExtractor），configure(null) 直接抛
+                 * IllegalArgumentException —— 这是"退回系统解码器必炸"的原因。
+                 * 必须自己造格式，并把 csd（AAC 的 ASC）一并写进去。
+                 */
+                val sysFmt = fmt ?: MediaFormat.createAudioFormat(androidMime, sampleRate, channelCount).apply {
+                    val asc = session?.audioCsd()
+                        ?: aacAscFallback(demuxCodec.ifBlank { "aac" }, sampleRate, channelCount)
+                    if (asc != null) setByteBuffer("csd-0", java.nio.ByteBuffer.wrap(asc))
+                }
+                c.configure(sysFmt, null, null, 0)
                 c.start()
                 codec = c
                 decoderKind = "system"

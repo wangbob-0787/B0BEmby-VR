@@ -1289,7 +1289,12 @@ void main() {
              * 直接做 PQ 解码会越算越黑（.15 实测：值÷4 → 输出均值 0.008，等价全黑）。
              * 这里先补回增益再解码；uHdr10Gain 由调参 hdr10_gain 控制，默认 4。
              */
-            vec3 pq = clamp(c.rgb * uHdr10Gain, 0.0, 1.0);
+            /*
+             * 增益兜底：uniform 没被设上时 GLSL 里是 0，乘出来整幅全黑（r1733 实测）。
+             * 取不到有效值时按 4 倍走（10 位被按 8 位取的补偿量）。
+             */
+            float gain = uHdr10Gain > 0.5 ? uHdr10Gain : 4.0;
+            vec3 pq = clamp(c.rgb * gain, 0.0, 1.0);
             /* ST2084 EOTF：PQ 码值 → 归一化亮度（1.0 = 10000 nit），再换成 1.0 = 100 nit */
             vec3 n = pow(pq, vec3(1.0 / 78.84375));            /* m2 */
             vec3 num = max(n - 0.8359375, 0.0);                /* c1 */

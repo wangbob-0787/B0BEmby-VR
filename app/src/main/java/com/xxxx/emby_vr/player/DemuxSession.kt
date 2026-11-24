@@ -88,6 +88,9 @@ class DemuxSession(
 
     @Volatile
     var audioCodecName: String = ""
+    /* 断流重连计数与最后一次读到的位置（判"真结尾"用） */
+    private var reconnectTries = 0
+    @Volatile var lastReadPtsMs: Long = 0L
         private set
 
     @Volatile
@@ -255,7 +258,34 @@ class DemuxSession(
                 n < 0 -> {
                     when (n) {
                         -1 -> {
-                            Log.i(TAG, "读到结尾（时长=${durationMs / 1000}s）")
+                            /*
+                             * 读到"结尾"不等于真播完：全包档只有一条长连接，网盘/CDN
+                             * 在任意位置把连接收掉都会返回 EOF（实测 311.8s / 2767s 处就断）。
+                             * 这种情况必须自己接回来，否则画面停在最后一帧、时钟继续走、
+                             * 用户只看到黑屏且没有任何提示（豆豆 2026-11-24 定性）。
+                             */
+                            val posMs = lastReadPtsMs
+                            val nearEnd = durationMs > 0 && posMs >= durationMs - 5000
+                            if (!nearEnd && reconnectTries < 3) {
+                                reconnectTries++
+                                Log.w(
+                                    TAG,
+                                    "读到 EOF 但位置=${posMs}ms 距片尾=${durationMs - posMs}ms → 第 ${reconnectTries} 次重连",
+                                )
+                                val back = (posMs - 3000L).coerceAtLeast(0L)
+                                val r = runCatching { AudioDemuxNative.nativeDemuxSeek(handle, back) }.getOrDefault(-1)
+                                if (r >= 0) {
+                                    videoQueue.flush()
+                                    audioQueue.flush()
+                                    resetFirstPts()
+                                    waitMs = 0L
+                                    break
+                                }
+                                Log.e(TAG, "重连定位失败 rc=$r → 按网络错误收场")
+                                failAndClose("断流且无法重连")
+                                return
+                            }
+                            Log.i(TAG, "读到结尾（位置=${posMs}ms 时长=${durationMs / 1000}s）")
                             videoQueue.putEos()
                             audioQueue.putEos()
                             return
@@ -305,6 +335,7 @@ class DemuxSession(
                     waitMs = 0L
                     netRetry = 0
                     val ptsUs = if (meta[2] >= 0) meta[2] * 1000L else 0L
+                    if (ptsUs > 0L) lastReadPtsMs = ptsUs / 1000L
                     when (meta[0]) {
                         0 -> {
                             if (audioFirstPtsUs < 0L) audioFirstPtsUs = ptsUs
