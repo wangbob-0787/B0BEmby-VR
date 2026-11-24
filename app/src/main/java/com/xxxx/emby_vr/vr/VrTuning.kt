@@ -1047,6 +1047,10 @@ object VrTuning {
             VrNative.setRawVideo(it != 0)
             applied += "画面直出 $it"
         }
+        raw["dump_raw"]?.toIntOrNull()?.let {
+            VrNative.setDumpRaw(it != 0)
+            applied += "取样导出 $it"
+        }
         raw["dovi_renderer_reshape"]?.toIntOrNull()?.let {
             doviRendererReshape = it != 0
             VrNative.setDvRendererReshape(it != 0)

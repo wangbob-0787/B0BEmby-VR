@@ -70,6 +70,9 @@ object VrNative {
 
     fun setRawVideo(on: Boolean) = runCatching { nativeSetRawVideo(if (on) 1 else 0) }
 
+    /** 取样导出：视频层画完回读一次网格写日志（调参 dump_raw=1，全进程只做一次） */
+    fun setDumpRaw(on: Boolean) = runCatching { nativeSetDumpRaw(if (on) 1 else 0) }
+
     fun setDoviParamPath(path: String) = runCatching { nativeSetDoviParamPath(path) }
 
     /**

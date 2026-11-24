@@ -97,6 +97,13 @@ static std::atomic<int> gDvRendererReshape{0};
 static std::atomic<int> gDvStreamActive{0};
 /* 画面直出（定位用，2026-11-16）：跳过全部颜色处理与输出转换，直接吐取样值。 */
 std::atomic<int> gRawVideo{0};
+/* 取样导出：调参 dump_raw=1 时，视频层画完回读一次网格（全进程只做一次） */
+std::atomic<int> gDumpRawWanted{0};
+std::atomic<int> gDumpRawDone{0};
+/* 视频层累计绘制次数：dump 读到全 0 时用它区分"没画"和"画了但内容为 0" */
+std::atomic<int> gVideoDraws{0};
+std::atomic<int> gLastUseDelayed{-1};
+std::atomic<float> lastShownPtsForDump{0.f};
 static bool g_doviLogged = false;
 
 /*
@@ -508,6 +515,12 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetRawVideo(JNIEnv * /* env */,
                                                      jobject /* this */, jint on) {
     gRawVideo.store(on ? 1 : 0);
     LOGI_RAW("原始画面直出 → %d", on ? 1 : 0);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetDumpRaw(JNIEnv *, jclass, jint v) {
+    gDumpRawWanted.store(v ? 1 : 0);
+    LOGI_RAW("取样导出 → %d（视频层画完后回读一次网格）", v ? 1 : 0);
 }
 
 /* HDR10 走自管解码时，颜色由渲染层做（父亲 2026-11-23 定） */
@@ -6496,6 +6509,58 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
     }
 
     // 画完必须解绑 FBO，否则下一只眼/下一帧会画进同一个附件
+    /*
+     * 取样导出（豆豆 2026-11-24 定）：视频层画完、还没解绑帧缓冲时，按 32x18 网格
+     * 回读 576 个点，把"进颜色公式之前的真实取值"写进日志。
+     *
+     * 这是判定"取样是不是 0 / 是不是被压小 4 倍"的唯一直接证据：肉眼只能看黑白，
+     * 数值才能分清"纹理没内容"和"公式算错"。调参 dump_raw=1 生效，全进程只做一次。
+     */
+    if (videoLayerPass && gDumpRawWanted.load() != 0) {
+        /*
+         * 取样导出（豆豆 2026-11-24 定的口径）：
+         * - 按 (raw, hdr10) 四种组合各导一次，最多 4 次；同一组合不重复。
+         * - raw=1 打完整 576 点（"进公式前的值"）；raw=0 只打 stat（"最终输出"）。
+         * - 打之前先吃一次 glGetError，把错误码也带出去，避免读到错缓冲还以为取样是 0。
+         */
+        const int rawNow = gRawVideo.load();
+        const int hdrNow = gHdr10Active.load();
+        int slot = (rawNow ? 1 : 0) * 2 + (hdrNow ? 1 : 0);
+        if (gDumpRawDone & (1 << slot)) {
+            /* 这一组合已导过 */
+        } else {
+            gDumpRawDone |= (1 << slot);
+            GLenum preErr = glGetError();
+            const int gw = 32, gh = 18;
+            const int total = gw * gh;
+            std::vector<unsigned char> px(total * 4, 0);
+            const int vw = L.width, vh = L.height;
+            LOGI_RAW("RAWDUMP|begin|gw=%d|gh=%d|vp=%dx%d|hdr10=%d|useDelayed=%d|raw=%d|gain=%.3f|glErr=0x%x|draws=%d|ts=%.3f",
+                     gw, gh, vw, vh, hdrNow, gLastUseDelayed.load(), rawNow, 4.0f,
+                     (unsigned) preErr, gVideoDraws.load(), lastShownPtsForDump.load());
+            int cnt = 0;
+            long sum = 0; int mx = 0, mn = 255, dark = 0;
+            for (int j2 = 0; j2 < gh; ++j2) {
+                for (int i2 = 0; i2 < gw; ++i2) {
+                    int x = (int) ((i2 + 0.5f) * vw / gw);
+                    int y = (int) ((j2 + 0.5f) * vh / gh);
+                    unsigned char c4[4] = {0, 0, 0, 0};
+                    glReadPixels(x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, c4);
+                    int k = j2 * gw + i2;
+                    px[k * 4 + 0] = c4[0]; px[k * 4 + 1] = c4[1]; px[k * 4 + 2] = c4[2];
+                    if (rawNow) LOGI_RAW("RAWDUMP|p|%d|%d|%d|%d", k, c4[0], c4[1], c4[2]);
+                    int m = c4[0] > c4[1] ? (c4[0] > c4[2] ? c4[0] : c4[2]) : (c4[1] > c4[2] ? c4[1] : c4[2]);
+                    sum += m; if (m > mx) mx = m; if (m < mn) mn = m;
+                    if (c4[0] <= 2 && c4[1] <= 2 && c4[2] <= 2) ++dark;
+                    ++cnt;
+                }
+            }
+            LOGI_RAW("RAWDUMP|stat|raw=%d|hdr10=%d|mean=%.4f|max=%.4f|min=%.4f|darkPct=%.1f",
+                     rawNow, hdrNow, (double) sum / cnt / 255.0, mx / 255.0, mn / 255.0,
+                     100.0 * dark / cnt);
+            LOGI_RAW("RAWDUMP|end|count=%d", cnt);
+        }
+    }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     /*
@@ -8464,7 +8529,10 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
      */
     if (u.depthTex >= 0) glUniform1i(u.depthTex, 1);
     if (u.offsets >= 0) glUniform1i(u.offsets, 3);
-    if (u.useDelayed >= 0) glUniform1i(u.useDelayed, delayed ? 1 : 0);
+    if (u.useDelayed >= 0) {
+        glUniform1i(u.useDelayed, delayed ? 1 : 0);
+        if (videoLayerPass) gLastUseDelayed.store(delayed ? 1 : 0);
+    }
     if (u.delayed >= 0) {
         /* uDelayedTex 只有 B0B_RING 版有，而那一版一定是带着环里那一帧来画的 */
         glUniform1i(u.delayed, 4);
