@@ -1346,7 +1346,13 @@ void main() {
              */
             float y = dot(lin, vec3(0.2627, 0.6780, 0.0593));
             /* 高光去饱和：亮度超过 200 nit（desat 2 档，1.0=100nit 刻度）才往灰收 */
-            float over = max(y - uHdr10Knee, 1e-6) / max(y, 1e-6);
+            /*
+             * uHdr10Knee 以**尼特**填写（人读着直观），而这里的 y 是"每 100 尼特算 1"的刻度，
+             * 必须换算。漏了这一步时填 200/1400 都等于"永不到达"，高光一次都没被压过，
+             * 只有峰值在起作用 —— 这就是"怎么调都过曝、只是整体变暗"的原因（2026-11-25 逐像素比对定案）。
+             */
+            float knee = uHdr10Knee * 0.01;
+            float over = max(y - knee, 1e-6) / max(y, 1e-6);
             lin = mix(lin, vec3(y), over);
             /* mobius 压缩：按最大分量压，三通道同比缩放（色相守恒）；peak 单位尼特 */
             float sig = max(max(lin.r, lin.g), lin.b);
