@@ -8584,15 +8584,33 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
      * 实测证据（2026-11-24）：源纹理自身均值 0.34~0.46（探针 C），
      * 而主着色器"上色前"读到 0（探针 A）。
      */
-    if (u.uvScale >= 0 || u.uvBias >= 0) {
-        static int uvChkDone = 0;
-        if (uvChkDone < 3) {
+    {
+        /*
+         * 一次性诊断：把"这一趟到底用哪份着色器、采样窗口是多少、有没有改读环形缓冲、
+         * 纹理绑在哪个单元"全部打出来。用来区分三种可能：
+         *   ① 用了环版着色器且改读空环纹理（useDelayed=1）
+         *   ② 采样窗口是 0（uv 变换成 0,0，整幅只采一个角）
+         *   ③ 纹理单元被换（oesBind0 != tex）
+         */
+        static int progChkDone = 0;
+        if (progChkDone < 4 && videoLayerPass) {
             GLfloat sc[2] = {-999.f, -999.f}, bi[2] = {-999.f, -999.f};
             if (u.uvScale >= 0) glGetUniformfv(prog, u.uvScale, sc);
             if (u.uvBias >= 0) glGetUniformfv(prog, u.uvBias, bi);
-            LOGI_RAW("UVCHK|before|scale=%.3f,%.3f|bias=%.3f,%.3f|prog=%u",
-                     sc[0], sc[1], bi[0], bi[1], (unsigned) prog);
-            uvChkDone++;
+            GLint useDelayed = -1, texUnit = -1;
+            const GLint dl = glGetUniformLocation(prog, "uUseDelayed");
+            if (dl >= 0) glGetUniformiv(prog, dl, &useDelayed);
+            const GLint tl = glGetUniformLocation(prog, "uTexture");
+            if (tl >= 0) glGetUniformiv(prog, tl, &texUnit);
+            GLint bindOes = 0;
+            glActiveTexture(GL_TEXTURE0);
+            glGetIntegerv(GL_TEXTURE_BINDING_EXTERNAL_OES, &bindOes);
+            LOGI_RAW("PROGCHK|prog=%u|main=%u|ring=%u|scale=%.3f,%.3f|bias=%.3f,%.3f"
+                     "|useDelayed=%d|uTexUnit=%d|oesBind0=%u|tex=%u|locScale=%d",
+                     (unsigned) prog, (unsigned) c.program, (unsigned) c.ringProg,
+                     sc[0], sc[1], bi[0], bi[1], useDelayed, texUnit,
+                     (unsigned) bindOes, (unsigned) tex, u.uvScale);
+            progChkDone++;
         }
         if (u.uvScale >= 0) glUniform2f(u.uvScale, 1.f, 1.f);
         if (u.uvBias >= 0) glUniform2f(u.uvBias, 0.f, 0.f);
