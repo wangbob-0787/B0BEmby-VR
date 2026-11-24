@@ -846,6 +846,7 @@ uniform int uTestPattern;     // 1 = 用固定测试图替代视频纹理（黑�
 uniform int uRawVideo;        // 1 = 视频层直接吐原始取样值（定位画面变灰用，2026-11-16）
 uniform int uHdr10;           // 1 = HDR10 自管路：渲染层做 PQ→线性→压亮度→BT.2020→709
 uniform float uHdr10Gain;     // 纹理值补偿（10 位被按 8 位取时约需 4）
+uniform int uDumpRawPre;      // 1 = 把「上色前」的亮度写进 alpha（取样对照用，2026-11-24）
 /*
  * 杜比视界还原（2026-11-13）：内核把每帧参数拍平成 96 个 float，这里整段上传。
  * 布局：0=版本 1=通道数；之后每通道 26 个 —— 1 个分段数 + 8 个分段点 + 8×3 段系数。
@@ -1335,7 +1336,13 @@ void main() {
             r709 = clamp(r709, 0.0, 1.0);
             /* BT.709 编码 */
             vec3 enc = mix(4.5 * r709, 1.099 * pow(r709, vec3(0.45)) - 0.099, step(0.018, r709));
-            outColor = vec4(clamp(enc, 0.0, 1.0), 1.0);
+            /*
+             * alpha 在视频层不参与合成（这一层不透明），所以取样时借它把「上色前」的
+             * 输入亮度带出去：RGBA 一起读回，就能分别看到上色前后的量级。
+             * 平时恒为 1.0，不影响显示。
+             */
+            float preLum = clamp(dot(c.rgb, vec3(0.2627, 0.6780, 0.0593)), 0.0, 1.0);
+            outColor = vec4(clamp(enc, 0.0, 1.0), uDumpRawPre == 1 ? preLum : 1.0);
             return;
         }
         if (uDvReshape == 1 && uDv[0] > 1.5) {
@@ -2810,6 +2817,7 @@ struct QuadLocs {
     GLint dvReshape = -1, dvParams = -1;   // 杜比还原：开关 + 每帧参数（2026-11-13）
     GLint hdr10 = -1;                      // HDR10 自管路：渲染层做 PQ/色域（2026-11-23）
     GLint hdr10Gain = -1;                  // HDR10 纹理值补偿
+    GLint dumpRawPre = -1;                 // uDumpRawPre：把上色前的亮度写进 alpha
     GLint delayed = -1, useDelayed = -1;   // 只有 B0B_RING 版有
 };
 
@@ -2869,6 +2877,7 @@ void fillQuadLocs(GLuint prog, QuadLocs &u) {
     u.rawVideo = glGetUniformLocation(prog, "uRawVideo");
     u.hdr10 = glGetUniformLocation(prog, "uHdr10");
     u.hdr10Gain = glGetUniformLocation(prog, "uHdr10Gain");
+    u.dumpRawPre = glGetUniformLocation(prog, "uDumpRawPre");
     u.dvReshape = glGetUniformLocation(prog, "uDvReshape");
     u.dvParams = glGetUniformLocation(prog, "uDv");
     u.delayed = glGetUniformLocation(prog, "uDelayedTex");   // 只有 B0B_RING 版有
@@ -8401,6 +8410,8 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
      * dvLoadFromFile 按 mtime 判断要不要重读。
      */
     doviProbeShared();
+    /* 取样对照用：只在 dump_raw=1 时让 alpha 携带「上色前」的亮度（2026-11-24） */
+    if (u.dumpRawPre >= 0) glUniform1i(u.dumpRawPre, gDumpRaw.load() != 0 ? 1 : 0);
     if (u.dvReshape >= 0 && u.dvParams >= 0) {
         /*
          * 判据只看「有没有参数」和「开关开没开」。
@@ -8656,6 +8667,8 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
             const int gw = 3, gh = 3;
             float sum = 0.f;
             int mx = 0;
+            float preSum = 0.f;
+            int preMax = 0;
             for (int jj = 0; jj < gh; ++jj) {
                 for (int ii = 0; ii < gw; ++ii) {
                     int xx = (int) ((ii + 0.5f) * L.width / gw);
@@ -8665,12 +8678,16 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
                     int mm = c4[0] > c4[1] ? (c4[0] > c4[2] ? c4[0] : c4[2]) : (c4[1] > c4[2] ? c4[1] : c4[2]);
                     sum += mm / 255.f;
                     if (mm > mx) mx = mm;
-                    LOGI_RAW("RAWDOT|%d|%d|%d|%d|%d", jj * gw + ii, c4[0], c4[1], c4[2]);
+                    /* alpha = 上色前的输入亮度（uDumpRawPre 写进去的），与 RGB（上色后）成对读 */
+                    preSum += c4[3] / 255.f;
+                    if (c4[3] > preMax) preMax = c4[3];
+                    LOGI_RAW("RAWDOT|%d|out=%d,%d,%d|pre=%d", jj * gw + ii, c4[0], c4[1], c4[2], c4[3]);
                 }
             }
-            LOGI_RAW("RAWSTAT|n=%d|hdr10=%d|raw=%d|mean=%.4f|max=%.4f|vp=%dx%d|glErr=0x%x",
+            LOGI_RAW("RAWSTAT|n=%d|hdr10=%d|raw=%d|out=%.4f/%.4f|pre=%.4f/%.4f|vp=%dx%d|glErr=0x%x",
                      gDumpRawDone.load(), gHdr10Active.load(), gRawVideo.load(),
                      sum / (gw * gh), mx / 255.f,
+                     preSum / (gw * gh), preMax / 255.f,
                      L.width, L.height, (unsigned) glGetError());
         }
     }
