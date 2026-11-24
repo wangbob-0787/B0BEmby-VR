@@ -35,10 +35,10 @@ class DemuxSession(
         /** 最多提前读多少秒：网盘带宽远高于片源码率，不设上限会把 96MB 队列灌满，之后只能丢包 */
         private const val READ_AHEAD_SEC = 20.0
         /**
-         * 队列顶部留给关键帧的余量：4K 关键帧按 4MB 估，1.5 个约 6MB；这里留 12MB，
-         * 即使关键帧涨到 8MB 也塞得下。关键帧一旦放不进去就只能丢，画面直接碎一截。
+         * 队列顶部留给关键帧的余量：4K 关键帧按 4MB 估，1.5 个约 6MB，留 8MB 够放下两个。
+         * 关键帧一旦放不进去就只能丢，画面直接碎一截，所以这段余量不能省。
          */
-        private const val KEYFRAME_RESERVE_BYTES = 12 * 1024 * 1024
+        private const val KEYFRAME_RESERVE_BYTES = 8 * 1024 * 1024
     }
 
     /** 画面包（字节 + 时间戳微秒 + 是否关键帧） */
