@@ -217,6 +217,7 @@ class DemuxSession(
         var readCount = 0
         var rxVideo = 0
         var enqVideo = 0
+        var droppedVideo = 0L
         val meta = IntArray(5)
         var waitMs = 0L
         var netRetry = 0
@@ -365,9 +366,20 @@ class DemuxSession(
                              * 怀疑卡在队列写入而不是读网络（r1720 的读停滞看门狗没触发）。
                              */
                             val putT0 = System.currentTimeMillis()
-                            val putOk = videoQueue.put(SampleQueue.Packet(data, n, ptsUs, key))
+                            /*
+                             * 视频用非阻塞投递（2026-11-25 豆豆定案）：这条读线程同时喂画面/声音/字幕，
+                             * 在视频队列上等腾空会让声音一起饿死，而声音饿死的直接后果是
+                             * "停写 -> 画面一起停 -> 更没人取视频包"的自锁。宁可丢帧，不许卡住读线程。
+                             */
+                            val putOk = videoQueue.offer(SampleQueue.Packet(data, n, ptsUs, key))
                             val putMs = System.currentTimeMillis() - putT0
-                            if (!putOk) break
+                            if (!putOk) {
+                                droppedVideo++
+                                if (droppedVideo % 50 == 1) {
+                                    Log.w(TAG, "视频队列满 → 丢弃 $droppedVideo 包（不阻塞读线程）")
+                                }
+                                continue
+                            }
                             enqVideo++
                             if (putMs > 200) Log.w(TAG, "写视频队列耗时 ${putMs}ms（队列满在等）")
                         }

@@ -43,6 +43,8 @@ class SampleQueue(private val maxBytes: Int) {
         private set
 
     /** 塞一帧；队列满了就等（ffplay 的 SDL_CondWait 等价） */
+    private var droppedFull = 0L
+
     fun put(packet: Packet): Boolean {
         synchronized(lock) {
             while (!aborted && bytes + packet.size > maxBytes && deque.isNotEmpty()) {
@@ -64,6 +66,34 @@ class SampleQueue(private val maxBytes: Int) {
             return true
         }
     }
+
+    /**
+     * 非阻塞投递：满了就丢这一包并返回 false（不等待）。
+     *
+     * 读线程是"画面/声音/字幕"共用的那一条连接，一旦在这里等队列腾空，
+     * 三个流一起停 —— 音频拿不到包就永远写不进去，进而把画面也按住（2026-11-25 豆豆定案）。
+     * 视频这类可丢流用这个入口：宁可丢一帧，不许卡住整条读线程。
+     */
+    fun offer(packet: Packet): Boolean {
+        synchronized(lock) {
+            if (aborted) {
+                droppedAfterAbort++
+                return false
+            }
+            if (bytes + packet.size > maxBytes && deque.isNotEmpty()) {
+                droppedFull++
+                return false
+            }
+            deque.addLast(packet)
+            bytes += packet.size
+            if (packet.ptsUs > lastPtsUs) lastPtsUs = packet.ptsUs
+            lock.notifyAll()
+            return true
+        }
+    }
+
+    /** 队列满时丢掉的包数（健康行用） */
+    fun droppedFullCount(): Long = synchronized(lock) { droppedFull }
 
     /** 取一帧；空了就等。返回 null = 结束或中止 */
     fun get(): Packet? {
