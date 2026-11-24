@@ -442,9 +442,7 @@ class VideoPipe {
          */
         runCatching {
             val hdr10 = com.xxxx.emby_vr.player.PlaybackFlags.hdr10Source &&
-                !com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource &&
-                /* 调参 hdr10_shader=0 时不许在这里把它盖回 1（2026-11-24 实测被覆盖过） */
-                com.xxxx.emby_vr.vr.VrTuning.hdr10ShaderOn
+                !com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource
             com.xxxx.emby_vr.vr.VrNative.setHdr10StreamActive(hdr10)
         }
         session = demuxSession

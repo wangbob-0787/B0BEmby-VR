@@ -97,7 +97,6 @@ static std::atomic<int> gDvRendererReshape{0};
 static std::atomic<int> gDvStreamActive{0};
 /* 画面直出（定位用，2026-11-16）：跳过全部颜色处理与输出转换，直接吐取样值。 */
 std::atomic<int> gRawVideo{0};
-std::atomic<int> gMiniOn{0};   // 1 = 视频层用 HDR10 最小着色器（单采样器，调参 hdr10_mini）
 /* 取样导出：调参 dump_raw=1 时，视频层画完回读中心点与网格均值，写一行日志 */
 static std::atomic<int> gDumpRaw{0};
 static std::atomic<int> gDumpRawDone{0};
@@ -520,17 +519,8 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetDumpRaw(JNIEnv *, jclass, jint v) {
     LOGI_RAW("取样导出 → %d", v ? 1 : 0);
 }
 
-/* HDR10 最小着色器开关（调参 hdr10_mini）：只影响视频层 2D 这一种组合 */
-extern "C" void setHdr10Mini(int on) { gMiniOn.store(on ? 1 : 0); }
-
 /* HDR10 走自管解码时，颜色由渲染层做（父亲 2026-11-23 定） */
 static std::atomic<int> gHdr10Active{0};
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetHdr10Mini(JNIEnv * /* env */, jobject /* this */,
-                                                      jint on) {
-    setHdr10Mini((int) on);
-}
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetHdr10StreamActive(JNIEnv * /* env */,
@@ -1049,16 +1039,6 @@ vec2 warpedXvr(vec2 p, float eye) {
 void main() {
     vec4 outColor;
     /*
-     * 干净一刀（父亲 2026-11-24，dump_raw=1 时 uDumpRawPre=9 触发）：
-     * 在最前面直接用原始 vUv 采样并输出，绕开颜色窗口、分支、公式、
-     * 画面调整的每一步。只回答一个问题：主程序到底能不能采到这张纹理。
-     * 有画面 = 采样正常，问题在后面的处理；全黑 = 采样本身返回 0。
-     */
-    if (uDumpRawPre == 9) {
-        outColor = vec4(SAMPLE_SRC(vUv).rgb, 1.0);
-        return;
-    }
-    /*
      * 纹理采样窗口（网页视频那块画面）；测试图与圆点仍用原始 vUv，不受影响。
      *
      * 2D→3D 的视差在**窗口坐标里**先加、再套 uUvScale/uUvBias ——
@@ -1362,18 +1342,9 @@ void main() {
              * 与同一帧输出的 RGB（= 上色后）成对，就能离线按同一公式复算核对。
              * 平时恒为 1.0，不影响显示。
              */
-            /*
-             * 分阶段带值（父亲 2026-11-24）：1/2/3 = 上色前 R/G/B，4 = 乘完增益，
-             * 5 = 压完亮度的线性值，6 = 最终编码输出。相邻六帧各带一项，
-             * 就能把整条 HDR 计算链重建出来，看它在哪一步归零。
-             */
-            float preC = 0.0;
-            if (uDumpRawPre == 1) preC = c.rgb.r;
-            else if (uDumpRawPre == 2) preC = c.rgb.g;
-            else if (uDumpRawPre == 3) preC = c.rgb.b;
-            else if (uDumpRawPre == 4) preC = pq.r;
-            else if (uDumpRawPre == 5) preC = r709.r;
-            else if (uDumpRawPre == 6) preC = enc.r;
+            float preC = uDumpRawPre == 1 ? c.rgb.r
+                       : (uDumpRawPre == 2 ? c.rgb.g
+                       : (uDumpRawPre == 3 ? c.rgb.b : 0.0));
             outColor = vec4(clamp(enc, 0.0, 1.0), uDumpRawPre != 0 ? preC : 1.0);
             return;
         }
@@ -8292,61 +8263,6 @@ void main() {
  * 内容变了就把交换链每张图都写成新内容（连画几张），之后内容不变才能安全跳过。
  * 任何一张没写成（acquire 失败）→ 关掉跳过，退回每帧照画，避免出现旧内容导致的抖动。
  */
-/*
- * HDR10 最小着色器（父亲 2026-11-24 提议）：只保留画面一个采样器 + HDR10 公式。
- *
- * 动机：主着色器除画面外还挂着深度图、偏移表两个采样器。Adreno 上多采样器
- * 单元冲突会让整次采样无效（历史坑：整层黑）。去掉它们后若画面出现，
- * 就说明是"多采样器"这一条；仍黑则与它无关。调参 hdr10_mini=1 才启用。
- */
-static GLuint gMiniProg = 0;
-static QuadLocs gMiniU;
-static const char *kMiniFs = R"(#version 300 es
-#extension GL_OES_EGL_image_external_essl3 : require
-precision highp float;
-in vec2 vUv;
-uniform samplerExternalOES uTexture;
-uniform float uHdr10Gain;
-uniform vec2 uUvScale;
-uniform vec2 uUvBias;
-out vec4 fragColor;
-void main() {
-    vec3 c = texture(uTexture, vUv * uUvScale + uUvBias).rgb;
-    float gain = uHdr10Gain > 0.5 ? uHdr10Gain : 1.0;
-    vec3 pq = clamp(c * gain, 0.0, 1.0);
-    vec3 n = pow(pq, vec3(1.0 / 78.84375));
-    vec3 num = max(n - 0.8359375, 0.0);
-    vec3 den = max(18.8515625 - 18.6875 * n, 1e-6);
-    vec3 lq = pow(num / den, vec3(1.0 / 0.1593017578));
-    vec3 lin = lq * 100.0;
-    float y = dot(lin, vec3(0.2627, 0.6780, 0.0593));
-    float over = max(y - 200.0, 1e-6) / max(y, 1e-6);
-    lin = mix(lin, vec3(y), over);
-    float sig = max(max(lin.r, lin.g), lin.b);
-    float peak = 52.0;
-    float sig2 = sig * peak / (sig + peak);
-    lin *= sig2 / max(sig, 1e-6);
-    vec3 r709 = vec3(dot(lin, vec3( 1.6605, -0.5876, -0.0728)),
-                     dot(lin, vec3(-0.1246,  1.1329, -0.0083)),
-                     dot(lin, vec3(-0.0182, -0.1006,  1.1187)));
-    r709 = clamp(r709, 0.0, 1.0);
-    vec3 enc = mix(4.5 * r709, 1.099 * pow(r709, vec3(0.45)) - 0.099, step(0.018, r709));
-    fragColor = vec4(clamp(enc, 0.0, 1.0), 1.0);
-}
-)";
-
-static GLuint ensureMiniProg() {
-    if (gMiniProg != 0) return gMiniProg;
-    gMiniProg = buildProgramWithSampler(kQuadVs, kMiniFs, "samplerExternalOES");
-    if (gMiniProg != 0) {
-        gMiniU = QuadLocs{};
-        fillQuadLocs(gMiniProg, gMiniU);
-        if (gMiniU.tex >= 0) glUseProgram(gMiniProg), glUniform1i(gMiniU.tex, 0);
-        VLOGI("HDR10 最小着色器就绪（单采样器）");
-    }
-    return gMiniProg;
-}
-
 bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
                      bool videoLayerPass, bool skipDrawIfWritten = false,
                      int eyeIndex = -1, const StereoSrc *src = nullptr) {
@@ -8360,13 +8276,8 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
      */
     ensurePlaceholder(c);   // 不做视差的绘制也要给采样器单元一个合法绑定
     const bool delayed = src != nullptr && src->colorTex != 0 && c.ringProg != 0;
-    /*
-     * 最小着色器只用于「视频层 + 2D + HDR10 + 没开环」这一种组合，其余一律走主程序。
-     */
-    const bool useMini = videoLayerPass && !delayed && videoLayerPass && gMiniOn.load() != 0 &&
-                         gHdr10Active.load() != 0 && c.depthOn == 0 && ensureMiniProg() != 0;
-    const GLuint prog = useMini ? gMiniProg : (delayed ? c.ringProg : c.program);
-    const QuadLocs &u = useMini ? gMiniU : (delayed ? c.ringU : c.quadU);
+    const GLuint prog = delayed ? c.ringProg : c.program;
+    const QuadLocs &u = delayed ? c.ringU : c.quadU;
 
     uint32_t idx = 0;
     if (!acquireWritableImage(c, L, &idx, videoLayerPass)) return false;
@@ -8509,13 +8420,7 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
      * 取样对照（2026-11-24）：dump_raw=1 时，alpha 按轮次分别携带「上色前」的 R/G/B。
      * alpha 在视频层不参与合成，所以这样带值不影响显示。
      */
-    /* 第 0 趟用 9（最前端直采，干净一刀），之后 1..6 分别带出上色链各阶段 */
-    /* 只在视频层生效：这组诊断对海报墙/控制条等层必须完全不介入（否则它们会被直采分支接管，整片黑） */
-    const int rawPreCh = (gDumpRaw.load() != 0 && videoLayerPass)
-                                 ? ((gDumpRawDone.load() == 0)
-                                            ? 9
-                                            : (1 + ((gDumpRawDone.load() - 1) % 6)))
-                                 : 0;
+    const int rawPreCh = (gDumpRaw.load() != 0) ? (1 + (gDumpRawDone.load() % 3)) : 0;
     if (u.dumpRawPre >= 0) glUniform1i(u.dumpRawPre, rawPreCh);
     if (u.dvReshape >= 0 && u.dvParams >= 0) {
         /*
@@ -8860,7 +8765,7 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
      * 组与组之间隔约 10 秒 —— 起播初期可能还在等关键帧，隔十秒再采能把"当时到底有没有画面"分开看。
      */
     if (gDumpRaw.load() != 0 && videoLayerPass && gHdr10Active.load() != 0 &&
-        gDumpRawDone.load() < 19) {
+        gDumpRawDone.load() < 9) {
         static int rawTick = 0;
         static int rawLastTick = -1000000;
         ++rawTick;
@@ -8871,18 +8776,6 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
         if (rawTick - rawLastTick >= rawNeed) {
             rawLastTick = rawTick;
             gDumpRawDone.fetch_add(1);
-            /* 通道名：9=最前端直采，1..6=上色链各阶段（原来用嵌套三目，括号漏了一个直接编不过） */
-            auto chName = [](int ch) -> const char * {
-                switch (ch) {
-                    case 9: return "direct";
-                    case 1: return "inR";
-                    case 2: return "inG";
-                    case 3: return "inB";
-                    case 4: return "pqR";
-                    case 5: return "linR";
-                    default: return "encR";
-                }
-            };
 
             /*
              * 采样点 C：源纹理本身（链路第 4 步）。
@@ -9062,12 +8955,12 @@ void main() { oColor = vec4(texture(uTexture, vUv).rgb, 1.0); }
                     if (c4[3] > preMax) preMax = c4[3];
                     LOGI_RAW("RAWDOT|%d|out=%d,%d,%d|pre%s=%d", jj * gw + ii,
                              c4[0], c4[1], c4[2],
-                             chName(rawPreCh), c4[3]);
+                             rawPreCh == 1 ? "R" : (rawPreCh == 2 ? "G" : "B"), c4[3]);
                 }
             }
             LOGI_RAW("RAWSTAT|n=%d|grp=%d|ch=%s|hdr10=%d|raw=%d|texUpd=%d|out=%.4f/%.4f|pre=%.4f/%.4f|vp=%dx%d|glErr=0x%x",
                      gDumpRawDone.load(), (gDumpRawDone.load() - 1) / 3 + 1,
-                     chName(rawPreCh),
+                     rawPreCh == 1 ? "R" : (rawPreCh == 2 ? "G" : "B"),
                      gHdr10Active.load(), gRawVideo.load(), gVideoTexUpdates.load(),
                      sum / (gw * gh), mx / 255.f,
                      preSum / (gw * gh), preMax / 255.f,
