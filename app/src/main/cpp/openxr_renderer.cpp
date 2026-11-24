@@ -8622,6 +8622,7 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
             glGetIntegerv(GL_TEXTURE_BINDING_EXTERNAL_OES, &bindOes);
             /* 主程序内部各开关的实际值：决定"采不采纹理、走哪条公式分支" */
             GLint vUseTex = -9, vHdr10 = -9, vDv = -9, vDown = -9, vTest = -9, vDepthOn = -9;
+            GLint vRawVideo = -9;
             GLfloat vInset = -9.f, vGain = -9.f;
             {
                 GLint l;
@@ -8639,8 +8640,14 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
                 if (l >= 0) glGetUniformiv(prog, l, &vDepthOn);
                 l = glGetUniformLocation(prog, "uSrcInset");
                 if (l >= 0) glGetUniformfv(prog, l, &vInset);
+                l = glGetUniformLocation(prog, "uRawVideo");
+                if (l >= 0) glGetUniformiv(prog, l, &vRawVideo);
+                else vRawVideo = -1;
                 l = glGetUniformLocation(prog, "uHdr10Gain");
                 if (l >= 0) glGetUniformfv(prog, l, &vGain);
+                else vGain = (GLfloat) l;   /* 负数：location 本身，说明取不到 */
+                LOGI_RAW("UALOC|rawVideoLoc=%d|gainLoc=%d",
+                         glGetUniformLocation(prog, "uRawVideo"), l);
             }
             GLint dv0 = -9;
             {
@@ -8654,11 +8661,11 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
             LOGI_RAW("PROGCHK|prog=%u|main=%u|ring=%u|scale=%.3f,%.3f|bias=%.3f,%.3f"
                      "|useDelayed=%d|uTexUnit=%d|oesBind0=%u|tex=%u|locScale=%d"
                      "|useTex=%d|hdr10=%d|dvReshape=%d|dv0=%d|down=%d|test=%d|depthOn=%d"
-                     "|srcInset=%.4f|gain=%.2f",
+                     "|srcInset=%.4f|gain=%.2f|rawVideo=%d",
                      (unsigned) prog, (unsigned) c.program, (unsigned) c.ringProg,
                      sc[0], sc[1], bi[0], bi[1], useDelayed, texUnit,
                      (unsigned) bindOes, (unsigned) tex, u.uvScale,
-                     vUseTex, vHdr10, vDv, dv0, vDown, vTest, vDepthOn, vInset, vGain);
+                     vUseTex, vHdr10, vDv, dv0, vDown, vTest, vDepthOn, vInset, vGain, vRawVideo);
             progChkDone++;
         }
         if (u.uvScale >= 0) glUniform2f(u.uvScale, 1.f, 1.f);
