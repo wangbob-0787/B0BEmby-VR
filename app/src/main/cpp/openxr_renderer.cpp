@@ -1305,7 +1305,7 @@ void main() {
              * 增益兜底：uniform 没被设上时 GLSL 里是 0，乘出来整幅全黑（r1733 实测）。
              * 取不到有效值时按 4 倍走（10 位被按 8 位取的补偿量）。
              */
-            float gain = uHdr10Gain > 0.5 ? uHdr10Gain : 4.0;
+            float gain = uHdr10Gain > 0.5 ? uHdr10Gain : 1.0;
             vec3 pq = clamp(c.rgb * gain, 0.0, 1.0);
             /* ST2084 EOTF：PQ 码值 → 归一化亮度（1.0 = 10000 nit），再换成 1.0 = 100 nit */
             vec3 n = pow(pq, vec3(1.0 / 78.84375));            /* m2 */
@@ -1347,8 +1347,16 @@ void main() {
             float preC = uDumpRawPre == 1 ? c.rgb.r
                        : (uDumpRawPre == 2 ? c.rgb.g
                        : (uDumpRawPre == 3 ? c.rgb.b : 0.0));
-            /* 同上：HDR10 分支提前返回，必须自己写输出 */
-            fragColor = vec4(clamp(enc, 0.0, 1.0), uDumpRawPre != 0 ? preC : 1.0);
+            /*
+             * 同上：HDR10 分支提前返回，必须自己写输出。
+             * 另外这里要把 BT.709 编码值线性化再交给 sRGB 交换链 —— 末尾统一输出那条路
+             * 就是"显示空间值 → 线性化 → 写 sRGB"；不线性化等于编码两遍，画面整体偏亮。
+             */
+            vec3 disp = clamp(enc, 0.0, 1.0);
+            vec3 linOut = mix(disp / 12.92,
+                              pow((disp + 0.055) / 1.055, vec3(2.4)),
+                              step(0.04045, disp));
+            fragColor = vec4(linOut, uDumpRawPre != 0 ? preC : 1.0);
             return;
         }
         if (uDvReshape == 1 && uDv[0] > 1.5) {
@@ -8462,7 +8470,8 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
             static float hdr10Gain = -1.f;
             if (hdr10Gain < 0.f) {
                 const char *g = getenv("B0B_HDR10_GAIN");
-                hdr10Gain = g ? (float) atof(g) : 4.f;
+                /* 默认 1：纹理里已经是完整 PQ 码值，再乘 4 会整幅顶白（.15 核显实测） */
+                hdr10Gain = g ? (float) atof(g) : 1.f;
                 if (hdr10Gain <= 0.f) hdr10Gain = 1.f;
                 LOGI_RAW("HDR10 纹理增益 → %.2f", hdr10Gain);
             }
