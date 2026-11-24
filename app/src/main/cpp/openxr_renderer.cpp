@@ -8800,6 +8800,18 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
         if (rawTick - rawLastTick >= rawNeed) {
             rawLastTick = rawTick;
             gDumpRawDone.fetch_add(1);
+            /* 通道名：9=最前端直采，1..6=上色链各阶段（原来用嵌套三目，括号漏了一个直接编不过） */
+            auto chName = [](int ch) -> const char * {
+                switch (ch) {
+                    case 9: return "direct";
+                    case 1: return "inR";
+                    case 2: return "inG";
+                    case 3: return "inB";
+                    case 4: return "pqR";
+                    case 5: return "linR";
+                    default: return "encR";
+                }
+            };
 
             /*
              * 采样点 C：源纹理本身（链路第 4 步）。
@@ -8979,16 +8991,12 @@ void main() { oColor = vec4(texture(uTexture, vUv).rgb, 1.0); }
                     if (c4[3] > preMax) preMax = c4[3];
                     LOGI_RAW("RAWDOT|%d|out=%d,%d,%d|pre%s=%d", jj * gw + ii,
                              c4[0], c4[1], c4[2],
-                             rawPreCh == 9 ? "direct" : (rawPreCh == 1 ? "inR" : (rawPreCh == 2 ? "inG"
-                                 : (rawPreCh == 3 ? "inB" : (rawPreCh == 4 ? "pqR"
-                                 : (rawPreCh == 5 ? "linR" : "encR")))), c4[3]);
+                             chName(rawPreCh), c4[3]);
                 }
             }
             LOGI_RAW("RAWSTAT|n=%d|grp=%d|ch=%s|hdr10=%d|raw=%d|texUpd=%d|out=%.4f/%.4f|pre=%.4f/%.4f|vp=%dx%d|glErr=0x%x",
                      gDumpRawDone.load(), (gDumpRawDone.load() - 1) / 3 + 1,
-                     rawPreCh == 9 ? "direct" : (rawPreCh == 1 ? "inR" : (rawPreCh == 2 ? "inG"
-                                    : (rawPreCh == 3 ? "inB" : (rawPreCh == 4 ? "pqR"
-                                    : (rawPreCh == 5 ? "linR" : "encR")))),
+                     chName(rawPreCh),
                      gHdr10Active.load(), gRawVideo.load(), gVideoTexUpdates.load(),
                      sum / (gw * gh), mx / 255.f,
                      preSum / (gw * gh), preMax / 255.f,
