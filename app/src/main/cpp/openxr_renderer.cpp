@@ -11361,7 +11361,6 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetVideoSize(JNIEnv *env, jobject /* th
  *   · 系统播放器路径（Profile 8.x 等）：实测只要 1.8~2.4ms，完全吃得下更大的层。
  * 所以由 Java 侧在起播时按实际路径下发，而不是全局一个值。
  */
-extern "C" JNIEXPORT void JNICALL
 extern "C" JNIEXPORT jint JNICALL
 Java_com_xxxx_emby_1vr_vr_VrNative_nativeVideoLayerWidth(JNIEnv * /* env */, jobject /* this */) {
     return (jint) gVideoLayerRealW.load();
