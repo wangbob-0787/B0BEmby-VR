@@ -34,6 +34,8 @@ class DemuxSession(
         private const val AUDIO_QUEUE_BYTES = 8 * 1024 * 1024
         /** 最多提前读多少秒：网盘带宽远高于片源码率，不设上限会把 96MB 队列灌满，之后只能丢包 */
         private const val READ_AHEAD_SEC = 20.0
+        /** 队列顶部留给一个关键帧的余量：4K 关键帧一包 2~4MB，留 8MB 才塞得下，不会顶到上限后被迫丢包 */
+        private const val KEYFRAME_RESERVE_BYTES = 8 * 1024 * 1024
     }
 
     /** 画面包（字节 + 时间戳微秒 + 是否关键帧） */
@@ -255,6 +257,17 @@ class DemuxSession(
              * 不限速时网盘会把 96MB 队列十几秒灌满，满了只能丢包，画面就碎；
              * 音视频同一条流一起前进，保持这段提前量，声音不会被单独饿死。
              */
+            /*
+             * 字节水位：留出一个关键帧的余量就停止读，绝不贴到 96MB 上限。
+             * 普通帧几十 KB、关键帧几 MB，只按时间限速时高码率片会先撞字节上限，
+             * 那时读出来的关键帧没处放，只能丢 —— 这就是花屏的来源。
+             * 这里停在"上限 − 8MB"，下一个关键帧一定有地方放；解码慢时读线程就等，不丢。
+             */
+            while (running.get() &&
+                videoQueue.sizeBytes() > VIDEO_QUEUE_BYTES - KEYFRAME_RESERVE_BYTES
+            ) {
+                Thread.sleep(10)
+            }
             if (paceBasePtsMs >= 0L && lastReadPtsMs > 0L) {
                 val readAheadSec = (lastReadPtsMs - paceBasePtsMs) / 1000.0 -
                     (android.os.SystemClock.elapsedRealtime() - paceBaseWallMs) / 1000.0
