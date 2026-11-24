@@ -34,8 +34,11 @@ class DemuxSession(
         private const val AUDIO_QUEUE_BYTES = 8 * 1024 * 1024
         /** 最多提前读多少秒：网盘带宽远高于片源码率，不设上限会把 96MB 队列灌满，之后只能丢包 */
         private const val READ_AHEAD_SEC = 20.0
-        /** 队列顶部留给一个关键帧的余量：4K 关键帧一包 2~4MB，留 8MB 才塞得下，不会顶到上限后被迫丢包 */
-        private const val KEYFRAME_RESERVE_BYTES = 8 * 1024 * 1024
+        /**
+         * 队列顶部留给关键帧的余量：4K 关键帧按 4MB 估，1.5 个约 6MB；这里留 12MB，
+         * 即使关键帧涨到 8MB 也塞得下。关键帧一旦放不进去就只能丢，画面直接碎一截。
+         */
+        private const val KEYFRAME_RESERVE_BYTES = 12 * 1024 * 1024
     }
 
     /** 画面包（字节 + 时间戳微秒 + 是否关键帧） */
@@ -416,8 +419,13 @@ class DemuxSession(
                             if (!dropUntilKey || key) {
                                 if (key) dropUntilKey = false
                                 putOk = videoQueue.offer(packet)
+                                /*
+                                 * 关键帧不许丢：放不进去就一直等到解码腾出位置（字节水位已给它留了余量，
+                                 * 正常立即成功，只有关键帧异常大时才需要等）。
+                                 * 普通帧最多等 300ms，等不到就丢到下一个关键帧，解码器不会拿着缺参考帧的画面继续解。
+                                 */
                                 var waitedMs = 0L
-                                while (!putOk && running.get() && waitedMs < 300L) {
+                                while (!putOk && running.get() && (key || waitedMs < 300L)) {
                                     Thread.sleep(10)
                                     waitedMs += 10L
                                     putOk = videoQueue.offer(packet)
