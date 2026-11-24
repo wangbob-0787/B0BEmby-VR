@@ -121,6 +121,10 @@ object VrTuning {
     @Volatile
     var videoSurfaceMaxW: Int = 0
 
+    /** HDR10 高光压缩：从多少尼特开始压、压到多少尼特（调参 hdr10_knee / hdr10_peak） */
+    @Volatile var hdr10Knee: Float = 200f
+    @Volatile var hdr10Peak: Float = 52f
+
     /**
      * 是否允许「片源没色彩标记且 10 位 ≥1080p」时推断成 HDR10（2026-11-16）。
      *
@@ -760,6 +764,16 @@ object VrTuning {
     /** 界面 / 网页层开关：起播与轮询共用一份解析，避免两处漂移 */
     private fun applyFlags(raw: Map<String, String>): List<String> {
         val applied = mutableListOf<String>()
+        run {
+            val knee = raw["hdr10_knee"]?.toFloatOrNull()
+            val peak = raw["hdr10_peak"]?.toFloatOrNull()
+            if (knee != null || peak != null) {
+                if (knee != null) hdr10Knee = knee
+                if (peak != null) hdr10Peak = peak
+                VrNative.setHdr10Tuning(hdr10Knee, hdr10Peak)
+                applied += "HDR10 高光 起压${hdr10Knee} 峰值${hdr10Peak}"
+            }
+        }
         raw["dv_off"]?.toIntOrNull()?.let {
             if (it != dvOff) {
                 dvOff = it

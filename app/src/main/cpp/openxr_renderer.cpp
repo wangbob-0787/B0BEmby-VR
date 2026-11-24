@@ -97,6 +97,9 @@ static std::atomic<int> gDvRendererReshape{0};
 static std::atomic<int> gDvStreamActive{0};
 /* 画面直出（定位用，2026-11-16）：跳过全部颜色处理与输出转换，直接吐取样值。 */
 std::atomic<int> gRawVideo{0};
+/* HDR10 高光压缩的可调项（调参 hdr10_knee / hdr10_peak）：改文件即生效，不用重编 */
+std::atomic<float> gHdr10Knee{200.f};   // 从多少尼特开始压高光
+std::atomic<float> gHdr10Peak{52.f};    // 压到多少尼特（屏幕目标峰值）
 /* 取样导出：调参 dump_raw=1 时，视频层画完回读中心点与网格均值，写一行日志 */
 static std::atomic<int> gDumpRaw{0};
 static std::atomic<int> gDumpRawDone{0};
@@ -519,8 +522,20 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetDumpRaw(JNIEnv *, jclass, jint v) {
     LOGI_RAW("取样导出 → %d", v ? 1 : 0);
 }
 
+/* HDR10 高光压缩的可调项（调参 hdr10_knee / hdr10_peak） */
+extern "C" void setHdr10Tuning(float knee, float peak) {
+    if (knee > 1.f) gHdr10Knee.store(knee);
+    if (peak > 1.f) gHdr10Peak.store(peak);
+}
+
 /* HDR10 走自管解码时，颜色由渲染层做（父亲 2026-11-23 定） */
 static std::atomic<int> gHdr10Active{0};
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetHdr10Tuning(JNIEnv * /* env */, jobject /* this */,
+                                                        jfloat knee, jfloat peak) {
+    setHdr10Tuning((float) knee, (float) peak);
+}
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetHdr10StreamActive(JNIEnv * /* env */,
@@ -846,6 +861,8 @@ uniform int uTestPattern;     // 1 = 用固定测试图替代视频纹理（黑�
 uniform int uRawVideo;        // 1 = 视频层直接吐原始取样值（定位画面变灰用，2026-11-16）
 uniform int uHdr10;           // 1 = HDR10 自管路：渲染层做 PQ→线性→压亮度→BT.2020→709
 uniform float uHdr10Gain;     // 纹理值补偿（10 位被按 8 位取时约需 4）
+uniform float uHdr10Knee;     // 高光起压点（尼特）
+uniform float uHdr10Peak;     // 目标峰值（尼特）
 uniform int uDumpRawPre;      // 1 = 把「上色前」的亮度写进 alpha（取样对照用，2026-11-24）
 /*
  * 杜比视界还原（2026-11-13）：内核把每帧参数拍平成 96 个 float，这里整段上传。
@@ -1323,11 +1340,11 @@ void main() {
              */
             float y = dot(lin, vec3(0.2627, 0.6780, 0.0593));
             /* 高光去饱和：亮度超过 200 nit（desat 2 档，1.0=100nit 刻度）才往灰收 */
-            float over = max(y - 200.0, 1e-6) / max(y, 1e-6);
+            float over = max(y - uHdr10Knee, 1e-6) / max(y, 1e-6);
             lin = mix(lin, vec3(y), over);
             /* mobius 压缩：按最大分量压，三通道同比缩放（色相守恒）；peak 单位尼特 */
             float sig = max(max(lin.r, lin.g), lin.b);
-            float peak = 52.0;
+            float peak = uHdr10Peak;
             float sig2 = sig * peak / (sig + peak);
             lin *= sig2 / max(sig, 1e-6);
             /* BT.2020 → BT.709（线性光） */
@@ -2831,6 +2848,8 @@ struct QuadLocs {
     GLint dvReshape = -1, dvParams = -1;   // 杜比还原：开关 + 每帧参数（2026-11-13）
     GLint hdr10 = -1;                      // HDR10 自管路：渲染层做 PQ/色域（2026-11-23）
     GLint hdr10Gain = -1;                  // HDR10 纹理值补偿
+    GLint hdr10Knee = -1;                  // 高光起压点
+    GLint hdr10Peak = -1;                  // 目标峰值
     GLint dumpRawPre = -1;                 // uDumpRawPre：把上色前的亮度写进 alpha
     GLint delayed = -1, useDelayed = -1;   // 只有 B0B_RING 版有
 };
@@ -2891,6 +2910,8 @@ void fillQuadLocs(GLuint prog, QuadLocs &u) {
     u.rawVideo = glGetUniformLocation(prog, "uRawVideo");
     u.hdr10 = glGetUniformLocation(prog, "uHdr10");
     u.hdr10Gain = glGetUniformLocation(prog, "uHdr10Gain");
+    u.hdr10Knee = glGetUniformLocation(prog, "uHdr10Knee");
+    u.hdr10Peak = glGetUniformLocation(prog, "uHdr10Peak");
     u.dumpRawPre = glGetUniformLocation(prog, "uDumpRawPre");
     u.dvReshape = glGetUniformLocation(prog, "uDvReshape");
     u.dvParams = glGetUniformLocation(prog, "uDv");
@@ -8466,6 +8487,8 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
         if (u.hdr10 >= 0) {
             glUniform1i(u.hdr10, (videoLayerPass && gHdr10Active.load() != 0) ? 1 : 0);
         }
+        if (u.hdr10Knee >= 0) glUniform1f(u.hdr10Knee, gHdr10Knee.load());
+        if (u.hdr10Peak >= 0) glUniform1f(u.hdr10Peak, gHdr10Peak.load());
         if (u.hdr10Gain >= 0) {
             static float hdr10Gain = -1.f;
             if (hdr10Gain < 0.f) {
