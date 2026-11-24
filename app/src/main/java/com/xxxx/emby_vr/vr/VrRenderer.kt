@@ -240,7 +240,13 @@ class VrRenderer(
     }
 
     private fun updateVideoFrame() {
-        val st = (if (updateTargetIsVr) vrVideoSurfaceTexture else surfaceTexture) ?: return
+        /*
+         * VR 模式下取帧由原生渲染线程自己完成（纹理属于它的 GL 上下文）。
+         * Java 这边再 updateTexImage 会跨上下文失败，日志每秒刷几十条
+         * "Unable to update texture contents"，还有偷走原生要用那一帧的风险（豆豆 2026-11-25）。
+         */
+        if (updateTargetIsVr) return
+        val st = surfaceTexture ?: return
         val t0 = System.nanoTime()
         try {
             st.updateTexImage()

@@ -9367,6 +9367,10 @@ class MainActivity : ComponentActivity() {
     private var selfPipeUrl: String? = null
     private var selfPipeSurface: android.view.Surface? = null
 
+    /** 声音停写联动的看门狗：到期自动放开画面，避免两边互等死锁 */
+    private var avStallWatchdog: Runnable? = null
+    private val uiHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
     /**
      * 失步重启：停掉旧实例、按目标位置重建。
      *
@@ -10337,11 +10341,29 @@ class MainActivity : ComponentActivity() {
                         ap.onStall = stallCb@{ stalledNow ->
                             if (audioPipe !== ap) return@stallCb
                             ui.post {
-                                avStall = stalledNow
+                                /*
+                                 * 联动必须有上限（2026-11-25 定案）：声音停写把画面按住之后，
+                                 * 画面停了不会推动声音恢复 —— 于是两边互等，永久冻结
+                                 * （真机就是跳转后画面停在最后一帧、无进展 50 秒）。
+                                 * 这里最多按 3 秒，超时自动放开，宁可画面继续走也不要死等。
+                                 */
                                 if (stalledNow) {
-                                    Log.w(TAG, "声音停写 → 画面一起停")
-                                } else if (!selfPaused) {
-                                    Log.i(TAG, "声音恢复 → 画面一起走")
+                                    avStall = true
+                                    Log.w(TAG, "声音停写 → 画面暂按（最多 3 秒）")
+                                    avStallWatchdog?.let { uiHandler.removeCallbacks(it) }
+                                    val task = Runnable {
+                                        if (avStall) {
+                                            avStall = false
+                                            Log.w(TAG, "声音停写超过 3 秒仍未恢复 → 放开画面，不再等")
+                                        }
+                                    }
+                                    avStallWatchdog = task
+                                    uiHandler.postDelayed(task, 3000)
+                                } else {
+                                    avStallWatchdog?.let { uiHandler.removeCallbacks(it) }
+                                    avStallWatchdog = null
+                                    avStall = false
+                                    if (!selfPaused) Log.i(TAG, "声音恢复 → 画面一起走")
                                 }
                             }
                         }

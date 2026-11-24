@@ -171,6 +171,8 @@ class AudioPipe {
 
     /** 首块数据是否已经处理过（补静音 / 裁头只做一次） */
     private var firstBlockHandled = false
+    /** 写入连续返回 0 时，上次主动 play 的时间（自愈节流） */
+    private var lastZeroPlayMs = 0L
 
     /**
      * 首块裁剪要跨块累计。
@@ -1251,11 +1253,25 @@ class AudioPipe {
             buf.limit(info.offset + offsetBytes + bytes)
             val n = at.write(buf, bytes, AudioTrack.WRITE_BLOCKING)
             if (n <= 0) {
-                if (zeroWrites++ < 3) {
+                zeroWrites++
+                if (zeroWrites <= 3) {
                     Log.w(TAG, "写入设备返回 $n（设备未在放；只报前三次）")
+                }
+                /*
+                 * 自愈（2026-11-25 豆豆裁定）：跳转第一步会暂停并 flush 设备，落点回来之后
+                 * 只有"重新 play"才能继续写。原来这里只报日志不处理，结果是跳转后永久无声，
+                 * 而且没声音就不会恢复写入 -> 还会把画面一起按住。
+                 * 这里连续返回 0 超过 300ms 就主动放一次，最多每 300ms 试一次。
+                 */
+                val nowMs = SystemClock.elapsedRealtime()
+                if (nowMs - lastZeroPlayMs > 300L) {
+                    lastZeroPlayMs = nowMs
+                    runCatching { at.play() }
+                    if (zeroWrites == 4) Log.w(TAG, "写入连续返回 0 → 主动把设备放起来")
                 }
                 return
             }
+            zeroWrites = 0
             offsetBytes += n
             bytes -= n
             writtenFrames += (n / bytesPerFrame).toLong()
