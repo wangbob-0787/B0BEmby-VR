@@ -8810,6 +8810,17 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
                     glBindVertexArray(c.videoLayerVao);
                     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
                     glBindVertexArray(0);
+                    /* 遮挡查询：这一趟到底有没有像素写进小图（区分"没画上"与"画了但颜色是 0"） */
+                    GLuint qid = 0;
+                    glGenQueries(1, &qid);
+                    glBeginQuery(GL_SAMPLES_PASSED, qid);
+                    glBindVertexArray(c.videoLayerVao);
+                    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                    glBindVertexArray(0);
+                    glEndQuery(GL_SAMPLES_PASSED);
+                    GLint passed = -1;
+                    glGetQueryObjectiv(qid, GL_QUERY_RESULT, &passed);
+                    glDeleteQueries(1, &qid);
                     float mSum = 0.f;
                     int mMax = 0;
                     for (int jj = 0; jj < 3; ++jj) {
@@ -8824,10 +8835,26 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
                             if (mm > mMax) mMax = mm;
                         }
                     }
-                    LOGI_RAW("MAINPROBE|grp=%d|prog=%u|main=%u|ring=%u|mean=%.4f|max=%.4f|tex=%u",
+                    /* 活跃 uniform 清单：设备上这份程序到底有哪些 uniform（豆豆指出 gain=-9 是哨兵） */
+                    {
+                        GLint n = 0, maxLen = 0;
+                        glGetProgramiv(prog, GL_ACTIVE_UNIFORMS, &n);
+                        std::string names;
+                        for (int i = 0; i < n; ++i) {
+                            char nm[64] = {0};
+                            GLsizei len = 0;
+                            GLint sz = 0;
+                            GLenum type = 0;
+                            glGetActiveUniform(prog, (GLuint) i, sizeof(nm), &len, &sz, &type, nm);
+                            names += nm;
+                            names += ";";
+                        }
+                        LOGI_RAW("ACTIVEUNI|n=%d|%s", n, names.c_str());
+                    }
+                    LOGI_RAW("MAINPROBE|grp=%d|prog=%u|main=%u|ring=%u|samples=%d|mean=%.4f|max=%.4f|tex=%u",
                              (gDumpRawDone.load() - 1) / 3 + 1, (unsigned) prog,
                              (unsigned) c.program, (unsigned) c.ringProg,
-                             mSum / 9.f, mMax / 255.f, (unsigned) tex);
+                             passed, mSum / 9.f, mMax / 255.f, (unsigned) tex);
                     /* 恢复必须回到**本次画的这张**：L.index 要到最后才更新，用它会读上一帧 */
                     glBindFramebuffer(GL_FRAMEBUFFER, L.fbos[idx]);
                     glViewport(0, 0, L.width, L.height);

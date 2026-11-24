@@ -4523,6 +4523,8 @@ class MainActivity : ComponentActivity() {
          */
         val vrSurface = if (com.xxxx.emby_vr.vr.VrNative.vrRunning) renderer.vrVideoSurface else null
         val surface = vrSurface ?: renderer.videoSurface
+        /* 这条原本一句日志都没有（豆豆 2026-11-24）：黑屏排查时"解码器写了哪块画面"必须能对账 */
+        Log.i(TAG, "画面管线选择：VR屏=${vrSurface != null} surface=${surface.hashCode()}")
         if (surface == null) {
             hud("视频纹理未就绪（GL 还没建好）")
             return
