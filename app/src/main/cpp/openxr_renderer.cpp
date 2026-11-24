@@ -8667,10 +8667,21 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
      * 纹理里也没有内容，于是这一次采样永远落在"上色之前 + 空画面"上，读回值恒为全黑
      * （2026-11-24 两次实测 RAWSTAT|hdr10=0|raw=0|max=0.0078），回答不了这个问题。
      */
+    /*
+     * 取样节奏（父亲 2026-11-24 定）：采三组，组内相邻帧分别带 R / G / B（同一画面），
+     * 组与组之间隔约 10 秒 —— 起播初期可能还在等关键帧，隔十秒再采能把"当时到底有没有画面"分开看。
+     */
     if (gDumpRaw.load() != 0 && videoLayerPass && gHdr10Active.load() != 0 &&
-        gDumpRawDone.load() < 15) {
+        gDumpRawDone.load() < 9) {
         static int rawTick = 0;
-        if ((++rawTick % 90) == 0) {
+        static int rawLastTick = -1000000;
+        ++rawTick;
+        const int rawDone = gDumpRawDone.load();
+        const bool rawGroupStart = (rawDone % 3) == 0;
+        /* 72Hz 下 720 帧 ≈ 10 秒；组内隔 3 帧（画面几乎没变） */
+        const int rawNeed = rawGroupStart ? (rawLastTick < 0 ? 0 : 720) : 3;
+        if (rawTick - rawLastTick >= rawNeed) {
+            rawLastTick = rawTick;
             gDumpRawDone.fetch_add(1);
             const int gw = 3, gh = 3;
             float sum = 0.f;
@@ -8694,8 +8705,8 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
                              rawPreCh == 1 ? "R" : (rawPreCh == 2 ? "G" : "B"), c4[3]);
                 }
             }
-            LOGI_RAW("RAWSTAT|n=%d|ch=%s|hdr10=%d|raw=%d|texUpd=%d|out=%.4f/%.4f|pre=%.4f/%.4f|vp=%dx%d|glErr=0x%x",
-                     gDumpRawDone.load(),
+            LOGI_RAW("RAWSTAT|n=%d|grp=%d|ch=%s|hdr10=%d|raw=%d|texUpd=%d|out=%.4f/%.4f|pre=%.4f/%.4f|vp=%dx%d|glErr=0x%x",
+                     gDumpRawDone.load(), (gDumpRawDone.load() - 1) / 3 + 1,
                      rawPreCh == 1 ? "R" : (rawPreCh == 2 ? "G" : "B"),
                      gHdr10Active.load(), gRawVideo.load(), gVideoTexUpdates.load(),
                      sum / (gw * gh), mx / 255.f,
