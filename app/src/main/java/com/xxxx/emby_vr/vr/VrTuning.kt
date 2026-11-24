@@ -1069,6 +1069,10 @@ object VrTuning {
             hdr10ShaderOn = it != 0
             applied += "HDR10 颜色分支 $it"
         }
+        raw["hdr10_mini"]?.toIntOrNull()?.let {
+            VrNative.setHdr10Mini(it != 0)
+            applied += "HDR10 最小着色器 $it"
+        }
         raw["dump_raw"]?.toIntOrNull()?.let {
             VrNative.setDumpRaw(it != 0)
             applied += "取样导出 $it"
