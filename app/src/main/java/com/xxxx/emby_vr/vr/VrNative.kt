@@ -68,6 +68,8 @@ object VrNative {
     /** 画面直出（定位用）：跳过全部颜色处理与输出转换，直接吐取样值。 */
     private external fun nativeSetRawVideo(on: Int)
 
+    private external fun nativeSetDumpRaw(on: Int)
+
     fun setRawVideo(on: Boolean) = runCatching { nativeSetRawVideo(if (on) 1 else 0) }
 
     /** 取样导出：视频层画完回读一次网格写日志（调参 dump_raw=1，全进程只做一次） */
