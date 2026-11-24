@@ -1301,24 +1301,22 @@ void main() {
             vec3 den = max(18.8515625 - 18.6875 * n, 1e-6);    /* c2 - c3*n */
             vec3 lq = pow(num / den, vec3(1.0 / 0.1593017578));/* m1；0..1 = 0..10000 nit */
             vec3 lin = lq * 100.0;                             /* 换成 1.0 = 100 nit */
-            /* 高光去饱和（ffmpeg tonemap 的 desat 语义：亮度超过阈值才往灰收） */
-            float y = dot(lin, vec3(0.2627, 0.6780, 0.0593));
-            float over = max(y - 2.0, 1e-6) / max(y, 1e-6);
-            lin = mix(lin, vec3(y), over);
-            /* mobius：按最大分量压缩，三通道同比缩放（色相守恒） */
-            float sig = max(max(lin.r, lin.g), lin.b);
             /*
-             * 参数与 ffmpeg 同刻度（1.0 = 100 nit）：desat=2 → 200 nit，
-             * peak=52 → 5200 nit。写成 52.0；若误写成 0.52，b 分母会塌成 1e-6、
-             * 压缩结果反而比原值大 4.32，整屏过曝（豆豆 2026-11-23 审出）。
-             * peak 还必须大于 j：小于等于 j 时同样会炸，这里兜一手。
+             * 以下两步都在"尼特"刻度上（lin = lq * 100，1.0 表示 100 nit）。
+             *
+             * 这里曾经照抄 ffmpeg tonemap 的三参数表达式（a/b/comp），但那个式子的
+             * 输入是"归一化到峰值"的 0..1；传 0..100 尼特进去，压完等于再乘 1/peak，
+             * 整幅被压到百分之一 —— 表现就是纯黑（父亲 2026-11-24 实测：
+             * 开关打开全黑、关掉能看到发灰画面）。改成与 .15 上验过的那版等价写法。
              */
-            float j = 0.3;
-            float peak = max(52.0, j + 1e-3);
-            float aa = -j * j * (peak - 1.0) / (j * j - 2.0 * j + peak);
-            float bb = (j * j - 2.0 * j * peak + peak) / max(peak - 1.0, 1e-6);
-            float comp = (bb * bb + 2.0 * bb * j + j * j) / (bb - aa) * (sig + aa) / (sig + bb);
-            float sig2 = sig <= j ? sig : comp;
+            float y = dot(lin, vec3(0.2627, 0.6780, 0.0593));
+            /* 高光去饱和：亮度超过 200 nit（desat 2 档，1.0=100nit 刻度）才往灰收 */
+            float over = max(y - 200.0, 1e-6) / max(y, 1e-6);
+            lin = mix(lin, vec3(y), over);
+            /* mobius 压缩：按最大分量压，三通道同比缩放（色相守恒）；peak 单位尼特 */
+            float sig = max(max(lin.r, lin.g), lin.b);
+            float peak = 52.0;
+            float sig2 = sig * peak / (sig + peak);
             lin *= sig2 / max(sig, 1e-6);
             /* BT.2020 → BT.709（线性光） */
             vec3 r709 = vec3(
