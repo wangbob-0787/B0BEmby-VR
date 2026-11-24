@@ -6766,12 +6766,14 @@ void drawOverlayIntoVideoLayer(VrContext &c, GLuint tex,
     if (videoLayerPass && gDumpRaw.load() != 0 && gDumpRawDone.load() == 0) {
         gDumpRawDone.store(1);
         const int gw = 3, gh = 3;
+        GLint vp[4] = {0, 0, 1, 1};
+        glGetIntegerv(GL_VIEWPORT, vp);
         float sum = 0.f;
         int mx = 0;
         for (int jj = 0; jj < gh; ++jj) {
             for (int ii = 0; ii < gw; ++ii) {
-                int xx = (int) ((ii + 0.5f) * L.width / gw);
-                int yy = (int) ((jj + 0.5f) * L.height / gh);
+                int xx = vp[0] + (int) ((ii + 0.5f) * vp[2] / gw);
+                int yy = vp[1] + (int) ((jj + 0.5f) * vp[3] / gh);
                 unsigned char c4[4] = {0, 0, 0, 0};
                 glReadPixels(xx, yy, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, c4);
                 int mm = c4[0] > c4[1] ? (c4[0] > c4[2] ? c4[0] : c4[2]) : (c4[1] > c4[2] ? c4[1] : c4[2]);
@@ -6782,7 +6784,7 @@ void drawOverlayIntoVideoLayer(VrContext &c, GLuint tex,
         }
         LOGI_RAW("RAWSTAT|hdr10=%d|raw=%d|mean=%.4f|max=%.4f|vp=%dx%d|glErr=0x%x",
                  gHdr10Active.load(), gRawVideo.load(), sum / (gw * gh), mx / 255.f,
-                 L.width, L.height, (unsigned) glGetError());
+                 (int) vp[2], (int) vp[3], (unsigned) glGetError());
     }
     glDisable(GL_BLEND);
 }
