@@ -1010,11 +1010,7 @@ class AudioPipe {
         } else {
             runCatching { codec?.flush() }
         }
-        /*
-         * 清掉跳转前留下的包（2026-11-24 定案）：Session 改读位置那一刻，队列里还压着
-         * 旧位置的数据；不清就继续送进解码器，现场表现是跳转后连续报"数据不合法"、声音再不回来。
-         */
-        runCatching { sourceQueue.flush() }
+        /* 同上：队列清点在 DemuxSession 读线程里，这里不清（否则会冲掉刚入队的新包） */
         originUs = (originSec * US).toLong()
         /*
          * 音频起点优先用 Session 回灌的真实首包时间；没拿到就留 -1，

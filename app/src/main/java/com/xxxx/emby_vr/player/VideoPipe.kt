@@ -1483,11 +1483,10 @@ class VideoPipe {
         keyWaitSinceMs = 0L
         runCatching { decoder?.flush() }
         /*
-         * 队列里还压着旧位置的数据包，一并清掉（2026-11-24 定案）：
-         * 只清解码器不清队列，跳转后还会把旧位置的残缺包喂进去，
-         * 表现是跳完解码计数不再前进、画面停在最后一帧。
+         * 队列不在这里清：真正的清点在 DemuxSession 的读线程里（改读位置之前那一处）。
+         * 在这里清会晚于"读线程已经重新入队"，把刚进来的关键帧冲掉 —— 画面从此死等关键帧
+         * （2026-11-24 真机实测：跳转后样本数不再增长）。
          */
-        runCatching { (session?.videoQueue ?: feedQueue).flush() }
         originPts = -1.0
         appliedOffset = Double.NaN
         firstFrameShown = false
