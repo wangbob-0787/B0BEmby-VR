@@ -6757,35 +6757,6 @@ void drawOverlayIntoVideoLayer(VrContext &c, GLuint tex,
     glBindVertexArray(c.videoLayerVao);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(0);
-    /*
-     * 取样导出（一次性）：把这一帧画面回读 9 个点写进日志。
-     *
-     * 只用来回答一个问题：黑是"取样值为 0"还是"公式算错"。不做校准、不打全网格，
-     * 代码足够短才不会把自己绊倒。调参 dump_raw=1 生效，全进程只做一次。
-     */
-    if (gDumpRaw.load() != 0 && gDumpRawDone.load() == 0) {
-        gDumpRawDone.store(1);
-        const int gw = 3, gh = 3;
-        GLint vp[4] = {0, 0, 1, 1};
-        glGetIntegerv(GL_VIEWPORT, vp);
-        float sum = 0.f;
-        int mx = 0;
-        for (int jj = 0; jj < gh; ++jj) {
-            for (int ii = 0; ii < gw; ++ii) {
-                int xx = vp[0] + (int) ((ii + 0.5f) * vp[2] / gw);
-                int yy = vp[1] + (int) ((jj + 0.5f) * vp[3] / gh);
-                unsigned char c4[4] = {0, 0, 0, 0};
-                glReadPixels(xx, yy, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, c4);
-                int mm = c4[0] > c4[1] ? (c4[0] > c4[2] ? c4[0] : c4[2]) : (c4[1] > c4[2] ? c4[1] : c4[2]);
-                sum += mm / 255.f;
-                if (mm > mx) mx = mm;
-                LOGI_RAW("RAWDOT|%d|%d|%d|%d|%d", jj * gw + ii, c4[0], c4[1], c4[2]);
-            }
-        }
-        LOGI_RAW("RAWSTAT|hdr10=%d|raw=%d|mean=%.4f|max=%.4f|vp=%dx%d|glErr=0x%x",
-                 gHdr10Active.load(), gRawVideo.load(), sum / (gw * gh), mx / 255.f,
-                 (int) vp[2], (int) vp[3], (unsigned) glGetError());
-    }
     glDisable(GL_BLEND);
 }
 
@@ -8666,6 +8637,32 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
                  lcx, lcy, lwFrac, lhFrac, L.width, L.height);
         }
         drawOverlayIntoVideoLayer(c, c.logoTex, lcx, lcy, lwFrac, lhFrac);
+    }
+
+    /*
+     * 取样导出（一次性）：视频层已经画完、还绑着这张图时回读 9 个点。
+     * 只回答一个问题：黑是"取样值为 0"还是"公式算错"。调参 dump_raw=1 生效。
+     */
+    if (gDumpRaw.load() != 0 && gDumpRawDone.load() == 0) {
+        gDumpRawDone.store(1);
+        const int gw = 3, gh = 3;
+        float sum = 0.f;
+        int mx = 0;
+        for (int jj = 0; jj < gh; ++jj) {
+            for (int ii = 0; ii < gw; ++ii) {
+                int xx = (int) ((ii + 0.5f) * L.width / gw);
+                int yy = (int) ((jj + 0.5f) * L.height / gh);
+                unsigned char c4[4] = {0, 0, 0, 0};
+                glReadPixels(xx, yy, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, c4);
+                int mm = c4[0] > c4[1] ? (c4[0] > c4[2] ? c4[0] : c4[2]) : (c4[1] > c4[2] ? c4[1] : c4[2]);
+                sum += mm / 255.f;
+                if (mm > mx) mx = mm;
+                LOGI_RAW("RAWDOT|%d|%d|%d|%d|%d", jj * gw + ii, c4[0], c4[1], c4[2]);
+            }
+        }
+        LOGI_RAW("RAWSTAT|hdr10=%d|raw=%d|mean=%.4f|max=%.4f|vp=%dx%d|glErr=0x%x",
+                 gHdr10Active.load(), gRawVideo.load(), sum / (gw * gh), mx / 255.f,
+                 L.width, L.height, (unsigned) glGetError());
     }
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
