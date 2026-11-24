@@ -9606,6 +9606,19 @@ void frameLoop(VrContext &c) {
          * （独立层排在视频层的位置 = 最下面），投影层那条分支自然留空。
          * 层次最终为：空屏 < 弹幕 < 海报墙 < 控制条 < 菜单 < 光柱。
          */
+        {
+            /*
+             * 一次性状态行：视频层有没有提交、空屏层有没有顶上去。
+             * 父亲 2026-11-24 报「退出 App 的一瞬间才看到画面」——那正是空屏层撤掉的时刻；
+             * 视频层没提交 + 空屏层顶着 = 画面被空屏盖住。
+             */
+            static int stateTick = 0;
+            if ((stateTick++ % 60) == 0) {
+                LOGI_RAW("LAYERSTATE|videoSub=%d|videoFrame=%d|blankSub=%d|spinner=%d",
+                         c.videoLayer.submitted ? 1 : 0, c.videoHasFrame.load() ? 1 : 0,
+                         c.blankLayer.submitted ? 1 : 0, c.spinnerWanted.load() ? 1 : 0);
+            }
+        }
         c.blankLayer.submitted = false;
         if (c.blankLayerOk &&
             !c.videoLayer.submitted && !c.spinnerWanted.load()) {
