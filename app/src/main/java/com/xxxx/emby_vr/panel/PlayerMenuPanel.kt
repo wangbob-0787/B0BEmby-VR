@@ -179,6 +179,9 @@ class MenuState {
     /** 当前是不是杜比 P5（宽度上限 1920，档位只有两档） */
     var isP5 by mutableStateOf(false)
 
+    /** 这一部片是不是走自管解码（P5 / HDR10）：是则「视频质量」不放任何档 */
+    var selfPipe by mutableStateOf(false)
+
     /** 实时 2D→3D 是否开着（开时档位换成"每眼宽度"） */
     var stereo3d by mutableStateOf(false)
 
@@ -339,6 +342,14 @@ val EMBY_QUALITY_TIERS = listOf(
     EmbyQualityTier(4_000_000, 1280, 720, false, "720p · 4 兆"),
 )
 
+/*
+ * 自管解码这条路（杜比 P5 / HDR10）的「视频质量」：不放任何档。
+ *
+ * 这条路直连片源原文件、画面由片源决定，档位对它没有作用（父亲 2026-11-24 定）。
+ * 留着档位会让人以为能靠切档降下载量，实际切了什么都不变。
+ */
+val SELF_PIPE_QUALITY_STEPS = QUalitySteps(emptyList(), emptyList())
+
 val EMBY_QUALITY_STEPS = QUalitySteps(
     EMBY_QUALITY_TIERS.map { it.bitrate to it.label },
     EMBY_QUALITY_TIERS.map { "" },
@@ -389,10 +400,13 @@ fun qualityStepsFor(
     isWeb: Boolean,
     isP5: Boolean,
     stereo3d: Boolean = false,
+    selfPipe: Boolean = false,
 ): QUalitySteps =
     when {
         /* 3D 最优先：每眼宽度与片源来自哪里无关 */
         stereo3d -> STEREO3D_QUALITY_STEPS
+        /* 自管解码（P5 / HDR10）：直连原文件，档位无作用，一个选项都不放 */
+        selfPipe -> SELF_PIPE_QUALITY_STEPS
         !kernelActive -> EMBY_QUALITY_STEPS
         isP5 -> P5_QUALITY_STEPS
         isWeb -> WEB_QUALITY_STEPS
@@ -620,7 +634,7 @@ private fun MoreMenu(menu: MenuState, playing: Boolean, webPlaying: Boolean) {
                      * 没写说明的档（原画 / 各码率档）就用档名本身，不能留空。
                      */
                     MenuKind.QUALITY ->
-                        qualityStepsFor(menu.kernelActive, menu.isWeb, menu.isP5, menu.stereo3d).let { s ->
+                        qualityStepsFor(menu.kernelActive, menu.isWeb, menu.isP5, menu.stereo3d, menu.selfPipe).let { s ->
                             s.hints.getOrNull(menu.quality)?.takeIf { it.isNotBlank() }
                                 ?: s.entries.getOrNull(menu.quality)?.second ?: ""
                         }
@@ -835,7 +849,16 @@ private fun SpeedMenu(menu: MenuState) {    Column(modifier = Modifier.verticalS
 @Composable
 private fun QualityMenu(menu: MenuState) {
     Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-        val steps = qualityStepsFor(menu.kernelActive, menu.isWeb, menu.isP5, menu.stereo3d)
+        val steps = qualityStepsFor(menu.kernelActive, menu.isWeb, menu.isP5, menu.stereo3d, menu.selfPipe)
+        if (steps.entries.isEmpty()) {
+            MenuRow(
+                label = "画面由片源决定",
+                value = "这条路直连原文件，没有可切的档",
+                selected = false,
+                onClick = {},
+            )
+            return@Column
+        }
         steps.entries.forEachIndexed { i, (_, label) ->
             MenuRow(
                 label = label,

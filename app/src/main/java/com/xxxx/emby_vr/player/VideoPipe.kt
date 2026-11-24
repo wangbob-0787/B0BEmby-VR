@@ -1482,6 +1482,12 @@ class VideoPipe {
         skippedToKeyframe = 0
         keyWaitSinceMs = 0L
         runCatching { decoder?.flush() }
+        /*
+         * 队列里还压着旧位置的数据包，一并清掉（2026-11-24 定案）：
+         * 只清解码器不清队列，跳转后还会把旧位置的残缺包喂进去，
+         * 表现是跳完解码计数不再前进、画面停在最后一帧。
+         */
+        runCatching { (session?.videoQueue ?: feedQueue).flush() }
         originPts = -1.0
         appliedOffset = Double.NaN
         firstFrameShown = false

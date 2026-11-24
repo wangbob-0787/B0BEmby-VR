@@ -1010,6 +1010,11 @@ class AudioPipe {
         } else {
             runCatching { codec?.flush() }
         }
+        /*
+         * 清掉跳转前留下的包（2026-11-24 定案）：Session 改读位置那一刻，队列里还压着
+         * 旧位置的数据；不清就继续送进解码器，现场表现是跳转后连续报"数据不合法"、声音再不回来。
+         */
+        runCatching { sourceQueue.flush() }
         originUs = (originSec * US).toLong()
         /*
          * 音频起点优先用 Session 回灌的真实首包时间；没拿到就留 -1，
@@ -1020,7 +1025,12 @@ class AudioPipe {
          * -1 相当于"音频早于画面一整段时间"，随后 pendingSkipBytes 会把接下来的音频**全部裁掉**
          * （真机表现：跳几次之后彻底没声，2026-11-23）。拿不到首包时间就退回目标位置。
          */
-        audioOriginUs = audioFirstUs.takeIf { it > 0L } ?: (targetSec * US).toLong()
+        /*
+         * 拿不到音频首包时间时退回**画面关键帧时刻**（originSec），不是拖动目标：
+         * 三步法要求两条链从同一个关键帧起跑；用目标位置会让声音与画面差一个关键帧间隔，
+         * 首块对齐再裁一次，越跳越偏（2026-11-24 实测）。
+         */
+        audioOriginUs = audioFirstUs.takeIf { it > 0L } ?: (originSec * US).toLong()
         firstBlockHandled = false
         pendingSkipBytes = 0L
         seekFlushCount++

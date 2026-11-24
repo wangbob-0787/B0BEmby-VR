@@ -5904,6 +5904,11 @@ class MainActivity : ComponentActivity() {
             isP5 = com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource,
             stereo3d = com.xxxx.emby_vr.vr.VrTuning.stereo3dOn,
         )
+        /* 自管解码（P5 / HDR10）这条没有档位：菜单也不放选项，这里直接忽略，不触发重建 */
+        if (table.entries.isEmpty()) {
+            Log.i(TAG, "视频质量 → 本片由片源决定，无档可切（忽略）")
+            return
+        }
         qualityIndex = index.coerceIn(0, (table.entries.size - 1).coerceAtLeast(0))
         Log.i(TAG, "视频质量 → ${table.entries.getOrNull(qualityIndex)?.second ?: qualityIndex}")
         /*
@@ -6266,6 +6271,11 @@ class MainActivity : ComponentActivity() {
          */
         menuState.isP5 = com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource &&
             !menuState.isWeb
+        /*
+         * 这一部片是否走自管解码（P5 / HDR10）：是则「视频质量」不放任何档
+         * （直连原文件，档位对它无作用，父亲 2026-11-24 定）。
+         */
+        menuState.selfPipe = selfPipeActive && !menuState.isWeb
         menuState.stereo3d = com.xxxx.emby_vr.vr.VrTuning.stereo3dOn
         when (kind) {
             com.xxxx.emby_vr.panel.MenuKind.SPEED -> menuState.speed = playSpeed
