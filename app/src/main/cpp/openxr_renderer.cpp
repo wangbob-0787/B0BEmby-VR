@@ -1296,7 +1296,10 @@ void main() {
          * 也不走后面的输出转换。用来判断"画面变灰"是我们处理造成的，还是拿到的就已经是灰的。
          */
         if (uRawVideo == 1) {
-            outColor = vec4(c.rgb, 1.0);
+            /* 提前返回前必须写输出：GLSL 里从 main 返回而没写 out 变量，片元输出未定义，
+             * Adreno 上表现为全黑（2026-11-24 定案：HDR10 与直出两条提前返回路径都黑，
+             * 而走末尾统一输出的杜比路径正常）。 */
+            fragColor = vec4(c.rgb, 1.0);
             return;
         }
         /*
@@ -1356,7 +1359,8 @@ void main() {
             float preC = uDumpRawPre == 1 ? c.rgb.r
                        : (uDumpRawPre == 2 ? c.rgb.g
                        : (uDumpRawPre == 3 ? c.rgb.b : 0.0));
-            outColor = vec4(clamp(enc, 0.0, 1.0), uDumpRawPre != 0 ? preC : 1.0);
+            /* 同上：HDR10 分支也是提前返回，必须自己写输出，否则整屏黑 */
+            fragColor = vec4(clamp(enc, 0.0, 1.0), uDumpRawPre != 0 ? preC : 1.0);
             return;
         }
         if (uDvReshape == 1 && uDv[0] > 1.5) {
