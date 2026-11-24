@@ -8440,7 +8440,8 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
      * alpha 在视频层不参与合成，所以这样带值不影响显示。
      */
     /* 第 0 趟用 9（最前端直采，干净一刀），之后 1..6 分别带出上色链各阶段 */
-    const int rawPreCh = (gDumpRaw.load() != 0)
+    /* 只在视频层生效：这组诊断对海报墙/控制条等层必须完全不介入（否则它们会被直采分支接管，整片黑） */
+    const int rawPreCh = (gDumpRaw.load() != 0 && videoLayerPass)
                                  ? ((gDumpRawDone.load() == 0)
                                             ? 9
                                             : (1 + ((gDumpRawDone.load() - 1) % 6)))
