@@ -752,8 +752,15 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxVideoCsd(
     Demux *d = fromHandle(handle);
     if (!d || !d->fmt || d->videoIdx < 0) return nullptr;
     AVCodecParameters *p = d->fmt->streams[d->videoIdx]->codecpar;
-    jint v[4] = {p->width, p->height, p->extradata_size, (jint) p->codec_id};
-    env->SetIntArrayRegion(out, 0, 4, v);
+    /*
+     * 位深与传输曲线一起交出去：只给 csd 时系统按 8 位配解码器，
+     * 10 位片源每帧只吐 8 字节（r1727 取证）。PQ(ST2084) = 16。
+     */
+    int depth = p->bits_per_raw_sample > 0 ? p->bits_per_raw_sample : 8;
+    if (depth <= 8 && p->profile == FF_PROFILE_HEVC_MAIN_10) depth = 10;
+    jint v[6] = {p->width, p->height, p->extradata_size, (jint) p->codec_id,
+                 depth, (p->color_trc == AVCOL_TRC_SMPTE2084) ? 1 : 0};
+    env->SetIntArrayRegion(out, 0, 6, v);
     if (!p->extradata || p->extradata_size <= 0) return nullptr;
     jbyteArray r = env->NewByteArray(p->extradata_size);
     env->SetByteArrayRegion(r, 0, p->extradata_size, (const jbyte *) p->extradata);

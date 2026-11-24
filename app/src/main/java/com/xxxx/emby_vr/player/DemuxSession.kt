@@ -109,6 +109,9 @@ class DemuxSession(
 
     @Volatile
     var videoHeight: Int = 0
+    /* 片源位深与传输曲线：10 位 + PQ 必须显式告诉解码器（r1727 取证：只给 csd 时每帧吐 8 字节） */
+    var videoBitDepth: Int = 8
+    var videoTransfer2084: Boolean = false
         private set
 
     /** 本次打开/跳转之后第一条音频包的时间（微秒），-1 = 还没读到。音频起点对齐要用它 */
@@ -181,11 +184,13 @@ class DemuxSession(
         durationMs = info[4].takeIf { it > 0 }?.toLong() ?: 0L
         audioCodecName = runCatching { AudioDemuxNative.nativeDemuxCodecName(h) }.getOrDefault("")
 
-        val csdOut = IntArray(4)
+        val csdOut = IntArray(6)
         videoCsd = runCatching { AudioDemuxNative.nativeDemuxVideoCsd(h, csdOut) }.getOrNull()
         videoWidth = csdOut[0]
         videoHeight = csdOut[1]
         videoCodecId = csdOut[3]
+        videoBitDepth = if (csdOut[4] > 0) csdOut[4] else 8
+        videoTransfer2084 = csdOut[5] == 1
         Log.i(
             TAG,
             "解封装就绪：采样率=$sampleRate 声道=$channelCount 解码器=$audioCodecName " +
@@ -237,7 +242,7 @@ class DemuxSession(
                 Log.i(TAG, "视频管道|收到视频=$rxVideo 入队成功=$enqVideo（读循环第 $readCount 次）")
             }
             if (readCount++ < 1) {
-                Log.i(TAG, "连接身份=视频|线程=${'$'}{Thread.currentThread().name}")
+                Log.i(TAG, "连接身份=视频|线程=" + Thread.currentThread().name)
             }
             val n = try {
                 AudioDemuxNative.nativeDemuxRead(h, buf, meta)
@@ -386,6 +391,25 @@ class DemuxSession(
         }
         return MediaFormat.createVideoFormat(mime, videoWidth, videoHeight).apply {
             setByteBuffer("csd-0", java.nio.ByteBuffer.wrap(annexB))
+            /*
+             * 10 位 + HDR 标记必须显式写进格式。
+             *
+             * 只给 csd 时，系统把 p010 的片子按 8 位配置解码器：实测每帧只吐 8 字节、
+             * 一帧真画面都没有（r1727 取证：11 个包全部 返回=<idx> size=8）。
+             * P5 能播是因为它走的是同一条路但片源参数集自带足够信息。
+             */
+            if (videoBitDepth >= 10) {
+                setInteger(MediaFormat.KEY_PROFILE, 0x2)             // HEVCProfileMain10
+                setInteger("profile", 0x2)
+                setInteger("bit-depth-luma", 10)
+                setInteger("bit-depth-chroma", 10)
+            }
+            if (videoTransfer2084) {
+                setInteger(MediaFormat.KEY_COLOR_STANDARD, 6)          // HDR10
+                setInteger(MediaFormat.KEY_COLOR_TRANSFER, 6)          // ST2084
+                setInteger(MediaFormat.KEY_COLOR_RANGE, 1)             // full
+            }
+            Log.i(TAG, "解码器格式：biezhi=${videoBitDepth} pq=${videoTransfer2084} 尺寸=${videoWidth}x${videoHeight} csd=${annexB.size}B")
         }
     }
 
