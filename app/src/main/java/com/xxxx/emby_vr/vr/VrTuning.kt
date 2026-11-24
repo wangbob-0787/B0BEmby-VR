@@ -129,6 +129,10 @@ object VrTuning {
      */
     var inferHdr10: Boolean = false
 
+    /** HDR10 颜色分支总开关（调参 hdr10_shader；0 = 关掉这一支，画面发灰但能看） */
+    @Volatile
+    var hdr10ShaderOn: Boolean = true
+
     /**
      * 杜比参数是否冻结（2026-11-16 定，默认冻结）。
      *
@@ -1052,6 +1056,18 @@ object VrTuning {
         raw["raw_video"]?.toIntOrNull()?.let {
             VrNative.setRawVideo(it != 0)
             applied += "画面直出 $it"
+        }
+        /*
+         * HDR10 颜色分支开关（hdr10_shader=0 临时关掉，用来把"算黑的"与"没接上"分开）。
+         *
+         * 必须在这里落成静态字段：起播路径（MainActivity）与解码路径（VideoPipe）
+         * 都要按同一个值设状态。原来只有 MainActivity 读调参，VideoPipe 起播时
+         * 又按"片源是 HDR10"无条件置 1，把开关当场覆盖掉 —— 2026-11-24 实测
+         * 日志 21:10:51 置 0、21:10:56 又被置回 1，开关等于没生效。
+         */
+        raw["hdr10_shader"]?.toIntOrNull()?.let {
+            hdr10ShaderOn = it != 0
+            applied += "HDR10 颜色分支 $it"
         }
         raw["dump_raw"]?.toIntOrNull()?.let {
             VrNative.setDumpRaw(it != 0)

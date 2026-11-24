@@ -4833,8 +4833,8 @@ class MainActivity : ComponentActivity() {
                          * 调参 `hdr10_shader=0` 可临时关掉这条分支（画面发灰但能看），
                          * 用来一次装机就把"黑屏是着色器算的"与"纹理没接上"区分开。
                          */
-                        val hdr10ShaderOn = com.xxxx.emby_vr.vr.VrTuning.value(this@MainActivity, "hdr10_shader")
-                            ?.trim() != "0"
+                        /* 统一读静态字段：与 VideoPipe 用同一个值，避免两边打架 */
+                        val hdr10ShaderOn = com.xxxx.emby_vr.vr.VrTuning.hdr10ShaderOn
                         com.xxxx.emby_vr.vr.VrNative.setHdr10StreamActive(
                             useSelfPipe && hdr10Self && hdr10ShaderOn,
                         )
