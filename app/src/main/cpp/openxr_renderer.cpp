@@ -8575,6 +8575,29 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
         }
     }
 
+    /*
+     * 采样窗口每趟都要显式写成默认值 (1,1)/(0,0)。
+     *
+     * 这两只以前只在程序初始化时设过一次：那时靠"uniform 按 program 保存"活着。
+     * HDR10 播放会切到另一套 program，新程序上它们是 GLSL 默认 0 ——
+     * 于是 uv 变换成 (0,0)，整幅画面都去采纹理的同一个角，画面全黑。
+     * 实测证据（2026-11-24）：源纹理自身均值 0.34~0.46（探针 C），
+     * 而主着色器"上色前"读到 0（探针 A）。
+     */
+    if (u.uvScale >= 0 || u.uvBias >= 0) {
+        static int uvChkDone = 0;
+        if (uvChkDone < 3) {
+            GLfloat sc[2] = {-999.f, -999.f}, bi[2] = {-999.f, -999.f};
+            if (u.uvScale >= 0) glGetUniformfv(prog, u.uvScale, sc);
+            if (u.uvBias >= 0) glGetUniformfv(prog, u.uvBias, bi);
+            LOGI_RAW("UVCHK|before|scale=%.3f,%.3f|bias=%.3f,%.3f|prog=%u",
+                     sc[0], sc[1], bi[0], bi[1], (unsigned) prog);
+            uvChkDone++;
+        }
+        if (u.uvScale >= 0) glUniform2f(u.uvScale, 1.f, 1.f);
+        if (u.uvBias >= 0) glUniform2f(u.uvBias, 0.f, 0.f);
+    }
+
     glBindVertexArray(c.videoLayerVao);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(0);
