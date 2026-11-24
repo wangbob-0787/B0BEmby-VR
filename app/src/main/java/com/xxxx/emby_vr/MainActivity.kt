@@ -1317,7 +1317,7 @@ class MainActivity : ComponentActivity() {
         val vr = com.xxxx.emby_vr.vr.VrTuning
         /* 实际宽度取"当前选中那一档"与上限的较小者：切了 2560 就该显示 2560 */
         var cap = if (com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource) {
-            vr.videoSurfaceMaxW.let { if (it > 0) it else 1920 }
+            vr.videoSurfaceMaxW.let { if (it > 0) it else srcW }
         } else {
             vr.rawMaxW.let { if (it > 0) it else vr.VIDEO_W_HARD_CAP }
         }
@@ -4724,8 +4724,10 @@ class MainActivity : ComponentActivity() {
                         if (it > 0) it.coerceAtMost(com.xxxx.emby_vr.vr.VrTuning.VIDEO_W_HARD_CAP) else com.xxxx.emby_vr.vr.VrTuning.VIDEO_W_HARD_CAP
                     }
                 } else {
+                    /* 自管解码贴图不再压宽度（父亲 2026-11-24）：片源多少就出多少 */
                     com.xxxx.emby_vr.vr.VrTuning.videoSurfaceMaxW.let {
-                        if (it > 0) it else 1920
+                        if (it > 0) it.coerceAtMost(com.xxxx.emby_vr.vr.VrTuning.VIDEO_W_HARD_CAP)
+                        else srcW
                     }
                 }
                 val vw = if (srcW > cap) cap else srcW
@@ -5090,9 +5092,9 @@ class MainActivity : ComponentActivity() {
                  */
                 com.xxxx.emby_vr.vr.VrNative.setVideoLayerMaxW(
                     if (com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource) {
-                        /* P5 那条链单独压：上限走 video_surface_w（试黑纹就是试这个数） */
+                        /* 上限走 video_surface_w；没设就 0（原生按片源原分辨率，父亲 2026-11-24） */
                         com.xxxx.emby_vr.vr.VrTuning.videoSurfaceMaxW.let {
-                            if (it > 0) it else 1280
+                            if (it > 0) it else 0
                         }
                     } else {
                         com.xxxx.emby_vr.vr.VrTuning.rawMaxW.let {
