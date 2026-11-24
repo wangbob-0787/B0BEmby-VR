@@ -63,6 +63,10 @@ object VrNative {
     /** HDR10 走自管解码：颜色（PQ→线性→压亮度→BT.2020→709）由渲染层做 */
     fun setHdr10StreamActive(on: Boolean) = runCatching { nativeSetHdr10StreamActive(if (on) 1 else 0) }
 
+    /** HDR10 最小着色器（只留画面一个采样器），调参 hdr10_mini 控制 */
+    fun setHdr10Mini(on: Boolean) = runCatching { nativeSetHdr10Mini(if (on) 1 else 0) }
+    private external fun nativeSetHdr10Mini(on: Int)
+
     private external fun nativeSetHdr10StreamActive(on: Int)
 
     /** 画面直出（定位用）：跳过全部颜色处理与输出转换，直接吐取样值。 */

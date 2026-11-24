@@ -97,6 +97,7 @@ static std::atomic<int> gDvRendererReshape{0};
 static std::atomic<int> gDvStreamActive{0};
 /* 画面直出（定位用，2026-11-16）：跳过全部颜色处理与输出转换，直接吐取样值。 */
 std::atomic<int> gRawVideo{0};
+std::atomic<int> gMiniOn{0};   // 1 = 视频层用 HDR10 最小着色器（单采样器，调参 hdr10_mini）
 /* 取样导出：调参 dump_raw=1 时，视频层画完回读中心点与网格均值，写一行日志 */
 static std::atomic<int> gDumpRaw{0};
 static std::atomic<int> gDumpRawDone{0};
@@ -519,8 +520,18 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetDumpRaw(JNIEnv *, jclass, jint v) {
     LOGI_RAW("取样导出 → %d", v ? 1 : 0);
 }
 
+/* HDR10 最小着色器开关（调参 hdr10_mini）：只影响视频层 2D 这一种组合 */
+extern "C" void setHdr10Mini(int on) { gMiniOn.store(on ? 1 : 0); }
+
 /* HDR10 走自管解码时，颜色由渲染层做（父亲 2026-11-23 定） */
 static std::atomic<int> gHdr10Active{0};
+
+extern "C" JNIEXPORT void JNICALL
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetHdr10Mini(JNIEnv * /* env */, jobject /* this */,
+                                                      jint on) {
+    setHdr10Mini((int) on);
+}
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetHdr10StreamActive(JNIEnv * /* env */,
@@ -8263,6 +8274,61 @@ void main() {
  * 内容变了就把交换链每张图都写成新内容（连画几张），之后内容不变才能安全跳过。
  * 任何一张没写成（acquire 失败）→ 关掉跳过，退回每帧照画，避免出现旧内容导致的抖动。
  */
+/*
+ * HDR10 最小着色器（父亲 2026-11-24 提议）：只保留画面一个采样器 + HDR10 公式。
+ *
+ * 动机：主着色器除画面外还挂着深度图、偏移表两个采样器。Adreno 上多采样器
+ * 单元冲突会让整次采样无效（历史坑：整层黑）。去掉它们后若画面出现，
+ * 就说明是"多采样器"这一条；仍黑则与它无关。调参 hdr10_mini=1 才启用。
+ */
+static GLuint gMiniProg = 0;
+static QuadLocs gMiniU;
+static const char *kMiniFs = R"(#version 300 es
+#extension GL_OES_EGL_image_external_essl3 : require
+precision highp float;
+in vec2 vUv;
+uniform samplerExternalOES uTexture;
+uniform float uHdr10Gain;
+uniform vec2 uUvScale;
+uniform vec2 uUvBias;
+out vec4 fragColor;
+void main() {
+    vec3 c = texture(uTexture, vUv * uUvScale + uUvBias).rgb;
+    float gain = uHdr10Gain > 0.5 ? uHdr10Gain : 1.0;
+    vec3 pq = clamp(c * gain, 0.0, 1.0);
+    vec3 n = pow(pq, vec3(1.0 / 78.84375));
+    vec3 num = max(n - 0.8359375, 0.0);
+    vec3 den = max(18.8515625 - 18.6875 * n, 1e-6);
+    vec3 lq = pow(num / den, vec3(1.0 / 0.1593017578));
+    vec3 lin = lq * 100.0;
+    float y = dot(lin, vec3(0.2627, 0.6780, 0.0593));
+    float over = max(y - 200.0, 1e-6) / max(y, 1e-6);
+    lin = mix(lin, vec3(y), over);
+    float sig = max(max(lin.r, lin.g), lin.b);
+    float peak = 52.0;
+    float sig2 = sig * peak / (sig + peak);
+    lin *= sig2 / max(sig, 1e-6);
+    vec3 r709 = vec3(dot(lin, vec3( 1.6605, -0.5876, -0.0728)),
+                     dot(lin, vec3(-0.1246,  1.1329, -0.0083)),
+                     dot(lin, vec3(-0.0182, -0.1006,  1.1187)));
+    r709 = clamp(r709, 0.0, 1.0);
+    vec3 enc = mix(4.5 * r709, 1.099 * pow(r709, vec3(0.45)) - 0.099, step(0.018, r709));
+    fragColor = vec4(clamp(enc, 0.0, 1.0), 1.0);
+}
+)";
+
+static GLuint ensureMiniProg() {
+    if (gMiniProg != 0) return gMiniProg;
+    gMiniProg = buildProgramWithSampler(kQuadVs, kMiniFs, "samplerExternalOES");
+    if (gMiniProg != 0) {
+        gMiniU = QuadLocs{};
+        fillQuadLocs(gMiniProg, gMiniU);
+        if (gMiniU.tex >= 0) glUseProgram(gMiniProg), glUniform1i(gMiniU.tex, 0);
+        VLOGI("HDR10 最小着色器就绪（单采样器）");
+    }
+    return gMiniProg;
+}
+
 bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
                      bool videoLayerPass, bool skipDrawIfWritten = false,
                      int eyeIndex = -1, const StereoSrc *src = nullptr) {
@@ -8276,8 +8342,13 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
      */
     ensurePlaceholder(c);   // 不做视差的绘制也要给采样器单元一个合法绑定
     const bool delayed = src != nullptr && src->colorTex != 0 && c.ringProg != 0;
-    const GLuint prog = delayed ? c.ringProg : c.program;
-    const QuadLocs &u = delayed ? c.ringU : c.quadU;
+    /*
+     * 最小着色器只用于「视频层 + 2D + HDR10 + 没开环」这一种组合，其余一律走主程序。
+     */
+    const bool useMini = videoLayerPass && !delayed && videoLayerPass && gMiniOn.load() != 0 &&
+                         gHdr10Active.load() != 0 && c.depthOn == 0 && ensureMiniProg() != 0;
+    const GLuint prog = useMini ? gMiniProg : (delayed ? c.ringProg : c.program);
+    const QuadLocs &u = useMini ? gMiniU : (delayed ? c.ringU : c.quadU);
 
     uint32_t idx = 0;
     if (!acquireWritableImage(c, L, &idx, videoLayerPass)) return false;
