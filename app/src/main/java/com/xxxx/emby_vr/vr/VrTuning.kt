@@ -764,16 +764,6 @@ object VrTuning {
     /** 界面 / 网页层开关：起播与轮询共用一份解析，避免两处漂移 */
     private fun applyFlags(raw: Map<String, String>): List<String> {
         val applied = mutableListOf<String>()
-        run {
-            val knee = raw["hdr10_knee"]?.toFloatOrNull()
-            val peak = raw["hdr10_peak"]?.toFloatOrNull()
-            if (knee != null || peak != null) {
-                if (knee != null) hdr10Knee = knee
-                if (peak != null) hdr10Peak = peak
-                VrNative.setHdr10Tuning(hdr10Knee, hdr10Peak)
-                applied += "HDR10 高光 起压${hdr10Knee} 峰值${hdr10Peak}"
-            }
-        }
         raw["dv_off"]?.toIntOrNull()?.let {
             if (it != dvOff) {
                 dvOff = it
@@ -972,6 +962,17 @@ object VrTuning {
         prev: Map<String, String> = emptyMap(),
     ): List<String> {
         val applied = mutableListOf<String>()
+        /*
+         * HDR10 高光两个可调项放在这里（每秒轮询都会调用 applyNative）：
+         * 放在起播那次解析里等于"只有重新起播才生效"，运行中改文件没反应（2026-11-24 实测）。
+         */
+        run {
+            val knee = raw["hdr10_knee"]?.toFloatOrNull()
+            val peak = raw["hdr10_peak"]?.toFloatOrNull()
+            if (knee != null) hdr10Knee = knee
+            if (peak != null) hdr10Peak = peak
+            VrNative.setHdr10Tuning(hdr10Knee, hdr10Peak)
+        }
         raw["super_sample"]?.toFloatOrNull()?.let {
             VrNative.setTuning(KEY_SUPER_SAMPLE, it)
             applied += "超采样 $it"
