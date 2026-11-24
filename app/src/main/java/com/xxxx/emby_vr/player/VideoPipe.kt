@@ -554,6 +554,20 @@ class VideoPipe {
              * 那属于要在实测里发现的问题，不在这里猜。
              */
             Log.i(TAG, "解码组件：${codec.name}（软解会是 c2.android.* 之类）")
+            /*
+             * 告诉系统这张画面是 HDR10（BT.2020 + PQ）：不声明时驱动按 8 位 SDR 处理，
+             * 10 位数据被压小约 4 倍，着色器再按 PQ 解码就越算越黑（.15 实测：
+             * 值÷4 → 输出均值 0.008）。声明后驱动才可能按高精度交给纹理。
+             * 只有 HDR10 片设，P5 那条路保持原样。
+             */
+            if (hdr10Stream) {
+                runCatching {
+                    if (android.os.Build.VERSION.SDK_INT >= 28) {
+                        surface.setColorspace(android.view.Surface.COLORSPACE_BT2020_PQ)
+                        Log.i(TAG, "画面 Surface 声明为 BT2020/PQ（HDR10 高精度通路）")
+                    }
+                }.onFailure { Log.w(TAG, "Surface 声明 HDR 失败：${it.message}") }
+            }
             codec.configure(format, surface, null, 0)
             codec.start()
             decoder = codec
@@ -1246,6 +1260,8 @@ class VideoPipe {
     @Volatile private var readySignalled = false
 
     /* 读流计数（给独立监视线程用：主循环卡住时它照常报数） */
+    /** 本片是 HDR10（决定是否向系统声明 PQ 色彩空间） */
+    @Volatile var hdr10Stream: Boolean = false
     @Volatile private var statSamples = 0L
     @Volatile private var statBytes = 0L
     @Volatile private var statInMiss = 0L
