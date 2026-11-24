@@ -1476,7 +1476,17 @@ class VideoPipe {
     /** 由解码线程执行的清解码器（只在没握着输出缓冲时） */
     private fun applyPendingFlush() {
         if (!pendingSourceFlush) return
-        if (heldIdx >= 0) return
+        /*
+         * 手里攥着的那一帧必须先还回去（2026-11-24 真机 + .15 状态机模型共同结论）：
+         * 跳转后渲染侧不再来取这一帧，解码线程就会卡在"持有未归还、不能取新输出"上，
+         * 表现正是跳完画面停在最后一帧、包在队列里堆着。原来这里直接 return，
+         * 等于把死锁留在原地。
+         */
+        if (heldIdx >= 0) {
+            runCatching { codec?.releaseOutputBuffer(heldIdx, false) }
+            Log.i(TAG, "全包档跳转：归还跳转前攥着的帧（idx=$heldIdx）")
+            heldIdx = -1
+        }
         pendingSourceFlush = false
         awaitingKeyframe = true
         skippedToKeyframe = 0
