@@ -218,6 +218,8 @@ class DemuxSession(
         var rxVideo = 0
         var enqVideo = 0
         var droppedVideo = 0L
+        /* 丢包后要一直丢到下一个关键帧，否则解码器会拿缺参考帧的画面继续解，画面碎成一片 */
+        var dropUntilKey = false
         val meta = IntArray(5)
         var waitMs = 0L
         var netRetry = 0
@@ -365,18 +367,33 @@ class DemuxSession(
                              * 写入前先报"排了多久"：HDR10 真机上样本停在 11 包、解码器只出 1 帧，
                              * 怀疑卡在队列写入而不是读网络（r1720 的读停滞看门狗没触发）。
                              */
-                            val putT0 = System.currentTimeMillis()
                             /*
-                             * 视频用非阻塞投递（2026-11-25 豆豆定案）：这条读线程同时喂画面/声音/字幕，
-                             * 在视频队列上等腾空会让声音一起饿死，而声音饿死的直接后果是
-                             * "停写 -> 画面一起停 -> 更没人取视频包"的自锁。宁可丢帧，不许卡住读线程。
+                             * 读速控制：队列满先等它腾空（最多 300ms），等不到才丢，且一丢就丢到关键帧。
+                             *
+                             * 原来一满就立刻丢包，丢掉的若是参考帧，解码器后面每一帧都错，画面碎到下一个
+                             * 关键帧（父亲 2026-11-25 实测：2 点后频繁花屏，快进一下就好）。
+                             * 等待只发生在投递这一下，音频包有独立队列缓冲，300ms 不足以把声音饿死；
+                             * 原来担心的"停写→画面停"自锁要长时间阻塞才成立。
                              */
-                            val putOk = videoQueue.offer(SampleQueue.Packet(data, n, ptsUs, key))
+                            val putT0 = System.currentTimeMillis()
+                            val packet = SampleQueue.Packet(data, n, ptsUs, key)
+                            var putOk = false
+                            if (!dropUntilKey || key) {
+                                if (key) dropUntilKey = false
+                                putOk = videoQueue.offer(packet)
+                                var waitedMs = 0L
+                                while (!putOk && running.get() && waitedMs < 300L) {
+                                    Thread.sleep(10)
+                                    waitedMs += 10L
+                                    putOk = videoQueue.offer(packet)
+                                }
+                            }
                             val putMs = System.currentTimeMillis() - putT0
                             if (!putOk) {
+                                dropUntilKey = true
                                 droppedVideo++
                                 if (droppedVideo % 50L == 1L) {
-                                    Log.w(TAG, "视频队列满 → 丢弃 $droppedVideo 包（不阻塞读线程）")
+                                    Log.w(TAG, "视频队列满 → 丢弃 $droppedVideo 包（等到关键帧再恢复）")
                                 }
                                 continue
                             }
