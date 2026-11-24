@@ -8734,6 +8734,61 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
              * 每组只做一次；做完把 FBO / 视口 / 程序交还给视频层。
              */
             if (rawGroupStart) {
+                /*
+                 * 用**主着色器本身**、按这一趟的真实参数画到 64×64 小图再读回。
+                 *
+                 * 为什么必须这样：解码器交的是外部纹理，CPU 读不了，只能"画一次再读"。
+                 * 之前的 C 探针用的是自写直通程序，只能证明"纹理有内容"，
+                 * 回答不了"主着色器这一趟到底拿到什么"。这里程序、采样窗口、
+                 * 是否改读环形缓冲、纹理绑定全部与真正上屏时一模一样 ——
+                 * 读出来是黑，就是主着色器这一趟真的采到黑的，不用再猜。
+                 */
+                {
+                    static GLuint mpFbo = 0, mpTex = 0;
+                    const int MW = 64;
+                    if (mpFbo == 0) {
+                        glGenTextures(1, &mpTex);
+                        glBindTexture(GL_TEXTURE_2D, mpTex);
+                        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, MW, MW, 0, GL_RGBA,
+                                     GL_UNSIGNED_BYTE, nullptr);
+                        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                        glGenFramebuffers(1, &mpFbo);
+                        glBindFramebuffer(GL_FRAMEBUFFER, mpFbo);
+                        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                               GL_TEXTURE_2D, mpTex, 0);
+                    } else {
+                        glBindFramebuffer(GL_FRAMEBUFFER, mpFbo);
+                    }
+                    glViewport(0, 0, MW, MW);
+                    glUseProgram(prog);
+                    glActiveTexture(GL_TEXTURE0);
+                    glBindTexture(GL_TEXTURE_EXTERNAL_OES, tex);
+                    glBindVertexArray(c.videoLayerVao);
+                    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                    glBindVertexArray(0);
+                    float mSum = 0.f;
+                    int mMax = 0;
+                    for (int jj = 0; jj < 3; ++jj) {
+                        for (int ii = 0; ii < 3; ++ii) {
+                            unsigned char c4[4] = {0, 0, 0, 0};
+                            const int px = (int) ((ii + 0.5f) * MW / 3);
+                            const int py = (int) ((jj + 0.5f) * MW / 3);
+                            glReadPixels(px, py, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, c4);
+                            int mm = c4[0] > c4[1] ? (c4[0] > c4[2] ? c4[0] : c4[2])
+                                                   : (c4[1] > c4[2] ? c4[1] : c4[2]);
+                            mSum += mm / 255.f;
+                            if (mm > mMax) mMax = mm;
+                        }
+                    }
+                    LOGI_RAW("MAINPROBE|grp=%d|prog=%u|main=%u|ring=%u|mean=%.4f|max=%.4f|tex=%u",
+                             (gDumpRawDone.load() - 1) / 3 + 1, (unsigned) prog,
+                             (unsigned) c.program, (unsigned) c.ringProg,
+                             mSum / 9.f, mMax / 255.f, (unsigned) tex);
+                    glBindFramebuffer(GL_FRAMEBUFFER, L.fbos[L.index]);
+                    glViewport(0, 0, L.width, L.height);
+                    glUseProgram(prog);
+                }
                 static GLuint srcProbeProg = 0;
                 static GLuint srcProbeFbo = 0;
                 static GLuint srcProbeTex = 0;
