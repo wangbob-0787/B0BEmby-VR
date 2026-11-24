@@ -532,6 +532,12 @@ extern "C" void setHdr10Tuning(float knee, float peak) {
 static std::atomic<int> gHdr10Active{0};
 
 extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeDrainVideoFrames(JNIEnv * /* env */, jobject /* this */,
+                                                          jint n) {
+    gVideoDrainReq.store(n > 0 ? (int) n : 4);
+}
+
+extern "C" JNIEXPORT void JNICALL
 Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetHdr10Tuning(JNIEnv * /* env */, jobject /* this */,
                                                         jfloat knee, jfloat peak) {
     setHdr10Tuning((float) knee, (float) peak);
@@ -3461,6 +3467,12 @@ std::thread gThread;
  */
 std::function<void()> gPanelUpdate;
 std::function<void()> gVideoUpdate;
+/*
+ * 跳转时清掉 Surface 队列里的积压帧（2026-11-25 定案方向）。
+ * 跳转前送进 Surface 的帧仍排在队列里，队列满后解码器 release 就会阻塞，
+ * 表现是画面停在最后一帧、解码计数不涨。这里在渲染线程连续取几次把队列抽干。
+ */
+std::atomic<int> gVideoDrainReq{0};
 static std::atomic<int> gVideoTexUpdates{0};   // 播放画面纹理被取帧的次数（取样日志用来对齐"当时有没有帧"）
 /**
  * 海报墙内容是否换了新帧（2026-10-14）。
@@ -9323,6 +9335,19 @@ void frameLoop(VrContext &c) {
             if (gFinishBeforeTexUpdate.load() != 0) glFinish();
             gVideoUpdate();
             gVideoTexUpdates.fetch_add(1);
+            /* 跳转后抽干积压帧：每次抽 4 帧，直到没人再请求 */
+            if (gVideoDrainReq.load() != 0) {
+                int n = gVideoDrainReq.exchange(0);
+                if (n > 0) {
+                    int drained = 0;
+                    for (int i = 0; i < n; i++) {
+                        gVideoUpdate();
+                        gVideoTexUpdates.fetch_add(1);
+                        drained++;
+                    }
+                    LOGI_RAW("跳转后抽干积压帧：取 %d 次（是否还有新帧由下一帧判断）", drained);
+                }
+            }
         }
 
         /*

@@ -1459,6 +1459,8 @@ class VideoPipe {
      * 真正的 flush 由解码线程在两帧之间自己做（见 pump 顶部）。
      */
     fun flushForSessionSeek() {
+        /* 先把 Surface 队列里的积压帧抽干：不抽的话队列满、解码器 release 阻塞，画面停在最后一帧 */
+        com.xxxx.emby_vr.vr.VrNative.drainVideoFrames(6)
         pendingSourceFlush = true
         Log.i(TAG, "全包档跳转：已登记清解码器，等解码线程在两帧之间执行")
     }

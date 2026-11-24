@@ -64,6 +64,10 @@ object VrNative {
     fun setHdr10StreamActive(on: Boolean) = runCatching { nativeSetHdr10StreamActive(if (on) 1 else 0) }
 
     /** HDR10 高光压缩两个可调项（调参 hdr10_knee / hdr10_peak），改文件即生效 */
+    /** 跳转后抽干 Surface 队列里的积压帧（否则解码器 release 阻塞、画面停住） */
+    fun drainVideoFrames(n: Int = 4) = runCatching { nativeDrainVideoFrames(n) }
+    private external fun nativeDrainVideoFrames(n: Int)
+
     fun setHdr10Tuning(knee: Float, peak: Float) =
         runCatching { nativeSetHdr10Tuning(knee, peak) }
     private external fun nativeSetHdr10Tuning(knee: Float, peak: Float)
