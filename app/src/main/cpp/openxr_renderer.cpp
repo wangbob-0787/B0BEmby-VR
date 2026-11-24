@@ -6526,10 +6526,11 @@ bool renderEye(VrContext &c, int eyeIndex, const XrView &view) {
         const int rawNow = gRawVideo.load();
         const int hdrNow = gHdr10Active.load();
         int slot = (rawNow ? 1 : 0) * 2 + (hdrNow ? 1 : 0);
-        if (gDumpRawDone & (1 << slot)) {
+        const int doneMask = gDumpRawDone.load();
+        if (doneMask & (1 << slot)) {
             /* 这一组合已导过 */
         } else {
-            gDumpRawDone |= (1 << slot);
+            gDumpRawDone.store(doneMask | (1 << slot));
             GLenum preErr = glGetError();
             const int gw = 32, gh = 18;
             const int total = gw * gh;
@@ -6812,6 +6813,7 @@ void drawOverlayIntoVideoLayer(VrContext &c, GLuint tex,
     if (c.jitterLoc >= 0) glUniform1f(c.jitterLoc, 0.f);
     glBindVertexArray(c.videoLayerVao);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    if (videoLayerPass) gVideoDraws.fetch_add(1);
     glBindVertexArray(0);
     glDisable(GL_BLEND);
 }
