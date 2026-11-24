@@ -840,10 +840,18 @@ class VideoPipe {
             val outIdx = codec.dequeueOutputBuffer(info, DEQUEUE_TIMEOUT_US)
             if (outProbe < 30) {
                 outProbe++
+                /*
+                 * 全量取证：这是判断"解码器到底有没有解出画面"的唯一硬证据。
+                 * 标志位：1=KEY_FRAME、2=CODEC_CONFIG、4=END_OF_STREAM、8=PARTIAL_FRAME。
+                 * 若每帧都是 size=8 且带 KEY_FRAME，说明它在回吐配置而不是画面（r1727 现象）。
+                 */
                 Log.i(
                     TAG,
                     "取输出#$outProbe 返回=$outIdx" +
-                        (if (outIdx >= 0) " size=${info.size} 标志=${info.flags}" else "") +
+                        (if (outIdx >= 0) {
+                            " size=${info.size} 标志=${info.flags} 呈现=${info.presentationTimeUs}" +
+                                " 表面=有"
+                        } else "") +
                         " 已喂=$totalFed",
                 )
             }
