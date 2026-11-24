@@ -103,6 +103,8 @@ std::atomic<float> gHdr10Peak{52.f};    // 压到多少尼特（屏幕目标峰�
 /* 取样导出：调参 dump_raw=1 时，视频层画完回读中心点与网格均值，写一行日志 */
 static std::atomic<int> gDumpRaw{0};
 static std::atomic<int> gDumpRawDone{0};
+/* 跳转后"抽干"请求：解码器交帧阻塞时，由渲染线程连续取帧把队列腾空 */
+std::atomic<int> gVideoDrainReq{0};
 static bool g_doviLogged = false;
 
 /*
@@ -3486,7 +3488,7 @@ std::function<void()> gVideoUpdate;
  * 跳转前送进 Surface 的帧仍排在队列里，队列满后解码器 release 就会阻塞，
  * 表现是画面停在最后一帧、解码计数不涨。这里在渲染线程连续取几次把队列抽干。
  */
-std::atomic<int> gVideoDrainReq{0};
+
 static std::atomic<int> gVideoTexUpdates{0};   // 播放画面纹理被取帧的次数（取样日志用来对齐"当时有没有帧"）
 /**
  * 海报墙内容是否换了新帧（2026-10-14）。
