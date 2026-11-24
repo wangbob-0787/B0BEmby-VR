@@ -8640,29 +8640,39 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
     }
 
     /*
-     * 取样导出（一次性）：视频层已经画完、还绑着这张图时回读 9 个点。
-     * 只回答一个问题：黑是"取样值为 0"还是"公式算错"。调参 dump_raw=1 生效。
+     * 取样导出：回答一个问题 —— 黑是"上色公式算黑的"，还是"图里本来就有内容、只是没送到屏幕上"。
+     * 调参 dump_raw=1 生效。
+     *
+     * 只在「HDR10 上色真正生效」且「画的是视频层」时采，每 90 帧采一次、共 5 次。
+     * 之前是无条件采一次：起播前渲染循环先画一帧空画面，那时 hdr10 开关还是 0、
+     * 纹理里也没有内容，于是这一次采样永远落在"上色之前 + 空画面"上，读回值恒为全黑
+     * （2026-11-24 两次实测 RAWSTAT|hdr10=0|raw=0|max=0.0078），回答不了这个问题。
      */
-    if (gDumpRaw.load() != 0 && gDumpRawDone.load() == 0) {
-        gDumpRawDone.store(1);
-        const int gw = 3, gh = 3;
-        float sum = 0.f;
-        int mx = 0;
-        for (int jj = 0; jj < gh; ++jj) {
-            for (int ii = 0; ii < gw; ++ii) {
-                int xx = (int) ((ii + 0.5f) * L.width / gw);
-                int yy = (int) ((jj + 0.5f) * L.height / gh);
-                unsigned char c4[4] = {0, 0, 0, 0};
-                glReadPixels(xx, yy, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, c4);
-                int mm = c4[0] > c4[1] ? (c4[0] > c4[2] ? c4[0] : c4[2]) : (c4[1] > c4[2] ? c4[1] : c4[2]);
-                sum += mm / 255.f;
-                if (mm > mx) mx = mm;
-                LOGI_RAW("RAWDOT|%d|%d|%d|%d|%d", jj * gw + ii, c4[0], c4[1], c4[2]);
+    if (gDumpRaw.load() != 0 && videoLayerPass && gHdr10Active.load() != 0 &&
+        gDumpRawDone.load() < 5) {
+        static int rawTick = 0;
+        if ((++rawTick % 90) == 0) {
+            gDumpRawDone.fetch_add(1);
+            const int gw = 3, gh = 3;
+            float sum = 0.f;
+            int mx = 0;
+            for (int jj = 0; jj < gh; ++jj) {
+                for (int ii = 0; ii < gw; ++ii) {
+                    int xx = (int) ((ii + 0.5f) * L.width / gw);
+                    int yy = (int) ((jj + 0.5f) * L.height / gh);
+                    unsigned char c4[4] = {0, 0, 0, 0};
+                    glReadPixels(xx, yy, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, c4);
+                    int mm = c4[0] > c4[1] ? (c4[0] > c4[2] ? c4[0] : c4[2]) : (c4[1] > c4[2] ? c4[1] : c4[2]);
+                    sum += mm / 255.f;
+                    if (mm > mx) mx = mm;
+                    LOGI_RAW("RAWDOT|%d|%d|%d|%d|%d", jj * gw + ii, c4[0], c4[1], c4[2]);
+                }
             }
+            LOGI_RAW("RAWSTAT|n=%d|hdr10=%d|raw=%d|mean=%.4f|max=%.4f|vp=%dx%d|glErr=0x%x",
+                     gDumpRawDone.load(), gHdr10Active.load(), gRawVideo.load(),
+                     sum / (gw * gh), mx / 255.f,
+                     L.width, L.height, (unsigned) glGetError());
         }
-        LOGI_RAW("RAWSTAT|hdr10=%d|raw=%d|mean=%.4f|max=%.4f|vp=%dx%d|glErr=0x%x",
-                 gHdr10Active.load(), gRawVideo.load(), sum / (gw * gh), mx / 255.f,
-                 L.width, L.height, (unsigned) glGetError());
     }
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
