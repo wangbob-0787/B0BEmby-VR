@@ -44,7 +44,7 @@ class FfmpegAudioDecoder(
      * 音频那一路换成 avformat 之后，没有 MediaFormat 可读；extradata 由解封装自己处理，
      * 这里只传解码器名与声道数。targetChannels 传 0 表示保持源布局。
      */
-    fun openWithParams(codecName: String, channels: Int): Boolean {
+    fun openWithParams(codecName: String, channels: Int, csd: ByteArray? = null): Boolean {
         close()
         if (!AudioDecoderNative.available) {
             Log.e(TAG, "自检失败：audiodec 未加载")
@@ -52,7 +52,12 @@ class FfmpegAudioDecoder(
         }
         handle = AudioDecoderNative.nativeNew()
         if (handle == 0L) return false
-        val rc = AudioDecoderNative.nativeOpen(handle, codecName, null, 0)
+        /*
+         * extradata 必须带上：AAC 没有 AudioSpecificConfig 时解码器打不开，
+         * 播放位置永远停在 0 → 播放时钟不走 → 画面等时钟不再取包（r1728 现场）。
+         */
+        val rc = AudioDecoderNative.nativeOpen(handle, codecName, csd, 0)
+        Log.i(TAG, "打开 $codecName csd=${csd?.size ?: 0}B rc=$rc")
         if (rc != 0) {
             Log.e(TAG, "自检失败：nativeOpen($codecName) rc=$rc")
             close()

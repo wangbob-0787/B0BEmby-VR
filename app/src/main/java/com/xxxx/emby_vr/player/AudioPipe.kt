@@ -370,7 +370,7 @@ class AudioPipe {
             }
             if (useFfmpeg) {
                 val d = FfmpegAudioDecoder(mime, fmt ?: MediaFormat())
-                val opened = if (fmt != null) d.open() else d.openWithParams(demuxCodec, channelCount)
+                val opened = if (fmt != null) d.open() else d.openWithParams(demuxCodec, channelCount, audioCsd)
                 if (opened) {
                     ffDec = d
                     decoderKind = "ffmpeg(${d.desc})"

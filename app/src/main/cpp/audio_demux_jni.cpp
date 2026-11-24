@@ -756,14 +756,46 @@ Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxVideoCsd(
      * 位深与传输曲线一起交出去：只给 csd 时系统按 8 位配解码器，
      * 10 位片源每帧只吐 8 字节（r1727 取证）。PQ(ST2084) = 16。
      */
-    int depth = p->bits_per_raw_sample > 0 ? p->bits_per_raw_sample : 8;
-    if (depth <= 8 && p->profile == FF_PROFILE_HEVC_MAIN_10) depth = 10;
+    /*
+     * 位深判定：HEVC 的 bits_per_raw_sample 常为 0 或 8，不可靠；
+     * 以像素格式（yuv420p10le 等）与 profile(Main10) 为准（豆豆 2026-11-24）。
+     */
+    int depth = 8;
+    switch (p->format) {
+        case AV_PIX_FMT_YUV420P10LE: case AV_PIX_FMT_YUV422P10LE:
+        case AV_PIX_FMT_YUV444P10LE: case AV_PIX_FMT_P010LE:
+            depth = 10; break;
+        default:
+            if (p->profile == FF_PROFILE_HEVC_MAIN_10) depth = 10;
+            else if (p->bits_per_raw_sample > 8) depth = p->bits_per_raw_sample;
+            break;
+    }
     jint v[6] = {p->width, p->height, p->extradata_size, (jint) p->codec_id,
                  depth, (p->color_trc == AVCOL_TRC_SMPTE2084) ? 1 : 0};
     env->SetIntArrayRegion(out, 0, 6, v);
     if (!p->extradata || p->extradata_size <= 0) return nullptr;
     jbyteArray r = env->NewByteArray(p->extradata_size);
     env->SetByteArrayRegion(r, 0, p->extradata_size, (const jbyte *) p->extradata);
+    return r;
+}
+
+/*
+ * 音频轨的 extradata（AAC 的 AudioSpecificConfig 等）。
+ *
+ * 没有它，FFmpeg 的 AAC 解码器打不开或解不出帧 —— 实测 mkv 里 csd=0B 时
+ * 音频起播日志正常、但播放位置永远停在 0，播放时钟不走，画面被"等时钟"挡住
+ * 不再取包，整条自管解码看起来像卡死（r1728 现场）。
+ */
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_xxxx_emby_1vr_player_AudioDemuxNative_nativeDemuxAudioCsd(
+        JNIEnv *env, jobject, jlong handle) {
+    Demux *d = fromHandle(handle);
+    if (!d || !d->fmt || d->audioIdx < 0) return nullptr;
+    AVCodecParameters *p = d->fmt->streams[d->audioIdx]->codecpar;
+    if (!p->extradata || p->extradata_size <= 0) return nullptr;
+    jbyteArray r = env->NewByteArray(p->extradata_size);
+    env->SetByteArrayRegion(r, 0, p->extradata_size, (const jbyte *) p->extradata);
+    LOGI("音频 csd: %d 字节", p->extradata_size);
     return r;
 }
 

@@ -377,6 +377,10 @@ class DemuxSession(
      * 而 ffmpeg 的 extradata 是 hvcC（129 字节、开头 `01 22 60 …`）。这份 hvcC 硬解吃了配置，
      * 但一帧都不吐（满屏纯色 / 黑屏），换成 Annex-B 才与能播的那条路一致。
      */
+    /** 音频轨 extradata：AudioPipe 用它打开软解 */
+    fun audioCsd(): ByteArray? =
+        runCatching { AudioDemuxNative.nativeDemuxAudioCsd(handle) }.getOrNull()
+
     fun videoFormat(): MediaFormat? {
         val csd = videoCsd ?: return null
         if (videoWidth <= 0 || videoHeight <= 0) return null
@@ -384,7 +388,13 @@ class DemuxSession(
             27 -> "video/avc"
             else -> "video/hevc"
         }
-        val annexB = hvcCToAnnexB(csd)
+        /*
+         * 打包格式开关：豆豆主张 video/hevc 的 csd-0 要原样 hvcC；
+         * 但我们这条路上 Annex-B 是 P5 现在能正常播放的形态，
+         * 不能盲改，做成调参两态对照（csd_raw=1 用原样 hvcC）。
+         */
+        val rawCsd = false   /* 对照实验时改 true：用原样 hvcC 而非 Annex-B */
+        val annexB = if (rawCsd) csd else hvcCToAnnexB(csd)
         runCatching {
             val head = annexB.copyOf(minOf(12, annexB.size)).joinToString(" ") { "%02x".format(it) }
             Log.i(TAG, "csd 转换：hvcC=${csd.size}B → Annex-B=${annexB.size}B 头=$head")

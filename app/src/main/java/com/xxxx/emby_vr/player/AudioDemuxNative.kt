@@ -46,6 +46,9 @@ object AudioDemuxNative {
     /** 音频解码器名（eac3/truehd/dca 等） */
     external fun nativeDemuxCodecName(handle: Long): String
 
+    /** 音频轨 extradata（AAC 的 ASC 等）。缺它时软解打不开，播放时钟不走 */
+    external fun nativeDemuxAudioCsd(handle: Long): ByteArray?
+
     /** 打断阻塞中的读/打开（stop 用）；打断后这个 handle 作废，必须重新 open */
     external fun nativeDemuxAbort(handle: Long)
 
