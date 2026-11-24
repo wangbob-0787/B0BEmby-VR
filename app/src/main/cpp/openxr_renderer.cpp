@@ -8650,6 +8650,15 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
         if (u.uvBias >= 0) glUniform2f(u.uvBias, 0.f, 0.f);
     }
 
+    /*
+     * 纹理绑定紧贴绘制做一次。
+     *
+     * 原来只在函数前段绑一次（8391），到真正 glDrawArrays 之间隔了 260 多行，
+     * 中间任何一处改绑都会让这一趟采到别的纹理 —— 表现正是"同一张纹理，
+     * 直通程序能读到、主程序采到 0"（2026-11-24 实测）。
+     */
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, tex);
     glBindVertexArray(c.videoLayerVao);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(0);
