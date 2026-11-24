@@ -426,6 +426,18 @@ class MainActivity : ComponentActivity() {
      *
      * 纠偏规则见 [smoothPosMs] 的注释：对齐大跳变、慢慢追落后、绝不后退。
      */
+    /**
+     * 杜比参数闸门：只有真杜比片才要求"参数就绪"。
+     *
+     * HDR10/普通片没有 RPU，那个标志永远为 0；无条件等它会把音频放行和画面放行一起卡死
+     * （豆豆 2026-11-24 定位：HDR10 只喂 11 个包就停、音频从未起跑）。
+     */
+    private fun doviGateOk(): Boolean {
+        val isDv = com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource
+        if (!isDv) return true
+        return com.xxxx.emby_vr.vr.VrNative.doviParamsReady()
+    }
+
     private fun refreshPosBase() {
         val now = android.os.SystemClock.elapsedRealtime()
         val target = currentPositionMs()
@@ -8307,7 +8319,15 @@ class MainActivity : ComponentActivity() {
          * 复用这里的重试循环（120ms 一拍），不另写第二套等待。
          * 20 秒兜底：真遇到没有杜比参数的片子也要收幕，否则就是永久黑屏。
          */
-        if (selfAudioOn && !com.xxxx.emby_vr.vr.VrNative.doviParamsReady()) {
+        /*
+         * 杜比参数闸门只对杜比片生效（父亲 2026-11-24 定，豆豆定位）。
+         *
+         * 原来无条件要求"参数就绪"，而 HDR10 片根本没有 RPU，这个标志永远是 0：
+         * 音频放行被永久挡住 → 音频线程不写数据 → 播放时钟停在 0 → 画面按时钟节流
+         * → 喂到第 11 个包就等 → 读循环把队列塞满后阻塞（整条自管解码看起来像卡死）。
+         * 非杜比片视为"已就绪"。
+         */
+        if (selfAudioOn && !doviGateOk()) {
             val waited = android.os.SystemClock.uptimeMillis() - waitingStartedAtMs
             if (waited < 20000L) {
                 handler.postDelayed({ tryRevealWaitingFrame() }, 120L)
@@ -9897,9 +9917,13 @@ class MainActivity : ComponentActivity() {
              */
             if (!selfFirstShown) return
             /* 与收黑幕同一个判据：声音也不许比正确画面先出来 */
-            if (!com.xxxx.emby_vr.vr.VrNative.doviParamsReady()) {
-                if (tries < 80) ui.postDelayed({ tryRelease(tries + 1) }, 100)
-                return
+            /* 同一道闸门：非杜比片直接视为就绪；杜比片等不到就兜底放行（不许静默 return） */
+            if (!doviGateOk()) {
+                if (tries < 80) {
+                    ui.postDelayed({ tryRelease(tries + 1) }, 100)
+                    return
+                }
+                Log.w(TAG, "放行兜底：等杜比参数 8 秒未到达（本片可能没有杜比参数）→ 照常放行")
             }
             /*
              * 队列要有存货才放行（豆豆 2026-11-21 第 2 条）。
