@@ -32,6 +32,8 @@ class DemuxSession(
         private const val TAG = "DemuxSession"
         private const val VIDEO_QUEUE_BYTES = 96 * 1024 * 1024
         private const val AUDIO_QUEUE_BYTES = 8 * 1024 * 1024
+        /** 最多提前读多少秒：网盘带宽远高于片源码率，不设上限会把 96MB 队列灌满，之后只能丢包 */
+        private const val READ_AHEAD_SEC = 20.0
     }
 
     /** 画面包（字节 + 时间戳微秒 + 是否关键帧） */
@@ -223,6 +225,9 @@ class DemuxSession(
         val meta = IntArray(5)
         var waitMs = 0L
         var netRetry = 0
+        /* 限速基准：首包 pts 与当时的墙钟；seek 后重新标定 */
+        var paceBasePtsMs = -1L
+        var paceBaseWallMs = 0L
         while (running.get()) {
             val target = seekTargetMs.get()
             if (target >= 0) {
@@ -236,6 +241,7 @@ class DemuxSession(
                 if (r >= 0) {
                     seekOriginPending = true
                     seekOriginTargetMs = target
+                    paceBasePtsMs = -1L
                 }
                 if (r >= 0) {
                     runCatching { onSeekDone?.invoke(target) }
@@ -243,6 +249,16 @@ class DemuxSession(
                     /* 跳转失败却当成成功，会让画面/声音停在两个不同的位置 */
                     runCatching { onSeekFailed?.invoke("跳转失败 rc=$r") }
                 }
+            }
+            /*
+             * 读速控制：最多提前读 READ_AHEAD_SEC 秒。
+             * 不限速时网盘会把 96MB 队列十几秒灌满，满了只能丢包，画面就碎；
+             * 音视频同一条流一起前进，保持这段提前量，声音不会被单独饿死。
+             */
+            if (paceBasePtsMs >= 0L && lastReadPtsMs > 0L) {
+                val readAheadSec = (lastReadPtsMs - paceBasePtsMs) / 1000.0 -
+                    (android.os.SystemClock.elapsedRealtime() - paceBaseWallMs) / 1000.0
+                if (readAheadSec > READ_AHEAD_SEC) Thread.sleep(10)
             }
             if (readCount % 200 == 0 && readCount > 0) {
                 Log.i(TAG, "视频管道|收到视频=$rxVideo 入队成功=$enqVideo（读循环第 $readCount 次）")
@@ -338,7 +354,13 @@ class DemuxSession(
                     waitMs = 0L
                     netRetry = 0
                     val ptsUs = if (meta[2] >= 0) meta[2] * 1000L else 0L
-                    if (ptsUs > 0L) lastReadPtsMs = ptsUs / 1000L
+                    if (ptsUs > 0L) {
+                        lastReadPtsMs = ptsUs / 1000L
+                        if (paceBasePtsMs < 0L) {
+                            paceBasePtsMs = lastReadPtsMs
+                            paceBaseWallMs = android.os.SystemClock.elapsedRealtime()
+                        }
+                    }
                     when (meta[0]) {
                         0 -> {
                             if (audioFirstPtsUs < 0L) audioFirstPtsUs = ptsUs
