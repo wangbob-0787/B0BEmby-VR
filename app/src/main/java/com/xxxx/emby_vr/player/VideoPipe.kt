@@ -433,6 +433,18 @@ class VideoPipe {
         }
         lastError = null
         fullMode = demuxSession != null
+        /*
+         * HDR10 渲染开关在每次起播/重建都重设一遍。
+         *
+         * 它原来只在起播分支里设一次，而换片/重建路径会把它清成 0（日志实证：
+         * 12:54:10 "本次播放是 HDR10 → 0" 之后再无置 1）—— 于是画面退回"直接显示
+         * PQ 原始码值"，看起来就是黑的（父亲 12:53 实测）。开关归渲染层，起播就该重设。
+         */
+        runCatching {
+            val hdr10 = com.xxxx.emby_vr.player.PlaybackFlags.hdr10Source &&
+                !com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource
+            com.xxxx.emby_vr.vr.VrNative.setHdr10StreamActive(hdr10)
+        }
         session = demuxSession
         sourceQueue = demuxSession?.videoQueue ?: feedQueue
         lowWaterSinceMs = 0L
