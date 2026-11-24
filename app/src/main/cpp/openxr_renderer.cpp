@@ -3820,6 +3820,8 @@ std::atomic<int> gVideoLayerMaxW{1280};
  * 都读这一个值，默认 4096（DCI 4K 宽）。
  */
 std::atomic<int> gVideoMaxW{4096};
+static std::atomic<int> gVideoLayerRealW{0};   // 视频层交换链的真实宽度（控制条显示用，父亲 2026-11-24）
+static std::atomic<int> gVideoLayerRealH{0};
 std::atomic<int> gNoDownsample{0};      // 1 = 关掉视频降采样分支（只做单次纹理采样）
 std::atomic<int> gNoJitter{0};          // 1 = 抖动种子固定（排除逐帧变化输入）
 std::atomic<int> gForceRgba8{0};        // 1 = 视频层交换链强制 GL_RGBA8（不试 sRGB）
@@ -9190,6 +9192,9 @@ void frameLoop(VrContext &c) {
             /* 76：Warp 输出缩放改由视频层的低分辨率中间缓冲承担（见 VideoLayerBuf::srcTex），
              * 交换链始终保持全分辨率 —— 交给系统合成器的必须是最清晰的那一版。 */
             if (vw >= 64 && vh >= 64 && buildQuadLayer(c, c.videoLayer, vw, vh, "视频层")) {
+                /* 这一对数才是"大屏幕上真实的清晰度"：控制条括号外必须读它，不能从菜单推算 */
+                gVideoLayerRealW.store(vw);
+                gVideoLayerRealH.store(vh);
                 const GLuint screenSrc = webOnScreen
                                              ? c.webTex
                                              : (panelOnScreen ? c.panelTex : c.videoTex);
@@ -11356,6 +11361,17 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetVideoSize(JNIEnv *env, jobject /* th
  *   · 系统播放器路径（Profile 8.x 等）：实测只要 1.8~2.4ms，完全吃得下更大的层。
  * 所以由 Java 侧在起播时按实际路径下发，而不是全局一个值。
  */
+extern "C" JNIEXPORT void JNICALL
+extern "C" JNIEXPORT jint JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeVideoLayerWidth(JNIEnv * /* env */, jobject /* this */) {
+    return (jint) gVideoLayerRealW.load();
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeVideoLayerHeight(JNIEnv * /* env */, jobject /* this */) {
+    return (jint) gVideoLayerRealH.load();
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetVideoLayerMaxW(JNIEnv *env, jobject /* this */,
                                                            jint width) {

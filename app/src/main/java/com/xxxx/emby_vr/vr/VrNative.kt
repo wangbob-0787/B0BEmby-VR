@@ -476,6 +476,12 @@ object VrNative {
      * 视频独立层宽度上限（2026-10-09）：按播放路径下发。
      * 内核（杜比视界 Profile 5）这条链贵，给 1280；系统播放器那条便宜，可以给 1920。
      */
+    /** 视频层交换链的真实宽高（控制条括号外显示这个，父亲 2026-11-24） */
+    fun videoLayerWidth(): Int = runCatching { nativeVideoLayerWidth() }.getOrDefault(0)
+    fun videoLayerHeight(): Int = runCatching { nativeVideoLayerHeight() }.getOrDefault(0)
+    private external fun nativeVideoLayerWidth(): Int
+    private external fun nativeVideoLayerHeight(): Int
+
     fun setVideoLayerMaxW(width: Int) {
         try {
             if (loaded) nativeSetVideoLayerMaxW(width)

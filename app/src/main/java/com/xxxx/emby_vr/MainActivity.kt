@@ -1314,28 +1314,17 @@ class MainActivity : ComponentActivity() {
     /** 大屏幕实际显示的像素尺寸（受当前宽度上限约束，见 techLineOf 的说明） */
     private fun screenSizeOf(srcW: Int?, srcH: Int?): String? {
         if (srcW == null || srcH == null || srcW <= 0 || srcH <= 0) return null
-        val vr = com.xxxx.emby_vr.vr.VrTuning
-        /* 实际宽度取"当前选中那一档"与上限的较小者：切了 2560 就该显示 2560 */
-        var cap = if (com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource) {
-            vr.videoSurfaceMaxW.let { if (it > 0) it else srcW }
-        } else {
-            vr.rawMaxW.let { if (it > 0) it else vr.VIDEO_W_HARD_CAP }
-        }
-        val p5 = com.xxxx.emby_vr.player.PlaybackFlags.dolbyVisionSource
-        val steps = com.xxxx.emby_vr.panel.qualityStepsFor(
-            kernelActive = ctl.kernelActive,
-            isWeb = webStreamSite != null,
-            isP5 = p5,
-            stereo3d = vr.stereo3dOn,
-        )
-        val picked = steps.entries.getOrNull(qualityIndex)?.first ?: 0
-        if (picked > 0 && cap > picked) cap = picked
-        if (vr.stereo3dOn && vr.stereoEyeW > 0 && cap > vr.stereoEyeW) cap = vr.stereoEyeW
-        val w = if (srcW > cap) cap else srcW
-        val h = (srcH.toLong() * w / srcW).toInt().coerceAtLeast(1)
-        val shown = "${w}×$h"
-        /* 被压过就一并标出片源尺寸，免得看不出差别来 */
-        return if (w != srcW) "$shown（片源 ${srcW}×$srcH）" else shown
+        /*
+         * 括号外 = 大屏幕上**真实的**清晰度：直接读原生视频层交换链的实际尺寸
+         * （每帧按片源与上限算出来的那一对数），不从菜单选项反推 ——
+         * 反推会在"菜单显示 2560、实际 1920"这类情况下骗人（父亲 2026-11-24 指出）。
+         * 括号里 = 片源本身的尺寸。取不到真实尺寸就不显示，宁可空着。
+         */
+        val realW = com.xxxx.emby_vr.vr.VrNative.videoLayerWidth()
+        val realH = com.xxxx.emby_vr.vr.VrNative.videoLayerHeight()
+        if (realW <= 0 || realH <= 0) return null
+        val shown = "$realW×$realH"
+        return if (realW != srcW) "$shown（片源 $srcW×$srcH）" else shown
     }
 
     /**
