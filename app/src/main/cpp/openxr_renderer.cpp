@@ -10715,6 +10715,8 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetSpinnerWanted(JNIEnv *env, jobject /
         g.videoActiveAtMs = nowMs();
     }
     g.spinnerWanted = w;
+    /* 立幕/收幕必须留痕（豆豆 2026-11-24）：黑幕没收时靠它看出是谁、在什么时候立的 */
+    LOGI_RAW("SPINNER|wanted=%d|from=%s", w ? 1 : 0, w ? "设置" : "撤销");
     VLOGI("银幕转圈 → %s", w ? "等第一帧（转圈）" : "收起");
 }
 
