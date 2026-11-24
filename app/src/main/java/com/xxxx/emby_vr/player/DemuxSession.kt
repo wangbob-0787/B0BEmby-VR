@@ -375,7 +375,7 @@ class DemuxSession(
                             val putMs = System.currentTimeMillis() - putT0
                             if (!putOk) {
                                 droppedVideo++
-                                if (droppedVideo % 50 == 1) {
+                                if (droppedVideo % 50L == 1L) {
                                     Log.w(TAG, "视频队列满 → 丢弃 $droppedVideo 包（不阻塞读线程）")
                                 }
                                 continue
