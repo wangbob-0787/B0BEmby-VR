@@ -8794,7 +8794,16 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
                     } else {
                         glBindFramebuffer(GL_FRAMEBUFFER, mpFbo);
                     }
+                    {
+                        const GLenum st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+                        if (st != GL_FRAMEBUFFER_COMPLETE) {
+                            LOGI_RAW("MAINPROBE|小图不完整 status=0x%x（读数不可信）", (unsigned) st);
+                        }
+                    }
                     glViewport(0, 0, MW, MW);
+                    /* 先填 50% 灰：画不上时读到的就是 0.5，而不是"看起来像全黑"的 0 */
+                    glClearColor(0.5f, 0.5f, 0.5f, 1.f);
+                    glClear(GL_COLOR_BUFFER_BIT);
                     glUseProgram(prog);
                     glActiveTexture(GL_TEXTURE0);
                     glBindTexture(GL_TEXTURE_EXTERNAL_OES, tex);
@@ -8819,7 +8828,8 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
                              (gDumpRawDone.load() - 1) / 3 + 1, (unsigned) prog,
                              (unsigned) c.program, (unsigned) c.ringProg,
                              mSum / 9.f, mMax / 255.f, (unsigned) tex);
-                    glBindFramebuffer(GL_FRAMEBUFFER, L.fbos[L.index]);
+                    /* 恢复必须回到**本次画的这张**：L.index 要到最后才更新，用它会读上一帧 */
+                    glBindFramebuffer(GL_FRAMEBUFFER, L.fbos[idx]);
                     glViewport(0, 0, L.width, L.height);
                     glUseProgram(prog);
                 }
@@ -8888,7 +8898,8 @@ void main() { oColor = vec4(texture(uTexture, vUv).rgb, 1.0); }
                              (gDumpRawDone.load() - 1) / 3 + 1, gVideoTexUpdates.load(),
                              pSum / 9.f, pMax / 255.f, (unsigned) tex,
                              (unsigned) glGetError());
-                    glBindFramebuffer(GL_FRAMEBUFFER, L.fbos[L.index]);
+                    /* 恢复必须回到**本次画的这张**：L.index 要到最后才更新，用它会读上一帧 */
+                    glBindFramebuffer(GL_FRAMEBUFFER, L.fbos[idx]);
                     glViewport(0, 0, L.width, L.height);
                     glUseProgram(prog);
                 }
