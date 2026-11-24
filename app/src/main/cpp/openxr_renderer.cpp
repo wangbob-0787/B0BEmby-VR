@@ -6763,7 +6763,7 @@ void drawOverlayIntoVideoLayer(VrContext &c, GLuint tex,
      * 只用来回答一个问题：黑是"取样值为 0"还是"公式算错"。不做校准、不打全网格，
      * 代码足够短才不会把自己绊倒。调参 dump_raw=1 生效，全进程只做一次。
      */
-    if (videoLayerPass && gDumpRaw.load() != 0 && gDumpRawDone.load() == 0) {
+    if (gDumpRaw.load() != 0 && gDumpRawDone.load() == 0) {
         gDumpRawDone.store(1);
         const int gw = 3, gh = 3;
         GLint vp[4] = {0, 0, 1, 1};
