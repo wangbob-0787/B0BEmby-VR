@@ -1043,7 +1043,16 @@ class AudioPipe {
          * 三步法要求两条链从同一个关键帧起跑；用目标位置会让声音与画面差一个关键帧间隔，
          * 首块对齐再裁一次，越跳越偏（2026-11-24 实测）。
          */
-        audioOriginUs = audioFirstUs.takeIf { it > 0L } ?: (originSec * US).toLong()
+        /*
+         * 起点只认 Session 回灌的真实首包时间；拿不到就保持"未知"，由第一包到达时定。
+         *
+         * 原来拿不到就退回 originSec（画面关键帧时刻）—— 而 originSec 本身可能已被
+         * 跳转残留的旧帧污染（真机出现过一个偏 1242 秒的起点），等于把污染继续传给音频，
+         * 之后写入一直失败（2026-11-25 豆豆裁定）。起点未知不会裁音频：首包到达时按真实
+         * 时间定基准，反而更稳。
+         */
+        audioOriginUs = audioFirstUs.takeIf { it > 0L } ?: -1L
+        if (audioOriginUs < 0L) Log.i(TAG, "跳转后音频起点未定（等首包回灌再定）")
         firstBlockHandled = false
         pendingSkipBytes = 0L
         seekFlushCount++
