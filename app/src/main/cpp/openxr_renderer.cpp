@@ -836,6 +836,7 @@ uniform float uJitter;        // 每帧变的抖动种子（打散 8 位量化�
 uniform int uTestPattern;     // 1 = 用固定测试图替代视频纹理（黑纹诊断，2026-10-09）
 uniform int uRawVideo;        // 1 = 视频层直接吐原始取样值（定位画面变灰用，2026-11-16）
 uniform int uHdr10;           // 1 = HDR10 自管路：渲染层做 PQ→线性→压亮度→BT.2020→709
+uniform float uHdr10Gain;     // 纹理值补偿（10 位被按 8 位取时约需 4）
 /*
  * 杜比视界还原（2026-11-13）：内核把每帧参数拍平成 96 个 float，这里整段上传。
  * 布局：0=版本 1=通道数；之后每通道 26 个 —— 1 个分段数 + 8 个分段点 + 8×3 段系数。
@@ -1283,7 +1284,12 @@ void main() {
          * 输出按 BT.709 编码。单位约定：线性量 1.0 = 100 nit。
          */
         if (uHdr10 == 1 && uDvReshape == 0) {
-            vec3 pq = clamp(c.rgb, 0.0, 1.0);
+            /*
+             * 纹理值补偿：解码器交出来的画面被按 8 位取（10 位数据被压小约 4 倍），
+             * 直接做 PQ 解码会越算越黑（.15 实测：值÷4 → 输出均值 0.008，等价全黑）。
+             * 这里先补回增益再解码；uHdr10Gain 由调参 hdr10_gain 控制，默认 4。
+             */
+            vec3 pq = clamp(c.rgb * uHdr10Gain, 0.0, 1.0);
             /* ST2084 EOTF：PQ 码值 → 归一化亮度（1.0 = 10000 nit），再换成 1.0 = 100 nit */
             vec3 n = pow(pq, vec3(1.0 / 78.84375));            /* m2 */
             vec3 num = max(n - 0.8359375, 0.0);                /* c1 */
@@ -2791,6 +2797,7 @@ struct QuadLocs {
     GLint jitter = -1, testPattern = -1, rawVideo = -1;
     GLint dvReshape = -1, dvParams = -1;   // 杜比还原：开关 + 每帧参数（2026-11-13）
     GLint hdr10 = -1;                      // HDR10 自管路：渲染层做 PQ/色域（2026-11-23）
+    GLint hdr10Gain = -1;                  // HDR10 纹理值补偿
     GLint delayed = -1, useDelayed = -1;   // 只有 B0B_RING 版有
 };
 
@@ -2849,6 +2856,7 @@ void fillQuadLocs(GLuint prog, QuadLocs &u) {
     u.testPattern = glGetUniformLocation(prog, "uTestPattern");
     u.rawVideo = glGetUniformLocation(prog, "uRawVideo");
     u.hdr10 = glGetUniformLocation(prog, "uHdr10");
+    u.hdr10Gain = glGetUniformLocation(prog, "uHdr10Gain");
     u.dvReshape = glGetUniformLocation(prog, "uDvReshape");
     u.dvParams = glGetUniformLocation(prog, "uDv");
     u.delayed = glGetUniformLocation(prog, "uDelayedTex");   // 只有 B0B_RING 版有
@@ -8413,6 +8421,16 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
         glUniform1i(u.dvReshape, nowReshape);
         if (u.hdr10 >= 0) {
             glUniform1i(u.hdr10, (videoLayerPass && gHdr10Active.load() != 0) ? 1 : 0);
+        }
+        if (u.hdr10Gain >= 0) {
+            static float hdr10Gain = -1.f;
+            if (hdr10Gain < 0.f) {
+                const char *g = getenv("B0B_HDR10_GAIN");
+                hdr10Gain = g ? (float) atof(g) : 4.f;
+                if (hdr10Gain <= 0.f) hdr10Gain = 1.f;
+                LOGI_RAW("HDR10 纹理增益 → %.2f", hdr10Gain);
+            }
+            glUniform1f(u.hdr10Gain, hdr10Gain);
         }
         /*
          * 参数也每趟写：uniform 是按 program 保存的，"看起来持久、其实这一趟还没设"的假设
