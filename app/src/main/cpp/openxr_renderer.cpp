@@ -8605,11 +8605,45 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
             GLint bindOes = 0;
             glActiveTexture(GL_TEXTURE0);
             glGetIntegerv(GL_TEXTURE_BINDING_EXTERNAL_OES, &bindOes);
+            /* 主程序内部各开关的实际值：决定"采不采纹理、走哪条公式分支" */
+            GLint vUseTex = -9, vHdr10 = -9, vDv = -9, vDown = -9, vTest = -9, vDepthOn = -9;
+            GLfloat vInset = -9.f, vGain = -9.f;
+            {
+                GLint l;
+                l = glGetUniformLocation(prog, "uUseTexture");
+                if (l >= 0) glGetUniformiv(prog, l, &vUseTex);
+                l = glGetUniformLocation(prog, "uHdr10");
+                if (l >= 0) glGetUniformiv(prog, l, &vHdr10);
+                l = glGetUniformLocation(prog, "uDvReshape");
+                if (l >= 0) glGetUniformiv(prog, l, &vDv);
+                l = glGetUniformLocation(prog, "uDownsample");
+                if (l >= 0) glGetUniformiv(prog, l, &vDown);
+                l = glGetUniformLocation(prog, "uTestPattern");
+                if (l >= 0) glGetUniformiv(prog, l, &vTest);
+                l = glGetUniformLocation(prog, "uDepthOn");
+                if (l >= 0) glGetUniformiv(prog, l, &vDepthOn);
+                l = glGetUniformLocation(prog, "uSrcInset");
+                if (l >= 0) glGetUniformfv(prog, l, &vInset);
+                l = glGetUniformLocation(prog, "uHdr10Gain");
+                if (l >= 0) glGetUniformfv(prog, l, &vGain);
+            }
+            GLint dv0 = -9;
+            {
+                const GLint l = glGetUniformLocation(prog, "uDv");
+                if (l >= 0) {
+                    GLfloat dv[1] = {-9.f};
+                    glGetUniformfv(prog, l, dv);
+                    dv0 = (GLint) dv[0];
+                }
+            }
             LOGI_RAW("PROGCHK|prog=%u|main=%u|ring=%u|scale=%.3f,%.3f|bias=%.3f,%.3f"
-                     "|useDelayed=%d|uTexUnit=%d|oesBind0=%u|tex=%u|locScale=%d",
+                     "|useDelayed=%d|uTexUnit=%d|oesBind0=%u|tex=%u|locScale=%d"
+                     "|useTex=%d|hdr10=%d|dvReshape=%d|dv0=%d|down=%d|test=%d|depthOn=%d"
+                     "|srcInset=%.4f|gain=%.2f",
                      (unsigned) prog, (unsigned) c.program, (unsigned) c.ringProg,
                      sc[0], sc[1], bi[0], bi[1], useDelayed, texUnit,
-                     (unsigned) bindOes, (unsigned) tex, u.uvScale);
+                     (unsigned) bindOes, (unsigned) tex, u.uvScale,
+                     vUseTex, vHdr10, vDv, dv0, vDown, vTest, vDepthOn, vInset, vGain);
             progChkDone++;
         }
         if (u.uvScale >= 0) glUniform2f(u.uvScale, 1.f, 1.f);
