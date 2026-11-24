@@ -224,8 +224,23 @@ class VrRenderer(
     private var vidUpdMax = 0.0
     private var vidUpdCount = 0
 
+    /*
+     * 取帧必须取「解码器正在写的那一张」纹理。
+     *
+     * 应用里存在两张视频 SurfaceTexture：应用自己建的老的那张（surfaceTexture）、
+     * 原生渲染线程建好推过来的那张（vrVideoSurfaceTexture）。解码器只会往选中的那张送帧，
+     * 若取帧取的是另一张，那张没人取 -> 缓冲队列满 -> 解码器 release 阻塞 ->
+     * 画面停住、包堆在队列里（2026-11-25 定案：跳转后画面停在最后一帧即此因）。
+     */
+    @Volatile private var updateTargetIsVr: Boolean = false
+
+    /** 由起播侧调用：告诉渲染线程这一趟解码器输出到哪张纹理 */
+    fun setVideoUpdateTarget(useVrTexture: Boolean) {
+        updateTargetIsVr = useVrTexture
+    }
+
     private fun updateVideoFrame() {
-        val st = surfaceTexture ?: return
+        val st = (if (updateTargetIsVr) vrVideoSurfaceTexture else surfaceTexture) ?: return
         val t0 = System.nanoTime()
         try {
             st.updateTexImage()
