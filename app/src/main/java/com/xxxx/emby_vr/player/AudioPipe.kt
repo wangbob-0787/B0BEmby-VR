@@ -370,9 +370,22 @@ class AudioPipe {
             }
             if (useFfmpeg) {
                 val d = FfmpegAudioDecoder(mime, fmt ?: MediaFormat())
-                val opened = if (fmt != null) d.open() else d.openWithParams(
-                    demuxCodec, channelCount, session?.audioCsd(),
-                )
+                /*
+                 * 全包档没有可用的 MediaFormat：必须走 openWithParams 并带上音频 csd。
+                 *
+                 * 之前这里优先用 fmt（full 模式下它是旧对象、csd 为 0），
+                 * 结果 AAC 解码器没有 AudioSpecificConfig，每个包都被判成
+                 * "Invalid data found when processing input"（rc=-1094995529），
+                 * 一帧都没解出来 —— 表现就是完全没声音。
+                 */
+                val csd = if (fullMode) session?.audioCsd() else null
+                val opened = if (fullMode) {
+                    d.openWithParams(demuxCodec, channelCount, csd ?: aacAscFallback(demuxCodec, sampleRate, channelCount))
+                } else if (fmt != null) {
+                    d.open()
+                } else {
+                    d.openWithParams(demuxCodec, channelCount, csd)
+                }
                 if (opened) {
                     ffDec = d
                     decoderKind = "ffmpeg(${d.desc})"
@@ -585,6 +598,26 @@ class AudioPipe {
      * 日志里就是 `Failed to initialize audio/aac, error 0xfffffffe`。
      * 与"音频统一 FFmpeg"的规格一致，AAC 也交给软解，省掉 MIME 映射与 csd 的坑。
      */
+    /**
+     * 兜底：取不到音频 csd 时按采样率/声道合成 AAC 的 AudioSpecificConfig。
+     *
+     * AAC-LC 的 ASC 是 2 字节位域：5 位 objectType-1 + 4 位采样率索引 + 4 位声道数 + 3 位 0。
+     * 44.1k / 2ch → 0x12 0x10。只在 csd 为空且是 aac 时使用。
+     */
+    private fun aacAscFallback(codec: String, rate: Int, channels: Int): ByteArray? {
+        if (!codec.contains("aac", true)) return null
+        val idx = when (rate) {
+            96000 -> 0; 88200 -> 1; 64000 -> 2; 48000 -> 3; 44100 -> 4
+            32000 -> 5; 24000 -> 6; 22050 -> 7; 16000 -> 8; 12000 -> 9; 11025 -> 10; 8000 -> 11
+            else -> 4
+        }
+        val ch = channels.coerceIn(1, 7)
+        val v = ((2 - 1) shl 11) or (idx shl 7) or (ch shl 3)
+        val asc = byteArrayOf(((v shr 8) and 0xFF).toByte(), (v and 0xFF).toByte())
+        Log.w(TAG, "音频 csd 缺失 → 合成 ASC（${rate}Hz ${ch}ch）=${"%02x %02x".format(asc[0], asc[1])}")
+        return asc
+    }
+
     private fun isNativeOnlyCodec(mime: String): Boolean = NATIVE_ONLY.contains(mime) ||
         mime.contains("dts", true) || mime.contains("truehd", true) || mime.contains("aac", true)
 
