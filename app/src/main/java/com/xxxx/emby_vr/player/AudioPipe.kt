@@ -173,6 +173,8 @@ class AudioPipe {
     private var firstBlockHandled = false
     /** 写入连续返回 0 时，上次主动 play 的时间（自愈节流） */
     private var lastZeroPlayMs = 0L
+    /** 起播时成功打开音频解码器所用的那份配置（AAC 的 ASC），跳转重建要沿用 */
+    @Volatile private var startCachedCsd: ByteArray? = null
 
     /**
      * 首块裁剪要跨块累计。
@@ -397,6 +399,8 @@ class AudioPipe {
                 } else {
                     d.openWithParams(demuxCodec, channelCount, csd)
                 }
+                /* 起播这份配置必须留住：跳转重建时 Session 可能还没重新取到 csd（AAC 会因此解不出声） */
+                startCachedCsd = csd ?: aacAscFallback(demuxCodec, sampleRate, channelCount)
                 if (opened) {
                     ffDec = d
                     decoderKind = "ffmpeg(${d.desc})"
@@ -1012,9 +1016,11 @@ class AudioPipe {
              */
             val d = FfmpegAudioDecoder(trackMime, trackFormat ?: MediaFormat())
             val rebuiltOk = if (fullMode) {
-                val csd = session?.audioCsd()
-                d.openWithParams(demuxCodec, channelCount,
-                    csd ?: aacAscFallback(demuxCodec, sampleRate, channelCount))
+                /* 优先：起播时留住的那份；其次：Session 现在的；最后：按参数合成 */
+                val csd = startCachedCsd ?: session?.audioCsd()
+                    ?: aacAscFallback(demuxCodec, sampleRate, channelCount)
+                Log.i(TAG, "跳转重建音频：csd=${csd?.size ?: 0}B（来路=${if (startCachedCsd != null) "起播缓存" else "会话/合成"}）")
+                d.openWithParams(demuxCodec, channelCount, csd)
             } else {
                 d.open()
             }
