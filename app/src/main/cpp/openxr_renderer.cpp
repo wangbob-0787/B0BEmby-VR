@@ -1039,6 +1039,16 @@ vec2 warpedXvr(vec2 p, float eye) {
 void main() {
     vec4 outColor;
     /*
+     * 干净一刀（父亲 2026-11-24，dump_raw=1 时 uDumpRawPre=9 触发）：
+     * 在最前面直接用原始 vUv 采样并输出，绕开颜色窗口、分支、公式、
+     * 画面调整的每一步。只回答一个问题：主程序到底能不能采到这张纹理。
+     * 有画面 = 采样正常，问题在后面的处理；全黑 = 采样本身返回 0。
+     */
+    if (uDumpRawPre == 9) {
+        outColor = vec4(SAMPLE_SRC(vUv).rgb, 1.0);
+        return;
+    }
+    /*
      * 纹理采样窗口（网页视频那块画面）；测试图与圆点仍用原始 vUv，不受影响。
      *
      * 2D→3D 的视差在**窗口坐标里**先加、再套 uUvScale/uUvBias ——
@@ -8429,7 +8439,12 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
      * 取样对照（2026-11-24）：dump_raw=1 时，alpha 按轮次分别携带「上色前」的 R/G/B。
      * alpha 在视频层不参与合成，所以这样带值不影响显示。
      */
-    const int rawPreCh = (gDumpRaw.load() != 0) ? (1 + (gDumpRawDone.load() % 6)) : 0;
+    /* 第 0 趟用 9（最前端直采，干净一刀），之后 1..6 分别带出上色链各阶段 */
+    const int rawPreCh = (gDumpRaw.load() != 0)
+                                 ? ((gDumpRawDone.load() == 0)
+                                            ? 9
+                                            : (1 + ((gDumpRawDone.load() - 1) % 6)))
+                                 : 0;
     if (u.dumpRawPre >= 0) glUniform1i(u.dumpRawPre, rawPreCh);
     if (u.dvReshape >= 0 && u.dvParams >= 0) {
         /*
@@ -8774,7 +8789,7 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
      * 组与组之间隔约 10 秒 —— 起播初期可能还在等关键帧，隔十秒再采能把"当时到底有没有画面"分开看。
      */
     if (gDumpRaw.load() != 0 && videoLayerPass && gHdr10Active.load() != 0 &&
-        gDumpRawDone.load() < 18) {
+        gDumpRawDone.load() < 19) {
         static int rawTick = 0;
         static int rawLastTick = -1000000;
         ++rawTick;
@@ -8964,14 +8979,14 @@ void main() { oColor = vec4(texture(uTexture, vUv).rgb, 1.0); }
                     if (c4[3] > preMax) preMax = c4[3];
                     LOGI_RAW("RAWDOT|%d|out=%d,%d,%d|pre%s=%d", jj * gw + ii,
                              c4[0], c4[1], c4[2],
-                             rawPreCh == 1 ? "inR" : (rawPreCh == 2 ? "inG"
+                             rawPreCh == 9 ? "direct" : (rawPreCh == 1 ? "inR" : (rawPreCh == 2 ? "inG"
                                  : (rawPreCh == 3 ? "inB" : (rawPreCh == 4 ? "pqR"
                                  : (rawPreCh == 5 ? "linR" : "encR")))), c4[3]);
                 }
             }
             LOGI_RAW("RAWSTAT|n=%d|grp=%d|ch=%s|hdr10=%d|raw=%d|texUpd=%d|out=%.4f/%.4f|pre=%.4f/%.4f|vp=%dx%d|glErr=0x%x",
                      gDumpRawDone.load(), (gDumpRawDone.load() - 1) / 3 + 1,
-                     rawPreCh == 1 ? "inR" : (rawPreCh == 2 ? "inG"
+                     rawPreCh == 9 ? "direct" : (rawPreCh == 1 ? "inR" : (rawPreCh == 2 ? "inG"
                                     : (rawPreCh == 3 ? "inB" : (rawPreCh == 4 ? "pqR"
                                     : (rawPreCh == 5 ? "linR" : "encR")))),
                      gHdr10Active.load(), gRawVideo.load(), gVideoTexUpdates.load(),
