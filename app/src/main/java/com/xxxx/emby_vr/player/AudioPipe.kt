@@ -1002,8 +1002,23 @@ class AudioPipe {
             ffDec?.close()
             /* 先置空：重建失败时绝不能留着指向已关闭实例（下次 decode 必炸，豆豆 2026-11-22） */
             ffDec = null
+            /*
+             * 重建必须带上音频配置（csd / AAC 的 ASC）（2026-11-25 豆豆定案）。
+             *
+             * 原来这里调 d.open()，全包档没有 MediaFormat 可读 -> csd 变成 0 字节，
+             * AAC 解码器没有 extradata 就一帧都解不出来（日志「解码器就绪：aac|csd=0B」），
+             * 于是写入一直返回 0 -> 声音停写 1.5 秒 -> 画面一起停 -> 互等冻住。
+             * 这正是"HDR10（AAC）随便一跳就卡、P5（EAC3）不卡"的真正差别。
+             */
             val d = FfmpegAudioDecoder(trackMime, trackFormat ?: MediaFormat())
-            if (d.open()) {
+            val rebuiltOk = if (fullMode) {
+                val csd = session?.audioCsd()
+                d.openWithParams(demuxCodec, channelCount,
+                    csd ?: aacAscFallback(demuxCodec, sampleRate, channelCount))
+            } else {
+                d.open()
+            }
+            if (rebuiltOk) {
                 ffDec = d
             } else {
                 lastError = "跳转后重建自带解码器失败（$trackMime）"
