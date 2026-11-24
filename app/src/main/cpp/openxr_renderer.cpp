@@ -1345,6 +1345,21 @@ void main() {
             float preC = uDumpRawPre == 1 ? c.rgb.r
                        : (uDumpRawPre == 2 ? c.rgb.g
                        : (uDumpRawPre == 3 ? c.rgb.b : 0.0));
+            /*
+             * 诊断（父亲 2026-11-24）：HDR10 这一支到底把画面算成了什么。
+             * 只在 dump_raw=1 且 dump 计数未满时打几行中间值 —— 输入 / 增益 / 线性亮度 /
+             * 压缩后亮度 / 输出编码，一次看清是哪一步归零。
+             */
+            if (uDumpRawPre != 0) {
+                static int hdrLogN = 0;
+                if (hdrLogN < 6) {
+                    LOGI_RAW("HDR10MATH|n=%d|in=%.4f,%.4f,%.4f|gain=%.2f|lin=%.4f,%.4f,%.4f"
+                             "|y=%.4f|sig2=%.4f|out=%.4f,%.4f,%.4f",
+                             hdrLogN, c.rgb.r, c.rgb.g, c.rgb.b, gain,
+                             lin.r, lin.g, lin.b, y, sig2, enc.r, enc.g, enc.b);
+                    hdrLogN++;
+                }
+            }
             outColor = vec4(clamp(enc, 0.0, 1.0), uDumpRawPre != 0 ? preC : 1.0);
             return;
         }
