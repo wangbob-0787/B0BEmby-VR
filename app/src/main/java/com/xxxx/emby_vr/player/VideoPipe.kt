@@ -67,6 +67,10 @@ class VideoPipe {
     @Volatile private var fullMode = false
     @Volatile private var sourceQueue: SampleQueue = feedQueue
     @Volatile private var session: DemuxSession? = null
+    /** 最近一次跳转的目标（秒）；>=0 表示跳转后还没定过新基准，用来丢残留帧 */
+    @Volatile private var seekTargetSec: Double = -1.0
+    /** 跳转后的第一帧不许改写声音基准（起点以 Session 落点为准） */
+    @Volatile private var suppressOriginFromPicture: Boolean = false
     /** 全包档断流判定：低水位起点与当前是否已判停（<0.5s 连续 2.0s 判停，≥1.5s 恢复） */
     private var lowWaterSinceMs = 0L
     private var queueStalled = false
@@ -960,6 +964,19 @@ class VideoPipe {
             return info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
         }
 
+        /*
+         * 跳转后丢弃「落在目标之外」的残留帧（2026-11-25 豆豆逐日志定案）。
+         *
+         * 跳转前解码器里可能还排着几帧旧位置的数据。前进跳时它们早于新起点，会被下面的
+         * 预卷规则丢掉；**后退跳时它们晚于目标**，一帧都丢不掉，于是被当成新起点 ——
+         * 真机现象：目标 939 秒，第一帧却是 1317.96 秒，接着"画面比声音晚 379.94 秒 →
+         * 声音往前跳"，音频被拽到 Session 根本没落到的位置，写入一直返回 0 →
+         * 声音停写 1.5 秒 → 画面一起停 → 两边互等冻住。
+         */
+        if (seekTargetSec >= 0.0 && ptsRaw > seekTargetSec + 2.0) {
+            prerollDropped++
+            return finish(false)
+        }
         /* 预卷：早于起点的帧丢弃、不上屏；第一帧到齐时定基准 */
         if (originPts < 0.0 && ptsRaw < audioStartSec) {
             prerollDropped++
@@ -973,7 +990,7 @@ class VideoPipe {
              * 关键帧可能在目标左侧几百毫秒到几秒，时钟必须跟着它走，
              * 否则"目标时间"和"真实能动的位置"之间会一直差着一截，声音也没法对齐。
              */
-            if (originFromPicture) {
+            if (originFromPicture && !suppressOriginFromPicture) {
                 audioStartSec = ptsRaw
                 /* 上报交给下面 originReported 那一处，这里不许再报一次（重复上报会起两个音频实例） */
             }
@@ -990,7 +1007,8 @@ class VideoPipe {
              */
             val clockAtFix = clockNow()
             val gap = originPts - clockAtFix
-            if (clockAtFix > 0.0 && gap > 0.3) {
+            /* 偏差超过 5 秒不是"对齐"能解决的，说明这一帧本来就不对：只丢帧，不许拽音频 */
+            if (clockAtFix > 0.0 && gap > 0.3 && gap <= 5.0) {
                 Log.w(
                     TAG,
                     "起播对齐：画面比声音晚 ${"%.2f".format(gap)}s → 声音往前跳到 ${"%.2f".format(originPts)}s",
@@ -1458,6 +1476,12 @@ class VideoPipe {
      * MediaCodec 规定持有 buffer 时不许 flush（轻则丢帧，重则把解码线程打死）。
      * 真正的 flush 由解码线程在两帧之间自己做（见 pump 顶部）。
      */
+    /** 记录这一趟跳转的目标，供 outputFrame 丢弃落在目标之外的残留帧 */
+    fun noteSeekTarget(sec: Double) {
+        seekTargetSec = sec
+        suppressOriginFromPicture = true
+    }
+
     fun flushForSessionSeek() {
         /* 先把 Surface 队列里的积压帧抽干：不抽的话队列满、解码器 release 阻塞，画面停在最后一帧 */
         com.xxxx.emby_vr.vr.VrNative.drainVideoFrames(6)

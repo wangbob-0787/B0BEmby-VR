@@ -9493,6 +9493,7 @@ class MainActivity : ComponentActivity() {
             runCatching { m.seekToSec(sec) }
             if (selfSession != null) {
                 /* 全包档：跳转只有 Session 一个入口；两条 Pipe 只清解码器与本地状态（图 §2-7） */
+                pipe.noteSeekTarget(sec)
                 pipe.flushForSessionSeek()
                 selfSession?.requestSeek((sec * 1000.0).toLong())
                 audioPipe?.onSessionSeek(sec, sec)
