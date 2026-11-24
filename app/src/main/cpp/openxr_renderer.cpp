@@ -1342,9 +1342,18 @@ void main() {
              * 与同一帧输出的 RGB（= 上色后）成对，就能离线按同一公式复算核对。
              * 平时恒为 1.0，不影响显示。
              */
-            float preC = uDumpRawPre == 1 ? c.rgb.r
-                       : (uDumpRawPre == 2 ? c.rgb.g
-                       : (uDumpRawPre == 3 ? c.rgb.b : 0.0));
+            /*
+             * 分阶段带值（父亲 2026-11-24）：1/2/3 = 上色前 R/G/B，4 = 乘完增益，
+             * 5 = 压完亮度的线性值，6 = 最终编码输出。相邻六帧各带一项，
+             * 就能把整条 HDR 计算链重建出来，看它在哪一步归零。
+             */
+            float preC = 0.0;
+            if (uDumpRawPre == 1) preC = c.rgb.r;
+            else if (uDumpRawPre == 2) preC = c.rgb.g;
+            else if (uDumpRawPre == 3) preC = c.rgb.b;
+            else if (uDumpRawPre == 4) preC = pq.r;
+            else if (uDumpRawPre == 5) preC = r709.r;
+            else if (uDumpRawPre == 6) preC = enc.r;
             outColor = vec4(clamp(enc, 0.0, 1.0), uDumpRawPre != 0 ? preC : 1.0);
             return;
         }
@@ -8420,7 +8429,7 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
      * 取样对照（2026-11-24）：dump_raw=1 时，alpha 按轮次分别携带「上色前」的 R/G/B。
      * alpha 在视频层不参与合成，所以这样带值不影响显示。
      */
-    const int rawPreCh = (gDumpRaw.load() != 0) ? (1 + (gDumpRawDone.load() % 3)) : 0;
+    const int rawPreCh = (gDumpRaw.load() != 0) ? (1 + (gDumpRawDone.load() % 6)) : 0;
     if (u.dumpRawPre >= 0) glUniform1i(u.dumpRawPre, rawPreCh);
     if (u.dvReshape >= 0 && u.dvParams >= 0) {
         /*
@@ -8765,7 +8774,7 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
      * 组与组之间隔约 10 秒 —— 起播初期可能还在等关键帧，隔十秒再采能把"当时到底有没有画面"分开看。
      */
     if (gDumpRaw.load() != 0 && videoLayerPass && gHdr10Active.load() != 0 &&
-        gDumpRawDone.load() < 9) {
+        gDumpRawDone.load() < 18) {
         static int rawTick = 0;
         static int rawLastTick = -1000000;
         ++rawTick;
@@ -8955,12 +8964,16 @@ void main() { oColor = vec4(texture(uTexture, vUv).rgb, 1.0); }
                     if (c4[3] > preMax) preMax = c4[3];
                     LOGI_RAW("RAWDOT|%d|out=%d,%d,%d|pre%s=%d", jj * gw + ii,
                              c4[0], c4[1], c4[2],
-                             rawPreCh == 1 ? "R" : (rawPreCh == 2 ? "G" : "B"), c4[3]);
+                             rawPreCh == 1 ? "inR" : (rawPreCh == 2 ? "inG"
+                                 : (rawPreCh == 3 ? "inB" : (rawPreCh == 4 ? "pqR"
+                                 : (rawPreCh == 5 ? "linR" : "encR")))), c4[3]);
                 }
             }
             LOGI_RAW("RAWSTAT|n=%d|grp=%d|ch=%s|hdr10=%d|raw=%d|texUpd=%d|out=%.4f/%.4f|pre=%.4f/%.4f|vp=%dx%d|glErr=0x%x",
                      gDumpRawDone.load(), (gDumpRawDone.load() - 1) / 3 + 1,
-                     rawPreCh == 1 ? "R" : (rawPreCh == 2 ? "G" : "B"),
+                     rawPreCh == 1 ? "inR" : (rawPreCh == 2 ? "inG"
+                                    : (rawPreCh == 3 ? "inB" : (rawPreCh == 4 ? "pqR"
+                                    : (rawPreCh == 5 ? "linR" : "encR")))),
                      gHdr10Active.load(), gRawVideo.load(), gVideoTexUpdates.load(),
                      sum / (gw * gh), mx / 255.f,
                      preSum / (gw * gh), preMax / 255.f,
