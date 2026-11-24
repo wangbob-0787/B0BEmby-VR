@@ -8683,6 +8683,84 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
         if (rawTick - rawLastTick >= rawNeed) {
             rawLastTick = rawTick;
             gDumpRawDone.fetch_add(1);
+
+            /*
+             * 采样点 C：源纹理本身（链路第 4 步）。
+             * 目的：把「帧有没有进纹理」和「上色/贴图环节采样到空」分开。
+             * 做法：用只读直通程序把源纹理画进 64×64 小图，回读 9 点 —— 与上色无关。
+             * 每组只做一次；做完把 FBO / 视口 / 程序交还给视频层。
+             */
+            if (rawGroupStart) {
+                static GLuint srcProbeProg = 0;
+                static GLuint srcProbeFbo = 0;
+                static GLuint srcProbeTex = 0;
+                static const char *pvs = R"(#version 300 es
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec2 aUv;
+out vec2 vUv;
+void main() { vUv = aUv; gl_Position = vec4(aPos.xy, 0.0, 1.0); }
+)";
+                static const char *pfs = R"(#version 300 es
+#extension GL_OES_EGL_image_external_essl3 : require
+precision mediump float;
+in vec2 vUv;
+uniform samplerExternalOES uTexture;
+out vec4 oColor;
+void main() { oColor = vec4(texture(uTexture, vUv).rgb, 1.0); }
+)";
+                if (srcProbeProg == 0) {
+                    srcProbeProg = buildProgramWithSampler(pvs, pfs, "samplerExternalOES");
+                    if (srcProbeProg != 0) {
+                        glUseProgram(srcProbeProg);
+                        glUniform1i(glGetUniformLocation(srcProbeProg, "uTexture"), 0);
+                    }
+                }
+                if (srcProbeProg != 0) {
+                    const int SW = 64;
+                    if (srcProbeFbo == 0) {
+                        glGenTextures(1, &srcProbeTex);
+                        glBindTexture(GL_TEXTURE_2D, srcProbeTex);
+                        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, SW, SW, 0, GL_RGBA,
+                                     GL_UNSIGNED_BYTE, nullptr);
+                        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                        glGenFramebuffers(1, &srcProbeFbo);
+                        glBindFramebuffer(GL_FRAMEBUFFER, srcProbeFbo);
+                        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                               GL_TEXTURE_2D, srcProbeTex, 0);
+                    } else {
+                        glBindFramebuffer(GL_FRAMEBUFFER, srcProbeFbo);
+                    }
+                    glViewport(0, 0, SW, SW);
+                    glUseProgram(srcProbeProg);
+                    glActiveTexture(GL_TEXTURE0);
+                    glBindTexture(GL_TEXTURE_EXTERNAL_OES, tex);
+                    glBindVertexArray(c.videoLayerVao);
+                    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                    glBindVertexArray(0);
+                    float pSum = 0.f;
+                    int pMax = 0;
+                    for (int jj = 0; jj < 3; ++jj) {
+                        for (int ii = 0; ii < 3; ++ii) {
+                            unsigned char c4[4] = {0, 0, 0, 0};
+                            const int px = (int) ((ii + 0.5f) * SW / 3);
+                            const int py = (int) ((jj + 0.5f) * SW / 3);
+                            glReadPixels(px, py, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, c4);
+                            int mm = c4[0] > c4[1] ? (c4[0] > c4[2] ? c4[0] : c4[2])
+                                                   : (c4[1] > c4[2] ? c4[1] : c4[2]);
+                            pSum += mm / 255.f;
+                            if (mm > pMax) pMax = mm;
+                        }
+                    }
+                    LOGI_RAW("RAWSRC|grp=%d|texUpd=%d|mean=%.4f|max=%.4f|tex=%u|glErr=0x%x",
+                             (gDumpRawDone.load() - 1) / 3 + 1, gVideoTexUpdates.load(),
+                             pSum / 9.f, pMax / 255.f, (unsigned) tex,
+                             (unsigned) glGetError());
+                    glBindFramebuffer(GL_FRAMEBUFFER, L.fbos[L.index]);
+                    glViewport(0, 0, L.width, L.height);
+                    glUseProgram(prog);
+                }
+            }
             const int gw = 3, gh = 3;
             float sum = 0.f;
             int mx = 0;
