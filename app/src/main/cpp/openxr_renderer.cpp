@@ -1337,12 +1337,15 @@ void main() {
             /* BT.709 编码 */
             vec3 enc = mix(4.5 * r709, 1.099 * pow(r709, vec3(0.45)) - 0.099, step(0.018, r709));
             /*
-             * alpha 在视频层不参与合成（这一层不透明），所以取样时借它把「上色前」的
-             * 输入亮度带出去：RGBA 一起读回，就能分别看到上色前后的量级。
+             * 取样对照：alpha 在视频层不参与合成（这一层不透明），借它把「上色前」的
+             * 纹理三通道值逐帧带出去 —— 相邻三次取样分别带上色前的 R / G / B，
+             * 与同一帧输出的 RGB（= 上色后）成对，就能离线按同一公式复算核对。
              * 平时恒为 1.0，不影响显示。
              */
-            float preLum = clamp(dot(c.rgb, vec3(0.2627, 0.6780, 0.0593)), 0.0, 1.0);
-            outColor = vec4(clamp(enc, 0.0, 1.0), uDumpRawPre == 1 ? preLum : 1.0);
+            float preC = uDumpRawPre == 1 ? c.rgb.r
+                       : (uDumpRawPre == 2 ? c.rgb.g
+                       : (uDumpRawPre == 3 ? c.rgb.b : 0.0));
+            outColor = vec4(clamp(enc, 0.0, 1.0), uDumpRawPre != 0 ? preC : 1.0);
             return;
         }
         if (uDvReshape == 1 && uDv[0] > 1.5) {
@@ -8410,8 +8413,12 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
      * dvLoadFromFile 按 mtime 判断要不要重读。
      */
     doviProbeShared();
-    /* 取样对照用：只在 dump_raw=1 时让 alpha 携带「上色前」的亮度（2026-11-24） */
-    if (u.dumpRawPre >= 0) glUniform1i(u.dumpRawPre, gDumpRaw.load() != 0 ? 1 : 0);
+    /*
+     * 取样对照（2026-11-24）：dump_raw=1 时，alpha 按轮次分别携带「上色前」的 R/G/B。
+     * alpha 在视频层不参与合成，所以这样带值不影响显示。
+     */
+    const int rawPreCh = (gDumpRaw.load() != 0) ? (1 + (gDumpRawDone.load() % 3)) : 0;
+    if (u.dumpRawPre >= 0) glUniform1i(u.dumpRawPre, rawPreCh);
     if (u.dvReshape >= 0 && u.dvParams >= 0) {
         /*
          * 判据只看「有没有参数」和「开关开没开」。
@@ -8660,9 +8667,9 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
      * （2026-11-24 两次实测 RAWSTAT|hdr10=0|raw=0|max=0.0078），回答不了这个问题。
      */
     if (gDumpRaw.load() != 0 && videoLayerPass && gHdr10Active.load() != 0 &&
-        gDumpRawDone.load() < 5) {
+        gDumpRawDone.load() < 6) {
         static int rawTick = 0;
-        if ((++rawTick % 90) == 0) {
+        if ((++rawTick % 30) == 0) {
             gDumpRawDone.fetch_add(1);
             const int gw = 3, gh = 3;
             float sum = 0.f;
@@ -8678,14 +8685,18 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
                     int mm = c4[0] > c4[1] ? (c4[0] > c4[2] ? c4[0] : c4[2]) : (c4[1] > c4[2] ? c4[1] : c4[2]);
                     sum += mm / 255.f;
                     if (mm > mx) mx = mm;
-                    /* alpha = 上色前的输入亮度（uDumpRawPre 写进去的），与 RGB（上色后）成对读 */
+                    /* alpha = 上色前该通道的纹理值（R/G/B 按轮次），与 RGB（上色后）成对读 */
                     preSum += c4[3] / 255.f;
                     if (c4[3] > preMax) preMax = c4[3];
-                    LOGI_RAW("RAWDOT|%d|out=%d,%d,%d|pre=%d", jj * gw + ii, c4[0], c4[1], c4[2], c4[3]);
+                    LOGI_RAW("RAWDOT|%d|out=%d,%d,%d|pre%s=%d", jj * gw + ii,
+                             c4[0], c4[1], c4[2],
+                             rawPreCh == 1 ? "R" : (rawPreCh == 2 ? "G" : "B"), c4[3]);
                 }
             }
-            LOGI_RAW("RAWSTAT|n=%d|hdr10=%d|raw=%d|out=%.4f/%.4f|pre=%.4f/%.4f|vp=%dx%d|glErr=0x%x",
-                     gDumpRawDone.load(), gHdr10Active.load(), gRawVideo.load(),
+            LOGI_RAW("RAWSTAT|n=%d|ch=%s|hdr10=%d|raw=%d|out=%.4f/%.4f|pre=%.4f/%.4f|vp=%dx%d|glErr=0x%x",
+                     gDumpRawDone.load(),
+                     rawPreCh == 1 ? "R" : (rawPreCh == 2 ? "G" : "B"),
+                     gHdr10Active.load(), gRawVideo.load(),
                      sum / (gw * gh), mx / 255.f,
                      preSum / (gw * gh), preMax / 255.f,
                      L.width, L.height, (unsigned) glGetError());
