@@ -1483,7 +1483,7 @@ class VideoPipe {
          * 等于把死锁留在原地。
          */
         if (heldIdx >= 0) {
-            runCatching { codec?.releaseOutputBuffer(heldIdx, false) }
+            runCatching { decoder?.releaseOutputBuffer(heldIdx, false) }
             Log.i(TAG, "全包档跳转：归还跳转前攥着的帧（idx=$heldIdx）")
             heldIdx = -1
         }
