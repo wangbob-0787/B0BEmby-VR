@@ -3429,6 +3429,7 @@ std::thread gThread;
  */
 std::function<void()> gPanelUpdate;
 std::function<void()> gVideoUpdate;
+static std::atomic<int> gVideoTexUpdates{0};   // 播放画面纹理被取帧的次数（取样日志用来对齐"当时有没有帧"）
 /**
  * 海报墙内容是否换了新帧（2026-10-14）。
  *
@@ -8667,9 +8668,9 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
      * （2026-11-24 两次实测 RAWSTAT|hdr10=0|raw=0|max=0.0078），回答不了这个问题。
      */
     if (gDumpRaw.load() != 0 && videoLayerPass && gHdr10Active.load() != 0 &&
-        gDumpRawDone.load() < 6) {
+        gDumpRawDone.load() < 15) {
         static int rawTick = 0;
-        if ((++rawTick % 30) == 0) {
+        if ((++rawTick % 90) == 0) {
             gDumpRawDone.fetch_add(1);
             const int gw = 3, gh = 3;
             float sum = 0.f;
@@ -8693,10 +8694,10 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
                              rawPreCh == 1 ? "R" : (rawPreCh == 2 ? "G" : "B"), c4[3]);
                 }
             }
-            LOGI_RAW("RAWSTAT|n=%d|ch=%s|hdr10=%d|raw=%d|out=%.4f/%.4f|pre=%.4f/%.4f|vp=%dx%d|glErr=0x%x",
+            LOGI_RAW("RAWSTAT|n=%d|ch=%s|hdr10=%d|raw=%d|texUpd=%d|out=%.4f/%.4f|pre=%.4f/%.4f|vp=%dx%d|glErr=0x%x",
                      gDumpRawDone.load(),
                      rawPreCh == 1 ? "R" : (rawPreCh == 2 ? "G" : "B"),
-                     gHdr10Active.load(), gRawVideo.load(),
+                     gHdr10Active.load(), gRawVideo.load(), gVideoTexUpdates.load(),
                      sum / (gw * gh), mx / 255.f,
                      preSum / (gw * gh), preMax / 255.f,
                      L.width, L.height, (unsigned) glGetError());
@@ -9022,6 +9023,7 @@ void frameLoop(VrContext &c) {
              */
             if (gFinishBeforeTexUpdate.load() != 0) glFinish();
             gVideoUpdate();
+            gVideoTexUpdates.fetch_add(1);
         }
 
         /*
