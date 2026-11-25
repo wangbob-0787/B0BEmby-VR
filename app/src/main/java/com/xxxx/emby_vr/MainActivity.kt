@@ -4503,7 +4503,7 @@ class MainActivity : ComponentActivity() {
                 loadWebDanmaku(webCid)
                 loadWebSubtitle(webSubtitleUrl)
             }
-        }, 8000L)
+        }, 3000L)
     }
 
     private fun startPlayer(
@@ -9385,7 +9385,7 @@ class MainActivity : ComponentActivity() {
      */
     /**
      * 断流自动重连标志（2026-11-25 父亲实测：断流后只会暂停，数据真断了就永远不恢复，
-     * 只能手动重起播）。断流持续 8 秒就主动定位一次，等价于"重起播但从原位置接上"。
+     * 只能手动重起播）。断流持续 3 秒就主动定位一次，等价于"重起播但从原位置接上"。
      */
     private var stallRecoverPending = false
 
@@ -10288,17 +10288,17 @@ class MainActivity : ComponentActivity() {
                             /*
                              * 断流不自我恢复时主动重连。
                              * 全包档这条走 Session 重新定位（restoreVideoPipeAt 内部即 requestSeek），
-                             * 定位会重开连接；off 档才会重建 pipe。8 秒是父亲实测"卡住"的体感阈值。
+                             * 定位会重开连接；off 档才会重建 pipe。3 秒是父亲实测"卡住"的体感阈值。
                              */
                             if (!stallRecoverPending) {
                                 stallRecoverPending = true
                                 ui.postDelayed({
                                     if (stallRecoverPending && !selfPaused) {
                                         val posNow = ((playClock?.positionUs() ?: 0L) / 1_000_000.0)
-                                        Log.w(TAG, "断流超过 8 秒 → 主动重连（定位到 ${"%.1f".format(posNow)}s）")
+                                        Log.w(TAG, "断流超过 3 秒 → 主动重连（定位到 ${"%.1f".format(posNow)}s）")
                                         runCatching { restoreVideoPipeAt(posNow) }
                                     }
-                                }, 8000L)
+                                }, 3000L)
                             }
                         } else if (!selfPaused) {
                             stallRecoverPending = false
