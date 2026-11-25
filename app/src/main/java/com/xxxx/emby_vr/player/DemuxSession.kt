@@ -48,6 +48,9 @@ class DemuxSession(
     class AudioPacket(val data: ByteArray, val ptsUs: Long)
 
     val videoQueue = SampleQueue(VIDEO_QUEUE_BYTES)
+
+    /** 当前播放位置（秒）的提供者：读速控制用它算队列水位 */
+    @Volatile var clockSec: (() -> Double)? = null
     val audioQueue = SampleQueue(AUDIO_QUEUE_BYTES)
 
     var onSubtitle: ((startMs: Long, endMs: Long, text: String, track: Int) -> Unit)? = null
@@ -230,9 +233,6 @@ class DemuxSession(
         val meta = IntArray(5)
         var waitMs = 0L
         var netRetry = 0
-        /* 限速基准：首包 pts 与当时的墙钟；seek 后重新标定 */
-        var paceBasePtsMs = -1L
-        var paceBaseWallMs = 0L
         while (running.get()) {
             val target = seekTargetMs.get()
             if (target >= 0) {
@@ -246,7 +246,6 @@ class DemuxSession(
                 if (r >= 0) {
                     seekOriginPending = true
                     seekOriginTargetMs = target
-                    paceBasePtsMs = -1L
                 }
                 if (r >= 0) {
                     runCatching { onSeekDone?.invoke(target) }
@@ -271,9 +270,16 @@ class DemuxSession(
             ) {
                 Thread.sleep(10)
             }
-            if (paceBasePtsMs >= 0L && lastReadPtsMs > 0L) {
-                val readAheadSec = (lastReadPtsMs - paceBasePtsMs) / 1000.0 -
-                    (android.os.SystemClock.elapsedRealtime() - paceBaseWallMs) / 1000.0
+            /*
+             * 读速控制：队列尾部时间 − 当前播放位置 > READ_AHEAD_SEC 就让读线程歇一下。
+             *
+             * 原来用"首包 pts + 墙钟"做基准，每次 seek（含断流重连）都会把基准清零，
+             * 清零后不限速地猛读，队列一口气涨到 60 多秒（2026-11-25 父亲实测）。
+             * 改成直接问播放位置，重连后也照样管住。
+             */
+            val clkSec = clockSec?.invoke() ?: -1.0
+            if (clkSec >= 0.0 && lastReadPtsMs > 0L) {
+                val readAheadSec = lastReadPtsMs / 1000.0 - clkSec
                 if (readAheadSec > READ_AHEAD_SEC) Thread.sleep(10)
             }
             if (readCount % 200 == 0 && readCount > 0) {

@@ -10116,6 +10116,8 @@ class MainActivity : ComponentActivity() {
                 val probe = runCatching {
                     com.xxxx.emby_vr.player.DemuxSession(url, (startSec * 1000.0).toLong())
                 }.getOrNull()
+                /* 读速控制要用当前播放位置，否则重连后会猛读一段 */
+                probe?.clockSec = { ((playClock?.positionUs() ?: 0L) / 1_000_000.0) }
                 /* 用原子量：工作线程写、守护线程读，普通变量在 JMM 下可能读到旧值 */
                 val opened = java.util.concurrent.atomic.AtomicBoolean(false)
                 if (probe != null) {
