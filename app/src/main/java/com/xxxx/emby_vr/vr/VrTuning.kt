@@ -127,6 +127,10 @@ object VrTuning {
     /* 曝光与显示曲线：压膝点会让整幅去饱和（海水发灰），压暗只能靠曝光 */
     @Volatile var hdr10Exposure: Float = 0.21f
     @Volatile var hdr10Gamma: Float = 0.74f
+    /* P5 亮度曲线：白点尼特 / 膝点 / 显示 gamma（写调参文件里就生效） */
+    @Volatile var doviWhite: Float = 200f
+    @Volatile var doviKnee: Float = 0.75f
+    @Volatile var doviGamma: Float = 2.2f
 
     /**
      * 是否允许「片源没色彩标记且 10 位 ≥1080p」时推断成 HDR10（2026-11-16）。
@@ -979,6 +983,13 @@ object VrTuning {
             if (expo != null) hdr10Exposure = expo
             if (gam != null) hdr10Gamma = gam
             VrNative.setHdr10Tuning(hdr10Knee, hdr10Peak, hdr10Exposure, hdr10Gamma)
+            val dw = raw["dovi_white"]?.toFloatOrNull()
+            val dk = raw["dovi_knee"]?.toFloatOrNull()
+            val dg = raw["dovi_gamma"]?.toFloatOrNull()
+            if (dw != null) doviWhite = dw
+            if (dk != null) doviKnee = dk
+            if (dg != null) doviGamma = dg
+            VrNative.setDoviTuning(doviWhite, doviKnee, doviGamma)
         }
         raw["super_sample"]?.toFloatOrNull()?.let {
             VrNative.setTuning(KEY_SUPER_SAMPLE, it)

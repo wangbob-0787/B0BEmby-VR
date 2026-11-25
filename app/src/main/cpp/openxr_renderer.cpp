@@ -103,6 +103,10 @@ std::atomic<float> gHdr10Peak{52.f};    // 压到多少尼特（屏幕目标峰�
 /* 曝光与显示曲线：压 knee 会连中间调一起去饱和（海水发灰），整体压暗必须单独用曝光 */
 std::atomic<float> gHdr10Exposure{0.21f};
 std::atomic<float> gHdr10Gamma{0.74f};
+/* 杜比 P5 亮度曲线三项（调参 dovi_white / dovi_knee / dovi_gamma） */
+std::atomic<float> gDoviWhite{200.f};
+std::atomic<float> gDoviKnee{0.75f};
+std::atomic<float> gDoviGamma{2.2f};
 /* 取样导出：调参 dump_raw=1 时，视频层画完回读中心点与网格均值，写一行日志 */
 static std::atomic<int> gDumpRaw{0};
 static std::atomic<int> gDumpRawDone{0};
@@ -559,6 +563,19 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetHdr10StreamActive(JNIEnv * /* env */
 }
 
 extern "C" JNIEXPORT void JNICALL
+extern "C" void setDoviTuning(float white, float knee, float gamma) {
+    if (white > 10.f) gDoviWhite.store(white);
+    if (knee > 0.05f) gDoviKnee.store(knee);
+    if (gamma > 0.5f) gDoviGamma.store(gamma);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetDoviTuning(JNIEnv * /* env */, jobject /* this */,
+                                                       jfloat white, jfloat knee, jfloat gamma) {
+    setDoviTuning((float) white, (float) knee, (float) gamma);
+}
+
+extern "C" JNIEXPORT void JNICALL
 Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetDoviStreamActive(JNIEnv * /* env */,
                                                             jobject /* this */, jint on) {
     gDvStreamActive.store(on ? 1 : 0);
@@ -878,6 +895,9 @@ uniform float uHdr10Gain;     // 纹理值补偿（10 位被按 8 位取时约�
 uniform float uHdr10Knee;     // 高光起压点（尼特）
 uniform float uHdr10Peak;     // 目标峰值（尼特）
 uniform float uHdr10Exposure; // 曝光（1.0 = 原亮度；压暗不影响饱和度）
+uniform float uDvWhite;       // P5 白点（尼特）
+uniform float uDvKnee;        // P5 膝点（0~1）
+uniform float uDvGamma;       // P5 显示 gamma
 uniform float uHdr10Gamma;    // 显示曲线（<1 提亮暗部）
 uniform int uDumpRawPre;      // 1 = 把「上色前」的亮度写进 alpha（取样对照用，2026-11-24）
 /*
@@ -1480,10 +1500,13 @@ void main() {
 
             /* ⑦ 白点：1.0 对应一万尼特，显示白点约 200 尼特 → 乘 50，并按峰值/0.75 等比压 */
             float peak = max(max(rgb709.r, rgb709.g), max(rgb709.b, 1e-5));
-            vec3 o3 = rgb709 * (50.0 / max(peak / 0.75, 1.0));
+            /* 白点与膝点可调（dovi_white / dovi_knee）：改调参文件即生效，不必重编 */
+            float wScale = 10000.0 / max(uDvWhite, 10.0);
+            float kneeDv = max(uDvKnee, 0.05);
+            vec3 o3 = rgb709 * (wScale / max(peak / kneeDv, 1.0));
 
             /* ⑧ gamma 2.2 */
-            c = vec4(pow(clamp(o3, 0.0, 1.0), vec3(1.0 / 2.2)), 1.0);
+            c = vec4(pow(clamp(o3, 0.0, 1.0), vec3(1.0 / max(uDvGamma, 0.5))), 1.0);
         } else if (uDvReshape == 1 && uDv[0] > 0.5) {
             /*
              * 旧通道（版本 1，只有曲线没有矩阵）：保持原来的近似，避免回归。
@@ -2892,7 +2915,10 @@ struct QuadLocs {
     GLint hdr10Knee = -1;                  // 高光起压点
     GLint hdr10Peak = -1;
     GLint hdr10Exposure = -1;
-    GLint hdr10Gamma = -1;                  // 目标峰值
+    GLint hdr10Gamma = -1;
+    GLint dvWhite = -1;
+    GLint dvKnee = -1;
+    GLint dvGamma = -1;                  // 目标峰值
     GLint dumpRawPre = -1;                 // uDumpRawPre：把上色前的亮度写进 alpha
     GLint delayed = -1, useDelayed = -1;   // 只有 B0B_RING 版有
 };
@@ -2957,6 +2983,9 @@ void fillQuadLocs(GLuint prog, QuadLocs &u) {
     u.hdr10Peak = glGetUniformLocation(prog, "uHdr10Peak");
     u.hdr10Exposure = glGetUniformLocation(prog, "uHdr10Exposure");
     u.hdr10Gamma = glGetUniformLocation(prog, "uHdr10Gamma");
+    u.dvWhite = glGetUniformLocation(prog, "uDvWhite");
+    u.dvKnee = glGetUniformLocation(prog, "uDvKnee");
+    u.dvGamma = glGetUniformLocation(prog, "uDvGamma");
     u.dumpRawPre = glGetUniformLocation(prog, "uDumpRawPre");
     u.dvReshape = glGetUniformLocation(prog, "uDvReshape");
     u.dvParams = glGetUniformLocation(prog, "uDv");
@@ -8542,6 +8571,9 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
         if (u.hdr10Peak >= 0) glUniform1f(u.hdr10Peak, gHdr10Peak.load());
         if (u.hdr10Exposure >= 0) glUniform1f(u.hdr10Exposure, gHdr10Exposure.load());
         if (u.hdr10Gamma >= 0) glUniform1f(u.hdr10Gamma, gHdr10Gamma.load());
+        if (u.dvWhite >= 0) glUniform1f(u.dvWhite, gDoviWhite.load());
+        if (u.dvKnee >= 0) glUniform1f(u.dvKnee, gDoviKnee.load());
+        if (u.dvGamma >= 0) glUniform1f(u.dvGamma, gDoviGamma.load());
         if (u.hdr10Gain >= 0) {
             static float hdr10Gain = -1.f;
             if (hdr10Gain < 0.f) {

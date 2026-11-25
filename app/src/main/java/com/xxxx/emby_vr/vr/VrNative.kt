@@ -60,6 +60,11 @@ object VrNative {
 
     fun setDoviStreamActive(on: Boolean) = runCatching { nativeSetDoviStreamActive(if (on) 1 else 0) }
 
+    /** P5 亮度曲线三项（调参 dovi_white / dovi_knee / dovi_gamma），改文件即生效 */
+    fun setDoviTuning(white: Float, knee: Float, gamma: Float) =
+        runCatching { nativeSetDoviTuning(white, knee, gamma) }
+    private external fun nativeSetDoviTuning(white: Float, knee: Float, gamma: Float)
+
     /** HDR10 走自管解码：颜色（PQ→线性→压亮度→BT.2020→709）由渲染层做 */
     fun setHdr10StreamActive(on: Boolean) = runCatching { nativeSetHdr10StreamActive(if (on) 1 else 0) }
 
