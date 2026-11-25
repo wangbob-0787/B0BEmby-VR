@@ -393,14 +393,6 @@ object VrTuning {
     var depthModel: Int = -1
 
     /**
-     * 深度推理引擎：0 = TFLite（历史路径），1 = LiteRT 显卡加速（OpenCL）。
-     *
-     * 同一颗芯片上参考实现用 LiteRT + OpenCL 加速库跑同款模型，比 TFLite 的 GL 委托快一档；
-     * 建不起来（老驱动/不支持）时下面会安静退回 TFLite，不影响出画。
-     */
-    @Volatile var depthEngine: Int = 0
-
-    /**
      * 深度在哪里算（父亲 2026-11-02）：0 = 头显本地（256 int8），1 = 点 15 远程（512x288）。
      *
      * 远程这条实测单次往返 22 毫秒（含点 15 上 18 毫秒推理），输入还大一档，
@@ -1126,10 +1118,6 @@ object VrTuning {
         raw["depth_remote_host"]?.trim()?.takeIf { it.isNotEmpty() }?.let {
             depthRemoteHost = it
             applied += "深度服务地址 $it"
-        }
-        raw["depth_engine"]?.toIntOrNull()?.let {
-            depthEngine = if (it == 1) 1 else 0
-            applied += "深度引擎 " + if (depthEngine == 1) "LiteRT 显卡（OpenCL）" else "TFLite"
         }
         raw["depth_model"]?.toIntOrNull()?.let {
             depthModel = when (it) {

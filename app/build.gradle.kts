@@ -239,10 +239,6 @@ dependencies {
     implementation(libs.tensorflow.lite)
     implementation(libs.tensorflow.lite.gpu)
     implementation(libs.tensorflow.lite.gpu.api)
-    /* LiteRT 2.x 显卡加速（走 OpenCL，参考实现在同一颗芯片上用这条跑深度） */
-    implementation(libs.litert)
-    implementation(libs.litert.api)
-    implementation(libs.litert.gpu)
 
     /*
      * 【2026-10-20 16:18 父亲要求：火狐内核整套拆掉】

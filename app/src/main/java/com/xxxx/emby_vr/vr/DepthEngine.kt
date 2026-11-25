@@ -157,10 +157,6 @@ object DepthEngine {
     @Volatile private var lastOkMs = System.currentTimeMillis()
 
     private var interp: Interpreter? = null
-    /* LiteRT 显卡（OpenCL）路径：与 interp 互斥，建不起来就退回 TFLite */
-    private var liteModel: com.google.ai.edge.litert.CompiledModel? = null
-    private var liteIn: List<com.google.ai.edge.litert.TensorBuffer>? = null
-    private var liteOut: List<com.google.ai.edge.litert.TensorBuffer>? = null
     /** 解释器是用哪套后端/模型/线程建起来的；调参一变就重建 */
     private var initedSig = ""
     /** 显卡委托对象：必须自己留着，解释器关闭后再关它 */
@@ -174,8 +170,6 @@ object DepthEngine {
     private var histBuf = IntArray(0)
     private var lastNormMs = 0L
     private var inBuf: ByteBuffer? = null
-    /* LiteRT 路径复用的输入数组（每帧新建几十万长度的数组会造成 GC 抖动） */
-    private var liteBuf = FloatArray(0)
     private var outBuf: ByteBuffer? = null
     private val worker = Executors.newSingleThreadExecutor { r ->
         Thread(r, "depth-infer").apply { priority = Thread.NORM_PRIORITY - 1 }
@@ -216,10 +210,6 @@ object DepthEngine {
     }
 
     private fun shutdown() {
-        runCatching { liteModel?.close() }
-        liteModel = null
-        liteIn = null
-        liteOut = null
         runCatching { interp?.close() }
         interp = null
         runCatching { gpu?.close() }
@@ -272,15 +262,6 @@ object DepthEngine {
                         "${VrTuning.depthThreads}|${VrTuning.depthRemote}|${VrTuning.depthBackend}"
                 if (VrNative.loaded) VrNative.setDepthInputSize(inW, inH)
                 Log.i(TAG, "深度推理：远程模式（点 15，输入 ${inW}x${inH}），本地解释器不建")
-                return
-            }
-            if (VrTuning.depthEngine == 1 && tryInitLiteRt(context)) {
-                ready = true
-                initedSig = "${VrTuning.depthGpu}|${VrTuning.depthModel}|" +
-                        "${VrTuning.depthThreads}|${VrTuning.depthRemote}|${VrTuning.depthBackend}|" +
-                        "${VrTuning.depthEngine}"
-                VrNative.setDepthInputSize(inW, inH)
-                Log.i(TAG, "深度模型就绪：LiteRT 显卡（OpenCL）输入 ${inW}x${inH}，输出 ${outW}x${outH}")
                 return
             }
             try {
@@ -349,7 +330,7 @@ object DepthEngine {
                 interp = it
                 gpu = gpuDelegate
                 ready = true
-                initedSig = "${VrTuning.depthGpu}|${VrTuning.depthModel}|${VrTuning.depthThreads}|${VrTuning.depthRemote}|${VrTuning.depthBackend}|${VrTuning.depthEngine}"
+                initedSig = "${VrTuning.depthGpu}|${VrTuning.depthModel}|${VrTuning.depthThreads}|${VrTuning.depthRemote}|${VrTuning.depthBackend}"
                 val backendName = when {
                     gpuDelegate != null -> "显卡推理"
                     nnapi != null -> "NNAPI 委托"
@@ -585,10 +566,6 @@ object DepthEngine {
     }
 
     private fun runInfer(rgba: ByteArray, w: Int, h: Int, seq: Long) {
-        if (liteModel != null) {
-            runInferLiteRt(rgba, w, h, seq)
-            return
-        }
         val it = interp ?: return
         val ib = inBuf ?: return
         val ob = outBuf ?: return
@@ -634,74 +611,6 @@ object DepthEngine {
      * 本地和远程两条推理路径都走这里，保证两边出来的深度口径一致，
      * 切换时才只是"清晰度和延迟"的差别，不会因为两套处理而看出别的差异。
      */
-    /**
-     * 用 LiteRT 显卡加速（OpenCL）建模型。
-     *
-     * 为什么单独一条：TFLite 的 GL 委托跑同款模型是 58ms，参考实现在同一颗芯片上
-     * 用 LiteRT + OpenCL 加速库跑得明显更快。模型要用给显卡准备的那份 fp16。
-     *
-     * 失败一律返回 false，由调用方退回 TFLite —— 显卡建不起来不能让 3D 整条链路挂掉。
-     */
-    private fun tryInitLiteRt(context: Context): Boolean = runCatching {
-        val asset = "models/zipdepth_512x288_fp16.tflite"
-        val opts = com.google.ai.edge.litert.CompiledModel.Options(
-            com.google.ai.edge.litert.Accelerator.GPU,
-        )
-        opts.gpuOptions = com.google.ai.edge.litert.CompiledModel.GpuOptions(
-            backend = com.google.ai.edge.litert.CompiledModel.GpuOptions.Backend.OPENCL,
-        )
-        val cm = com.google.ai.edge.litert.CompiledModel.create(context.assets, asset, opts)
-        val ins = cm.createInputBuffers(0)
-        val outs = cm.createOutputBuffers(0)
-        if (ins.isEmpty() || outs.isEmpty()) error("输入/输出缓冲为空")
-        liteModel = cm
-        liteIn = ins
-        liteOut = outs
-        /* fp16 那份模型的输入输出都是 512x288 */
-        inW = 512
-        inH = 288
-        outW = 512
-        outH = 288
-        true
-    }.onFailure {
-        Log.w(TAG, "深度推理：LiteRT 显卡建不起来，退回 TFLite（${it.message}）")
-        liteModel = null
-        liteIn = null
-        liteOut = null
-    }.getOrDefault(false)
-
-    /** LiteRT 显卡路径的一次推理：与 TFLite 路径同一套输入格式（RGB 0..1 浮点） */
-    private fun runInferLiteRt(rgba: ByteArray, w: Int, h: Int, seq: Long) {
-        val cm = liteModel ?: return
-        val ins = liteIn ?: return
-        val outs = liteOut ?: return
-        if (rgba.size < w * h * 4) return
-        val n = inW * inH * 3
-        val input = if (liteBuf.size == n) liteBuf else FloatArray(n).also { liteBuf = it }
-        var k = 0
-        for (y in 0 until inH) {
-            val sy = (y.toLong() * h / inH).toInt()
-            val row = sy * w
-            for (x in 0 until inW) {
-                val sx = (x.toLong() * w / inW).toInt()
-                val o = (row + sx) * 4
-                input[k++] = (rgba[o].toInt() and 0xFF) / 255f
-                input[k++] = (rgba[o + 1].toInt() and 0xFF) / 255f
-                input[k++] = (rgba[o + 2].toInt() and 0xFF) / 255f
-            }
-        }
-        val t0 = SystemClock.elapsedRealtime()
-        ins[0].writeFloat(input)
-        cm.run(ins, outs, 0)
-        lastInferMs = SystemClock.elapsedRealtime() - t0
-        inferSumMs += lastInferMs
-        inferSamples++
-        if (lastInferMs > inferMaxMs) inferMaxMs = lastInferMs
-        val vals = outs[0].readFloat()
-        if (vals.isEmpty()) return
-        finishDepth(vals, outW, outH, seq)
-    }
-
     /** 直方图分位：返回第 q 分位对应的值（0..1）。total 为样本总数。 */
     private fun quantile(hist: IntArray, total: Int, q: Float): Float {
         val target = (total * q).toInt().coerceIn(1, total)
