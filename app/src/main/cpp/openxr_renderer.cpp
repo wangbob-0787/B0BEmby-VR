@@ -562,7 +562,6 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetHdr10StreamActive(JNIEnv * /* env */
     LOGI_RAW("本次播放是 HDR10（渲染层做亮度与色域）→ %d", on ? 1 : 0);
 }
 
-extern "C" JNIEXPORT void JNICALL
 extern "C" void setDoviTuning(float white, float knee, float gamma) {
     if (white > 10.f) gDoviWhite.store(white);
     if (knee > 0.05f) gDoviKnee.store(knee);
