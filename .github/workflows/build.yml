@@ -93,8 +93,17 @@ jobs:
       - name: 下载杜比内核
         run: |
           mkdir -p app/libs
-          curl -fL --retry 5 --retry-all-errors -o app/libs/libmpv-dovi.aar \
-            "https://github.com/wangbob-0787/B0BEmby-VR/releases/download/kernel-dovi/libmpv-release.aar"
+          # Release 是首选来源；下载失败（资产缺失/网络）时退回仓库内的同一份包。
+          # 仓库里的那份与 kernel-dovi Release 的产物一致，内核更新后要同步提交。
+          if ! curl -fL --retry 3 --retry-all-errors -o /tmp/kernel.aar \
+              "https://github.com/wangbob-0787/B0BEmby-VR/releases/download/kernel-dovi/libmpv-release.aar"; then
+            echo "Release 取内核失败 → 用仓库内的 app/libs/libmpv-dovi.aar"
+          elif unzip -tq /tmp/kernel.aar >/dev/null 2>&1; then
+            mv /tmp/kernel.aar app/libs/libmpv-dovi.aar
+            echo "已用 Release 的内核包"
+          else
+            echo "Release 包校验失败 → 用仓库内的 app/libs/libmpv-dovi.aar"
+          fi
           unzip -tq app/libs/libmpv-dovi.aar
 
       # 音频解码库走同一套思路：build-ffmpeg-audio.yml 编完发到 ffmpeg-audio-n7.1，
