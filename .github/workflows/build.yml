@@ -71,15 +71,21 @@ jobs:
             # /releases/assets/<id> 也算 api.github.com 的额度，编译机出口 IP 被限流就
             # 一律 403。改成「浏览器直链优先、API 兜底」，两条都失败才判死。
             ok=0
-            for src in \
-              "https://github.com/wuruxu/crwebview/releases/download/2.0.0/$f" \
-              "$API/releases/assets/$id"; do
-              if curl -fL --retry 4 --retry-delay 5 --retry-all-errors \
-                   -H "Accept: application/octet-stream" \
-                   -o "app/libs/$f" "$src"; then ok=1; break; fi
-              echo "通道失败：$src"
+            # 2026-11-25：第三方资产会整段时间 404（不是我们这边的问题），
+            # 单个通道内部重试不够，再加外层三轮、每轮隔 15 秒，避免整次编译因此失败。
+            for attempt in 1 2 3; do
+              for src in \
+                "https://github.com/wuruxu/crwebview/releases/download/2.0.0/$f" \
+                "$API/releases/assets/$id"; do
+                if curl -fL --retry 2 --retry-delay 5 --retry-all-errors \
+                     -H "Accept: application/octet-stream" \
+                     -o "app/libs/$f" "$src"; then ok=1; break; fi
+                echo "通道失败（第 $attempt 轮）：$src"
+              done
+              [ "$ok" = 1 ] && break
+              sleep 15
             done
-            [ "$ok" = 1 ] || { echo "::error::$f 两条通道都下不下来"; exit 1; }
+            [ "$ok" = 1 ] || { echo "::error::$f 三条通道三轮都下不下来"; exit 1; }
             unzip -tq "app/libs/$f" >/dev/null 2>&1 || { echo "::error::$f 下载不完整"; exit 1; }
           done
           ls -lh app/libs/
