@@ -9383,6 +9383,12 @@ class MainActivity : ComponentActivity() {
      * 只在"解码器不在跑"或"失步靠丢帧追不回来"时用。能用热跳就别走这里：
      * 重建要重新开流、跳到关键帧，实测六到九秒；热跳是几百毫秒。
      */
+    /**
+     * 断流自动重连标志（2026-11-25 父亲实测：断流后只会暂停，数据真断了就永远不恢复，
+     * 只能手动重起播）。断流持续 8 秒就主动定位一次，等价于"重起播但从原位置接上"。
+     */
+    private var stallRecoverPending = false
+
     private fun restoreVideoPipeAt(sec: Double) {
         /*
          * 全包档不重建：重建出来的是 off 档 pipe（它自己起 feedLoop），会和还活着的 Session
@@ -10279,7 +10285,23 @@ class MainActivity : ComponentActivity() {
                         if (stalled) {
                             Log.w(TAG, "画面断流 → 声音与时钟一起停")
                             runCatching { audioPipe?.pause() }
+                            /*
+                             * 断流不自我恢复时主动重连。
+                             * 全包档这条走 Session 重新定位（restoreVideoPipeAt 内部即 requestSeek），
+                             * 定位会重开连接；off 档才会重建 pipe。8 秒是父亲实测"卡住"的体感阈值。
+                             */
+                            if (!stallRecoverPending) {
+                                stallRecoverPending = true
+                                ui.postDelayed({
+                                    if (stallRecoverPending && !selfPaused) {
+                                        val posNow = ((playClock?.positionUs() ?: 0L) / 1_000_000.0)
+                                        Log.w(TAG, "断流超过 8 秒 → 主动重连（定位到 ${"%.1f".format(posNow)}s）")
+                                        runCatching { restoreVideoPipeAt(posNow) }
+                                    }
+                                }, 8000L)
+                            }
                         } else if (!selfPaused) {
+                            stallRecoverPending = false
                             Log.i(TAG, "画面恢复 → 声音与时钟一起走")
                             runCatching { audioPipe?.resume() }
                         }
