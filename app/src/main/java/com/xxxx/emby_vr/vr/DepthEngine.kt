@@ -166,6 +166,9 @@ object DepthEngine {
     private var inH = 0
     private var outW = 0
     private var outH = 0
+    /* 归一化用 64 档直方图算 2%/98% 分位（照 4XVR 的做法），范围按 150ms 平滑 */
+    private var histBuf = IntArray(0)
+    private var lastNormMs = 0L
     private var inBuf: ByteBuffer? = null
     private var outBuf: ByteBuffer? = null
     private val worker = Executors.newSingleThreadExecutor { r ->
@@ -608,6 +611,17 @@ object DepthEngine {
      * 本地和远程两条推理路径都走这里，保证两边出来的深度口径一致，
      * 切换时才只是"清晰度和延迟"的差别，不会因为两套处理而看出别的差异。
      */
+    /** 直方图分位：返回第 q 分位对应的值（0..1）。total 为样本总数。 */
+    private fun quantile(hist: IntArray, total: Int, q: Float): Float {
+        val target = (total * q).toInt().coerceIn(1, total)
+        var acc = 0
+        for (i in hist.indices) {
+            acc += hist[i]
+            if (acc >= target) return i.toFloat() / (hist.size - 1)
+        }
+        return 1f
+    }
+
     private fun finishDepth(vals: FloatArray, ow: Int, oh: Int, seq: Long) {
         val n = vals.size
         var mn = Float.MAX_VALUE
@@ -622,14 +636,32 @@ object DepthEngine {
          * 每帧各自拉伸会让同一场景的立体强度随画面内容起伏，看着就是"一会有一会没有"。
          * 参考值只按 2% 的步长跟随，单帧的极值不会立刻改变整体映射；换镜头时参考作废重取。
          */
+        /*
+         * 逐帧分位归一化（照 4XVR）：取 2%/98% 分位拉满量程，范围按 150ms 时间常数平滑，
+         * 切镜时由下面的 jumpStreak 把 refInit 置假、直接跳到新范围。
+         * 用 64 档直方图近似分位 —— 147k 个元素排序太慢，直方图一遍扫完。
+         */
+        val buckets = 64
+        if (histBuf.size != buckets) histBuf = IntArray(buckets)
+        java.util.Arrays.fill(histBuf, 0)
+        for (i in 0 until n) {
+            val b = (vals[i] * (buckets - 1)).toInt().coerceIn(0, buckets - 1)
+            histBuf[b]++
+        }
+        val lo2 = quantile(histBuf, n, 0.02f)
+        val hi98 = quantile(histBuf, n, 0.98f)
+        val nowN = SystemClock.elapsedRealtime()
         if (refInit) {
-            refMn = refMn * 0.98f + mn * 0.02f
-            refMx = refMx * 0.98f + mx * 0.02f
+            val dt = ((nowN - lastNormMs).coerceAtLeast(1L)) / 1000f
+            val aN = 1f - kotlin.math.exp(-dt / 0.150f)
+            refMn += (lo2 - refMn) * aN
+            refMx += (hi98 - refMx) * aN
         } else {
-            refMn = mn
-            refMx = mx
+            refMn = lo2
+            refMx = hi98
             refInit = true
         }
+        lastNormMs = nowN
         val useMn = refMn
         val useMx = if (refMx - refMn > 0.05f) refMx else refMn + 0.05f
         val range = useMx - useMn
