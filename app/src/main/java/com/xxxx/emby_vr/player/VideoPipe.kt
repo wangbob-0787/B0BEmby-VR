@@ -616,20 +616,31 @@ class VideoPipe {
                      * 全包档读在 Session 里，本类的"样本数没涨"不再代表断流 —— 改看队列水位
                      * （图 §3 P1-3：<0.5 秒连续 2.0 秒判停，≥1.5 秒判恢复）。
                      */
-                    val nowStalled = if (fullMode) queueWaterStalled() else {
+                    val waterStalled = if (fullMode) queueWaterStalled() else {
                         val grew = statSamples != lastWatchSamples
                         !grew && statSamples > 0
-                    }
-                    if (nowStalled != stalled) {
-                        stalled = nowStalled
-                        Log.w(TAG, if (nowStalled) "断流：读不到数据 → 请上层暂停声音" else "断流恢复：数据来了 → 请上层继续")
-                        runCatching { onStall?.invoke(nowStalled) }
                     }
                     /* 无进展秒数：数字冻结时靠它一眼看出"读不动"多久了（豆豆 2026-11-23） */
                     if (statSamples != lastWatchSamples) noProgressSince = System.currentTimeMillis()
                     val noProgressSec = if (statSamples == 0L) 0L
                     else (System.currentTimeMillis() - noProgressSince) / 1000
                     lastWatchSamples = statSamples
+                    /*
+                     * 两种都算"卡住"，走同一条上层暂停/重连：
+                     * ① 队列读空（水位低）；② 样本数长时间不涨 —— 读流卡死但队列不空。
+                     * ② 是 2026-11-25 实测补上的：队列里还有包，水位判据不触发，
+                     * 画面能停 40 秒没人管，只有手动重起播才恢复。
+                     */
+                    val nowStalled = waterStalled || noProgressSec >= 8
+                    if (nowStalled != stalled) {
+                        stalled = nowStalled
+                        Log.w(
+                            TAG,
+                            if (nowStalled) "画面卡住（水位低=$waterStalled 无进展=${noProgressSec}s）→ 请上层暂停声音"
+                            else "画面恢复：数据来了 → 请上层继续",
+                        )
+                        runCatching { onStall?.invoke(nowStalled) }
+                    }
                     Log.i(
                         TAG,
                         "PIPEREAD|样本=$statSamples|字节=$statBytes|读返回=$statLastReadRet" +
