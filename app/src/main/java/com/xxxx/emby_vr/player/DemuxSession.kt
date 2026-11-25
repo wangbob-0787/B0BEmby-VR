@@ -376,13 +376,7 @@ class DemuxSession(
                     waitMs = 0L
                     netRetry = 0
                     val ptsUs = if (meta[2] >= 0) meta[2] * 1000L else 0L
-                    if (ptsUs > 0L) {
-                        lastReadPtsMs = ptsUs / 1000L
-                        if (paceBasePtsMs < 0L) {
-                            paceBasePtsMs = lastReadPtsMs
-                            paceBaseWallMs = android.os.SystemClock.elapsedRealtime()
-                        }
-                    }
+                    if (ptsUs > 0L) lastReadPtsMs = ptsUs / 1000L
                     when (meta[0]) {
                         0 -> {
                             if (audioFirstPtsUs < 0L) audioFirstPtsUs = ptsUs
