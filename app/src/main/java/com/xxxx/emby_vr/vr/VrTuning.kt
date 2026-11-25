@@ -124,6 +124,9 @@ object VrTuning {
     /** HDR10 高光压缩：从多少尼特开始压、压到多少尼特（调参 hdr10_knee / hdr10_peak） */
     @Volatile var hdr10Knee: Float = 200f
     @Volatile var hdr10Peak: Float = 52f
+    /* 曝光与显示曲线：压膝点会让整幅去饱和（海水发灰），压暗只能靠曝光 */
+    @Volatile var hdr10Exposure: Float = 0.21f
+    @Volatile var hdr10Gamma: Float = 0.74f
 
     /**
      * 是否允许「片源没色彩标记且 10 位 ≥1080p」时推断成 HDR10（2026-11-16）。
@@ -969,9 +972,13 @@ object VrTuning {
         run {
             val knee = raw["hdr10_knee"]?.toFloatOrNull()
             val peak = raw["hdr10_peak"]?.toFloatOrNull()
+            val expo = raw["hdr10_exposure"]?.toFloatOrNull()
+            val gam = raw["hdr10_gamma"]?.toFloatOrNull()
             if (knee != null) hdr10Knee = knee
             if (peak != null) hdr10Peak = peak
-            VrNative.setHdr10Tuning(hdr10Knee, hdr10Peak)
+            if (expo != null) hdr10Exposure = expo
+            if (gam != null) hdr10Gamma = gam
+            VrNative.setHdr10Tuning(hdr10Knee, hdr10Peak, hdr10Exposure, hdr10Gamma)
         }
         raw["super_sample"]?.toFloatOrNull()?.let {
             VrNative.setTuning(KEY_SUPER_SAMPLE, it)

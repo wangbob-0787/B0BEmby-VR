@@ -68,9 +68,9 @@ object VrNative {
     fun drainVideoFrames(n: Int = 4) = runCatching { nativeDrainVideoFrames(n) }
     private external fun nativeDrainVideoFrames(n: Int)
 
-    fun setHdr10Tuning(knee: Float, peak: Float) =
-        runCatching { nativeSetHdr10Tuning(knee, peak) }
-    private external fun nativeSetHdr10Tuning(knee: Float, peak: Float)
+    fun setHdr10Tuning(knee: Float, peak: Float, exposure: Float, gamma: Float) =
+        runCatching { nativeSetHdr10Tuning(knee, peak, exposure, gamma) }
+    private external fun nativeSetHdr10Tuning(knee: Float, peak: Float, exposure: Float, gamma: Float)
 
     private external fun nativeSetHdr10StreamActive(on: Int)
 

@@ -165,7 +165,7 @@ private fun warmYoutubeIfNeeded(url: String?) {
     android.util.Log.i("B0BEmbyVR", "YouTube 预热解析：$vid")
     Thread {
         runCatching {
-            (java.net.URL("http://192.168.150.18:8792/resolve?id=$vid")
+            (java.net.URL("http://192.168.150.15:8792/resolve?id=$vid")
                 .openConnection() as java.net.HttpURLConnection)
                 .apply {
                     connectTimeout = 8000
@@ -1144,7 +1144,7 @@ private object WebRuntime {
         android.util.Log.i("B0BEmbyVR", "YouTube：向 .18 解析视频 $vid")
         Thread {
             val res = runCatching {
-                val conn = java.net.URL("http://192.168.150.18:8792/resolve?id=$vid")
+                val conn = java.net.URL("http://192.168.150.15:8792/resolve?id=$vid")
                     .openConnection() as java.net.HttpURLConnection
                 conn.connectTimeout = 8000
                 /* 服务端首次解析可能要十几秒（要过令牌与签名），给足读超时 */
@@ -3131,7 +3131,7 @@ class WebPageBridge {
  *
  * 为什么必须这么做：VR 里没有输入法，YouTube 的登录页要输邮箱密码，走不通；
  * 而不登录时 YouTube 连视频卡片都不渲染，页面等于空白。
- * 凭据由 `http://192.168.150.18:8792/cookies` 提供（服务端从浏览器调试接口取明文），
+ * 凭据由 `http://192.168.150.15:8792/cookies` 提供（服务端从浏览器调试接口取明文），
  * 这里逐条写进 CookieManager，写完 flush 再让调用方 loadUrl。
  *
  * 失败不阻断加载：拿不到凭据就照常打开网页（未登录可用部分功能）。
@@ -3139,7 +3139,7 @@ class WebPageBridge {
 private suspend fun injectYoutubeCookies() {
     runCatching {
         val text = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            java.net.URL("http://192.168.150.18:8792/cookies").readText()
+            java.net.URL("http://192.168.150.15:8792/cookies").readText()
         }
         val arr = org.json.JSONObject(text).optJSONArray("cookies") ?: return@runCatching
         val cm = org.chromium.android_crwebview.webkit.CookieManager.getInstance()
