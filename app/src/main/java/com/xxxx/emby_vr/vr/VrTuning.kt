@@ -616,12 +616,6 @@ object VrTuning {
     const val KEY_STEREO_NEWTON = 67
     const val KEY_SHOW_DEPTH = 81
 
-    /** 1 = 深度写进纹理时把行序翻过来（默认 0）：判定深度图上下颠倒用，翻完不对改回 0 */
-    const val KEY_FLIP_DEPTH = 82
-
-    /** 补洞扫描步数（1..12，默认 12）：步数少 = 只补眼前那一两像素的缝，不在轮廓外拖黑线 */
-    const val KEY_FILL_STEPS = 83
-
     /** 补洞搜索半径（画面像素，2~96，默认 24）：洞宽≈视差量，太小跨不过洞、太大会啃到前景 */
     const val KEY_STEREO_FILL_PX = 68
 
@@ -1455,15 +1449,6 @@ object VrTuning {
             val on = it >= 0.5f
             VrNative.setTuning(KEY_SHOW_DEPTH, if (on) 1f else 0f)
             applied += "银幕显示深度 ${if (on) "开" else "关"}"
-        }
-        raw["stereo_fill_steps"]?.toIntOrNull()?.let {
-            VrNative.setTuning(KEY_FILL_STEPS, it.toFloat())
-            applied += "补洞扫描 ${it.coerceIn(1, 12)} 步"
-        }
-        raw["stereo_flip_depth"]?.toFloatOrNull()?.let {
-            val on = it >= 0.5f
-            VrNative.setTuning(KEY_FLIP_DEPTH, if (on) 1f else 0f)
-            applied += "深度行序 ${if (on) "翻转" else "原样"}"
         }
         raw["stereo_newton"]?.toIntOrNull()?.let {
             VrNative.setTuning(KEY_STEREO_NEWTON, it.toFloat())

@@ -42,9 +42,6 @@ class MpvBackend(private val context: Context) {
          */
         @Volatile private var engReady = false
 
-        /** 网络/普通 HDR10 流的色标修正（调参 mpv_hdr_fix=1，由界面层写入） */
-        @Volatile var hdrColorFix = false
-
         /**
          * 内核是否已初始化完成。
          *
@@ -108,27 +105,11 @@ class MpvBackend(private val context: Context) {
                 )
                 setOptionRuntime("target-prim", "bt.2020")
                 setOptionRuntime("target-trc", "pq")
-                setOptionRuntime("tone-mapping", "spline")
-                setOptionRuntime("target-peak", "1100")
+                setOptionRuntime("tone-mapping", "clip")
+                setOptionRuntime("target-peak", "10000")
             } else {
-                /*
-                 * 网络/普通 HDR10 片的色标修正（调参 stereo 侧的 `mpv_hdr_fix=1` 打开）。
-                 *
-                 * 问题：不少 HDR10 流的解码器只报传输曲线是 PQ（color-transfer=3），
-                 * 基色却报成 bt709。libplacebo 按 709 解 PQ，红色分量被放大，人脸发红。
-                 * 办法：进 MPV 之前用 setparams 把基色强制成 bt2020、传输曲线强制成 PQ，
-                 * 再让库正常做 HDR→SDR；不改这条流的其它处理。
-                 */
-                val hdrFix = hdrColorFix
-                if (hdrFix) {
-                    setOptionRuntime(
-                        "vf",
-                        "setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc",
-                    )
-                } else {
-                    /* 清掉滤镜链：留着它普通片会少一层正常处理 */
-                    setOptionRuntime("vf", "")
-                }
+                /* 清掉滤镜链：留着它普通片会少一层正常处理 */
+                setOptionRuntime("vf", "")
                 setOptionRuntime("target-prim", "bt.709")
                 setOptionRuntime("target-trc", "gamma2.2")
                 /*
@@ -137,23 +118,9 @@ class MpvBackend(private val context: Context) {
                  * bt.2390 会把中间调压成一片、暗部被抬起来，观感比浏览器灰；
                  * spline 的跨度与浏览器一致（实测量得两者对比度 0.36 vs 0.35）。
                  */
-                /*
-                 * 目标亮度 800（2026-11-27 父亲实测：1100 时人脸"红得像猪肝"，过艳）。
-                 * 2026-11-16 那次逐档比过 600/800/1000/1200，800 与浏览器最接近；换内核后
-                 * 1100 过饱和，回到 800。
-                 */
-                /*
-                 * 2026-11-27 02:20 对照实验：网页播正常、接管后脸发红，目标亮度 800/1100 都红。
-                 * 这一步把映射彻底关掉（clip + 不压高光），用来分辨"是映射曲线"还是"色彩矩阵"。
-                 * 若关了还红 → 在 YUV→RGB 或色域那层；若不红了 → 是 spline 曲线把红推高。
-                 */
-                setOptionRuntime("tone-mapping", "clip")
-                setOptionRuntime("target-peak", "10000")
-                /*
-                 * 输出范围交给内核自己判断（2026-11-27 02:25 改）：
-                 * 源是 limited、我们强制 full 时，亮部会被顶到上限，肤色先变红。
-                 * 连色调映射一起回到 spline + 800（对照实验证明 clip 那档整幅发灰）。
-                 */
+                setOptionRuntime("tone-mapping", "spline")
+                setOptionRuntime("target-peak", "1100")
+                /* 输出完整范围 + 对比度 100（父 2026-11-19 20:13 定，写死进代码） */
                 setOptionRuntime("video-output-levels", "full")
                 setOptionRuntime("contrast", "100")
             }

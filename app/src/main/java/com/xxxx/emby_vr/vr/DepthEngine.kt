@@ -145,7 +145,6 @@ object DepthEngine {
 
     private var appContext: Context? = null
     private var prevDepth: ByteArray? = null
-    private var outFBuf = FloatArray(0)
     private var inferCount = 0
     /* 连续几次判定为"换了镜头"：单帧超阈值可能只是画面里有物体快速移动，不算换镜头 */
     private var jumpStreak = 0
@@ -473,7 +472,7 @@ object DepthEngine {
         val out = s.getOutputStream()
         val inp = s.getInputStream()
         val head = java.io.ByteArrayOutputStream(16 + batch.size * (6 + 40 * 1024))
-        head.write(byteArrayOf(0x42, 0x30, 0x42, 0x46))   // B0BF（压缩上行 + 浮点回传）
+        head.write(byteArrayOf(0x42, 0x30, 0x42, 0x4B))   // B0BK（压缩上行 + 压缩回传）
         head.write(byteArrayOf((batch.size and 0xFF).toByte(), ((batch.size shr 8) and 0xFF).toByte()))
         for (f in batch) {
             val len = f.rgb.size
@@ -492,22 +491,28 @@ object DepthEngine {
         if (n != batch.size) throw java.io.IOException("远程深度：批量数目对不上（$n/${batch.size}）")
         for (f in batch) {
             /*
-             * 回传的是 float32 深度（512x288 一帧 590KB）：不再落 8 位、不再压 JPEG。
-             * 精度从 256 级变成连续值，边缘的台阶从这里消失。
+             * 回传的深度是灰度 JPEG（512x288 原始 147KB，压完约 20KB）。
+             * 解回像素后只取红通道 —— 灰度图三通道相同。
              */
-            val whl = ByteArray(4)
-            readFully(inp, whl, 4)
+            val whl = ByteArray(8)
+            readFully(inp, whl, 8)
             val ow = (whl[0].toInt() and 0xFF) or ((whl[1].toInt() and 0xFF) shl 8)
             val oh = (whl[2].toInt() and 0xFF) or ((whl[3].toInt() and 0xFF) shl 8)
-            val cnt = ow * oh
-            if (cnt <= 0) continue
-            val fraw = ByteArray(cnt * 4)
-            readFully(inp, fraw, fraw.size)
+            val ln = (whl[4].toInt() and 0xFF) or ((whl[5].toInt() and 0xFF) shl 8) or
+                     ((whl[6].toInt() and 0xFF) shl 16) or ((whl[7].toInt() and 0xFF) shl 24)
+            if (ln <= 0) continue
+            val jp = ByteArray(ln)
+            readFully(inp, jp, ln)
+            val bmp = android.graphics.BitmapFactory.decodeByteArray(jp, 0, ln) ?: continue
+            val cnt = bmp.width * bmp.height
+            if (cnt <= 0) { bmp.recycle(); continue }
+            val px = if (pixBuf.size == cnt) pixBuf else IntArray(cnt).also { pixBuf = it }
+            bmp.getPixels(px, 0, bmp.width, 0, 0, bmp.width, bmp.height)
+            bmp.recycle()
             val vals = if (valsBuf.size == cnt) valsBuf else FloatArray(cnt).also { valsBuf = it }
-            java.nio.ByteBuffer.wrap(fraw).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                .asFloatBuffer().get(vals, 0, cnt)
+            for (i in 0 until cnt) vals[i] = ((px[i] shr 16) and 0xFF) / 255f
             lastInferMs = (SystemClock.elapsedRealtime() - f.ts)
-            finishDepth(vals, ow, oh, f.seq, emitFloat = true)
+            finishDepth(vals, bmp.width, bmp.height, f.seq)
         }
         lastInferMs = SystemClock.elapsedRealtime() - t0
     }
@@ -678,31 +683,6 @@ object DepthEngine {
      * 左右各扫一遍，相邻像素深度差不超过 step；有画面边缘的像素放宽到 step*8，
      * 真实轮廓因此保留，平坦区的硬跳变被摊成几十像素的缓坡，画面不会再"隔着水渍"。
      */
-    /** 与 limitRamp 同一套规则，作用在浮点缓冲区上（0..255 量纲，保持阈值口径不变） */
-    private fun limitRampF(out: FloatArray, ow: Int, oh: Int) {
-        val ramp = VrTuning.stereoRamp
-        if (ramp <= 0) return
-        val relaxed = ramp * 8
-        val has = rampAllow.size == ow * oh
-        for (y in 0 until oh) {
-            val base = y * ow
-            for (x in 1 until ow) {
-                val step = if (has && rampAllow[base + x] > 0.5f) relaxed else ramp
-                val prevV = out[base + x - 1]
-                val cur = out[base + x]
-                if (cur > prevV + step) out[base + x] = prevV + step
-                else if (cur < prevV - step) out[base + x] = prevV - step
-            }
-            for (x in ow - 2 downTo 0) {
-                val step = if (has && rampAllow[base + x] > 0.5f) relaxed else ramp
-                val nextV = out[base + x + 1]
-                val cur = out[base + x]
-                if (cur > nextV + step) out[base + x] = nextV + step
-                else if (cur < nextV - step) out[base + x] = nextV - step
-            }
-        }
-    }
-
     private fun limitRamp(out: ByteArray, ow: Int, oh: Int) {
         val ramp = VrTuning.stereoRamp
         if (ramp <= 0) return
@@ -727,11 +707,7 @@ object DepthEngine {
         }
     }
 
-    /**
-     * emitFloat = true 时按浮点回传原生（远程服务直回 float32 的那条路），
-     * 否则仍按 8 位字节回传（本地推理那条路，模型出来的就是 8 位口径）。
-     */
-    private fun finishDepth(vals: FloatArray, ow: Int, oh: Int, seq: Long, emitFloat: Boolean = false) {
+    private fun finishDepth(vals: FloatArray, ow: Int, oh: Int, seq: Long) {
         val n = vals.size
         var mn = Float.MAX_VALUE
         var mx = -Float.MAX_VALUE
@@ -808,7 +784,7 @@ object DepthEngine {
             jumpStreak = 0
         }
 
-        val outF = if (outFBuf.size == n) outFBuf else FloatArray(n).also { outFBuf = it }
+        val out = if (outU8Buf.size == n) outU8Buf else ByteArray(n).also { outU8Buf = it }
         for (i in 0 until n) {
             var v = (vals[i] - useMn) / range
             if (invert) v = 1f - v
@@ -817,12 +793,10 @@ object DepthEngine {
             if (prev != null && prev.size == n && a < 1f) {
                 b = prev[i].toInt().and(0xFF) * (1f - a) + b * a
             }
-            outF[i] = b.coerceIn(0f, 255f)
+            out[i] = b.toInt().coerceIn(0, 255).toByte()
         }
-        limitRampF(outF, ow, oh)
-        val out8 = ByteArray(n)
-        for (i in 0 until n) out8[i] = outF[i].toInt().coerceIn(0, 255).toByte()
-        prevDepth = out8
+        limitRamp(out, ow, oh)
+        prevDepth = out
         inferCount++
         if (inferCount % 20 == 1) {
             /*
@@ -847,13 +821,7 @@ object DepthEngine {
         }
         lastOkMs = System.currentTimeMillis()
         /* 帧号原样带回原生：环形缓冲靠它把深度还给"本来就是它"的那一帧 */
-        if (emitFloat) {
-            val f = FloatArray(n)
-            for (i in 0 until n) f[i] = outF[i] / 255f
-            VrNative.pushDepthF(f, ow, oh, seq)
-        } else {
-            VrNative.pushDepth(out8, ow, oh, seq)
-        }
+        VrNative.pushDepth(out, ow, oh, seq)
     }
 
     /**
