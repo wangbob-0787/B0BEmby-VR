@@ -3831,12 +3831,14 @@ std::atomic<int> gStereoEdgeDense{1};
 /* 1 = 银幕显示深度图（调参 stereo_show_depth）。只用于抓设备真实深度，默认关 */
 std::atomic<int> gStereoShowDepth{0};
 /*
- * 1 = 深度写进纹理时把行序翻过来（调参 stereo_flip_depth），0 = 原样。
+ * 1 = 深度写进纹理时把行序翻过来，0 = 原样。
  *
- * 留成开关是为了不重编就能 A/B：深度是不是上下颠倒，靠翻一次再看银幕灰度图最直接，
- * 命令行改 vr-tuning.txt 一秒生效，翻完不对改回 0 即可。
+ * 默认必须翻：抓帧读回的第 0 行是画面底部，而深度纹理按 v 采样、v=0 是画面顶部，
+ * 不翻的话整幅深度上下颠倒（银幕灰度图人形头朝下、画面里斜向/尖角物体在立体层里
+ * 镜像出一条水渍状的斜带，如竹竿变 X、三角变倒三角）。2026-11-26 实测：翻过来后
+ * 灰度图正了、X 与倒三角消失、立体感明显变强。留 stereo_flip_depth 只为对照。
  */
-std::atomic<int> gDepthFlipRows{0};
+std::atomic<int> gDepthFlipRows{1};
 /* 远程深度一批几帧（客户端组批用，原生侧仅记录，供诊断对账） */
 std::atomic<int> gDepthRemoteBatch{3};
 std::atomic<float> gStereoSharp{1.0f};     // 分层锐化强度 0..1
