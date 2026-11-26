@@ -42,6 +42,9 @@ class MpvBackend(private val context: Context) {
          */
         @Volatile private var engReady = false
 
+        /** 网络/普通 HDR10 流的色标修正（调参 mpv_hdr_fix=1，由界面层写入） */
+        @Volatile var hdrColorFix = false
+
         /**
          * 内核是否已初始化完成。
          *
@@ -108,8 +111,24 @@ class MpvBackend(private val context: Context) {
                 setOptionRuntime("tone-mapping", "clip")
                 setOptionRuntime("target-peak", "10000")
             } else {
-                /* 清掉滤镜链：留着它普通片会少一层正常处理 */
-                setOptionRuntime("vf", "")
+                /*
+                 * 网络/普通 HDR10 片的色标修正（调参 stereo 侧的 `mpv_hdr_fix=1` 打开）。
+                 *
+                 * 问题：不少 HDR10 流的解码器只报传输曲线是 PQ（color-transfer=3），
+                 * 基色却报成 bt709。libplacebo 按 709 解 PQ，红色分量被放大，人脸发红。
+                 * 办法：进 MPV 之前用 setparams 把基色强制成 bt2020、传输曲线强制成 PQ，
+                 * 再让库正常做 HDR→SDR；不改这条流的其它处理。
+                 */
+                val hdrFix = hdrColorFix
+                if (hdrFix) {
+                    setOptionRuntime(
+                        "vf",
+                        "setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc",
+                    )
+                } else {
+                    /* 清掉滤镜链：留着它普通片会少一层正常处理 */
+                    setOptionRuntime("vf", "")
+                }
                 setOptionRuntime("target-prim", "bt.709")
                 setOptionRuntime("target-trc", "gamma2.2")
                 /*
