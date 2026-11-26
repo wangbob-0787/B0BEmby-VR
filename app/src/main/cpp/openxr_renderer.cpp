@@ -7732,12 +7732,7 @@ void main() {
     c.depthUpDirty = false;
 }
 
-/**
- * 把一份深度打包成 RGBA8 传进目标纹理（RGB = 这一帧的低分画面，A = 深度）。
- *
- * 为什么把颜色也塞进同一张纹理：引导放大要拿低分辨率的颜色和高分辨率画面比亮度。
- * 颜色必须属于同一帧 —— 拿别的帧的颜色当引导，深度边缘会贴到错的地方。
- */
+/** 浮点深度上传：R32F 单通道，0..1 连续值，全程不再量化 */
 bool uploadDepthFloat(RenderTarget &t, const std::vector<float> &depth, int w, int h);
 
 bool uploadDepthToTarget(RenderTarget &t, const std::vector<unsigned char> &depth, int w, int h,
@@ -7769,8 +7764,6 @@ bool uploadDepthFloat(RenderTarget &t, const std::vector<float> &depth, int w, i
     glBindTexture(GL_TEXTURE_2D, 0);
     return true;
 }
-
-    if (w <= 0 || h <= 0 || depth.size() != (size_t) w * h) return false;
 
 /**
  * 取走 Kotlin 侧算好的深度。
