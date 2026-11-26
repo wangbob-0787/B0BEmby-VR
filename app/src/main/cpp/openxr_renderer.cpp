@@ -982,7 +982,13 @@ out vec4 fragColor;
  * 单位必须是**帧像素**：按低分辨率像素一步走，256 宽的深度图一步就是十个帧像素，
  * 两脚步跨完整个空洞，取到的"更远表面"其实是隔了半个画面的东西，补完颜色对不上。
  */
+/*
+ * 补洞最多扫几步：FILL_MAX 是硬上限，uFillMax 是现场可调（1..12）。
+ * 步数决定"补洞能往背景伸多远"——步数少 = 只补眼前那一两像素的缝，不会在轮廓外
+ * 拖出一条黑线；步数多 = 洞补得干净，但会把近处深度往外铺。调参 stereo_fill_steps。
+ */
 const int FILL_MAX = 12;
+uniform int uFillMax;
 const float FILL_PX = 24.0;
 
 /* 抖动用的哈希（打散 8 位量化色带）*/
@@ -1185,11 +1191,12 @@ void main() {
                 float here = depthAt(vUv);
                 float far = here;
                 bool found = false;
+                int fillMax = clamp(uFillMax, 1, FILL_MAX);
                 float fillPx = clamp(uFillPx, 2.0, 96.0);
                 float stepUV = fillPx / float(FILL_MAX) / max(uFrameWidth, 1.0);
                 float reachUV = float(reach) / max(uLowResWidth, 1.0);
-                int span = int(min(float(FILL_MAX), ceil(reachUV / stepUV)));
-                for (int i = 1; i <= FILL_MAX; i++) {
+                int span = int(min(float(fillMax), ceil(reachUV / stepUV)));
+                for (int i = 1; i <= fillMax; i++) {
                     if (i > span) break;
                     float o = float(i) * stepUV;
                     float dl = texture(uDepthTex, vec2(vUv.x - o, vUv.y)).r;
@@ -2922,6 +2929,7 @@ struct QuadLocs {
     GLint newton = -1;
     GLint showDepth = -1;
     GLint fillPx = -1;
+    GLint fillMax = -1;
     GLint fillPick = -1;
     GLint edgeThr = -1;
     GLint edgeColorThr = -1;
@@ -2981,6 +2989,7 @@ void fillQuadLocs(GLuint prog, QuadLocs &u) {
     u.newton = glGetUniformLocation(prog, "uNewton");
     u.showDepth = glGetUniformLocation(prog, "uShowDepth");
     u.fillPx = glGetUniformLocation(prog, "uFillPx");
+    u.fillMax = glGetUniformLocation(prog, "uFillMax");
     u.fillPick = glGetUniformLocation(prog, "uFillPick");
     u.edgeThr = glGetUniformLocation(prog, "uEdgeThr");
     u.edgeColorThr = glGetUniformLocation(prog, "uEdgeColorThr");
@@ -3851,6 +3860,8 @@ std::atomic<int> gStereoShowDepth{0};
  * 灰度图正了、X 与倒三角消失、立体感明显变强。留 stereo_flip_depth 只为对照。
  */
 std::atomic<int> gDepthFlipRows{1};
+/* 补洞最多扫几步（调参 stereo_fill_steps，1..12）。步数少 = 只补眼前的缝 */
+std::atomic<int> gStereoFillSteps{12};
 /* 远程深度一批几帧（客户端组批用，原生侧仅记录，供诊断对账） */
 std::atomic<int> gDepthRemoteBatch{3};
 std::atomic<float> gStereoSharp{1.0f};     // 分层锐化强度 0..1
@@ -8760,6 +8771,7 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
                 glUniform1i(u.newton, n < 0 ? 0 : (n > 2 ? 2 : n));
             }
             if (u.fillPx >= 0) glUniform1f(u.fillPx, gStereoFillPx.load());
+    if (u.fillMax >= 0) glUniform1i(u.fillMax, gStereoFillSteps.load());
             if (u.fillPick >= 0) glUniform1i(u.fillPick, gStereoFillPick.load());
             if (u.showDepth >= 0) glUniform1i(u.showDepth, gStereoShowDepth.load());
             if (u.edgeThr >= 0) glUniform1f(u.edgeThr, gStereoEdgeThr.load());
@@ -11307,6 +11319,15 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
                 VLOGI("调参 → 银幕显示深度图 %s", value >= 0.5f ? "开" : "关");
             }
             break;
+        /* 83 = 补洞扫描步数（1..12）。步数少 = 只补眼前那一两像素的缝 */
+        case 83: {
+            const int n83 = (int) value;
+            if (n83 >= 1 && n83 <= 12) {
+                gStereoFillSteps.store(n83);
+                VLOGI("调参 → 补洞扫描 %d 步（上限 12）", n83);
+            }
+            return;
+        }
         /* 82 = 深度行序翻转（1 = 翻）。判定深度图是否上下颠倒用，A/B 完改回 0 */
         case 82:
             if (value >= 0.f && value <= 1.f) {
