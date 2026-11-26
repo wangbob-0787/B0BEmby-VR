@@ -3830,6 +3830,13 @@ std::atomic<float> gRingDelayOverride{0.f};
 std::atomic<int> gStereoEdgeDense{1};
 /* 1 = 银幕显示深度图（调参 stereo_show_depth）。只用于抓设备真实深度，默认关 */
 std::atomic<int> gStereoShowDepth{0};
+/*
+ * 1 = 深度写进纹理时把行序翻过来（调参 stereo_flip_depth），0 = 原样。
+ *
+ * 留成开关是为了不重编就能 A/B：深度是不是上下颠倒，靠翻一次再看银幕灰度图最直接，
+ * 命令行改 vr-tuning.txt 一秒生效，翻完不对改回 0 即可。
+ */
+std::atomic<int> gDepthFlipRows{0};
 /* 远程深度一批几帧（客户端组批用，原生侧仅记录，供诊断对账） */
 std::atomic<int> gDepthRemoteBatch{3};
 std::atomic<float> gStereoSharp{1.0f};     // 分层锐化强度 0..1
@@ -7709,15 +7716,18 @@ bool uploadDepthToTarget(RenderTarget &t, const std::vector<unsigned char> &dept
      * 遮挡表那趟又不取反，三处约定不一致时补洞就会取到前景，边缘冒出亮条。
      */
     const bool invert = gDepthInvert.load() != 0;
+    /* 颜色要和深度同一套行序，否则引导放大拿到的"这一帧的低分画面"和深度错位 */
+    const bool flipRows = gDepthFlipRows.load() != 0;
     std::vector<unsigned char> rgba((size_t) w * h * 4);
     for (int y = 0; y < h; y++) {
-        /* 不翻行：读回的第 0 行就是 v=0 那一行，深度和画面用的是同一套行序 */
+        const int sy = flipRows ? (h - 1 - y) : y;
         for (int x = 0; x < w; x++) {
-            const size_t i = (size_t) y * w + x;
-            rgba[i * 4 + 0] = haveColor ? lowColor[i * 4 + 0] : 128;
-            rgba[i * 4 + 1] = haveColor ? lowColor[i * 4 + 1] : 128;
-            rgba[i * 4 + 2] = haveColor ? lowColor[i * 4 + 2] : 128;
-            rgba[i * 4 + 3] = invert ? (unsigned char) (255 - depth[i]) : depth[i];
+            const size_t dst = (size_t) y * w + x;
+            const size_t src = (size_t) sy * w + x;
+            rgba[dst * 4 + 0] = haveColor ? lowColor[src * 4 + 0] : 128;
+            rgba[dst * 4 + 1] = haveColor ? lowColor[src * 4 + 1] : 128;
+            rgba[dst * 4 + 2] = haveColor ? lowColor[src * 4 + 2] : 128;
+            rgba[dst * 4 + 3] = invert ? (unsigned char) (255 - depth[src]) : depth[src];
         }
     }
     glBindTexture(GL_TEXTURE_2D, t.tex);
@@ -11213,6 +11223,13 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
             if (value >= 0.f && value <= 1.f) {
                 gStereoShowDepth.store(value >= 0.5f ? 1 : 0);
                 VLOGI("调参 → 银幕显示深度图 %s", value >= 0.5f ? "开" : "关");
+            }
+            break;
+        /* 82 = 深度行序翻转（1 = 翻）。判定深度图是否上下颠倒用，A/B 完改回 0 */
+        case 82:
+            if (value >= 0.f && value <= 1.f) {
+                gDepthFlipRows.store(value >= 0.5f ? 1 : 0);
+                VLOGI("调参 → 深度行序 %s", value >= 0.5f ? "翻转" : "原样");
             }
             break;
         case 66: {
