@@ -604,7 +604,7 @@ object VrTuning {
      * 三次插值 + 两轮 = 13 次/像素/眼；双线性 + 一轮 = 7 次；双线性 + 零轮 = 5 次。
      */
     const val KEY_STEREO_NEWTON = 67
-    const val KEY_SHOW_DEPTH = 68
+    const val KEY_SHOW_DEPTH = 81
 
     /** 补洞搜索半径（画面像素，2~96，默认 24）：洞宽≈视差量，太小跨不过洞、太大会啃到前景 */
     const val KEY_STEREO_FILL_PX = 68

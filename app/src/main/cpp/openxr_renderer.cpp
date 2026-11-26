@@ -11208,8 +11208,8 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
          * 66 = 遮挡表降档（1/2/4）。这趟是链路里最贵的 GPU pass，降半档采样量到四分之一；
          * 切档后每 60 次会打一行"遮挡表"统计，直接对比输出尺寸与耗时。
          */
-        /* 68 = 银幕显示深度图（1 = 开）。抓设备真实深度用，不动变形逻辑 */
-        case 68:
+        /* 81 = 银幕显示深度图（1 = 开）。抓设备真实深度用，不动变形逻辑 */
+        case 81:
             if (value >= 0.f && value <= 1.f) {
                 gStereoShowDepth.store(value >= 0.5f ? 1 : 0);
                 VLOGI("调参 → 银幕显示深度图 %s", value >= 0.5f ? "开" : "关");
