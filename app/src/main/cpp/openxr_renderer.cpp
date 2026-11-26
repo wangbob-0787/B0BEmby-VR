@@ -7091,9 +7091,12 @@ bool ensureTarget(RenderTarget &t, int w, int h, GLint internalFormat, bool line
      * R32F 存连续深度值；R8/RGBA8 是 8 位量化版。R32F 在 GLES3 上没有硬件线性过滤，
      * 采样侧一律 texelFetch 自己插值（depthAt / 上采样那趟都这么写）。
      */
-    const GLenum pxFmt = (internalFormat == GL_R32F || internalFormat == GL_R8) ? GL_RED : GL_RGBA;
-    const GLenum pxType = (internalFormat == GL_R32F) ? GL_FLOAT : GL_UNSIGNED_BYTE;
+    const GLenum pxFmt = (internalFormat == GL_R32F || internalFormat == GL_R16F ||
+                          internalFormat == GL_R8) ? GL_RED : GL_RGBA;
+    const GLenum pxType = (internalFormat == GL_R32F || internalFormat == GL_R16F)
+                          ? GL_FLOAT : GL_UNSIGNED_BYTE;
     glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, w, h, 0, pxFmt, pxType, nullptr);
+    /* R16F（半浮点）在 GLES3 上可以硬件线性过滤；R32F 要扩展，且取样很贵 */
     if (internalFormat == GL_R32F) probeFloatLinear();
     const bool useLinear = internalFormat == GL_R32F ? gFloatLinear : linear;
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, useLinear ? GL_LINEAR : GL_NEAREST);
@@ -7548,7 +7551,7 @@ void main() {
      * 用最近邻时，256 宽的深度图铺到 2560 宽的画面就是十像素一块的方块，
      * 立体偏移跟着一块一块跳 —— 这是"边缘发虚、偶尔扭曲"的另一半来源。
      */
-    if (!ensureTarget(dst, outW, outH, GL_R8, true)) return;
+    if (!ensureTarget(dst, outW, outH, GL_R16F, true)) return;
 
     GLint prevFbo = 0;
     GLint prevViewport[4] = {0, 0, 0, 0};
@@ -7565,7 +7568,7 @@ void main() {
     if (c.offsetsSrcLoc >= 0) glUniform2f(c.offsetsSrcLoc, (float) srcW, (float) srcH);
     if (c.offsetsOutLoc >= 0) glUniform2f(c.offsetsOutLoc, (float) outW, (float) outH);
     if (c.offsetsSrcRLoc >= 0) glUniform1i(c.offsetsSrcRLoc, srcIsR8 ? 1 : 0);
-    if (c.offsetsLinearLoc >= 0) glUniform1i(c.offsetsLinearLoc, gFloatLinear ? 1 : 0);
+    if (c.offsetsLinearLoc >= 0) glUniform1i(c.offsetsLinearLoc, 1);
     if (c.offsetsConvLoc >= 0) glUniform1f(c.offsetsConvLoc, c.depthConv);
     /* 羽化按每眼 1920 源宽折算成深度图像素，和参考实现同一个口径 */
     if (c.offsetsFeatherLoc >= 0) {
@@ -7823,15 +7826,10 @@ bool uploadDepthFloat(RenderTarget &t, const std::vector<float> &depth, int w, i
      * 16 位半浮点（R16F，可快速过滤）留作下一步实验。
      */
     if (w <= 0 || h <= 0 || depth.size() != (size_t) w * h) return false;
-    if (!ensureTarget(t, w, h, GL_R8, true)) return false;
-    std::vector<unsigned char> bytes(depth.size());
-    for (size_t i = 0; i < depth.size(); i++) {
-        const float v = depth[i];
-        bytes[i] = (unsigned char) (v <= 0.f ? 0 : (v >= 1.f ? 255 : (int) (v * 255.f + 0.5f)));
-    }
+    if (!ensureTarget(t, w, h, GL_R16F, true)) return false;
     glBindTexture(GL_TEXTURE_2D, t.tex);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RED, GL_UNSIGNED_BYTE, bytes.data());
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RED, GL_FLOAT, depth.data());
     glBindTexture(GL_TEXTURE_2D, 0);
     return true;
 }
@@ -7900,7 +7898,7 @@ void ensureDepthTexture(VrContext &c) {
             px[(size_t) y * W + x] = (unsigned char) (fminf(fmaxf(d, 0.f), 1.f) * 255.f);
         }
     }
-    if (!ensureTarget(c.depth, W, H, GL_R8, true)) return;
+    if (!ensureTarget(c.depth, W, H, GL_R16F, true)) return;
     std::vector<float> f((size_t) W * H);
     for (int i = 0; i < W * H; i++) f[(size_t) i] = px[(size_t) i] / 255.f;
     glBindTexture(GL_TEXTURE_2D, c.depth.tex);
@@ -8831,7 +8829,7 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
                 glUniform1i(u.newton, n < 0 ? 0 : (n > 2 ? 2 : n));
             }
             if (u.fillPx >= 0) glUniform1f(u.fillPx, gStereoFillPx.load());
-    if (u.depthLinear >= 0) glUniform1i(u.depthLinear, gFloatLinear ? 1 : 0);
+    if (u.depthLinear >= 0) glUniform1i(u.depthLinear, 1);
     if (u.fillMax >= 0) glUniform1i(u.fillMax, gStereoFillSteps.load());
             if (u.fillPick >= 0) glUniform1i(u.fillPick, gStereoFillPick.load());
             if (u.showDepth >= 0) glUniform1i(u.showDepth, gStereoShowDepth.load());
