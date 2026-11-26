@@ -392,6 +392,7 @@ object VrTuning {
     @Volatile
     var depthModel: Int = -1
 
+
     /**
      * 深度在哪里算（父亲 2026-11-02）：0 = 头显本地（256 int8），1 = 点 15 远程（512x288）。
      *
@@ -603,6 +604,7 @@ object VrTuning {
      * 三次插值 + 两轮 = 13 次/像素/眼；双线性 + 一轮 = 7 次；双线性 + 零轮 = 5 次。
      */
     const val KEY_STEREO_NEWTON = 67
+    const val KEY_SHOW_DEPTH = 68
 
     /** 补洞搜索半径（画面像素，2~96，默认 24）：洞宽≈视差量，太小跨不过洞、太大会啃到前景 */
     const val KEY_STEREO_FILL_PX = 68
@@ -1428,6 +1430,11 @@ object VrTuning {
                 it >= 2 -> "2（采样 1/4）"
                 else -> "关（原样）"
             }
+        }
+        raw["stereo_show_depth"]?.toFloatOrNull()?.let {
+            val on = it >= 0.5f
+            VrNative.setTuning(KEY_SHOW_DEPTH, if (on) 1f else 0f)
+            applied += "银幕显示深度 ${if (on) "开" else "关"}"
         }
         raw["stereo_newton"]?.toIntOrNull()?.let {
             VrNative.setTuning(KEY_STEREO_NEWTON, it.toFloat())

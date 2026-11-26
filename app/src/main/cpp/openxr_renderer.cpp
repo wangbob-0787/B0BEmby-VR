@@ -946,6 +946,8 @@ uniform vec2 uUvBias;
  */
 uniform sampler2D uDepthTex;
 uniform int uDepthOn;
+/* 1 = 银幕直接显示深度图（灰度）。调试用：抓设备上真实用的那张深度，离线复现才有依据 */
+uniform int uShowDepth;
 uniform float uEyeSign;         // −1 = 左眼，+1 = 右眼；不用遮挡表那一路靠它分左右
 uniform float uDisp;
 uniform float uConvergence;
@@ -1098,6 +1100,11 @@ void main() {
      * 把视差算到黑边上。
      */
     vec2 uvT = vUv;
+    if (uShowDepth == 1) {
+        float dz = depthAt(vUv);
+        fragColor = vec4(dz, dz, dz, 1.0);
+        return;
+    }
     if (uDepthOn == 1 && uFillPick >= 3) {
         /*
          * 整条走 4XVR 的立体变形：一个像素从算源点到采样一次走完，
@@ -2901,6 +2908,7 @@ struct QuadLocs {
     GLint lowResW = -1, frameW = -1, srcInset = -1, eyeIndex = -1;
     GLint occl = -1, fill = -1, smoothRead = -1;
     GLint newton = -1;
+    GLint showDepth = -1;
     GLint fillPx = -1;
     GLint fillPick = -1;
     GLint edgeThr = -1;
@@ -2959,6 +2967,7 @@ void fillQuadLocs(GLuint prog, QuadLocs &u) {
     u.fill = glGetUniformLocation(prog, "uFill");
     u.smoothRead = glGetUniformLocation(prog, "uSmoothRead");
     u.newton = glGetUniformLocation(prog, "uNewton");
+    u.showDepth = glGetUniformLocation(prog, "uShowDepth");
     u.fillPx = glGetUniformLocation(prog, "uFillPx");
     u.fillPick = glGetUniformLocation(prog, "uFillPick");
     u.edgeThr = glGetUniformLocation(prog, "uEdgeThr");
@@ -3819,6 +3828,8 @@ std::atomic<float> gStereoFeather{16.f};
 std::atomic<float> gRingDelayOverride{0.f};
 /* 边缘加密：1 = 偏移表用全分辨率深度算（边缘贴得紧，算得重），0 = 用低分深度（老算法） */
 std::atomic<int> gStereoEdgeDense{1};
+/* 1 = 银幕显示深度图（调参 stereo_show_depth）。只用于抓设备真实深度，默认关 */
+std::atomic<int> gStereoShowDepth{0};
 /* 远程深度一批几帧（客户端组批用，原生侧仅记录，供诊断对账） */
 std::atomic<int> gDepthRemoteBatch{3};
 std::atomic<float> gStereoSharp{1.0f};     // 分层锐化强度 0..1
@@ -8678,6 +8689,7 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
             }
             if (u.fillPx >= 0) glUniform1f(u.fillPx, gStereoFillPx.load());
             if (u.fillPick >= 0) glUniform1i(u.fillPick, gStereoFillPick.load());
+            if (u.showDepth >= 0) glUniform1i(u.showDepth, gStereoShowDepth.load());
             if (u.edgeThr >= 0) glUniform1f(u.edgeThr, gStereoEdgeThr.load());
             if (u.edgeColorThr >= 0) glUniform1f(u.edgeColorThr, gStereoEdgeColorThr.load());
         } else {
@@ -11196,6 +11208,13 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetTuning(JNIEnv *env, jobject /* this 
          * 66 = 遮挡表降档（1/2/4）。这趟是链路里最贵的 GPU pass，降半档采样量到四分之一；
          * 切档后每 60 次会打一行"遮挡表"统计，直接对比输出尺寸与耗时。
          */
+        /* 68 = 银幕显示深度图（1 = 开）。抓设备真实深度用，不动变形逻辑 */
+        case 68:
+            if (value >= 0.f && value <= 1.f) {
+                gStereoShowDepth.store(value >= 0.5f ? 1 : 0);
+                VLOGI("调参 → 银幕显示深度图 %s", value >= 0.5f ? "开" : "关");
+            }
+            break;
         case 66: {
             const int d = (int) value;
             gStereoOcclDiv.store(d >= 4 ? 4 : (d >= 2 ? 2 : 1));
