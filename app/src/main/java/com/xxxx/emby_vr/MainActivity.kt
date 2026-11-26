@@ -4837,10 +4837,16 @@ class MainActivity : ComponentActivity() {
                          */
                         val hdr10ShaderOn = com.xxxx.emby_vr.vr.VrTuning.value(this@MainActivity, "hdr10_shader")
                             ?.trim() != "0"
-                        /* 网络/普通 HDR10 流的色标修正：调参 mpv_hdr_fix=1 时，MPV 侧强制按 BT.2020 + PQ 解释 */
+                        /*
+                         * HDR10 的色标按规范补齐（不是针对某部片）：
+                         * HDR10 的定义就是 BT.2020 基色 + PQ 传输曲线。流里出现"PQ 却标成 bt709"
+                         * 本身就是标记错误（编码器或解码器只填了一半），按规范补成 BT.2020 才是
+                         * 还原它的真实数据。调参 mpv_hdr_fix=0 可关掉这条纠正、做对照。
+                         */
                         com.xxxx.emby_vr.player.MpvBackend.hdrColorFix =
+                            com.xxxx.emby_vr.player.PlaybackFlags.hdr10Source &&
                             com.xxxx.emby_vr.vr.VrTuning.value(this@MainActivity, "mpv_hdr_fix")
-                                ?.trim() == "1"
+                                ?.trim() != "0"
                         com.xxxx.emby_vr.vr.VrNative.setHdr10StreamActive(
                             useSelfPipe && hdr10Self && hdr10ShaderOn,
                         )
