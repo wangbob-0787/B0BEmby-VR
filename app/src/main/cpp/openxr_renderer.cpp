@@ -965,6 +965,7 @@ uniform float uEyeIndex;        // 0 = 左眼，1 = 右眼
 uniform int uOcclusion;         // 1 = 用预计算遮挡表（默认），0 = 逐像素现算深度
 uniform int uFill;              // 1 = 空洞沿扫描线补（默认），0 = 空洞也按偏移表走
 uniform float uFillPx;          // 补洞搜索半径（画面像素，默认 24）
+uniform int uDepthLinear;       // 1 = 浮点深度能硬件线性插值，直接 texture() 一次
 uniform int uFillPick;          // 1 = 就近取紧邻背景（默认），0 = 整个范围内取最远
 uniform float uEdgeThr;         // 真边缘判据：深度跳变阈值（低分深度单位，默认 0.03）
 uniform float uEdgeColorThr;    // 真边缘判据：两侧颜色差阈值（默认 0.06）
@@ -1005,6 +1006,7 @@ float hash21(vec2 p) {
  */
 /* R32F 没有硬件线性过滤：手动双线性，四处 texelFetch */
 float depthSampleBilinear(vec2 uv) {
+    if (uDepthLinear == 1) return texture(uDepthTex, uv).r;
     vec2 ds = vec2(textureSize(uDepthTex, 0));
     vec2 sp = uv * ds - 0.5;
     ivec2 b0 = ivec2(floor(sp));
@@ -1019,7 +1021,8 @@ float depthSampleBilinear(vec2 uv) {
 
 float depthAt(vec2 uv) {
     if (uSmoothRead == 0) {
-        /* R32F 没有硬件线性过滤：四次 texelFetch 手动双线性，和图元足迹对齐 */
+        if (uDepthLinear == 1) return texture(uDepthTex, uv).r;
+        /* 硬件不支持浮点过滤时：四次 texelFetch 手动双线性，和图元足迹对齐 */
         vec2 ds = vec2(textureSize(uDepthTex, 0));
         vec2 sp = uv * ds - 0.5;
         ivec2 b0 = ivec2(floor(sp));
@@ -2944,6 +2947,7 @@ struct QuadLocs {
     GLint showDepth = -1;
     GLint fillPx = -1;
     GLint fillMax = -1;
+    GLint depthLinear = -1;
     GLint fillPick = -1;
     GLint edgeThr = -1;
     GLint edgeColorThr = -1;
@@ -3003,6 +3007,7 @@ void fillQuadLocs(GLuint prog, QuadLocs &u) {
     u.newton = glGetUniformLocation(prog, "uNewton");
     u.showDepth = glGetUniformLocation(prog, "uShowDepth");
     u.fillPx = glGetUniformLocation(prog, "uFillPx");
+    u.depthLinear = glGetUniformLocation(prog, "uDepthLinear");
     u.fillMax = glGetUniformLocation(prog, "uFillMax");
     u.fillPick = glGetUniformLocation(prog, "uFillPick");
     u.edgeThr = glGetUniformLocation(prog, "uEdgeThr");
@@ -3264,6 +3269,7 @@ struct VrContext {
     GLint offsetsSrcLoc = -1;       // 偏移表：源深度尺寸
     GLint offsetsOutLoc = -1;       // 偏移表：输出尺寸
     GLint offsetsSrcRLoc = -1;      // 偏移表：源通道（R8 取 .r）
+    GLint offsetsLinearLoc = -1;    // 偏移表：浮点深度能否硬件插值
     GLint offsetsFeatherLoc = -1;   // 局部液化：羽化半径（源像素）
     GLint offsetsStretchLoc = -1;   // 局部液化：背景修正权重
     GLint offsetsEdgeThrLoc = -1;   // 真边缘判据：3x3 动态范围阈值
@@ -7053,6 +7059,19 @@ void releaseTarget(RenderTarget &t) {
 /**
  * 建（或按新尺寸重建）一张离屏目标；失败返回 false，调用方据此关掉整条功能。
  */
+/* 显卡是否支持对 32 位浮点纹理做硬件线性插值（GLES3 上是可选扩展）。
+ * 支持时深度采样用一次 texture()，比手算四次 texelFetch 便宜一个数量级。 */
+static bool gFloatLinear = false;
+static bool gFloatLinearProbed = false;
+
+static void probeFloatLinear() {
+    if (gFloatLinearProbed) return;
+    gFloatLinearProbed = true;
+    const char *ext = (const char *) glGetString(GL_EXTENSIONS);
+    gFloatLinear = ext != nullptr && strstr(ext, "OES_texture_float_linear") != nullptr;
+    VLOGI("浮点深度纹理线性过滤：%s", gFloatLinear ? "支持（走硬件插值）" : "不支持（手算双线性）");
+}
+
 bool ensureTarget(RenderTarget &t, int w, int h, GLint internalFormat, bool linear) {
     if (t.tex != 0 && t.w == w && t.h == h) return true;
     if (t.fbo != 0) {
@@ -7075,8 +7094,10 @@ bool ensureTarget(RenderTarget &t, int w, int h, GLint internalFormat, bool line
     const GLenum pxFmt = (internalFormat == GL_R32F || internalFormat == GL_R8) ? GL_RED : GL_RGBA;
     const GLenum pxType = (internalFormat == GL_R32F) ? GL_FLOAT : GL_UNSIGNED_BYTE;
     glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, w, h, 0, pxFmt, pxType, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, linear ? GL_LINEAR : GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, linear ? GL_LINEAR : GL_NEAREST);
+    if (internalFormat == GL_R32F) probeFloatLinear();
+    const bool useLinear = internalFormat == GL_R32F ? gFloatLinear : linear;
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, useLinear ? GL_LINEAR : GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, useLinear ? GL_LINEAR : GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_2D, 0);
@@ -7389,9 +7410,12 @@ uniform float uEdgeThr;     // 真边缘判据：3x3 动态范围阈值（源深
 out vec4 fragColor;
 
 /* 源像素坐标（可以是小数）：偏移表比深度图细时，同一行上的采样点更密 */
+uniform int uDepthLinear;
+
 float depthAt(vec2 sp) {
+    if (uDepthLinear == 1) return texture(uDepth, (sp + 0.5) / uSrcSize).r;
     /*
-     * R32F 深度没有硬件线性过滤：四次 texelFetch 手算双线性，与原来 LINEAR 采样等价。
+     * 硬件不支持浮点过滤时：四次 texelFetch 手算双线性，与原来 LINEAR 采样等价。
      * 退化成最近邻时，偏移表会按深度纹素一块一块跳，立体画面边缘跟着跳。
      */
     ivec2 hi = ivec2(uSrcSize) - 1;
@@ -7511,6 +7535,7 @@ void main() {
         c.offsetsSrcLoc = glGetUniformLocation(c.offsetsProg, "uSrcSize");
         c.offsetsOutLoc = glGetUniformLocation(c.offsetsProg, "uOutSize");
         c.offsetsSrcRLoc = glGetUniformLocation(c.offsetsProg, "uSrcR");
+        c.offsetsLinearLoc = glGetUniformLocation(c.offsetsProg, "uDepthLinear");
         c.offsetsConvLoc = glGetUniformLocation(c.offsetsProg, "uConvergence");
         c.offsetsFeatherLoc = glGetUniformLocation(c.offsetsProg, "uFeather");
         c.offsetsStretchLoc = glGetUniformLocation(c.offsetsProg, "uStretch");
@@ -7540,6 +7565,7 @@ void main() {
     if (c.offsetsSrcLoc >= 0) glUniform2f(c.offsetsSrcLoc, (float) srcW, (float) srcH);
     if (c.offsetsOutLoc >= 0) glUniform2f(c.offsetsOutLoc, (float) outW, (float) outH);
     if (c.offsetsSrcRLoc >= 0) glUniform1i(c.offsetsSrcRLoc, srcIsR8 ? 1 : 0);
+    if (c.offsetsLinearLoc >= 0) glUniform1i(c.offsetsLinearLoc, gFloatLinear ? 1 : 0);
     if (c.offsetsConvLoc >= 0) glUniform1f(c.offsetsConvLoc, c.depthConv);
     /* 羽化按每眼 1920 源宽折算成深度图像素，和参考实现同一个口径 */
     if (c.offsetsFeatherLoc >= 0) {
@@ -8795,6 +8821,7 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
                 glUniform1i(u.newton, n < 0 ? 0 : (n > 2 ? 2 : n));
             }
             if (u.fillPx >= 0) glUniform1f(u.fillPx, gStereoFillPx.load());
+    if (u.depthLinear >= 0) glUniform1i(u.depthLinear, gFloatLinear ? 1 : 0);
     if (u.fillMax >= 0) glUniform1i(u.fillMax, gStereoFillSteps.load());
             if (u.fillPick >= 0) glUniform1i(u.fillPick, gStereoFillPick.load());
             if (u.showDepth >= 0) glUniform1i(u.showDepth, gStereoShowDepth.load());
