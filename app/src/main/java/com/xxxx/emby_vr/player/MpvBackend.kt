@@ -142,8 +142,13 @@ class MpvBackend(private val context: Context) {
                  * 2026-11-16 那次逐档比过 600/800/1000/1200，800 与浏览器最接近；换内核后
                  * 1100 过饱和，回到 800。
                  */
-                setOptionRuntime("tone-mapping", "spline")
-                setOptionRuntime("target-peak", "800")
+                /*
+                 * 2026-11-27 02:20 对照实验：网页播正常、接管后脸发红，目标亮度 800/1100 都红。
+                 * 这一步把映射彻底关掉（clip + 不压高光），用来分辨"是映射曲线"还是"色彩矩阵"。
+                 * 若关了还红 → 在 YUV→RGB 或色域那层；若不红了 → 是 spline 曲线把红推高。
+                 */
+                setOptionRuntime("tone-mapping", "clip")
+                setOptionRuntime("target-peak", "10000")
                 /* 输出完整范围 + 对比度 100（父 2026-11-19 20:13 定，写死进代码） */
                 setOptionRuntime("video-output-levels", "full")
                 setOptionRuntime("contrast", "100")
