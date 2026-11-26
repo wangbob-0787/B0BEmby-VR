@@ -3,16 +3,9 @@ package com.xxxx.emby_vr.vr
 import android.content.Context
 import android.os.SystemClock
 import android.util.Log
-import org.tensorflow.lite.DataType
-import org.tensorflow.lite.Interpreter
-import org.tensorflow.lite.gpu.CompatibilityList
-import org.tensorflow.lite.gpu.GpuDelegate
-import org.tensorflow.lite.nnapi.NnApiDelegate
-import java.io.FileInputStream
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-import java.nio.MappedByteBuffer
-import java.nio.channels.FileChannel
+import com.google.ai.edge.litert.Accelerator
+import com.google.ai.edge.litert.CompiledModel
+import com.google.ai.edge.litert.TensorBuffer
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -22,12 +15,13 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 数据流：原生渲染线程把当前画面缩到模型输入尺寸读回 CPU → 交到这里 →
  * 后台线程跑模型 → 结果回传原生上传成纹理。渲染线程只做读回，不等模型。
  *
- * 模型：ZipDepth 的 int8 动态范围量化版（256x256 输入，6MB），与 DepthRay 在同一台
- * PICO 4 上跑的是同一个文件。选它而不是 512x288 fp16 版有两个原因：体积一半、单帧
- * 推理快一档；在这个尺寸上深度图的边缘精度由后面的引导上采样补，不靠模型自己给。
+ * 模型：ZipDepth 的 .tflite，与 DepthRay / 4XVR 同一份。
  *
- * 推理固定在 CPU 四线程，不用 GPU / NNAPI 委托：GPU 推理和画面渲染抢同一块显卡，
- * 实测开 GPU 委托反而掉帧（渲染是这条链路的瓶颈，不是推理）。
+ * 引擎：LiteRT 2.4（TFLite 的新一代运行时）。走 OpenCL 显卡推理 —— 旧 TFLite 的 GPU 委托
+ * 在这块头显上单次 58ms，画面 50 帧（20ms/帧）配不上深度，错位的根因就在这里。
+ * 4XVR 用同一个模型每帧都能配上，差别只在引擎；litert-gpu 里的
+ * libLiteRtClGlAccelerator.so 就是那条链路。
+ * depth_gpu=0 时走 CPU（A/B 对照用）；显卡建不起来也退回 CPU。
  */
 object DepthEngine {
 
@@ -156,12 +150,14 @@ object DepthEngine {
     private var refInit = false
     @Volatile private var lastOkMs = System.currentTimeMillis()
 
-    private var interp: Interpreter? = null
+    private var model: CompiledModel? = null
+    /** 输入/输出缓冲：CompiledModel 建一次复用，每帧只写输入读输出 */
+    private var ins: List<TensorBuffer>? = null
+    private var outs: List<TensorBuffer>? = null
+    /** 这次建的是不是显卡（OpenCL）后端；日志与"CPU 跑大模型不划算"的判断都看它 */
+    private var gpuActive = false
     /** 解释器是用哪套后端/模型/线程建起来的；调参一变就重建 */
     private var initedSig = ""
-    /** 显卡委托对象：必须自己留着，解释器关闭后再关它 */
-    private var gpu: GpuDelegate? = null
-    private var nnapi: NnApiDelegate? = null
     private var inW = 0
     private var inH = 0
     private var outW = 0
@@ -169,8 +165,11 @@ object DepthEngine {
     /* 归一化用 64 档直方图算 2%/98% 分位（照 4XVR 的做法），范围按 150ms 平滑 */
     private var histBuf = IntArray(0)
     private var lastNormMs = 0L
-    private var inBuf: ByteBuffer? = null
-    private var outBuf: ByteBuffer? = null
+    /*
+     * 模型输入按 NHWC 摊平的 RGB 0..1（512x288x3 = 44 万个数）。复用：
+     * 每帧新建就是 1.7MB 垃圾，一秒 20 帧直接把头显堆顶爆（旧实现踩过 OutOfMemory）。
+     */
+    private var rgbFloats = FloatArray(0)
     private val worker = Executors.newSingleThreadExecutor { r ->
         Thread(r, "depth-infer").apply { priority = Thread.NORM_PRIORITY - 1 }
     }
@@ -210,12 +209,13 @@ object DepthEngine {
     }
 
     private fun shutdown() {
-        runCatching { interp?.close() }
-        interp = null
-        runCatching { gpu?.close() }
-        gpu = null
-        runCatching { nnapi?.close() }
-        nnapi = null
+        runCatching { ins?.forEach { it.close() } }
+        ins = null
+        runCatching { outs?.forEach { it.close() } }
+        outs = null
+        runCatching { model?.close() }
+        model = null
+        gpuActive = false
         ready = false
         batchStop = true
         batchThread = null
@@ -227,15 +227,14 @@ object DepthEngine {
         inferSumMs = 0L
         inferMaxMs = 0L
         inferSamples = 0
-        inBuf = null
-        outBuf = null
+        rgbFloats = FloatArray(0)
         inW = 0
         inH = 0
         busy.set(false)
         /* 释放后签名必须清空：否则下次 init 失败或中途换配置时，wantSig 与旧签名相等就再也不重建 */
         initedSig = ""
         if (VrNative.loaded) VrNative.setDepthInputSize(0, 0)
-        Log.i(TAG, "深度推理：3D 已关，解释器释放（推理线程收工）")
+        Log.i(TAG, "深度推理：3D 已关，推理引擎已释放（推理线程收工）")
     }
 
     private fun init(context: Context) {
@@ -266,77 +265,46 @@ object DepthEngine {
             }
             try {
                 var asset = modelAsset()
-                var model = loadModel(context, asset)
-                val opts = Interpreter.Options().setNumThreads(VrTuning.depthThreads)
+                var gpuWanted = VrTuning.depthGpu == 1
+                var cm: CompiledModel? = null
                 /*
-                 * 显卡委托：建不起来（老驱动、显存不足、机型不支持）就安静退回 CPU，
-                 * 不能让 3D 整条链路因为这一步挂掉。委托对象要留着，close 时一起关。
+                 * 显卡（OpenCL）：建不起来（驱动、显存、机型）就退回 CPU，不能让 3D 整条
+                 * 链路因为这一步挂掉 —— 旧引擎在这里踩过，退回 CPU 时用大模型是这块芯片
+                 * 上最慢的组合，所以下面还要换小模型。
                  */
-                var gpuDelegate: GpuDelegate? = null
-                if (VrTuning.depthGpu == 1) {
-                    gpuDelegate = runCatching {
-                        val compat = CompatibilityList()
-                        check(compat.isDelegateSupportedOnThisDevice) { "本机显卡委托不支持" }
-                        val gpuOpts = compat.bestOptionsForThisDevice
-                        GpuDelegate(gpuOpts).also { opts.addDelegate(it) }
-                    }.onFailure {
-                        Log.w(TAG, "深度推理：显卡委托建不起来，退回 CPU（${it.message}）")
-                    }.getOrNull()
-                }
-                /*
-                 * NNAPI 委托（调参 depth_backend=1）：参考实现在同一颗芯片上用处理器跑到
-                 * 45 毫秒，我们走 XNNPACK 是 113 毫秒，模型文件却是同一个 —— 差别只能在
-                 * 驱动层整型加速，这条路就是那一层。建不起来就当没设，不换模型。
-                 */
-                if (gpuDelegate == null && VrTuning.depthBackend == 1) {
-                    nnapi = runCatching { NnApiDelegate() }
-                        .onFailure { Log.w(TAG, "深度推理：NNAPI 委托建不起来（${it.message}）") }
+                if (gpuWanted) {
+                    cm = runCatching { createModel(context, asset, true) }
+                        .onFailure {
+                            Log.w(TAG, "深度推理：OpenCL 显卡建不起来，退回 CPU（${it.message}）")
+                        }
                         .getOrNull()
-                    nnapi?.let { opts.addDelegate(it) }
+                    if (cm == null) gpuWanted = false
                 }
-                /* depth_backend=2：关掉 XNNPACK，对照默认那条到底有没有把加速用上 */
-                if (VrTuning.depthBackend == 2) opts.setUseXNNPACK(false)
                 /*
                  * 退回 CPU 时别继续跑大模型：fp16 那款是给显卡准备的，跑在 CPU 上比 int8
                  * 小模型慢一倍，是这块芯片上最差的一条组合。换模型只在这里做一次，
                  * 不进热路径。
                  */
-                if (gpuDelegate == null && autoFallback && asset.contains("512x288")) {
-                    Log.w(TAG, "深度推理：显卡委托不可用，自动换回 int8 小模型（depth_auto=0 可关掉）")
+                if (cm == null && autoFallback && asset.contains("512x288")) {
+                    Log.w(TAG, "深度推理：CPU 跑大模型不划算，自动换回 int8 小模型（depth_auto=0 可关掉）")
                     asset = "models/zipdepth_256_int8dr.tflite"
-                    model = loadModel(context, asset)
                 }
-                val it = Interpreter(model, opts)
+                if (cm == null) cm = createModel(context, asset, false)
 
-                val ishape = it.getInputTensor(0).shape()   // [1,h,w,3]
-                val oshape = it.getOutputTensor(0).shape()  // [1,h,w]
-                if (it.getInputTensor(0).dataType() != DataType.FLOAT32 ||
-                    it.getOutputTensor(0).dataType() != DataType.FLOAT32
-                ) {
-                    Log.e(TAG, "深度模型输入输出必须是 float32，实际 ${it.getInputTensor(0).dataType()}")
-                    it.close()
-                    return
-                }
-                inH = ishape[1]
-                inW = ishape[2]
-                outH = oshape[1]
-                outW = oshape[oshape.size - 1]
+                inW = if (asset.contains("512x288")) 512 else 256
+                inH = if (asset.contains("512x288")) 288 else 256
+                /* ZipDepth 输出与输入同尺寸（逐像素深度），不需要再查 tensor 形状 */
+                outW = inW
+                outH = inH
 
-                inBuf = ByteBuffer.allocateDirect(inW * inH * 3 * 4)
-                    .order(ByteOrder.nativeOrder())
-                outBuf = ByteBuffer.allocateDirect(outW * outH * 4)
-                    .order(ByteOrder.nativeOrder())
-
-                interp = it
-                gpu = gpuDelegate
+                ins = cm.createInputBuffers(0)
+                outs = cm.createOutputBuffers(0)
+                rgbFloats = FloatArray(inW * inH * 3)
+                model = cm
+                gpuActive = gpuWanted
                 ready = true
                 initedSig = "${VrTuning.depthGpu}|${VrTuning.depthModel}|${VrTuning.depthThreads}|${VrTuning.depthRemote}|${VrTuning.depthBackend}"
-                val backendName = when {
-                    gpuDelegate != null -> "显卡推理"
-                    nnapi != null -> "NNAPI 委托"
-                    VrTuning.depthBackend == 2 -> "CPU ${VrTuning.depthThreads} 线程（已关 XNNPACK）"
-                    else -> "CPU ${VrTuning.depthThreads} 线程"
-                }
+                val backendName = if (gpuWanted) "LiteRT 显卡（OpenCL）" else "LiteRT CPU ${VrTuning.depthThreads} 线程"
                 Log.i(TAG, "深度模型就绪：${asset.substringAfterLast('/')} 输入 ${inW}x${inH}，" +
                     "输出 ${outW}x${outH}，$backendName")
                 VrNative.setDepthInputSize(inW, inH)
@@ -566,43 +534,73 @@ object DepthEngine {
     }
 
     private fun runInfer(rgba: ByteArray, w: Int, h: Int, seq: Long) {
-        val it = interp ?: return
-        val ib = inBuf ?: return
-        val ob = outBuf ?: return
+        val cm = model ?: return
+        val inputs = ins ?: return
+        val outputs = outs ?: return
         if (rgba.size < w * h * 4) return
 
-        ib.rewind()
         /*
-         * 最近邻缩放到模型输入尺寸，RGB 归一到 0..1。
-         * 不做双线性：256x256 上这点差别看不出来（后面还有引导上采样把边缘贴回去），
+         * 最近邻缩放到模型输入尺寸，RGB 归一到 0..1，按 NHWC 摊平。
+         * 不做双线性：这点差别看不出来（后面还有引导上采样把边缘贴回去），
          * 最近邻省下的时间够多跑一次推理。
          */
+        val rgb = rgbFloats
+        if (rgb.size != inW * inH * 3) return
+        var o = 0
         for (y in 0 until inH) {
             val sy = (y.toLong() * h / inH).toInt()
             val row = sy * w
             for (x in 0 until inW) {
                 val sx = (x.toLong() * w / inW).toInt()
-                val o = (row + sx) * 4
-                ib.putFloat((rgba[o].toInt() and 0xFF) / 255f)
-                ib.putFloat((rgba[o + 1].toInt() and 0xFF) / 255f)
-                ib.putFloat((rgba[o + 2].toInt() and 0xFF) / 255f)
+                val i = (row + sx) * 4
+                rgb[o++] = (rgba[i].toInt() and 0xFF) / 255f
+                rgb[o++] = (rgba[i + 1].toInt() and 0xFF) / 255f
+                rgb[o++] = (rgba[i + 2].toInt() and 0xFF) / 255f
             }
         }
-        ib.rewind()
-        ob.rewind()
+        inputs[0].writeFloat(rgb)
 
+        /*
+         * 计时只包推理本身，喂输入与读输出在外面 —— 与旧引擎 58ms 的口径一致，
+         * 换引擎前后才能直接比。
+         */
         val t0 = SystemClock.elapsedRealtime()
-        it.run(ib, ob)
+        cm.run(inputs, outputs, 0)
         lastInferMs = SystemClock.elapsedRealtime() - t0
         inferSumMs += lastInferMs
         inferSamples++
         if (lastInferMs > inferMaxMs) inferMaxMs = lastInferMs
 
-        ob.rewind()
+        /*
+         * readFloat 每次返回新数组（LiteRT 没有读进现有数组的接口），147k 个数约 590KB：
+         * 这是每帧唯一还会分配的大块，交给 ART 回收；别再拷贝第二遍。
+         */
+        val raw = outputs[0].readFloat()
         val n = outW * outH
         val vals = if (valsBuf.size == n) valsBuf else FloatArray(n).also { valsBuf = it }
-        for (i in 0 until n) vals[i] = ob.float
+        System.arraycopy(raw, 0, vals, 0, minOf(n, raw.size))
         finishDepth(vals, outW, outH, seq)
+    }
+
+    /**
+     * 建引擎：显卡走 GPU + OpenCL（4XVR 同一条链路），CPU 按调参线程数。
+     *
+     * 只在这里设后端，不在别的分支再拼一套 options —— 两处配置同一个模型，
+     * 换档时容易两边不一致。
+     */
+    private fun createModel(context: Context, asset: String, gpu: Boolean): CompiledModel {
+        val opts = if (gpu) {
+            CompiledModel.Options(Accelerator.GPU).apply {
+                gpuOptions = CompiledModel.GpuOptions(
+                    backend = CompiledModel.GpuOptions.Backend.OPENCL,
+                )
+            }
+        } else {
+            CompiledModel.Options(Accelerator.CPU).apply {
+                cpuOptions = CompiledModel.CpuOptions(numThreads = VrTuning.depthThreads)
+            }
+        }
+        return CompiledModel.create(context.assets, asset, opts)
     }
 
     /**
@@ -719,7 +717,7 @@ object DepthEngine {
              */
             val avg = if (inferSamples > 0) inferSumMs / inferSamples else 0L
             Log.i(TAG, "深度推理：本次 ${lastInferMs}ms｜最近 $inferSamples 次 平均 ${avg}ms 最大 ${inferMaxMs}ms"
-                    + "｜后端 ${if (gpu != null) "显卡委托" else "CPU ${VrTuning.depthThreads} 线程"}"
+                    + "｜后端 ${if (gpuActive) "LiteRT 显卡（OpenCL）" else "LiteRT CPU ${VrTuning.depthThreads} 线程"}"
                     + "｜模型 ${if (inW == 512) "512x288" else "${inH}x${inW}"} 深度 ${ow}x${oh}")
             inferSumMs = 0L
             inferMaxMs = 0L
@@ -785,15 +783,4 @@ object DepthEngine {
         )
     }
 
-    private fun loadModel(context: Context, asset: String): MappedByteBuffer {
-        context.assets.openFd(asset).use { fd ->
-            FileInputStream(fd.fileDescriptor).use { fis ->
-                return fis.channel.map(
-                    FileChannel.MapMode.READ_ONLY,
-                    fd.startOffset,
-                    fd.declaredLength
-                )
-            }
-        }
-    }
 }

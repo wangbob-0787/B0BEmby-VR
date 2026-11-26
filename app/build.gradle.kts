@@ -136,9 +136,6 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
-    }
     signingConfigs {
         // 与 B0BEmby(TV 版) 同一套固定证书：装机可用 pm install -r 覆盖，CI 里无需密钥
         create("fixedDebug") {
@@ -183,16 +180,25 @@ android {
 }
 
 /*
- * 火狐内核（GeckoView）依赖 kotlin-stdlib 2.3.20，而本项目的 Kotlin 编译器是 2.0.21 ——
- * 不锁回来的话 Gradle 会挑 2.3.20，编译期直接报
- * 「Module was compiled with an incompatible version of Kotlin（metadata 2.3.0 > 2.0.0）」（run 505 实测）。
- * 内核那边用到的标准库接口都是老 API，锁到项目版本即可。
+ * JVM 目标 17：Kotlin 2.4 已不再走 android{} 里的 kotlinOptions（那套 DSL 只在 2.2 之前有），
+ * 统一用 compilerOptions；两边都设 17，避免 class 文件版本不一致。
+ */
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
+}
+
+/*
+ * 火狐内核（GeckoView）依赖 kotlin-stdlib 2.3.20 —— 现在编译器是 2.4.0，比它高，本该不用管；
+ * 锁回项目版本是防止依赖树里别处又把标准库降到编译器的 metadata 版本以下
+ * （降下来就是「Module was compiled with an incompatible version of Kotlin」，run 505 实测过）。
  */
 configurations.all {
     resolutionStrategy {
-        force("org.jetbrains.kotlin:kotlin-stdlib:2.0.21")
-        force("org.jetbrains.kotlin:kotlin-stdlib-jdk7:2.0.21")
-        force("org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.0.21")
+        force("org.jetbrains.kotlin:kotlin-stdlib:2.4.0")
+        force("org.jetbrains.kotlin:kotlin-stdlib-jdk7:2.4.0")
+        force("org.jetbrains.kotlin:kotlin-stdlib-jdk8:2.4.0")
     }
 }
 
@@ -227,18 +233,17 @@ dependencies {
     implementation(libs.nanohttpd)
 
     /*
-     * 实时 2D→3D 的深度推理（2026-11-01）：ZipDepth 的 .tflite 模型在 Kotlin 侧跑。
+     * 实时 2D→3D 的深度推理（2026-11-26 换引擎）：ZipDepth 的 .tflite 在 LiteRT 上跑。
      *
-     * 三条运行时都引：CPU（基础运行时）、GPU 委托本体（tensorflow-lite-gpu）、
-     * GPU 委托的接口类（tensorflow-lite-gpu-api，缺了它运行时会 NoClassDefFoundError）。
-     * 走哪条由调参 depth_gpu 决定，随时可切；GPU 建不起来自动退回 CPU，不会黑屏。
+     * 为什么换掉 TFLite 2.17 + GPU 委托：委托单次 58ms，画面 50 帧（20ms/帧）配不上深度，
+     * 表现出来就是"画面被切成两半没对齐"。4XVR 用同一个模型每帧都能配上，差别只在引擎 —
+     * LiteRT 2.4 的 OpenCL 加速库（litert-gpu 里的 libLiteRtClGlAccelerator.so）。
      *
-     * 模型文件：assets/models/ 下两套（zipdepth_512x288_fp16 / zipdepth_256_int8dr，
-     * ZipDepth 官方 MIT 授权），按 depth_model 选，auto 时 GPU 配 fp16、CPU 配 int8。
+     * 只引两个：litert 带运行时会与 litert-api，litert-gpu 带 OpenCL 加速器。
+     * 走哪条由调参 depth_gpu 决定（1 = 显卡 OpenCL，0 = CPU）；显卡建不起来退回 CPU。
      */
-    implementation(libs.tensorflow.lite)
-    implementation(libs.tensorflow.lite.gpu)
-    implementation(libs.tensorflow.lite.gpu.api)
+    implementation(libs.litert)
+    implementation(libs.litert.gpu)
 
     /*
      * 【2026-10-20 16:18 父亲要求：火狐内核整套拆掉】
