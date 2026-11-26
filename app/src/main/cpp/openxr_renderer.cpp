@@ -1003,6 +1003,20 @@ float hash21(vec2 p) {
  * 台阶在立体画面里就是"边缘一跳一跳"，用平滑插值能压掉。
  * u_smoothRead 保留关掉它的一路，用来对照"台阶到底是不是插值造成的"。
  */
+/* R32F 没有硬件线性过滤：手动双线性，四处 texelFetch */
+float depthSampleBilinear(vec2 uv) {
+    vec2 ds = vec2(textureSize(uDepthTex, 0));
+    vec2 sp = uv * ds - 0.5;
+    ivec2 b0 = ivec2(floor(sp));
+    vec2 f = sp - vec2(b0);
+    ivec2 hi2 = ivec2(ds) - 1;
+    float v00 = texelFetch(uDepthTex, clamp(b0, ivec2(0), hi2), 0).r;
+    float v10 = texelFetch(uDepthTex, clamp(b0 + ivec2(1, 0), ivec2(0), hi2), 0).r;
+    float v01 = texelFetch(uDepthTex, clamp(b0 + ivec2(0, 1), ivec2(0), hi2), 0).r;
+    float v11 = texelFetch(uDepthTex, clamp(b0 + ivec2(1, 1), ivec2(0), hi2), 0).r;
+    return mix(mix(v00, v10, f.x), mix(v01, v11, f.x), f.y);
+}
+
 float depthAt(vec2 uv) {
     if (uSmoothRead == 0) {
         /* R32F 没有硬件线性过滤：四次 texelFetch 手动双线性，和图元足迹对齐 */
@@ -1031,10 +1045,10 @@ float depthAt(vec2 uv) {
     vec2 g1 = w2 + w3;
     vec2 h0 = (base - 0.5 + w1 / max(g0, vec2(1e-6))) / size;
     vec2 h1 = (base + 1.5 + w3 / max(g1, vec2(1e-6))) / size;
-    float a00 = texture(uDepthTex, vec2(h0.x, h0.y)).r;
-    float a10 = texture(uDepthTex, vec2(h1.x, h0.y)).r;
-    float a01 = texture(uDepthTex, vec2(h0.x, h1.y)).r;
-    float a11 = texture(uDepthTex, vec2(h1.x, h1.y)).r;
+    float a00 = depthSampleBilinear(vec2(h0.x, h0.y));
+    float a10 = depthSampleBilinear(vec2(h1.x, h0.y));
+    float a01 = depthSampleBilinear(vec2(h0.x, h1.y));
+    float a11 = depthSampleBilinear(vec2(h1.x, h1.y));
     return mix(mix(a11, a01, g0.x), mix(a10, a00, g0.x), g0.y);
 }
 
@@ -7376,9 +7390,19 @@ out vec4 fragColor;
 
 /* 源像素坐标（可以是小数）：偏移表比深度图细时，同一行上的采样点更密 */
 float depthAt(vec2 sp) {
-    vec2 uv = (sp + 0.5) / uSrcSize;
-    vec4 t = texture(uDepth, uv);
-    return uSrcR == 1 ? t.r : t.a;
+    /*
+     * R32F 深度没有硬件线性过滤：四次 texelFetch 手算双线性，与原来 LINEAR 采样等价。
+     * 退化成最近邻时，偏移表会按深度纹素一块一块跳，立体画面边缘跟着跳。
+     */
+    ivec2 hi = ivec2(uSrcSize) - 1;
+    vec2 b = floor(sp);
+    vec2 f = sp - b;
+    ivec2 b0 = ivec2(b);
+    float v00 = texelFetch(uDepth, clamp(b0, ivec2(0), hi), 0).r;
+    float v10 = texelFetch(uDepth, clamp(b0 + ivec2(1, 0), ivec2(0), hi), 0).r;
+    float v01 = texelFetch(uDepth, clamp(b0 + ivec2(0, 1), ivec2(0), hi), 0).r;
+    float v11 = texelFetch(uDepth, clamp(b0 + ivec2(1, 1), ivec2(0), hi), 0).r;
+    return mix(mix(v00, v10, f.x), mix(v01, v11, f.x), f.y);
 }
 
 /*
