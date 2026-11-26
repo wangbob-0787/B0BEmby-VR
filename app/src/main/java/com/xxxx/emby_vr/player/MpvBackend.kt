@@ -137,8 +137,13 @@ class MpvBackend(private val context: Context) {
                  * bt.2390 会把中间调压成一片、暗部被抬起来，观感比浏览器灰；
                  * spline 的跨度与浏览器一致（实测量得两者对比度 0.36 vs 0.35）。
                  */
+                /*
+                 * 目标亮度 800（2026-11-27 父亲实测：1100 时人脸"红得像猪肝"，过艳）。
+                 * 2026-11-16 那次逐档比过 600/800/1000/1200，800 与浏览器最接近；换内核后
+                 * 1100 过饱和，回到 800。
+                 */
                 setOptionRuntime("tone-mapping", "spline")
-                setOptionRuntime("target-peak", "1100")
+                setOptionRuntime("target-peak", "800")
                 /* 输出完整范围 + 对比度 100（父 2026-11-19 20:13 定，写死进代码） */
                 setOptionRuntime("video-output-levels", "full")
                 setOptionRuntime("contrast", "100")
