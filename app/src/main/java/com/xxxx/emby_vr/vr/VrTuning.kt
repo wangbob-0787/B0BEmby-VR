@@ -392,6 +392,16 @@ object VrTuning {
     @Volatile
     var depthModel: Int = -1
 
+    /**
+     * 视差限速（`stereo_ramp`，0 = 关，单位是深度 0..255 的级数）。
+     *
+     * 画面里没有边缘的平坦区，模型常把近景远景填成同一个深度，位移场在边界处一步跳过去，
+     * 视觉上就是"隔着水渍看画面"：局部被拉长、割裂。这里给位移场加水平限速，
+     * 一步最多跨这么多级；画面里有明显边缘的地方（亮度梯度大）自动放宽，真实轮廓不被抹平。
+     */
+    @Volatile
+    var stereoRamp: Int = 0
+
 
     /**
      * 深度在哪里算（父亲 2026-11-02）：0 = 头显本地（256 int8），1 = 点 15 远程（512x288）。
@@ -1120,6 +1130,10 @@ object VrTuning {
         raw["depth_remote_host"]?.trim()?.takeIf { it.isNotEmpty() }?.let {
             depthRemoteHost = it
             applied += "深度服务地址 $it"
+        }
+        raw["stereo_ramp"]?.toIntOrNull()?.let {
+            stereoRamp = it.coerceIn(0, 40)
+            applied += "视差限速 $stereoRamp" + if (stereoRamp == 0) "（关）" else " 级/像素"
         }
         raw["depth_model"]?.toIntOrNull()?.let {
             depthModel = when (it) {

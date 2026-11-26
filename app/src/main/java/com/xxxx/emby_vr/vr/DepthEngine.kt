@@ -169,6 +169,9 @@ object DepthEngine {
     private var inH = 0
     private var outW = 0
     private var outH = 0
+    /* 限速用：每像素"画面这里有没有边缘"（1 = 有，放宽），复用避免每帧分配 */
+    private var rampAllow = FloatArray(0)
+    private var lumaBuf = FloatArray(0)
     /* 归一化用 64 档直方图算 2%/98% 分位（照 4XVR 的做法），范围按 150ms 平滑 */
     private var histBuf = IntArray(0)
     private var lastNormMs = 0L
@@ -597,6 +600,7 @@ object DepthEngine {
         val n = outW * outH
         val vals = if (valsBuf.size == n) valsBuf else FloatArray(n).also { valsBuf = it }
         System.arraycopy(raw, 0, vals, 0, minOf(n, raw.size))
+        buildRampAllow(rgba, w, h)
         finishDepth(vals, outW, outH, seq)
     }
 
@@ -636,6 +640,71 @@ object DepthEngine {
             if (acc >= target) return i.toFloat() / (hist.size - 1)
         }
         return 1f
+    }
+
+    /**
+     * 标记"画面里的强边缘"（每像素 0 或 1）。
+     *
+     * 用当前帧亮度做水平梯度：梯度大 = 真实物体轮廓，位移允许在那里跳；
+     * 梯度小 = 平坦区（雾、天空、墙面），位移必须慢变，否则一步跳过去就是水渍状拉伸。
+     * 结果做一次 3 像素膨胀，让轮廓两侧都放宽，避免把边削掉。
+     */
+    private fun buildRampAllow(rgba: ByteArray, w: Int, h: Int) {
+        val n = outW * outH
+        if (n <= 0 || rgba.size < w * h * 4) return
+        if (lumaBuf.size != n) lumaBuf = FloatArray(n)
+        if (rampAllow.size != n) rampAllow = FloatArray(n)
+        for (y in 0 until outH) {
+            val sy = (y.toLong() * h / outH).toInt()
+            val row = sy * w
+            for (x in 0 until outW) {
+                val sx = (x.toLong() * w / outW).toInt()
+                val i = (row + sx) * 4
+                lumaBuf[y * outW + x] = ((rgba[i].toInt() and 0xFF) * 299 +
+                        (rgba[i + 1].toInt() and 0xFF) * 587 +
+                        (rgba[i + 2].toInt() and 0xFF) * 114) / 1000f
+            }
+        }
+        for (y in 0 until outH) {
+            val base = y * outW
+            for (x in 0 until outW) {
+                val l = lumaBuf[base + x]
+                var edge = false
+                if (x > 0 && kotlin.math.abs(l - lumaBuf[base + x - 1]) > 18f) edge = true
+                if (!edge && x < outW - 1 && kotlin.math.abs(lumaBuf[base + x + 1] - l) > 18f) edge = true
+                rampAllow[base + x] = if (edge) 1f else 0f
+            }
+        }
+    }
+
+    /**
+     * 位移场水平限速（`stereo_ramp` > 0 时生效）。
+     *
+     * 左右各扫一遍，相邻像素深度差不超过 step；有画面边缘的像素放宽到 step*8，
+     * 真实轮廓因此保留，平坦区的硬跳变被摊成几十像素的缓坡，画面不会再"隔着水渍"。
+     */
+    private fun limitRamp(out: ByteArray, ow: Int, oh: Int) {
+        val ramp = VrTuning.stereoRamp
+        if (ramp <= 0) return
+        val relaxed = ramp * 8
+        val has = rampAllow.size == ow * oh
+        for (y in 0 until oh) {
+            val base = y * ow
+            for (x in 1 until ow) {
+                val step = if (has && rampAllow[base + x] > 0.5f) relaxed else ramp
+                val prev = out[base + x - 1].toInt() and 0xFF
+                val cur = out[base + x].toInt() and 0xFF
+                if (cur > prev + step) out[base + x] = (prev + step).toByte()
+                else if (cur < prev - step) out[base + x] = (prev - step).toByte()
+            }
+            for (x in ow - 2 downTo 0) {
+                val step = if (has && rampAllow[base + x] > 0.5f) relaxed else ramp
+                val next = out[base + x + 1].toInt() and 0xFF
+                val cur = out[base + x].toInt() and 0xFF
+                if (cur > next + step) out[base + x] = (next + step).toByte()
+                else if (cur < next - step) out[base + x] = (next - step).toByte()
+            }
+        }
     }
 
     private fun finishDepth(vals: FloatArray, ow: Int, oh: Int, seq: Long) {
@@ -726,6 +795,7 @@ object DepthEngine {
             }
             out[i] = b.toInt().coerceIn(0, 255).toByte()
         }
+        limitRamp(out, ow, oh)
         prevDepth = out
         inferCount++
         if (inferCount % 20 == 1) {
