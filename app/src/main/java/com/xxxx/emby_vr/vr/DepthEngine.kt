@@ -106,11 +106,18 @@ object DepthEngine {
         private set
 
     /*
-     * 推理耗时统计：每 20 次打一行平均/最大，A/B 切档（模型、线程、委托、遮挡表档位）
-     * 之后直接对比数字，不靠一次测量下结论 —— 单次最快值会被缓存和调度带偏。
+     * 推理耗时统计：每 20 次打一行平均/最大，A/B 切档之后直接对比数字，不靠一次测量下结论。
+     *
+     * 分四段记：喂输入（缩放+writeFloat）、提交（run 返回）、读回（readFloat，含等显卡算完）、
+     * 原生自报（lastNativeInferenceDurationNanoseconds）。
+     * 为什么要分段：OpenCL 是异步队列，run 返回只代表命令交出去了 —— 只测 run 会得到
+     * 0~2ms 的假数字，真正花时间的是 readFloat 等结果。不分开就永远不知道慢在哪。
      */
-    private var inferSumMs = 0L
-    private var inferMaxMs = 0L
+    private var feedSumMs = 0L
+    private var submitSumMs = 0L
+    private var readSumMs = 0L
+    private var nativeSumMs = 0L
+    private var workMaxMs = 0L
     private var inferSamples = 0
 
     /**
@@ -224,8 +231,11 @@ object DepthEngine {
         sock = null
         prevDepth = null
         refInit = false
-        inferSumMs = 0L
-        inferMaxMs = 0L
+        feedSumMs = 0L
+        submitSumMs = 0L
+        readSumMs = 0L
+        nativeSumMs = 0L
+        workMaxMs = 0L
         inferSamples = 0
         rgbFloats = FloatArray(0)
         inW = 0
@@ -558,24 +568,32 @@ object DepthEngine {
                 rgb[o++] = (rgba[i + 2].toInt() and 0xFF) / 255f
             }
         }
+        val tFeed0 = SystemClock.elapsedRealtime()
         inputs[0].writeFloat(rgb)
-
-        /*
-         * 计时只包推理本身，喂输入与读输出在外面 —— 与旧引擎 58ms 的口径一致，
-         * 换引擎前后才能直接比。
-         */
-        val t0 = SystemClock.elapsedRealtime()
+        val tSubmit0 = SystemClock.elapsedRealtime()
         cm.run(inputs, outputs, 0)
-        lastInferMs = SystemClock.elapsedRealtime() - t0
-        inferSumMs += lastInferMs
-        inferSamples++
-        if (lastInferMs > inferMaxMs) inferMaxMs = lastInferMs
+        val tSubmit1 = SystemClock.elapsedRealtime()
 
         /*
-         * readFloat 每次返回新数组（LiteRT 没有读进现有数组的接口），147k 个数约 590KB：
-         * 这是每帧唯一还会分配的大块，交给 ART 回收；别再拷贝第二遍。
+         * readFloat 每次返回新数组（LiteRT 没有读进现有数组的接口），147k 个数约 590KB。
+         * 它同时是**等显卡算完**的地方：OpenCL 队列异步，run 返回时结果通常还没出来。
          */
         val raw = outputs[0].readFloat()
+        val tRead1 = SystemClock.elapsedRealtime()
+
+        val feedMs = tSubmit0 - tFeed0
+        val submitMs = tSubmit1 - tSubmit0
+        val readMs = tRead1 - tSubmit1
+        val nativeMs = cm.lastNativeInferenceDurationNanoseconds / 1_000_000
+        feedSumMs += feedMs
+        submitSumMs += submitMs
+        readSumMs += readMs
+        nativeSumMs += nativeMs
+        val work = submitMs + readMs
+        if (work > workMaxMs) workMaxMs = work
+        inferSamples++
+        /* 对外的一行仍报"这一帧从提交到拿到结果"，与旧引擎 58ms 同一口径 */
+        lastInferMs = work
         val n = outW * outH
         val vals = if (valsBuf.size == n) valsBuf else FloatArray(n).also { valsBuf = it }
         System.arraycopy(raw, 0, vals, 0, minOf(n, raw.size))
@@ -715,12 +733,16 @@ object DepthEngine {
              * 一行把 A/B 需要的三样都带上：本次耗时、最近 20 次的平均/最大、当前档位。
              * 平均比单次可信 —— 单次最快值会被缓存和调度带偏。
              */
-            val avg = if (inferSamples > 0) inferSumMs / inferSamples else 0L
-            Log.i(TAG, "深度推理：本次 ${lastInferMs}ms｜最近 $inferSamples 次 平均 ${avg}ms 最大 ${inferMaxMs}ms"
+            val n20 = if (inferSamples > 0) inferSamples else 1
+            Log.i(TAG, "深度推理：本次 ${lastInferMs}ms（提交 ${submitSumMs / n20} 读回 ${readSumMs / n20}）"
+                    + "｜最近 $inferSamples 次 平均 喂入 ${feedSumMs / n20} 原生 ${nativeSumMs / n20} 最大 ${workMaxMs}ms"
                     + "｜后端 ${if (gpuActive) "LiteRT 显卡（OpenCL）" else "LiteRT CPU ${VrTuning.depthThreads} 线程"}"
                     + "｜模型 ${if (inW == 512) "512x288" else "${inH}x${inW}"} 深度 ${ow}x${oh}")
-            inferSumMs = 0L
-            inferMaxMs = 0L
+            feedSumMs = 0L
+            submitSumMs = 0L
+            readSumMs = 0L
+            nativeSumMs = 0L
+            workMaxMs = 0L
             inferSamples = 0
             Log.i(TAG, "深度切镜：diff " + "%.3f".format(lastDiff) +
                     " hist " + "%.3f".format(lastHist) +
