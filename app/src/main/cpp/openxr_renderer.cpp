@@ -7548,7 +7548,7 @@ void main() {
      * 用最近邻时，256 宽的深度图铺到 2560 宽的画面就是十像素一块的方块，
      * 立体偏移跟着一块一块跳 —— 这是"边缘发虚、偶尔扭曲"的另一半来源。
      */
-    if (!ensureTarget(dst, outW, outH, GL_R32F, false)) return;
+    if (!ensureTarget(dst, outW, outH, GL_R8, true)) return;
 
     GLint prevFbo = 0;
     GLint prevViewport[4] = {0, 0, 0, 0};
@@ -7817,11 +7817,21 @@ bool uploadDepthToTarget(RenderTarget &t, const std::vector<unsigned char> &dept
 }
 
 bool uploadDepthFloat(RenderTarget &t, const std::vector<float> &depth, int w, int h) {
+    /*
+     * 存 8 位：R32F 在这块 Adreno 上取样太贵，实测把帧率从 72 打到 18（FrmGpu 30~50ms），
+     * 硬件线性过滤开着也救不回来 —— 贵在读 fp32 纹理，不在插值。先退回 8 位保住帧率，
+     * 16 位半浮点（R16F，可快速过滤）留作下一步实验。
+     */
     if (w <= 0 || h <= 0 || depth.size() != (size_t) w * h) return false;
-    if (!ensureTarget(t, w, h, GL_R32F, false)) return false;
+    if (!ensureTarget(t, w, h, GL_R8, true)) return false;
+    std::vector<unsigned char> bytes(depth.size());
+    for (size_t i = 0; i < depth.size(); i++) {
+        const float v = depth[i];
+        bytes[i] = (unsigned char) (v <= 0.f ? 0 : (v >= 1.f ? 255 : (int) (v * 255.f + 0.5f)));
+    }
     glBindTexture(GL_TEXTURE_2D, t.tex);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RED, GL_FLOAT, depth.data());
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RED, GL_UNSIGNED_BYTE, bytes.data());
     glBindTexture(GL_TEXTURE_2D, 0);
     return true;
 }
@@ -7890,7 +7900,7 @@ void ensureDepthTexture(VrContext &c) {
             px[(size_t) y * W + x] = (unsigned char) (fminf(fmaxf(d, 0.f), 1.f) * 255.f);
         }
     }
-    if (!ensureTarget(c.depth, W, H, GL_R32F, false)) return;
+    if (!ensureTarget(c.depth, W, H, GL_R8, true)) return;
     std::vector<float> f((size_t) W * H);
     for (int i = 0; i < W * H; i++) f[(size_t) i] = px[(size_t) i] / 255.f;
     glBindTexture(GL_TEXTURE_2D, c.depth.tex);
