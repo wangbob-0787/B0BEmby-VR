@@ -109,7 +109,7 @@ class MpvBackend(private val context: Context) {
                 setOptionRuntime("target-prim", "bt.2020")
                 setOptionRuntime("target-trc", "pq")
                 setOptionRuntime("tone-mapping", "spline")
-                setOptionRuntime("target-peak", "800")
+                setOptionRuntime("target-peak", "1100")
             } else {
                 /*
                  * 网络/普通 HDR10 片的色标修正（调参 stereo 侧的 `mpv_hdr_fix=1` 打开）。
@@ -154,7 +154,7 @@ class MpvBackend(private val context: Context) {
                  * 源是 limited、我们强制 full 时，亮部会被顶到上限，肤色先变红。
                  * 连色调映射一起回到 spline + 800（对照实验证明 clip 那档整幅发灰）。
                  */
-                setOptionRuntime("video-output-levels", "auto")
+                setOptionRuntime("video-output-levels", "full")
                 setOptionRuntime("contrast", "100")
             }
         }
