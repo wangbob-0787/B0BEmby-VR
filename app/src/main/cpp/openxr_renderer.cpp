@@ -2924,6 +2924,7 @@ struct QuadLocs {
     GLint depthFade = -1, offsets = -1, dispTexels = -1;
     GLint lowResW = -1, frameW = -1, srcInset = -1, eyeIndex = -1;
     GLint occl = -1, fill = -1, smoothRead = -1;
+    GLint depthManual = -1;   // 浮点深度走手算双线性
     GLint newton = -1;
     GLint showDepth = -1;
     GLint fillPx = -1;
@@ -3883,6 +3884,8 @@ std::atomic<int> gDepthInputH{0};
  */
 std::atomic<int> gDepthMsFloor{0};
 std::atomic<int> gDepthInvert{0};   // 深度的近远方向（1 = 用之前取反）
+/* 深度精度：0 = 8 位（RGBA8），1 = 半浮点 R16F，2 = 浮点 R32F。由客户端随帧告知。 */
+std::atomic<int> gDepthPrecision{0};
 static jobject gDepthSink = nullptr;      // DepthEngine 单例的全局引用
 static jmethodID gDepthSubmit = nullptr;  // DepthEngine.submitFrame([BIIJ)V
 /* DepthEngine.setActive(Z)V —— 3D 关掉时让推理线程真正收工，不留空转的四个核 */
@@ -7750,7 +7753,7 @@ bool uploadDepthFloatToTarget(RenderTarget &t, const std::vector<float> &depth, 
     /* 半浮点/浮点没有硬件线性过滤，采样侧手算双线性（uDepthManual=1） */
     if (!ensureTarget(t, w, h, fmt, false)) return false;
     const bool invert = gDepthInvert.load() != 0;
-    const bool flip = gDepthFlipRows.load() != 0;
+    const bool flip = true;   // 与 8 位那条一致：抓帧第 0 行是画面底部，必须翻
     std::vector<float> out((size_t) w * h);
     for (int y = 0; y < h; y++) {
         const int sy = flip ? (h - 1 - y) : y;
