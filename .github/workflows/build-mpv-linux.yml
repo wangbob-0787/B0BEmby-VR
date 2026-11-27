@@ -80,6 +80,7 @@ jobs:
             meson setup build --prefix=/opt/mpv --buildtype=release \
             -Dlibmpv=true -Dcplayer=true \
             -Dvulkan=disabled -Dlibarchive=disabled -Dvapoursynth=disabled \
+            -Dgl=enabled -Ddrm=enabled -Dx11=enabled -Dwayland=enabled \
             -Dc_link_args=-lstdc++
           ninja -C build -j"$(nproc)" >/tmp/mpv.log 2>&1 || { tail -60 /tmp/mpv.log; exit 1; }
           ./build/mpv --version
