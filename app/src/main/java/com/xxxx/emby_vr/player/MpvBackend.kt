@@ -121,18 +121,15 @@ class MpvBackend(private val context: Context) {
                 setOptionRuntime("tone-mapping", "spline")
                 setOptionRuntime("target-peak", "1100")
                 /*
-                 * 输出完整范围；对比度、饱和度、色相这些"调节量"一律 0。
+                 * 输出完整范围 + 对比度 100。这套内核里 **contrast 的"原样"是 100，不是 0**：
+                 * 写 0 会把画面按约一半的增益压掉（实测同一张测试卡白点 234 → 118）。
+                 * 判据来自日志对账：亮度正常那次（2026-11-27 10:31）内核收到的就是 contrast=100。
                  *
-                 * mpv 里 contrast / saturation / hue / brightness / gamma 都是**相对偏移**，
-                 * 0 才是原样，正数是在原画上再加。历史上这里写死 100（= 对比度拉满），
-                 * 调参文件里还留着 saturation=85（= 饱和度 +85）—— 结果是整幅过艳、
-                 * 人脸发红，而纯色块测试图看不出（纯色本就在极值）。
-                 * 判据：同一条流，纯色块正常但人物肤色发红 → 先查这几个相对量是不是非 0。
+                 * 饱和度、色相这里**一个字都不写**：偏红的来源是调参文件里的 mpv_saturation=85，
+                 * 那种"再艳一档"的偏移要归零交给调参文件，不能被这里覆盖成别的值。
                  */
                 setOptionRuntime("video-output-levels", "full")
-                setOptionRuntime("contrast", "0")
-                setOptionRuntime("saturation", "0")
-                setOptionRuntime("hue", "0")
+                setOptionRuntime("contrast", "100")
             }
         }
 
