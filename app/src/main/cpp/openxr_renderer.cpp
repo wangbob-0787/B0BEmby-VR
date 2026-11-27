@@ -968,7 +968,23 @@ uniform float uFillPx;          // 补洞搜索半径（画面像素，默认 24
 uniform int uFillPick;          // 1 = 就近取紧邻背景（默认），0 = 整个范围内取最远
 uniform float uEdgeThr;         // 真边缘判据：深度跳变阈值（低分深度单位，默认 0.03）
 uniform float uEdgeColorThr;    // 真边缘判据：两侧颜色差阈值（默认 0.06）
-uniform int uSmoothRead;        // 1 = 深度三次插值读（默认），0 = 双线性
+uniform int uSmoothRead;
+uniform int uDepthManual;
+
+/* 浮点/半浮点深度没有硬件线性过滤：这里手算双线性；8 位档走一次 texture() */
+float depthTexSample(vec2 uv) {
+    if (uDepthManual == 0) return texture(uDepthTex, uv).r;
+    vec2 ds = vec2(textureSize(uDepthTex, 0));
+    vec2 sp = uv * ds - 0.5;
+    ivec2 b0 = ivec2(floor(sp));
+    vec2 f = sp - vec2(b0);
+    ivec2 lim = ivec2(ds) - 1;
+    float v00 = texelFetch(uDepthTex, clamp(b0, ivec2(0), lim), 0).r;
+    float v10 = texelFetch(uDepthTex, clamp(b0 + ivec2(1,0), ivec2(0), lim), 0).r;
+    float v01 = texelFetch(uDepthTex, clamp(b0 + ivec2(0,1), ivec2(0), lim), 0).r;
+    float v11 = texelFetch(uDepthTex, clamp(b0 + ivec2(1,1), ivec2(0), lim), 0).r;
+    return mix(mix(v00, v10, f.x), mix(v01, v11, f.x), f.y);
+}        // 1 = 深度三次插值读（默认），0 = 双线性
 /*
  * 牛顿修正轮数 0..2。每轮 6 次深度采样，是每帧每眼都跑的开销；
  * 降到 0/1 就是"省采样换边缘精度"的对照档，必须肉眼 A/B 才知道值不值。
@@ -998,7 +1014,7 @@ float hash21(vec2 p) {
  * u_smoothRead 保留关掉它的一路，用来对照"台阶到底是不是插值造成的"。
  */
 float depthAt(vec2 uv) {
-    if (uSmoothRead == 0) return texture(uDepthTex, uv).r;
+    if (uSmoothRead == 0) return depthTexSample(uv);
     vec2 size = vec2(textureSize(uDepthTex, 0));
     vec2 tc = uv * size - 0.5;
     vec2 base = floor(tc);
@@ -1013,10 +1029,10 @@ float depthAt(vec2 uv) {
     vec2 g1 = w2 + w3;
     vec2 h0 = (base - 0.5 + w1 / max(g0, vec2(1e-6))) / size;
     vec2 h1 = (base + 1.5 + w3 / max(g1, vec2(1e-6))) / size;
-    float a00 = texture(uDepthTex, vec2(h0.x, h0.y)).r;
-    float a10 = texture(uDepthTex, vec2(h1.x, h0.y)).r;
-    float a01 = texture(uDepthTex, vec2(h0.x, h1.y)).r;
-    float a11 = texture(uDepthTex, vec2(h1.x, h1.y)).r;
+    float a00 = depthTexSample(vec2(h0.x, h0.y));
+    float a10 = depthTexSample(vec2(h1.x, h0.y));
+    float a01 = depthTexSample(vec2(h0.x, h1.y));
+    float a11 = depthTexSample(vec2(h1.x, h1.y));
     return mix(mix(a11, a01, g0.x), mix(a10, a00, g0.x), g0.y);
 }
 
@@ -1180,8 +1196,8 @@ void main() {
                 for (int i = 1; i <= FILL_MAX; i++) {
                     if (i > span) break;
                     float o = float(i) * stepUV;
-                    float dl = texture(uDepthTex, vec2(vUv.x - o, vUv.y)).r;
-                    float dr = texture(uDepthTex, vec2(vUv.x + o, vUv.y)).r;
+                    float dl = depthTexSample(vec2(vUv.x - o, vUv.y));
+                    float dr = depthTexSample(vec2(vUv.x + o, vUv.y));
                     bool hl = dl > here + 0.01;
                     bool hr = dr > here + 0.01;
                     if (uFillPick == 1) {
@@ -1207,8 +1223,8 @@ void main() {
                     /* 轮数由 stereo_newton 控制（0/1/2）。ES 3.0 的循环上限必须是常量，所以按上限 2 循环、提前跳出 */
                     if (i >= uNewton) break;
                     float d0 = depthAt(vec2(uvT.x, vUv.y));
-                    float dm = texture(uDepthTex, vec2(uvT.x - h, vUv.y)).r;
-                    float dp = texture(uDepthTex, vec2(uvT.x + h, vUv.y)).r;
+                    float dm = depthTexSample(vec2(uvT.x - h, vUv.y));
+                    float dp = depthTexSample(vec2(uvT.x + h, vUv.y));
                     float e = (uvT.x - vUv.x) - uEyeSign * disp * (d0 - uConvergence);
                     float slope = 1.0 - uEyeSign * disp * (dp - dm) / (2.0 * h);
                     /*
@@ -2859,6 +2875,7 @@ struct RenderTarget {
     GLuint tex = 0;
     int w = 0;
     int h = 0;
+    GLint fmt = 0;   // 内部格式：换格式（8 位↔半浮点↔浮点）必须重建纹理
 };
 
 /**
@@ -2907,6 +2924,7 @@ struct QuadLocs {
     GLint depthFade = -1, offsets = -1, dispTexels = -1;
     GLint lowResW = -1, frameW = -1, srcInset = -1, eyeIndex = -1;
     GLint occl = -1, fill = -1, smoothRead = -1;
+    GLint depthManual = -1;   // 浮点深度走手算双线性
     GLint newton = -1;
     GLint showDepth = -1;
     GLint fillPx = -1;
@@ -2966,6 +2984,7 @@ void fillQuadLocs(GLuint prog, QuadLocs &u) {
     u.occl = glGetUniformLocation(prog, "uOcclusion");
     u.fill = glGetUniformLocation(prog, "uFill");
     u.smoothRead = glGetUniformLocation(prog, "uSmoothRead");
+    u.depthManual = glGetUniformLocation(prog, "uDepthManual");
     u.newton = glGetUniformLocation(prog, "uNewton");
     u.showDepth = glGetUniformLocation(prog, "uShowDepth");
     u.fillPx = glGetUniformLocation(prog, "uFillPx");
@@ -3229,6 +3248,7 @@ struct VrContext {
     GLint offsetsSrcLoc = -1;       // 偏移表：源深度尺寸
     GLint offsetsOutLoc = -1;       // 偏移表：输出尺寸
     GLint offsetsSrcRLoc = -1;      // 偏移表：源通道（R8 取 .r）
+    GLint offsetsManualLoc = -1;    // 偏移表：浮点深度走手算双线性
     GLint offsetsFeatherLoc = -1;   // 局部液化：羽化半径（源像素）
     GLint offsetsStretchLoc = -1;   // 局部液化：背景修正权重
     GLint offsetsEdgeThrLoc = -1;   // 真边缘判据：3x3 动态范围阈值
@@ -3864,12 +3884,17 @@ std::atomic<int> gDepthInputH{0};
  */
 std::atomic<int> gDepthMsFloor{0};
 std::atomic<int> gDepthInvert{0};   // 深度的近远方向（1 = 用之前取反）
+/* 深度精度：0 = 8 位（RGBA8），1 = 半浮点 R16F，2 = 浮点 R32F。由客户端随帧告知。 */
+std::atomic<int> gDepthPrecision{0};
 static jobject gDepthSink = nullptr;      // DepthEngine 单例的全局引用
 static jmethodID gDepthSubmit = nullptr;  // DepthEngine.submitFrame([BIIJ)V
 /* DepthEngine.setActive(Z)V —— 3D 关掉时让推理线程真正收工，不留空转的四个核 */
 static jmethodID gDepthSetActive = nullptr;
 static std::mutex gDepthMutex;
 static std::vector<unsigned char> gDepthStage;
+/* 浮点/半浮点深度暂存（远程 16/32 位回传走这条） */
+static std::vector<float> gDepthStageF;
+static std::atomic<bool> gDepthFreshF{false};
 static std::atomic<int> gDepthStageW{0};
 static std::atomic<int> gDepthStageH{0};
 /* 这份深度属于环形缓冲里的哪一帧（-1 = 实时路径，没有帧号） */
@@ -7005,7 +7030,7 @@ void releaseTarget(RenderTarget &t) {
  * 建（或按新尺寸重建）一张离屏目标；失败返回 false，调用方据此关掉整条功能。
  */
 bool ensureTarget(RenderTarget &t, int w, int h, GLint internalFormat, bool linear) {
-    if (t.tex != 0 && t.w == w && t.h == h) return true;
+    if (t.tex != 0 && t.w == w && t.h == h && t.fmt == internalFormat) return true;
     if (t.fbo != 0) {
         glDeleteFramebuffers(1, &t.fbo);
         t.fbo = 0;
@@ -7038,6 +7063,7 @@ bool ensureTarget(RenderTarget &t, int w, int h, GLint internalFormat, bool line
     }
     t.w = w;
     t.h = h;
+    t.fmt = internalFormat;
     return true;
 }
 
@@ -7335,8 +7361,23 @@ uniform float uEdgeThr;     // 真边缘判据：3x3 动态范围阈值（源深
 out vec4 fragColor;
 
 /* 源像素坐标（可以是小数）：偏移表比深度图细时，同一行上的采样点更密 */
+uniform int uDepthManual;
+
 float depthAt(vec2 sp) {
     vec2 uv = (sp + 0.5) / uSrcSize;
+    if (uDepthManual == 1) {
+        /* 浮点深度没有硬件过滤：四次 texelFetch 手算双线性 */
+        vec2 ds = uSrcSize;
+        vec2 p = sp;
+        ivec2 b0 = ivec2(floor(p));
+        vec2 f = p - vec2(b0);
+        ivec2 lim = ivec2(ds) - 1;
+        float v00 = texelFetch(uDepth, clamp(b0, ivec2(0), lim), 0).r;
+        float v10 = texelFetch(uDepth, clamp(b0 + ivec2(1,0), ivec2(0), lim), 0).r;
+        float v01 = texelFetch(uDepth, clamp(b0 + ivec2(0,1), ivec2(0), lim), 0).r;
+        float v11 = texelFetch(uDepth, clamp(b0 + ivec2(1,1), ivec2(0), lim), 0).r;
+        return mix(mix(v00, v10, f.x), mix(v01, v11, f.x), f.y);
+    }
     vec4 t = texture(uDepth, uv);
     return uSrcR == 1 ? t.r : t.a;
 }
@@ -7447,6 +7488,7 @@ void main() {
         c.offsetsSrcLoc = glGetUniformLocation(c.offsetsProg, "uSrcSize");
         c.offsetsOutLoc = glGetUniformLocation(c.offsetsProg, "uOutSize");
         c.offsetsSrcRLoc = glGetUniformLocation(c.offsetsProg, "uSrcR");
+        c.offsetsManualLoc = glGetUniformLocation(c.offsetsProg, "uDepthManual");
         c.offsetsConvLoc = glGetUniformLocation(c.offsetsProg, "uConvergence");
         c.offsetsFeatherLoc = glGetUniformLocation(c.offsetsProg, "uFeather");
         c.offsetsStretchLoc = glGetUniformLocation(c.offsetsProg, "uStretch");
@@ -7476,6 +7518,7 @@ void main() {
     if (c.offsetsSrcLoc >= 0) glUniform2f(c.offsetsSrcLoc, (float) srcW, (float) srcH);
     if (c.offsetsOutLoc >= 0) glUniform2f(c.offsetsOutLoc, (float) outW, (float) outH);
     if (c.offsetsSrcRLoc >= 0) glUniform1i(c.offsetsSrcRLoc, srcIsR8 ? 1 : 0);
+    if (c.offsetsManualLoc >= 0) glUniform1i(c.offsetsManualLoc, gDepthPrecision.load() > 0 ? 1 : 0);
     if (c.offsetsConvLoc >= 0) glUniform1f(c.offsetsConvLoc, c.depthConv);
     /* 羽化按每眼 1920 源宽折算成深度图像素，和参考实现同一个口径 */
     if (c.offsetsFeatherLoc >= 0) {
@@ -7697,6 +7740,35 @@ void main() {
  * 为什么把颜色也塞进同一张纹理：引导放大要拿低分辨率的颜色和高分辨率画面比亮度。
  * 颜色必须属于同一帧 —— 拿别的帧的颜色当引导，深度边缘会贴到错的地方。
  */
+/**
+ * 浮点/半浮点深度上传（16 位或 32 位来源）。
+ *
+ * 与 8 位那条的区别：不再打包低分颜色（引导上采样那条路只在 8 位档用），
+ * 行序与取反规则保持一致 —— 翻行是 2026-11-26 定案的，任何精度都必须翻。
+ */
+bool uploadDepthFloatToTarget(RenderTarget &t, const std::vector<float> &depth, int w, int h,
+                              int precision) {
+    if (w <= 0 || h <= 0 || depth.size() != (size_t) w * h) return false;
+    const GLint fmt = precision >= 2 ? GL_R32F : GL_R16F;
+    /* 半浮点/浮点没有硬件线性过滤，采样侧手算双线性（uDepthManual=1） */
+    if (!ensureTarget(t, w, h, fmt, false)) return false;
+    const bool invert = gDepthInvert.load() != 0;
+    const bool flip = true;   // 与 8 位那条一致：抓帧第 0 行是画面底部，必须翻
+    std::vector<float> out((size_t) w * h);
+    for (int y = 0; y < h; y++) {
+        const int sy = flip ? (h - 1 - y) : y;
+        for (int x = 0; x < w; x++) {
+            const float v = depth[(size_t) sy * w + x];
+            out[(size_t) y * w + x] = invert ? (1.f - v) : v;
+        }
+    }
+    glBindTexture(GL_TEXTURE_2D, t.tex);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RED, GL_FLOAT, out.data());
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return true;
+}
+
 bool uploadDepthToTarget(RenderTarget &t, const std::vector<unsigned char> &depth, int w, int h,
                          const std::vector<unsigned char> &lowColor) {
     if (w <= 0 || h <= 0 || depth.size() != (size_t) w * h) return false;
@@ -7739,6 +7811,17 @@ bool uploadDepthToTarget(RenderTarget &t, const std::vector<unsigned char> &dept
  * seq >= 0 的是环形缓冲里某一帧的结果（必须落进那一槽），seq < 0 的是实时路径的。
  * 两条路互不串用：给实时路径喂一份"旧帧的深度"，正是边缘错位的来源。
  */
+bool takeDepthResultF(std::vector<float> &out, int *w, int *h, long long *seq) {
+    if (!gDepthFreshF.load()) return false;
+    std::lock_guard<std::mutex> lk(gDepthMutex);
+    out.swap(gDepthStageF);
+    *w = gDepthStageW.load();
+    *h = gDepthStageH.load();
+    *seq = gDepthStageSeq.load();
+    gDepthFreshF.store(false);
+    return true;
+}
+
 bool takeDepthResult(std::vector<unsigned char> &out, int *w, int *h, long long *seq) {
     if (!gDepthFresh.load()) return false;
     std::lock_guard<std::mutex> lk(gDepthMutex);
@@ -7752,6 +7835,18 @@ bool takeDepthResult(std::vector<unsigned char> &out, int *w, int *h, long long 
 
 /** 实时路径：把刚到的深度传到共享深度图，交给后面两趟（遮挡表 + 引导上采样） */
 void uploadDepthIfFresh(VrContext &c) {
+    {
+        std::vector<float> fb;
+        int fw = 0, fh = 0;
+        long long fseq = -1;
+        if (takeDepthResultF(fb, &fw, &fh, &fseq)) {
+            if (fseq < 0 && uploadDepthFloatToTarget(c.depth, fb, fw, fh,
+                                                     gDepthPrecision.load())) {
+                c.depthUpDirty = true;
+            }
+            return;
+        }
+    }
     std::vector<unsigned char> buf;
     int w = 0;
     int h = 0;
@@ -8065,6 +8160,24 @@ void pushRingFrame(VrContext &c, GLuint oesSrc) {
 
 /** 收下环里的深度结果（按帧序号落槽），并记下这一帧的迟到量 */
 void applyRingDepth(VrContext &c) {
+    {
+        std::vector<float> fb;
+        int fw = 0, fh = 0;
+        long long fseq = -1;
+        if (takeDepthResultF(fb, &fw, &fh, &fseq)) {
+            for (RingSlot &s2 : c.ringSlots) {
+                if (!s2.hasFrame || s2.seq != fseq) continue;
+                if (!uploadDepthFloatToTarget(s2.depth, fb, fw, fh, gDepthPrecision.load())) return;
+                s2.depthReady = true;
+                s2.depthMs = (long long) nowMs();
+                c.ringLateMs.push_back((float) (s2.depthMs - s2.tsMs));
+                if (c.ringLateMs.size() > 64) c.ringLateMs.erase(c.ringLateMs.begin());
+                return;
+            }
+            c.ringStatStale++;
+            return;
+        }
+    }
     std::vector<unsigned char> buf;
     int w = 0;
     int h = 0;
@@ -8689,6 +8802,7 @@ bool renderQuadLayer(VrContext &c, VideoLayerBuf &L, GLuint tex,
             if (u.occl >= 0) glUniform1i(u.occl, gStereoOccl.load());
             if (u.fill >= 0) glUniform1i(u.fill, gStereoFill.load());
             if (u.smoothRead >= 0) glUniform1i(u.smoothRead, gStereoSmooth.load());
+            if (u.depthManual >= 0) glUniform1i(u.depthManual, gDepthPrecision.load() > 0 ? 1 : 0);
             if (u.newton >= 0) {
                 const int n = gStereoNewton.load();
                 glUniform1i(u.newton, n < 0 ? 0 : (n > 2 ? 2 : n));
@@ -9670,7 +9784,7 @@ void frameLoop(VrContext &c) {
                     if (!c.ringActive) {
                         /* ---- 实时路径：与环启用前完全一致 ---- */
                         uploadDepthIfFresh(c);
-                        if (c.depthUpDirty && c.depth.tex != 0) {
+                        if (c.depthUpDirty && c.depth.tex != 0 && gDepthPrecision.load() == 0) {
                             renderDepthUpsample(c, c.depth.tex, screenSrc, 0, webOnScreen,
                                                 upW0, upH0, c.depthUp);
                             /*
@@ -11086,6 +11200,27 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativeSetDepthInputSize(JNIEnv * /* env */,
 }
 
 extern "C" JNIEXPORT void JNICALL
+Java_com_xxxx_emby_1vr_vr_VrNative_nativePushDepthF32(JNIEnv *env, jobject /* this */,
+                                                      jfloatArray data, jint w, jint h,
+                                                      jlong seq, jint precision) {
+    if (data == nullptr || w <= 0 || h <= 0) return;
+    const jsize n = env->GetArrayLength(data);
+    if (n != (jsize) (w * h)) return;
+    std::vector<float> tmp((size_t) n);
+    env->GetFloatArrayRegion(data, 0, n, tmp.data());
+    {
+        std::lock_guard<std::mutex> lk(gDepthMutex);
+        gDepthStageF.swap(tmp);
+        gDepthStageW.store(w);
+        gDepthStageH.store(h);
+        gDepthStageSeq.store((long long) seq);
+        gDepthPrecision.store(precision >= 2 ? 2 : 1);
+        gDepthFreshF.store(true);
+    }
+    gDepthStampMs.store(nowMs());
+}
+
+extern "C" JNIEXPORT void JNICALL
 Java_com_xxxx_emby_1vr_vr_VrNative_nativePushDepth(JNIEnv *env, jobject /* this */,
                                                    jbyteArray data, jint w, jint h,
                                                    jlong seq) {
@@ -11100,6 +11235,7 @@ Java_com_xxxx_emby_1vr_vr_VrNative_nativePushDepth(JNIEnv *env, jobject /* this 
         gDepthStageW.store(w);
         gDepthStageH.store(h);
         gDepthStageSeq.store((long long) seq);
+        gDepthPrecision.store(0);
     }
     gDepthFresh.store(true);
     gDepthStampMs.store(nowMs());
