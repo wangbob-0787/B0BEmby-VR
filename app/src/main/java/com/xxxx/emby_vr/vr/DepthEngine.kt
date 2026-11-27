@@ -518,7 +518,7 @@ object DepthEngine {
             val payload = ByteArray(ln)
             readFully(inp, payload, ln)
             if (bits >= 16) {
-                /* 16 位：zlib 压的 uint16；32 位：原始 float32 */
+                /* 16 位：zlib 压的「12 位 + 行差分」int16；32 位：原始 float32 */
                 val cnt = ow * oh
                 if (cnt <= 0) continue
                 val vals = if (valsBuf.size == cnt) valsBuf else FloatArray(cnt).also { valsBuf = it }
@@ -539,9 +539,21 @@ object DepthEngine {
                     inf.end()
                     val bytes = raw.toByteArray()
                     if (bytes.size != cnt * 2) continue
-                    val bb = java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                    for (i in 0 until cnt) {
-                        vals[i] = (bb.getShort().toInt() and 0xFFFF) / 65535f
+                    /*
+                     * 服务端发的是「12 位有效 + 行内相邻差分」的 int16：深度模型精度撑不到 16 位，
+                     * 低几位是插值噪声、zlib 压不动（实测 16 位直传 266KB，12 位差分后 48KB）。
+                     * 逐行累加还原成 0..4095，再归一化 —— 必须按行重置累加，跨行累加会把整幅拖成斜的。
+                     */
+                    val bb = java.nio.ByteBuffer.wrap(bytes)
+                        .order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+                    for (y in 0 until oh) {
+                        var acc = 0
+                        val base = y * ow
+                        for (x in 0 until ow) {
+                            acc += bb.get(base + x).toInt()
+                            val v = if (acc < 0) 0 else if (acc > 4095) 4095 else acc
+                            vals[base + x] = v / 4095f
+                        }
                     }
                 }
                 lastInferMs = (SystemClock.elapsedRealtime() - f.ts)
