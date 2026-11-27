@@ -616,6 +616,12 @@ object VrTuning {
     const val KEY_STEREO_NEWTON = 67
     const val KEY_SHOW_DEPTH = 81
 
+    /**
+     * 远程深度回传精度（调参 depth_bits）：8 = JPEG 约 20KB（默认），16 = uint16+zlib（约 80~150KB），
+     * 32 = 原始 float32（590KB，仅内网低速链路谨慎使用）。8 位以外的档位要求头显侧纹理同步换格式。
+     */
+    var depthBits: Int = 8
+
     /** 补洞搜索半径（画面像素，2~96，默认 24）：洞宽≈视差量，太小跨不过洞、太大会啃到前景 */
     const val KEY_STEREO_FILL_PX = 68
 
@@ -1444,6 +1450,10 @@ object VrTuning {
                 it >= 2 -> "2（采样 1/4）"
                 else -> "关（原样）"
             }
+        }
+        raw["depth_bits"]?.toIntOrNull()?.let {
+            depthBits = if (it >= 32) 32 else if (it >= 16) 16 else 8
+            applied += "深度回传 ${depthBits} 位"
         }
         raw["stereo_show_depth"]?.toFloatOrNull()?.let {
             val on = it >= 0.5f
