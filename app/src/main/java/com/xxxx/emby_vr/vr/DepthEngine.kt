@@ -145,7 +145,6 @@ object DepthEngine {
 
     private var appContext: Context? = null
     private var prevDepth: ByteArray? = null
-    private var outFBuf = FloatArray(0)
     private var inferCount = 0
     /* 连续几次判定为"换了镜头"：单帧超阈值可能只是画面里有物体快速移动，不算换镜头 */
     private var jumpStreak = 0
@@ -473,20 +472,7 @@ object DepthEngine {
         val out = s.getOutputStream()
         val inp = s.getInputStream()
         val head = java.io.ByteArrayOutputStream(16 + batch.size * (6 + 40 * 1024))
-        /*
-         * 上行永远是压缩 JPEG；回传格式按调参 depth_bits 选（默认 16）：
-         *  8  → B0BK：灰度 JPEG，约 20KB
-         *  16 → B0BP：uint16 + zlib，约 80~150KB
-         *  32 → B0BF：原始 float32，590KB
-         * 三种回传都由服务端回「宽、高、长度」八字节头再跟载荷；32 位那路曾经少回长度，
-         * 客户端按错位字节读出一 GB 级长度当场分配失败，深度一帧不到（2026-11-27 服务端已补）。
-         */
-        val bits = VrTuning.depthBits
-        when (bits) {
-            32 -> head.write(byteArrayOf(0x42, 0x30, 0x42, 0x46))   // B0BF
-            16 -> head.write(byteArrayOf(0x42, 0x30, 0x42, 0x50))   // B0BP
-            else -> head.write(byteArrayOf(0x42, 0x30, 0x42, 0x4B)) // B0BK
-        }
+        head.write(byteArrayOf(0x42, 0x30, 0x42, 0x4B))   // B0BK（压缩上行 + 压缩回传）
         head.write(byteArrayOf((batch.size and 0xFF).toByte(), ((batch.size shr 8) and 0xFF).toByte()))
         for (f in batch) {
             val len = f.rgb.size
@@ -515,40 +501,8 @@ object DepthEngine {
             val ln = (whl[4].toInt() and 0xFF) or ((whl[5].toInt() and 0xFF) shl 8) or
                      ((whl[6].toInt() and 0xFF) shl 16) or ((whl[7].toInt() and 0xFF) shl 24)
             if (ln <= 0) continue
-            val payload = ByteArray(ln)
-            readFully(inp, payload, ln)
-            if (bits >= 16) {
-                /* 16 位：zlib 压的 uint16；32 位：原始 float32 */
-                val cnt = ow * oh
-                if (cnt <= 0) continue
-                val vals = if (valsBuf.size == cnt) valsBuf else FloatArray(cnt).also { valsBuf = it }
-                if (bits >= 32) {
-                    if (ln != cnt * 4) continue
-                    java.nio.ByteBuffer.wrap(payload).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                        .asFloatBuffer().get(vals, 0, cnt)
-                } else {
-                    val raw = java.io.ByteArrayOutputStream(cnt * 2)
-                    val inf = java.util.zip.Inflater()
-                    inf.setInput(payload)
-                    val buf = ByteArray(16 * 1024)
-                    while (true) {
-                        val got = inf.inflate(buf)
-                        if (got <= 0) break
-                        raw.write(buf, 0, got)
-                    }
-                    inf.end()
-                    val bytes = raw.toByteArray()
-                    if (bytes.size != cnt * 2) continue
-                    val bb = java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                    for (i in 0 until cnt) {
-                        vals[i] = (bb.getShort().toInt() and 0xFFFF) / 65535f
-                    }
-                }
-                lastInferMs = (SystemClock.elapsedRealtime() - f.ts)
-                finishDepth(vals, ow, oh, f.seq, emitFloat = true, precision = bits)
-                continue
-            }
-            val jp = payload
+            val jp = ByteArray(ln)
+            readFully(inp, jp, ln)
             val bmp = android.graphics.BitmapFactory.decodeByteArray(jp, 0, ln) ?: continue
             val cnt = bmp.width * bmp.height
             if (cnt <= 0) { bmp.recycle(); continue }
@@ -729,31 +683,6 @@ object DepthEngine {
      * 左右各扫一遍，相邻像素深度差不超过 step；有画面边缘的像素放宽到 step*8，
      * 真实轮廓因此保留，平坦区的硬跳变被摊成几十像素的缓坡，画面不会再"隔着水渍"。
      */
-    /** 与 limitRamp 同一套限速规则，作用在浮点缓冲区上（0..255 量纲，阈值口径不变） */
-    private fun limitRampF(out: FloatArray, ow: Int, oh: Int) {
-        val ramp = VrTuning.stereoRamp
-        if (ramp <= 0) return
-        val relaxed = ramp * 8
-        val has = rampAllow.size == ow * oh
-        for (y in 0 until oh) {
-            val base = y * ow
-            for (x in 1 until ow) {
-                val step = if (has && rampAllow[base + x] > 0.5f) relaxed else ramp
-                val p = out[base + x - 1]
-                val c = out[base + x]
-                if (c > p + step) out[base + x] = p + step
-                else if (c < p - step) out[base + x] = p - step
-            }
-            for (x in ow - 2 downTo 0) {
-                val step = if (has && rampAllow[base + x] > 0.5f) relaxed else ramp
-                val n2 = out[base + x + 1]
-                val c = out[base + x]
-                if (c > n2 + step) out[base + x] = n2 + step
-                else if (c < n2 - step) out[base + x] = n2 - step
-            }
-        }
-    }
-
     private fun limitRamp(out: ByteArray, ow: Int, oh: Int) {
         val ramp = VrTuning.stereoRamp
         if (ramp <= 0) return
@@ -778,18 +707,7 @@ object DepthEngine {
         }
     }
 
-    /**
-     * emitFloat = true 时按浮点/半浮点直接回传原生（精度由 precision 决定：16 或 32），
-     * 否则仍按 8 位字节回传（8 位档与本地推理那条路）。
-     */
-    private fun finishDepth(
-        vals: FloatArray,
-        ow: Int,
-        oh: Int,
-        seq: Long,
-        emitFloat: Boolean = false,
-        precision: Int = 8,
-    ) {
+    private fun finishDepth(vals: FloatArray, ow: Int, oh: Int, seq: Long) {
         val n = vals.size
         var mn = Float.MAX_VALUE
         var mx = -Float.MAX_VALUE
@@ -867,11 +785,6 @@ object DepthEngine {
         }
 
         val out = if (outU8Buf.size == n) outU8Buf else ByteArray(n).also { outU8Buf = it }
-        /*
-         * 浮点档要保住精度：量化到 8 位只是给"上一帧平滑"和限速用的中间量，
-         * 真正回传的是这里按 0..255 连续值保存的浮点数组。
-         */
-        val outF = if (outFBuf.size == n) outFBuf else FloatArray(n).also { outFBuf = it }
         for (i in 0 until n) {
             var v = (vals[i] - useMn) / range
             if (invert) v = 1f - v
@@ -880,16 +793,9 @@ object DepthEngine {
             if (prev != null && prev.size == n && a < 1f) {
                 b = prev[i].toInt().and(0xFF) * (1f - a) + b * a
             }
-            outF[i] = b.coerceIn(0f, 255f)
             out[i] = b.toInt().coerceIn(0, 255).toByte()
         }
         limitRamp(out, ow, oh)
-        limitRampF(outF, ow, oh)
-        if (emitFloat) {
-            val f = FloatArray(n)
-            for (i in 0 until n) f[i] = outF[i] / 255f
-            VrNative.pushDepthF32(f, ow, oh, seq, if (precision >= 32) 2 else 1)
-        }
         prevDepth = out
         inferCount++
         if (inferCount % 20 == 1) {

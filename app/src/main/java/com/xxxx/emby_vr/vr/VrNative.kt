@@ -168,7 +168,6 @@ object VrNative {
     private external fun nativeSetDepthInputSize(w: Int, h: Int)
 
     private external fun nativePushDepth(data: ByteArray, w: Int, h: Int, seq: Long)
-    private external fun nativePushDepthF32(data: FloatArray, w: Int, h: Int, seq: Long, precision: Int)
 
     private external fun nativeNotifySeek()
 
@@ -185,15 +184,6 @@ object VrNative {
             if (loaded) nativeSetDepthInputSize(w, h)
         } catch (t: Throwable) {
             Log.e(TAG, "设置深度输入尺寸失败：${t.message}")
-        }
-    }
-
-    /** 浮点/半浮点深度（0..1）；precision：1 = 16 位来源，2 = 32 位浮点 */
-    internal fun pushDepthF32(data: FloatArray, w: Int, h: Int, seq: Long, precision: Int) {
-        try {
-            if (loaded) nativePushDepthF32(data, w, h, seq, precision)
-        } catch (t: Throwable) {
-            Log.e(TAG, "回传浮点深度失败：${t.message}")
         }
     }
 
