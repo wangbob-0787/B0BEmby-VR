@@ -474,10 +474,12 @@ object DepthEngine {
         val inp = s.getInputStream()
         val head = java.io.ByteArrayOutputStream(16 + batch.size * (6 + 40 * 1024))
         /*
-         * 上行永远是压缩 JPEG；回传格式按调参 depth_bits 选：
+         * 上行永远是压缩 JPEG；回传格式按调参 depth_bits 选（默认 16）：
          *  8  → B0BK：灰度 JPEG，约 20KB
          *  16 → B0BP：uint16 + zlib，约 80~150KB
          *  32 → B0BF：原始 float32，590KB
+         * 三种回传都由服务端回「宽、高、长度」八字节头再跟载荷；32 位那路曾经少回长度，
+         * 客户端按错位字节读出一 GB 级长度当场分配失败，深度一帧不到（2026-11-27 服务端已补）。
          */
         val bits = VrTuning.depthBits
         when (bits) {

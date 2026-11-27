@@ -617,10 +617,11 @@ object VrTuning {
     const val KEY_SHOW_DEPTH = 81
 
     /**
-     * 远程深度回传精度（调参 depth_bits）：8 = JPEG 约 20KB（默认），16 = uint16+zlib（约 80~150KB），
-     * 32 = 原始 float32（590KB，仅内网低速链路谨慎使用）。8 位以外的档位要求头显侧纹理同步换格式。
+     * 远程深度回传精度（调参 depth_bits）：8 = JPEG 约 20KB，16 = uint16+zlib（约 80~150KB，默认），
+     * 32 = 原始 float32（590KB，仅对照用，显卡吃不住）。8 位以外的档位要求头显侧纹理同步换格式。
+     * 默认取 16：头显实测人脸边缘比 8 位稳，帧率只差 2 帧左右；32 位掉到 45 帧，不列入可选。
      */
-    var depthBits: Int = 8
+    var depthBits: Int = 16
 
     /** 补洞搜索半径（画面像素，2~96，默认 24）：洞宽≈视差量，太小跨不过洞、太大会啃到前景 */
     const val KEY_STEREO_FILL_PX = 68
