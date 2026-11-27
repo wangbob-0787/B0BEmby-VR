@@ -79,8 +79,7 @@ jobs:
           PKG_CONFIG_PATH=/opt/ff/lib/pkgconfig:/opt/lp/lib/x86_64-linux-gnu/pkgconfig \
             meson setup build --prefix=/opt/mpv --buildtype=release \
             -Dlibmpv=true -Dcplayer=true \
-            -Dvulkan=disabled -Ddrm=disabled -Dx11=disabled -Dwayland=disabled \
-            -Dlibarchive=disabled -Dvapoursynth=disabled \
+            -Dvulkan=disabled -Dlibarchive=disabled -Dvapoursynth=disabled \
             -Dc_link_args=-lstdc++
           ninja -C build -j"$(nproc)" >/tmp/mpv.log 2>&1 || { tail -60 /tmp/mpv.log; exit 1; }
           ./build/mpv --version
