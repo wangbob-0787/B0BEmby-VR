@@ -32,7 +32,7 @@ jobs:
           sudo apt-get remove -y meson || true
           sudo apt-get install -y build-essential ninja-build pkg-config git nasm yasm \
             libvulkan-dev glslang-dev glslang-tools liblcms2-dev libzimg-dev \
-            libegl1-mesa-dev libgles2-mesa-dev libgbm-dev libdisplay-info-dev \
+            libegl1-mesa-dev libgles2-mesa-dev libgbm-dev \
             python3-jinja2 python3-markupsafe libarchive-dev libjpeg-dev libass-dev libdrm-dev
 
       - name: 装新版 meson（22.04 自带 0.61，mpv 0.42 要 >=1.3）
@@ -43,6 +43,14 @@ jobs:
           /opt/meson/bin/pip install -q "meson>=1.3" ninja
           echo "/opt/meson/bin" >> $GITHUB_PATH
           /opt/meson/bin/meson --version
+
+      - name: 编 libdisplay-info（22.04 源里没有，mpv 0.41 打开 drm 后必需）
+        run: |
+          git clone --depth 1 --branch 0.2.0 https://gitlab.freedesktop.org/emersion/libdisplay-info.git /tmp/di
+          cd /tmp/di
+          PATH=/opt/meson/bin:$PATH meson setup build --prefix=/opt/di --buildtype=release -Dwerror=false
+          ninja -C build
+          ninja -C build install
 
       - name: 编 FFmpeg（静态）
         env:
