@@ -32,7 +32,7 @@ jobs:
           sudo apt-get remove -y meson || true
           sudo apt-get install -y build-essential ninja-build pkg-config git nasm yasm \
             libvulkan-dev glslang-dev glslang-tools liblcms2-dev libzimg-dev \
-            libegl1-mesa-dev libgles2-mesa-dev libgbm-dev \
+            libegl1-mesa-dev libgles2-mesa-dev libgbm-dev libdisplay-info-dev \
             python3-jinja2 python3-markupsafe libarchive-dev libjpeg-dev libass-dev libdrm-dev
 
       - name: 装新版 meson（22.04 自带 0.61，mpv 0.42 要 >=1.3）
