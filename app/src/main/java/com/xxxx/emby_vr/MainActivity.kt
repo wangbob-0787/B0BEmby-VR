@@ -438,9 +438,10 @@ class MainActivity : ComponentActivity() {
      *
      * 引擎报位置是**隔一会儿跳一下**（内核这条尤其明显，网页视频最看得出），
      * 若每一拍都拿它重置基准，落后于预测的那几拍就会把弹幕往回拽 —— 肉眼是"走一下停一下"。
-     * 所以采到的位置只用来**对齐与测速**，不直接当显示值：
-     *   · 引擎值在预测之后、或差得离谱（换集 / 拖动 / 起播）→ 认引擎的值；
-     *   · 引擎值在预测之前（刚跳完一台阶）→ 保持预测，不往回拽，等它自己追上来。
+     * 所以采到的位置只用来**测速**，不拿来逐拍对齐显示值：
+     *   · 位置永远按"上一拍 + 速率 × 时间"连续推进，肉眼是匀速；
+     *   · 速率每 [kClockRateWindowMs] 用引擎两次读数校准一次；
+     *   · 只有差到接近一秒（换集 / 拖动）才重设基准。
      *
      * 预测速率取自引擎自己的两次读数（[kClockRateWindowMs] 一次，引擎位置真的前进才算），
      * 不是我们凭空给的值 —— 设备实际播放比墙钟慢那 1% 就靠它吸收，否则会一路超前再被拉回。
@@ -464,12 +465,14 @@ class MainActivity : ComponentActivity() {
                 rateWinPosMs = pos
                 rateWinAtMs = now
             }
+            /*
+             * 显示位置只按"上一拍位置 + 速率 × 时间"连续推进，**不拿引擎的值逐拍对齐** ——
+             * 每一次对齐都是一次可见的顿（父亲 2026-11-28：对齐太频繁就是抖）。
+             * 速率的校准放在上面的窗口里（[kClockRateWindowMs] 一次），
+             * 平时只有差到接近一秒（换集 / 拖动 / 明显跑偏）才重设基准。
+             */
             val predicted = prev.posMs + ((now - prev.atMs) * prev.rate).toLong()
-            val applied = when {
-                kotlin.math.abs(pos - predicted) > kClockRealignMs -> pos
-                pos > predicted -> pos
-                else -> predicted
-            }
+            val applied = if (kotlin.math.abs(pos - predicted) > kClockRealignMs) pos else predicted
             clockSnapshot = ClockSnapshot(applied, now, playing, clockRate)
         }
         if (now - posLogAtMs > 5000L) {
