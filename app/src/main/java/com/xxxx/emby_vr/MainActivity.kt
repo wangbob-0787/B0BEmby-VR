@@ -366,16 +366,16 @@ class MainActivity : ComponentActivity() {
      * 采样值就是当前解码引擎自己报的音频时钟位置（自管 / 内核 / 系统三路各自实现，
      * 见 PlaybackControl.positionMs）。这一层不估速率、不追赶、不原地等待 ——
      * 每次采样直接覆盖。播放快慢由引擎的时钟决定，弹幕只跟随它。
+     *
+     * **位置、时刻、播放在播状态必须一起读、一起写**：三个字段分开写时，画笔线程
+     * 可能读到"新位置 + 旧时刻"，算出来会凭空多出一段（位置先往前跳一下，
+     * 下一拍再被拉回），肉眼就是弹幕一抖一抖。所以打包成一个不可变快照，
+     * 采样时整块替换，读时只取一次引用。
      */
-    @Volatile
-    private var clockPosMs = 0L
+    private class ClockSnapshot(val posMs: Long, val atMs: Long, val playing: Boolean)
 
     @Volatile
-    private var clockAtMs = 0L
-
-    /* 采样那一刻引擎是否在播：画笔线程据此决定采不到新位置时要不要按墙钟外推 */
-    @Volatile
-    private var clockPlaying = false
+    private var clockSnapshot: ClockSnapshot? = null
 
     private var posLogAtMs = 0L
 
@@ -430,12 +430,11 @@ class MainActivity : ComponentActivity() {
      */
     private fun samplePlaybackClock() {
         val now = android.os.SystemClock.elapsedRealtime()
-        clockPosMs = ctl.positionMs()
-        clockPlaying = ctl.isPlaying()
-        clockAtMs = now
+        val pos = ctl.positionMs()
+        clockSnapshot = ClockSnapshot(pos, now, ctl.isPlaying())
         if (now - posLogAtMs > 5000L) {
             posLogAtMs = now
-            Log.i(TAG, "弹幕时钟 位置=${clockPosMs}ms")
+            Log.i(TAG, "弹幕时钟 位置=${pos}ms")
         }
     }
 
@@ -446,10 +445,9 @@ class MainActivity : ComponentActivity() {
      * 弹幕会原地来回抖。停的那一拍直接返回采样值，弹幕就停在原地。
      */
     private fun playbackPosEstimate(): Long {
-        val at = clockAtMs
-        if (at == 0L) return 0L
-        if (!clockPlaying) return clockPosMs.coerceAtLeast(0L)
-        return (clockPosMs + (android.os.SystemClock.elapsedRealtime() - at))
+        val snap = clockSnapshot ?: return 0L
+        if (!snap.playing) return snap.posMs.coerceAtLeast(0L)
+        return (snap.posMs + (android.os.SystemClock.elapsedRealtime() - snap.atMs))
             .coerceAtLeast(0L)
     }
 
@@ -7841,10 +7839,8 @@ class MainActivity : ComponentActivity() {
         danmakuView?.setSubtitle("")
         danmakuTrack = null
         danmakuView?.setTrack(null)
-        // 位置缓存一起清零：下一集重新采样，免得拿上一集的位置当起点
-        clockAtMs = 0L
-        clockPosMs = 0L
-        clockPlaying = false
+        // 位置缓存一起清掉：下一集重新采样，免得拿上一集的位置当起点
+        clockSnapshot = null
         logoUrl.value = null
         /*
          * 这里**不再**做两件事（父亲 2026-10-07）：
