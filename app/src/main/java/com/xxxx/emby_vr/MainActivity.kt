@@ -356,45 +356,33 @@ class MainActivity : ComponentActivity() {
     private var subtitleNow = ""
 
     /*
-     * 播放位置的「基准 + 时刻」。
+     * 播放位置缓存：主线程采样，画笔线程读（父亲 2026-11-28 定的跟随口径）。
      *
      * 弹幕画布在**自己的线程**上逐帧绘制，而播放器不允许跨线程访问
      * （实测报 IllegalStateException: Player is accessed on the wrong thread，
-     * 弹幕因此一帧都画不出来）。所以主线程只负责定期取一次位置，画笔线程
-     * 用「基准 + 已过去的时间」自己推算出当前进度，既线程安全又足够平滑。
+     * 弹幕因此一帧都画不出来）。所以主线程定期采一次位置存这里，
+     * 画笔线程用「采样值 + 已过去的时间」推算当前进度。
+     *
+     * 采样值就是当前解码引擎自己报的音频时钟位置（自管 / 内核 / 系统三路各自实现，
+     * 见 PlaybackControl.positionMs）。这一层不估速率、不追赶、不原地等待 ——
+     * 每次采样直接覆盖。播放快慢由引擎的时钟决定，弹幕只跟随它。
      */
     @Volatile
-    private var posBaseMs = 0L
+    private var clockPosMs = 0L
 
     @Volatile
-    private var posBaseAtMs = 0L
+    private var clockAtMs = 0L
 
-    /*
-     * 弹幕时钟（父亲 2026-10-13 凌晨：内核路径弹幕「一跳一跳」）。
-     *
-     * 病根：播放器每秒只报几次位置（内核那条路报得更粗），而弹幕每秒画 90 帧 ——
-     * 每报一次就把时钟"拽"到播放器的值，画面上就是每 250ms 抖一下。
-     *
-     * 改法：时钟自己按墙钟往前走，播放器的值只用来**慢慢纠偏**（slew）：
-     *   · **绝不后退**：往回拽是最扎眼的抖动，宁可原地等；
-     *   · 落后时每拍最多追 [kDanmakuSlewMs]，差得离谱（换集 / seek）才直接对齐。
-     * 结果：位置连续、单调，抖动被摊平成看不出来的微调。
-     */
+    /* 采样那一刻引擎是否在播：画笔线程据此决定采不到新位置时要不要按墙钟外推 */
     @Volatile
-    private var smoothPosMs = 0.0
-    /* 弹幕时钟的实测播放速率（低通后），见 refreshPosBase */
-    private var rateSmoothed = 1.0
-    /* 上一拍播放器原值：算速率必须用它，不能用我们自己的时钟（否则形成反馈回路） */
-    private var lastTargetMs = 0L
-    private var rateLogAtMs = 0L
+    private var clockPlaying = false
 
-    @Volatile
-    private var smoothAtMs = 0L
+    private var posLogAtMs = 0L
 
-    /** 位置刷新定时器（独立于控制条：控制条收起时也要继续跑） */
+    /** 位置采样定时器（独立于控制条：控制条收起时也要继续跑） */
     private val posTicker = object : Runnable {
         override fun run() {
-            refreshPosBase()
+            samplePlaybackClock()
             updateDrawnSubtitle()
             /*
              * 弹幕画布宽度是运行时开关（2026-10-14 父亲定）：文件里改了立刻重建画布，
@@ -404,11 +392,12 @@ class MainActivity : ComponentActivity() {
                 applyDanmakuCanvas(lastDanmakuAspect)
             }
             /*
-             * 有字幕时把查询间隔压到 50ms：字幕条目实测只有 240~280ms，
-             * 250ms 一拍会和它同量级 —— 一拍命中、一拍不中，屏幕上就是"起止时间之内不停闪"
-             * （2026-11-23 真机）。这里只改"多久查一次"，不动任何内容时间。
+             * 固定 50ms 一拍，两个理由：
+             *  · 位置采样越密，弹幕跟随引擎时钟就越贴（采样间由墙钟外推补足）；
+             *  · 字幕条目实测只有 240~280ms，250ms 一拍会和它同量级 —— 一拍命中、一拍不中，
+             *    屏幕上就是"起止时间之内不停闪"（2026-11-23 真机）。
              */
-            handler.postDelayed(this, if (subtitleCues.isNotEmpty()) 50L else 250L)
+            handler.postDelayed(this, 50L)
         }
     }
 
@@ -422,11 +411,6 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * 主线程调：采一次播放器位置，并**平滑纠偏**弹幕时钟（每 250ms 一次）。
-     *
-     * 纠偏规则见 [smoothPosMs] 的注释：对齐大跳变、慢慢追落后、绝不后退。
-     */
-    /**
      * 杜比参数闸门：只有真杜比片才要求"参数就绪"。
      *
      * HDR10/普通片没有 RPU，那个标志永远为 0；无条件等它会把音频放行和画面放行一起卡死
@@ -438,70 +422,34 @@ class MainActivity : ComponentActivity() {
         return com.xxxx.emby_vr.vr.VrNative.doviParamsReady()
     }
 
-    private fun refreshPosBase() {
+    /**
+     * 主线程调（每 50ms 一次）：把当前解码引擎的音频时钟位置记下来。
+     *
+     * 只记不算：不估速率、不追赶、不等待。位置的真伪与快慢完全由引擎决定，
+     * 弹幕只负责跟随（父亲 2026-11-28 定的口径）。
+     */
+    private fun samplePlaybackClock() {
         val now = android.os.SystemClock.elapsedRealtime()
-        val target = currentPositionMs()
-        if (smoothAtMs == 0L) {
-            smoothPosMs = target.toDouble()
-            smoothAtMs = now
-            posBaseMs = target
-            posBaseAtMs = now
-            lastTargetMs = target
-            return
+        clockPosMs = ctl.positionMs()
+        clockPlaying = ctl.isPlaying()
+        clockAtMs = now
+        if (now - posLogAtMs > 5000L) {
+            posLogAtMs = now
+            Log.i(TAG, "弹幕时钟 位置=${clockPosMs}ms")
         }
-        /*
-         * 推进速率按**实测播放速率**算，不再固定 1:1 墙钟。
-         *
-         * 根因（豆豆 2026-11-23 实测）：设备每秒实际只放 43640 个样本（标称 44100），
-         * 播放位置每 100 秒比墙钟慢约 1 秒 —— 弹幕时钟按墙钟走就必然越走越前，
-         * 爬到 800ms 阈值再被硬拉回，形成"领先一段、回跳一次"的锯齿。
-         * 三条路（自管 / 内核 / 系统播放器）位置源都慢这 1%，所以修在公共层。
-         */
-        /* 速率与推进共用同一个 dt（都取 smoothAtMs）：两个字段各有别的写入者，
-           一旦只动其一，速率和推进就会用不同时间基，误差不报错只会慢慢跑偏 */
-        val dtMs = (now - smoothAtMs).coerceAtLeast(1L)
-        val rateRaw = (target - lastTargetMs).toDouble() / dtMs.toDouble()
-        /*
-         * 不做"暂停判断"：暂停时位置不动 → rate=0 → 时钟不动，弹幕天然冻住。
-         * 位置回退（噪声）沿用上拍速率；跳变（seek/换集）限到 4 倍。
-         */
-        val rate = when {
-            rateRaw < 0.0 -> rateSmoothed
-            rateRaw > 4.0 -> 4.0
-            else -> rateRaw
-        }
-        rateSmoothed = 0.8 * rateSmoothed + 0.2 * rate
-        var est = smoothPosMs + (now - smoothAtMs) * rateSmoothed
-        val err = target - est
-        est += when {
-            // 换集 / 拖动进度 / 起播：差得离谱就认播放器的值
-            kotlin.math.abs(err) > kDanmakuRealignMs -> err
-            // 落后：每拍最多追这么多，几拍内悄悄跟上
-            err > 0.0 -> kotlin.math.min(err, kDanmakuSlewMs)
-            // 超前（缓冲卡住等）：原地等播放器追上来，绝不往回跳
-            else -> 0.0
-        }
-        if (now - rateLogAtMs > 5000L) {
-            rateLogAtMs = now
-            Log.i(
-                TAG,
-                "弹幕时钟 位置=${target}ms 时钟=${est.toLong()}ms 差=${(target - est).toLong()}ms 速率=" + String.format(java.util.Locale.US, "%.3f", rateSmoothed),
-            )
-        }
-        smoothPosMs = est
-        smoothAtMs = now
-        lastTargetMs = target
-        // 旧字段留着给"没有平滑时钟"的兜底路径读，保持单调
-        posBaseMs = est.toLong()
-        posBaseAtMs = now
     }
 
-    /** 任何线程可调：按平滑时钟推算当前播放位置（连续、单调，不抖） */
+    /**
+     * 任何线程可调：采样值 + 采样至今的墙钟流逝（采样间连续，不做速率估计）。
+     *
+     * 引擎停了就不外推 —— 暂停时位置不动，若仍按墙钟往前推、下一拍再被拽回来，
+     * 弹幕会原地来回抖。停的那一拍直接返回采样值，弹幕就停在原地。
+     */
     private fun playbackPosEstimate(): Long {
-        val at = smoothAtMs
+        val at = clockAtMs
         if (at == 0L) return 0L
-        return (smoothPosMs + (android.os.SystemClock.elapsedRealtime() - at))
-            .toLong()
+        if (!clockPlaying) return clockPosMs.coerceAtLeast(0L)
+        return (clockPosMs + (android.os.SystemClock.elapsedRealtime() - at))
             .coerceAtLeast(0L)
     }
 
@@ -2526,7 +2474,7 @@ class MainActivity : ComponentActivity() {
                 // 控制条第一行左侧：正在播放什么（右侧的时间由独立时钟负责）
                 refreshOsdTitleFromItem()
                 // 弹幕画布要的播放位置：主线程取，画笔线程只读缓存
-                refreshPosBase()
+                samplePlaybackClock()
                 /*
                  * 银幕比例每部片子重算（父亲 2026-10-17 立的规矩）。
                  * 内核拿到第一帧后才会报出真实尺寸；报出来、且与当前用的比例不一样就改。
@@ -7893,13 +7841,10 @@ class MainActivity : ComponentActivity() {
         danmakuView?.setSubtitle("")
         danmakuTrack = null
         danmakuView?.setTrack(null)
-        // 平滑时钟一起清零：下一集从头对齐，免得拿上一集的位置去纠偏
-        smoothAtMs = 0L
-        smoothPosMs = 0.0
-        rateSmoothed = 1.0
-        lastTargetMs = 0L
-        posBaseAtMs = 0L
-        posBaseMs = 0L
+        // 位置缓存一起清零：下一集重新采样，免得拿上一集的位置当起点
+        clockAtMs = 0L
+        clockPosMs = 0L
+        clockPlaying = false
         logoUrl.value = null
         /*
          * 这里**不再**做两件事（父亲 2026-10-07）：
@@ -10960,15 +10905,6 @@ class MainActivity : ComponentActivity() {
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
                 "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-        /**
-         * 弹幕时钟纠偏参数（父亲 2026-10-13 凌晨定）。
-         *
-         * 采样每 250ms 一次：落后时每拍最多追 [kDanmakuSlewMs]（≈100ms/s，眼睛看不出来），
-         * 差值超过 [kDanmakuRealignMs] 判定为换集/seek/起播，直接对齐。
-         * 超前一律原地等，绝不后退（后退就是最扎眼的抖动）。
-         */
-        private const val kDanmakuSlewMs = 25.0
-        private const val kDanmakuRealignMs = 800.0
     }
 }
 
