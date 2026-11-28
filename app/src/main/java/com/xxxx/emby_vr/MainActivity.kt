@@ -372,12 +372,22 @@ class MainActivity : ComponentActivity() {
      * 下一拍再被拉回），肉眼就是弹幕一抖一抖。所以打包成一个不可变快照，
      * 采样时整块替换，读时只取一次引用。
      */
-    private class ClockSnapshot(val posMs: Long, val atMs: Long, val playing: Boolean)
+    private class ClockSnapshot(
+        val posMs: Long,
+        val atMs: Long,
+        val playing: Boolean,
+        val rate: Float,
+    )
 
     @Volatile
     private var clockSnapshot: ClockSnapshot? = null
 
     private var posLogAtMs = 0L
+
+    /* 速率估计窗口（只在主线程采样里读写）：起点位置与时刻，以及平滑后的速率 */
+    private var clockRate = 1.0f
+    private var rateWinPosMs = 0L
+    private var rateWinAtMs = 0L
 
     /** 位置采样定时器（独立于控制条：控制条收起时也要继续跑） */
     private val posTicker = object : Runnable {
@@ -423,23 +433,57 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * 主线程调（每 50ms 一次）：把当前解码引擎的音频时钟位置记下来。
+     * 主线程调（每 50ms 一次）：把当前解码引擎的音频时钟位置记下来（父亲 2026-11-28 定的口径：
+     * 弹幕只跟随引擎的时钟，不另立一套时钟）。
      *
-     * 只记不算：不估速率、不追赶、不等待。位置的真伪与快慢完全由引擎决定，
-     * 弹幕只负责跟随（父亲 2026-11-28 定的口径）。
+     * 引擎报位置是**隔一会儿跳一下**（内核这条尤其明显，网页视频最看得出），
+     * 若每一拍都拿它重置基准，落后于预测的那几拍就会把弹幕往回拽 —— 肉眼是"走一下停一下"。
+     * 所以采到的位置只用来**对齐与测速**，不直接当显示值：
+     *   · 引擎值在预测之后、或差得离谱（换集 / 拖动 / 起播）→ 认引擎的值；
+     *   · 引擎值在预测之前（刚跳完一台阶）→ 保持预测，不往回拽，等它自己追上来。
+     *
+     * 预测速率取自引擎自己的两次读数（[kClockRateWindowMs] 一次，引擎位置真的前进才算），
+     * 不是我们凭空给的值 —— 设备实际播放比墙钟慢那 1% 就靠它吸收，否则会一路超前再被拉回。
      */
     private fun samplePlaybackClock() {
         val now = android.os.SystemClock.elapsedRealtime()
         val pos = ctl.positionMs()
-        clockSnapshot = ClockSnapshot(pos, now, ctl.isPlaying())
+        val playing = ctl.isPlaying()
+        val prev = clockSnapshot
+        if (prev == null || !prev.playing || !playing) {
+            /* 起播 / 暂停恢复 / 换片：基准直接认引擎，速率窗口重新开始 */
+            clockRate = 1.0f
+            rateWinPosMs = pos
+            rateWinAtMs = now
+            clockSnapshot = ClockSnapshot(pos, now, playing, clockRate)
+        } else {
+            if (now - rateWinAtMs >= kClockRateWindowMs && pos > rateWinPosMs) {
+                val raw = (pos - rateWinPosMs).toFloat() / (now - rateWinAtMs).toFloat()
+                /* 只接受像"正常播放"的速率：跳转、缓冲造成的异常样本直接丢掉 */
+                if (raw > 0.5f && raw < 2.0f) clockRate = clockRate * 0.5f + raw * 0.5f
+                rateWinPosMs = pos
+                rateWinAtMs = now
+            }
+            val predicted = prev.posMs + ((now - prev.atMs) * prev.rate).toLong()
+            val applied = when {
+                kotlin.math.abs(pos - predicted) > kClockRealignMs -> pos
+                pos > predicted -> pos
+                else -> predicted
+            }
+            clockSnapshot = ClockSnapshot(applied, now, playing, clockRate)
+        }
         if (now - posLogAtMs > 5000L) {
             posLogAtMs = now
-            Log.i(TAG, "弹幕时钟 位置=${pos}ms")
+            Log.i(
+                TAG,
+                "弹幕时钟 位置=${clockSnapshot?.posMs}ms 引擎=${pos}ms 速率=" +
+                    String.format(java.util.Locale.US, "%.3f", clockRate),
+            )
         }
     }
 
     /**
-     * 任何线程可调：采样值 + 采样至今的墙钟流逝（采样间连续，不做速率估计）。
+     * 任何线程可调：采样值 + 采样至今的流逝（按引擎测得的速率折算，采样间连续）。
      *
      * 引擎停了就不外推 —— 暂停时位置不动，若仍按墙钟往前推、下一拍再被拽回来，
      * 弹幕会原地来回抖。停的那一拍直接返回采样值，弹幕就停在原地。
@@ -447,7 +491,7 @@ class MainActivity : ComponentActivity() {
     private fun playbackPosEstimate(): Long {
         val snap = clockSnapshot ?: return 0L
         if (!snap.playing) return snap.posMs.coerceAtLeast(0L)
-        return (snap.posMs + (android.os.SystemClock.elapsedRealtime() - snap.atMs))
+        return (snap.posMs + ((android.os.SystemClock.elapsedRealtime() - snap.atMs) * snap.rate).toLong())
             .coerceAtLeast(0L)
     }
 
@@ -10897,6 +10941,16 @@ class MainActivity : ComponentActivity() {
          * 分片地址是"一段一签"的，CDN 认 Referer 为主；UA 用桌面浏览器这一串，
          * 与网页里那台浏览器一致，避免被判成异常客户端。
          */
+        /**
+         * 位置采样与预测差多少才判定为换集 / 拖动 / 起播（父亲 2026-11-28 直读口径）。
+         *
+         * 引擎报位置是阶梯式的，一个台阶通常在几百毫秒以内；超过这个量就是真跳了。
+         */
+        private const val kClockRealignMs = 800L
+
+        /** 速率估计窗口：短了会被台阶噪声带偏，长了跟不上真实速率变化（父亲 2026-11-28 直读口径） */
+        private const val kClockRateWindowMs = 2000L
+
         private const val WEB_DESKTOP_UA =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
                 "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
