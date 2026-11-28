@@ -156,6 +156,16 @@ class MainActivity : ComponentActivity() {
 
     /** 上次用的画面比例：运行时改画布宽度时按它重算高度 */
     private var lastDanmakuAspect = 16f / 9f
+
+    /**
+     * 起播时按片源信息算出的画面比例（宽/高）。
+     *
+     * 银幕比例以它为准：内核报的尺寸可能只是它的输出尺寸，或者上一部片子留下的旧值
+     * （2026-11-28 实测：《两京十五日》起播先按片源设成 2.388，紧接着被内核报的
+     * 1792x1080 覆盖成 1.659，父亲看到的就是"宽度不对"）。
+     * 0 表示片源尺寸未知，此时才允许内核的值说了算（网页流永远允许）。
+     */
+    private var sourceAspectPx = 0f
     private var danmakuView: com.xxxx.emby_vr.danmaku.DanmakuView? = null
 
     /** 当前这一集解析好的弹幕（菜单里把弹幕关掉时先留着，开回来直接用） */
@@ -383,6 +393,9 @@ class MainActivity : ComponentActivity() {
     private var clockSnapshot: ClockSnapshot? = null
 
     private var posLogAtMs = 0L
+
+    /* "内核尺寸与片源不符"这条日志的节流时刻 */
+    private var untrustedSizeLogAtMs = 0L
 
     /* 速率估计窗口（只在主线程采样里读写）：起点位置与时刻，以及平滑后的速率 */
     private var clockRate = 1.0f
@@ -2527,6 +2540,27 @@ class MainActivity : ComponentActivity() {
                  * Emby 片子自己报的尺寸也和探测值不一致时以真实帧为准。
                  */
                 mpvBackend?.videoSize()?.let { (vw, vh) ->
+                    /*
+                     * 内核报的尺寸先核对一遍再采信：内核报的可能是它自己的输出尺寸，
+                     * 也可能是上一部片子留下的旧值（2026-11-28 实测：起播已按片源设成 2.388，
+                     * 半毫秒后被内核的 1792x1080 覆盖成 1.659 —— 父亲看到"宽度不对"）。
+                     * 网页流没有片源尺寸可比，仍由内核说了算；片源尺寸未知时同样采信。
+                     */
+                    val isWebPath = webPlayingNow || webStreamSite != null
+                    val kernelAspect = vw.toFloat() / vh.toFloat()
+                    val trustKernel = isWebPath || sourceAspectPx <= 0f ||
+                        kotlin.math.abs(kernelAspect - sourceAspectPx) / sourceAspectPx < 0.10f
+                    if (!trustKernel) {
+                        val nowMs = android.os.SystemClock.elapsedRealtime()
+                        if (nowMs - untrustedSizeLogAtMs > 5000L) {
+                            untrustedSizeLogAtMs = nowMs
+                            Log.w(
+                                TAG,
+                                "内核报的画面尺寸 ${vw}x$vh 与片源比例 ${sourceAspectPx} 不符 → 忽略，按片源比例走",
+                            )
+                        }
+                        return@let
+                    }
                     /*
                      * 大屏纹理尺寸必须按「切完档的目标宽度」下给 native：每秒再按片源原尺寸
                      * 灌一次，菜单切到 2560 也会被这条立刻顶回 4096。
@@ -4718,6 +4752,7 @@ class MainActivity : ComponentActivity() {
                 }
                 val vw = if (srcW > cap) cap else srcW
                 val vh = (srcH.toLong() * vw / srcW).toInt().coerceAtLeast(64)
+                sourceAspectPx = srcW.toFloat() / srcH.toFloat()
                 renderer.setVideoBufferSize(vw, vh)
                 mpvBackend = com.xxxx.emby_vr.player.MpvBackend(this).also { m ->
                     m.attachSurface(surface)
